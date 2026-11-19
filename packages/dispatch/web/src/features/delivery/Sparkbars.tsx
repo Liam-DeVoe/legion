@@ -1,8 +1,9 @@
 // The prototype's web/src/components/Sparkbars.tsx, ported as it is; its fills are the `chartBar`
-// tokens, since no component writes a colour utility of its own. One difference: each day carries
-// its own verdict (`met`), which its caller judges from that day's row (`lib/target.ts`'s
-// `dayMeets`), rather than the bar's figure judged here, since a target may judge a statistic the
-// bar does not draw.
+// tokens, since no component writes a colour utility of its own. One difference: each bar carries
+// its own verdict (`met`), which its caller judges from the value the bar draws, in its target's
+// direction and inclusiveness, and leaves null where the target does not judge that statistic of
+// a day (`lib/target.ts`'s `ownVerdict`), rather than the prototype's comparison here of the bar
+// against the line.
 import { chartBar } from "../../theme/classes";
 import { barScale } from "./lib/barScale";
 
@@ -10,13 +11,17 @@ export interface SparkbarPoint {
   label: string; // tooltip prefix, e.g. "2026-09-27"
   value: number | null; // null: nothing to measure that day
   partial: boolean;
-  // Whether the day meets the target; null or absent draws its bar neutral, as every bar is with
-  // no target.
+  // Whether the bar's value meets the target, as its caller judges it; null or absent draws the
+  // bar neutral, as every bar is where the target judges no statistic of a day the bar draws.
   met?: boolean | null;
 }
 
 interface Props {
   points: SparkbarPoint[];
+  // Where a target may judge the bars: the slug of the eval whose target it is and the statistic
+  // each bar draws a day's value of, which every bar names (`data-eval`, `data-statistic`, with
+  // `data-span="day"`); omitted on a chart no eval judges.
+  judged?: { evalSlug: string; statistic: string };
   // Omitted where no target exists: no target line.
   target?: number;
   // Top of the scale; the target line always fits under it.
@@ -27,10 +32,10 @@ interface Props {
 const BAR = 10;
 const HEIGHT = 28;
 
-/** One bar per day with a dashed target line: green bars are days that meet the target, red bars
- * days that miss it, neutral ones days with no verdict, and faded bars days the window only partly
- * covers. Plain SVG, no chart library, so it costs nothing on a filter change. */
-export function Sparkbars({ points, target, max, format }: Props) {
+/** One bar per day with a dashed target line where its caller draws one: a green bar's value meets
+ * the target, a red bar's misses it, a neutral bar has no verdict, and faded bars are days the
+ * window only partly covers. Plain SVG, no chart library, so it costs nothing on a filter change. */
+export function Sparkbars({ points, judged, target, max, format }: Props) {
   const y = barScale(
     max,
     target,
@@ -64,6 +69,9 @@ export function Sparkbars({ points, target, max, format }: Props) {
               width={BAR - 2}
               height={Math.max(HEIGHT - y(p.value), 1)}
               className={p.met == null ? chartBar.neutral : p.met ? chartBar.met : chartBar.missed}
+              data-eval={judged?.evalSlug}
+              data-span={judged === undefined ? undefined : "day"}
+              data-statistic={judged?.statistic}
             />
           )}
         </g>

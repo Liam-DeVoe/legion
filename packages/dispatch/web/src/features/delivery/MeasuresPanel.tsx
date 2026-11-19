@@ -1,19 +1,21 @@
 // The prototype's web/src/components/DoraPanel.tsx, ported as it is: the six KPI cards, the
 // headline strip, and the "Definitions & alternatives" fold with its eight definition cards and
-// per-day table. Every number, every target and whether each is met come from
-// GET /api/v1/delivery/measures; nothing is computed here but a day's tone, which the answer
-// gives no verdict of and which follows the eval's own rule over the statistics its target judges
-// (`lib/target.ts`). Each card's caption names those statistics, so it reads as the verdict beside
-// it is judged (dispatch://INFRA-2916, R5). Three differences, each from LEGION-567's slice 2
-// plan: the change-failure-rate card says flags arrive with flag confirmation while the server
-// stores none; the P0 card links each issue inside Dispatch and dates its count by the response's
-// computed_at; and the cards and the strip lay themselves out for the panel's own width, since
-// Dispatch's sidebar leaves it narrower than the prototype's page and a phone narrower still,
-// where the prototype is desktop-only.
+// per-day table. Every number, every target and each card's met/missed badge come from
+// GET /api/v1/delivery/measures; nothing is computed here but the tone of a figure, a count, a
+// day's bar or a per-day cell, each by its own value against the target of the eval it belongs to
+// and only where that target judges the statistic it shows (`lib/target.ts`'s `ownVerdict`,
+// dispatch://INFRA-2916, R5). Each such element names the eval, the statistic and whether its
+// value is one day's or the window's (`data-eval`, `data-statistic`, `data-span`), and each card's
+// caption names the statistics its target judges, so it reads as the badge beside it is judged.
+// Three differences, each from LEGION-567's slice 2 plan: the change-failure-rate card says flags
+// arrive with flag confirmation while the server stores none; the P0 card links each issue inside
+// Dispatch and dates its count by the response's computed_at; and the cards and the strip lay
+// themselves out for the panel's own width, since Dispatch's sidebar leaves it narrower than the
+// prototype's page and a phone narrower still, where the prototype is desktop-only.
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { DeliveryDailyPoint, DeliveryMeasuresResponse } from "../../api/types";
+import type { DeliveryMeasuresResponse, DeliveryTargets } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import {
   TableBody,
@@ -22,13 +24,10 @@ import {
   TableHeadCell,
   TableRow,
   TableShell,
-  type TableTone,
 } from "../../components/TableShell";
 import {
   borderDefault,
-  dangerText,
   linkText,
-  successText,
   surfaceBg,
   surfaceMutedBg,
   textMutedOnCanvas,
@@ -38,15 +37,15 @@ import {
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
+import { JudgedFigure } from "./JudgedFigure";
 import { formatMinutes, NO_VALUE, pct } from "./lib/format";
 import {
   DEPLOY_BARS,
-  dailyValue,
-  dayMeets,
+  EVAL_SLUGS,
   type Judge,
+  type Measure,
+  ownVerdict,
   RUN_SUCCESS_BARS,
-  showsAnyJudge,
-  type Target,
   targetLabel,
   targetLine,
 } from "./lib/target";
@@ -60,13 +59,31 @@ const PENDING = "\u2026";
 
 /** The change-failure-rate card's breakdown: deploys with a confirmed break, and how many more
  *  have only unreviewed (pending) flags. `confirmedOrPending` counts each deploy once (the
- *  prototype's web/src/lib/dora.ts:297-305). */
-export function failureRateBreakdown(confirmed: number, confirmedOrPending: number): string {
-  const onlyPending = confirmedOrPending - confirmed;
-  const breaks = `${confirmed} ${confirmed === 1 ? "deploy" : "deploys"} with a confirmed break`;
-  return onlyPending === 0
-    ? `${breaks}; none with only unreviewed flags`
-    : `${breaks}; ${onlyPending} more with only unreviewed flags`;
+ *  prototype's web/src/lib/dora.ts:297-305). The confirmed count is the eval's
+ *  per_deploy.confirmed, toned by its own verdict where the target judges it; the count of deploys
+ *  with only unreviewed flags is confirmedOrPending less it, which no judge names
+ *  (per_deploy.pending counts every deploy with a pending flag), so it takes no tone. */
+function FailureRateBreakdown(props: {
+  confirmed: number;
+  confirmedOrPending: number;
+  targets: DeliveryTargets;
+}): ReactNode {
+  const onlyPending = props.confirmedOrPending - props.confirmed;
+  return (
+    <>
+      <WindowFigure
+        measure="change_failure_rate"
+        statistic="per_deploy.confirmed"
+        targets={props.targets}
+        value={props.confirmed}
+      >
+        {props.confirmed}
+      </WindowFigure>
+      {` ${props.confirmed === 1 ? "deploy" : "deploys"} with a confirmed break; `}
+      {onlyPending === 0 ? "none" : `${onlyPending} more`}
+      {" with only unreviewed flags"}
+    </>
+  );
 }
 
 type FailureRate = DeliveryMeasuresResponse["measures"]["change_failure_rate"];
@@ -83,9 +100,38 @@ function measured(f: FailureRate): f is FailureRate & {
   );
 }
 
-function tone(met: boolean | null): string {
-  if (met === null) return textMutedOnCanvas;
-  return met ? successText : dangerText;
+/** A figure of the whole window that the target of `measure`'s eval may judge (`JudgedFigure`),
+ *  toned by its own value. It reads `plain` where that target judges another statistic or is off,
+ *  so a card judged by its p90 does not colour its median and change-fail-rate judged by its
+ *  per-PR rate colours neither its per-deploy rate nor its upper bound; and `pending`, muted
+ *  unless given, while the read is pending (`targets` undefined). */
+function WindowFigure(props: {
+  measure: Measure;
+  statistic: Judge;
+  targets: DeliveryTargets | undefined;
+  value: number | null | undefined;
+  className?: string;
+  plain?: string;
+  pending?: string;
+  children: ReactNode;
+}): ReactNode {
+  const { targets } = props;
+  return (
+    <JudgedFigure
+      className={props.className}
+      evalSlug={EVAL_SLUGS[props.measure]}
+      met={
+        targets === undefined
+          ? null
+          : ownVerdict(targets[props.measure], props.statistic, "window", props.value ?? null)
+      }
+      plain={targets === undefined ? (props.pending ?? textMutedOnSurface) : props.plain}
+      span="window"
+      statistic={props.statistic}
+    >
+      {props.children}
+    </JudgedFigure>
+  );
 }
 
 function KpiCard(props: {
@@ -114,11 +160,23 @@ function KpiCard(props: {
   );
 }
 
-function BigNumber({ className, children }: { className: string; children: string }): ReactNode {
-  return <span className={`text-lg font-semibold ${className}`}>{children}</span>;
+/** A headline figure (`WindowFigure`) of a card or of the strip, plain where it takes no tone. */
+function BigNumber(props: {
+  measure: Measure;
+  statistic: Judge;
+  targets: DeliveryTargets | undefined;
+  value: number | null | undefined;
+  pending?: string;
+  children: string;
+}): ReactNode {
+  return <WindowFigure className="text-lg font-semibold" plain={textPrimaryOnSurface} {...props} />;
 }
 
-function DefinitionCard(props: { title: string; value: string; children: ReactNode }): ReactNode {
+function DefinitionCard(props: {
+  title: string;
+  value: ReactNode;
+  children: ReactNode;
+}): ReactNode {
   return (
     <div className={`rounded p-3 ${surfaceMutedBg}`}>
       <div className={`text-xs uppercase ${textMutedOnSurfaceMuted}`}>{props.title}</div>
@@ -126,6 +184,14 @@ function DefinitionCard(props: { title: string; value: string; children: ReactNo
       <div className={`text-xs ${textMutedOnSurfaceMuted}`}>{props.children}</div>
     </div>
   );
+}
+
+/** One figure of the headline strip; `judged` names the statistic of a delivery eval it shows,
+ *  where it shows one. */
+interface StripStat {
+  label: string;
+  value: string;
+  judged?: { measure: Measure; statistic: Judge; value: number | null | undefined };
 }
 
 /** The delivery measures for the page's window and facets: Sami's six KPI targets, then one
@@ -136,34 +202,28 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   const [open, setOpen] = useState(false);
   const show = (format: (response: DeliveryMeasuresResponse) => string): string =>
     data === undefined ? PENDING : format(data);
-  // Every figure a card colours by a verdict follows one rule: the verdict is of the statistics the
-  // card's target judges, so the figure takes its tone only where the target judges the statistic
-  // the figure shows (`shownJudges`, less one another judge implies) and reads plain where it
-  // judges others or is off, whatever verdict of that figure the answer carries. So a card judged
-  // by its p90, or by a longest change that implies its median, does not colour its median;
-  // change-fail-rate judged by its per-PR rate colours neither its per-deploy rate nor its upper
-  // bound; and deploy-frequency judged by its deploys with a PR does not colour its deploys a day.
-  // The card's badge (`met`) stays the verdict of everything its target judges.
-  const judgedTone = (
-    judge: Judge,
-    target: (response: DeliveryMeasuresResponse) => Target,
-    met: (response: DeliveryMeasuresResponse) => boolean | null
-  ): string => {
-    if (data === undefined) return textMutedOnSurface;
-    return showsAnyJudge(target(data), [judge]) ? tone(met(data)) : textPrimaryOnSurface;
-  };
   const targets = data?.targets;
   const status = data?.status;
   const measures = data?.measures;
 
-  const strip = [
+  const strip: StripStat[] = [
     {
       label: "Deploy freq",
       value: show((d) => `${d.measures.deploy_frequency.per_day.toFixed(2)}/day`),
+      judged: {
+        measure: "deploys_per_day",
+        statistic: "deploys.per_day",
+        value: measures?.deploy_frequency.per_day,
+      },
     },
     {
       label: "Lead time (merge\u2192prod)",
       value: show((d) => formatMinutes(d.measures.lead_time.merge_to_production.median_minutes)),
+      judged: {
+        measure: "merge_to_production_minutes",
+        statistic: "minutes.median",
+        value: measures?.lead_time.merge_to_production.median_minutes,
+      },
     },
     {
       label: "CFR (per PR)",
@@ -172,6 +232,11 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           ? NO_VALUE
           : pct(d.measures.change_failure_rate.per_pr.rate)
       ),
+      judged: {
+        measure: "change_failure_rate",
+        statistic: "per_pr.rate",
+        value: measures?.change_failure_rate.per_pr.rate,
+      },
     },
     {
       label: "Time to restore",
@@ -197,23 +262,31 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         >
           <div className="flex items-baseline gap-2">
             <BigNumber
-              className={judgedTone(
-                "deploys.per_day",
-                (d) => d.targets.deploys_per_day,
-                (d) => d.status.deploys_per_day
-              )}
+              measure="deploys_per_day"
+              statistic="deploys.per_day"
+              targets={targets}
+              value={measures?.deploy_frequency.per_day}
             >
               {show((d) => `${d.measures.deploy_frequency.per_day.toFixed(1)}/day`)}
             </BigNumber>
             {measures === undefined ? null : (
               <span className={`text-xs ${textMutedOnSurface}`}>
-                {measures.deploy_frequency.successful_deploys} deploys
+                <WindowFigure
+                  measure="deploys_per_day"
+                  statistic="deploys.deploys"
+                  targets={targets}
+                  value={measures.deploy_frequency.successful_deploys}
+                >
+                  {measures.deploy_frequency.successful_deploys}
+                </WindowFigure>{" "}
+                deploys
               </span>
             )}
           </div>
           {measures === undefined || targets === undefined ? null : (
             <Sparkbars
               format={(v) => `${v} deploys`}
+              judged={{ evalSlug: EVAL_SLUGS.deploys_per_day, statistic: "deploys.per_day" }}
               max={
                 targetLine(targets.deploys_per_day, DEPLOY_BARS) ??
                 Math.max(1, ...(measures.daily ?? []).map((d) => d.deploys))
@@ -222,7 +295,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 label: d.day,
                 value: d.deploys,
                 partial: d.partial,
-                met: dayMeets(targets.deploys_per_day, (judge) => dailyValue(d, judge)),
+                met: ownVerdict(targets.deploys_per_day, "deploys.per_day", "day", d.deploys),
               }))}
               target={targetLine(targets.deploys_per_day, DEPLOY_BARS)}
             />
@@ -237,11 +310,14 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           <div className="flex items-baseline gap-2">
             {/* Two decimals: 4.96% meets the target, 5.00% does not. */}
             <BigNumber
-              className={judgedTone(
-                "per_deploy.rate",
-                (d) => d.targets.change_failure_rate,
-                (d) => d.status.change_failure_rate
-              )}
+              measure="change_failure_rate"
+              statistic="per_deploy.rate"
+              targets={targets}
+              value={
+                measures === undefined || !measured(measures.change_failure_rate)
+                  ? null
+                  : measures.change_failure_rate.per_deploy.rate
+              }
             >
               {show((d) =>
                 !measured(d.measures.change_failure_rate)
@@ -261,22 +337,26 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <>
               <div className={`text-xs ${textMutedOnSurface}`}>
                 up to{" "}
-                <span
-                  className={`font-semibold ${judgedTone(
-                    "upper_bound.rate",
-                    (d) => d.targets.change_failure_rate,
-                    (d) => d.status.change_failure_rate_upper_bound
-                  )}`}
+                <WindowFigure
+                  className="font-semibold"
+                  measure="change_failure_rate"
+                  plain={textPrimaryOnSurface}
+                  statistic="upper_bound.rate"
+                  targets={data.targets}
+                  value={data.measures.change_failure_rate.per_deploy.upper_bound_rate}
                 >
                   {pct(data.measures.change_failure_rate.per_deploy.upper_bound_rate, 2)}
-                </span>{" "}
+                </WindowFigure>{" "}
                 if every pending flag is confirmed
               </div>
               <div className={`text-[11px] ${textMutedOnSurface}`}>
-                {failureRateBreakdown(
-                  data.measures.change_failure_rate.per_deploy.confirmed,
-                  data.measures.change_failure_rate.per_deploy.confirmed_or_pending
-                )}
+                <FailureRateBreakdown
+                  confirmed={data.measures.change_failure_rate.per_deploy.confirmed}
+                  confirmedOrPending={
+                    data.measures.change_failure_rate.per_deploy.confirmed_or_pending
+                  }
+                  targets={data.targets}
+                />
               </div>
             </>
           )}
@@ -292,11 +372,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className="flex items-baseline gap-1">
               <BigNumber
-                className={judgedTone(
-                  "minutes.median",
-                  (d) => d.targets.merge_to_production_minutes,
-                  (d) => d.status.merge_to_production_median
-                )}
+                measure="merge_to_production_minutes"
+                statistic="minutes.median"
+                targets={targets}
+                value={measures?.lead_time.merge_to_production.median_minutes}
               >
                 {show((d) =>
                   formatMinutes(d.measures.lead_time.merge_to_production.median_minutes)
@@ -306,11 +385,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             </span>
             <span className="flex items-baseline gap-1">
               <BigNumber
-                className={judgedTone(
-                  "minutes.max",
-                  (d) => d.targets.merge_to_production_minutes,
-                  (d) => d.status.merge_to_production
-                )}
+                measure="merge_to_production_minutes"
+                statistic="minutes.max"
+                targets={targets}
+                value={measures?.lead_time.merge_to_production.max_minutes}
               >
                 {show((d) => formatMinutes(d.measures.lead_time.merge_to_production.max_minutes))}
               </BigNumber>
@@ -332,11 +410,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           <div className="flex flex-wrap items-baseline gap-x-3">
             <span className="flex items-baseline gap-1">
               <BigNumber
-                className={judgedTone(
-                  "minutes.median",
-                  (d) => d.targets.opened_to_merge_median_minutes,
-                  (d) => d.status.opened_to_merge
-                )}
+                measure="opened_to_merge_median_minutes"
+                statistic="minutes.median"
+                targets={targets}
+                value={measures?.lead_time.opened_to_merge.median_minutes}
               >
                 {show((d) => formatMinutes(d.measures.lead_time.opened_to_merge.median_minutes))}
               </BigNumber>
@@ -344,11 +421,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             </span>
             <span className="flex items-baseline gap-1">
               <BigNumber
-                className={judgedTone(
-                  "minutes.p90",
-                  (d) => d.targets.opened_to_merge_median_minutes,
-                  (d) => d.status.opened_to_merge
-                )}
+                measure="opened_to_merge_median_minutes"
+                statistic="minutes.p90"
+                targets={targets}
+                value={measures?.lead_time.opened_to_merge.p90_minutes}
               >
                 {show((d) => formatMinutes(d.measures.lead_time.opened_to_merge.p90_minutes))}
               </BigNumber>
@@ -365,11 +441,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         >
           <div className="flex items-baseline gap-2">
             <BigNumber
-              className={judgedTone(
-                "runs.rate",
-                (d) => d.targets.deploy_run_success_rate,
-                (d) => d.status.deploy_run_success
-              )}
+              measure="deploy_run_success_rate"
+              statistic="runs.rate"
+              targets={targets}
+              value={measures?.deploy_run_success.rate}
             >
               {show((d) =>
                 d.measures.deploy_run_success.rate === null
@@ -379,8 +454,24 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             </BigNumber>
             {measures === undefined ? null : (
               <span className={`text-xs ${textMutedOnSurface}`}>
-                {measures.deploy_run_success.reached_production} of{" "}
-                {measures.deploy_run_success.concluded} concluded
+                <WindowFigure
+                  measure="deploy_run_success_rate"
+                  statistic="runs.reached_production"
+                  targets={targets}
+                  value={measures.deploy_run_success.reached_production}
+                >
+                  {measures.deploy_run_success.reached_production}
+                </WindowFigure>{" "}
+                of{" "}
+                <WindowFigure
+                  measure="deploy_run_success_rate"
+                  statistic="runs.concluded"
+                  targets={targets}
+                  value={measures.deploy_run_success.concluded}
+                >
+                  {measures.deploy_run_success.concluded}
+                </WindowFigure>{" "}
+                concluded
               </span>
             )}
           </div>
@@ -388,17 +479,34 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <>
               <Sparkbars
                 format={pct}
+                judged={{
+                  evalSlug: EVAL_SLUGS.deploy_run_success_rate,
+                  statistic: "runs.rate",
+                }}
                 max={1}
                 points={(measures.daily ?? []).map((d) => ({
                   label: d.day,
                   value: d.run_success_rate,
                   partial: d.partial,
-                  met: dayMeets(targets.deploy_run_success_rate, (judge) => dailyValue(d, judge)),
+                  met: ownVerdict(
+                    targets.deploy_run_success_rate,
+                    "runs.rate",
+                    "day",
+                    d.run_success_rate
+                  ),
                 }))}
                 target={targetLine(targets.deploy_run_success_rate, RUN_SUCCESS_BARS)}
               />
               <div className={`text-[11px] ${textMutedOnSurface}`}>
-                {measures.deploy_run_success.cancelled} cancelled runs not counted
+                <WindowFigure
+                  measure="deploy_run_success_rate"
+                  statistic="runs.cancelled"
+                  targets={targets}
+                  value={measures.deploy_run_success.cancelled}
+                >
+                  {measures.deploy_run_success.cancelled}
+                </WindowFigure>{" "}
+                cancelled runs not counted
               </div>
             </>
           )}
@@ -411,11 +519,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         >
           <div className="flex items-baseline gap-2">
             <BigNumber
-              className={judgedTone(
-                "issues.value",
-                (d) => d.targets.unowned_p0,
-                (d) => d.status.unowned_p0
-              )}
+              measure="unowned_p0"
+              statistic="issues.value"
+              targets={targets}
+              value={data === undefined ? undefined : (data.unowned_p0 ?? []).length}
             >
               {show((d) => `${(d.unowned_p0 ?? []).length}`)}
             </BigNumber>
@@ -464,7 +571,15 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1" data-testid="measures-strip">
           {strip.map((stat) => (
             <div className="flex items-baseline gap-2 whitespace-nowrap" key={stat.label}>
-              <span className={`text-lg font-semibold ${textPrimaryOnSurface}`}>{stat.value}</span>
+              {stat.judged === undefined ? (
+                <span className={`text-lg font-semibold ${textPrimaryOnSurface}`}>
+                  {stat.value}
+                </span>
+              ) : (
+                <BigNumber {...stat.judged} pending={textPrimaryOnSurface} targets={targets}>
+                  {stat.value}
+                </BigNumber>
+              )}
               <span className={`text-xs ${textMutedOnCanvas}`}>{stat.label}</span>
             </div>
           ))}
@@ -486,22 +601,54 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   );
 }
 
+/** One day's cell of the fold's per-day table that the target of `measure`'s eval may judge: it
+ *  names the eval and the statistic, and is toned by its own value where that target judges a
+ *  day's value of `statistic` (`ownVerdict`), plain otherwise, an off target included. A partial
+ *  day's cell takes no tone, its row reading muted. */
+function DayCell(props: {
+  measure: Measure;
+  statistic: Judge;
+  targets: DeliveryTargets;
+  partial: boolean;
+  value: number | null;
+  children: ReactNode;
+}): ReactNode {
+  const met = props.partial
+    ? null
+    : ownVerdict(props.targets[props.measure], props.statistic, "day", props.value);
+  return (
+    <TableCell
+      align="right"
+      data-eval={EVAL_SLUGS[props.measure]}
+      data-span="day"
+      data-statistic={props.statistic}
+      tone={met === null ? "default" : met ? "success" : "danger"}
+    >
+      {props.children}
+    </TableCell>
+  );
+}
+
 /** The fold's eight definition cards and the per-day table, newest first. */
 function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   const { measures, targets } = data;
   // Newest first, copied once per answer rather than on every render of the open fold.
   const newestFirst = useMemo(() => [...(measures.daily ?? [])].reverse(), [measures.daily]);
-  // A day's cell takes the tone of its eval's verdict of that day where the target judges the
-  // statistic the cell shows, and none where it judges another: that verdict is of a figure the
-  // cell does not show. An off target judges nothing, which reads muted. A day still running
-  // takes none, since a day that is not over has met nothing yet.
-  const cellTone = (d: DeliveryDailyPoint, target: Target, shown: readonly string[]): TableTone => {
-    if (d.partial || (target !== null && !showsAnyJudge(target, shown))) return "default";
-    const met = dayMeets(target, (judge) => dailyValue(d, judge));
-    if (met === null) return "muted";
-    return met ? "success" : "danger";
-  };
+  // Each card's figure of a statistic a delivery eval's target may judge is toned by its own value
+  // under that target (`WindowFigure`); a figure of no eval's statistic (the lead times from first
+  // commit and from PR opened, the time to restore, the rework share) takes no tone.
+  const figure = (
+    measure: Measure,
+    statistic: Judge,
+    value: number | null,
+    text: ReactNode
+  ): ReactNode => (
+    <WindowFigure measure={measure} statistic={statistic} targets={targets} value={value}>
+      {text}
+    </WindowFigure>
+  );
   const frequency = measures.deploy_frequency;
+  const merge = measures.lead_time.merge_to_production;
   const lead = measures.lead_time;
   const failures = measures.change_failure_rate;
   return (
@@ -509,17 +656,61 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
       <div
         className={`grid grid-cols-2 gap-4 border-t px-3 pt-3 pb-3 text-sm md:grid-cols-3 ${borderDefault}`}
       >
-        <DefinitionCard title="Deploy frequency" value={`${frequency.per_day.toFixed(2)}/day`}>
-          {frequency.successful_deploys} successful ({frequency.deploys_with_prs} shipped a PR,{" "}
-          {frequency.with_prs_per_day.toFixed(2)}/day)
+        <DefinitionCard
+          title="Deploy frequency"
+          value={figure(
+            "deploys_per_day",
+            "deploys.per_day",
+            frequency.per_day,
+            `${frequency.per_day.toFixed(2)}/day`
+          )}
+        >
+          {figure(
+            "deploys_per_day",
+            "deploys.deploys",
+            frequency.successful_deploys,
+            frequency.successful_deploys
+          )}{" "}
+          successful (
+          {figure(
+            "deploys_per_day",
+            "deploys.with_prs",
+            frequency.deploys_with_prs,
+            frequency.deploys_with_prs
+          )}{" "}
+          shipped a PR,{" "}
+          {figure(
+            "deploys_per_day",
+            "deploys.with_prs_per_day",
+            frequency.with_prs_per_day,
+            frequency.with_prs_per_day.toFixed(2)
+          )}
+          /day)
         </DefinitionCard>
 
         <DefinitionCard
           title={"Lead time (merge \u2192 prod)"}
-          value={formatMinutes(lead.merge_to_production.median_minutes)}
+          value={figure(
+            "merge_to_production_minutes",
+            "minutes.median",
+            merge.median_minutes,
+            formatMinutes(merge.median_minutes)
+          )}
         >
-          p90 {formatMinutes(lead.merge_to_production.p90_minutes)}, max{" "}
-          {formatMinutes(lead.merge_to_production.max_minutes)}
+          p90{" "}
+          {figure(
+            "merge_to_production_minutes",
+            "minutes.p90",
+            merge.p90_minutes,
+            formatMinutes(merge.p90_minutes)
+          )}
+          , max{" "}
+          {figure(
+            "merge_to_production_minutes",
+            "minutes.max",
+            merge.max_minutes,
+            formatMinutes(merge.max_minutes)
+          )}
         </DefinitionCard>
 
         <DefinitionCard
@@ -547,18 +738,82 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
           </>
         ) : (
           <>
-            <DefinitionCard title="Change failure rate (per PR)" value={pct(failures.per_pr.rate)}>
-              {failures.per_pr.confirmed} confirmed ({failures.per_pr.reverts} reverts),{" "}
-              {failures.per_pr.pending} pending, {failures.per_pr.rejected} rejected of{" "}
-              {failures.per_pr.total} PRs. Incidents: no source yet.
+            <DefinitionCard
+              title="Change failure rate (per PR)"
+              value={figure(
+                "change_failure_rate",
+                "per_pr.rate",
+                failures.per_pr.rate,
+                pct(failures.per_pr.rate)
+              )}
+            >
+              {figure(
+                "change_failure_rate",
+                "per_pr.confirmed",
+                failures.per_pr.confirmed,
+                failures.per_pr.confirmed
+              )}{" "}
+              confirmed (
+              {figure(
+                "change_failure_rate",
+                "per_pr.reverts",
+                failures.per_pr.reverts,
+                failures.per_pr.reverts
+              )}{" "}
+              reverts),{" "}
+              {figure(
+                "change_failure_rate",
+                "per_pr.pending",
+                failures.per_pr.pending,
+                failures.per_pr.pending
+              )}{" "}
+              pending,{" "}
+              {figure(
+                "change_failure_rate",
+                "per_pr.rejected",
+                failures.per_pr.rejected,
+                failures.per_pr.rejected
+              )}{" "}
+              rejected of{" "}
+              {figure(
+                "change_failure_rate",
+                "per_pr.total",
+                failures.per_pr.total,
+                failures.per_pr.total
+              )}{" "}
+              PRs. Incidents: no source yet.
             </DefinitionCard>
 
             <DefinitionCard
               title="Change failure rate (per deploy)"
-              value={pct(failures.per_deploy.rate)}
+              value={figure(
+                "change_failure_rate",
+                "per_deploy.rate",
+                failures.per_deploy.rate,
+                pct(failures.per_deploy.rate)
+              )}
             >
-              {failures.per_deploy.confirmed} of {failures.per_deploy.total} deploys;{" "}
-              {pct(failures.per_deploy.upper_bound_rate)} if every pending flag is confirmed
+              {figure(
+                "change_failure_rate",
+                "per_deploy.confirmed",
+                failures.per_deploy.confirmed,
+                failures.per_deploy.confirmed
+              )}{" "}
+              of{" "}
+              {figure(
+                "change_failure_rate",
+                "per_deploy.total",
+                failures.per_deploy.total,
+                failures.per_deploy.total
+              )}{" "}
+              deploys;{" "}
+              {figure(
+                "change_failure_rate",
+                "upper_bound.rate",
+                failures.per_deploy.upper_bound_rate,
+                pct(failures.per_deploy.upper_bound_rate)
+              )}{" "}
+              if every pending flag is confirmed
             </DefinitionCard>
           </>
         )}
@@ -600,21 +855,26 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                   {d.day}
                   {d.partial ? " (partial)" : ""}
                 </TableCell>
-                <TableCell align="right" tone={cellTone(d, targets.deploys_per_day, DEPLOY_BARS)}>
+                <DayCell
+                  measure="deploys_per_day"
+                  partial={d.partial}
+                  statistic="deploys.per_day"
+                  targets={targets}
+                  value={d.deploys}
+                >
                   {d.deploys}
-                </TableCell>
+                </DayCell>
                 <TableCell align="right">{d.concluded}</TableCell>
                 <TableCell align="right">{d.reached_production}</TableCell>
-                <TableCell
-                  align="right"
-                  tone={
-                    d.run_success_rate === null
-                      ? "default"
-                      : cellTone(d, targets.deploy_run_success_rate, RUN_SUCCESS_BARS)
-                  }
+                <DayCell
+                  measure="deploy_run_success_rate"
+                  partial={d.partial}
+                  statistic="runs.rate"
+                  targets={targets}
+                  value={d.run_success_rate}
                 >
                   {d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate)}
-                </TableCell>
+                </DayCell>
                 <TableCell align="right">{d.cancelled}</TableCell>
               </TableRow>
             ))}

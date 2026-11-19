@@ -51,7 +51,10 @@ func ScanRepoProject(row pgx.Row) (model.RepoProject, error) {
 // Every writer of a mapping goes through here, so none takes the change log's lock after a row of
 // the table: the PUT and the DELETE of api's mapping routes, the boot seed (api.SeedRepoProjects),
 // cmd/dispatch-seed's projects, and the delivery fixtures that tests and the eval bench write
-// (deliverytest.WriteRepoProjects).
+// (deliverytest.WriteRepoProjects). The one exception is the eval bench's -base load, which
+// inserts its mappings with none of these locks (deliverytest.InsertRepoProjects): it writes into
+// the base head's schema, which has no owner lock for LockOwners to take, and no server runs
+// while it loads, so no other writer of a mapping is there for these locks to order it against.
 func LockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, projects ...string) (*model.RepoProject, error) {
 	if err := LockChanges(ctx, tx); err != nil {
 		return nil, err

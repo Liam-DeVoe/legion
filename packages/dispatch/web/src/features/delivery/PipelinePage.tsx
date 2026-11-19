@@ -1,14 +1,17 @@
 // The prototype's web/src/pages/Pipeline.tsx, ported as it is: the header line, six cards, the
 // slowest-jobs table and the failed-in-24-hours table, each with the prototype's data-* attributes.
 // Every number, every target, every verdict and every day comes from GET /api/v1/delivery/pipeline.
-// The two lead-time cards' met/missed, which the prototype judged on the page, is the response's
-// `status`, each card's eval's own verdict by its target and the figures it judges
+// The two lead-time cards' met/missed badge, which the prototype judged on the page, is the
+// response's `status`, each card's eval's own verdict by its target and the figures it judges
 // (dispatch://INFRA-2916, R5), and each card names those figures and shows their values from the
-// target's `judges`; nothing is computed here but the colour of a day's bar, which the response
-// gives no verdict of and which follows the eval's own rule over that day's value of each judged
-// figure, its target's direction and inclusiveness included (`lib/target.ts`). Differences, each
-// from LEGION-567's slice 3 plan or for the same reason as the measures panel's: Dispatch's
-// sidebar replaces the prototype's row of page links;
+// target's `judges`. Nothing is computed here but the tone of a lead-time figure, a day's bar or a
+// judged line's value, which the response gives no verdict of: each is that element's own value
+// against the target, its direction and inclusiveness included, and only where the target judges
+// the statistic it shows (`lib/target.ts`'s `ownVerdict`); each such element names the eval, the
+// statistic and whether its value is one day's or the seven days' (`data-eval`, `data-statistic`,
+// `data-span`).
+// Differences, each from LEGION-567's slice 3 plan or for the same reason as the measures panel's:
+// Dispatch's sidebar replaces the prototype's row of page links;
 // the cards take the prototype's column counts at the prototype's content widths (one column, two
 // from 46rem, six from 78rem: its `md:grid-cols-2 xl:grid-cols-6` less its `px-4` page padding)
 // measured on the page's own width rather than the viewport, since beside Dispatch's sidebar the
@@ -33,6 +36,7 @@ import type {
   DeliveryLeadTimeCell,
   DeliveryLeadTimeDay,
   DeliveryPipelineResponse,
+  DeliveryTargets,
   DeliveryTiming,
   DeliveryTimingDay,
 } from "../../api/types";
@@ -59,13 +63,17 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { JudgedFigure } from "./JudgedFigure";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";
 import {
-  dayMeets,
+  EVAL_SLUGS,
+  type Judge,
   judgeWord,
-  LEAD_TIME_MINUTES,
+  LEAD_TIME_BARS,
   leadTimeValue,
+  ownVerdict,
+  type Span,
   shownJudges,
   type Target,
   targetLine,
@@ -193,19 +201,21 @@ export function PipelineView({
           />
           <LeadTimeCard
             detail="DORA lead time, PRs by the day they merged"
+            measure="merge_to_production_minutes"
             met={pipeline.status.merge_to_production}
             metric="merge_to_production"
             offJudge="minutes.max"
-            target={pipeline.targets.merge_to_production_minutes}
+            targets={pipeline.targets}
             timing={pipeline.merge_to_production}
             title="Merge to production"
           />
           <LeadTimeCard
             detail="Opened to merged, every merged PR, by the day it merged"
+            measure="opened_to_merge_median_minutes"
             met={pipeline.status.opened_to_merge}
             metric="opened_to_merge"
             offJudge="minutes.median"
-            target={pipeline.targets.opened_to_merge_median_minutes}
+            targets={pipeline.targets}
             timing={pipeline.opened_to_merge}
             title="PR open to merge"
           />
@@ -326,24 +336,45 @@ function lastDay<T>(timing: { readonly days: readonly T[] | null }): T {
   return today;
 }
 
+/** Where a lead-time figure is judged (`JudgedFigure`): by the target of the eval `evalSlug`
+ *  names, as one day's value or the seven days'. */
+interface Judging {
+  evalSlug: string;
+  target: Target;
+  span: Span;
+}
+
 function Figure(props: {
   label: string;
   median: number | null;
   p90: number | null;
   n: number;
   noun: string;
+  // A lead-time card's: where its figures are judged. A card no eval judges omits it and writes
+  // its figures as text.
+  judging?: Judging;
 }): ReactNode {
+  const { judging } = props;
+  const part = (statistic: Judge, value: number | null, text: string): ReactNode =>
+    judging === undefined ? (
+      text
+    ) : (
+      <JudgedFigure {...judging} statistic={statistic} value={value}>
+        {text}
+      </JudgedFigure>
+    );
   return (
     <div className="min-w-0">
       <div className={`text-[11px] ${textMutedOnSurface}`}>{props.label}</div>
       <div className="flex items-baseline gap-1">
         <span className={`text-lg font-semibold ${textPrimaryOnSurface}`}>
-          {formatDuration(props.median)}
+          {part("minutes.median", props.median, formatDuration(props.median))}
         </span>
         <span className={`text-[11px] ${textMutedOnSurface}`}>median</span>
       </div>
       <div className={`text-xs ${textSecondaryOnSurface}`}>
-        p90 {formatDuration(props.p90)} · {props.n}{" "}
+        p90 {part("minutes.p90", props.p90, formatDuration(props.p90))} ·{" "}
+        {part("minutes.n", props.n, `${props.n}`)}{" "}
         {props.n === 1 ? props.noun.replace(/s$/, "") : props.noun}
       </div>
     </div>
@@ -425,8 +456,13 @@ function TimingCard(props: {
  *  production, whose median it implies, and the median for PR open to merge, until someone
  *  changes them. Where the target is off, which judges nothing, it names `offJudge`, the
  *  statistic the card showed before targets carried their judges, so turning a target off takes
- *  the verdict away and leaves the figures. It colours a day's bars by that day's value of every
- *  judged statistic (`dayMeets`). */
+ *  the verdict away and leaves the figures. Every other element it tones takes its own verdict
+ *  (`JudgedFigure`, `lib/target.ts`'s `ownVerdict`), never the badge's: each of today's and the
+ *  seven days' figures and each judged line's two values by its own value of its statistic,
+ *  where the target judges it, today's only for a median, p90 or longest change (a count of pull
+ *  requests judges the seven days' total, which no day is a share of); a day's median bar by that
+ *  day's median and its p90 bar by its p90, each where the target judges it. The dashed line is
+ *  drawn exactly where those bars take a tone. `measure` names the card's eval among `targets`. */
 function LeadTimeCard(props: {
   metric: string;
   title: string;
@@ -435,17 +471,22 @@ function LeadTimeCard(props: {
     readonly days: readonly DeliveryLeadTimeDay[] | null;
     readonly total: DeliveryLeadTimeCell;
   };
-  target: Target;
+  measure: "merge_to_production_minutes" | "opened_to_merge_median_minutes";
+  targets: DeliveryTargets;
   met: boolean | null;
   offJudge: string;
 }): ReactNode {
-  const { timing, target, met } = props;
+  const { timing, met } = props;
+  const target = props.targets[props.measure];
+  const evalSlug = EVAL_SLUGS[props.measure];
   const today = lastDay(timing);
   const total = timing.total;
-  const line = targetLine(target, LEAD_TIME_MINUTES);
+  const line = targetLine(target, LEAD_TIME_BARS);
+  const ofDay: Judging = { evalSlug, target, span: "day" };
+  const ofWindow: Judging = { evalSlug, target, span: "window" };
   // The count of pull requests is a number; every other statistic of a lead time is minutes.
-  const figure = (cell: DeliveryLeadTimeCell, judge: string): string =>
-    judge === "minutes.n" ? `${cell.n}` : formatDuration(leadTimeValue(cell, judge));
+  const figure = (judge: string, value: number | null): string =>
+    judge === "minutes.n" ? `${value}` : formatDuration(value);
   return (
     <div className={CARD} data-metric={props.metric}>
       <div className="flex items-start justify-between gap-2">
@@ -454,6 +495,7 @@ function LeadTimeCard(props: {
       </div>
       <div className="grid grid-cols-2 gap-2">
         <Figure
+          judging={ofDay}
           label="Today"
           median={today.median_minutes}
           n={today.n}
@@ -461,6 +503,7 @@ function LeadTimeCard(props: {
           p90={today.p90_minutes}
         />
         <Figure
+          judging={ofWindow}
           label="Last 7 days"
           median={total.median_minutes}
           n={total.n}
@@ -471,21 +514,35 @@ function LeadTimeCard(props: {
       <SpreadBars
         days={(timing.days ?? []).map((d) => ({
           ...d,
-          met: dayMeets(target, (judge) => leadTimeValue(d, judge)),
+          median_met: ownVerdict(target, "minutes.median", "day", d.median_minutes),
+          p90_met: ownVerdict(target, "minutes.p90", "day", d.p90_minutes),
         }))}
         format={formatDuration}
+        judged={{ evalSlug, series: "minutes" }}
         noun="PRs"
         target={line}
       />
-      {(target === null ? [props.offJudge] : shownJudges(target)).map((judge) => (
-        <div className={`text-xs ${textSecondaryOnSurface}`} data-judge={judge} key={judge}>
-          {judgeWord(judge)} today <span className="font-semibold">{figure(today, judge)}</span>, 7
-          days{" "}
-          <span className={`font-semibold ${met === false ? dangerText : ""}`}>
-            {figure(total, judge)}
-          </span>
-        </div>
-      ))}
+      {(target === null ? [props.offJudge] : shownJudges(target)).map((judge) => {
+        const todays = leadTimeValue(today, judge);
+        const sevenDays = leadTimeValue(total, judge);
+        return (
+          <div className={`text-xs ${textSecondaryOnSurface}`} data-judge={judge} key={judge}>
+            {judgeWord(judge)} today{" "}
+            <JudgedFigure className="font-semibold" {...ofDay} statistic={judge} value={todays}>
+              {figure(judge, todays)}
+            </JudgedFigure>
+            , 7 days{" "}
+            <JudgedFigure
+              className="font-semibold"
+              {...ofWindow}
+              statistic={judge}
+              value={sevenDays}
+            >
+              {figure(judge, sevenDays)}
+            </JudgedFigure>
+          </div>
+        );
+      })}
       <div className={`text-[11px] ${textMutedOnSurface}`}>
         {target === null
           ? "target off"

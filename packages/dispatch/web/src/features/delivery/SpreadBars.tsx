@@ -1,8 +1,10 @@
 // The prototype's web/src/components/SpreadBars.tsx, ported as it is; its fills are the
 // `chartBar` tokens, since no component writes a colour utility of its own. One difference: each
-// day carries its own verdict (`met`), which its caller judges from that day's row
-// (`lib/target.ts`'s `dayMeets`), rather than the prototype's strict "under the target" of each
-// bar's figure, since a person may make a target inclusive and judge any statistic of the day.
+// of a day's two bars carries its own verdict (`median_met`, `p90_met`), which its caller judges
+// from the value that bar draws and leaves null where the target does not judge that statistic
+// (`lib/target.ts`'s `ownVerdict`), rather than the prototype's strict "under the target" of each
+// bar's figure, since a person may make a target inclusive, turn its direction, and judge one of
+// the two statistics and not the other.
 import { chartBar } from "../../theme/classes";
 import { barScale } from "./lib/barScale";
 
@@ -12,13 +14,20 @@ export interface SpreadBarDay {
   median_minutes: number | null;
   p90_minutes: number | null;
   partial: boolean;
-  // Whether the day meets the target, both its bars coloured by it; null or absent draws them
-  // neutral, as every day is with no target.
-  met?: boolean | null;
+  // Whether each bar's value meets the target, as its caller judges it, the median's and the
+  // p90's apart, since a target may judge one and not the other. Null or absent draws that bar
+  // neutral, as every bar is with no target.
+  median_met?: boolean | null;
+  p90_met?: boolean | null;
 }
 
 interface Props {
   days: readonly SpreadBarDay[];
+  // Where a target may judge the bars: the slug of the eval whose target it is and the series
+  // whose median and p90 the bars draw, which each bar names (`data-eval`, and `data-statistic`
+  // `<series>.median` or `<series>.p90`, with `data-span="day"`); omitted on a chart no eval
+  // judges.
+  judged?: { evalSlug: string; series: string };
   // Omitted where no target exists: no target line.
   target?: number;
   noun: string; // what `n` counts, "runs"
@@ -28,10 +37,11 @@ interface Props {
 const BAR = 12;
 const HEIGHT = 36;
 
-/** One bar per day: the p90 drawn faint behind the median. With a target, a dashed line marks it,
- * and a day's two bars are green where the day meets the target, red where it misses it and
- * neutral where it has no verdict. Today's partial day is faded. Plain SVG, like `Sparkbars`. */
-export function SpreadBars({ days, target, noun, format }: Props) {
+/** One bar per day: the p90 drawn faint behind the median. With a target, a dashed line marks it
+ * where the caller draws one, and each bar is green where its own value meets the target, red
+ * where it misses it and neutral where it has no verdict, so a day's two bars may differ. Today's
+ * partial day is faded. Plain SVG, like `Sparkbars`. */
+export function SpreadBars({ days, judged, target, noun, format }: Props) {
   const y = barScale(
     1,
     target,
@@ -72,12 +82,15 @@ export function SpreadBars({ days, target, noun, format }: Props) {
                 width={BAR - 2}
                 height={Math.max(HEIGHT - y(d.p90_minutes), 1)}
                 className={
-                  d.met == null
+                  d.p90_met == null
                     ? chartBar.neutralFaint
-                    : d.met
+                    : d.p90_met
                       ? chartBar.metFaint
                       : chartBar.missedFaint
                 }
+                data-eval={judged?.evalSlug}
+                data-span={judged === undefined ? undefined : "day"}
+                data-statistic={judged === undefined ? undefined : `${judged.series}.p90`}
               />
               <rect
                 x={i * BAR + 1}
@@ -85,8 +98,15 @@ export function SpreadBars({ days, target, noun, format }: Props) {
                 width={BAR - 2}
                 height={Math.max(HEIGHT - y(d.median_minutes), 1)}
                 className={
-                  d.met == null ? chartBar.neutral : d.met ? chartBar.met : chartBar.missed
+                  d.median_met == null
+                    ? chartBar.neutral
+                    : d.median_met
+                      ? chartBar.met
+                      : chartBar.missed
                 }
+                data-eval={judged?.evalSlug}
+                data-span={judged === undefined ? undefined : "day"}
+                data-statistic={judged === undefined ? undefined : `${judged.series}.median`}
               />
             </>
           )}

@@ -6,10 +6,10 @@
 //	  -built-by "$COMMIT" -seed 2916 -now 2026-11-13T00:00:00Z
 //
 // -base writes the base head's tables alone (no reading) into a database the base head
-// 02a7b3c6 migrated, for k8's negative control; -scale multiplies every count (0.02 loads in a
-// pod in a few minutes); -ten-times writes ten times the stated run rate. Every time is relative
-// to -now, the current UTC midnight by default, so a load of the base and one of this head with
-// one -now and one -seed hold the same history at the same times.
+// 02a7b3c6 migrated, for k8's and k13's negative controls; -scale multiplies every count (0.02
+// loads in a pod in a few minutes); -ten-times writes ten times the stated run rate. Every time is
+// relative to -now, the current UTC midnight by default, so a load of the base and one of this
+// head with one -now and one -seed hold the same history at the same times.
 //
 // -failure-day writes a failure day (evalbench.AddFailureDay) into a database this command has
 // loaded, and nothing else: -failure-day-runs failed deploy runs with -failure-day-jobs failed
