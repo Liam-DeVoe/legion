@@ -1513,13 +1513,15 @@ function askThreadsOn(issue: string): RefreshTarget {
   };
 }
 
-/** Two caches hold a post's words under a key that is not the post's own: the search palette keeps
- *  each answer under its words for its `staleTime` (`useTieredSearch.ts`, `["search", words,
- *  request]`), and `referenceTargetsQuery` keeps the names of a set of references under that set
- *  (`["reference-targets", refs]`); each holds a post's text or a block of it with the post's
- *  marks. So an edit or a delete of a post reads every answer of both again: the post may be in
- *  any of them, and its words may be gone. A create needs none: a kept answer that misses a post
- *  written since shows no text of it. */
+/** The search palette keeps each answer under the words it was asked for and the request it
+ *  sent, never under the posts it holds, for its `staleTime` (`useTieredSearch.ts`, `["search",
+ *  words, request]`), and an answer holds a post's text or a block of it with the post's marks.
+ *  So an edit or a delete of a post reads every kept answer again: the post may be in any of
+ *  them, and its words may be gone. A create needs none: a kept answer that misses a post written
+ *  since shows no text of it. The names reads (`referenceTargetsQuery`) hold a post's words and
+ *  marks too, but under the addresses they name, so a correction reads again only those whose
+ *  key names an address of the issue or the project document the post is on
+ *  (`referenceNameTargets`), as every other change of words under an address does. */
 const POST_CORRECTIONS: Partial<Record<EventType, true>> = {
   "comment.edited": true,
   "comment.deleted": true,
@@ -1527,10 +1529,7 @@ const POST_CORRECTIONS: Partial<Record<EventType, true>> = {
   "message.deleted": true,
 };
 
-const ANSWERS_KEYED_BY_WORDS_OR_REFS: readonly RefreshTarget[] = [
-  { queryKey: ["search"] },
-  { queryKey: ["reference-targets"] },
-];
+const SEARCH_ANSWERS: RefreshTarget = { queryKey: ["search"] };
 
 /**
  * Whether `address` is `owner` or an address under it: `owner`, then the end of the address or
@@ -1546,13 +1545,14 @@ function addressUnder(address: string, owner: string, next: string): boolean {
 }
 
 /** The slug of the project document `event` is on, where its payload carries it: a renamed or
- *  removed document's own, an edited comment's document's (`artifact_slug`), and an edited
- *  ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through the
- *  ask's own route the one that holds its typed block (`block_artifact`), or for an approval
- *  request's rewording the one it asks approval of (`approval_artifact`, which the server's read
- *  of the event log attaches to every ask event carrying `approval`), each the document the ask
- *  is on. Four events carry none, and name the document by its id alone, which no address is
- *  written with: a new version, a comment's edit written before `artifact_slug` existed, the
+ *  removed document's own, an edited or a deleted comment's document's (`artifact_slug`, which
+ *  the read of a deleted comment's event keeps beside its delete marks), and an edited ask's
+ *  document's, the one its anchor quotes (`anchor_artifact`), for an edit through the ask's own
+ *  route the one that holds its typed block (`block_artifact`), or for an approval request's
+ *  rewording the one it asks approval of (`approval_artifact`, which the server's read of the
+ *  event log attaches to every ask event carrying `approval`), each the document the ask is on.
+ *  Four events carry none, and name the document by its id alone, which no address is written
+ *  with: a new version, a comment's edit written before `artifact_slug` existed, the
  *  edit of a question asked of the document as a whole, with no anchor, no block and no
  *  approval, and a document version's rewording of a block ask, whose event the document's
  *  settlement writes without `block_artifact`. */
@@ -1568,6 +1568,7 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
         event.payload.approval_artifact?.slug
       );
     case "comment.edited":
+    case "comment.deleted":
       return event.payload.artifact_slug;
     default:
       return undefined;
@@ -1635,12 +1636,14 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
 
 /**
  * Which names reads (`referenceTargetsQuery`, `["reference-targets", <sorted addresses>]`) an
- * event refreshes: those whose key holds an address it changes the words under, on a comment's
- * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
- * and none on any other event. The issue page's names reads are kept fresh by events
- * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
- * addresses it names, so a page that comes to hold another set reads again under a key of its
- * own: only a change of words under the same address needs a rule.
+ * event refreshes: those whose key holds an address it changes the words under, on an edit or a
+ * delete of a comment or an issue message (its body, which a delete empties, and the marks the
+ * read answers for the post, `edited_at`, `deleted_at` and `deleted_by`), an ask's edit (its
+ * question) and a document's new version (its blocks' words), and none on any other event. The
+ * issue page's names reads are kept fresh by events (`useIssueTree`'s `EVENT_FRESH`), never by
+ * their age, and a names read's key is the set of addresses it names, so a page that comes to
+ * hold another set reads again under a key of its own: only a change of words under the same
+ * address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
  * naming none, as an older server sends it) renames the issue's own address, since a names read
  * names an issue by its title, so it refreshes the reads naming that address, and only those
@@ -1661,10 +1664,14 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  *
  * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
  * once the document has been quiet after those edits, each of which wrote a version that sent
- * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. Nor
- * is a message: the feed has no `message.edited` (its message events are `message.created`,
- * `message.delivery`, `message.accepted` and `message.answered`), so a message's body never
- * changes under its address.
+ * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. A
+ * post's correction is on what owns the post: a comment's on its issue, or on the project
+ * document it belongs to, whose slug its payload carries (`projectDocumentSlug`), and a
+ * message's on its issue, since the server corrects an issue message and refuses any other. So
+ * each reaches every names read whose key names the post, its blocks or anything else of that
+ * owner, as every address the page names a read by is written under its owner, and no other.
+ * The search palette's answers, which a post's words are kept under too, are keyed by no
+ * address, so a correction reads every one of them again (`POST_CORRECTIONS`).
  *
  * The feed is the workspace's (`api/event-feed.ts`): these events arrive for every issue and
  * project document of the workspace, a document's new version above all, and one that can
@@ -1689,6 +1696,9 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.version":
     case "ask.edited":
     case "comment.edited":
+    case "comment.deleted":
+    case "message.edited":
+    case "message.deleted":
       return [namesReadsNaming(event)];
     case "issue.updated": {
       const changes = issueChanges(event);
@@ -1712,7 +1722,7 @@ export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string
     targets.push(askThreadsOn(threadsIssue));
   }
   if (POST_CORRECTIONS[event.type] === true) {
-    targets.push(...ANSWERS_KEYED_BY_WORDS_OR_REFS);
+    targets.push(SEARCH_ANSWERS);
   }
   return targets;
 }

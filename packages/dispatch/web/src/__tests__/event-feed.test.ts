@@ -1541,9 +1541,10 @@ const commentCorrections: readonly Correction[] = ["comment.edited", "comment.de
 const messageCorrections: readonly Correction[] = ["message.edited", "message.deleted"];
 
 /** Each read that prints a post - its body, a part of it, or its edit and delete marks - with the
- *  corrections of the posts it prints. The last row, the search palette's answers and the
- *  reference-target names, is a read no create refreshes: only a correction does
- *  (`POST_CORRECTIONS`, `api/event-refresh.ts`). */
+ *  corrections of the posts it prints. The last row is two reads no create refreshes, and only a
+ *  correction does: the search palette's answers, every one of them (`POST_CORRECTIONS`), and
+ *  the reference-target names whose key names an address of the post's issue, here CORE-1's
+ *  comment-1 (`referenceNameTargets`, `api/event-refresh.ts`). */
 const correctedReads: readonly (readonly [string, readonly Correction[], readonly ReadName[]])[] = [
   [
     "the Inbox's thread rows and their count",
@@ -1585,7 +1586,7 @@ const correctedReads: readonly (readonly [string, readonly Correction[], readonl
     ["conversationMessages", "message", "rootMessage"],
   ],
   [
-    "every answer the search palette keeps, and every set of reference-target names, which can hold the post",
+    "every answer the search palette keeps, and every set of reference-target names naming an address of the post's issue",
     [...commentCorrections, ...messageCorrections],
     ["searchAnswer", "referenceTargets"],
   ],

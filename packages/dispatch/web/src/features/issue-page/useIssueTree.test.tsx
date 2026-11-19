@@ -119,6 +119,8 @@ const comment: Comment = {
   author: { id: "alice", kind: "user" },
   body: "One more turn of the conversation.",
   created_at: "2026-11-05T01:00:00Z",
+  deleted_at: null,
+  deleted_by: null,
   deliveries: [],
   edited_at: null,
   id: "comment-1",
@@ -1271,22 +1273,25 @@ const NAMING_ELSEWHERE = [
 ];
 
 // A names read is keyed by the addresses it names, so only words that change under an address
-// already named need a rule - a comment's edit, an ask's edit and a document's new version - and
-// so do a document's rename and its removal, which rename or empty every address to it, and an
-// issue's write that changes its title, which renames the issue's own address. The feed is the
-// workspace's, so each refreshes only the names reads whose key names an address it can change of
-// the issue the event is on: an event on an issue no read names changes no name that read holds,
-// and only a title change changes the name of the issue's own address, which the names read
-// answers with the issue's title and nothing else. A child's page names its parent by that
-// address, and the parent's documents take new versions often: none of those, nor any other
-// change under the parent, reads the child's names again, where the parent's new title, and an
-// older server's update that names none of its changes, does. A new comment is a new address,
-// which the tree reads under a key of its own, a person's edit of a document is the notice after
-// the versions that already refreshed them, and an issue's write that leaves its title alone
-// renames nothing.
+// already named need a rule - a comment's edit and delete, an issue message's edit and delete,
+// an ask's edit and a document's new version - and so do a document's rename and its removal,
+// which rename or empty every address to it, and an issue's write that changes its title, which
+// renames the issue's own address. The feed is the workspace's, so each refreshes only the names
+// reads whose key names an address it can change of the issue the event is on: an event on an
+// issue no read names changes no name that read holds, and only a title change changes the name
+// of the issue's own address, which the names read answers with the issue's title and nothing
+// else. A child's page names its parent by that address, and the parent's documents take new
+// versions often: none of those, nor any other change under the parent, reads the child's names
+// again, where the parent's new title, and an older server's update that names none of its
+// changes, does. A new comment is a new address, which the tree reads under a key of its own, a
+// person's edit of a document is the notice after the versions that already refreshed them, and
+// an issue's write that leaves its title alone renames nothing.
 test("an edit on an issue refreshes the names reads whose key names the issue and no other, a new comment none", () => {
   const editsWords = [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
+    feedEvent("comment.deleted", { anchor: null, ask_id: null, id: "comment-1" }),
+    feedEvent("message.edited", { id: "message-1", in_reply_to: null }),
+    feedEvent("message.deleted", { id: "message-1", in_reply_to: null }),
     feedEvent("ask.edited", { anchor: null, id: "ask-1" }),
     feedEvent("artifact.version", { artifact_id: plan.id, name: "Plan" }),
     feedEvent("artifact.renamed", { artifact: plan }),
@@ -1341,13 +1346,13 @@ const roadmap = issueDocument("artifact-roadmap", "roadmap-md", {
 });
 
 // A project document's event is on the document and what it owns, each written under
-// `dispatch://CORE/artifact/roadmap-md`. A rename, a removal, a comment's edit, the edit of an
-// ask its anchor puts on the document, or of a block ask through the ask's own route, and an
-// approval request's rewording carry the slug, so they leave a read naming another document of
-// the project alone too, `roadmap-md-2` among them; a new version and the edit of a question
-// asked of the document as a whole name the document by its id alone, as a version's rewording
-// of a block ask does, so they are held to the project's documents, which leaves another
-// project's documents and every issue alone.
+// `dispatch://CORE/artifact/roadmap-md`. A rename, a removal, a comment's edit and delete, the
+// edit of an ask its anchor puts on the document, or of a block ask through the ask's own route,
+// and an approval request's rewording carry the slug, so they leave a read naming another
+// document of the project alone too, `roadmap-md-2` among them; a new version and the edit of a
+// question asked of the document as a whole name the document by its id alone, as a version's
+// rewording of a block ask does, so they are held to the project's documents, which leaves
+// another project's documents and every issue alone.
 test("a project document's event refreshes the names reads naming that document, and none naming another", () => {
   const onDocument = { artifact_id: roadmap.id, issue_key: null };
   const naming = [
@@ -1370,6 +1375,19 @@ test("a project document's event refreshes the names reads naming that document,
         anchor: null,
         artifact_slug: roadmap.slug,
         ask_id: null,
+        id: "comment-1",
+        project_key: "CORE",
+      },
+      onDocument
+    ),
+    feedEvent(
+      "comment.deleted",
+      {
+        anchor: null,
+        artifact_slug: roadmap.slug,
+        ask_id: null,
+        deleted_at: "2026-11-05T03:00:00Z",
+        deleted_by: { id: "alice", kind: "user" },
         id: "comment-1",
         project_key: "CORE",
       },

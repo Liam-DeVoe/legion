@@ -15,6 +15,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { referenceSpans } from "../refs/reference-spans";
 import {
   buildDispatchReference,
@@ -101,6 +102,12 @@ export interface Draft {
   /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
    *  every other draft, a statement of the spec drawn before that read answers among them. */
   counts?: NodeCounts;
+  /** When its author deleted this comment or message (`TreeNode.deletedAt`). */
+  deletedAt?: string;
+  /** Who deleted it, where the read names them (`TreeNode.deletedBy`). */
+  deletedBy?: Actor;
+  /** When its author last replaced this comment's or message's body (`TreeNode.editedAt`). */
+  editedAt?: string;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
   gaps: GapKind[];
@@ -288,10 +295,17 @@ export function coverageStatements(
  *   `""`, as a block is, which the chip draws as not yet named.
  * - **Anything else** by the read's `name` for it. An ask's, a comment's and a message's name is
  *   the question or the body as stored, which is markdown whose marks are no word of it (R21),
- *   so it is read to plain words (`plainWords`). A component's name is a title too, which is no
- *   markdown, and is left as the read gives it, its addresses as written: the short form is the
- *   rule of a line that draws an issue's or a child issue's title, and no node of the tree is a
- *   component, so no row's line reads its name.
+ *   so it is read to plain words (`plainWords`). A comment or a message the read marks deleted
+ *   (`ReferenceTarget.deleted_at`) is named by the deleted line's words (`deletedLineWords`),
+ *   never by the emptied body, which is no words at all, as a link to it reads
+ *   (`reference-target.ts`'s `useReferenceLabel`). A component's name is a title too, which is
+ *   no markdown, and is left as the read gives it, its addresses as written: the short form is
+ *   the rule of a line that draws an issue's or a child issue's title, and no node of the tree is
+ *   a component, so no row's line reads its name.
+ *
+ * A chip carries the marks the read answers for a post (`NodeChip.deletedAt`, `deletedBy`,
+ * `editedAt`), and the name of an edited one, a comment, a message or a block of either, is its
+ * words then ` · edited`, as `useReferenceLabel` writes a link to it.
  */
 export function treeContext(
   reads: IssueTreeReads,
@@ -346,7 +360,10 @@ export function treeContext(
       return documentWord(reads.issue, route.key === key ? documents.get(route.slug) : undefined);
     }
     if (target?.kind === "ask" || target?.kind === "comment" || target?.kind === "message") {
-      return plainWords(target.name, target);
+      // A deleted post's name is the deleted line, never the words of its emptied body, as a
+      // link to it reads (`reference-target.ts`'s `useReferenceLabel`).
+      const deleted = target.kind === "ask" ? null : postDeletion(target);
+      return deleted === null ? plainWords(target.name, target) : deletedLineWords(deleted);
     }
     if (target?.kind === "issue") return titleWords(titles.get(reference) ?? target.name);
     return blockWords(target?.name ?? "");
@@ -362,11 +379,20 @@ export function treeContext(
       if (held !== undefined) return held;
       const target = names.get(reference);
       const gone = target?.gone ?? false;
+      const deleted = postDeletion(target);
+      // An edited post, or a block of one, is named by its words then ` · edited`, as a link to
+      // it reads (`useReferenceLabel`); a deleted one's deleted line already says what became of
+      // its text, and a name with no words takes no mark.
+      const edited = deleted === null ? target?.edited_at : undefined;
+      const named = gone ? "" : nameOf(reference, target);
       const chip: NodeChip = {
         ...(target?.ambiguous === true ? { ambiguous: true } : {}),
         answered: target !== undefined,
+        ...(deleted === null ? {} : { deletedAt: deleted.at }),
+        ...(deleted === null || deleted.by === null ? {} : { deletedBy: deleted.by }),
+        ...(edited === undefined ? {} : { editedAt: edited }),
         gone,
-        name: gone ? "" : nameOf(reference, target),
+        name: edited === undefined || named === "" ? named : `${named} · edited`,
         ref: reference,
       };
       chips.set(reference, chip);
@@ -879,10 +905,38 @@ interface Turn {
   readonly body: string;
   /** The server's reading of `body`. */
   readonly bodyTree?: DisplayTree;
+  /** Its author's delete of it (`postDeletion`), null for a turn nobody deleted. */
+  readonly deleted: PostDeletion | null;
+  /** When its author last replaced its body, null for a turn nobody edited. */
+  readonly editedAt: string | null;
   readonly id: string;
   readonly kind: "comment" | "message";
   /** The node it answers, `null` for a root turn under the issue. */
   readonly replyTo: string | null;
+}
+
+/**
+ * The deleted line's words as one line of text, for the name a chip naming a deleted comment or
+ * message draws and the page publishes for it: `Deleted by <who>`, or `Deleted` for a delete
+ * whose read names nobody, the words `deletedLineText` (`refs/post-marks.ts`) gives a link to
+ * the post (`useReferenceLabel`), with no time, as that line has none. The model is pure and reads
+ * no agent registry, so `<who>` is the actor's own id, never a name the registry gives it; a view
+ * that draws the line itself names the actor from `deletedBy`. It is made from the delete alone,
+ * so it holds no part of the body even where a read still carries one.
+ */
+function deletedLineWords(deleted: PostDeletion): string {
+  return deleted.by === null ? "Deleted" : `Deleted by ${deleted.by.id}`;
+}
+
+/**
+ * The line a deleted comment's or message's node holds in place of its body: the words
+ * `DeletedBody` (`refs/PostBody.tsx`) prints where the body was, `Deleted by <who> · <when>`, or
+ * `Deleted · <when>` for a delete whose read names nobody (`deletedLineWords`). The model is
+ * pure and reads no clock, so `<when>` is the time the read stores (`deleted_at`) as it stores
+ * it, never an age; a view that draws the line itself draws the time from `deletedAt`.
+ */
+function deletedPostLine(deleted: PostDeletion): string {
+  return `${deletedLineWords(deleted)} · ${deleted.at}`;
 }
 
 /**
@@ -915,6 +969,13 @@ interface Turn {
  *
  * An address naming a comment or a message of the outline (`/comments/<id>`, `/messages/<id>`,
  * `?comment=`) is therefore an address of a row of this tree.
+ *
+ * A turn its author corrected keeps its place (INFRA-1523, R2 and R3). An edited one keeps its
+ * words and carries when it was last edited (`editedAt`). A deleted one carries when and by whom
+ * (`deletedAt`, `deletedBy`), and holds the deleted line as its text (`deletedPostLine`) and no
+ * reading, so no line, body, filter or citation read from the node reads any part of its body.
+ * It carries no `editedAt`: the deleted line already says what became of the text, as the
+ * byline's ` · edited` says nothing of a deleted post (`EditedMark`).
  */
 function addTurns(
   drafts: Map<string, Draft>,
@@ -935,6 +996,8 @@ function addTurns(
       author: comment.author,
       body: comment.body,
       bodyTree: comment.body_tree,
+      deleted: postDeletion(comment),
+      editedAt: comment.edited_at,
       id: comment.id,
       kind: "comment" as const,
       replyTo:
@@ -951,6 +1014,8 @@ function addTurns(
         author: message.author,
         body: message.body,
         bodyTree: message.body_tree,
+        deleted: postDeletion(message),
+        editedAt: message.edited_at,
         id: message.id,
         kind: "message" as const,
         replyTo: message.in_reply_to,
@@ -963,8 +1028,15 @@ function addTurns(
     draft.parents = turn.replyTo === null ? [] : [turn.replyTo];
     draft.reference = buildDispatchReference({ id: turn.id, key: context.key, kind: turn.kind });
     draft.source = textSourceOf(turn.kind, turn.id);
-    draft.text = turn.body;
-    draft.tree = turn.bodyTree;
+    if (turn.deleted === null) {
+      draft.text = turn.body;
+      draft.tree = turn.bodyTree;
+      if (turn.editedAt !== null) draft.editedAt = turn.editedAt;
+    } else {
+      draft.deletedAt = turn.deleted.at;
+      if (turn.deleted.by !== null) draft.deletedBy = turn.deleted.by;
+      draft.text = deletedPostLine(turn.deleted);
+    }
   }
 }
 
