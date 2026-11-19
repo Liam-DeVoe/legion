@@ -66,6 +66,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1590,6 +1591,22 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	withP = append(withP, r.pluginScript(clients, role, "P", refs, role.session)...)
 	daemon := &daemonRefs{handoff: refs.handoff}
 	withP = append(withP, r.daemonScript(daemonClient, daemon, since)...)
+	// K4's words: with the daemon's token for P the script makes one of each kind of write the
+	// daemon's Dispatch client has a method for. A method the client gains and the script does not
+	// call is a write no row of the table proves under the broker, so each exported method of
+	// internal/dispatch's HTTPClient must name a row of the daemon's client.
+	daemonRows := map[string]bool{}
+	for _, write := range withP {
+		if write.client == "the daemon's client" {
+			daemonRows[write.write] = true
+		}
+	}
+	methods := reflect.TypeOf(daemonClient)
+	for i := range methods.NumMethod() {
+		if name := methods.Method(i).Name; !daemonRows[name] {
+			t.Errorf("K4: the daemon's script makes no call of (*dispatch.HTTPClient).%s, so the table proves no %s under the broker; add it to daemonScript", name, name)
+		}
+	}
 
 	// The documents of P, for the control's table to name what each of its requests addresses.
 	r.documentsOfP = map[string]bool{}
