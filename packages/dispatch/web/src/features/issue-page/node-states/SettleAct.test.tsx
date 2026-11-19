@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock } from "../../../__tests__/fake-clock";
+import { installFakeLiveSockets } from "../../../__tests__/live-socket-harness";
 import {
   ApiError,
   api,
@@ -13,6 +14,7 @@ import {
   type WriteBounds,
   type WriteRequest,
 } from "../../../api/client";
+import { liveSocketFor } from "../../../api/live-socket";
 import { issueCoverageQuery } from "../../../api/queries";
 import { MIN_REFETCH_INTERVAL_MS } from "../../../api/query-refresh";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -21,14 +23,18 @@ import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
 import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
 import { issueTreeQuery, subscribeTreeFreshness, viewQuery } from "../tree-read/tree-read";
+import { SettleIssueProvider } from "./settle-write";
 
 /**
  * Settle on a focused proposed row, drawn by `NodeRow.tsx`'s `RowActs` in the row as the page
  * draws it, beside the reads the page holds while the row is drawn: the tree read, the coverage
  * read and the one view a slot has on (Verification), each under the query options `tree-read.ts`
  * gives it, with the Spec view's read held from the load and read by nobody now, and the
- * tree read's subscription (`subscribeTreeFreshness`) keeping them fresh as the page does. Each
- * read and each write is answered here, so the test reads which went out.
+ * tree read's subscription (`subscribeTreeFreshness`) keeping them fresh as the page does, with
+ * the live feed up as the shell's event feed holds it: with the feed down nothing tells what a
+ * write did, so the subscription reads the tree and every view itself at each write's settle,
+ * whatever its answer. Each read and each write is answered here, so the test reads which went
+ * out.
  */
 
 const KEY = "CORE-1";
@@ -59,6 +65,17 @@ const PROPOSED: TreeNode = {
   type: "requirement",
   waiting: false,
 };
+
+/** Requirement 7 of another issue, which the tree of `KEY` draws: its own address names that
+ *  issue, so it settles under it. */
+const OTHER_ISSUE: TreeNode = {
+  ...PROPOSED,
+  id: "core-2-spec-md#b-r7",
+  reference: "dispatch://CORE-2/artifact/spec-md#b-r7",
+};
+/** The settle's path of `OTHER_ISSUE`, under the issue its address names. */
+const OTHER_SETTLE_PATH =
+  "/api/v1/issues/CORE-2/nodes/dispatch%3A%2F%2FCORE-2%2Fartifact%2Fspec-md%23b-r7/settle";
 
 /** One page of the tree read or of a view, which is all of it. */
 function treeAnswer(): IssueTreeAnswer {
@@ -99,12 +116,31 @@ interface DrawnRow {
   readonly unmount: () => void;
 }
 
-/** The focused proposed row, its settle answered by `answer` at each attempt, the first
+/** The live feed of `client` up, as the shell's event feed holds it: its socket open and the
+ *  feed's subscription on it started by Dispatch (`events_start`). Answers the end of the feed,
+ *  which puts the page's WebSocket back. */
+function liveFeedOn(client: QueryClient): () => void {
+  const sockets = installFakeLiveSockets();
+  const live = liveSocketFor(client);
+  live.subscribeEvents({ onEvent: () => undefined, onStart: () => undefined, since: () => null });
+  const socket = sockets.latest();
+  act(() => socket.open());
+  const { sub } = socket.subscribed("events");
+  act(() => socket.receive({ type: "events_start", sub, since: "1", replay_complete: true }));
+  return () => {
+    live.close();
+    sockets.restore();
+  };
+}
+
+/** The focused proposed row `node`, drawn in the tree of `KEY` as `IssueTree` draws its rows
+ *  (`SettleIssueProvider`), its settle answered by `answer` at each attempt, the first
  *  `failedCoverage` reads of the coverage failing, and each other read of it answered `covered`. */
 function drawRow(
   answer: (attempt: number) => Promise<unknown>,
   failedCoverage = 0,
-  covered: unknown = { requirements: [] }
+  covered: unknown = { requirements: [] },
+  node: TreeNode = PROPOSED
 ): DrawnRow {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -140,6 +176,7 @@ function drawRow(
     keys.push(bounds.key);
     return answer(sent.length);
   }) as typeof api.send);
+  const endFeed = liveFeedOn(client);
   const unsubscribe = subscribeTreeFreshness(client, KEY);
   const view = render(
     <QueryClientProvider client={client}>
@@ -149,22 +186,24 @@ function drawRow(
           <button data-elsewhere="" type="button">
             Elsewhere
           </button>
-          <NodeRow
-            author={{ kind: "person", name: "bob", reader: false }}
-            body={false}
-            context={false}
-            focused
-            isClosed={false}
-            level={1}
-            node={PROPOSED}
-            onFocus={() => {}}
-            onPin={() => {}}
-            onToggle={() => {}}
-            ownAnswer={false}
-            pinned={false}
-            rowKey="row"
-            tabStop
-          />
+          <SettleIssueProvider value={KEY}>
+            <NodeRow
+              author={{ kind: "person", name: "bob", reader: false }}
+              body={false}
+              context={false}
+              focused
+              isClosed={false}
+              level={1}
+              node={node}
+              onFocus={() => {}}
+              onPin={() => {}}
+              onToggle={() => {}}
+              ownAnswer={false}
+              pinned={false}
+              rowKey="row"
+              tabStop
+            />
+          </SettleIssueProvider>
         </NoTooltips>
       </MemoryRouter>
     </QueryClientProvider>
@@ -187,6 +226,7 @@ function drawRow(
     unmount: () => {
       view.unmount();
       unsubscribe();
+      endFeed();
       send.mockRestore();
       coverage.mockRestore();
       tree.mockRestore();
@@ -251,9 +291,9 @@ test("a 200 drops the held views and reads the open one again", async () => {
   }
 });
 
-// A coverage read already marked stale - a read of it failed, or a refresh still owes one -
-// raises nothing the tree read's subscription hears when it is invalidated again, so the 200
-// reads the tree again and drops the held views of its own.
+// A coverage read already marked stale - a read of it failed, or a refresh still owes one - is
+// read again by the 200 as a fresh one is, and the 200 reads the tree again and drops the held
+// views of its own, since the tree read's subscription hears no coverage read.
 test("a 200 reads the tree again while the coverage read is marked stale", async () => {
   const user = userEvent.setup();
   const landing = Promise.withResolvers<unknown>();
@@ -291,12 +331,12 @@ test("a 200 reads the tree again while the coverage read is marked stale", async
   }
 });
 
-// The coverage is invalidated before the tree is asked for, so its read begins first. While the
-// settle's write is out the tree read's subscription holds the reads of the tree and of the views
-// it dropped, each owed one read once the write settles (`subscribeTreeFreshness`): the open view
-// is read once, not at the drop and again at the settle. The coverage's changed answer is no
-// newer than the tree read the settle owed, so nothing is read again for it, however long the
-// refresh scheduler's interval runs.
+// The coverage is invalidated before the tree is asked for, so its read begins first. The
+// settle's callback runs once the tree read's hold has ended (`subscribeTreeFreshness`), and
+// nothing asked for a read while the write was out, so the hold reads nothing at its settle and
+// the callback reads the tree and the open view once each. The coverage's changed answer asks
+// for no read of the tree, which the subscription does not hear, however long the refresh
+// scheduler's interval runs.
 test("a 200 that changes the coverage reads the coverage, the tree and the open view once each", async () => {
   const user = userEvent.setup();
   const landing = Promise.withResolvers<unknown>();
@@ -318,6 +358,31 @@ test("a 200 that changes the coverage reads the coverage, the tree and the open 
       realClock();
     }
     await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// A node whose own address names another issue settles under that issue, and its write is one of
+// the issue the tree is drawn for (`WriteSpec.issue`), since the tree read holds for the writes of
+// its own issue alone: a read of the tree asked for while the settle is out waits for it, and the
+// tree is read once when it settles.
+test("a settle of another issue's node holds the reads of the tree it is drawn in", async () => {
+  const user = userEvent.setup();
+  const landing = Promise.withResolvers<unknown>();
+  const drawn = drawRow(() => landing.promise, 0, { requirements: [] }, OTHER_ISSUE);
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.sent).toHaveLength(1));
+    expect(drawn.sent[0]?.path).toBe(OTHER_SETTLE_PATH);
+    await act(async () => {
+      await drawn.client.invalidateQueries({ exact: true, queryKey: issueTreeQuery(KEY).queryKey });
+    });
+    expect(drawn.reads, "the tree was read while the settle was out").toEqual([]);
+    await act(async () => landing.resolve(settled()));
+    await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
+    await waitFor(() => expect(drawn.reads).toContain("verification"));
+    expect(drawn.reads.filter((what) => what === "tree")).toEqual(["tree"]);
   } finally {
     drawn.unmount();
   }

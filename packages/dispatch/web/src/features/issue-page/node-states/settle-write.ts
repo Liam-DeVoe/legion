@@ -11,7 +11,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { writeRequest } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
-import { issueCoverageQuery } from "../../../api/queries";
+import { issueCoverageQuery, issueTreeKey } from "../../../api/queries";
 import { refreshQueries } from "../../../api/query-refresh";
 import type { IssueDetails } from "../../../api/types";
 import { type IssueRoute, parseIssuePath, parseNodeReference } from "../../refs/routes";
@@ -19,7 +19,7 @@ import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { type AddressTarget, issueAddress, pathToTarget, presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { CONTROL_LABELS } from "../page-words";
-import { dropViews, issueTreeKey, issueTreeQuery } from "../tree-read/tree-read";
+import { dropViews, issueTreeQuery } from "../tree-read/tree-read";
 import { withLine } from "./node-states";
 
 /**
@@ -90,11 +90,12 @@ export function useSettleIssue(): string | undefined {
  * (`SettleIssueProvider`), else of `key`: a node whose own address names another issue settles
  * under that issue, whose coverage is the one read again. The coverage is invalidated first and
  * the tree asked for after it, so the coverage's read begins first. The tree is asked for here,
- * not left to the tree read's subscription, which hears an invalidation of the coverage: a
- * coverage read already marked stale - a read of it failed, or a refresh still owes one - raises
- * none, and another issue's coverage is no query of the page's. While this write is out the
- * subscription holds the tree's read and the views this drops, and reads each once when the
- * write settles (`subscribeTreeFreshness` in `tree-read/tree-read.ts`).
+ * since the tree read's subscription hears no read but the tree's and its views' own
+ * (`subscribeTreeFreshness` in `tree-read/tree-read.ts`), and another issue's coverage is no
+ * query of the page's. The write is one of the issue the tree is drawn for (`issue`), whatever
+ * issue its path names, since the subscription holds for the writes of its own issue alone:
+ * while it is out no read of the tree or of its views is sent, and each asked for meanwhile is
+ * read once when it settles, before this callback runs.
  * A refusal reads nothing again.
  */
 export function useSettle(key: string, reference: string, landed: () => void) {
@@ -102,6 +103,7 @@ export function useSettle(key: string, reference: string, landed: () => void) {
   const drawn = useSettleIssue() ?? key;
   return useKeyedWrite({
     inline: true,
+    issue: drawn,
     label: () => CONTROL_LABELS.settle,
     onSuccess: () => {
       landed();
