@@ -958,9 +958,10 @@ func TestAHoldsLinesNameTheClaimOnce(t *testing.T) {
 
 // An operator's resume of a claim recording a session it does not hold is refused before
 // anything of the claim changes (resumeRefusal): a RefusedError, which the operator's route answers
-// 409 with its sentence, naming the forget-session that gives the claim a new session, and the
-// claim stays suspended with nothing launched and nothing charged. Relaunched, its every launch
-// would be refused by the hold at start and the claim would fail within its launch budget
+// 409 with its sentence, naming the operator's forget-session and the controller's or an
+// architect's fresh_session, either of which gives the claim a new session, and the claim stays
+// suspended with nothing launched and nothing charged. Relaunched, its every launch would be
+// refused by the hold at start and the claim would fail within its launch budget
 // (acceptance of #4220). A rule's resume leaves it suspended the same way. A claim holding its
 // session resumes as before (R9).
 //
@@ -981,8 +982,10 @@ func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 	if !errors.As(err, &refused) {
 		t.Fatalf("the operator's resume of a claim recording %s, which %s holds = %v, want a refusal", session, other, err)
 	}
-	if want := "legion claims forget-session --claim " + string(h.token); !strings.Contains(err.Error(), want) {
-		t.Fatalf("the refusal %q does not name %q", err, want)
+	for _, want := range []string{"legion claims forget-session --claim " + string(h.token), freshSessionTool} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal %q does not name %q", err, want)
+		}
 	}
 	h.must(RequestRuleResume{Claim: h.token, Reason: "the outbox starts the claim's phase"})
 	h.wantState(StateSuspended)
@@ -1003,10 +1006,10 @@ func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 
 // The controller's resume of a claim it suspended, recording a session another claim holds, is
 // refused by the same check as the operator's (resumeRefusal), which runs after the controller's
-// own checks (askedBy, Claim.ResumeRefusal) admit it: a RefusedError naming the forget-session
-// that gives the claim a new session, the claim still suspended by the controller, nothing
-// launched and nothing charged. Once the claim holds its session, the controller's resume
-// relaunches it.
+// own checks (askedBy, Claim.ResumeRefusal) admit it: a RefusedError naming the operator's
+// forget-session and the controller's own fresh_session, either of which gives the claim a new
+// session, the claim still suspended by the controller, nothing launched and nothing charged.
+// Once the claim holds its session, the controller's resume relaunches it.
 //
 // The control: resume with no resumeRefusal: the controller's resume answers no refusal and the
 // claim is launched into the hold's refusal.
@@ -1025,8 +1028,10 @@ func TestAControllersResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) 
 	if !errors.As(err, &refused) {
 		t.Fatalf("the controller's resume of a claim recording %s, which %s holds = %v, want a refusal", session, other, err)
 	}
-	if want := "legion claims forget-session --claim " + string(h.token); !strings.Contains(err.Error(), want) {
-		t.Fatalf("the refusal %q does not name %q", err, want)
+	for _, want := range []string{"legion claims forget-session --claim " + string(h.token), freshSessionTool} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal %q does not name %q", err, want)
+		}
 	}
 	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByController || c.Budgets.LaunchFailures != 0 || c.Session != session {
 		t.Fatalf("the refused resume left the claim %s by %q with %d launch failures recording %q, want it suspended by the controller with none and %s",
@@ -1071,6 +1076,11 @@ func TestAReleaseReportsNoAbandonedSessionTheClaimRecordsAgain(t *testing.T) {
 	}
 }
 
+// freshSessionTool is the remedy a refusal of a session the claim does not hold names for the
+// controller and an architect (resumeRefusal), beside the operator's forget-session: neither holds
+// an operator's token, and their `legion` tool's fresh_session gives the claim a new session.
+const freshSessionTool = "the `fresh_session` of the controller's or an architect's `legion` tool"
+
 // wantRefusedResume is the outcome of an operator's resume of a claim recording a session it does
 // not hold (resumeRefusal): a RefusedError, which the operator's route answers 409, and the claim
 // still suspended with no launch charged, so no process ran under the session and the claim keeps
@@ -1089,8 +1099,9 @@ func wantRefusedResume(t *testing.T, h *harness, err error) {
 
 // An operator's retry of a stopped claim, and an operator's delivery to a suspended one, relaunch
 // the session the claim records, so each is refused one the claim does not hold the way a resume is
-// (resumeRefusal): a RefusedError naming the forget-session to run, nothing launched, nothing
-// queued, and the claim left in the state it was in (the side review of 47f29c476c).
+// (resumeRefusal): a RefusedError naming the operator's forget-session and the controller's or an
+// architect's fresh_session, nothing launched, nothing queued, and the claim left in the state it
+// was in (the side review of 47f29c476c).
 //
 // The control (the pull request records the run): retry and deliverResuming without resumeRefusal:
 // each answers no refusal and relaunches the claim into the hold's refusal.
@@ -1121,8 +1132,10 @@ func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 			if !errors.As(err, &refused) {
 				t.Fatalf("%s recording %s, which %s holds = %v, want a refusal", tc.name, session, other, err)
 			}
-			if want := "legion claims forget-session --claim " + string(h.token); !strings.Contains(err.Error(), want) {
-				t.Fatalf("the refusal %q does not name %q", err, want)
+			for _, want := range []string{"legion claims forget-session --claim " + string(h.token), freshSessionTool} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("the refusal %q does not name %q", err, want)
+				}
 			}
 			if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
 				t.Fatalf("the runtime was asked to resume %d times, want none", len(calls))

@@ -12,6 +12,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
+// suspendTool is the stop a forget's refusal names for the controller and an architect
+// (mayForget), beside the operator's `legion claims suspend`: neither holds an operator's token,
+// and their `legion` tool's suspend stops the holder's process through the daemon.
+const suspendTool = "the `suspend` of the controller's or an architect's `legion` tool"
+
 // A session a claim records but does not hold is cleared only once the Envoy listener no longer
 // names it as the claim's role holder (mayForget, review rounds 16 and 17 of #4220). The outbox
 // withholds the claim's role messages only while it records that session, and the listener keeps
@@ -69,7 +74,8 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 	}
 	// The bound and the remedy are spelled here rather than read from the code, so a wrong bound
 	// or a remedy that sends the operator to suspend a claim that runs nothing fails the rows
-	// (review round 16 of #4220, #60 and #61).
+	// (review round 16 of #4220, #60 and #61). The remedy names the controller's and an
+	// architect's suspend beside the operator's, since neither holds an operator's token.
 	const suspendHolder, theBound, holderRunsNothing = "legion claims suspend --claim " + string(holder),
 		"max(min(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL",
 		"if " + string(holder) + " is suspended, retired or failed, no process of it runs"
@@ -91,10 +97,10 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 			unnamed   bool
 			wait      bool // a refused row is a wait: it matches ErrForgetWaitsForRole and wait.ErrWaiting
 		}{
-			{"refused while the listener names the session as the role's live holder", every, answer{session, "live", nil}, []string{suspendHolder, holderRunsNothing, theBound}, false, true},
-			{"refused while that holder is unresponsive", every, answer{session, "unresponsive", nil}, []string{suspendHolder}, false, true},
-			{"refused while that holder is gone but its claim stands", every, answer{session, "gone", nil}, []string{suspendHolder, theBound}, false, true},
-			{"refused while an older listener names that holder lapsed", every, answer{session, "lapsed", nil}, []string{suspendHolder}, false, true},
+			{"refused while the listener names the session as the role's live holder", every, answer{session, "live", nil}, []string{suspendHolder, suspendTool, holderRunsNothing, theBound}, false, true},
+			{"refused while that holder is unresponsive", every, answer{session, "unresponsive", nil}, []string{suspendHolder, suspendTool}, false, true},
+			{"refused while that holder is gone but its claim stands", every, answer{session, "gone", nil}, []string{suspendHolder, suspendTool, theBound}, false, true},
+			{"refused while an older listener names that holder lapsed", every, answer{session, "lapsed", nil}, []string{suspendHolder, suspendTool}, false, true},
 			{"refused while the listener does not answer", every, answer{"", "", errors.New("the listener is unreachable")}, []string{"did not say which session holds its role"}, false, true},
 			{"refused while the listener refuses the lookup, a fault", every, answer{"", "", fmt.Errorf("look up: %w", &notify.RoleLookupRefused{Status: 401, Reason: "unauthorized"})}, []string{"refuses the lookup", "until an operator fixes"}, false, false},
 			{"refused naming no claim when the refused name is a file name another claim holds", fileNameOnly, answer{session, "live", nil}, []string{"the process registered under it", theBound}, true, true},
@@ -231,8 +237,10 @@ func TestAControllersForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testi
 	if !errors.As(err, &refused) || !errors.Is(err, ErrForgetWaitsForRole) {
 		t.Fatalf("the controller's forget while the listener names %s as the role's live holder = %v, want mayForget's wait", session, err)
 	}
-	if want := "legion claims suspend --claim " + string(holder); !strings.Contains(err.Error(), want) {
-		t.Errorf("the refusal = %v, want it to name %q", err, want)
+	for _, want := range []string{"legion claims suspend --claim " + string(holder), suspendTool} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal = %v, want it to name %q", err, want)
+		}
 	}
 	if asked != 1 {
 		t.Errorf("the listener was asked %d times, want once", asked)

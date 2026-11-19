@@ -32,9 +32,11 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 // It reads the issue as the sweep groups it — every claim of the issue that has not retired — and
 // answers, in this order:
 //
-//   - ctx ending while a sweep's walk holds the turn the request waits for (podUpdateWalk):
-//     refused, the sweep is busy (api.PodUpdateBusy), with nothing read and nothing opened, and
-//     the answer asks the caller to wait one sweep interval before it asks again.
+//   - a sweep's walk holding the turn the request waits for (podUpdateWalk) until ctx ends, or
+//     for the whole of the bound the request waits for it (roundRecordBound): refused, the sweep
+//     is busy (api.PodUpdateBusy), with nothing read and nothing opened, and the answer names
+//     which of the two ended the wait and the bound, and asks the caller to wait one sweep
+//     interval before it asks again.
 //   - no such claim: refused (api.PodUpdateNoClaim). An issue of another project is one, since
 //     this daemon runs no claim of it.
 //   - a round open over the issue's pod: that round, opened nothing new. A round over the pod the
@@ -67,9 +69,12 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //
 // It holds the walk's turn (podUpdateWalk) from its read of the claims to its post, so the claims
 // it decides from are no older than the last sweep's walk, the limits it reads are the ones it
-// charges, and no sweep's walk opens a round on them in between. It waits for that turn only as
-// long as ctx lives, since a sweep's walk holds it across the store reads and writes of every
-// issue of the project. The wait for the record is made after, outside that turn: a machine in a
+// charges, and no sweep's walk opens a round on them in between. It waits for that turn while ctx
+// lives and at most the bound of its wait for the record (roundRecordBound), since a sweep's walk
+// holds it across the store reads and writes of every issue of the project: the API sets no
+// deadline on the request and the controller's client sets no timeout, so ctx alone ends only
+// once the caller has gone, when the refusal reaches nobody, and a caller still there would wait
+// out the whole walk. The wait for the record is made after, outside that turn: a machine in a
 // relaunch can hold the post for minutes, and the sweep's walk must not wait on it.
 func (s *supervision) requestPodUpdate(ctx context.Context, issue string) (api.PodUpdateResponse, error) {
 	answer, asked, err := s.postRequestedPodUpdate(ctx, issue)
@@ -83,14 +88,24 @@ func (s *supervision) requestPodUpdate(ctx context.Context, issue string) (api.P
 }
 
 // postRequestedPodUpdate is requestPodUpdate's decision, made holding the walk's turn
-// (podUpdateWalk), and the post of the round it decides on. It answers the round and the claims
-// the post asks (askedClaims), whose record of it the answer then waits for; none where the claims
-// record the round already.
+// (podUpdateWalk), and the post of the round it decides on. It waits for that turn while ctx lives
+// and at most roundRecordBound, and where neither gives it the turn refuses the request as busy
+// (api.PodUpdateBusy), naming which ended the wait and the bound. It answers the round and the
+// claims the post asks (askedClaims), whose record of it the answer then waits for; none where the
+// claims record the round already.
 func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) (api.PodUpdateResponse, []claim.Token, error) {
 	turn := s.podUpdateWalkTurn()
+	bound := s.roundRecordBound()
+	waiting, stopWaiting := context.WithTimeout(ctx, bound)
 	select {
 	case turn <- struct{}{}:
-	case <-ctx.Done():
+		stopWaiting()
+	case <-waiting.Done():
+		stopWaiting()
+		ended := "the request's wait for it passed its bound"
+		if err := ctx.Err(); err != nil {
+			ended = fmt.Sprintf("the request ended (%v)", err)
+		}
 		// One sweep interval (plan.orphanSweep, a minute in a deployment) is the wait the answer
 		// asks for. Only the sweep's walk holds the turn this long, one walk at a time and one a
 		// sweep interval, so a walk that outlived the request's whole wait is one running long.
@@ -98,8 +113,8 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 		// later, it comes after the time the sweep itself gives that walk before it walks again.
 		retry := s.plan.orphanSweep
 		return api.PodUpdateResponse{}, nil, &api.PodUpdateRefused{Refusal: api.PodUpdateBusy, RetryAfter: retry, Message: fmt.Sprintf(
-			"a sweep of this daemon's update rounds held its walk over the project's issues until the request for %s ended (%v). Nothing was read and nothing was opened; ask again in %s, once that sweep has moved on",
-			issue, ctx.Err(), retry)}
+			"a sweep of this daemon's update rounds held its walk over the project's issues until %s: the request for %s waits for that walk while it lives and at most %s. Nothing was read and nothing was opened; ask again in %s, once that sweep has moved on",
+			ended, issue, bound, retry)}
 	}
 	defer func() { <-turn }()
 	claims, err := s.supervisor.Claims(ctx)
@@ -158,23 +173,32 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 	return api.PodUpdateResponse{Round: round, Reasons: requestedPodUpdateReasons, Opened: true}, tokens, nil
 }
 
-// defaultPodRoundRecordBound is how long the controller's request waits for a claim to record the
-// round it posted (awaitPodRoundRecorded) where supervision sets no bound of its own.
+// defaultPodRoundRecordBound is how long the controller's request waits for the walk's turn
+// (postRequestedPodUpdate), and then for a claim to record the round it posted
+// (awaitPodRoundRecorded), where supervision sets no bound of its own (roundRecordBound).
 const defaultPodRoundRecordBound = 30 * time.Second
 
-// awaitPodRoundRecorded waits until a claim of issue records round in the store, or the bound
-// passes (supervision.podRoundRecordBound, defaultPodRoundRecordBound where unset). Each asked claim's
-// machine is handed a mark behind every event posted to it before — the round's post among them —
-// which its feeder closes once it has handled them (supervisor.drained), and the store is read
-// once a mark closes, so no poll and no clock decides it: a machine that takes the post writes the
-// round to its claim's row before it reaches the mark (supervise's openPodUpdate). A machine
-// busy in a long decision, a relaunch, holds its mark until that decision ends, and a round no
-// claim has recorded at the bound is refused (api.PodUpdateNotRecorded).
-func (s *supervision) awaitPodRoundRecorded(ctx context.Context, issue, round string, asked []claim.Token) error {
-	bound := s.podRoundRecordBound
-	if bound <= 0 {
-		bound = defaultPodRoundRecordBound
+// roundRecordBound is the bound on each of the controller's request's two waits: for the walk's
+// turn (postRequestedPodUpdate) and for a claim's record of the round it posted
+// (awaitPodRoundRecorded). It is supervision.podRoundRecordBound, defaultPodRoundRecordBound
+// where that is unset, read here alone so the two waits cannot drift apart.
+func (s *supervision) roundRecordBound() time.Duration {
+	if s.podRoundRecordBound > 0 {
+		return s.podRoundRecordBound
 	}
+	return defaultPodRoundRecordBound
+}
+
+// awaitPodRoundRecorded waits until a claim of issue records round in the store, or the bound
+// passes (roundRecordBound). Each asked claim's machine is handed a mark behind every event
+// posted to it before — the round's post among them — which its feeder closes once it has handled
+// them (supervisor.drained), and the store is read once a mark closes, so no poll and no clock
+// decides it: a machine that takes the post writes the round to its claim's row before it reaches
+// the mark (supervise's openPodUpdate). A machine busy in a long decision, a relaunch, holds its
+// mark until that decision ends, and a round no claim has recorded at the bound is refused
+// (api.PodUpdateNotRecorded).
+func (s *supervision) awaitPodRoundRecorded(ctx context.Context, issue, round string, asked []claim.Token) error {
+	bound := s.roundRecordBound()
 	waiting, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	handled := make(chan struct{}, len(asked))

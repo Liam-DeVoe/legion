@@ -64,8 +64,10 @@ const (
 	// 503 POD_UPDATE_NOT_RECORDED: the post may still land, and a later request answers the round
 	// once a claim records it. A 200 is only ever a round a claim records.
 	PodUpdateNotRecorded
-	// PodUpdateBusy: the request's own context ended while a sweep's walk over the project's
-	// issues held the turn the request waits for, so it read nothing and opened nothing. 503
+	// PodUpdateBusy: a sweep's walk over the project's issues held the turn the request waits for
+	// until the request's own context ended, or for the whole of the daemon's bound on that wait,
+	// the bound of its wait for a claim's record of the round (30 seconds), so it read nothing and
+	// opened nothing; its sentence names which of the two ended the wait, and the bound. 503
 	// POD_UPDATE_BUSY, with a Retry-After of the sweep's interval (PodUpdateRefused.RetryAfter).
 	PodUpdateBusy
 )

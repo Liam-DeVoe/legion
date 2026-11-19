@@ -203,8 +203,9 @@ export interface LegionDaemonClient {
    * pod is being replaced already (`POD_CHANGING`), an opening a limit of the project holds back
    * (`POD_UPDATE_LIMITED`, naming the limit), and a round no claim recorded within the daemon's
    * wait (`POD_UPDATE_NOT_RECORDED`, 503): a 200 is only ever a round a claim records. A request
-   * that ends while a sweep holds the daemon's walk over the project's issues opens nothing
-   * (`POD_UPDATE_BUSY`, 503, with `Retry-After`). */
+   * that waits more than the daemon's bound (30 s) for a sweep's walk over the project's issues
+   * opens nothing (`POD_UPDATE_BUSY`, 503), and its sentence names when to ask again; this client
+   * reads no response header. */
   readonly issuePodUpdate: (
     input: z.input<typeof LegionPodUpdateRequest>
   ) => Promise<z.output<typeof LegionPodUpdateResponse>>;

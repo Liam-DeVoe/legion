@@ -1530,8 +1530,9 @@ export const LegionClaimOperationResponse = z.object({
  * `POD_UPDATE_LIMITED`, whose message names the limit; and a round no claim records within the
  * daemon's wait is `POD_UPDATE_NOT_RECORDED` (503), since a 200 is only ever a round a claim
  * records in the daemon's store, which the daemon's sweeps carry across a restart. A request that
- * ends while a sweep of the update rounds holds the daemon's walk over the project's issues opens
- * nothing and is `POD_UPDATE_BUSY` (503, with `Retry-After`). */
+ * waits more than the daemon's bound (30 s) for a sweep's walk over the project's issues, or ends
+ * before it, opens nothing and is `POD_UPDATE_BUSY` (503, with `Retry-After`, whose wait its
+ * sentence names). */
 export const LegionPodUpdateRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

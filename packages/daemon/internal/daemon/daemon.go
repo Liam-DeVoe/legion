@@ -1392,8 +1392,10 @@ type supervision struct {
 	podUpdateWalkOnce sync.Once
 	podUpdateWalk     chan struct{}
 	// podRoundRecordBound is how long the controller's request for a pod's round waits for a claim
-	// to record the round it posted (awaitPodRoundRecorded); zero is defaultPodRoundRecordBound, the
-	// value the daemon runs. A test sets a shorter one so it need not wait out the default.
+	// to record the round it posted (awaitPodRoundRecorded), and at most how long it waits for the
+	// sweep's walk to give it the turn (postRequestedPodUpdate), both read through roundRecordBound;
+	// zero is defaultPodRoundRecordBound, the value the daemon runs. A test sets a shorter one so it
+	// need not wait out the default.
 	podRoundRecordBound time.Duration
 	// podUpdateRoundsMu guards podUpdateRounds, what the last sweep decided under those two limits
 	// as the operator's claim listing serves it (api.PodUpdateRounds, podUpdateRoundsView): the

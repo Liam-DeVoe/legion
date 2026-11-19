@@ -474,37 +474,64 @@ func TestPodUpdateTheControllerAsksForSurvivesARestartAndIsCarriedWithNoDrift(t 
 }
 
 // A request that comes while a sweep's walk over the project's issues holds the walk's turn
-// (podUpdateWalk) waits for that turn only as long as the request lives. The test holds the turn
-// as a walk holds it (walkPodUpdates): the request waits while its context lives, and once that
-// context ends it is refused 503 POD_UPDATE_BUSY with a Retry-After of the sweep's interval in
-// seconds, having read nothing and opened nothing: no claim records a round once its machine has
-// handled every event posted to it, nothing is charged to the project's limits, and no ask is
-// written. Once the walk gives the turn back, the same request opens the round.
+// (podUpdateWalk) waits for that turn while the request lives and at most the bound of its wait
+// for the round's record (roundRecordBound): the API sets no deadline on a request and the
+// controller's client sets no timeout, so a caller still there would otherwise wait out the whole
+// walk. The test holds the turn as a walk holds it (walkPodUpdates). A request whose context ends
+// first, under the default bound, waits while its context lives and is then refused 503
+// POD_UPDATE_BUSY, its sentence saying the request ended; a request whose context never ends is
+// refused the same once the rig's short bound passes, its sentence naming that bound. Each
+// carries a Retry-After of the sweep's interval in seconds, and each read nothing and opened
+// nothing: no claim records a round once its machine has handled every event posted to it,
+// nothing is charged to the project's limits, and no ask is written. Once the walk gives the turn
+// back, the same request opens the round.
 //
-// The negative control is the request taking the turn with no bound, as the walk takes it: it
-// waits for the turn past its context's end, and no answer comes.
-func TestPodUpdateTheControllerAsksForWaitsForASweepsWalkOnlyAsLongAsItsRequestLives(t *testing.T) {
+// The negative control is the request's wait for the turn bounded by its context alone (the
+// select on ctx.Done(), with no bound): the request whose context never ends waits for the turn
+// past the bound, and no answer comes.
+func TestPodUpdateTheControllerAsksForWaitsForASweepsWalkWhileItsRequestLivesAndAtMostItsBound(t *testing.T) {
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
 
 	walk := rig.s.podUpdateWalkTurn()
 	walk <- struct{}{}
+	// serve hands the route the request ctx lives in, and answers its answer once it comes.
+	serve := func(ctx context.Context) <-chan *httptest.ResponseRecorder {
+		request := route.request(ctx, podUpdateIssue)
+		answers := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			recorder := httptest.NewRecorder()
+			route.handler.ServeHTTP(recorder, request)
+			answers <- recorder
+		}()
+		return answers
+	}
+	// busy holds an answer to the sweep's busy refusal and answers its sentence.
+	busy := func(recorder *httptest.ResponseRecorder) string {
+		t.Helper()
+		var failure api.Failure
+		if err := json.Unmarshal(recorder.Body.Bytes(), &failure); err != nil {
+			t.Fatalf("decode the refusal %s: %v", recorder.Body, err)
+		}
+		if recorder.Code != http.StatusServiceUnavailable || failure.Code != "POD_UPDATE_BUSY" {
+			t.Fatalf("the request = %d %s, want 503 POD_UPDATE_BUSY; body %s", recorder.Code, failure.Code, recorder.Body)
+		}
+		if got, want := recorder.Header().Get("Retry-After"), strconv.Itoa(int(orphanSweepInterval/time.Second)); got != want {
+			t.Errorf("Retry-After = %q, want %q, the sweep's interval in seconds", got, want)
+		}
+		return failure.Error
+	}
+
+	// A request whose context ends before the default bound passes.
 	ctx, end := context.WithCancel(context.Background())
 	defer end()
-	request := route.request(ctx, podUpdateIssue)
-	answers := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		recorder := httptest.NewRecorder()
-		route.handler.ServeHTTP(recorder, request)
-		answers <- recorder
-	}()
+	answers := serve(ctx)
 	select {
 	case recorder := <-answers:
 		t.Fatalf("the request answered %d while its context lived and the walk held the turn; body %s", recorder.Code, recorder.Body)
 	case <-time.After(200 * time.Millisecond):
 	}
-
 	end()
 	var recorder *httptest.ResponseRecorder
 	select {
@@ -512,29 +539,39 @@ func TestPodUpdateTheControllerAsksForWaitsForASweepsWalkOnlyAsLongAsItsRequestL
 	case <-time.After(10 * time.Second):
 		t.Fatal("the request never answered once its context ended, while the walk held the turn")
 	}
-	var failure api.Failure
-	if err := json.Unmarshal(recorder.Body.Bytes(), &failure); err != nil {
-		t.Fatalf("decode the refusal %s: %v", recorder.Body, err)
+	if refusal := busy(recorder); !strings.Contains(refusal, "the request ended (context canceled)") || !strings.Contains(refusal, defaultPodRoundRecordBound.String()) {
+		t.Errorf("the refusal says %q, want it to say the request ended, and to name the bound %s", refusal, defaultPodRoundRecordBound)
 	}
-	if recorder.Code != http.StatusServiceUnavailable || failure.Code != "POD_UPDATE_BUSY" {
-		t.Fatalf("the request = %d %s, want 503 POD_UPDATE_BUSY; body %s", recorder.Code, failure.Code, recorder.Body)
+
+	// A request whose context never ends, once the rig's short bound passes.
+	rig.s.podRoundRecordBound = 300 * time.Millisecond
+	asked := time.Now()
+	answers = serve(context.Background())
+	select {
+	case recorder = <-answers:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("a live request never answered within %s while the walk held the turn, though its bound is %s", 10*time.Second, rig.s.podRoundRecordBound)
 	}
-	if got, want := recorder.Header().Get("Retry-After"), strconv.Itoa(int(orphanSweepInterval/time.Second)); got != want {
-		t.Errorf("Retry-After = %q, want %q, the sweep's interval in seconds", got, want)
+	if waited := time.Since(asked); waited < rig.s.podRoundRecordBound {
+		t.Errorf("the live request answered after %s, want it to wait out its bound of %s", waited, rig.s.podRoundRecordBound)
 	}
+	if refusal := busy(recorder); !strings.Contains(refusal, "the request's wait for it passed its bound") || !strings.Contains(refusal, rig.s.podRoundRecordBound.String()) {
+		t.Errorf("the refusal says %q, want it to say the request's wait passed its bound, and to name the bound %s", refusal, rig.s.podRoundRecordBound)
+	}
+
 	for _, role := range roles {
 		handled := make(chan struct{})
 		rig.sup.drained(rig.tokens[role], handled)
 		<-handled
 		if c := rig.claimOf(role); c.UpdateRound != "" {
-			t.Errorf("the %s records round %q after the refused request, want none", role, c.UpdateRound)
+			t.Errorf("the %s records round %q after the refused requests, want none", role, c.UpdateRound)
 		}
 	}
 	if opened, inFlight := charged(rig.s); !opened.IsZero() || len(inFlight) != 0 {
-		t.Errorf("the refused request charged an opening at %v, in flight %v, want nothing charged", opened, inFlight)
+		t.Errorf("the refused requests charged an opening at %v, in flight %v, want nothing charged", opened, inFlight)
 	}
 	if asks := rig.asks(); len(asks) != 0 {
-		t.Errorf("the refused request left %d asks, want none: %+v", len(asks), asks)
+		t.Errorf("the refused requests left %d asks, want none: %+v", len(asks), asks)
 	}
 
 	<-walk

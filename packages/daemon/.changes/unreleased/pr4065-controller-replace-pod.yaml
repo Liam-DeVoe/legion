@@ -13,5 +13,6 @@ body: |-
   (`409 POD_CHANGING`). The route answers 200 only once a claim of the issue records the round in
   the store, which a restart restores and the sweeps carry; a round no claim records within 30
   seconds is refused `503 POD_UPDATE_NOT_RECORDED`. A request waits for the update-round sweep's
-  walk over the project's issues only as long as the request lasts; one that ends first opens
-  nothing and is refused `503 POD_UPDATE_BUSY` with `Retry-After: 60`, the sweep's interval.
+  walk over the project's issues while it lasts and at most 30 seconds; one that waits longer, or
+  ends first, opens nothing and is refused `503 POD_UPDATE_BUSY` with `Retry-After: 60`, the
+  sweep's interval, which its sentence names too.

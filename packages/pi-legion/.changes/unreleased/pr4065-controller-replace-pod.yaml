@@ -9,4 +9,5 @@ body: |-
   (`NO_POD`), an issue whose pod is being replaced already (`POD_CHANGING`), and while a limit of
   the project holds the opening back (`POD_UPDATE_LIMITED`, which names the limit). It answers
   only once a claim of the issue records the round, and refuses a round no claim records in time
-  (`POD_UPDATE_NOT_RECORDED`).
+  (`POD_UPDATE_NOT_RECORDED`), and a request that a sweep of the update rounds keeps waiting past
+  its bound (`POD_UPDATE_BUSY`, whose sentence says when to ask again).

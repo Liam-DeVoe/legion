@@ -2510,8 +2510,10 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 // hold, asked before anything of the claim changes, and otherwise nil: a claim recording a session
 // another claim holds, or one no claim holds, is refused its resume, and stays suspended, rather
 // than launched into the hold's refusal at start, which charges each launch to its budget and
-// fails the claim within it (acceptance of #4220). Its remedy is a new session, `legion claims
-// forget-session`, then the resume. A store that does not answer is no refusal: the resume goes on,
+// fails the claim within it (acceptance of #4220). Its remedy is a new session: the operator's
+// `legion claims forget-session`, then the resume, or the `fresh_session` of the controller's or
+// an architect's `legion` tool, which gives the claim a new session and starts it. A store that
+// does not answer is no refusal: the resume goes on,
 // and start asks again at the probe interval, charging nothing, as before. A claim recording no
 // session resumes as before, and so does one holding its session, which costs no store call once
 // admitted (R9).
@@ -2525,7 +2527,7 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 		return nil
 	}
 	return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
-		"%s records session %s, which it does not hold (%w), so relaunching it would be refused at every launch until the claim failed; give it a new session first (`legion claims forget-session --claim %s --session %s`), then ask the %s again",
+		"%s records session %s, which it does not hold (%w), so relaunching it would be refused at every launch until the claim failed; give it a new session first (the operator's `legion claims forget-session --claim %s --session %s`), then ask the %s again, or use the `fresh_session` of the controller's or an architect's `legion` tool, which gives it a new session and starts it",
 		m.claim.Token, m.claim.Session, err, m.claim.Token, m.claim.Session, request)}
 }
 

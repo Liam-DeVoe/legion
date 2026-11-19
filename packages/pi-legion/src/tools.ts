@@ -443,8 +443,8 @@ export function createLegionTool(deps: {
         "already (POD_CHANGING), and while a limit of the project holds the round back (POD_UPDATE_LIMITED, which " +
         "names the limit). Those refused requests open nothing: NO_CLAIM leaves no pod to replace, NO_POD names what " +
         "must change before you ask again, and POD_CHANGING and POD_UPDATE_LIMITED say when to ask again. A request " +
-        "that ends while a sweep holds the daemon's walk over the project's issues opens nothing either (POD_UPDATE_BUSY, " +
-        "with Retry-After). The daemon answers only once a claim of the issue records the round. It refuses a round " +
+        "that a sweep of the update rounds keeps waiting past 30 seconds opens nothing either (POD_UPDATE_BUSY, whose " +
+        "sentence says when to ask again). The daemon answers only once a claim of the issue records the round. It refuses a round " +
         "that no claim records in time (POD_UPDATE_NOT_RECORDED), and answers 500 POD_UPDATE_FAILED where it cannot " +
         "read the claims back after the post: either round can still open, so read updateRound on the issue's claims " +
         "before you ask again. " +

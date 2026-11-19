@@ -175,13 +175,14 @@ issue records it. Each refusal below says what to do:
 - `NO_CLAIM`: the issue is not one of your project's, or the daemon runs no claim of it. There
   is no pod of it to replace. It opens nothing.
 - `NO_POD`: no role of the issue runs in a pod now, or the pod's roles have no worker the round
-  could ask. Ask again once a role of the issue runs in its pod, if the pod must still go. It
-  opens nothing.
+  could ask. Ask again once a role of the issue runs in its pod, if the pod must still go; where
+  each claim of the issue that has a session has failed, `retry` one first. It opens nothing.
 - `POD_CHANGING` or `POD_UPDATE_LIMITED`: a replacement is in flight, or a limit of the project
   holds the round back, and the sentence names the limit. Ask again at a later wake. It opens
   nothing.
-- `POD_UPDATE_BUSY`: your request ended while a sweep of the update rounds held the daemon's walk
-  over the project's issues. It opens nothing. Ask again after the answer's `Retry-After`.
+- `POD_UPDATE_BUSY`: a sweep of the update rounds held the daemon's walk over the project's
+  issues longer than your request waits for it. It opens nothing. Ask again after the wait its
+  sentence names, a minute.
 - `POD_UPDATE_NOT_RECORDED`: the daemon posted the round, and no claim recorded it within the
   wait, so its post may still land and open it. A `500 POD_UPDATE_FAILED` can come after the post
   too, where the daemon could not read the claims back. After either, read `updateRound` on the

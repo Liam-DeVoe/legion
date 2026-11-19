@@ -2441,9 +2441,11 @@ package api
 // workspace may hold work. It answers 200 only once a claim of the issue records the round in
 // the store, which a restart restores and the sweeps carry to the pod's replacement; a round no
 // claim records within its wait is `503 POD_UPDATE_NOT_RECORDED`, and may still open. A request
-// whose own context ends while a sweep's walk over the project's issues holds the turn the request
-// waits for reads nothing and opens nothing, and is `503 POD_UPDATE_BUSY` with a `Retry-After` of
-// the sweep's interval in seconds (60).
+// waits for the turn a sweep's walk over the project's issues holds while its own context lives
+// and at most the bound of its wait for the record (30 seconds); one whose context ends first, or
+// that waits out that bound, reads nothing and opens nothing, and is `503 POD_UPDATE_BUSY` with a
+// `Retry-After` of the sweep's interval in seconds (60), its sentence naming which of the two
+// ended the wait, and the bound.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
