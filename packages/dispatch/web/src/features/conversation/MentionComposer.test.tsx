@@ -438,7 +438,6 @@ test("an emptied draft takes its pills with it at once", async () => {
 // issue's spec. So a bare key whose issue exists and a `#id` the spec declares get the titled
 // pills the stored comment's links are, and a key no issue holds gets none, as it gets no link.
 test("a draft's bare key and #id get the titled pills a reader of the stored text sees", async () => {
-  await warmMarkdownRenderer();
   const user = userEvent.setup();
   summaryRead.mockImplementation((key) =>
     key === "CORE-9"
@@ -497,7 +496,6 @@ test("a draft's bare key and #id get the titled pills a reader of the stored tex
 // else does (`draftSource`): a reply to a comment on an issue is in its parent's scope, so its
 // `#q2` gets the pill that scope declares, never the one the issue's spec would.
 test("a reply's #id gets the pill its parent comment's scope declares, not the spec's", async () => {
-  await warmMarkdownRenderer();
   const user = userEvent.setup();
   const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockImplementation(
     async (kind) =>
@@ -556,7 +554,6 @@ async function expectPillsAsStored(
   text: string,
   expected: { href: string; name: string }[]
 ): Promise<void> {
-  await warmMarkdownRenderer();
   const user = userEvent.setup();
   const { view } = renderComposer();
   const stored = render(
@@ -1793,9 +1790,6 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
 });
 
 test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape", async () => {
-  // The quote is read in the commit that mounts the composer, which only a loaded engine draws
-  // (`MarkdownPreview`): the first body of a file takes the asynchronous path.
-  await warmMarkdownRenderer();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const user = userEvent.setup();
   let cancelled = 0;
@@ -1847,7 +1841,6 @@ test("reply mode shows the quote, sends reply_to, and cancels by chip or Escape"
 // (`excerptTree`) rather than a parse of the parent's markdown. The tree reads differently from
 // the markdown beside it, so a chip drawn from a parse would read `— Once the build is green.`.
 test("the Replying-to chip draws its parent from the tree the reply's host read", async () => {
-  await warmMarkdownRenderer();
   const { view } = renderComposer({
     replyTo: {
       actor: plannerAuthor,

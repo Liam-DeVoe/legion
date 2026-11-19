@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import {
   DISPATCH_WRITING_BOXES,
   type DispatchWritingBoxRow,
@@ -18,7 +18,14 @@ import {
   searchResponse,
 } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { MentionField } from "./MentionField";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** Every key the field's own listener may take, and what the host saw of it. */
 interface HostKeys {

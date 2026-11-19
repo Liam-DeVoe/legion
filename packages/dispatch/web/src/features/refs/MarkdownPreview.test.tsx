@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
@@ -12,6 +12,12 @@ import { MarkdownPreview } from "./MarkdownPreview";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { installFakeParseWorker, restoreParseWorker } from "./parse-worker-fixture";
 import { type ReferenceHost, ReferenceHostIs } from "./reference-host";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * `MarkdownPreview` on its own: the inputs a real surface hands it that the one-fixture surface

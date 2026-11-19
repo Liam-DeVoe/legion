@@ -1,4 +1,4 @@
-import { afterEach, test as bunTest, expect, type Mock, spyOn } from "bun:test";
+import { afterEach, beforeAll, test as bunTest, expect, type Mock, spyOn } from "bun:test";
 import {
   AssistantRuntimeProvider,
   type ThreadMessageLike,
@@ -17,9 +17,16 @@ import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
 import type { ArtifactWithTrees, GraphReferences, SearchResult } from "../../api/types";
 import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { REF_PICKER_INSTRUCTION, REF_PICKER_PARTS_WORDS } from "../refs/ref-picker";
 import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
 import { AgentThread } from "./AgentThread";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The reference picker in an agent's live conversation: the three doors of every other box over

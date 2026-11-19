@@ -1,4 +1,14 @@
-import { afterEach, beforeEach, describe, expect, jest, type Mock, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  type Mock,
+  spyOn,
+  test,
+} from "bun:test";
 import {
   AssistantRuntimeProvider,
   type ThreadMessageLike,
@@ -39,6 +49,12 @@ import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { Unfurl } from "./Unfurl";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** One marked snippet of the display-tree fixture, by name: the reading the server made of
  *  that text as a search hit, with the words it matched marked. */

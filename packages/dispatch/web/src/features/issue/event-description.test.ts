@@ -1,8 +1,15 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import type { DispatchEvent } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { eventDescription } from "./event-description";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The record an ask event's question is: the ask itself, on its issue. */
 const ASK_SOURCE = { id: "ask-1", issue: "CORE-1", kind: "ask" } as const;

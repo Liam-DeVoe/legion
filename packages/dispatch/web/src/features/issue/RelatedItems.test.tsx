@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -10,6 +10,12 @@ import type { AskRead, DisplayTree, Suggestions, WriteSuggestion } from "../../a
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { RelatedItems } from "./RelatedItems";
 import { RELATED_DEBOUNCE_MS } from "./related-timing";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const answer = { at: "2026-10-01T00:00:00Z", selected: [], text: null, user: "alice" };
 

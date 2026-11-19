@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import {
   type MutationKey,
@@ -22,6 +22,7 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Comment, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   FIRST_BACKOFF_MS,
   SEND_DEADLINE_MS,
@@ -34,6 +35,12 @@ import { type HeldSend, HeldSends, heldSends, stoppable } from "./held-sends";
 import { PendingSendTurn } from "./PendingSendTurn";
 import { carriedIdsOf, type SentRequest, saveCommentEdit } from "./send-request";
 import { type SessionSends, useSessionSends } from "./useSessionSends";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const request: SentRequest = {
   anchor: undefined,

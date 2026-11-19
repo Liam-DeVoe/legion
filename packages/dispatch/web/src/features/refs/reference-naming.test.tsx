@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -16,12 +16,18 @@ import type {
 import { DismissControl, RowDismissContext } from "../inbox/DismissControl";
 import { ThreadTitle } from "../inbox/ThreadTitle";
 import { MarkdownBody } from "./MarkdownBody";
-import { useMarkdownHeadline } from "./markdown-engine";
+import { useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
 import { PlainText } from "./plain-text";
 import { partyLink } from "./ref-picker";
 import { ReferenceHostIs } from "./reference-host";
 import { shortForm } from "./routes";
 import type { TextSource } from "./text-references";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The one naming rule and the four host shapes, read on a painted body and on the plain-text

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import type {
   Actor,
   Ask,
@@ -11,12 +11,19 @@ import type {
 } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   buildConversations,
   focusConversation,
   handoffFields,
   matchesFilter,
 } from "./conversation-model";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // A writer carried by a frame's payload is one of the kinds Dispatch writes, where a route's
 // read states a plain string, so this one is written as the literal it is: a `block.invalid`
