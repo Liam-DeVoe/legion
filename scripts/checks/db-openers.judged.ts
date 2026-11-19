@@ -172,6 +172,13 @@ export const JUDGED: readonly JudgedOpener[] = [
     why: TEST_SERVER("DISPATCH_TEST_DATABASE_URL"),
   },
   {
+    file: "packages/envoy/internal/dispatch/store/storetest/xidwindow.go",
+    function: "Measure",
+    callee: `${PGX}.ConnectConfig`,
+    argument: "config",
+    why: `${TEST_SERVER("DISPATCH_TEST_DATABASE_URL")}; the configuration is a copy of the one of the pool under test, which a test opened there`,
+  },
+  {
     file: "packages/envoy/internal/testpg/testpg.go",
     function: "databaseOn",
     callee: ENVOY_DATABASE_ON,
