@@ -1160,9 +1160,10 @@ export interface LegionPaneOptions {
     url: URL,
     body: Record<string, unknown>
   ) => Response | Promise<Response> | undefined;
-  /** Runs once the scratch root, `bin` (first on the pane's PATH) and `state` exist, before the
-   * profile is written and omp is spawned: what the pane's workspace must hold. */
+  /** Runs once the scratch root, `home`, `bin` (first on the pane's PATH) and `state` exist,
+   * before the profile is written and omp is spawned: what the pane's workspace must hold. */
   readonly prepare?: (paths: {
+    readonly home: string;
     readonly workspace: string;
     readonly bin: string;
     readonly state: string;
@@ -1237,7 +1238,7 @@ export async function runLegionPane(
   const bin = path.join(root, "bin");
   await mkdir(bin, { recursive: true });
   await mkdir(state, { recursive: true, mode: 0o700 });
-  await options.prepare?.({ workspace, bin, state });
+  await options.prepare?.({ home, workspace, bin, state });
 
   const scripted: Reply[] = [...replies];
   let answered = 0;

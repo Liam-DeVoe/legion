@@ -91,6 +91,14 @@ itself, whose tests import its sources by relative path.
   the run's own deadline (the CI job's timeout), and the hook names its directories on stderr once
   it has run 10 s, so that run says what it was removing.
 
+- A test that starts a child process spreads `childThreadsEnvironment`
+  (`@legion/test-fixtures/child-threads`) into it. The fixture gives both CPU-sized pools one
+  thread: `TOKIO_WORKER_THREADS=1` for Oh My Pi's natives, and `RAYON_NUM_THREADS=1` for the
+  natives and jj. `versionControlEnvironment` carries it for every jj and git it returns, and the
+  real-Oh-My-Pi harness re-exports it as `OMP_THREADS_ENV`; another child spreads it itself. On
+  the 288-CPU development box, either pool otherwise starts one thread per CPU and a test at a
+  512-task limit can fail with EAGAIN or a rayon-pool panic. Do not spell either variable in a test.
+
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
   no value is captured as unset and the restore deletes it again; setting it to the empty string

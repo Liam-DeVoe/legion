@@ -104,11 +104,13 @@ stays the one listener slot it is, written only by the paths that establish a Le
 `test/omp-harness.ts` runs the real Oh My Pi binary (`LEGION_TEST_OMP`) for each plugin's
 `*-omp.test.ts`; `test/omp-natives.ts` shares one natives cache per binary with the Go tests;
 `test/host-registry.ts` is the `AgentRegistry` stand-in every plugin suite's mock spreads in.
-Every omp a test starts gets `OMP_THREADS_ENV` (`TOKIO_WORKER_THREADS=1` and `RAYON_NUM_THREADS=1`,
-`test/omp-natives.ts`) in its environment: the natives' Tokio runtime and rayon's global pool
-otherwise each start one thread per CPU, and on a 288-CPU machine one omp held 1,177 threads with
+Every child process a test starts gets `childThreadsEnvironment`
+(`@legion/test-fixtures/child-threads`): `TOKIO_WORKER_THREADS=1` and
+`RAYON_NUM_THREADS=1`. The natives' Tokio runtime and rayon's global pool, and jj's rayon pool,
+otherwise each start one thread per CPU. On a 288-CPU machine one omp held 1,177 threads with
 neither set and about 316 with Tokio's alone, more than a test under a 512-task limit can start.
-`spawnRpc` and `spawnInteractive` give it, and so do the files that run the binary themselves.
+`OMP_THREADS_ENV` is that fixture for the harness; `versionControlEnvironment` gives it to jj and
+git; a test with another child spreads it into that child's environment.
 `spawnRpc` takes **absolute** extension paths — this module lives in another package than its
 callers, so `import.meta.dir` here is not the caller's — and pi-envoy's `dispatch-first-omp.test.ts`
 passes `path.join(import.meta.dir, "envoy.ts")`. `spawnInteractive` starts interactive `omp` (the

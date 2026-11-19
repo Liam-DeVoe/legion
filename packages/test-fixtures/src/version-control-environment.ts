@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
+import { childThreadsEnvironment } from "./child-threads";
 
 /** The identity jj commits as, which no configuration of the host supplies. */
 export const versionControlIdentity = {
@@ -25,6 +26,8 @@ export const versionControlNames = [
   "GIT_CONFIG_GLOBAL",
   "GIT_CONFIG_NOSYSTEM",
   "GIT_TERMINAL_PROMPT",
+  "TOKIO_WORKER_THREADS",
+  "RAYON_NUM_THREADS",
   "PUBLIC_LEAK_CHECK",
 ] as const;
 
@@ -97,8 +100,10 @@ function configurationHome(environment: Record<string, string | undefined>): str
 /**
  * The environment a jj or git this suite starts runs in: the given directory as its home, with a
  * `.config` under it and a jj configuration file of its own in it, no git configuration at all,
- * and the identity. So neither the developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor
- * the system gitconfig, nor a prompt for a credential decides what a test sees.
+ * the identity and one thread for each child pool (`childThreadsEnvironment`). So neither the
+ * developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig, nor a prompt
+ * for a credential decides what a test sees, and a `jj` whose rayon pool would otherwise start one
+ * thread per CPU stays under a test's task limit.
  *
  * The one thing of the machine's it does carry is the shared public leak check
  * ({@link sharedPublicLeakCheck}), under `PUBLIC_LEAK_CHECK`, and only where the machine resolves
@@ -135,6 +140,7 @@ export function versionControlEnvironment(home: string): Record<string, string> 
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
     ...versionControlIdentity,
+    ...childThreadsEnvironment,
     ...(leakCheck === undefined ? {} : { [leakCheckVariable]: leakCheck }),
   };
 }

@@ -15,6 +15,7 @@ import {
   runLegionPane,
 } from "@legion/pi-shared/test/omp-harness";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -93,8 +94,7 @@ function published(body: Record<string, unknown>): Response {
   });
 }
 
-/** The identity the daemon puts on every pane (runtime.GitIdentity), which the pane's jj commits
- * as. */
+/** The identity the daemon puts on every pane (runtime.GitIdentity), which its jj commits as. */
 const PANE_IDENTITY = { JJ_USER: "Legion Test", JJ_EMAIL: "legion-test@example.invalid" };
 
 /** The implement handoff the worker wrote to the stand-in Dispatch with `dispatch handoff-write`
@@ -110,12 +110,17 @@ const STALL_RECORD = {
   created_at: "2026-10-09T08:00:00Z",
 };
 
-/** Runs `jj` in `cwd` as the pane's identity, failing loudly on a non-zero exit, and answers its
- * stdout. */
-async function runJj(jj: string, cwd: string, args: readonly string[]): Promise<string> {
+/** Runs `jj` in `cwd` under the pane's isolated environment, failing loudly on a non-zero exit,
+ * and answers its stdout. */
+async function runJj(
+  jj: string,
+  cwd: string,
+  env: Record<string, string>,
+  args: readonly string[]
+): Promise<string> {
   const child = Bun.spawn([jj, ...args], {
     cwd,
-    env: { ...process.env, ...PANE_IDENTITY },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -257,7 +262,7 @@ async function stallPane(
         ...(options.legion === false ? {} : { LEGION_PROJECT: "stall" }),
         ...options.env,
       },
-      prepare: async ({ workspace, bin }) => {
+      prepare: async ({ home, workspace, bin }) => {
         // The pane's PATH is the harness's fixed one plus `bin`: the jj this test process finds is
         // linked into `bin`, so the pane's `handoff_complete` runs the one that made its workspace.
         const jj = Bun.which("jj");
@@ -267,9 +272,14 @@ async function stallPane(
         if ((await Bun.spawn(["git", "init", "--bare", "--quiet", origin]).exited) !== 0) {
           throw new Error(`git init --bare ${origin} failed`);
         }
-        await runJj(jj, path.dirname(workspace), ["git", "init", workspace]);
+        const jjEnv = {
+          PATH: process.env.PATH ?? "",
+          ...versionControlEnvironment(home),
+          ...PANE_IDENTITY,
+        };
+        await runJj(jj, path.dirname(workspace), jjEnv, ["git", "init", workspace]);
         // From here on, every command runs in the workspace, as the pane's own shell does.
-        const jjIn = (...args: string[]) => runJj(jj, workspace, args);
+        const jjIn = (...args: string[]) => runJj(jj, workspace, jjEnv, args);
         await jjIn("git", "remote", "add", "origin", origin);
         await writeFile(path.join(workspace, "main.py"), 'print("stall")\n');
         await jjIn("describe", "-m", "implement: the change");

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { chmod, mkdir, readdir, readFile, realpath, symlink } from "node:fs/promises";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { childThreadsEnvironment } from "@legion/test-fixtures/child-threads";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   exportJjSessionAttribution,
@@ -482,6 +483,7 @@ describe("exportJjSessionAttribution", () => {
         XDG_CONFIG_HOME: path.join(root, "config"),
         JJ_USER: "Attribution Test",
         JJ_EMAIL: "attribution-test@example.invalid",
+        ...childThreadsEnvironment,
       };
       const state = path.join(root, "state");
       const chain = await exportJjSessionAttribution(ROOT_ID, state, {
