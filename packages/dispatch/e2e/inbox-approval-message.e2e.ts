@@ -11,7 +11,8 @@ import {
   withOpenedAsk,
 } from "./api";
 import { holdFirstRequest } from "./editor";
-import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
+import { nextFrames } from "./frames";
+import { askCard, inboxPane, paneScroller, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -416,6 +417,38 @@ test("the reading-pane row for an approval request with replies on its ask: each
       pane.locator("header").getByRole("button", { exact: true, name: "Approve" })
     ).toBeVisible();
     await expect(drawn).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
+// A reply the reader types in the approval request's reply box, in the reading pane, and has not
+// sent is a draft of a reply on an open ask. Where the window narrows below the reading column the
+// same request is drawn as a card, and the card must not read that draft as a reply typed under a
+// settled ask that has since opened again: that note says the reply "was not sent" and stands in
+// the composer's place, though nothing settled and nothing was refused (INFRA-341, testing round
+// 17, at 1808df5f).
+test("a reply typed in the approval pane and not sent is not read as a reply to a question that opened again", async ({
+  browser,
+}) => {
+  const seed = await seedApproval(REPLIED_SUMMARY);
+  await createComment(seed.issueKey, { ask_id: seed.askId, body: PERSON_REPLY }, { login: "bob" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH });
+    await page.goto(inboxAt(seed.askId));
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.askId);
+    const thread = paneScroller(page).getByTestId(`thread-${seed.askId}`);
+    await expect(thread.getByText(PERSON_REPLY, { exact: true })).toBeVisible();
+    await thread.getByRole("textbox", { name: "Reply" }).fill("A reply I have not sent yet.");
+
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 1 });
+    const card = await askCard(page, seed.askId);
+    await expect(card).toBeVisible();
+    await expect(card.getByRole("radio", { name: /^Approve/ })).toBeVisible();
+    await nextFrames(page);
+    await expect(page.getByText(/opened again before you sent your reply/)).toHaveCount(0);
   } finally {
     await alice.close();
   }
