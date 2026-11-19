@@ -327,13 +327,11 @@ export function fieldsAddress<S extends AddressSpec>(
 }
 
 /** Whether a value a parameter read back is the one it was given: the same primitive, or lists
- *  of the same length whose items are the same, in the same order. */
+ *  of the same length whose items are the same, in the same order. Every parameter kind reads a
+ *  primitive or a flat `readonly string[]`, so a list's items are compared as primitives. */
 function sameAddressValue(read: unknown, given: unknown): boolean {
   if (Array.isArray(read) && Array.isArray(given)) {
-    return (
-      read.length === given.length &&
-      read.every((one, index) => sameAddressValue(one, given[index]))
-    );
+    return read.length === given.length && read.every((one, index) => one === given[index]);
   }
   return read === given;
 }

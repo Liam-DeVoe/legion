@@ -243,8 +243,7 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
  *  focus. In the reading column it is the column's own focus stop. The Inbox's j, k and Enter
  *  answer from either. */
 function handOffFocus(form: HTMLElement): void {
-  const focused = document.activeElement;
-  if (focused === null || !form.contains(focused)) return;
+  if (!form.contains(document.activeElement)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
 }
 
