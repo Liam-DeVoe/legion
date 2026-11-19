@@ -295,6 +295,10 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			want: "specgraph: result 1: it sets a job of no letter and no digit, which names no job"},
 		{name: "a failing example whose commit names nothing", change: func(in *Input) { in.Results[1].Commit = " " },
 			want: "specgraph: result 2: it sets a commit of no letter and no digit, which names no commit"},
+		{name: "a failing example whose planted_on names nothing", change: func(in *Input) { in.Results[1].PlantedOn = " " },
+			want: "specgraph: result 2: it sets a planted_on of no letter and no digit, which names no commit"},
+		{name: "a failing example whose fault path is no repository path", change: func(in *Input) { in.Results[1].FaultPaths = []string{"packages//envoy/main.go"} },
+			want: `specgraph: result 2: it sets the fault path "packages//envoy/main.go", which is no repository path, whose parts "/" separates and none of which is empty, "." or ".."`},
 		{name: "a run whose leg names nothing", change: func(in *Input) { in.Results[0].Leg = new(" ") },
 			want: "specgraph: result 1: it sets a leg of no letter and no digit, which names no leg"},
 		{name: "a run of a check of production whose deploy names nothing", add: []Check{checkStateProduction}, change: func(in *Input) {

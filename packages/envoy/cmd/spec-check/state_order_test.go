@@ -57,11 +57,11 @@ func TestATimeIsReadByItsInstant(t *testing.T) {
 // R9: "Six cases read as unknown, and never as true. … And a check whose current text has no
 // failing example that failed when it should." R7: "Of several results that count, the latest
 // counts." The order of record is at, then seq. Each row: carry, with one more failing example of
-// its code check at c1, on which the test missed the fault, at the at of carry's caught failing
-// example, with the row's seq. With no seq, or seq 0, the record would sort before the caught one,
-// and the check would read true at m2, the head of main: the reader refuses it. With seq 5 it is
-// the later record, and the check reads unknown there. TestAcceptAFailureWithNoSeqIsNeverHidden is
-// the same for a failure of production.
+// its code check planted on c1, on which the test missed the fault, at the at of carry's caught
+// failing example, with the row's seq. With no seq, or seq 0, the record would sort before the
+// caught one, and the check would read true at m2, the head of main: the reader refuses it. With
+// seq 5 it is the later record, and the check reads unknown there.
+// TestAcceptAFailureWithNoSeqIsNeverHidden is the same for a failure of production.
 func TestAMissedFailingExampleWithNoSeqIsNeverHidden(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -81,8 +81,8 @@ func TestAMissedFailingExampleWithNoSeqIsNeverHidden(t *testing.T) {
 			dir := copyScenario(t, "carry")
 			var results []any
 			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-			missed := map[string]any{"check": "a-restart-loses-no-message", "check_version": 1, "kind": "failing_example", "outcome": "pass",
-				"commit": "c1", "job": "go-checks", "leg": "", "attempt": 1, "at": "2026-11-12T10:05:00Z", "fault_author": "agent-b", "test_authors": []string{"agent-a"}}
+			missed := plantedOn(map[string]any{"check": "a-restart-loses-no-message", "check_version": 1, "kind": "failing_example", "outcome": "pass",
+				"job": "go-checks", "leg": "", "attempt": 1, "at": "2026-11-12T10:05:00Z", "fault_author": "agent-b", "test_authors": []string{"agent-a"}}, "c1")
 			if row.seq != nil {
 				missed["seq"] = row.seq
 			}

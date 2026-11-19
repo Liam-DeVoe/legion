@@ -3,6 +3,7 @@ package specgraph
 import (
 	"cmp"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -71,6 +72,17 @@ type Result struct {
 	// TestCommit and the subject's commit (R7: the procedure is "the code that runs it" too; R9: "its
 	// test, as it is now").
 	TestCommit string `json:"test_commit" input:"zero: no test of its own ran; fault refuses that for a program check of production or the graph"`
+	// PlantedOn is the commit that the step of a failing example planted its fault on, the one parent
+	// of Commit, the fault's own commit, which CI tested; FaultPaths is each path that the fault
+	// changed (R9: "For a check that a program runs, the failing example is a fault that a step
+	// plants in the code"). A failing example of a program check of the code counts from PlantedOn,
+	// only when each of FaultPaths is a source file and no file of a test, and never at Commit
+	// (CheckStates, step 7; faultCommit). A result of any other kind or check may name them, and no
+	// rule of the state reads them there. The rules of a name and of a repository path read them on
+	// every result: PlantedOn holds a letter or a digit (nameFault), and each of FaultPaths is a
+	// repository path (isRepoPath), since a path that names none would read as a real one.
+	PlantedOn  string   `json:"planted_on" input:"zero: it names no commit that a fault was planted on, so a failing example of a program check of the code counts nowhere"`
+	FaultPaths []string `json:"fault_paths" input:"zero: it names no path of a fault, so a failing example of a program check of the code counts nowhere"`
 }
 
 // resultCommit is the commit where the job of r ran, and where r counts (R8; CheckStates, steps 2,
@@ -108,9 +120,11 @@ func jobCommit(procedure *Check, r Result) string {
 // cancels an earlier pass"): a result with no at would be older than every approval, one with no
 // seq the first record of its at, one with no leg a result of no matrix, and one with no subject, no
 // job or no test commit would count nowhere, as would one whose check, commit, deploy, graph_tx,
-// job, leg or test_commit names nothing (nameFault). Every result sets its check, the digest of
-// the text that ran, a kind and an outcome of the format, at most one subject, its leg, at, and seq
-// from 1. procedure is the text of the check that ran, when the caller holds it, and nil when not;
+// job, leg, test_commit or planted_on names nothing (nameFault), and one of whose fault_paths is no
+// repository path (isRepoPath), which no tie covers and which would read as a real path where the
+// tie of its check is not known. Every result sets its check, the digest of the text that ran, a
+// kind and an outcome of the format, at most one subject, its leg, at, and seq from 1. procedure is
+// the text of the check that ran, when the caller holds it, and nil when not;
 // with it, r also sets what that text makes the judge read: a run, and a failing example of a check
 // of the code, the subject of the check's kind (commit, deploy or graph_tx), also a run of a check
 // of the graph that could not run, which names the transaction that it tried to read (R13: a query
@@ -140,8 +154,15 @@ func (r Result) fault(procedure *Check) string {
 	}
 	if fault := nameFault(namedMember{"check", "check", r.Check}, namedMember{"commit", "commit", r.Commit},
 		namedMember{"deploy", "deploy", r.Deploy}, namedMember{"graph_tx", "transaction of the graph", r.GraphTx},
-		namedMember{"job", "job", r.Job}, namedMember{"leg", "leg", *r.Leg}, namedMember{"test_commit", "commit", r.TestCommit}); fault != "" || procedure == nil {
+		namedMember{"job", "job", r.Job}, namedMember{"leg", "leg", *r.Leg}, namedMember{"test_commit", "commit", r.TestCommit},
+		namedMember{"planted_on", "commit", r.PlantedOn}); fault != "" {
 		return fault
+	}
+	if i := slices.IndexFunc(r.FaultPaths, func(path string) bool { return !isRepoPath(path) }); i >= 0 {
+		return fmt.Sprintf(`it sets the fault path %s, which is no repository path, whose parts "/" separates and none of which is empty, "." or ".."`, quoted(r.FaultPaths[i]))
+	}
+	if procedure == nil {
+		return ""
 	}
 	c, run := *procedure, r.Kind == ResultRun
 	switch {

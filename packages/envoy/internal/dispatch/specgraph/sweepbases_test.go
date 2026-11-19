@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"maps"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 )
 
 // sweepBases is each base that the sweeps read, by its name: each scenario of testdata/scenarios,
-// and sixteen shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
+// and seventeen shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
 // run of no matrix at m2 that ended with no result: there a run result of the leg "" at c1, where
 // the job had legs, would answer that run, and the check would read true (legFault refuses it).
 // Three of carry where a failure and a later pass count at one subject, so the check reads unknown
@@ -25,30 +26,39 @@ import (
 // unknown"): a failure of c2 at 10:03, between c1's pass and c1's caught failing example, and a
 // later pass of c2 with its caught failing example; c0, c1's parent with c1's tree and ties, whose
 // failure at 09:00 counts where c1's results count, and a later pass of c2; and a failure of c2 at
-// 10:30 and a pass of m2 on 13 November with its caught failing example. A refusal of CI at a
-// commit makes its check read unknown there and takes out the results of that commit alone (R48:
-// "At that commit, such a check reads unknown"), so a rule by which a refusal cancelled the
-// failure of another commit, or let newer evidence decide at the refused commit, would read the
-// later pass true. And two of wait-cycle where a check that is false is the one fault under a
-// statement, so a failing check that reads as a check of no statement would leave that statement
-// met: envoy-delivers-messages, with its own check false and the check of
-// a-message-survives-a-restart true (its two outcomes swapped); and a-message-survives-a-restart,
-// with a second check that passes beside its failing one. And eight of production-and-graph, two
-// for each kind of check that reads no commit: its query of the graph, and that check written as
-// an agent of the graph, as a query of production and as an agent of production. A result of each
-// belongs to no commit, so CI's refusal at the commit that its test_commit names takes out nothing
-// of it (CheckStates, step 2), and R7 decides. Of each two, one holds test_commit c1 on the check's
-// failing run and the other CI's refusal of the check at c1: the refusal sweep adds the refusal to
-// the one and the member sweep the test_commit to the other, so an input of each holds both facts,
-// and a rule by which such a refusal took out that run would read the check's earlier pass true.
-// And two of production-and-graph with its program check of production written as another kind: as
-// a program check of the graph, whose runs read the transaction tx1 and count at the commit of their
-// test, and as an agent of production, whose block names no test. Each of the sixteen reads, at the
-// subjects of its shape, the state that the shape gives its check (readsAt), so that a builder that
-// changed nothing, or another thing, gives no base: the six above the states that their shapes are
-// for, and the ten of production-and-graph their check of the graph, or the check that they write,
-// in the state that the check's kind gives its results; the eight that write a check also read it
-// as its kind (readsAs).
+// 10:30 and a pass of m2 on 13 November with its caught failing example; each caught failing
+// example of c2 or m2 is planted on its commit. A refusal of CI at a commit makes its check read
+// unknown there and takes out the results of that commit alone (R48: "At that commit, such a check
+// reads unknown"), so a rule by which a refusal cancelled the failure of another commit, or let
+// newer evidence decide at the refused commit, would read the later pass true. And carry with its
+// failing example in the form of a query or an agent of the code, its commit c1 and no planted_on
+// and no fault path: as no step planted it, it counts nowhere, and the check reads unknown
+// (no_failing_example) at c2 and at m2, so the member sweep adds planted_on, and fault_paths, to a
+// failing example that neither alone makes count (CheckStates, step 7). And two of wait-cycle where
+// a check that is false is the one fault under a statement, so a failing check that reads as a
+// check of no statement would leave that statement met: envoy-delivers-messages, with its own check
+// false and the check of a-message-survives-a-restart true (its two outcomes swapped); and
+// a-message-survives-a-restart, with a second check that passes beside its failing one. And eight
+// of production-and-graph, two for each kind of check that reads no commit: its query of the graph,
+// and that check written as an agent of the graph, as a query of production and as an agent of
+// production. A result of each belongs to no commit, so CI's refusal at the commit that its
+// test_commit names takes out nothing of it (CheckStates, step 2), and R7 decides. Of each two, one
+// holds test_commit c1 on the check's failing run and the other CI's refusal of the check at c1:
+// the refusal sweep adds the refusal to the one and the member sweep the test_commit to the other,
+// so an input of each holds both facts, and a rule by which such a refusal took out that run would
+// read the check's earlier pass true. And two of production-and-graph with its program check of
+// production written as another kind: as a program check of the graph, whose runs read the
+// transaction tx1 and count at the commit of their test, and as an agent of production, whose block
+// names no test. Each of the seventeen reads, at the subjects of its shape, the state that the
+// shape gives its check (readsAt), so that a builder that changed nothing, or another thing, gives
+// no base: the seven above the states that their shapes are for, and the ten of
+// production-and-graph their check of the graph, or the check that they write, in the state that
+// the check's kind gives its results; the eight that write a check also read it as its kind
+// (readsAs). A base that holds a test_commit or a refusal reads the same state with that fact as
+// without it, by the rule that the base is for, so each of those eight also reads its fact back as
+// the reader reads it: a run of the check that failed and names test_commit c1, or CI's refusal of
+// the check at c1. And no base built from another reads, through the reader, as the base that it
+// came from, so that a builder that changed nothing, or only the bytes of a file, gives no base.
 func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	t.Helper()
 	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
@@ -62,9 +72,12 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	dropped := maps.Clone(bases["silent-leg"])
 	dropped["jobs.json"] = &fstest.MapFile{Data: []byte(`[{"job":"go-checks","leg":"","commit":"m2","ended":true}]`)}
 	bases["silent-leg with its matrix dropped at m2"] = dropped
+	// from is the base that each built base came from, by the built base's name.
+	from := map[string]fstest.MapFS{"silent-leg with its matrix dropped at m2": bases["silent-leg"]}
 	// carry is carry with records added to results.json, each a copy of carry's result 1 (from 0, a
-	// pass of a-restart-loses-no-message at c1) or 2 (from 1, its caught failing example) with the
-	// members of set, and a run of go-checks that ended at each commit of jobsAt.
+	// pass of a-restart-loses-no-message at c1) or 2 (from 1, its caught failing example, planted on
+	// c1) with the members of set, and a run of go-checks that ended at each commit of jobsAt; a copy
+	// of the failing example planted on another commit sets planted_on and a commit of its own.
 	type add struct {
 		from int
 		set  map[string]any
@@ -92,11 +105,11 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	bases["carry with c2's failure between c1's pass and c1's failing example"] = carry([]string{"c2"},
 		add{0, map[string]any{"commit": "c2", "outcome": "fail", "at": "2026-11-12T10:03:00Z", "seq": 5}},
 		add{0, map[string]any{"commit": "c2", "at": "2026-11-12T12:00:00Z", "seq": 6}},
-		add{1, map[string]any{"commit": "c2", "at": "2026-11-12T12:05:00Z", "seq": 7}})
+		add{1, map[string]any{"commit": "f-c2", "planted_on": "c2", "at": "2026-11-12T12:05:00Z", "seq": 7}})
 	parent := carry([]string{"c0", "c2"},
 		add{0, map[string]any{"commit": "c0", "outcome": "fail", "at": "2026-11-12T09:00:00Z", "seq": 5}},
 		add{0, map[string]any{"commit": "c2", "at": "2026-11-12T12:00:00Z", "seq": 6}},
-		add{1, map[string]any{"commit": "c2", "at": "2026-11-12T12:05:00Z", "seq": 7}})
+		add{1, map[string]any{"commit": "f-c2", "planted_on": "c2", "at": "2026-11-12T12:05:00Z", "seq": 7}})
 	editTree(t, parent, "history.json", func(v any) any {
 		history := v.(map[string]any)
 		commits := history["commits"].([]any)
@@ -118,7 +131,20 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	bases["carry with c2's failure at 10:30 and a later pass of m2"] = carry([]string{"c2", "m2"},
 		add{0, map[string]any{"commit": "c2", "outcome": "fail", "at": "2026-11-12T10:30:00Z", "seq": 5}},
 		add{0, map[string]any{"commit": "m2", "at": "2026-11-13T12:00:00Z", "seq": 6}},
-		add{1, map[string]any{"commit": "m2", "at": "2026-11-13T12:05:00Z", "seq": 7}})
+		add{1, map[string]any{"commit": "f-m2", "planted_on": "m2", "at": "2026-11-13T12:05:00Z", "seq": 7}})
+	unplanted := maps.Clone(bases["carry"])
+	editTree(t, unplanted, "results.json", func(v any) any {
+		fault := v.([]any)[1].(map[string]any)
+		fault["commit"] = fault["planted_on"]
+		delete(fault, "planted_on")
+		delete(fault, "fault_paths")
+		return v
+	})
+	bases["carry with its failing example planted by no step"] = unplanted
+	for _, name := range []string{"carry with c2's failure between c1's pass and c1's failing example", "carry with a failure of c0, c1's parent, and a later pass of c2",
+		"carry with c2's failure at 10:30 and a later pass of m2", "carry with its failing example planted by no step"} {
+		from[name] = bases["carry"]
+	}
 	swapped := maps.Clone(bases["wait-cycle"])
 	editTree(t, swapped, "results.json", func(v any) any {
 		for _, r := range v.([]any) {
@@ -133,12 +159,15 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	})
 	bases["wait-cycle with the outcomes of its two first runs swapped"] = swapped
 	bases["wait-cycle with a second, passing check of a-message-survives-a-restart"] = withSecondCheck(t, bases["wait-cycle"])
-	// The six bases above read, at the subjects of their shapes, the states that the shapes are for
+	from["wait-cycle with the outcomes of its two first runs swapped"] = bases["wait-cycle"]
+	from["wait-cycle with a second, passing check of a-message-survives-a-restart"] = bases["wait-cycle"]
+	// The seven bases above read, at the subjects of their shapes, the states that the shapes are for
 	// (readsAt): the check of the code of silent-leg unknown (ci_fault) at m2, at the run of no
 	// matrix, which names no leg; that of carry unknown (disagree) at c2 and at m2, where its failure
-	// and its later pass count; and at m1 of wait-cycle, the own check of envoy-delivers-messages
-	// false and the check of a-message-survives-a-restart true, or that check false and the one
-	// added beside it true.
+	// and its later pass count, and unknown (no_failing_example) there with its failing example
+	// planted by no step; and at m1 of wait-cycle, the own check of envoy-delivers-messages false and
+	// the check of a-message-survives-a-restart true, or that check false and the one added beside it
+	// true.
 	const code = "a-restart-loses-no-message"
 	disagree := CheckState{State: checkUnknown, Reason: reasonDisagree, Disagree: true}
 	passedAtB1 := CheckState{State: checkTrue, Reason: reasonPassed, From: "b1"}
@@ -152,6 +181,7 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 		{"carry with c2's failure between c1's pass and c1's failing example", code, disagree, []string{"c2", "m2"}},
 		{"carry with a failure of c0, c1's parent, and a later pass of c2", code, disagree, []string{"c2", "m2"}},
 		{"carry with c2's failure at 10:30 and a later pass of m2", code, disagree, []string{"c2", "m2"}},
+		{"carry with its failing example planted by no step", code, CheckState{State: checkUnknown, Reason: reasonNoFailingExample}, []string{"c2", "m2"}},
 		{"wait-cycle with the outcomes of its two first runs swapped", "a-sent-message-reaches-a-listener", failedAtB1, []string{"m1"}},
 		{"wait-cycle with the outcomes of its two first runs swapped", "a-restart-keeps-the-message", passedAtB1, []string{"m1"}},
 		{"wait-cycle with a second, passing check of a-message-survives-a-restart", "a-restart-keeps-the-message", failedAtB1, []string{"m1"}},
@@ -202,10 +232,21 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 		})
 		refused := maps.Clone(base.fsys)
 		refused["uncited.json"] = &fstest.MapFile{Data: []byte(`{"c1": {"` + graph + `": "test-not-in-code"}}`)}
+		holds := map[string]func(Scenario) bool{
+			"with test_commit c1 on the failing run of ": func(s Scenario) bool {
+				return slices.ContainsFunc(s.Results, func(r Result) bool {
+					return r.Check == graph && r.Kind == ResultRun && r.Outcome == OutcomeFail && r.TestCommit == "c1"
+				})
+			},
+			"with CI's refusal at c1 of ": func(s Scenario) bool { return s.Uncited["c1"][graph] == "test-not-in-code" },
+		}
 		for how, fsys := range map[string]fstest.MapFS{"with test_commit c1 on the failing run of ": withTestCommit, "with CI's refusal at c1 of ": refused} {
 			name := "production-and-graph " + how + what
 			readsAt(t, name, fsys, graph, base.want, "m2")
-			bases[name] = fsys
+			if s, err := ReadScenario(fsys); err != nil || !holds[how](s) {
+				t.Fatalf("%s: the reader does not read the fact that the base is built to hold (%v)", name, err)
+			}
+			bases[name], from[name] = fsys, base.fsys
 		}
 	}
 	for what, base := range map[string]converted{
@@ -214,7 +255,26 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	} {
 		name := "production-and-graph with its program check of production " + what
 		readsAt(t, name, base.fsys, program, base.want, "m2")
-		bases[name] = base.fsys
+		bases[name], from[name] = base.fsys, bases["production-and-graph"]
+	}
+	// No built base reads, through the reader, as the base that it came from, and each base that is
+	// no scenario is built from one: a builder that changed nothing, or only the bytes of its files,
+	// gives no base.
+	for _, name := range slices.Sorted(maps.Keys(bases)) {
+		source, built := from[name]
+		switch {
+		case !built && !slices.Contains(dirs, filepath.Join("testdata", "scenarios", name)):
+			t.Fatalf("%s: a base that is no scenario names no base that it came from", name)
+		case !built:
+			continue
+		}
+		got, err := ReadScenario(bases[name])
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if want, err := ReadScenario(source); err != nil || reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: the reader reads it as the base that it came from (%v)", name, err)
+		}
 	}
 	return bases
 }
@@ -300,9 +360,10 @@ func readsAt(t *testing.T, name string, base fs.FS, id string, want CheckState, 
 }
 
 // readsAs is the scenario fsys, named name, as ReadScenario reads it, and fails the test unless the
-// reader reads it and reads its check id as a check of procedure and subject, with the test of a
-// program exactly when procedure is program: in the current approved spec and in the files of each
-// commit.
+// reader reads it and reads its check id as a check of procedure and subject: in the current
+// approved spec and in the files of each commit. Whether the check names the test of a program is
+// the reader's own rule: it refuses a program check that names no test (no-test) and a check of
+// another procedure that names one (test-on-non-program), so readsAs fails on that refusal first.
 func readsAs(t *testing.T, name string, fsys fs.FS, id string, procedure Procedure, subject Subject) Scenario {
 	t.Helper()
 	s, err := ReadScenario(fsys)
@@ -315,9 +376,9 @@ func readsAs(t *testing.T, name string, fsys fs.FS, id string, procedure Procedu
 		trees["the files at "+commit] = tree
 	}
 	for _, where := range slices.Sorted(maps.Keys(trees)) {
-		if c, held := trees[where].CheckByID(id); !held || c.Procedure != procedure || c.Subject != subject || (c.Test != nil) != (procedure == ProcedureProgram) {
-			t.Fatalf("%s: %s reads %s as a check of procedure %q and subject %q with the test %+v (held %t); want procedure %q and subject %q, with a test only for a program",
-				name, where, id, c.Procedure, c.Subject, c.Test, held, procedure, subject)
+		if c, held := trees[where].CheckByID(id); !held || c.Procedure != procedure || c.Subject != subject {
+			t.Fatalf("%s: %s reads %s as a check of procedure %q and subject %q (held %t); want procedure %q and subject %q",
+				name, where, id, c.Procedure, c.Subject, held, procedure, subject)
 		}
 	}
 	return s
@@ -332,7 +393,10 @@ func readsAs(t *testing.T, name string, fsys fs.FS, id string, procedure Procedu
 // approved spec and in the files of each commit (readsAs), and each run of the check reads the
 // subject of the kind: a commit and no deploy or transaction for the code, as refusal's runs of it
 // do, the deploy d1 and no transaction for production, and the transaction tx1 and no deploy for
-// the graph. So a fault of As for any one kind fails the row of that kind.
+// the graph. Each failing example of a check of the code reads as its kind counts it: for a
+// program check, refusal's own record, the fault's commit f1, planted on c1 with one fault path;
+// for a query or an agent, the commit c1 and no planted_on or fault path, since such a check counts
+// a failing example at its commit. So a fault of As for any one kind fails the row of that kind.
 func TestAsWritesACheckOfEachKind(t *testing.T) {
 	t.Parallel()
 	for _, subject := range []Subject{SubjectCode, SubjectProduction, SubjectGraph} {
@@ -369,6 +433,26 @@ func TestAsWritesACheckOfEachKind(t *testing.T) {
 				}
 				if runs == 0 {
 					t.Fatalf("%s: no run of %s", name, id)
+				}
+				if subject == SubjectCode {
+					want := Result{Commit: "c1"}
+					if procedure == ProcedureProgram {
+						want = Result{Commit: "f1", PlantedOn: "c1", FaultPaths: []string{"packages/envoy/cmd/listener/main.go"}}
+					}
+					faults := 0
+					for i, r := range s.Results {
+						if r.Check != id || r.Kind != ResultFailingExample {
+							continue
+						}
+						faults++
+						if r.Commit != want.Commit || r.PlantedOn != want.PlantedOn || !slices.Equal(r.FaultPaths, want.FaultPaths) {
+							t.Errorf("%s: result %d, a failing example, reads the commit %q, planted_on %q and the fault paths %q, want %q, %q and %q",
+								name, i+1, r.Commit, r.PlantedOn, r.FaultPaths, want.Commit, want.PlantedOn, want.FaultPaths)
+						}
+					}
+					if faults == 0 {
+						t.Fatalf("%s: no failing example of %s", name, id)
+					}
 				}
 			})
 		}

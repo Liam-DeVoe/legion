@@ -28,11 +28,12 @@ var sweepMaps = map[string][][]string{
 }
 
 // sweepPaths is each place of a repository path in the JSON files of a scenario: the keys of a tree
-// of the history, and the entries of a tie. The sweep writes each such path in the forms that name
-// no repository path, which no tie entry covers.
+// of the history, the entries of a tie, and the paths of a fault of a result. The sweep writes each
+// such path in the forms that name no repository path, which no tie entry covers.
 var sweepPaths = map[string]struct{ keysOf, values [][]string }{
 	"history.json": {keysOf: [][]string{{"commits", "*", "files"}}},
 	"ties.json":    {values: [][]string{{"*", "*", "*"}}},
+	"results.json": {values: [][]string{{"*", "fault_paths", "*"}}},
 }
 
 // namesOfNothing are the texts that the sweep writes at each string place and as each key of a map:
@@ -54,27 +55,28 @@ func notRepoPaths(path string) []string {
 // that says nothing at one place: each member of each object of the format left out, null at each
 // place (a member, an entry of a map, an element of a list, the whole file), each file of the
 // scenario taken out; each name that names nothing: "" and " " at each string place and as each
-// key of each map of the format (sweepMaps), and each repository path of a tree or a tie written as
-// "./<path>", "/<path>", "<path>/" and with a "/" doubled (sweepPaths). No such input may move a
-// check toward true, a statement or its own state toward met, or a wait toward ends, against the
-// state of the whole scenario: a member with a mark of zero is no exception, and a mark whose
-// reading moves a state toward true is wrong. The reader may refuse the input. A record taken out
-// whole, such as a result, is another input, not one that says nothing
+// key of each map of the format (sweepMaps), and each repository path of a tree, a tie or a fault
+// written as "./<path>", "/<path>", "<path>/" and with a "/" doubled (sweepPaths). No such input
+// may move a check toward true, a statement or its own state toward met, or a wait toward ends,
+// against the state of the whole scenario: a member with a mark of zero is no exception, and a mark
+// whose reading moves a state toward true is wrong. The reader may refuse the input. A record taken
+// out whole, such as a result, is another input, not one that says nothing
 // (TestTakingOutAWholeRecordMovesAStateOnlyByItsRight), and so is a named leg written where a
 // record has "": it states that the job had legs there, which an older result of that leg answers
 // by right (R8). The scenarios hold each shape that a rule reads: a check of the code with a matrix
-// and a silent leg, a wait on its statement, a failure of production at the at of its pass, a
-// refusal of CI, and, in production-and-graph, a program check of production whose runs name the
-// commit of their test (test_commit), a query of the graph at the transaction of its subject
-// (graph_tx), and a run of a job that has not ended. So each member that a rule reads is in a
-// record of some scenario, and each place of it is swept. The sweep also reads the shapes that no
-// scenario holds (sweepBases). One right, which sweepInputs gives the input where it writes it: a
-// repository path of a tree written " " is a real path, since git holds a file of that name (git
-// ls-tree of a tree that holds one lists the path " "), so the tree changed at a path that a tie
-// covers, and a result there, a failure among them, carries no more across it (R8: "A result at
-// one commit also counts at another commit when no code that the check runs changed between the
-// two"); a base whose failure at one commit carries to another shows it. A content label is no
-// path, and one of " " names no content, so the reader refuses it and it has no right.
+// and a silent leg, its failing example planted on a commit (planted_on, fault_paths), a wait on
+// its statement, a failure of production at the at of its pass, a refusal of CI, and, in
+// production-and-graph, a program check of production whose runs name the commit of their test
+// (test_commit), a query of the graph at the transaction of its subject (graph_tx), and a run of a
+// job that has not ended. So each member that a rule reads is in a record of some scenario, and
+// each place of it is swept. The sweep also reads the shapes that no scenario holds (sweepBases).
+// One right, which sweepInputs gives the input where it writes it: a repository path of a tree
+// written " " is a real path, since git holds a file of that name (git ls-tree of a tree that holds
+// one lists the path " "), so the tree changed at a path that a tie covers, and a result there, a
+// failure among them, carries no more across it (R8: "A result at one commit also counts at
+// another commit when no code that the check runs changed between the two"); a base whose failure
+// at one commit carries to another shows it. A content label is no path, and one of " " names no
+// content, so the reader refuses it and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -163,8 +165,9 @@ func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sw
 // A holds a result of the check, taking that result out can let the results of other commits
 // decide, and they can read true (refusedCommitsResults). The right covers each place of a subject
 // at another commit than A where the input reads what the base reads with each result of the check
-// whose commit is A (resultCommit) taken out of results.json, and no place at A, where R48 gives
-// none. A query or an agent of production or of the graph has no result of a commit
+// whose commit is A (countedCommit: for a failing example of a program check of the code, the
+// commit that its fault was planted on) taken out of results.json, and no place at A, where R48
+// gives none. A query or an agent of production or of the graph has no result of a commit
 // (CountsAtACommit), so a refusal of it at another commit than the subject's takes out nothing,
 // whatever commit a result's test_commit names, and it has no right. The sweep adds one refusal at
 // a time to uncited.json of each base (sweepBases), at each commit that a record of the base names,
@@ -199,8 +202,8 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 						return uncited
 					})
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
-					if CountsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && resultCommit(r) == commit }) {
-						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, s, c.ID, commit)
+					if CountsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && countedCommit(c, r) == commit }) {
+						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, s, c, commit)
 					}
 					inputs = append(inputs, in)
 				}
@@ -216,26 +219,25 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 // check: those results count nowhere (R48), and the results of the other commits decide.
 const refusedCommitsResults = `the results of the refused commit count nowhere, and the results of the other commits decide (R48: "no earlier result of it counts")`
 
-// withoutResultsOf is the states of base, whose scenario is s, with each result of the check id
-// whose commit (resultCommit: its commit, else its test_commit) is commit taken out of results.json,
-// and with no state of a subject at commit: the places that a refusal of the check at commit may
-// move toward true, each to the state given here.
-func withoutResultsOf(t *testing.T, base fstest.MapFS, s Scenario, id, commit string) map[string]string {
+// withoutResultsOf is the states of base, whose scenario is s, with each result of the check c
+// whose commit (countedCommit) is commit taken out of results.json, and with no state of a subject
+// at commit: the places that a refusal of the check at commit may move toward true, each to the
+// state given here.
+func withoutResultsOf(t *testing.T, base fstest.MapFS, s Scenario, c Check, commit string) map[string]string {
 	t.Helper()
 	fsys := maps.Clone(base)
 	editTree(t, fsys, "results.json", func(v any) any {
-		return slices.DeleteFunc(slices.Clone(v.([]any)), func(r any) bool {
-			record := r.(map[string]any)
-			at, _ := record["commit"].(string)
-			if at == "" {
-				at, _ = record["test_commit"].(string)
+		kept := []any{}
+		for i, record := range v.([]any) {
+			if r := s.Results[i]; r.Check != c.ID || countedCommit(c, r) != commit {
+				kept = append(kept, record)
 			}
-			return record["check"] == id && at == commit
-		})
+		}
+		return kept
 	})
 	states, err := sweepStates(fsys)
 	if err != nil {
-		t.Fatalf("the base with the results of %s at %s taken out: %v", id, commit, err)
+		t.Fatalf("the base with the results of %s at %s taken out: %v", c.ID, commit, err)
 	}
 	for i, subject := range s.Subjects {
 		if subject.Commit == commit {
@@ -245,15 +247,26 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, s Scenario, id, commit st
 	return states
 }
 
-// addableMembers is each member that a record of a JSON file of a scenario can leave out (the ten
-// members marked zero that a file can leave out, memberMark), by the place of the list of its
-// records and the kind of the values that the sweep gives it.
+// countedCommit is the commit where the result r of the check c counts (CheckStates, steps 2 and
+// 7): for a failing example of a program check of the code, the commit that the step planted its
+// fault on, and else the commit where its job ran (resultCommit).
+func countedCommit(c Check, r Result) string {
+	if r.Kind == ResultFailingExample && c.Subject == SubjectCode && c.Procedure == ProcedureProgram {
+		return r.PlantedOn
+	}
+	return resultCommit(r)
+}
+
+// addableMembers is each member that a record of a JSON file of a scenario can leave out (the
+// twelve members marked zero that a file can leave out, memberMark), by the place of the list of
+// its records and the kind of the values that the sweep gives it.
 var addableMembers = map[string]struct {
 	records []string
 	members [][2]string // each member and its kind
 }{
 	"results.json": {nil, [][2]string{{"commit", "commit"}, {"deploy", "deploy"}, {"graph_tx", "graph_tx"}, {"job", "job"},
-		{"attempt", "attempt"}, {"fault_author", "author"}, {"test_authors", "authors"}, {"test_commit", "commit"}}},
+		{"attempt", "attempt"}, {"fault_author", "author"}, {"test_authors", "authors"}, {"test_commit", "commit"},
+		{"planted_on", "commit"}, {"fault_paths", "paths"}}},
 	"subjects.json": {nil, [][2]string{{"graph_tx", "graph_tx"}}},
 	"history.json":  {[]string{"commits"}, [][2]string{{"parent", "commit"}}},
 }
@@ -266,6 +279,8 @@ var addableMembers = map[string]struct {
 // and for the leg rule alike; one on a result of a query or an agent of production or of the graph
 // moves nothing, also where CI refused the check at that commit, since such a check reads no commit
 // (CountsAtACommit); and a commit on a result of a check of production or of the graph is refused.
+// A planted_on alone, or fault_paths alone, on a failing example of a program check of the code
+// that no step planted moves nothing: it counts from planted_on only with both (CheckStates, step 7).
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -275,11 +290,14 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 			base := bases[name]
 			names := namesOf(t, base)
 			values := map[string][]any{"attempt": {2}}
-			for kind, other := range map[string]string{"commit": "c9", "deploy": "d9", "graph_tx": "g9", "job": "other-job", "author": "other-author"} {
+			for kind, other := range map[string]string{"commit": "c9", "deploy": "d9", "graph_tx": "g9", "job": "other-job", "author": "other-author", "path": "packages/envoy/cmd/other/main.go"} {
 				for _, v := range append(slices.Clone(names[kind]), other) {
 					values[kind] = append(values[kind], v)
-					if kind == "author" {
+					switch kind {
+					case "author":
 						values["authors"] = append(values["authors"], []any{v})
+					case "path":
+						values["paths"] = append(values["paths"], []any{v})
 					}
 				}
 			}
@@ -314,10 +332,11 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 }
 
 // namesOf is each name that a record of the scenario fsys names, by its kind (commit, deploy,
-// graph_tx, job, author), sorted, each once: the commits of the history, of the subjects, of the
-// results, of the job runs and of the maps of ties.json and uncited.json; the deploys and the
-// transactions of the subjects and of the results; the jobs of the results and of the job runs; and
-// the authors of the results.
+// graph_tx, job, author, path), sorted, each once: the commits of the history, of the subjects, of
+// the results, among them the commits that faults were planted on, of the job runs and of the maps
+// of ties.json and uncited.json; the deploys and the transactions of the subjects and of the
+// results; the jobs of the results and of the job runs; the authors of the results; and the paths
+// of the trees of the history and of the faults of the results.
 func namesOf(t *testing.T, fsys fstest.MapFS) map[string][]string {
 	t.Helper()
 	names := map[string]map[string]bool{}
@@ -338,19 +357,25 @@ func namesOf(t *testing.T, fsys fstest.MapFS) map[string][]string {
 	}
 	for _, c := range read("history.json").(map[string]any)["commits"].([]any) {
 		add("commit", c.(map[string]any)["id"])
+		for path := range c.(map[string]any)["files"].(map[string]any) {
+			add("path", path)
+		}
 	}
 	for _, file := range []string{"subjects.json", "results.json", "jobs.json"} {
 		for _, r := range read(file).([]any) {
 			r := r.(map[string]any)
 			add("commit", r["commit"])
 			add("commit", r["test_commit"])
+			add("commit", r["planted_on"])
 			add("deploy", r["deploy"])
 			add("graph_tx", r["graph_tx"])
 			add("job", r["job"])
 			add("author", r["fault_author"])
-			if authors, ok := r["test_authors"].([]any); ok {
-				for _, a := range authors {
-					add("author", a)
+			for member, kind := range map[string]string{"test_authors": "author", "fault_paths": "path"} {
+				if list, ok := r[member].([]any); ok {
+					for _, v := range list {
+						add(kind, v)
+					}
 				}
 			}
 		}
@@ -563,7 +588,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		with, without string // the state of the check with the record and with it taken out
 	}
 	// carriedFailure is carry with a failure of c at c1 after its pass, which carries to c2, and a
-	// pass and a caught failing example at c2 after it: c2 reads unknown (disagree).
+	// pass at c2 after it and a caught failing example planted on c2: c2 reads unknown (disagree).
 	carriedFailure := func(t *testing.T, fsys fstest.MapFS) {
 		editTree(t, fsys, "results.json", func(v any) any {
 			results := v.([]any)
@@ -573,7 +598,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 				return r
 			}
 			fault := maps.Clone(results[1].(map[string]any))
-			fault["commit"], fault["at"], fault["seq"] = "c2", "2026-11-13T09:05:00Z", 7
+			fault["commit"], fault["planted_on"], fault["at"], fault["seq"] = "f-c2", "c2", "2026-11-13T09:05:00Z", 7
 			return append(results, run("c1", "fail", "2026-11-12T10:10:00Z", 5), run("c2", "pass", "2026-11-13T09:00:00Z", 6), fault)
 		})
 	}

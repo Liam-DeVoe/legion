@@ -661,7 +661,7 @@ func (s *checkCase) addNodes(nodes ...specNode) {
 }
 
 // addCheck adds the program check c, after the nodes before it, with the tie of C, a pass of its
-// job at c1 and a failing example at c1 on which its test failed.
+// job at c1 and a failing example planted on c1 on which its test failed.
 func (s *checkCase) addCheck(c Check, before ...specNode) {
 	s.t.Helper()
 	s.addNodes(append(before, c)...)
@@ -670,7 +670,7 @@ func (s *checkCase) addCheck(c Check, before ...specNode) {
 	fault := run
 	fault.Kind, fault.Outcome, fault.At = ResultFailingExample, OutcomeFail, checkStateRun.Add(5*time.Minute)
 	fault.FaultAuthor, fault.TestAuthors = "author-b", []string{"author-a"}
-	s.Results = append(s.Results, run, fault)
+	s.Results = append(s.Results, run, plantedOn(fault, "c1"))
 }
 
 // runOutcome sets the outcome of each run of the check id.

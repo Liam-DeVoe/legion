@@ -3,6 +3,7 @@ package specgraph
 import (
 	"cmp"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -136,18 +137,19 @@ const (
 //     results at S.Commit before or after the refusal, a result carried from another commit, or
 //     newer evidence of another commit that would count there, so no result of C makes it true
 //     or false at S.Commit. The own results of a commit where CI refused C, the candidates of step
-//     3 whose commit is that commit (resultCommit), count nowhere, at it or where R8 would carry
-//     them: R48 cancelled them at their commit, so R8 has nothing to carry (withoutRefused). With
-//     such a result taken out that would count at S and no run left that counts at S: unknown,
-//     uncited, Detail the least rule by its name of those refusals, so that the order of the
-//     results does not choose it. The own results of every other commit are R7's and R8's,
-//     whatever CI refused elsewhere: a refusal cancels no result of another commit, so a pass and a
-//     failure of one procedure at one commit read unknown, disagree, and whether a result carries
-//     across the refused commit is the question of the ties and the history (R8: "A result at one
-//     commit also counts at another commit when no code that the check runs changed between the
-//     two"). A query or an agent of production or of the graph has no commit of a result, so only
-//     CI's refusal at S.Commit counts for it, whatever commit a result's TestCommit names. A run of
-//     the job is no result, and no refusal takes one out.
+//     3 whose commit is that commit (resultCommit; for a failing example of a program check of the
+//     code, the commit that it counts from, faultCommit), count nowhere, at it or where R8 would
+//     carry them: R48 cancelled them at their commit, so R8 has nothing to carry
+//     (withoutRefused). With such a result taken out that would count at S and no run left that
+//     counts at S: unknown, uncited, Detail the least rule by its name of those refusals, so that
+//     the order of the results does not choose it. The own results of every other commit are R7's
+//     and R8's, whatever CI refused elsewhere: a refusal cancels no result of another commit, so a
+//     pass and a failure of one procedure at one commit read unknown, disagree, and whether a
+//     result carries across the refused commit is the question of the ties and the history (R8: "A
+//     result at one commit also counts at another commit when no code that the check runs changed
+//     between the two"). A query or an agent of production or of the graph has no commit of a
+//     result, so only CI's refusal at S.Commit counts for it, whatever commit a result's TestCommit
+//     names. A run of the job is no result, and no refusal takes one out.
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
 //     check only when the check's job reported it (R6: "only the reports of that job count"), and
@@ -188,14 +190,20 @@ const (
 //     S.Deploy decides (R7: "A pass, then a failure, then a pass across deploys is ordinary"). Then
 //     a newest run that could not run: unknown, could_not_run.
 //  6. C has a time limit and its newest run that counts is older: unknown, expired.
-//  7. The newest failing example that counts: for a code check, one that counts at S as a run does
+//  7. The newest failing example that counts. For a program check of the code, one whose record
+//     names the commit that the step planted its fault on (PlantedOn) and one path of the fault or
+//     more (FaultPaths), each a source file and no file of a test (isFaultPath) and each covered by
+//     C's tie at PlantedOn where that tie is known, and that counts at S from PlantedOn as a run of
+//     PlantedOn would, by the rule of step 4; never at its Commit, the commit that CI tested (R9:
+//     "For a check that a program runs, the failing example is a fault that a step plants in the
+//     code"; faultCommit). For a query or an agent of the code, one that counts at S as a run does
 //     (R8: it counts "only while no file that the test reads changed"); for a program check of
 //     production or the graph, one whose TestCommit counts at S.Commit by the rule of step 4 (R9:
-//     "its test, as it is now"); for a query or an agent, the newest. None: unknown,
-//     no_failing_example; it did not fail: unknown, failing_example_missed; for a program check,
-//     its record does not show that an agent that did not write the test wrote the fault (R9): it
-//     names no author of the fault, no author of the test, or the author of the fault among the
-//     authors of the test: unknown, fault_by_test_author.
+//     "its test, as it is now"); for a query or an agent of production or the graph, the newest.
+//     None: unknown, no_failing_example; it did not fail: unknown, failing_example_missed; for a
+//     program check, its record does not show that an agent that did not write the test wrote the
+//     fault (R9): it names no author of the fault, no author of the test, or the author of the
+//     fault among the authors of the test: unknown, fault_by_test_author.
 //  8. The newest run of each leg passed: true, passed; each failed: false, failed (R7: "the latest
 //     counts, and a later failure cancels an earlier pass").
 //
@@ -529,7 +537,46 @@ func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
 	if !CountsAtACommit(c) {
 		return faults
 	}
-	return resultsWhere(faults, func(r Result) bool { return j.carries(c.ID, resultCommit(r)) })
+	return resultsWhere(faults, func(r Result) bool { return j.carries(c.ID, j.faultCommit(c, r)) })
+}
+
+// faultCommit is the commit that the failing example r of c counts from (step 7), "" for none. For
+// a program check of the code, it is r's PlantedOn, the commit that the step planted the fault on,
+// when r names it and one path of the fault or more, and each path is a source file and no file of
+// a test (isFaultPath) and is covered by c's tie at PlantedOn where that tie is known; else none.
+// It is never r's Commit, the fault's own commit, which CI tested (R9: "For a check that a program
+// runs, the failing example is a fault that a step plants in the code"): the code of that commit is
+// the code with the fault, and no commit of the branch holds it. For each other check, it is the
+// commit where r's job ran (resultCommit).
+func (j *checkJudge) faultCommit(c Check, r Result) string {
+	if c.Subject != SubjectCode || c.Procedure != ProcedureProgram {
+		return resultCommit(r)
+	}
+	tie := j.in.Ties[r.PlantedOn][c.ID]
+	if r.PlantedOn == "" || len(r.FaultPaths) == 0 || slices.ContainsFunc(r.FaultPaths, func(path string) bool {
+		return !isFaultPath(path) || tie.Known && !tie.Covers(path)
+	}) {
+		return ""
+	}
+	return r.PlantedOn
+}
+
+// isFaultPath is whether path is a path that a planted fault may change: a source file, which ends
+// in .go, .ts or .tsx, and no file of a test, whose name ends in _test.go, .test.ts, .test.tsx or
+// .e2e.ts, or one of whose directories starts with test, ends with test or tests, or is __tests__
+// or e2e. A fault in a file of a test changes the test and not the code, and R9 asks a fault "in
+// the code" on which the test "as it is now" fails.
+func isFaultPath(path string) bool {
+	dirs := strings.Split(path, "/")
+	name := dirs[len(dirs)-1]
+	dirs = dirs[:len(dirs)-1]
+	endsIn := func(ends ...string) bool {
+		return slices.ContainsFunc(ends, func(end string) bool { return strings.HasSuffix(name, end) })
+	}
+	testDir := func(dir string) bool {
+		return strings.HasPrefix(dir, "test") || strings.HasSuffix(dir, "test") || strings.HasSuffix(dir, "tests") || dir == "__tests__" || dir == "e2e"
+	}
+	return endsIn(".go", ".ts", ".tsx") && !endsIn("_test.go", ".test.ts", ".test.tsx", ".e2e.ts") && !slices.ContainsFunc(dirs, testDir)
 }
 
 // carries is whether a result at commit counts at the subject's commit for the check id (R8): the
@@ -563,31 +610,36 @@ func (j *checkJudge) carries(check, commit string) bool {
 }
 
 // withoutRefused takes out of runs and faults, the candidates of c (step 2), each result of a
-// commit where CI refused c, by the commit where its job ran (resultCommit): R48 makes c read
-// unknown at that commit and no result of it counts there, so the refused commit's own results
-// count nowhere, at it or where R8 would carry them. The results of each other commit stay,
-// whatever CI refused elsewhere (R7, R8). refused is whether a result taken out would have counted
-// at the subject, and rule the least rule, by its name, of those refusals, so that the order of
-// the results, which says nothing, does not choose the rule that the state names. A check whose
-// results count at no commit (CountsAtACommit), a query or an agent of production or of the graph,
-// has no result of a commit, so it keeps each candidate, whatever commit a result's TestCommit
-// names: only CI's refusal at S.Commit counts for it, before its results are read.
+// commit where CI refused c, by the commit where its job ran (resultCommit), and a failing example
+// by the commit that it counts from (faultCommit), the commit that the step planted the fault on for
+// a program check of the code: R48 makes c read unknown at that commit and no result of it counts
+// there, so the refused commit's own results count nowhere, at it or where R8 would carry them.
+// The results of each other commit stay, whatever CI refused elsewhere (R7, R8). refused is whether
+// a result taken out would have counted at the subject, and rule the least rule, by its name, of
+// those refusals, so that the order of the results, which says nothing, does not choose the rule
+// that the state names. A check whose results count at no commit (CountsAtACommit), a query or an
+// agent of production or of the graph, has no result of a commit, so it keeps each candidate,
+// whatever commit a result's TestCommit names: only CI's refusal at S.Commit counts for it, before
+// its results are read.
 func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string, refused bool, keptRuns, keptFaults []Result) {
 	if !CountsAtACommit(c) {
 		return "", false, runs, faults
 	}
-	kept := func(r Result) bool {
-		commit := resultCommit(r)
-		other, at := j.in.Uncited[commit][c.ID]
-		if !at {
-			return true
+	kept := func(commitOf func(Result) string) func(Result) bool {
+		return func(r Result) bool {
+			commit := commitOf(r)
+			other, at := j.in.Uncited[commit][c.ID]
+			if !at {
+				return true
+			}
+			if j.carries(c.ID, commit) && (!refused || other < rule) {
+				rule, refused = other, true
+			}
+			return false
 		}
-		if j.carries(c.ID, commit) && (!refused || other < rule) {
-			rule, refused = other, true
-		}
-		return false
 	}
-	keptRuns, keptFaults = resultsWhere(runs, kept), resultsWhere(faults, kept)
+	keptRuns = resultsWhere(runs, kept(resultCommit))
+	keptFaults = resultsWhere(faults, kept(func(r Result) string { return j.faultCommit(c, r) }))
 	return rule, refused, keptRuns, keptFaults
 }
 

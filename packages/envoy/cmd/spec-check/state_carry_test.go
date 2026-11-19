@@ -191,8 +191,8 @@ func TestARefusalOfCICancelsTheResultsOfItsCommitAlone(t *testing.T) {
 	const check = "a-restart-loses-no-message"
 	type change = func(r []map[string]any) []map[string]any
 	// run adds a run of the check at commit with its outcome, recorded at its time and seq, and fault
-	// a caught failing example; at is m2's pass, beside the run of the job that ended at m2; failsAtC1
-	// makes c1's run at 10:00 a failure.
+	// a caught failing example planted on commit; at is m2's pass, beside the run of the job that
+	// ended at m2; failsAtC1 makes c1's run at 10:00 a failure.
 	run := func(commit, outcome, runAt string, seq int) change {
 		return func(r []map[string]any) []map[string]any {
 			return append(r, withMembers(r[0], map[string]any{"commit": commit, "outcome": outcome, "at": runAt, "seq": seq}))
@@ -200,7 +200,7 @@ func TestARefusalOfCICancelsTheResultsOfItsCommitAlone(t *testing.T) {
 	}
 	fault := func(commit, faultAt string, seq int) change {
 		return func(r []map[string]any) []map[string]any {
-			return append(r, withMembers(r[1], map[string]any{"commit": commit, "at": faultAt, "seq": seq}))
+			return append(r, withMembers(plantedOn(r[1], commit), map[string]any{"at": faultAt, "seq": seq}))
 		}
 	}
 	at := func(passAt string) change { return run("m2", "pass", passAt, 6) }
@@ -267,7 +267,7 @@ func TestARefusalOfCICancelsTheResultsOfItsCommitAlone(t *testing.T) {
 			}, at("2026-11-13T12:00:00Z")}, want: "unknown (no_failing_example)", none: "unknown (failing_example_missed)"},
 		{name: "a failing example at m2 that missed its fault, after m2's caught one, and m2's pass", refused: "c1",
 			changes: []change{at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7), func(r []map[string]any) []map[string]any {
-				return append(r, withMembers(r[1], map[string]any{"commit": "m2", "outcome": "pass", "at": "2026-11-13T12:06:00Z", "seq": 8}))
+				return append(r, withMembers(plantedOn(r[1], "m2"), map[string]any{"outcome": "pass", "at": "2026-11-13T12:06:00Z", "seq": 8}))
 			}}, want: "unknown (failing_example_missed)", none: "unknown (failing_example_missed)"},
 		// At the refused commit itself, newer evidence of another commit does not decide either.
 		{name: "CI refused the check at c2, which holds no result and no run", refused: "c2", noM2JobRun: true,
@@ -356,4 +356,12 @@ func withMembers(r, set map[string]any) map[string]any {
 	c := maps.Clone(r)
 	maps.Copy(c, set)
 	return c
+}
+
+// plantedOn is a copy of r, a failing example of carry's program check of the code, with the fault
+// that the step planted on commit: its commit the fault's own commit "f-<commit>", which CI tested,
+// its planted_on commit, from which it counts, and its one fault path a source file of the check's
+// tie, as carry's own failing example has.
+func plantedOn(r map[string]any, commit string) map[string]any {
+	return withMembers(r, map[string]any{"commit": "f-" + commit, "planted_on": commit, "fault_paths": []any{"packages/envoy/cmd/listener/main.go"}})
 }

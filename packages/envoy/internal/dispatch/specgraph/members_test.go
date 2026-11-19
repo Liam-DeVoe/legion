@@ -189,7 +189,8 @@ func memberBase(t *testing.T) (s *checkCase, in Input, subjects []ScenarioSubjec
 	}
 	missed, caught := fault(checkStateCheck, OutcomePass, "author-c", 6*time.Minute), fault(checkStateCheck, OutcomeFail, "author-b", 5*time.Minute)
 	for _, r := range []*Result{&missed, &caught} {
-		r.Commit, r.Job, r.Leg, r.Attempt = "c1", "go-checks", new("linux"), 1
+		*r = plantedOn(*r, "c1")
+		r.Job, r.Leg, r.Attempt = "go-checks", new("linux"), 1
 	}
 	qFault := fault(q, OutcomeFail, "author-b", 5*time.Minute)
 	qFault.TestCommit = "c1"

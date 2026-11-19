@@ -80,7 +80,7 @@ type scenarioResult struct {
 // the one text of a time of the package's forms, as approvedForm writes it.
 const (
 	subjectForm = `{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"` + timeForm + `"}`
-	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
+	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>","planted_on":"<commit>","fault_paths":["<repository path>", …]}`
 	jobRunForm  = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
 	unitForm    = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
 	uncitedForm = `{"<commit>":{"<check id>":"<R48 rule>"}}`
@@ -123,15 +123,18 @@ const (
 //     at another only when the check's tie is known at both commits and no path that changed
 //     between them is covered by the tie at either commit;
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
-//     "leg","attempt","at","seq","fault_author","test_authors","test_commit"}]: check_version
-//     names an approved version of the check, whose Digest the result carries, and the result is
-//     whole by that version's text (Result.fault): kind is run or failing_example, outcome pass,
-//     fail or could_not_run, it names at most one of the subjects commit, deploy and graph_tx, the
-//     one that it read, and it sets leg ("" for no matrix), at and seq, from 1; a run, and a
-//     failing example of a check of the code, names the subject of its check's kind, a run of a
-//     check of the graph that could not run too, which names the transaction that it tried to read;
-//     a run of a program check that names a job names the job, and a result of a program check of
-//     production or of the graph names test_commit. No two results of one check have one at and one
+//     "leg","attempt","at","seq","fault_author","test_authors","test_commit","planted_on",
+//     "fault_paths"}]: check_version names an approved version of the check, whose Digest the
+//     result carries, and the result is whole by that version's text (Result.fault): kind is run or
+//     failing_example, outcome pass, fail or could_not_run, it names at most one of the subjects
+//     commit, deploy and graph_tx, the one that it read, and it sets leg ("" for no matrix), at and
+//     seq, from 1; a run, and a failing example of a check of the code, names the subject of its
+//     check's kind, a run of a check of the graph that could not run too, which names the
+//     transaction that it tried to read; a run of a program check that names a job names the job,
+//     and a result of a program check of production or of the graph names test_commit; each of
+//     fault_paths is a repository path. A failing example of a program check of the code counts
+//     from planted_on, the commit that its fault was planted on, and never at its commit, the
+//     fault's own commit (CheckStates, step 7). No two results of one check have one at and one
 //     seq;
 //   - jobs.json, [{"job","leg","commit","ended"}]: each run sets job and commit, leg ("" for no
 //     matrix), and ended, false for a run that has not ended;

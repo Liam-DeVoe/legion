@@ -38,10 +38,14 @@ var subjectRead = map[string]struct{ member, value, other string }{
 // of production does, and the reader refuses a program check that names none. For a check of
 // production, each result of it that read a transaction of the graph reads the deploy d1 instead,
 // as a result of production reads a deploy; for a check of the graph, each result of it that read a
-// deploy reads the transaction tx1 instead, as a result of the graph reads a transaction. Each other
-// file holds the bytes of fsys. As refuses a scenario whose approved spec holds no node id, a spec
-// file that does not hold the check's block once, and a block that sets no procedure or no subject,
-// so that no test passes on a change that changed nothing.
+// deploy reads the transaction tx1 instead, as a result of the graph reads a transaction. For a
+// query or an agent of the code, each failing example of it that names the commit that a step
+// planted its fault on (planted_on) reads that commit as its commit, with no planted_on and no
+// fault_paths, as a failing example of such a check counts at its commit: only a program check of
+// the code counts one from planted_on. Each other file holds the bytes of fsys. As refuses a
+// scenario whose approved spec holds no node id, a spec file that does not hold the check's block
+// once, and a block that sets no procedure or no subject, so that no test passes on a change that
+// changed nothing.
 func As(fsys fs.FS, id, procedure, subject string) (fstest.MapFS, error) {
 	out := fstest.MapFS{}
 	err := fs.WalkDir(fsys, ".", func(path string, entry fs.DirEntry, err error) error {
@@ -80,23 +84,32 @@ func As(fsys fs.FS, id, procedure, subject string) (fstest.MapFS, error) {
 		}
 		out[path] = &fstest.MapFile{Data: []byte(text[:start] + block + text[start+end:])}
 	}
-	if read, reads := subjectRead[subject]; reads {
-		err := editJSON(out, "results.json", func(v any) error {
-			results, ok := v.([]any)
-			if !ok {
-				return fmt.Errorf("it is no list")
-			}
-			for _, r := range results {
-				if r, ok := r.(map[string]any); ok && r["check"] == id && r[read.other] != nil {
-					delete(r, read.other)
-					r[read.member] = read.value
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
+	read, reads := subjectRead[subject]
+	planted := subject == "code" && procedure != "program"
+	if !reads && !planted {
+		return out, nil
+	}
+	err = editJSON(out, "results.json", func(v any) error {
+		results, ok := v.([]any)
+		if !ok {
+			return fmt.Errorf("it is no list")
 		}
+		for _, r := range results {
+			switch r, ok := r.(map[string]any); {
+			case !ok || r["check"] != id:
+			case reads && r[read.other] != nil:
+				delete(r, read.other)
+				r[read.member] = read.value
+			case planted && r["kind"] == "failing_example" && r["planted_on"] != nil:
+				r["commit"] = r["planted_on"]
+				delete(r, "planted_on")
+				delete(r, "fault_paths")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }

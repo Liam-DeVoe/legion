@@ -342,7 +342,7 @@ func TestCheckState(t *testing.T) {
 			c.commit("b1", "m1", "packages/envoy/cmd/listener/main.go")
 			c.commit("m2", "m1", "docs/x.md")["packages/envoy/cmd/listener/main.go"] = "b1" // the squash of b1 on m1
 			c.Subject = Point{Commit: "m2", Branch: "main"}
-			c.Results[0].Commit, c.Results[1].Commit = "b1", "b1"
+			c.Results[0].Commit, c.Results[1] = "b1", plantedOn(c.Results[1], "b1")
 		}, want: CheckState{State: "true", Reason: "passed", From: "b1"}},
 		{name: "B4, a squash inside the tie: main changed a file of the tie before the squash", change: func(c *checkCase) {
 			c.commit("m1", "c1")
@@ -350,18 +350,18 @@ func TestCheckState(t *testing.T) {
 			c.commit("m1b", "m1", "packages/envoy/cmd/listener/main.go")
 			c.commit("m2", "m1b")["packages/envoy/cmd/listener/restart_test.go"] = "b1" // b1's test on m1b
 			c.Subject = Point{Commit: "m2", Branch: "main"}
-			c.Results[0].Commit, c.Results[1].Commit = "b1", "b1"
+			c.Results[0].Commit, c.Results[1] = "b1", plantedOn(c.Results[1], "b1")
 		}, want: CheckState{State: "unknown", Reason: "subject_moved"}},
 		{name: "Review focus 4, another branch: the results at x1 count at c2", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.commit("x1", "c2", "docs/x.md")
 			c.Subject.Commit = "c2"
-			c.Results[0].Commit, c.Results[1].Commit = "x1", "x1"
+			c.Results[0].Commit, c.Results[1] = "x1", plantedOn(c.Results[1], "x1")
 		}, want: CheckState{State: "true", Reason: "passed", From: "x1"}},
 		{name: "Review focus 4, a commit the history cannot read", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
-			c.Results[0].Commit, c.Results[1].Commit = "x9", "x9"
+			c.Results[0].Commit, c.Results[1] = "x9", plantedOn(c.Results[1], "x9")
 		}, want: CheckState{State: "unknown", Reason: "subject_moved"}},
 		{name: "v-citations 4: CI refused the check at the subject", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
@@ -369,15 +369,21 @@ func TestCheckState(t *testing.T) {
 			c.Uncited = map[string]map[string]string{"c2": {c.check: "test-not-in-code"}}
 		}, want: CheckState{State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
 		// R48: "At that commit, such a check reads unknown, and no earlier result of it counts." The
-		// own results of the refused commit count nowhere, a failing example's commit too, and for a
-		// program check of production the commit of its test; the results of another commit stay.
+		// own results of the refused commit count nowhere, a failing example's commit too, the commit
+		// that its fault was planted on for a program check of the code, and for a program check of
+		// production the commit of its test; the results of another commit stay.
 		{name: "R48, a refusal at the commit of the caught failing example alone takes out that example at c2, where that commit's results count", change: func(c *checkCase) {
 			c.commit("x1", "c1", "docs/x.md")
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
-			c.Results[1].Commit = "x1"
+			c.Results[1] = plantedOn(c.Results[1], "x1")
 			c.Uncited = map[string]map[string]string{"x1": {c.check: "test-not-in-code"}}
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		{name: "control: a refusal at the fault's own commit, which CI tested, takes out nothing: the example counts from the commit that its fault was planted on", change: func(c *checkCase) {
+			c.commit("c2", "c1", "docs/x.md")
+			c.Subject.Commit = "c2"
+			c.Uncited = map[string]map[string]string{c.Results[1].Commit: {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
 		{name: "R48, a refusal of a program check of production at the commit of the test that caught its fault takes out that example", change: func(c *checkCase) {
 			c.productionProgram("docs/x.md", "c1")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
@@ -896,9 +902,22 @@ func legRun(commit, leg string, attempt int, outcome Outcome, at time.Time) Resu
 	return Result{Check: checkStateCheck.ID, Kind: ResultRun, Outcome: outcome, Commit: commit, Job: "go-checks", Leg: new(leg), Attempt: attempt, At: at}
 }
 
-// caughtFault is a failing example of C at commit on which its test failed: author-b, who did not
-// write the test, planted the fault.
+// caughtFault is a failing example of C on which its test failed, with the fault that the step
+// planted on commit (plantedOn): author-b, who did not write the test, planted the fault.
 func caughtFault(commit string, at time.Time) Result {
-	return Result{Check: checkStateCheck.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Commit: commit, Job: "go-checks", Attempt: 1,
-		At: at, FaultAuthor: "author-b", TestAuthors: []string{"author-a"}}
+	return plantedOn(Result{Check: checkStateCheck.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Job: "go-checks", Attempt: 1,
+		At: at, FaultAuthor: "author-b", TestAuthors: []string{"author-a"}}, commit)
+}
+
+// checkStateFaultPath is the path that the fault of each failing example of a program check of the
+// code changes in these tests: a source file of C's tie (checkStateTie), and no file of a test.
+const checkStateFaultPath = "packages/envoy/cmd/listener/main.go"
+
+// plantedOn is r, a failing example of a program check of the code, with the fault that the step
+// planted on commit (R9: "For a check that a program runs, the failing example is a fault that a
+// step plants in the code"): its Commit the fault's own commit "f-<commit>", which CI tested, its
+// PlantedOn commit, from which it counts, and its FaultPaths checkStateFaultPath.
+func plantedOn(r Result, commit string) Result {
+	r.Commit, r.PlantedOn, r.FaultPaths = "f-"+commit, commit, []string{checkStateFaultPath}
+	return r
 }

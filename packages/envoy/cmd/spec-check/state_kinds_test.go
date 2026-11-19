@@ -102,6 +102,17 @@ func editResults(t *testing.T, dir string, change func(results []map[string]any)
 	writeJSONFile(t, filepath.Join(dir, "results.json"), results)
 }
 
+// readScenario is the scenario at dir as the command reads it (specgraph.ReadScenario), so that a
+// row reads back the edit that it compares.
+func readScenario(t *testing.T, dir string) specgraph.Scenario {
+	t.Helper()
+	s, err := specgraph.ReadScenario(os.DirFS(dir))
+	if err != nil {
+		t.Fatalf("%s: %v", dir, err)
+	}
+	return s
+}
+
 // R12: "Each leg of a matrix reports its own result, and no leg replaces the result of another."
 // One job at one commit has legs or it has none, and the leg rule reads a run result at the commit
 // where the judge counts it, as its check decides: a result of a query or an agent of production
@@ -109,9 +120,10 @@ func editResults(t *testing.T, dir string, change func(results []map[string]any)
 // Each row: production-and-graph with its check of the graph written as the row's kind, its two
 // runs reported by the job production-checks and its failing run in the leg x, where that job's
 // runs at c1 are of the leg "": with test_commit c1 on that run, the command prints what it prints
-// with none. The controls: for each kind of check whose results count at a commit, a run result in
-// the leg x at the commit c1 where it counts, where the runs of its job at c1 are of the leg "", is
-// refused with the line of the leg rule. Those kinds are read from specgraph.CountsAtACommit over
+// with none, and the reader reads that run, with its test_commit, before the two are compared. The
+// controls: for each kind of check whose results count at a commit, a run result in the leg x at
+// the commit c1 where it counts, where the runs of its job at c1 are of the leg "", is refused with
+// the line of the leg rule. Those kinds are read from specgraph.CountsAtACommit over
 // eachKind, so a kind that it counts at a commit later has its row here with no edit of a list. For
 // a check of the code, refusal's check of the code written as the kind, with its pass at its
 // commit c1 by the job go-checks; for a check of production or of the graph, production-and-graph's
@@ -140,6 +152,14 @@ func TestTheLegRuleReadsNoCommitOfACheckThatReadsNoCommit(t *testing.T) {
 						}
 					}
 				})
+				// the edit, read back as the command reads it: a failing run of the check in the leg x,
+				// by production-checks, with the row's test_commit
+				if !slices.ContainsFunc(readScenario(t, dir).Results, func(r specgraph.Result) bool {
+					return r.Check == graphCheck && r.Kind == specgraph.ResultRun && r.Outcome == specgraph.OutcomeFail && *r.Leg == "x" &&
+						r.Job == "production-checks" && r.TestCommit == testCommit
+				}) {
+					t.Fatalf("with test_commit %q: the reader reads no failing run of %s in the leg x by production-checks with that test_commit", testCommit, graphCheck)
+				}
 				got[i] = runBinary(t, binary, "", "state", "--scenario", dir)
 			}
 			if got[0].code != 0 || got[0].stderr != "" || !strings.Contains(got[0].stdout, "  check "+graphCheck+": ") {
@@ -185,7 +205,8 @@ func TestTheLegRuleReadsNoCommitOfACheckThatReadsNoCommit(t *testing.T) {
 // check's failure at 11:00 taken out, so that the check of the graph decides both statements; its
 // failing run at 11:00 names test_commit c1, and CI refused it at c1. The command prints what it
 // prints with no refusal, and the check reads unknown (disagree) at the transaction of the graph,
-// where its pass and its failure count, and false at the deploy, where the newest run decides.
+// where its pass and its failure count, and false at the deploy, where the newest run decides. Each
+// row reads its edits back as the command reads them before the two outputs are compared.
 func TestARefusalAtATestCommitTakesOutNoResultOfACheckThatReadsNoCommit(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -210,6 +231,17 @@ func TestARefusalAtATestCommitTakesOutNoResultOfACheckThatReadsNoCommit(t *testi
 				writeJSONFile(t, filepath.Join(dir, "results.json"), results)
 				if refused {
 					writeJSONFile(t, filepath.Join(dir, "uncited.json"), map[string]any{"c1": map[string]any{graphCheck: "test-not-in-code"}})
+				}
+				// the edits, read back as the command reads them: the failing run of the check with
+				// test_commit c1, no failure of the program check, and CI's refusal at c1 exactly when
+				// the row says so
+				s := readScenario(t, dir)
+				if !slices.ContainsFunc(s.Results, func(r specgraph.Result) bool {
+					return r.Check == graphCheck && r.Kind == specgraph.ResultRun && r.Outcome == specgraph.OutcomeFail && r.TestCommit == "c1"
+				}) || slices.ContainsFunc(s.Results, func(r specgraph.Result) bool {
+					return r.Check == "a-production-restart-loses-no-message" && r.Kind == specgraph.ResultRun && r.Outcome == specgraph.OutcomeFail
+				}) || (s.Uncited["c1"][graphCheck] == "test-not-in-code") != refused {
+					t.Fatalf("refused %t: the reader does not read the row's edits: %+v, uncited %v", refused, s.Results, s.Uncited)
 				}
 				got[i] = runBinary(t, binary, "", "state", "--scenario", dir)
 			}

@@ -39,7 +39,7 @@ func TestScenarioRefusals(t *testing.T) {
 	serving := ":::requirement{#messages-reach-sessions kind=\"behavior\"}"
 	loop := ":::requirement{#messages-reach-sessions kind=\"behavior\" serves=\"a-stored-message-survives-a-restart\"}"
 	loopDetail := "loop: a-stored-message-survives-a-restart -[parent]-> messages-reach-sessions -[serves]-> a-stored-message-survives-a-restart"
-	const resultForm = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
+	const resultForm = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>","planted_on":"<commit>","fault_paths":["<repository path>", …]}`
 	const unitForm = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
 	const historyForm = `{"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}`
 	const jobRunForm = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
@@ -229,6 +229,15 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a failing example of a check of production that names a commit", "carry",
 			write("results.json", `[{"check":"production-delivery-takes-under-a-second","check_version":1,"kind":"failing_example","outcome":"fail","commit":"c1","leg":"","at":"2026-11-12T12:00:00Z","seq":4}]`),
 			"results.json", `result 1: it sets the commit "c1", which a check of production does not read`},
+		// A failing example of a program check of the code counts from planted_on, the commit that
+		// the step planted its fault on, and only where each of its fault_paths is a source file in
+		// the tie: a planted_on that names no commit, or a fault path that is no repository path,
+		// which no tie covers, would read as a real one, so the reader refuses each.
+		{"a failing example whose planted_on holds only blanks", "carry", replace("results.json", `"planted_on": "c1"`, `"planted_on": " \t "`),
+			"results.json", "result 2: it sets a planted_on of no letter and no digit, which names no commit"},
+		{"a failing example whose fault path is no repository path", "carry",
+			replace("results.json", `"fault_paths": ["packages/envoy/cmd/listener/main.go"]`, `"fault_paths": ["./packages/envoy/cmd/listener/main.go"]`),
+			"results.json", `result 2: it sets the fault path "./packages/envoy/cmd/listener/main.go", which is no repository path, whose parts "/" separates and none of which is empty, "." or ".."`},
 		// The derivation reads a relation of an approved node only to a node of its kind, so a parent
 		// that names no node of the approved spec, or a check, would read as no parent: in wait-cycle,
 		// envoy-delivers-messages would then read met, where the scenario has it not met (R22: "Dispatch
