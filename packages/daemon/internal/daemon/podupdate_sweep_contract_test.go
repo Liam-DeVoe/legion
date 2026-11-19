@@ -144,9 +144,10 @@ func sweepRoles() []claim.Role { return append(slices.Clone(claim.Roles), claim.
 // (waitingClaims) is decided before openPodUpdate too (completePodUpdate), and the rule owes no
 // claim of such a group an ask, so the path is held to the rule there as well.
 //
-// The machines a test builds write nothing to the store (sweepClaims) and arm no timer
-// (sweepClock): a test puts hundreds of thousands of claims to the path, each a machine of its own
-// for one sweep. The runtime reads every pod there and drifted, and records nothing (steadyPod).
+// The machines a test builds write nothing to the store and answer every name of a claim's session
+// as that claim's (sweepClaims), and arm no timer (sweepClock): a test puts hundreds of thousands
+// of claims to the path, each a machine of its own for one sweep. The runtime reads every pod there
+// and drifted, and records nothing (steadyPod).
 // The rig's machines are fed nothing once the path is built: each one's inbox is swapped for one
 // no goroutine takes from, and the inbox it had is closed, which ends the goroutine that fed it. So
 // each post openPodUpdate makes is kept there for posts to read rather than decided, and no
@@ -222,10 +223,11 @@ func (p *sweepPath) posts(group []supervise.Claim, round string) (wrong []string
 	posted, ended := false, false
 	for token, box := range p.posted {
 		box.mu.Lock()
-		events := box.events
-		box.events = nil
+		items := box.items
+		box.items = nil
 		box.mu.Unlock()
-		for _, ev := range events {
+		for _, item := range items {
+			ev := item.ev
 			if ev == (supervise.PodUpdateOpen{Claim: token, Round: round, Reasons: podUpdateDrift}) {
 				got[token]++
 				posted = true
@@ -262,10 +264,22 @@ func (p *sweepPath) posts(group []supervise.Claim, round string) (wrong []string
 
 // sweepClaims is the store the machines a sweepPath builds write through: it takes every claim
 // write and keeps nothing, so the ask mark a publish writes stays on the machine, and a claim a
-// test built with a value the claims table would refuse is not written there.
+// test built with a value the claims table would refuse is not written there. It answers every
+// name of a claim's session as held by that claim, as a running daemon's table does for each
+// claim's own session, and keeps nothing: the claims a test builds of different roles record the
+// same session, and the outbox publishes to a claim only while it holds its session (the outbox's
+// heldBack, supervise's Machine.HoldsItsSession), which is no fact of the round's rule.
 type sweepClaims struct{ supervise.Store }
 
 func (sweepClaims) PutClaim(context.Context, supervise.Claim) error { return nil }
+
+func (sweepClaims) HoldSessions(_ context.Context, _ string, token claim.Token, holds []supervise.Hold) ([]claim.Token, error) {
+	holders := make([]claim.Token, len(holds))
+	for i := range holders {
+		holders[i] = token
+	}
+	return holders, nil
+}
 
 // sweepClock is the rig's held clock as the machines a sweepPath builds read it, arming nothing: a
 // machine built from a launching or registered claim arms its boot watch at once, and a timer per
