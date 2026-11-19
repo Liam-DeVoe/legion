@@ -41,6 +41,11 @@ const notALowercaseDomain redact.Misreading = "is not a lowercase domain name su
 // balancer's backend service, an App Engine app or a Cloud Run service follows it.
 var iapAudienceShape = regexp.MustCompile(`^/projects/[0-9]+/\S+$`)
 
+// notAnIAPAudience is what a refusal of DISPATCH_IAP_AUDIENCE names, after the value's length
+// (redact.Refusal): a value of another shape may be a URL pasted into the wrong variable, user part
+// and all, so it is never echoed.
+const notAnIAPAudience redact.Misreading = "is not the audience IAP signs its assertions for, which begins /projects/<project number>/, such as /projects/<project number>/global/backendServices/<backend service id>"
+
 // signInClientSettings are the three settings every Google sign-in takes, each with boot's value:
 // the issuer and Dispatch's confidential client there.
 func signInClientSettings(boot bootConfig) []struct{ name, value string } {

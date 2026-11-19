@@ -161,6 +161,13 @@ const RESTS = {
   misread: basis("packages/envoy/pgsetting/pgsetting.go", "func misread(", "221168d2df5b"),
   misreadNet: basis("packages/envoy/internal/redact/url.go", "func Misread(", "7a874dfb402f"),
   loopback: basis(`${DISPATCH}main.go`, "func loopbackDatabase(", "654bd6fbf695"),
+  iapAudienceShape: basis(`${DISPATCH}signin.go`, "var iapAudienceShape =", "7eda81402e5d"),
+  iapAudienceCheck: basis(
+    `${DISPATCH}main.go`,
+    "if !iapAudienceShape.MatchString(iapAudience) {",
+    "11b362bd54a1"
+  ),
+  domainShapeCheck: basis(`${DISPATCH}signin.go`, "func checkDomainShape(", "c3eca7e4681c"),
   mounted: basis(`${DISPATCH}main.go`, "func logDevSignInMounted(", "98a15d292b9a"),
   devOrigin: basis(
     "packages/envoy/internal/dispatch/routes/devsignin.go",
@@ -278,6 +285,11 @@ export const JUDGED: readonly Judged[] = [
   {
     file: "packages/claude-envoy/hooks/session-hook.ts",
     text: '"answers-refresh", session, cwd',
+    why: PATH,
+  },
+  {
+    file: "packages/claude-envoy/src/codex/codex-server.ts",
+    text: "join(",
     why: PATH,
   },
   {
@@ -823,8 +835,14 @@ export const JUDGED: readonly Judged[] = [
   },
   {
     file: `${DISPATCH}main.go`,
-    text: "DISPATCH_IDENTITY=%q (expected cookie or header:<Header-Name>)",
-    why: "the identity mode, quoted only when it is neither cookie nor header:<name>; it is not read as a URL",
+    text: "DISPATCH_IDENTITY=%q (expected cookie, iap or header:<Header-Name>)",
+    why: "the identity mode, quoted only when it is none of cookie, iap and header:<name>; it is not read as a URL",
+  },
+  {
+    file: `${DISPATCH}main.go`,
+    text: 'slog.Info("dispatch: naming people from Identity-Aware Proxy',
+    why: "the IAP audience, admitted only when it begins /projects/<project number>/ and holds no white space (iapAudienceShape), a path that no reader takes as a URL, whose refusal names the value by its length; the sign-in domain, admitted only as a lowercase DNS name (checkDomainShape); and the key set's URL, oidc.IAPKeySetURL, a constant no setting changes",
+    rests: [RESTS.iapAudienceShape, RESTS.iapAudienceCheck, RESTS.domainShapeCheck],
   },
   ...[
     'is for a loopback server only: %s, must be on 127.0.0.1 or [::1]"',
@@ -889,6 +907,7 @@ export const JUDGED: readonly Judged[] = [
   ...[
     'return strings.Join(names, ", ") + " and one of "',
     "must be unset because header identity and Google sign-in cannot share a deployment",
+    "must be unset under DISPATCH_IDENTITY=iap",
     "set, DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN missing",
     "Google sign-in needs %s: %s set, %s missing",
   ].map((text) => ({ file: `${DISPATCH}signin.go`, text, why: VARIABLES })),

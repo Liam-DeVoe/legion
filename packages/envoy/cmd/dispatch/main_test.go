@@ -169,12 +169,20 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		{map[string]string{"DISPATCH_SIGNIN_DOMAIN": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_SIGNIN_DOMAIN"},
 		{map[string]string{"DISPATCH_SIGNIN_DOMAIN": "Example.com"}, "DISPATCH_SIGNIN_DOMAIN, a value of 11 characters, is not a lowercase domain name such as example.com"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": ""}, "DISPATCH_IAP_AUDIENCE required"},
-		{map[string]string{"DISPATCH_IAP_AUDIENCE": "123456789012-client.apps.googleusercontent.com"}, "DISPATCH_IAP_AUDIENCE=\"123456789012-client.apps.googleusercontent.com\" must be the audience IAP signs"},
+		{map[string]string{"DISPATCH_IAP_AUDIENCE": "123456789012-client.apps.googleusercontent.com"}, "DISPATCH_IAP_AUDIENCE, a value of 46 characters, is not the audience IAP signs"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": "/projects/example-project/global/backendServices/1"}, "begins /projects/<project number>/"},
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(tc.overrides))); err == nil || !strings.Contains(err.Error(), tc.naming) {
 			t.Errorf("IAP identity with %v: err = %v, want a refusal naming %q", tc.overrides, err, tc.naming)
 		}
+	}
+	// A value of another shape may be a URL pasted into the wrong variable: it is named by its
+	// length, and no part of its user part prints.
+	pasted := "https://made-up-user-5b1e:not-a-secret-7d2a@iap.example/projects/1/x"
+	_, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": pasted})))
+	if want := "DISPATCH_IAP_AUDIENCE, a value of " + strconv.Itoa(len(pasted)) + " characters, is not the audience IAP signs"; err == nil ||
+		!strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "made-up-user") || strings.Contains(err.Error(), "not-a-secret") {
+		t.Errorf("IAP identity with a URL as its audience: err = %v, want %q and no part of its user part", err, want)
 	}
 	for name, environment := range map[string]map[string]string{
 		"cookie identity": signInEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}),
@@ -184,7 +192,7 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 			t.Errorf("%s with DISPATCH_IAP_AUDIENCE: err = %v, want a refusal naming it", name, err)
 		}
 	}
-	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
+	_, err = resolveBootConfig(devSignInEnvironment(map[string]string{
 		"DISPATCH_IDENTITY": "iap", "DISPATCH_IAP_AUDIENCE": testIAPAudience, "DISPATCH_SIGNIN_DOMAIN": "example.com",
 	}))
 	if err == nil || !strings.Contains(err.Error(), "DISPATCH_IDENTITY must be cookie") {

@@ -1342,7 +1342,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE required: DISPATCH_IDENTITY=iap admits a request only on an assertion Identity-Aware Proxy signed for that audience, /projects/<project number>/global/backendServices/<backend service id> behind a load balancer")
 		}
 		if !iapAudienceShape.MatchString(iapAudience) {
-			return bootConfig{}, fmt.Errorf("DISPATCH_IAP_AUDIENCE=%q must be the audience IAP signs its assertions for, which begins /projects/<project number>/, such as /projects/<project number>/global/backendServices/<backend service id>", iapAudience)
+			return bootConfig{}, redact.Refusal("DISPATCH_IAP_AUDIENCE", iapAudience, notAnIAPAudience)
 		}
 		boot.IAPAudience, boot.IAPKeySetURL = iapAudience, oidc.IAPKeySetURL
 	case strings.HasPrefix(mode, "header:"):
