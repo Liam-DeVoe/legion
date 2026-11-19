@@ -3291,12 +3291,14 @@ export interface components {
       state: string;
     };
     AccessAnswer: {
-      member_kind: string;
+      /** @enum {string} */
+      member_kind: "full" | "restricted" | "none";
       owner: string;
       person: string;
       project: string;
       slack_channels: string[] | null;
-      visibility: string;
+      /** @enum {string} */
+      visibility: "public" | "private";
       visible: boolean;
     };
     AccessGroup: {
@@ -6023,7 +6025,8 @@ export interface components {
       title?: null | string;
     };
     PersonAnswer: {
-      member_kind: string;
+      /** @enum {string} */
+      member_kind: "full" | "restricted" | "none";
       person: string;
     };
     PersonNode: {
@@ -6147,12 +6150,14 @@ export interface components {
       people: string[] | null;
       project: string;
       slack_channels: string[] | null;
-      visibility: string;
+      /** @enum {string} */
+      visibility: "public" | "private";
     };
     ProjectAccessInput: {
       owner?: string;
       slack_channels?: string[];
-      visibility?: string;
+      /** @enum {string} */
+      visibility?: "public" | "private";
     };
     ProjectDefaultAssignee: {
       assignee: string;

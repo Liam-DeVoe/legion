@@ -347,7 +347,7 @@ const (
 type ProjectAccess struct {
 	Project    string   `json:"project"`
 	Owner      string   `json:"owner"`
-	Visibility string   `json:"visibility"`
+	Visibility string   `json:"visibility" enum:"public,private"`
 	People     []string `json:"people"`
 	Groups     []string `json:"groups"`
 	// SlackChannels are the Slack channel ids the project's credentials may post to, at most 16,
@@ -378,10 +378,10 @@ type AccessGroup struct {
 // repositories: GitHub events carry no project, so no reader needs a project's repositories.
 type AccessAnswer struct {
 	Project    string `json:"project"`
-	Visibility string `json:"visibility"`
+	Visibility string `json:"visibility" enum:"public,private"`
 	Owner      string `json:"owner"`
 	Person     string `json:"person"`
-	MemberKind string `json:"member_kind"`
+	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
 	Visible    bool   `json:"visible"`
 	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
 	SlackChannels []string `json:"slack_channels"`
@@ -391,7 +391,7 @@ type AccessAnswer struct {
 // /api/v1/access/person?person=).
 type PersonAnswer struct {
 	Person     string `json:"person"`
-	MemberKind string `json:"member_kind"`
+	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
 }
 
 // The member kinds the membership answer spells: MemberKind's two, and MemberAnswerNone for a

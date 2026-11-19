@@ -25,6 +25,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { dropSettledWrites } from "../writes/settled-writes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** One change of a project's access, as the owner presses it: the project given to another
@@ -157,14 +158,7 @@ function useAccessWrite(
       onLanded(change);
     },
     onSettled: () => {
-      // A save settles in press order and is still pending while this runs, so every settled
-      // save left is older than it and no longer the one the panel reports.
-      const cache = queryClient.getMutationCache();
-      for (const older of cache.findAll({ exact: true, mutationKey })) {
-        if (older.state.status !== "pending") {
-          cache.remove(older);
-        }
-      }
+      dropSettledWrites(queryClient, mutationKey);
       void queryClient.invalidateQueries({ queryKey: accessKey });
     },
   });

@@ -13301,6 +13301,11 @@
       "AccessAnswer": {
         "properties": {
           "member_kind": {
+            "enum": [
+              "full",
+              "restricted",
+              "none"
+            ],
             "type": "string"
           },
           "owner": {
@@ -13322,6 +13327,10 @@
             ]
           },
           "visibility": {
+            "enum": [
+              "public",
+              "private"
+            ],
             "type": "string"
           },
           "visible": {
@@ -25415,6 +25424,11 @@
       "PersonAnswer": {
         "properties": {
           "member_kind": {
+            "enum": [
+              "full",
+              "restricted",
+              "none"
+            ],
             "type": "string"
           },
           "person": {
@@ -25943,6 +25957,10 @@
             ]
           },
           "visibility": {
+            "enum": [
+              "public",
+              "private"
+            ],
             "type": "string"
           }
         },
@@ -25969,6 +25987,10 @@
             "type": "array"
           },
           "visibility": {
+            "enum": [
+              "public",
+              "private"
+            ],
             "type": "string"
           }
         },
