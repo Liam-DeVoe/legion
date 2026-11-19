@@ -233,6 +233,16 @@ run env ROUTES_FAIL=1 "$wrapper" go test -count=1 ./...
 check "exits 1" "$(is "$status" 1)"
 check "go names the failure" "$(contains "$out" 'the harness asked this run to fail')"
 
+echo "case: a record in a sticky directory others can write, as a runner's /tmp, still takes the binary"
+# The supervisor is root and the record is the user's; where fs.protected_regular is set, Linux
+# refuses root an O_CREAT open of another user's file in such a directory, which a runner's TMPDIR
+# is and this machine's may not be.
+run env TMPDIR=/tmp "$wrapper" go test -count=1 ./...
+check "exits 0" "$(is "$status" 0)"
+check "says the one binary ran beneath PID 1 of a namespace of its own" \
+  "$(contains "$out" 'private-proc: 1 test binaries ran, each beneath PID 1 of a PID namespace of its own, of the 1 packages with tests')"
+check "the supervisor wrote its record" "$(is "$(printf '%s\n' "$out" | grep -c 'PermissionError')" 0)"
+
 echo "case: a go test that ran no test binary fails"
 # go test -c compiles the binary and runs nothing, and exits 0: the record then holds no package,
 # which is what the script must catch. (go never answers a run from its cache while -exec is set.)

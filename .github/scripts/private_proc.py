@@ -214,7 +214,12 @@ def supervise(argv: list[str]) -> int:
         say(f"no namespace of its own for {binary[0]}: {wrong}")
         return NOT_PRIVATE
     env = dict(entry.split("=", 1) for entry in data.decode().split("\0") if "=" in entry)
-    with open(record, "a", encoding="utf-8") as file:
+    # The record is the wrapper's, made before go ran (run_command), and it is opened without
+    # O_CREAT: this process is root, the file is the user's, and in a sticky directory others can
+    # write, such as /tmp, where tempfile puts the record on a runner, Linux refuses even root an
+    # O_CREAT open of another user's file when fs.protected_regular is set (Ubuntu sets it to 2).
+    fd = os.open(record, os.O_WRONLY | os.O_APPEND)
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
         file.write(directory + "\n")
     # The handlers come before the fork, so no signal sent the moment the binary starts is lost:
     # PID 1 of a namespace takes only the signals it has a handler for. An exec gives a caught
