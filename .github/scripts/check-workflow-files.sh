@@ -85,15 +85,21 @@ nodes: dict[Path, tuple[object, object]] = {}
 
 
 def escape_message(value: str) -> str:
-    """A workflow command's message, escaped as ci_filter_coverage.py's escape_message does. A
-    message can hold YAML text (a repeated key, a `uses:` value), and the runner reads each line
-    of a step's output as a command of its own, so a key holding a newline would start one."""
-    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    """A workflow command's message, escaped as ci_filter_coverage.py's escape_annotation_message
+    does: `%`, CR and LF, and the legacy `##[` command, which the runner recognises anywhere in a
+    line. A message can hold YAML text (a repeated key, a `uses:` value), and the runner reads
+    each line of a step's output as a command of its own, so a key holding a newline would start
+    one. This is a copy rather than an import because this check runs when ci.yaml cannot, and
+    importing the filter engine would tie it to the files the filter checks read."""
+    return (
+        value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace("##[", "%23%23%5B")
+    )
 
 
 def escape_property(value: str) -> str:
-    """A property's value, escaped as ci_filter_coverage.py's escape_property does: the runner
-    ends the properties at `::` and splits them on `,`."""
+    """A property's value, escaped as ci_filter_coverage.py's escape_property does: the message
+    escape above, then `:` and `,`, since the runner ends the properties at `::` and splits them
+    on `,`."""
     return escape_message(value).replace(":", "%3A").replace(",", "%2C")
 
 

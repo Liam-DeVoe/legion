@@ -14,7 +14,9 @@
 #
 # Run from the repository root: LEGION_TEST_UV=<uv binary> .github/scripts/tool-fallback-installed-versions.sh <tarball>
 # LEGION_TEST_UV is the uv binary the install-uv action fetched, which that action writes to
-# GITHUB_ENV; the script runs it for uv's version, and under `set -u` an unset one stops it.
+# GITHUB_ENV; the script runs it for uv's version. It reads it only inside a command
+# substitution, so an unset one ends that subshell alone (`set -u`): uv's reading is empty, and
+# the script ends naming uv among the tools that answered a version their rows do not pin.
 # CI runs it in ci-job-tool-fallback.yaml's tool-fallback job, at the step "Check every tool is
 # the version its row pins".
 set -euo pipefail

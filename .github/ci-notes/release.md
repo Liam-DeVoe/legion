@@ -207,6 +207,10 @@ are. The difference is what it packs: the plugin's own tree carries no built fil
 builds dist/ and legion/ with packages/claude-envoy/scripts/verify-build.sh — the one
 statement of what the published plugin must hold, which ci.yaml runs on every pull request —
 puts that checked build into the checkout and packs it with the rest of the package.
+It also packs the Codex CLI plugin, @sjawhar/codex-envoy, from that same checked
+dist/ and at the same version: the two hosts' plugin rules cannot both hold in one package
+(packages/claude-envoy/scripts/build.ts, CODEX_SOURCES), so the Codex one is a package of its
+own, built from the same source and released with this one.
 .claude-plugin/marketplace.json names this package as an `npm` source with the range
 `>=1.0.0`, so Claude Code installs the newest release and never the 0.0.0 placeholder that
 `latest` points at until the first one.
@@ -237,6 +241,12 @@ in even though .gitignore names them. The pack runs the package's prepack and po
 (packages/claude-envoy/scripts/pack-skills.sh): `skills/<name>` is a link into the
 repository's skills/, which bun packs as nothing at all, so the prepack replaces each
 link with the skill's files and the postpack puts the links back.
+
+## What the Codex plugin's build and pack step builds
+
+The Codex plugin's package, built from the checked dist/ the step above packed rather than
+bundled again, with the manifests and skills of this tree (scripts/build.ts --codex-out).
+It is written outside the checkout, as every build here is.
 
 ## What the publish job runs, and why one job publishes all four packages
 
@@ -307,6 +317,16 @@ reads this one, which Claude Code installs for itself from the marketplace. So a
 steps for this plugin fail still releases legion, in the steps after them. This job does
 need claude_envoy_build, as it needs every build job, so a legion release waits for that
 build to finish, whatever it decided.
+
+## What the publish job does with the Codex plugin
+
+codex-envoy: the Codex CLI plugin claude_envoy_build packed beside claude-envoy, from the
+same build and at the same version, published to npm on its own name and tagged with
+claude-envoy's tag alone. npm's trusted publishing cannot create a package, so until an
+owner of the @sjawhar scope has published the name once by hand and named this workflow
+its trusted publisher, this step says so and publishes nothing; any other failure of the
+registry read is an error. Like claude-envoy's steps, none of these gates the legion
+release below.
 
 ## What the plugin pair check decides
 

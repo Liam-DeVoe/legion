@@ -278,7 +278,7 @@ jobs:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
-    # 4 + 4 + 2 min plus 135 s = 13 min.
+    # 4 + 4 + 2 min plus 135 s = 12 min 15 s -> 13 min.
     timeout-minutes: 13
     services:
       postgres:

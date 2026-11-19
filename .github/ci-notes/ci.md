@@ -105,7 +105,9 @@ YAML anchor reaches no further than the string it is in.
 The text below is what the changes job's steps carried until the filters became one file, kept
 as it stood, so its present tense describes that layout. The exceptions are the lines that
 pointed at a comment this change removed, or at a line number that moved, which now name what
-they meant.
+they meant. A line that names the second or the third step's comment keeps its words: that
+comment is the paragraph of this block that begins "The second of the three filter strings" or
+"The third of the filter strings".
 
 The second of the three filter strings. Actions hands a step's input to the action as one
 environment variable, and Linux caps one of those at MAX_ARG_STRLEN, 131,072 bytes: the
@@ -133,13 +135,16 @@ opens, and the first had no room for a filter either (dispatch://INFRA-1413). Th
 race lane filters are here, and so is envoy_client, which the first step had no room for
 once main's new test files grew its generated blocks, and so is private_names_port, whose
 generated block names every migration test of the daemon's store and grows with each one
-main adds. They share no group with a filter of the other steps but ci_router,
-go_workspace, bun_install and legion_command, which this string writes again. Seven more
-filters moved here when main's growth and the spec-check filters took the second string
-to 98,525 bytes, past the margin: broker_multiprocess, airlock_lean, envoy_smoke,
-worker_image, ci_filters, tool_fallback and ci_images, which need no group but ci_router
-and go_workspace. With them here, each of the three strings had 21,000 bytes or more of
-room to rule 18's margin again.
+main adds, and so are envoy_go and envoy_go_checks, its fast half, which the second step had
+no room for once envoy_go's filter took the two contract paths the API's window tests read,
+which its step runs plain, beside main's own growth of that string. They share no group with
+a filter of the other steps but ci_router, go_workspace, bun_install and legion_command,
+which this string writes again. Seven more filters moved here when main's growth and the
+spec-check filters took the second string to 98,525 bytes, past the margin:
+broker_multiprocess, airlock_lean, envoy_smoke, worker_image, ci_filters, tool_fallback and
+ci_images, which need no group but ci_router and go_workspace. With them and envoy_go's two
+filters here, each of the three strings has 25,000 bytes or more of room to rule 18's margin
+again.
 
 filter_verdicts above is one object over the three steps, the shape .github/scripts/ci-ok.jq
 reads. A GitHub expression can build no object from three, so jq merges them here. A
@@ -305,6 +310,8 @@ tests/envoy-channel-server.test.ts holds the marketplace entry to this package's
 own name, to no `version` of its own, and to a source range that leaves out the
 0.0.0 placeholder and admits the first release. No step of the test job runs that
 test, so the entry is this job's alone.
+The same test holds the Codex marketplace entry to the Codex package's name and
+range.
 
 ## contracts: The Go copies its tests hold the TypeScript to
 
@@ -1545,7 +1552,7 @@ The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, 
 Postgres, the tools and the cache they need. It left the test job in dispatch://INFRA-1413,
 where one filter had to cover both: a change to a shell script, to packages/claude-envoy or
 to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
-and test above, for the reason their comment gives.
+and test above, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives.
 
 ## Why the three plugin pack tests are a job of their own
 
@@ -1566,7 +1573,7 @@ this head runs them, to the frozen shell script's verdicts case for case
 dispatch://INFRA-1413: the harness builds ./cmd/legion, so that job's filter had to name the
 whole closure of that build, and a change to any package of the daemon ran thirty-odd shell
 harnesses and the Bun suites of scripts/ that could not see it. Fail-open with typecheck,
-test, daemon-go and plugin-pack above, for the reason their comment gives, and as this step
+test, daemon-go and plugin-pack above, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives, and as this step
 ran while it was one of the test job's.
 
 ## What the docs job builds, and why it declares no timeout-minutes

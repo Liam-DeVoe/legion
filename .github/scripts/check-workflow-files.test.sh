@@ -213,6 +213,30 @@ check "names both keys and the line of the second, each newline escaped" \
 check "starts no line with ::warning, in either case" "$(is "$(grep -ci '^::warning' <<<"$out" || true)" 0)"
 check "reports it once" "$(is "$(errors "$out")" 1)"
 
+echo "case: a file name holding a comma and a colon, and a key holding the legacy ##[ command"
+# The runner ends a command's properties at the first `::` and splits them on `,`, so the file
+# name is escaped as a property; and it recognises `##[` anywhere in a line, so the message's keys
+# are escaped as ci_filter_coverage.py escapes an annotation's message.
+root=$(fixture escaped-property)
+cat > "$root/.github/workflows/a,b:c.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  "x##[group]": one
+  "X##[GROUP]": two
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "escapes the file property's comma and colon, and each key's ##[" \
+  "$(contains "$out" "^::error file=.github/workflows/a%2Cb%3Ac.yaml,line=5::.github/workflows/a,b:c.yaml:5: the mapping key 'X%23%23%5BGROUP]' is the key 'x%23%23%5Bgroup]' of line 4 again")"
+check "leaves no ##[ in its output" "$(is "$(grep -c '##\[' <<<"$out" || true)" 0)"
+check "reports it once" "$(is "$(errors "$out")" 1)"
+
 echo "case: a mapping holding an alias of itself ends, and passes"
 # The alias makes the composed nodes a cycle, which the key walk would follow for ever if it did
 # not visit each node once. The file is valid YAML with no folded key and no call, so it passes.
