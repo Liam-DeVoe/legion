@@ -379,13 +379,10 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 					s.writeHandlerError(w, markErr)
 					return
 				}
-				comment.Anchor.Orphaned = true
-				anchor, err := encodeJSON(comment.Anchor)
-				if err != nil {
-					s.writeHandlerError(w, err)
-					return
-				}
-				if _, err := tx.Exec(r.Context(), `update comments set anchor = $2 where id = $1`, comment.ID, anchor); err != nil {
+				// Only the anchor's orphaned key is set. The rest of the anchor stays as it is,
+				// the artifact the comment's anchored_to tuple names among it, so this write
+				// restates nothing the store holds.
+				if _, err := tx.Exec(r.Context(), `update comments set anchor = jsonb_set(anchor, '{orphaned}', 'true') where id = $1`, comment.ID); err != nil {
 					s.writeHandlerError(w, err)
 					return
 				}
