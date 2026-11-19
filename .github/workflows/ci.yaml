@@ -391,6 +391,7 @@ jobs:
       check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_step_expansion_test }}
+      check_test_reach_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_test_reach_test }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
@@ -1662,9 +1663,11 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-step-expansion.test.sh'
-              # :40 loads the script by path, and the script imports the engine, which imports
+              # :40 loads the script by path, and the script imports the shared step reader
+              # (go_test_steps.py), whose functions most cases call, and the engine, which imports
               # the path model and the Go build-tag module.
               - '.github/scripts/go-test-step-expansion.py'
+              - '.github/scripts/go_test_steps.py'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_build_tags.py'
@@ -1680,6 +1683,18 @@ jobs:
               # ci_job_reads.py to hold each such script to this gate's declared reads.
               - 'packages/envoy/scripts/database-skips.sh'
               - '.github/scripts/ci_job_reads.py'
+            check_test_reach_test: &check_test_reach_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-test-reach.test.sh'
+              - '.github/scripts/check-test-reach.sh'
+              # Every fixture links in the step reader the search imports, and the engine that
+              # one imports with the path model and the Go build-tag module.
+              - '.github/scripts/go_test_steps.py'
+              - '.github/scripts/ci_filter_coverage.py'
+              - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/go_build_tags.py'
 
             # The test job: the Claude Code plugin build, the changelog fold, the script
             # harnesses above and the Bun suites of scripts/. The daemon's Go tests are the
@@ -1753,6 +1768,7 @@ jobs:
               - *check_ci_filters_test
               - *check_ts_filters_test
               - *go_test_step_expansion_test
+              - *check_test_reach_test
               # The guide-layout step's own files, for that same reason: its gate is
               # guide_layout below, and a guide-only change has to select this job for it.
               - *guide_layout_files
@@ -1963,13 +1979,15 @@ jobs:
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
-              # Check k9 (packages/envoy/scripts/airlock-check.sh) starts dev-airlock.sh's stack,
-              # whose dev-broker.sh builds these four beside the broker and agent-secrets.
+              # Check k9 (packages/envoy/scripts/airlock-check.sh) and the lease test
+              # (dev-airlock-lease.test.sh) start dev-airlock.sh's stack, whose dev-broker.sh
+              # builds these four beside the broker and agent-secrets.
               - 'packages/envoy/cmd/agent-secrets-devrelay/*'
               - 'packages/envoy/cmd/agent-secrets-helper/*'
               - 'packages/envoy/cmd/dev-airlock-stands/*'
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/scripts/airlock-check.sh'
+              - 'packages/envoy/scripts/dev-airlock-lease.test.sh'
               - 'packages/envoy/scripts/dev-airlock.sh'
               - 'packages/envoy/scripts/dev-broker.sh'
               # cmd/broker/main_test.go:348 (sslrootcert).
@@ -5805,6 +5823,7 @@ jobs:
       check_ci_filters_test: ${{ needs.changes.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ needs.changes.outputs.go_test_step_expansion_test }}
+      check_test_reach_test: ${{ needs.changes.outputs.check_test_reach_test }}
 
   # The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the
   # Postgres, the tools and the cache they need. It left the test job in dispatch://INFRA-1413,

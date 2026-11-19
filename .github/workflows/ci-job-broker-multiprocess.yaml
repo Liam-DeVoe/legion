@@ -89,6 +89,18 @@ jobs:
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
           DEV_BROKER_POSTGRES_URL="$BROKER_TEST_DATABASE_URL" bash packages/envoy/scripts/airlock-check.sh k9
 
+      # The airlock stack's pod session outlives its lease
+      # (packages/envoy/scripts/dev-airlock-lease.test.sh): the stack k9 runs on, with one broker at
+      # the shortest lease it starts with, a 30-minute grant used before and after three leases
+      # pass. It prints one PASS: or FAIL: line per property and takes the stack's start and about
+      # five minutes more, so it is held to the same events as k9, on the same stack: the job's
+      # Postgres, and port 443 of loopback addresses of its own.
+      - name: Airlock session outlives its lease
+        if: github.event_name == 'merge_group' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+        run: |
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+          DEV_BROKER_POSTGRES_URL="$BROKER_TEST_DATABASE_URL" bash packages/envoy/scripts/dev-airlock-lease.test.sh
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

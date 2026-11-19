@@ -234,6 +234,10 @@ on:
           go-test-step-expansion.test.sh and what it tests.
         type: string
         required: true
+      check_test_reach_test:
+        description: "ci.yaml's needs.changes.outputs.check_test_reach_test: check-test-reach.test.sh and what it tests."
+        type: string
+        required: true
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -547,12 +551,18 @@ jobs:
         run: .github/scripts/check-ts-filters.test.sh
 
       # Beside the two checks above, and needing no Go either: every case is one line of text,
-      # read by the line reader of .github/scripts/go-test-step-expansion.py, or the hash of a
-      # script that file's AUDITED_SCRIPTS pins. The script's own run compiles the three Go
-      # modules it covers and is run by hand rather than by any job.
+      # read by the step reader of .github/scripts/go_test_steps.py, or the hash of a script that
+      # file's AUDITED_SCRIPTS pins. The expansion's own run compiles the three Go modules it
+      # covers and is run by hand rather than by any job.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh
+
+      # The search lint runs over the tree, run here over fixture repositories, one per kind of
+      # finding and one per registry class; like the search, it runs no go, bun or build command.
+      - name: Test the test-reach search
+        if: inputs.changes-result != 'success' || inputs.check_test_reach_test == 'true'
+        run: .github/scripts/check-test-reach.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

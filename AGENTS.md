@@ -787,10 +787,10 @@ Each item below names a task and where its code is, then notes on it.
 
 - Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
 
-  The by-hand tool of dispatch://INFRA-1408's check k1.
-  It expands every `go test` step of `ci.yaml` and of the workflows its jobs call whose working directory is `packages/envoy`, `packages/envoy/infra` or `packages/daemon` into the test functions that step really runs — through the step's own packages, `-tags`, `-race`, `-run` and `-skip`, with `go test -list` — and gives two verdicts, exiting 1 on either:
-  every (package, function) pair more than one step runs, which no `EXCEPTIONS` entry declares with the requirement that makes it run twice, and every pair some expanded step compiles while no step runs it.
-  The second verdict is fixed to the packages the expansion already touches, never to every test of the three modules, because a tag-gated live proof no step runs is true and useless; an unrun pair is closed in the workflow rather than declared, by giving the function to a step's `-run` or taking its package off the step that only builds it.
+  A tool a person runs by hand, before the merge, at the head and at the merge base.
+  It expands every `go test` step of `ci.yaml` and of the workflows its jobs call whose working directory is `packages/envoy`, `packages/envoy/infra` or `packages/daemon` into the test functions that step really runs — through the step's own packages, `-tags`, `-race`, `-run` and `-skip`, with `go test -list` — and exits 1 on every (package, function) pair more than one step runs that no `EXCEPTIONS` entry declares with the requirement that makes it run twice.
+  It reads the steps with `.github/scripts/go_test_steps.py`, the reader `check-test-reach.sh` uses too.
+  The search replaced its other verdict, every pair some step compiles while no step runs it: `.github/scripts/check-test-reach.sh` runs in `ci.yaml`'s `lint` job on every change, with no `go` command, and fails on a test one step's `-skip` leaves out and no other step runs, a build tag no required step passes, a variable gate whose variable `.github/test-variables.yaml` does not name with a class that holds, a script no required step runs that carries neither the tool line nor the not-a-test line, and a scheduled step whose test command no required job runs; its header says how it reads each.
   The daemon joined the scope with the `-run`/`-skip` pair that keeps `internal/daemon`'s three real-Oh-My-Pi tests to one run each (dispatch://INFRA-1413): a check that sees one of the two steps and not the other proves nothing about them.
   No CI job runs it and none should — it compiles every test binary of all three modules, the `-race` ones included, which the script's own header times.
 

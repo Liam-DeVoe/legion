@@ -1050,6 +1050,7 @@ TWO_BUILDS_SAME_JOB = "dispatch-two-builds-same"
 TWO_BUILDS_SAME_STEP = "Two-build tests of the Dispatch server against its own build"
 BROKER_MP_STEP = "Two-process tests of the secrets broker"
 BROKER_K9_STEP = "Airlock check k9 under load"
+BROKER_LEASE_STEP = "Airlock session outlives its lease"
 E2E_REFILL_STEP = "Bucket refill on a real listener and NATS"
 PARITY_FUZZ = "packages/proof-editor/scripts/parity-fuzz.ts"
 PARITY_FUZZ_STEP = "Parity fuzz of the proof editor's markdown patches and nesting bound"
@@ -2992,8 +2993,9 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("go_test_step_expansion_test", "Test the go test step expansion",
             f"{SCRIPTS}/go-test-step-expansion.test.sh", [
-        (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:40)"),
-        (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
+        (f"{SCRIPTS}/go-test-step-expansion.py", "loaded by path in every case (go-test-step-expansion.test.sh:42)"),
+        (f"{SCRIPTS}/go_test_steps.py", "the step reader under test, which both the expansion and check-test-reach.sh import"),
+        (f"{SCRIPTS}/ci_filter_coverage.py", "the step reader imports it for step_workdir, script_lines and called_workflows"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its two-steps case reads this file's own go test line, the wrapper one"),
@@ -3002,6 +3004,13 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/ci-job-envoy-go-race-api.yaml", "its audited-step case reads this file's step that runs database-skips.sh with arguments"),
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
+    ]),
+    harness("check_test_reach_test", "Test the test-reach search", f"{SCRIPTS}/check-test-reach.test.sh", [
+        (f"{SCRIPTS}/check-test-reach.sh", "the script under test, symlinked into every fixture"),
+        (f"{SCRIPTS}/go_test_steps.py", "the step reader the search imports, linked in beside it"),
+        (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the step reader imports, linked in beside it"),
+        (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports, linked in beside it"),
+        (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module the search and that engine import, linked in beside it"),
     ]),
 ]
 
@@ -4262,7 +4271,8 @@ GATES = [
     ], reads=reads(
         (TAGGED_TESTS, f"{at('broker-multiprocess', BROKER_MP_STEP)} takes its -run from it"),
         (f"{ENVOY}/scripts/airlock-check.sh", f"{at('broker-multiprocess', BROKER_K9_STEP)} runs it"),
-        (f"{ENVOY}/scripts/dev-airlock.sh", f"{ENVOY}/scripts/airlock-check.sh's start_stack runs it"),
+        (f"{ENVOY}/scripts/dev-airlock-lease.test.sh", f"{at('broker-multiprocess', BROKER_LEASE_STEP)} runs it"),
+        (f"{ENVOY}/scripts/dev-airlock.sh", f"{ENVOY}/scripts/airlock-check.sh's start_stack and dev-airlock-lease.test.sh run it"),
         (f"{ENVOY}/scripts/dev-broker.sh", f"{ENVOY}/scripts/dev-airlock.sh runs it for Postgres, the issuer and the binaries"),
     ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod")),
 
