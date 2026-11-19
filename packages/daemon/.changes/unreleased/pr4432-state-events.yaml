@@ -6,7 +6,8 @@ body: |-
   event is an outbox row that the daemon writes in the transaction of the write it reports, so a
   change that commits always has its event, and a write that rolls back has none. The rows run on
   a new `state` lane, one lane for each project, which publishes them strictly in sequence order,
-  and the rows of one committed transaction go out as one message. A commit trigger gives each row
+  and the rows of one committed transaction go out as one message. A transaction whose events pass
+  900 KB goes out as consecutive messages, split between events. A commit trigger gives each row
   its sequence and its time when its transaction commits (migration
   `20261118164019_state_events`), so the sequence follows commit order and has no gap. A daemon
   with no workflow writes no state event. `GET /legion/v1/state` serves `daemon.stateSeq`, the

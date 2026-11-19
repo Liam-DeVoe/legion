@@ -20,6 +20,12 @@
 -- - recorded_at is when Dispatch wrote the row. Beside read_at it is how long an event took to
 --   reach Dispatch, since a batch's read_at is the daemon's own time.
 --
+-- legion_reads_project_recorded_at orders a project's rows as Dispatch wrote them, by recorded_at
+-- and then id: the Legion board's header reads a project's newest row by it, and
+-- legion.PruneReads keeps each project's newest row by it. A batch's read_at is the daemon's clock
+-- and a whole read's is Dispatch's, so legion_reads_project_read_at (20261103170923) does not order
+-- the two kinds.
+--
 -- legion_event_cursors is one row per project whose events the intake has applied or whose state
 -- it has read whole, read `for update` and written in the transaction of each batch and each read:
 --
@@ -47,15 +53,17 @@
 -- is stable, so every row stored already reads this migration's moment as its recorded_at and none
 -- is rewritten. The check holds the new column alone, which every existing row meets at its
 -- default, so it refuses nothing; it is validated by a scan of legion_reads (a week of reads at the
--- most, legion.ReadRetention) under the ACCESS EXCLUSIVE lock the three columns take. The new table
--- no earlier release names, and its foreign key holds projects in SHARE ROW EXCLUSIVE until the
--- migration commits. Nothing existing is refused or rewritten, and the census answers 0. The
--- identifier is the UTC moment this was written, as `migrationid` requires of every migration past
--- the numbered series.
+-- most, legion.ReadRetention) under the ACCESS EXCLUSIVE lock the three columns take. The index is
+-- built over the same rows under the same lock. The new table no earlier release names, and its
+-- foreign key holds projects in SHARE ROW EXCLUSIVE until the migration commits. Nothing existing
+-- is refused or rewritten, and the census answers 0. The identifier is the UTC moment this was
+-- written, as `migrationid` requires of every migration past the numbered series.
 alter table legion_reads
   add column kind text not null default 'read' check (kind in ('read', 'events')),
   add column reason text,
   add column recorded_at timestamptz not null default now();
+
+create index legion_reads_project_recorded_at on legion_reads (project, recorded_at desc, id desc);
 
 create table legion_event_cursors (
   project text primary key references projects(key) on delete cascade,

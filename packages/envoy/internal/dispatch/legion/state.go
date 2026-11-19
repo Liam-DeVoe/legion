@@ -226,8 +226,8 @@ func (s State) Observations() []Observation {
 
 // The one conversion of each observed field, from the field as a state document carries it to the
 // value legion_observations holds: a whole read's (Observations) and a state event's (intake.go's
-// eventObservations) alike, each of which decodes the daemon's value into the field's own type
-// here first.
+// stateEvent.observe, through changeObservation) alike, each of which decodes the daemon's value
+// into the field's own type here first.
 
 // phaseValue is an issue's phase.
 func phaseValue(phase string) json.RawMessage { return encodeValue(phase) }

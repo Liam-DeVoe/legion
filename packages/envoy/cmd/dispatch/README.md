@@ -1580,7 +1580,8 @@ a handler waiting on GitHub holds no connection, so nothing else would keep the 
 
 **The Legion state intake** (`legion.Intake`, `internal/dispatch/legion/intake.go`) takes every Legion daemon's state events from the durable `legion-state-events` on `notifications.legion.*.state`, under a hold as the GitHub intake's is (`delivery.NewHeldDurable`), and runs whenever the process has NATS, with or without the GitHub App.
 A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot or wait, a role's claim, the admission block, or its boot.
-Messages run under the project their payload names, one at a time per project, and each message applied writes the fields it moved, one `legion_reads` row of kind `events` and the project's cursor (`legion_event_cursors`) in one transaction, then wakes the project's board (`legion.StateChannel`).
+A transaction whose events pass 900 KB goes out as consecutive messages, split between events (`stateMessageBound`, `packages/daemon/internal/daemon/outbox.go`), and the intake applies each of them as a message of its own.
+Messages run under the project their payload names, one at a time per project, and each message applied writes the fields it moved, one `legion_reads` row of kind `events` and the project's cursor (`legion_event_cursors`) in one transaction, whose commit wakes the project's board (`legion.StateChannel`).
 It reads a daemon's `GET /legion/v1/state` whole, on the same project's runner, only where the events cannot carry the state: a project with no starting point, at each take-over and at each write of its Legion setting (`dispatch_legion_settings`, on the shared listener above);
 a boot event that does not follow the cursor or that applied a migration;
 a message past a gap the stream no longer holds;
@@ -3972,7 +3973,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
 
-  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`, and has the Legion state intake read that daemon's state whole once, the same URL again included; DELETE stops reading it, what Dispatch already recorded staying.
+  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`, and, when Dispatch has NATS, has the Legion state intake read that daemon's state whole once, the same URL again included; DELETE stops reading it, what Dispatch already recorded staying.
   No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
   A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, a key that is not a project key `400 INVALID_PROJECT`, and a project that does not exist `404 PROJECT_NOT_FOUND`.
   The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.

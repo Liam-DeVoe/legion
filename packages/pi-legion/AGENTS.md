@@ -100,7 +100,17 @@ the daemon block of `GET /legion/v1/state` carries `stateSeq`, the sequence of t
 event the project's daemon committed, read in the body's own snapshot, so a reader of the state
 events starts after a whole read at `stateSeq + 1`; the reader this plugin parses the state
 through takes the key as optional, because a caller from a pod whose claims record a contract
-under 166 is served the block without it, `api.stateFor`, `withoutStateSeq`), after contract 146
+under 166 is served the block without it, `api.stateFor`, `withoutStateSeq`), after contract 152
+(INFRA-2543: the GitHub App installation, and no longer the project's Dispatch repository mapping,
+decides which repositories a project works in, so the `repositories` block of
+`GET /legion/v1/state` names in `mapped` every repository the daemon serves, each with `apps`, the
+installation of each role App on it, and `refused` holds a repository a role App is not installed
+on, with an optional `apps` of that shape; the reader this plugin parses the state through takes
+`apps` as optional, and the bump is for what `mapped` and `refused` now mean), after contract 151
+(dispatch://INFRA-3729: issue pods in GKE Sandbox microVMs, which moves the launcher's command
+line, the daemon's answer to its hello (`kernelKills`) and its `launcher_memory_kill` frame
+(`cause`), and puts `runtime.kubernetes.sandbox` in the state's settings block, which the plugin
+parses loosely, so no shape the plugin parses moves), after contract 146
 (dispatch://INFRA-2614: a root at `admitted` carries its architect's `phaseEntry` and
 `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of

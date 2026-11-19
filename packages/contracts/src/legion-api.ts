@@ -3,15 +3,20 @@ import { PROJECT_KEY_PATTERN } from "./dispatch-tools";
 import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
 
 /**
- * The Legion daemon's HTTP API, as its readers see it.
+ * The Legion daemon's HTTP API and the bus message of its state lane, as their readers see them.
  *
- * Go owns this wire shape: `packages/daemon/internal/api` (`state.go`, `operator.go`) and the
- * claim wire in `packages/daemon/internal/claim/wire.go` are the source of truth, and every
- * schema here mirrors them field for field. The two are pinned to each other by
- * `packages/contracts/fixtures/daemon-api/*.json`, written by the Go golden tests
- * (`go test ./internal/api/ -update`, and `go test ./internal/projection/ -update` for
- * `state-controller-claim.json`) and parsed here by `legion-api.test.ts` — no generator runs in
- * either direction, so a Go field added without its line below fails that test.
+ * Go owns these wire shapes, and every schema here mirrors them field for field. The HTTP shapes
+ * are `packages/daemon/internal/api`'s (`state.go`, `operator.go`) and the claim wire's in
+ * `packages/daemon/internal/claim/wire.go`. The state lane's message (`legionStateMessage`) is
+ * written by `packages/daemon/internal/daemon/outbox.go` (`stateEvents`) from the rows
+ * `packages/daemon/internal/record/outbox.go` stores. The two sides are pinned to each other by
+ * `packages/contracts/fixtures/daemon-api/*.json`, which the daemon's golden tests write through
+ * `packages/daemon/internal/testgolden` (`go test ./internal/api/ -update`;
+ * `go test ./internal/projection/ -update` for `state-controller-claim.json`;
+ * `go test ./internal/daemon/ -run '^TestStateEventsGolden$' -update` for `state-events.json`;
+ * `go test ./internal/config/ -update` for `stall-defaults.json`) and `legion-api.test.ts` parses.
+ * No generator runs in either direction, so a Go field added without its line below fails that
+ * test.
  *
  * Reached as `@legion/contracts/legion-api`, never from the barrel.
  */

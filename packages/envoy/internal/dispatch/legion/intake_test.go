@@ -8,7 +8,6 @@ import (
 	"maps"
 	"net/http"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -235,10 +234,11 @@ func admissionMoved(seq int, block map[string]any) map[string]any {
 	return map[string]any{"seq": seq, "kind": "admission", "admission": block}
 }
 
-// booted is a boot event with the settings stateSettings names.
-func booted(seq int, migrated bool, adminCap int) map[string]any {
+// booted is a boot event whose settings are INFRA's: the project, a dispatch_url and admissionCap
+// as admission_cap.
+func booted(seq int, migrated bool, admissionCap int) map[string]any {
 	return map[string]any{"seq": seq, "kind": "boot", "migrated": migrated, "settings": map[string]any{
-		"project": "INFRA", "dispatch_url": "http://dispatch.internal.example", "admission_cap": adminCap,
+		"project": "INFRA", "dispatch_url": "http://dispatch.internal.example", "admission_cap": admissionCap,
 	}}
 }
 
@@ -283,7 +283,7 @@ func currentValues(t *testing.T, database *store.Store, project string) map[stri
 	return values
 }
 
-// history is one field's rows of legion_observations, oldest first, as "<value>@<observed_at>".
+// history is one field's values in legion_observations, oldest first, each as its JSON text.
 func history(t *testing.T, database *store.Store, project, issue, field string) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
@@ -525,26 +525,7 @@ func TestEachAppliedBatchWakesTheProjectsBoard(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
-	listener, err := rig.database.Pool.Acquire(t.Context())
-	if err != nil {
-		t.Fatalf("take a connection to listen on: %v", err)
-	}
-	defer listener.Release()
-	if _, err := listener.Exec(t.Context(), "listen "+StateChannel); err != nil {
-		t.Fatalf("listen on %s: %v", StateChannel, err)
-	}
-	announced := func(what string) {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-		defer cancel()
-		notification, err := listener.Conn().WaitForNotification(ctx)
-		if err != nil {
-			t.Fatalf("%s: no announcement on %s within 10s (%v): an open board would never hear it", what, StateChannel, err)
-		}
-		if notification.Payload != "INFRA" {
-			t.Errorf("%s: announced %q, want the project INFRA", what, notification.Payload)
-		}
-	}
+	announced := announcements(t, rig.database, "INFRA")
 
 	rig.start()
 	announced("the starting read")
@@ -632,8 +613,10 @@ func TestAGapTheStreamNoLongerHoldsMakesOneWholeRead(t *testing.T) {
 // the daemon's commit time, and the daemon's clock can run ahead of Dispatch's. A whole read made
 // after such events is the newer state all the same, so each row it writes, a `null` for a field
 // it no longer carries included, lands after the field's newest row, and legion_current (what
-// ReadCurrent answers) holds the read's values rather than the older events'. The read's own
-// legion_reads row keeps the read's time.
+// ReadCurrent answers) holds the read's values rather than the older events'. Every row the read
+// writes is at one moment, 1 µs after the project's newest row, though some of its fields have
+// older newest rows than others: that one moment is how the metrics tell an issue a read dropped
+// from a slot released (metrics' slotSpans). The read's own legion_reads row keeps the read's time.
 func TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -641,20 +624,24 @@ func TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState(t *testing.T
 	rig.start()
 	rig.awaitStartingRead("INFRA")
 
-	// The daemon's clock is an hour ahead of Dispatch's.
+	// The daemon's clock is an hour ahead of Dispatch's. Message 12 commits a second after 11, so
+	// the architect's claim has a newer row than the phase and the planner's claim.
 	ahead := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
 	rig.publishOf("INFRA", rig.run, ahead,
 		change(11, "INFRA-1", moved("phase", "implementing"), claimMoved("planner", "idle")))
+	latest := ahead.Add(time.Second)
+	rig.publishOf("INFRA", rig.run, latest, change(12, "INFRA-1", claimMoved("architect", "idle")))
 	rig.settled()
-	if current := currentValues(t, rig.database, "INFRA"); current["INFRA-1/phase"] != `"implementing"` || current["INFRA-1/claim.planner"] != `"idle"` {
-		t.Fatalf("legion_current after the events = %v, want their implementing and idle", current)
+	if current := currentValues(t, rig.database, "INFRA"); current["INFRA-1/phase"] != `"implementing"` ||
+		current["INFRA-1/claim.planner"] != `"idle"` || current["INFRA-1/claim.architect"] != `"idle"` {
+		t.Fatalf("legion_current after the events = %v, want their implementing and idle claims", current)
 	}
 
-	// Sequences 12 and 13 never reach Dispatch. The daemon's state has moved the phase on and
-	// dropped the planner's claim, which the gap's whole read finds.
+	// Sequence 13 never reaches Dispatch. The daemon's state has moved the phase on, dropped the
+	// planner's claim and put the architect back to work, which the gap's whole read finds.
 	daemon.serves(daemonState("INFRA", 15, `"INFRA-1":{"key":"INFRA-1","phase":"reviewing","tree":"INFRA-1",
 		"slot":{"index":0},"architect":{"session":"s-0","state":"working"}}`))
-	rig.publishOf("INFRA", rig.run, ahead.Add(time.Second),
+	rig.publishOf("INFRA", rig.run, latest.Add(time.Second),
 		change(14, "INFRA-1", moved("phase", "testing")), change(15, "INFRA-1", moved("phase", "reviewing")))
 	rig.settled()
 	reads := readRecords(t, rig.database, "INFRA")
@@ -681,12 +668,32 @@ func TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState(t *testing.T
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`, `"reviewing"`}) {
 		t.Errorf("the phase's history is %v, want the starting read's, the event's, then the gap's read's", got)
 	}
+
+	// The read wrote three rows - the phase, the planner's claim it no longer carries and the
+	// architect's claim - and every one of them is 1 µs after message 12's, the project's newest
+	// row, though the phase's and the planner's own newest rows were a second older.
+	written := map[string]time.Time{}
+	for _, row := range observedRows(t, rig.database, "INFRA") {
+		if row.at.After(latest) {
+			written[row.issue+"/"+row.field] = row.at
+		}
+	}
+	moment := latest.Add(time.Microsecond)
+	if len(written) != 3 {
+		t.Errorf("the gap's read wrote %v after the events, want the phase and the two claims", written)
+	}
+	for field, at := range written {
+		if !at.Equal(moment) {
+			t.Errorf("the gap's read wrote %s at %s, want every row of the read at %s, 1 µs after the project's newest row",
+				field, at.Format(time.RFC3339Nano), moment.Format(time.RFC3339Nano))
+		}
+	}
 }
 
 // TestABootThatDoesNotFollowMakesOneWholeRead: a boot event whose sequence does not follow the
 // cursor, one at or below it under a run the cursor has not followed (a daemon whose counter went
 // back), and one that applied a migration each read the project whole once; a boot that follows
-// reads nothing.
+// reads nothing, and neither does a boot replayed under the run the cursor followed last.
 func TestABootThatDoesNotFollowMakesOneWholeRead(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -722,6 +729,17 @@ func TestABootThatDoesNotFollowMakesOneWholeRead(t *testing.T) {
 			name:     "a boot that follows",
 			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(11, false, 3)) },
 			stateSeq: 11,
+		},
+		{
+			// The boot and a change after it are applied under the rig's run, and the stream
+			// delivers the boot again: at or below the cursor, under the cursor's own run.
+			name: "a boot replayed under the cursor's own run",
+			before: func(rig *intakeRig) {
+				rig.publish("INFRA", booted(11, false, 3))
+				rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "implementing")))
+			},
+			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(11, false, 3)) },
+			stateSeq: 12,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -805,10 +823,7 @@ func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testin
 	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	linux := newFakeDaemon(t, daemonState("LINUX", 20, planning("LINUX")))
 	seedLegionProject(t, rig.database, "INFRA", infra.URL)
-	if _, err := rig.database.Pool.Exec(t.Context(),
-		`insert into projects (key, name, default_assignee) values ('LINUX', 'LINUX', 'alice')`); err != nil {
-		t.Fatalf("seed project LINUX: %v", err)
-	}
+	seedProject(t, rig.database, "LINUX")
 	actor := model.Actor{Kind: "user", ID: "alice@example.com"}
 
 	// The durable's first creation.
@@ -988,18 +1003,19 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 }
 
 // TestAMessageForAProjectWithNoSettingIsDropped: a message of a project no legion_settings row
-// names is acknowledged and writes nothing, and the drop is logged once per project per hour.
+// names is acknowledged and writes nothing, and the drop is logged once per project per
+// dropLogEvery: LINUX's second and third messages log nothing, and its first message after
+// dropLogEvery has passed on the intake's clock logs again. The intake then remembers only the
+// projects it logged in the last dropLogEvery, so GHOST, logged before it, is forgotten.
 func TestAMessageForAProjectWithNoSettingIsDropped(t *testing.T) {
 	rig := newIntakeRig(t)
-	if _, err := rig.database.Pool.Exec(t.Context(),
-		`insert into projects (key, name, default_assignee) values ('LINUX', 'LINUX', 'alice')`); err != nil {
-		t.Fatalf("seed project LINUX: %v", err)
-	}
+	seedProject(t, rig.database, "LINUX")
 	rig.start()
 	rig.publish("LINUX", change(1, "LINUX-1", moved("phase", "planning")))
-	rig.publish("LINUX", change(2, "LINUX-1", moved("phase", "implementing")))
 	// A project Dispatch does not hold at all.
 	rig.publish("GHOST", change(1, "GHOST-1", moved("phase", "planning")))
+	rig.publish("LINUX", change(2, "LINUX-1", moved("phase", "implementing")))
+	rig.publish("LINUX", change(3, "LINUX-1", moved("phase", "testing")))
 	rig.settled()
 
 	for _, project := range []string{"LINUX", "GHOST"} {
@@ -1017,14 +1033,100 @@ func TestAMessageForAProjectWithNoSettingIsDropped(t *testing.T) {
 	if cursors != 0 {
 		t.Errorf("%d cursors, want none", cursors)
 	}
-	var dropped []string
-	for _, line := range rig.awaitLogRecords(droppedLine, 2) {
-		dropped = append(dropped, fmt.Sprint(line["project"]))
+
+	// Each drop is logged after its message is acknowledged. LINUX's runner takes its messages in
+	// turn, so once the third is acknowledged the first two have logged what they log.
+	logged := func() map[string]int {
+		counts := map[string]int{}
+		for _, line := range rig.logRecords(droppedLine) {
+			counts[fmt.Sprint(line["project"])]++
+		}
+		return counts
 	}
-	slices.Sort(dropped)
-	if want := []string{"GHOST", "LINUX"}; !slices.Equal(dropped, want) {
-		t.Errorf("drops logged for %v, want each project once: %v", dropped, want)
+	var counts map[string]int
+	rig.waitFor(5*time.Second, func() bool {
+		counts = logged()
+		return counts["LINUX"] > 0 && counts["GHOST"] > 0
+	}, func() string { return fmt.Sprintf("drops logged %v, want LINUX and GHOST", counts) })
+	if want := map[string]int{"LINUX": 1, "GHOST": 1}; !maps.Equal(counts, want) {
+		t.Fatalf("drops logged %v, want %v: one line per project inside dropLogEvery", counts, want)
 	}
+
+	rig.clock.advance(dropLogEvery)
+	rig.publish("LINUX", change(4, "LINUX-1", moved("phase", "reviewing")))
+	rig.settled()
+	rig.waitFor(5*time.Second, func() bool {
+		counts = logged()
+		return counts["LINUX"] >= 2
+	}, func() string {
+		return fmt.Sprintf("drops logged %v, want a second LINUX line once dropLogEvery passed", counts)
+	})
+	if want := map[string]int{"LINUX": 2, "GHOST": 1}; !maps.Equal(counts, want) {
+		t.Errorf("drops logged %v, want %v", counts, want)
+	}
+	rig.intake.mu.Lock()
+	remembered := slices.Sorted(maps.Keys(rig.intake.dropped))
+	rig.intake.mu.Unlock()
+	if !slices.Equal(remembered, []string{"LINUX"}) {
+		t.Errorf("the intake remembers the drops of %v, want LINUX alone: GHOST's entry is older than dropLogEvery", remembered)
+	}
+}
+
+// TestTheIntakePrunesTheReadsAtMostOnceAnHour: the intake prunes legion_reads (PruneReads) after a
+// batch it applied, and then not again until pruneEvery has passed on its own clock. A read past
+// ReadRetention written after a prune stays through the batches inside pruneEvery, and goes at the
+// first batch after it.
+func TestTheIntakePrunesTheReadsAtMostOnceAnHour(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	aged := func() int64 {
+		t.Helper()
+		var id int64
+		if err := rig.database.Pool.QueryRow(t.Context(), `
+			insert into legion_reads (project, read_at, ok, bytes) values ('INFRA', $1, true, 1) returning id
+		`, time.Now().Add(-ReadRetention-time.Hour)).Scan(&id); err != nil {
+			t.Fatalf("write a read past the retention: %v", err)
+		}
+		return id
+	}
+	held := func(id int64) bool {
+		t.Helper()
+		var exists bool
+		if err := rig.database.Pool.QueryRow(t.Context(),
+			`select exists (select 1 from legion_reads where id = $1)`, id).Scan(&exists); err != nil {
+			t.Fatalf("read legion_reads: %v", err)
+		}
+		return exists
+	}
+	prunedBy := func(id int64, what string) {
+		t.Helper()
+		rig.waitFor(10*time.Second, func() bool { return !held(id) }, func() string {
+			return fmt.Sprintf("the read past the retention is still held after %s, want it pruned", what)
+		})
+	}
+
+	first := aged()
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+	prunedBy(first, "the first batch")
+
+	// The runner takes INFRA's messages in turn and prunes after a batch is acknowledged, so once
+	// 13 is acknowledged, 12's prune has been decided.
+	second := aged()
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "testing")))
+	rig.publish("INFRA", change(13, "INFRA-1", moved("phase", "reviewing")))
+	rig.settled()
+	if !held(second) {
+		t.Fatal("a batch inside pruneEvery of the last prune pruned again, want no prune until pruneEvery has passed")
+	}
+
+	rig.clock.advance(pruneEvery)
+	rig.publish("INFRA", change(14, "INFRA-1", moved("phase", "accepting")))
+	rig.settled()
+	prunedBy(second, "the first batch past pruneEvery")
 }
 
 // TestAnApplyThatFailsIsRetriedBeforeAnyLaterMessage: a batch the database refuses is tried again
@@ -1090,15 +1192,6 @@ func TestAnApplyThatFailsIsRetriedBeforeAnyLaterMessage(t *testing.T) {
 	}
 }
 
-// stateEventsGoldenPath is the Legion daemon's golden of its state lane, which the daemon's own
-// TestStateEventsGolden writes (packages/daemon/internal/daemon/state_events_golden_test.go): a
-// daemon of project LEGION driven step by step over a seeded store, each step with every message
-// its state lane published, as the Envoy listener's publish route stores the envelope, and the
-// document GET /legion/v1/state served once they were published.
-func stateEventsGoldenPath() string {
-	return filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "daemon-api", "state-events.json")
-}
-
 // goldenStep is one step of the state lane's golden: what the daemon did; the one message its lane
 // published for it, with the run, the last sequence and the commit time its payload names; and the
 // state document the daemon served after it.
@@ -1111,12 +1204,17 @@ type goldenStep struct {
 	state    json.RawMessage
 }
 
-// readStateEventsGolden reads the state lane's golden (stateEventsGoldenPath), and fails unless
-// each step is one message and a state whose stateSeq is that message's last sequence: one
-// committed transaction, and the state a whole read made right after it reads.
+// readStateEventsGolden reads the Legion daemon's golden of its state lane, state-events.json,
+// which the daemon's own TestStateEventsGolden writes
+// (packages/daemon/internal/daemon/state_events_golden_test.go): a daemon of project LEGION
+// driven step by step over a seeded store, each step with every message its state lane published,
+// as the Envoy listener's publish route stores the envelope, and the document GET /legion/v1/state
+// served once they were published. It fails unless each step is one message and a state whose
+// stateSeq is that message's last sequence: one committed transaction, and the state a whole read
+// made right after it reads.
 func readStateEventsGolden(t *testing.T) []goldenStep {
 	t.Helper()
-	raw, err := os.ReadFile(stateEventsGoldenPath())
+	raw, err := os.ReadFile(daemonAPIFixture("state-events.json"))
 	if err != nil {
 		t.Fatalf("read the daemon's state events golden: %v", err)
 	}
@@ -1247,7 +1345,7 @@ func orNone[T any](value *T) string {
 
 // TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites: the rows the daemon's state events write
 // are the rows a whole read of the same states writes. The daemon's own golden of its state lane
-// (stateEventsGoldenPath) is applied twice over. Project LEGION, the golden's own, takes each
+// (readStateEventsGolden) is applied twice over. Project LEGION, the golden's own, takes each
 // step's message through the intake from a real NATS stream, published as the daemon's listener
 // stored it; project READS records each step's state document as a whole read records it
 // (RecordRead). After each step the two hold the same legion_current, `null` rows included, and
@@ -1257,10 +1355,11 @@ func orNone[T any](value *T) string {
 // Both start from the golden's first state: the intake's starting read of LEGION's daemon is served
 // it, and READS records it. The intake's clock stands at the commit time of the step it applies
 // (its message's `at`), the moment READS records the step's state at, so the starting read is
-// stamped at the boot's commit. A row is stamped 1 µs after its field's newest row where that is
-// later than its own time (recordEvents, recordObservations), but each step of the golden commits
-// a minute after the one before, so that rule moves no row of either project here: every row a step
-// writes is at its message's `at`, and the test fails on one that is not.
+// stamped at the boot's commit. A batch's row is stamped 1 µs after its field's newest row, and a
+// whole read's rows 1 µs after the project's newest row, where that is later than their own time
+// (recordEvents, recordObservations), but each step of the golden commits a minute after the one
+// before, so that rule moves no row of either project here: every row a step writes is at its
+// message's `at`, and the test fails on one that is not.
 //
 // The boot's message is at the starting read's stateSeq, and a whole read names no run, so the
 // intake cannot tell it from a daemon whose counter went back and reads the daemon whole once more

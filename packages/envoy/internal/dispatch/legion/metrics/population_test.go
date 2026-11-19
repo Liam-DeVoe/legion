@@ -284,7 +284,7 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 }
 
 // TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot: Read takes the window's observations and
-// the project's reported set, with its trees, from one snapshot (readSampled), so an intake commit
+// the project's reported set, with its trees, from one snapshot (readRecorded), so an intake commit
 // during the read moves both or neither. The commit here lands, on another connection, the moment
 // the first statement reading legion_observations or legion_current ends, and every other such
 // statement waits for it, so the two reads straddle it whether they run in turn or side by side:
@@ -336,5 +336,87 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 	}
 	if observed, tree := newest(population); observed != "INFRA-2" || tree != "INFRA-2" {
 		t.Errorf("the next read has INFRA-2's newest tree observation %q and its Tree %q, want INFRA-2 for both, the commit's", observed, tree)
+	}
+}
+
+// TestAWholeReadThatDropsAnIssueIsReadAsADrop: a whole read that no longer carries an issue writes
+// a `null` row for each of the issue's fields, and the metrics read a `null` slot beside a `null`
+// phase at one moment as a drop, not a release (TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue).
+// Here the issue's slot has a row newer than the dropping read's own time, as a state event of a
+// daemon whose clock runs ahead of Dispatch's writes, and its phase has none. The read, recorded
+// through the step every whole read's record takes (legion.RecordRead), still writes the two
+// `null` rows at one moment, 1 µs after that newer row. So the root, admitted and holding a slot
+// from hour 0 with its architect at work, is in design to its close at hour 6, and spends no hour
+// in the queue. Each `null` at its own field's moment would read the slot's as a release, and put
+// the hours after it in the queue.
+func TestAWholeReadThatDropsAnIssueIsReadAsADrop(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := t.Context()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed (%s): %v", sql, err)
+		}
+	}
+	exec(`insert into projects (key, name, default_assignee) values ('INFRA', 'INFRA', 'alice')`)
+	exec(`insert into issues (key, project_key, number, title, status, rank, created_by, created_at, closed_at)
+		values ('INFRA-1', 'INFRA', 1, 'The root', 'done', 'm', '{"kind":"user","id":"alice"}'::jsonb, $1, $2)`, after(-1), after(6))
+	exec(`insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ('INFRA-1', 1, 'comment.created', $1::jsonb, '{}'::jsonb, false, $2)`,
+		`{"kind":"session","id":"s-architect","origin":{"session_title":"Legion architect · INFRA-1"}}`, after(0))
+
+	record := func(at time.Time, observations ...legion.Observation) {
+		t.Helper()
+		if _, err := legion.RecordRead(ctx, database.Pool, "INFRA", at, 1024, observations); err != nil {
+			t.Fatalf("record the read at %s: %v", at.Format(time.RFC3339), err)
+		}
+	}
+	settings := legion.Observation{IssueKey: legion.AdmissionKey, Field: legion.FieldSettings, Value: []byte(`{"project": "INFRA"}`)}
+	record(after(0), settings,
+		legion.Observation{IssueKey: "INFRA-1", Field: legion.FieldPhase, Value: []byte(`"admitted"`)},
+		legion.Observation{IssueKey: "INFRA-1", Field: legion.FieldSlot, Value: []byte(`0`)})
+	// A state event gives the root slot 1, on a daemon clock three hours ahead of Dispatch's.
+	exec(`insert into legion_observations (project, issue_key, field, value, observed_at)
+		values ('INFRA', 'INFRA-1', $1, '1'::jsonb, $2)`, legion.FieldSlot, after(3))
+	// The read at hour 2 on Dispatch's clock no longer carries the root.
+	record(after(2), settings)
+
+	rows, err := database.Pool.Query(ctx, `
+		select field, observed_at from legion_observations
+		where project = 'INFRA' and issue_key = 'INFRA-1' and value = 'null'::jsonb
+	`)
+	if err != nil {
+		t.Fatalf("read the read's null rows: %v", err)
+	}
+	dropped := map[string]time.Time{}
+	for rows.Next() {
+		var field string
+		var at time.Time
+		if err := rows.Scan(&field, &at); err != nil {
+			t.Fatalf("scan a null row: %v", err)
+		}
+		dropped[field] = at
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the read's null rows: %v", err)
+	}
+	moment := after(3).Add(time.Microsecond)
+	if len(dropped) != 2 || !dropped[legion.FieldPhase].Equal(moment) || !dropped[legion.FieldSlot].Equal(moment) {
+		t.Fatalf("the read wrote its null rows at %v, want the phase and the slot both at %s, 1 µs after the project's newest row", dropped, moment)
+	}
+
+	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	if err != nil {
+		t.Fatalf("read the population: %v", err)
+	}
+	report := Compute(population, ScopeAll, after(24))
+	if len(report.WorkTime.Issues) != 1 {
+		t.Fatalf("work-time rows = %+v, want the root alone", report.WorkTime.Issues)
+	}
+	if row := report.WorkTime.Issues[0]; row.Hours != 6 || row.QueuedHours != 0 {
+		t.Errorf("the root's work time = %g h with %g h queued, want 6 h with none queued: a drop releases no slot", row.Hours, row.QueuedHours)
+	}
+	if bar := barOf(t, report, "architect"); bar.Hours != 6 {
+		t.Errorf("the architect bar = %g h, want 6: the root is in design from hour 0 to its close", bar.Hours)
 	}
 }

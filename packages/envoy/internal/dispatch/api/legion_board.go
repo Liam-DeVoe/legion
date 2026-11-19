@@ -116,10 +116,11 @@ type legionBoardResponse struct {
 
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the live
 // trees, the queue's length, and the last read of the daemon — when it was made, whether it
-// succeeded and why it did not. SlotCap is null until a read records the daemon's admission
-// block, Trees is 0 until a daemon that reports its live trees does (dispatch://INFRA-980), and
-// ReadAt is null for a project whose daemon has never answered at all, which shows the board with
-// empty columns.
+// succeeded and why it did not. While a whole read is owed, ReadOK is false and ReadError is that
+// read's failure, whatever batches of events came after it (readDaemonRead). SlotCap is null until
+// a read records the daemon's admission block, Trees is 0 until a daemon that reports its live
+// trees does (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never
+// answered at all, which shows the board with empty columns.
 type legionBoardHeader struct {
 	SlotsInUse  int        `json:"slots_in_use"`
 	SlotCap     *int       `json:"slot_cap"`
@@ -197,13 +198,14 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 }
 
 // legionBoardPopulation is every read one board answer makes: the project's Legion setting, the
-// newest read of its daemon and the project's legion_current in one snapshot (readSampled: the
+// newest read of its daemon and the project's legion_current in one snapshot (readRecorded: the
 // header, the cards and the issues the daemon reports), the project's own issues in Dispatch's
 // rank order, and the phase work of the issues its tree walk can climb onto that the daemon
 // reports nothing of.
 type legionBoardPopulation struct {
 	project string
-	// read is the newest legion_reads row, nil for a project whose daemon was never read.
+	// read is the header's read of the daemon (readDaemonRead), nil for a project whose daemon was
+	// never read.
 	read *legionBoardDaemonRead
 	// admission is the daemon's admission block as the newest read recorded it, nil while no read
 	// has recorded one: before the first read of a daemon, and for a daemon that sends none.
@@ -229,8 +231,8 @@ type legionBoardPopulation struct {
 	ranked []string
 }
 
-// legionBoardDaemonRead is the newest legion_reads row: when the read was made, whether it
-// succeeded, and why it did not.
+// legionBoardDaemonRead is the header's read of the daemon: when the newest record of it was made,
+// whether it succeeded, and why it did not.
 type legionBoardDaemonRead struct {
 	at      time.Time
 	ok      bool
@@ -266,7 +268,7 @@ func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBo
 	population := &legionBoardPopulation{
 		project: project, issues: map[string]*legionBoardIssue{}, parents: map[string]string{},
 	}
-	if err := population.readSampled(ctx, pool); err != nil {
+	if err := population.readRecorded(ctx, pool); err != nil {
 		return nil, err
 	}
 	if err := population.readIssues(ctx, pool); err != nil {
@@ -278,13 +280,13 @@ func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBo
 	return population, nil
 }
 
-// readSampled reads what the intake writes of the project — the newest legion_reads row, the
+// readRecorded reads what the intake writes of the project — its legion_reads and its cursor, the
 // header's (readDaemonRead), and its legion_current, the cards' and the walk's (readCurrent) — in
 // one repeatable-read, read-only transaction, so the two answer one moment. The intake commits
 // each legion_reads row with the observations it records, a batch of state events or a whole
 // read, and two reads at two moments would still let a commit between them put the header of one
 // record over the cards of another.
-func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Pool) error {
+func (p *legionBoardPopulation) readRecorded(ctx context.Context, pool *store.Pool) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return err
@@ -299,15 +301,33 @@ func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Poo
 	return tx.Commit(ctx)
 }
 
-// readDaemonRead reads the newest read of the project's daemon, the freshness the header shows.
+// readDaemonRead reads the header's read of the project's daemon. Its time is the newest
+// legion_reads row's, the newest Dispatch wrote, by recorded_at and then id: a batch's read_at is
+// the daemon's commit time and a whole read's is Dispatch's clock, so read_at does not order the
+// two kinds. Its ok and its error are that row's too, except while the project's cursor owes a
+// whole read (legion_event_cursors.read_owed): they are then the newest whole read's, which
+// failed, so a batch applied after a failed read does not show a good read.
 func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) error {
 	var read legionBoardDaemonRead
 	err := tx.QueryRow(ctx, `
-		select read_at, ok, error
-		from legion_reads
-		where project = $1
-		order by read_at desc, id desc
-		limit 1
+		with newest as (
+			select read_at, ok, error
+			from legion_reads
+			where project = $1
+			order by recorded_at desc, id desc
+			limit 1
+		), owed as (
+			select whole.ok, whole.error
+			from legion_reads whole
+			where whole.project = $1 and whole.kind = 'read'
+			  and exists (select 1 from legion_event_cursors where project = $1 and read_owed)
+			order by whole.recorded_at desc, whole.id desc
+			limit 1
+		)
+		select newest.read_at, coalesce(owed.ok, newest.ok),
+			case when owed.ok is null then newest.error else owed.error end
+		from newest
+		left join owed on true
 	`, p.project).Scan(&read.at, &read.ok, &read.failure)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -319,7 +339,7 @@ func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) e
 	return nil
 }
 
-// readCurrent reads the project's legion_current through legion.ReadCurrent inside readSampled's
+// readCurrent reads the project's legion_current through legion.ReadCurrent inside readRecorded's
 // transaction, so the cards and the tree walk answer the snapshot the header does. Its Newest are
 // the cards, and the project's own rows under legion.AdmissionKey (observeProject); its Reported
 // is the walk's (treeNode).

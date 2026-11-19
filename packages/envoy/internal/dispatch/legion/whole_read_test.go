@@ -96,15 +96,49 @@ func configured(t *testing.T, daemonURL string) (*store.Store, Settings) {
 	return database, Settings{Project: "INFRA", StateURL: daemonURL}
 }
 
-func seedLegionProject(t *testing.T, database *store.Store, project, daemonURL string) {
+// seedProject writes project into projects: a project Dispatch holds, with no Legion setting.
+func seedProject(t *testing.T, database *store.Store, project string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(),
 		`insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict do nothing`, project); err != nil {
 		t.Fatalf("seed project %s: %v", project, err)
 	}
+}
+
+// seedLegionProject writes project and its Legion setting, which names daemonURL.
+func seedLegionProject(t *testing.T, database *store.Store, project, daemonURL string) {
+	t.Helper()
+	seedProject(t, database, project)
 	if _, err := PutSettings(context.Background(), database.Pool, project, daemonURL,
 		model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		t.Fatalf("set the Legion setting of %s: %v", project, err)
+	}
+}
+
+// announcements listens on StateChannel, on a connection of database's pool that it holds until
+// the test ends, and answers a wait for the next announcement: the wait fails the test unless an
+// announcement comes within 10 s, and unless it names project. what names the record waited for.
+func announcements(t *testing.T, database *store.Store, project string) func(what string) {
+	t.Helper()
+	listener, err := database.Pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("take a connection to listen on: %v", err)
+	}
+	t.Cleanup(listener.Release)
+	if _, err := listener.Exec(t.Context(), "listen "+StateChannel); err != nil {
+		t.Fatalf("listen on %s: %v", StateChannel, err)
+	}
+	return func(what string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		notification, err := listener.Conn().WaitForNotification(ctx)
+		if err != nil {
+			t.Fatalf("%s: no announcement on %s within 10s (%v): an open board would never hear it", what, StateChannel, err)
+		}
+		if notification.Payload != project {
+			t.Errorf("%s: announced %q, want the project %s", what, notification.Payload, project)
+		}
 	}
 }
 
@@ -326,10 +360,7 @@ func TestPruneReadsDropsTheReadsPastTheirRetention(t *testing.T) {
 	// A project whose daemon nothing reads any more: its setting was removed, and the reads it
 	// left stay (DeleteSettings). It is here to prove the prune keeps a project's newest read
 	// however old it is, since that row is the freshness the board's header shows.
-	if _, err := database.Pool.Exec(t.Context(),
-		`insert into projects (key, name, default_assignee) values ('LINUX', 'LINUX', 'alice')`); err != nil {
-		t.Fatalf("seed project LINUX: %v", err)
-	}
+	seedProject(t, database, "LINUX")
 	aged := func(project string, age time.Duration) {
 		t.Helper()
 		at := time.Now().UTC().Add(-age)
@@ -371,26 +402,7 @@ func TestPruneReadsDropsTheReadsPastTheirRetention(t *testing.T) {
 func TestEachWholeReadIsAnnouncedToTheOpenBoards(t *testing.T) {
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
-	listener, err := database.Pool.Acquire(t.Context())
-	if err != nil {
-		t.Fatalf("take a connection to listen on: %v", err)
-	}
-	defer listener.Release()
-	if _, err := listener.Exec(t.Context(), "listen "+StateChannel); err != nil {
-		t.Fatalf("listen on %s: %v", StateChannel, err)
-	}
-	announced := func(what string) {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		notification, err := listener.Conn().WaitForNotification(ctx)
-		if err != nil {
-			t.Fatalf("%s: no announcement on %s within 5s (%v): an open board would never hear this read", what, StateChannel, err)
-		}
-		if notification.Payload != "INFRA" {
-			t.Errorf("%s: announced %q, want the project INFRA", what, notification.Payload)
-		}
-	}
+	announced := announcements(t, database, "INFRA")
 
 	readDaemon(t, database, setting)
 	announced("a read that moved the observations")

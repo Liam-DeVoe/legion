@@ -1986,7 +1986,8 @@ select i.key, row_number() over (order by i.key) + coalesce((select max(index) f
 Read the count the second statement wrote against the deployment's `admissionCap` before starting the earlier image: it writes a row per running root whatever the cap, as this release's own migration does, and the earlier release's cap loop drains the surplus as trees finish rather than refusing to boot.
 Set `admissionCap` back to the value it had before the upgrade in the same change that pins the earlier image, since this release's value counts issues and the earlier one's counts trees.
 
-These statements publish no state event, since an edit by SQL never does: where a Dispatch that takes the daemon's state events reads this project, `PUT` the project's Legion setting again with the same URL once the daemon runs, and Dispatch reads the daemon's state whole once ([Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events)).
+These statements publish no state event, since an edit by SQL never does.
+A daemon of a release before the one that publishes state events publishes none at all, so roll Dispatch back first, to the release before that one, and then roll back the daemon ([Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events)).
 
 A root in `todo` is left out because it holds a slot under neither release: it goes back into the earlier release's waiting line, whose own admission pass gives it a slot and opens its tree when the line reaches it.
 Giving it one here would be the opposite of a rollback.
@@ -2156,9 +2157,10 @@ The kind check keeps the name after the rollback, and the rollback needs no stat
 
 This release has the daemon publish each change of what Dispatch observes as a state event, and Dispatch writes its Legion observations from those events (dispatch://INFRA-3931).
 Before it, Dispatch read each configured daemon's `GET /legion/v1/state` once a minute.
-The daemon writes each event as an outbox row in the transaction of the write it reports, on one `state` lane per project, and it publishes the rows of each committed transaction as one message on `notifications.legion.<token>.state`.
+The daemon writes each event as an outbox row in the transaction of the write it reports, on one `state` lane per project, and it publishes the rows of each committed transaction as one message on `notifications.legion.<token>.state`, or as consecutive messages split between events where they pass 900 KB (`stateMessageBound`).
 Its migration `20261118164019_state_events` adds the three state kinds to the outbox's kind check, the tables `state_publication` and `state_admission_blocks`, three columns on `outbox`, and the commit trigger that gives each state row its sequence.
-Dispatch's migration `20261118212431_legion_events` adds `kind`, `reason` and `recorded_at` to `legion_reads`, each with a default, and the table `legion_event_cursors`.
+Dispatch's migration `20261118212431_legion_events` adds `kind` and `recorded_at` to `legion_reads`, each with a default, and `reason`, which is null on a row that names no reason.
+It also adds the index `legion_reads_project_recorded_at` and the table `legion_event_cursors`.
 
 Roll out the three parts in this order:
 
@@ -2178,7 +2180,7 @@ Roll out the three parts in this order:
 3. **The Dispatch release.**
    Its intake creates the durable at its first take-over, delivering new messages only, then reads each configured project's daemon whole once, and then applies the events.
    A project whose daemon does not run the daemon release gets one read, recorded as a failed `legion_reads` row whose error names why (`the daemon serves no daemon.stateSeq, so it publishes no state events`), and its board's header shows that failure.
-   The read still records that daemon's state, and nothing reads the project again until its daemon publishes an event, its Legion setting is written, or the durable is taken over again.
+   The read still records that daemon's state, and nothing reads the project again until its daemon publishes an event, a Legion setting is written, or the durable is taken over again.
    During the roll, a process of the earlier Dispatch release goes on reading each daemon once a minute beside the new intake, and its `legion_reads` rows take the new columns' defaults.
 
 The readings of production on 2026-11-18 were these.
@@ -2203,7 +2205,9 @@ Where the rollback lasted longer than the stream keeps a message (72 hours), the
 An earlier daemon boots on the migrated schema.
 It writes no state kind, the commit trigger runs for those kinds alone, and it puts the three kinds in no outbox lane, so a state row left unpublished waits and holds back no other row.
 Roll Dispatch back first, and then the daemon.
-A Dispatch of this release reads a daemon without the change once, and then waits for events that daemon never sends, so its board shows that one read and nothing after it.
+A Dispatch of this release reads a daemon without the change once and records a failed read, since that daemon serves no `daemon.stateSeq`.
+That daemon sends no event, so Dispatch reads it again only at a take-over of the durable or at a write of a Legion setting (`startReason` in `legion/intake.go`), and its board shows nothing between those reads.
+A write of that project's own setting reads it at once, and a take-over or a write of another project's setting reads it only a minute or more after the last read.
 Where a daemon was rolled back under a Dispatch of this release, `PUT` the project's Legion setting again with the same URL once the daemon runs this release again.
 The boot event of that roll forward follows the cursor and applied no migration, so nothing else has Dispatch read the state the earlier daemon wrote.
 

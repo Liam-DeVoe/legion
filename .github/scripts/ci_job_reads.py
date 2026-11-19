@@ -766,6 +766,8 @@ RULES = {
     f"{ENVOY}/internal/contracts/normalize_test.go": reads(
         (f"{FIX}/github-envelopes/*", "internal/contracts/normalize_test.go:753"),
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/normalize_test.go:2078,2711")),
+    f"{ENVOY}/internal/contracts/subject_project_test.go": reads(
+        (f"{FIX}/subject-project.json", "internal/contracts/subject_project_test.go:75 reads the shared cases the generated subject builders and readers are held to")),
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:264 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
     f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:982,1013")),
@@ -798,12 +800,12 @@ RULES = {
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:518")),
     f"{ENVOY}/internal/dispatch/legion/golden_state_test.go": reads(
         (f"{FIX}/daemon-api/state.json",
-         "internal/dispatch/legion/golden_state_test.go:29 os.ReadFile (goldenStatePath :16, "
+         "internal/dispatch/legion/golden_state_test.go:33 os.ReadFile (daemonAPIFixture :14, "
          "../../../../contracts/fixtures/daemon-api): the state document the daemon's own "
          "internal/api/state_golden_test.go writes, which a whole read's decode must read")),
     f"{ENVOY}/internal/dispatch/legion/intake_test.go": reads(
         (f"{FIX}/daemon-api/state-events.json",
-         "internal/dispatch/legion/intake_test.go:1119 os.ReadFile (stateEventsGoldenPath :1098, "
+         "internal/dispatch/legion/intake_test.go:1217 os.ReadFile (daemonAPIFixture, golden_state_test.go:14, "
          "../../../../contracts/fixtures/daemon-api): the daemon's golden of its state lane, which "
          "packages/daemon/internal/daemon/state_events_golden_test.go writes and "
          "TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites applies")),

@@ -548,7 +548,7 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 }
 
 // TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot: a board answer takes its cards and
-// the daemon's half of its tree walk from one repeatable-read transaction (readSampled), so a
+// the daemon's half of its tree walk from one repeatable-read transaction (readRecorded), so a
 // whole read's commit during the answer moves both or neither. The commit here lands, on another
 // connection, the moment the board's first statement reading legion_current ends: it moves the
 // child from `planning` in INFRA-1's tree to `testing` in a tree of its own. The answer is the
@@ -693,6 +693,54 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 	}
 	if len(reads) != 2 || reads[0] != "ok=true " || !strings.HasPrefix(reads[1], "ok=false record: ") {
 		t.Errorf("legion_reads = %q, want the good read and then the refused one, and no row saying the refused read succeeded", reads)
+	}
+}
+
+// TestTheBoardHeaderShowsAFailedWholeReadWhileTheReadIsOwed: a whole read that fails owes the read
+// (legion_event_cursors.read_owed), and the intake applies the project's batches of state events
+// meanwhile, each a legion_reads row of kind `events` that says ok. A batch's read_at is the
+// daemon's commit time, which can be past Dispatch's clock or before it, so the header's read is
+// the newest row Dispatch wrote (recorded_at), at that row's read_at. While the read is owed, the
+// header shows the failed whole read's failure over every batch after it. The next good whole read
+// clears the read owed, and a batch after it is a good read too, whatever its read_at.
+func TestTheBoardHeaderShowsAFailedWholeReadWhileTheReadIsOwed(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	daemon := newFakeLegionDaemon(t, handler, "INFRA")
+	seedLegionIssue(t, database, "INFRA", 1, "The issue", "a", nil, "")
+	daemon.read(t, database, legionStateOf("INFRA", `"INFRA-1":{"key":"INFRA-1","phase":"planning","tree":"INFRA-1"}`))
+	daemon.read(t, database, `not json`)
+	failed := legionBoardOf(t, handler, "INFRA").Header
+	if failed.ReadOK || failed.ReadError == nil {
+		t.Fatalf("the header after the failed read = %+v, want its failure", failed)
+	}
+	batch := func(at time.Time) {
+		t.Helper()
+		legionExec(t, database, `insert into legion_reads (project, read_at, ok, bytes, kind) values ('INFRA', $1, true, 512, 'events')`, at)
+	}
+
+	// One batch on a daemon clock an hour ahead of Dispatch's, then one an hour behind it.
+	ahead := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+	behind := ahead.Add(-2 * time.Hour)
+	batch(ahead)
+	batch(behind)
+	header := legionBoardOf(t, handler, "INFRA").Header
+	if header.ReadOK || header.ReadError == nil || *header.ReadError != *failed.ReadError {
+		t.Errorf("the header after two batches = %+v (read_error %v), want the failed whole read's %q: the read is still owed",
+			header, deref(header.ReadError), *failed.ReadError)
+	}
+	if header.ReadAt == nil || !header.ReadAt.Equal(behind) {
+		t.Errorf("the header's read_at = %v, want the newest batch Dispatch wrote, at its own %s", header.ReadAt, behind.Format(time.RFC3339Nano))
+	}
+
+	daemon.read(t, database, legionStateOf("INFRA", `"INFRA-1":{"key":"INFRA-1","phase":"testing","tree":"INFRA-1"}`))
+	if header := legionBoardOf(t, handler, "INFRA").Header; !header.ReadOK || header.ReadError != nil {
+		t.Errorf("the header after a good whole read = %+v, want a good read", header)
+	}
+	batch(behind.Add(time.Second))
+	header = legionBoardOf(t, handler, "INFRA").Header
+	if !header.ReadOK || header.ReadError != nil || header.ReadAt == nil || !header.ReadAt.Equal(behind.Add(time.Second)) {
+		t.Errorf("the header after a batch that follows the good read = %+v, want a good read at the batch's own time", header)
 	}
 }
 

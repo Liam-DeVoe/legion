@@ -174,7 +174,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 	}
 	keys := population.scopeKeys(from, to)
 	// The seven reads below write disjoint fields — five take the keys above and write fields of
-	// those issues, readSampled the window's observations and the project's reported set, and
+	// those issues, readRecorded the window's observations and the project's reported set, and
 	// readPhaseWork the phase-work keys — so they run together rather than one after another, as
 	// the delivery population's independent reads do (api/delivery.go). errgroup answers the first
 	// error recorded, so which of two failing reads names the failure is no longer fixed.
@@ -183,7 +183,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 		func(ctx context.Context) error { return population.readStatusMarks(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
-		func(ctx context.Context) error { return population.readSampled(ctx, pool, project, keys) },
+		func(ctx context.Context) error { return population.readRecorded(ctx, pool, project, keys) },
 		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, github, keys) },
 		func(ctx context.Context) error { return population.readPhaseWork(ctx, pool) },
 	}
@@ -573,7 +573,7 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 	return nil
 }
 
-// readSampled reads what the Legion intake writes — the window's issues' observations
+// readRecorded reads what the Legion intake writes — the window's issues' observations
 // (readObservations) and the project's reported set (readReported) — in one repeatable-read,
 // read-only transaction, so the timelines and the trees answer one moment: an intake commit
 // between two reads would give an issue a tree from a record its timeline does not hold, or a
@@ -581,7 +581,7 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 // beside Read's other reads, and the reported set is the short one — on the test Postgres at
 // 3,000 issues of 6 fields, 26 ms beside the history's 531 ms over 180,000 rows — so reading it
 // in turn costs the answer about that much.
-func (p *Population) readSampled(ctx context.Context, pool *store.Pool, project string, keys []string) error {
+func (p *Population) readRecorded(ctx context.Context, pool *store.Pool, project string, keys []string) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return fmt.Errorf("begin the read of %s's Legion observations: %w", project, err)
