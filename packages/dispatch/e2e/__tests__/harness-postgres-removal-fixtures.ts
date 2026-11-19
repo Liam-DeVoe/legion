@@ -621,6 +621,18 @@ export function boundOf(row: Row, ms: number, by = row.deadline): { ms: number; 
   };
 }
 
+/** `ms` scaled by `limit / own`, the share of a row's own limit `own` that its CI step leaves it,
+ *  in whole ms, rounded down exactly: the product first and then one division. A share taken first
+ *  (`ms * (limit / own)`) rounds twice, so where the exact share is a whole number of ms it can fall
+ *  a hair below it and floor one ms short: a run of the step-cut row of
+ *  `harness-postgres-removal.test.ts` read 437 for an exact 438 on 2026-11-19. Each operand is a
+ *  whole number of ms, and their product lies far below 2^53, so it is exact; the one division then
+ *  errs by less than one part in 2^52 of its quotient, while a quotient that is not a whole number
+ *  lies at least 1/`own` from every whole number, so it floors as the exact quotient does. */
+function shareOf(ms: number, limit: number, own: number): number {
+  return Math.floor((ms * limit) / own);
+}
+
 /** The `Row` of a row whose limit is `rowMs(waits)`, or the time its CI step leaves
  *  (`stepEnds`) where that is shorter, which starts now. */
 export function rowOf(waits: Waits): Row {
@@ -641,11 +653,11 @@ export function rowOf(waits: Waits): Row {
   const room = waits.roomMs ?? rowRoomMs;
   const step = stepEnds();
   const limit = step === undefined ? own : Math.max(0, Math.min(own, step - start));
-  // What the step leaves of the row's own limit: 1 where the step leaves it all, as off CI.
+  // What the step leaves of the row's own limit: all of it where the step leaves it all, as off CI.
   const share = limit / own;
-  const deadline = start + Math.floor(waitsMs(waits) * share);
+  const deadline = start + shareOf(waitsMs(waits), limit, own);
   // The waits of the `finally` after the deadline: its stops, then the room for its removals.
-  const stops = deadline + Math.floor((own - waitsMs(waits) - room) * share);
+  const stops = deadline + shareOf(own - waitsMs(waits) - room, limit, own);
   const cut =
     step !== undefined && limit < own
       ? `the end of the CI step that runs it, at ${new Date(step).toISOString()} (${stepEndsVariable}), ${limit / 1000} s after the row began and before its own ${own / 1000} s`

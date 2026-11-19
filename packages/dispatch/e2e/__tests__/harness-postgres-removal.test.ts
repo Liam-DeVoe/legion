@@ -54,7 +54,7 @@ import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 import ts from "typescript";
 
-import { removalBounds, removeContainer } from "../harness-postgres-container-removal";
+import { machine, removalBounds, removeContainer } from "../harness-postgres-container-removal";
 import * as marks from "../harness-postgres-marks";
 import { claimWaitMs, servingPostmasters, stopPostmaster } from "../harness-postgres-removal";
 import {
@@ -1355,6 +1355,47 @@ test(
   },
   // What the row counts, summed by the fixtures' program (`rowMs`): one child, one holder read, the
   // planted event's bound, and the removal bound of its `finally`.
+  rowMs(stepCut)
+);
+
+// The row above draws its step's end from a window of 1 s, so a run of it reads one share of the
+// row's limit. This row reads every whole ms of that window, on a clock it holds still
+// (`machine.now`, the clock `rowOf` reads), and holds the share `rowOf` gives the row's waits and
+// the share it gives its stops to the exact share, in integers. A share taken as a ratio first and
+// then scaled rounds twice: it floored one ms short of an exact 438 in a run of the row above on
+// 2026-11-19.
+test(
+  "a row's waits and its stops get the exact whole ms of what its CI step leaves, at every whole ms the row above may draw",
+  () => {
+    const own = rowMs(stepCut);
+    const stops = own - waitsMs(stepCut) - (stepCut.roomMs ?? rowRoomMs);
+    const exact = (ms: number, limit: number) => Number((BigInt(ms) * BigInt(limit)) / BigInt(own));
+    // A whole second, as a step exports it, ahead of the first read of the step's end.
+    const stepEnd = Math.ceil(Date.now() / 1000) * 1000 + 10_000;
+    const saved = process.env[stepEndsVariable];
+    const now = machine.now;
+    const wrong: string[] = [];
+    try {
+      process.env[stepEndsVariable] = String(stepEnd / 1000);
+      for (let limit = 500; limit <= 1_500; limit += 1) {
+        machine.now = () => stepEnd - limit;
+        const row = rowOf(stepCut);
+        const got = [row.ms, row.stops - row.deadline];
+        const want = [exact(waitsMs(stepCut), limit), exact(stops, limit)];
+        if (got[0] !== want[0] || got[1] !== want[1]) {
+          wrong.push(
+            `${limit} ms left: waits ${got[0]} ms and stops ${got[1]} ms, where the exact shares are ${want[0]} and ${want[1]}`
+          );
+        }
+      }
+    } finally {
+      machine.now = now;
+      if (saved === undefined) delete process.env[stepEndsVariable];
+      else process.env[stepEndsVariable] = saved;
+    }
+    expect(wrong).toEqual([]);
+  },
+  // What the row counts, as the row above: it calls `rowOf` of the same waits and waits for none.
   rowMs(stepCut)
 );
 
