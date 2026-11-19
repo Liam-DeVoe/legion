@@ -32,6 +32,7 @@ go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bund
 go run ./cmd/writing-check dataset followups --from <bundle> --cases <build dir> --out <dir>
 go run ./cmd/writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
+go run ./cmd/writing-check calibrate --name <name> (--run <dir>[,<dir>...] | --rows <file>) [--labels-v1 <file>] [--labels-v2 <file>] [--split <file>] [--read-before-split <file>] [--half fit|measure|all] [--pairs <file>] [--verdicts <file>] [--measured <file>]
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
 go run ./cmd/writing-check harness score --cases <build dir> [--sessions <dir>] --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S] [--grader <model> [--grader-no-session]] [--grader-timeout <d>] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify|inputs-first-verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
 go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] [--added-grader old|inputs-first|verify|inputs-first-verify] <model flags>
@@ -1264,6 +1265,91 @@ another parent changes the record's parent and root.
 `TestDatasetNamedWritesCasesTheHarnessLoads` runs `named` against a stand-in Dispatch and loads
 the output with the harness's case reader (`harness.LoadDataset`).
 `TestDatasetNamedMakesACaseOfAnAsk` does the same for an ask.
+
+## calibrate
+
+`calibrate` checks the `answered` score of `harness` against what the owner did after an
+agent's explanation of his words (see "Calibrating answered" under `harness`). It computes the
+reaction check and the pair check of INFRA-3231, the figures that scripts took before it. It
+reads files only: it calls no model and reads nothing over the network.
+
+| Flag | Meaning |
+| --- | --- |
+| `--labels-v1`, `--labels-v2` | The two labels files. Each is JSONL, one row for each question case: `case_id`, `label` (`understood` or `not_understood`), `part`, `split_group` and `explanation_tid`. The case of the explanation is `answer/<explanation_tid>`. The reaction check is printed for each file that is given. |
+| `--split` | The split file, `{"fit_groups": [...], "measure_groups": [...]}`: the split groups of each half. `--half fit` and `--half measure` need it. |
+| `--read-before-split` | A JSON file whose `their_measure_groups` are the groups of the measure half that were read before the split. `--half measure` needs it. |
+| `--run` | The harness run directories that give the score, comma-separated. The score of a case is `grades.answered.verdict` in the run's `cases.jsonl`. A grade with an `error`, or with no verdict, gives no score. When two runs score one case differently, the command refuses it (exit 1). When they score it the same, that is the score. |
+| `--rows` | In place of `--run`: a JSONL file of `{"expl": <case id>, "score": <bool>}` rows, the score of a judge that is no harness run. An explanation that the file does not hold has no score. |
+| `--half` | `fit`, `measure` (the default) or `all`: the rows whose split group is in the fit half, in the measure half, or every row of the tuning part. `--half` does not select pairs. |
+| `--pairs` | A pairs file, for the pair check (see below). |
+| `--verdicts` | The question check's verdicts, JSONL rows of `id` and `categories`, for the figures by question kind. |
+| `--name` | The name of the measurement (required). |
+| `--measured` | A JSONL file. The command appends the record of the measurement to it (see below). |
+
+Give `--run` or `--rows`, and labels or `--pairs`.
+
+**The reaction check.** A row of a labels file is counted when its `part` is `development` (the
+tuning part), its label is `understood` or `not_understood`, and its split group (`split_group`,
+or else its case id) is in the half. A counted row whose explanation has no score is left out and
+counted as unscored. For each labels file, in the order v1, v2, the command prints one line for
+the half. For `--half measure`, it prints a second line for the measure half without the groups
+read before the split. Each line gives:
+
+- `n`: the rows with a score, their split groups, and the unscored rows;
+- `agreement`: the share of rows where the score says answered and he understood, or says not
+  answered and he did not understand, with its interval;
+- `caught k of N`: of the N explanations he did not follow, the k that the score says did not
+  answer, with its interval;
+- the table of his reaction against the score;
+- `PASS` or `FAIL` against the bar.
+
+With `--verdicts`, each such line is followed by one line for each question kind, with point
+figures and no interval: the cases, those he understood, the agreement, and caught k of N. The
+kind of a case is the most common of its categories. A tie goes to the category that is listed
+first, as Python's `Counter.most_common` orders them. A case with no category has the kind
+`(none)`.
+
+**The pair check.** Each row of a pairs file holds two question cases of one split group
+(`group`): `not_followed`, whose explanation `expl_not_followed` he did not follow, and
+`followed`, whose explanation `expl_followed` he followed. The score prefers the pair when it
+says that the followed explanation answered and the other did not. It ties when it says the same
+of both, and it is reversed when it says the opposite. A pair with an unscored explanation is
+left out and counted as unscored. The command prints one line for all pairs, with `PASS` or
+`FAIL`, then one line for each value of `half` and for each value of `part`. Each line gives the
+scored pairs, their groups, the unscored pairs, `prefers k of n` with its interval, the ties and
+the reversed pairs.
+
+**The bar.** The reaction check passes when the agreement is at least 80%, its interval's lower
+end is at least 70%, and caught is at least 70%. The pair check passes when the share that
+prefers is at least 80% and its interval's lower end is at least 70%. An unscored pair fails the
+pair check, and the line gives the count. A `FAIL` does not change the exit status.
+
+**The interval.** Every interval is 95%, a cluster bootstrap over the split groups that
+reproduces `cluster_ci` of the earlier scripts exactly. The groups are sorted by byte order.
+Each of 10,000 draws picks as many groups as there are, with replacement, by `randrange` of
+Python's `random.Random(3231)`, and pools their rows. Each interval uses a new generator with that
+seed. A draw with no trial is skipped: for caught, a draw with no explanation that he did not
+follow. Of the k sorted values, the bounds are the values at `int(0.025·k)` and
+`min(k−1, int(0.975·k))`. Percentages are printed as Python's `{:.1%}` prints them. The generator
+is a port of CPython's MT19937 (`pyRandom`); `TestMTMatchesPythonsRandom` checks it against
+values drawn by Python, and `TestCalibrateReactionCheckMatchesAgreePy` checks the figures against
+the scripts' functions on a made-up fixture.
+
+**The record.** With `--measured`, the command appends one JSON line to the file after it
+prints the figures: `name`; `runs` (the `--run` directories) or `rows` (the `--rows` file);
+`half`; `figures`, each printed line by its key; and `at`, the time in UTC, RFC 3339 to the
+second. The keys are `scores` (the first line), `bar`, `<version>/<selection>`,
+`<version>/<selection>/kind/<kind>`, `pairs/all`, `pairs/half/<half>` and `pairs/part/<part>`.
+The version is `v1` or `v2`, and the selection is `fit`, `measure`, `measure-unread` or `all`.
+When the file already holds a record of the name (its `name`, or the `variant` of a record that
+the earlier script wrote), the command refuses it before it prints anything: exit 1, and nothing
+is written. The command exits 2 for flags it cannot use.
+
+```sh
+go run ./cmd/writing-check calibrate --name <name> --half measure --run <run dir> \
+  --labels-v1 labels.jsonl --labels-v2 labels-v2.jsonl --split split.json \
+  --read-before-split read-before-split.json --pairs pairs.jsonl --measured measured.jsonl
+```
 
 ## harness
 

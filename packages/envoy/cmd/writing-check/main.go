@@ -28,6 +28,7 @@
 //	writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
 //	writing-check dataset followups --from <bundle> --cases <build dir> --out <dir>
 //	writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
+//	writing-check calibrate --name <name> (--run <dir>[,<dir>...] | --rows <file>) [--labels-v1 <file>] [--labels-v2 <file>] [--split <file>] [--read-before-split <file>] [--half fit|measure|all] [--pairs <file>] [--verdicts <file>] [--measured <file>]
 //	writing-check harness probe|score|grader-test|local|load [flags]
 //
 // probe-model measures the latency of the model reader's calls, fetch reads the prose agents
@@ -42,7 +43,9 @@
 // and validate checks a description file. dataset builds the dataset of INFRA-3231's R1 from the
 // event log: a snapshot, the verdicts of the selection prompt, and the cases; its named step
 // builds cases from document versions and asks read from the live Dispatch. harness scores the
-// changes of INFRA-3231's R3 on that dataset (package harness). README.md says what each one does.
+// changes of INFRA-3231's R3 on that dataset (package harness), and calibrate checks the
+// harness's answered score against what the owner did after an agent's explanation, calling no
+// model. README.md says what each one does.
 package main
 
 import (
@@ -82,6 +85,7 @@ subcommands:
   reading            take the outcome reading over a window of agent writes
   validate           check a description file (scanner.yaml) against the method's rules
   dataset            build the dataset of texts the owner could not read: fetch, classify, build, pack, owner-texts, followups, named
+  calibrate          check the answered score against what the owner did after an explanation
   harness            score the changes of INFRA-3231 on the dataset: probe, score, grader-test, local, load
 
 writing-check <subcommand> -h lists its flags.
@@ -129,6 +133,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runValidate(args[1:], stdout, stderr)
 	case "dataset":
 		return runDataset(ctx, args[1:], stdout, stderr)
+	case "calibrate":
+		return runCalibrate(args[1:], stdout, stderr)
 	case "harness":
 		return harness.Run(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
