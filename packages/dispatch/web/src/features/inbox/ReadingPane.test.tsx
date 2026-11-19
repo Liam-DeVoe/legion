@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { changingEachHandle, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { ApiError, api } from "../../api/client";
@@ -603,6 +604,92 @@ test("an approval draws the request's own question above the document, inside th
     expect(screen.getByTestId("inbox-pane-scroller").contains(block)).toBe(true);
   } finally {
     view.unmount();
+  }
+});
+
+/** A reply on the approval request's own ask, as the Inbox row's thread carries it. */
+function approvalReply(id: string, author: InboxRow["author"], body: string, at: string) {
+  return {
+    ...commentDeliveryFields(),
+    anchor: null,
+    ask_id: "ask-a",
+    author,
+    body,
+    created_at: at,
+    edited_at: null,
+    id,
+    issue_key: "CORE-1",
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+}
+
+const PERSON_REPLY = "Does the canary hold the old flag for a day?";
+const AGENT_REPLY = "It does: the flag stays on until the canary has run a full day.";
+
+test("an approval draws the replies on its ask from the row's own thread, with its reply box and no read of its own", async () => {
+  await warmMarkdownRenderer();
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  // The row carries the ask's thread, as the Inbox's one list read hydrates every row's: the
+  // column draws it from there, and a read of the ask's thread is a request it never makes.
+  const getAsk = spyOn(api, "getAsk").mockRejectedValue(new Error("the column read the thread"));
+  const row = approvalAsk();
+  const { view } = renderPane({
+    ask: {
+      ...row,
+      thread: {
+        ...row.thread,
+        replies: [
+          approvalReply(
+            "reply-person",
+            { id: "bob", kind: "user" },
+            PERSON_REPLY,
+            "2026-09-11T01:00:00Z"
+          ),
+          approvalReply(
+            "reply-agent",
+            { id: "session-1", kind: "session" },
+            AGENT_REPLY,
+            "2026-09-11T02:00:00Z"
+          ),
+        ],
+      },
+    },
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+        { 4: latest }
+      ),
+  });
+
+  try {
+    const question = await screen.findByTestId("pane-approval-question");
+    const thread = await screen.findByTestId("thread-ask-a");
+    expect(await within(thread).findByText(PERSON_REPLY)).toBeDefined();
+    expect(await within(thread).findByText(AGENT_REPLY)).toBeDefined();
+    // The box a reply is written in, with the button that sends it, under the replies.
+    expect(within(thread).getByRole("textbox", { name: "Reply" })).toBeDefined();
+    expect(within(thread).getByRole("button", { name: "Reply" })).toBeDefined();
+    // Under the question, and above the version the request asks about, in the one scroller.
+    expect(
+      question.compareDocumentPosition(thread) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeGreaterThan(0);
+    const drawn = await screen.findByLabelText("Document version 4");
+    expect(
+      thread.compareDocumentPosition(drawn) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeGreaterThan(0);
+    expect(screen.getByTestId("inbox-pane-scroller").contains(thread)).toBe(true);
+    // The question is the column's own block, and the card's parts draw it nowhere else.
+    expect(screen.getAllByText("Approve spec.md at version 4?")).toHaveLength(1);
+    expect(getAsk).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
   }
 });
 

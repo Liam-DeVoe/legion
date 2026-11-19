@@ -306,6 +306,10 @@ export interface AskThreadProps {
   /** The ids of the replies the reader has not read (`unreadWrites` in
    *  `threads/thread-layout.ts`): an unread reply is never folded away. */
   unread?: ReadonlySet<string>;
+  /** Whether the reply composer stands under an open ask too, where the host answers the ask with
+   *  controls of its own and draws no answer area to ask back in: a reply is then the one way
+   *  into the thread (`AskCard`'s `exchangeOnly`, the Inbox reading pane's approval request). */
+  repliesWhileOpen?: boolean;
 }
 
 /**
@@ -316,7 +320,8 @@ export interface AskThreadProps {
  * An answered or resolved ask keeps a plain reply composer, next to the newest message
  * (`composerFirst`), and `takesReply` says which asks do; an open ask reserves its single
  * composer for answering or asking back, and draws a reply the reader had not sent before it
- * opened again read-only in the composer's place (`useUnsentReply`).
+ * opened again read-only in the composer's place (`useUnsentReply`) - unless its host answers it
+ * elsewhere and draws no such composer (`repliesWhileOpen`), which keeps the reply composer here.
  */
 export function AskThread({
   ask,
@@ -330,6 +335,7 @@ export function AskThread({
   owner,
   order,
   unread,
+  repliesWhileOpen = false,
 }: AskThreadProps): ReactNode {
   const replies = thread.data?.replies ?? [];
   const [showAllReplies, setShowAllReplies] = useState<boolean>();
@@ -381,7 +387,7 @@ export function AskThread({
     />
   );
   const unsentReply = useUnsentReply(ask);
-  const composer = !showComposer ? null : takesReply(ask) ? (
+  const composer = !showComposer ? null : repliesWhileOpen || takesReply(ask) ? (
     <AskReplyComposer ask={ask} createReply={reply} uploadOwner={uploadOwner} />
   ) : unsentReply === "" ? null : (
     <UnsentReply text={unsentReply} />

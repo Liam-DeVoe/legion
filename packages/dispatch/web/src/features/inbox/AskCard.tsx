@@ -129,6 +129,14 @@ export interface AskCardProps {
    *  editor shows the question, and the block is the link's target, so the card renders only
    *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
   frame?: AskFrame;
+  /** Draws the ask's exchange alone - its replies and the reply box under them - for a host that
+   *  draws the question and answers it with controls of its own: the Inbox reading pane's
+   *  approval request, whose column draws the question above the document's version and whose
+   *  head approves or requests changes (`ApprovalBody` in `ReadingPane.tsx`). The exchange is the
+   *  card's own - its thread read, seeded from `initialThread`, its order and its read mark -
+   *  drawn inline whatever `thread` says, and its reply box stands while the ask is open too,
+   *  since nothing else that host draws posts to the thread (`AskThread`'s `repliesWhileOpen`). */
+  exchangeOnly?: boolean;
   answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
   declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   /** Reply-thread fetch/write seams for tests; default to the real API. */
@@ -391,6 +399,7 @@ export function AskCard({
   thread = "inline",
   variant = "full",
   frame = "card",
+  exchangeOnly = false,
   answerAsk: answer = answerAsk,
   createReply: reply = createReply,
   declineAsk: decline = declineAsk,
@@ -688,7 +697,7 @@ export function AskCard({
   // A reply's own `dispatch://` reference needs the project document behind a document ask
   // (`askOwner`), which only an Inbox row carries on the ask itself.
   const threadNode =
-    thread === "collapsed" ? (
+    thread === "collapsed" && !exchangeOnly ? (
       <AskThreadDisclosure
         ask={currentAsk}
         createReply={reply}
@@ -706,15 +715,21 @@ export function AskCard({
         ask={currentAsk}
         createReply={reply}
         currentReplyId={currentReplyId}
-        embedded={completed === null}
+        embedded={exchangeOnly || completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
         order={threadOrder}
         owner={askOwner}
+        repliesWhileOpen={exchangeOnly}
         thread={threadQuery}
         unread={unreadReplies}
         uploadOwner={uploadOwner}
       />
     );
+  // The host draws everything else: the question, the controls that answer it, and the record
+  // of an answer, which an approval's head shows on its chip.
+  if (exchangeOnly) {
+    return threadNode;
+  }
 
   const answerLabel = changing ? "Save answer" : "Answer";
   /** What Answer says while it is busy: this card's own send, or an upload the draft is waiting

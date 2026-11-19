@@ -1,5 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
@@ -9,7 +17,7 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
-import { moveTheBox } from "../doc/readers-place";
+import { keepWhatStandsUnder, moveTheBox } from "../doc/readers-place";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -128,8 +136,37 @@ function useMarkedBlocks(content: RefObject<HTMLDivElement | null>): boolean {
   return marked;
 }
 
+/** The replies on an approval request's own ask and the box a reply is written in, which the
+ *  column draws under the request's question through the parts every ask card draws its exchange
+ *  with (`AskCard`'s `exchangeOnly`): the same thread, the same reply box and the same read mark.
+ *  The thread is the row's own, seeded as the card the column falls back to seeds it
+ *  (`QuestionCard`), so drawing it asks the server for nothing.
+ *
+ *  It stands above the version the reader reads, so a reply that lands while they are down in
+ *  that version grows this box above them: the page answers each growth of the box while it
+ *  stands above the top of the column (`keepWhatStandsUnder`, `features/doc/readers-place.ts`),
+ *  and the words under it stay on the line they are on. A reader who can see the box watches the
+ *  reply land. One box for each request, so the next request's replies are a box of their own
+ *  rather than a growth of this one, and where the column stands is the placement's to say. */
+function ApprovalExchange({ ask }: { ask: InboxRow }): ReactNode {
+  const box = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = box.current;
+    return element === null ? undefined : keepWhatStandsUnder(element);
+  }, []);
+  return (
+    // `flow-root`, so the box measures the whole of what it draws: a margin inside it would
+    // otherwise collapse out through it and be counted by no correction.
+    <div className={`mb-3 flow-root border-b pb-3 ${borderDefault}`} ref={box}>
+      <AskCard ask={ask} exchangeOnly initialThread={{ ask, ...ask.thread }} />
+    </div>
+  );
+}
+
 /** An approval request: the document's latest version - the version Approve approves - with
- *  every word changed since the last approval marked, and "Next change" stepping the marks. */
+ *  every word changed since the last approval marked, and "Next change" stepping the marks;
+ *  above it the request's own question, and under the question the replies on its ask with the
+ *  box a reply is written in (`ApprovalExchange`). */
 function ApprovalBody({
   approval,
   artifactId,
@@ -289,10 +326,11 @@ function ApprovalBody({
       latestVersion === undefined ||
       (approvedVersion !== undefined && baselineQuery.isPending);
     // The question stands while the skeleton does: it is the pane's alone to draw, and waits
-    // on none of the document's reads.
+    // on none of the document's reads. So do the replies under it, which the row carries.
     return (
       <>
         {question}
+        <ApprovalExchange ask={ask} key={ask.id} />
         {opening ? (
           <LoadingSkeleton label={`Opening ${approval.name}`} />
         ) : (
