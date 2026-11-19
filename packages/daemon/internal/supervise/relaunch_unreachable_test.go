@@ -604,9 +604,11 @@ func TestARelaunchRefusedAfterItsStopLeavesNoClaimRecordingAStoppedProcess(t *te
 // that does not answer it — a dropped connection, a pool that timed out, a lock wait past the
 // request's time — is no refusal of the tree's. The relaunch stops nothing then either, and says
 // so with a sentinel of its own, which the API answers with a code that asks for the relaunch
-// again, and writes a line for it. Read as the tree's refusal, the controller would leave the
-// claim to a close or a start of its tree that nothing is about to make, and the claim would stay
-// out of reach with nobody acting.
+// again. The machine writes no line of its own for it: each caller writes the one line, the API's
+// route (api's claimRelaunch) and the daemon's relaunch of its own controller (internal/daemon's
+// relaunchOwnController), so one failed check is one line. Read as the tree's refusal, the
+// controller would leave the claim to a close or a start of its tree that nothing is about to
+// make, and the claim would stay out of reach with nobody acting.
 func TestARelaunchWhoseTreeCheckTheStoreDoesNotAnswerStopsNothingAndIsAskedAgain(t *testing.T) {
 	store := &epochStore{epoch: 1}
 	h := lifecycleHarness(t, store, queuedClaim())
@@ -633,8 +635,8 @@ func TestARelaunchWhoseTreeCheckTheStoreDoesNotAnswerStopsNothingAndIsAskedAgain
 	if p := h.pending(); p.ID != sent || p.Interrupted {
 		t.Fatalf("pending = %+v, want the task the turn runs left as it was", p)
 	}
-	if lines := h.logs.lines("the tree lifecycle's check of the relaunch got no answer"); len(lines) != 1 {
-		t.Fatalf("logged %v, want one line naming the check that got no answer", lines)
+	if lines := h.logs.lines(errUnanswered.Error()); len(lines) != 0 {
+		t.Fatalf("the machine logged %v, want no line of its own: the relaunch's caller writes the one line of the failed check", lines)
 	}
 	h.wantBudgets(Budgets{})
 }

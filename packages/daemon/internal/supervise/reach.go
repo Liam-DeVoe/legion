@@ -259,8 +259,9 @@ type RequestRelaunch struct {
 // A refusal before the stop is a refusal of the claim, as the guard's and the runtime's are
 // (RefusedError), and the tree lifecycle's recheck answers one of two: the tree's own refusal
 // (treelifecycle.Refuses) is ErrTreeRefusesLaunch, which its tree's close or next start decides,
-// and any other error of that check — a store that did not answer — is ErrTreeCheckFailed,
-// written to the log, which says nothing was stopped and the relaunch may be asked for again. A
+// and any other error of that check — a store that did not answer — is ErrTreeCheckFailed, which
+// says nothing was stopped and the relaunch may be asked for again, and which its caller writes
+// to the log once (api's claimRelaunch, internal/daemon's relaunchOwnController). A
 // launch left to be tried again after the stop (relaunchLater, whose error says so:
 // errLaunchWaits) is no refusal:
 // the process is stopped, the relaunch is recorded and the daemon makes the launch itself, so the
@@ -328,8 +329,6 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		if treelifecycle.Refuses(err) {
 			return refuse(fmt.Errorf("%w: %w", ErrTreeRefusesLaunch, err))
 		}
-		m.log.Warn("supervise: the tree lifecycle's check of the relaunch got no answer; nothing is stopped, and the relaunch may be asked for again",
-			"incarnation", loc.Incarnation, "error", err)
 		return refuse(fmt.Errorf("%w: %w", ErrTreeCheckFailed, err))
 	}
 	m.log.Warn("supervise: relaunching a claim Envoy cannot reach on its same session; the stop charges nothing",
