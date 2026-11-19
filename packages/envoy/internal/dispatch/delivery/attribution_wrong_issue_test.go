@@ -247,8 +247,9 @@ func TestPR2808EveryWriterGivesTheBranchsIssue(t *testing.T) {
 // branch's candidate is gone, so the body's first key wins at rank 4 and the write may replace
 // the stored issue. GitHub's own webhook always carries head_ref (contracts' githubPayload), so
 // only another publisher of `notifications.github.` subjects sends this; any Envoy /v1 bearer
-// may. This build writes nothing the envelope says and reads the pull request from GitHub.
-func TestPR2808AnEnvelopeWithoutItsBranchGivesTheBodysFirstKey(t *testing.T) {
+// may. This build writes nothing the envelope says and reads the pull request from GitHub, so
+// #2808 still gets the issue that GitHub's answer names in its branch.
+func TestPR2808AnEnvelopeWithoutItsBranchStillGivesTheBranchsIssue(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedPR2808Issues(t, ctx, pool)
