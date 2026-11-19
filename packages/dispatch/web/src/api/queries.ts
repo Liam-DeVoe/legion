@@ -303,8 +303,8 @@ export const artifactBlocksQuery = (id: string) =>
  *  (`features/doc/ProofDocument.tsx`) and the Inbox's reading column
  *  (`features/inbox/PaneDocument.tsx`, `features/inbox/ReadingPane.tsx`) read this one entry,
  *  and a version named on the page is written into it. It is declared here, beside the landing
- *  that seeds it, and not in the column's module where it was: the entry imports this file, and
- *  a factory it imported from a reader's module would bring that whole module into the entry. */
+ *  that seeds it, and not in a reader's module: the entry imports this file, and a factory it
+ *  imported from a reader's module would bring that whole module into the entry. */
 export const artifactQueryOptions = (artifactId: string) =>
   queryOptions({
     queryKey: ["artifact", artifactId],
@@ -316,9 +316,9 @@ export const artifactQueryOptions = (artifactId: string) =>
  *  stored tree outside the Proof schema. The live document (`features/doc/ProofDocument.tsx`),
  *  the Inbox's reading column (`features/inbox/PaneDocument.tsx`) and a reference's hover card
  *  (`artifactTextQuery` in `features/refs/reference-target.ts`) read it under this one key. It
- *  is declared here, beside the landing that seeds it, and not in `ProofDocument` where it was:
- *  the entry imports this file, and importing the factory from there would bring the whole
- *  document module into the entry. */
+ *  is declared here, beside the landing that seeds it, and not in `ProofDocument`: the entry
+ *  imports this file, and importing the factory from there would bring the whole document
+ *  module into the entry. */
 export const liveTextQueryOptions = (artifactId: string) =>
   queryOptions({
     queryKey: ["artifact", artifactId, "text"],
@@ -567,9 +567,9 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
  *  when labels are active. List and Board build their keys here, so one set of labels is one
  *  key in both; `projectIssuesQuery` then forks on `open`, so the open-only read of a view that
  *  hides closed issues is a key of its own under the same prefix. It is declared here, beside
- *  the query that reads it, and not in `features/project/issue-filters.ts` where it was: the
- *  entry imports this file, and a key taken from the filters' module brought that module, the
- *  issue page's claim chip and what the chip draws into the entry with it. */
+ *  the query that reads it, and not in `features/project/issue-filters.ts`: the entry imports
+ *  this file, and a key taken from the filters' module would bring that module, the issue
+ *  page's claim chip and what the chip draws into the entry with it. */
 export function projectIssuesQueryKey(
   project: string,
   labels: readonly string[]
