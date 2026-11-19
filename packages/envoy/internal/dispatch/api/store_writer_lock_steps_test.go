@@ -1198,12 +1198,13 @@ func (r *storeWriterRig) documentEdit() storeWriter {
 // so the owner it takes first is its project, whose row numbers the issue. It then writes the
 // issue's node and its spec's in one write, then the issue's row and the spec's row, which name
 // them. No live process of the rig lacks the issue room, so each run is born converted (T12b of
-// this branch's plan): after the spec's row it writes, inline, the issue's tree (createIssueTree)
-// and its issue_trees row, the spec's document_rooms row naming that tree, and the decisions query
-// node (createDecisionsQuery), each node before the row naming it; the tree's version 1, whose
-// insert writes the tree's fence row, the fence of the room the spec is indexed in, is queued in
-// the read phase (planConvertedIssueRoom) and runs with the rest of the write phase at the commit,
-// after those rows. The tree's and the decisions query's nodes, rows and versions are writes of
+// this branch's plan): after the spec's row it queues, at the head of its write phase
+// (createConvertedIssueRoom), the issue's tree (createIssueTree) and its issue_trees row, the
+// spec's document_rooms row naming that tree, and the decisions query node (createDecisionsQuery),
+// each node before the row naming it, ahead of the tree's version 1, whose insert writes the tree's
+// fence row, the fence of the room the spec is indexed in, which the read phase queued
+// (planConvertedIssueRoom); all of them run at the commit. The tree's and the decisions query's
+// nodes, rows and versions are writes of
 // tables an earlier step takes first; the issue_trees and document_rooms rows are each the first
 // write of its own table, held in turn. The commit then writes the spec's version 1, indexes it in
 // the room as an upload indexes its document, appends issue.created, and appends what the index

@@ -225,6 +225,22 @@ func (l *Ledger) Queue(step WriteStep) error {
 	return nil
 }
 
+// QueueFirst puts step at the head of the transaction's write phase, before every write queued so
+// far: for rows a route writes after its read phase has queued document work that reads them -
+// an issue's room, which the spec's queued version, fence and index resolve the spec's room
+// through - so the rows join the write phase's batch, ahead of that work, rather than running
+// inline inside the transaction's id window. It refuses what Queue refuses.
+func (l *Ledger) QueueFirst(step WriteStep) error {
+	if l.tx == nil {
+		return errUnjoined
+	}
+	if l.sealed {
+		return ErrQueueSealed
+	}
+	l.queue = append([]WriteStep{step}, l.queue...)
+	return nil
+}
+
 // queueFor is the ledger whose write queue a write made in tx joins: ctx's, when it queues tx's
 // writes (writer) and its write phase has not begun. Nil means the write runs at once: in a
 // transaction no ledger queues (a durable writer's own, a test's), or while the write phase's

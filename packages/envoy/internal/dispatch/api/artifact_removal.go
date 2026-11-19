@@ -287,7 +287,7 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 // join the room (documentJoinsIssueRoom), and the role test already refuses each of them, but a
 // role document reads no role once an operator erases its query node (`envoy-dispatch erase`), so
 // this test keeps every document of the room out of the removal. Every writer of a document_rooms
-// row takes the issue's owner lock first (joinIssueRoom, queueIssueRoomJoin), so the row read here
+// row takes the issue's owner lock first (createConvertedIssueRoom, queueIssueRoomJoin), so the row read here
 // stands until the removal commits.
 func artifactRowIsUntouched(artifact model.Artifact) error {
 	switch {
@@ -476,7 +476,7 @@ type artifactClear struct {
 // and it would make "nothing deletes an ask" false where two `for no key update` levels rest on
 // it (lockAskForTransition, docs' loadAskBlocks). document_rooms.artifact_id carries no cascade
 // either, and no row of it can be there: a document it names is refused before the room's lock
-// (artifactRowIsUntouched), and its writers take the issue's owner lock first (joinIssueRoom,
+// (artifactRowIsUntouched), and its writers take the issue's owner lock first (createConvertedIssueRoom,
 // queueIssueRoomJoin).
 func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 	id := []any{artifact.ID}

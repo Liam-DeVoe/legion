@@ -162,16 +162,16 @@ var storeWriteCallSites = map[string]string{
 	// document is deleted, and removeArtifact appends what it stated in the batch that appends the
 	// artifact.removed event, appendCausingEvent (api's TestARemovalStatesItsDocumentGoneInTheStoreLockOrder).
 	// createIssueTree is an issue's tree artifact (R5 of this branch's spec): its node and its
-	// part_of to the issue through WriteUncaused before the artifacts row that names the node and
-	// the issue_trees row, in its caller's transaction, which holds the issue's row and causes what
-	// the write stated under the event it appends - the order of the write it shares with
-	// createIssue's spec (WriteUncaused, then the row), which TestEveryStoreWriteTakesOneLockOrder
-	// proves of WriteUncaused. createDecisionsQuery is the decisions query node of an issue born
-	// converted (T12b of this branch's plan): in createIssue's transaction, after the
-	// issue's row, the tree's issue_trees row and the spec's document_rooms row, its node and its
-	// part_of through WriteUncaused before the artifacts row naming the node, then its empty
+	// part_of to the issue through QueueNodes before the artifacts row that names the node and
+	// the issue_trees row, queued at the head of its caller's write phase, whose transaction holds
+	// the issue's owner lock and causes what the write stated under the event it appends - the
+	// order of the write it shares with createIssue's spec (the node, then the row), which
+	// TestEveryStoreWriteTakesOneLockOrder proves of the node write. createDecisionsQuery is the
+	// decisions query node of an issue born converted (T12b of this branch's plan): in the same
+	// queued step, after the tree's issue_trees row and the spec's document_rooms row, its node and
+	// its part_of through QueueNodes before the artifacts row naming the node, then its empty
 	// version 1 and that version's node, and createIssue causes what both stated under
-	// issue.created through Caused. api's TestEveryObjectNodeWriterTakesTheStoreLockOrder runs
+	// issue.created through QueueCaused. api's TestEveryObjectNodeWriterTakesTheStoreLockOrder runs
 	// createIssue born converted and holds it to those steps.
 	"api/artifact_removal.go#removedDocumentNodes": "api#TestARemovalStatesItsDocumentGoneInTheStoreLockOrder",
 	"api/artifacts.go#createIssueTree":             "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",

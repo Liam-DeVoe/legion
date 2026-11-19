@@ -625,13 +625,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// An issue born converted takes, in its write phase, the rows its read phase planned: its tree,
-	// whose Yjs document is the issue's room, the spec's document_rooms row naming it, written here
-	// at once, after both rows its keys name and before the commit runs any statement the read
-	// phase queued, so every queued statement that resolves the spec's room reads the room (T12b of
-	// this branch's plan); and its decisions query node (createConvertedIssueRoom).
+	// whose Yjs document is the issue's room, the spec's document_rooms row naming it, and its
+	// decisions query node (createConvertedIssueRoom), queued at the head of the write phase,
+	// after the spec's row above, which they name, and before every statement the read phase
+	// queued, so every queued statement that resolves the spec's room reads the room (T12b of this
+	// branch's plan). They steer nothing this route answers, so they run in the write phase's batch
+	// and not inline inside the transaction's id window.
 	var roomNodes graphstore.Uncaused
 	if bornConverted {
-		if roomNodes, err = s.createConvertedIssueRoom(r.Context(), tx, key, input.Project, artifactID, room, actor, createdAt); err != nil {
+		if roomNodes, err = s.createConvertedIssueRoom(ledger, key, input.Project, artifactID, room, actor, createdAt); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -938,7 +940,9 @@ type convertedIssueRoom struct {
 // spec's document_rooms row, which the write phase writes (createConvertedIssueRoom), on the
 // ledger: the tree and the query as pending artifacts, so the document work below and the
 // spec's seed read their addresses, and the spec as edited in the tree's room
-// (Ledger.RegisterPendingRoom), so the spec's seed writes the spec's fragment of the room. Then it
+// (Ledger.RegisterPendingRoom), so the spec's seed writes the spec's fragment of the room; and it
+// announces the spec's move into that room (docs.AnnounceDocumentRooms), a notification Postgres
+// delivers at the commit, which assigns the transaction no id and so is sent here. Then it
 // does the two documents' work, queued on the ledger and run at the commit, after their rows: the
 // tree's own fragment seeded empty, so an edit of the tree finds a document inside the Proof
 // schema; and each one's version 1, empty, with its version node, as every empty document is
@@ -971,6 +975,9 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 	ledger.RegisterPendingArtifact(room.tree, pending(room.tree, room.treeSlug, "tree"))
 	ledger.RegisterPendingArtifact(room.decisions, pending(room.decisions, room.decisionsSlug, "doc"))
 	ledger.RegisterPendingRoom(specID, room.tree)
+	if err := docs.AnnounceDocumentRooms(ctx, tx, room.tree, specID); err != nil {
+		return convertedIssueRoom{}, err
+	}
 	if _, err := s.deps.Docs.SeedText(ctx, room.tree, "", actor); err != nil {
 		return convertedIssueRoom{}, fmt.Errorf("seed the issue tree's own fragment: %w", err)
 	}
@@ -1006,43 +1013,35 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 	return room, nil
 }
 
-// createConvertedIssueRoom writes, in tx's write phase, the rows room planned beside the spec's
-// row specID, one of the create's inline writes: the tree artifact (createIssueTree); the spec's
-// document_rooms row naming the tree, written at once, after both rows its keys name and before
-// the commit runs the statements the read phase queued, and announced in this transaction
-// (joinIssueRoom); and the decisions query node (createDecisionsQuery). The caller holds the new
-// issue's owner lock, which every writer of a document_rooms row holds first. It answers what the
-// node writes and the read phase's document work stated, which the caller causes under its event.
-func (s *server) createConvertedIssueRoom(ctx context.Context, tx pgx.Tx, key, project, specID string, room convertedIssueRoom, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
-	treeNodes, err := s.createIssueTree(ctx, tx, room.tree, room.treeSlug, key, project, actor, at)
-	if err != nil {
+// createConvertedIssueRoom queues, at the head of ledger's write phase (docs.Ledger.QueueFirst),
+// the rows room planned beside the spec's row specID, which the caller has written by then: the
+// tree artifact's node and rows (createIssueTree); the spec's document_rooms row naming the tree,
+// ahead of every statement the read phase queued, which resolve the spec's room through it, and
+// announced in the read phase (planConvertedIssueRoom); and the decisions query's node and row
+// (createDecisionsQuery), each node before the row naming it. They steer nothing the route
+// answers, so they run in the write phase's batch and not inline inside the transaction's id
+// window. The caller holds the new issue's owner lock, which every writer of a document_rooms row
+// holds first. It answers what the node writes and the read phase's document work state, which the
+// caller causes under its event.
+func (s *server) createConvertedIssueRoom(ledger *docs.Ledger, key, project, specID string, room convertedIssueRoom, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
+	tree := issueTreeWrite(room.treeSlug, key, project, actor, at)
+	decisions := decisionsQueryWrite(room.decisionsSlug, key, project, actor, at)
+	if err := ledger.QueueFirst(func(b *store.WriteBatch) error {
+		if err := s.createIssueTree(b, tree, room.tree, room.treeSlug, key, project, actor); err != nil {
+			return err
+		}
+		b.Queue("join the spec to its issue's room", `insert into document_rooms (artifact_id, room) values ($1, $2)`, specID, room.tree)
+		return s.createDecisionsQuery(b, decisions, room.decisions, room.decisionsSlug, key, project, actor)
+	}); err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	if err := joinIssueRoom(ctx, tx, room.tree, specID); err != nil {
-		return graphstore.Uncaused{}, err
-	}
-	decisions, err := s.createDecisionsQuery(ctx, tx, room.decisions, room.decisionsSlug, key, project, actor, at)
-	if err != nil {
-		return graphstore.Uncaused{}, err
-	}
-	return graphstore.Joined(treeNodes, decisions, room.held), nil
+	return graphstore.Joined(tree, decisions, room.held), nil
 }
 
-// joinIssueRoom writes, in tx, document's document_rooms row naming room, its issue's tree, at
-// once, and announces it in tx (docs.AnnounceDocumentRooms), so every process closes its rooms of
-// the two once tx commits. It is for a write phase that has written the document's row inline, and
-// whose read phase recorded the room on its ledger (docs.Ledger.RegisterPendingRoom). The caller
-// holds the issue's owner lock, as every writer of the row does.
-func joinIssueRoom(ctx context.Context, tx pgx.Tx, room, document string) error {
-	if _, err := tx.Exec(ctx, `insert into document_rooms (artifact_id, room) values ($1, $2)`, document, room); err != nil {
-		return fmt.Errorf("join the document to its issue's room: %w", err)
-	}
-	return docs.AnnounceDocumentRooms(ctx, tx, room, document)
-}
-
-// queueIssueRoomJoin is joinIssueRoom for a document whose row's insert is queued on ledger, an
-// upload's (queueNewArtifact): it records on the ledger that the document is edited in room
-// (docs.Ledger.RegisterPendingRoom), so the document work that follows writes the document's
+// queueIssueRoomJoin is the room join createConvertedIssueRoom queues, for a document whose row's
+// insert is queued on ledger, an upload's (queueNewArtifact): it records on the ledger that the
+// document is edited in room (docs.Ledger.RegisterPendingRoom), so the document work that follows
+// writes the document's
 // fragment of the room, and queues the document_rooms row right after that insert, whose key it
 // names, and before any write of the document. The announcement is a notification, which
 // Postgres delivers at the commit, so it is sent at once and assigns the transaction no id.
@@ -1078,30 +1077,34 @@ func documentJoinsIssueRoom(slug string) bool {
 	return false
 }
 
-// createDecisionsQuery creates, in tx, the decisions query node id of the issue key in project,
-// under slug: a doc row with no fragment and no document_rooms row (D6 of this branch's plan),
-// whose node is a query node of query `decisions` (graphstore.QueryNode) with its part_of the
-// issue, written before the row that names it. Its version 1, empty, with its version node and its
-// index, is the read phase's (planConvertedIssueRoom). The row carries no role: the read projects
-// `decisions` from the node's query value. It answers what the node write stated, which the caller
-// causes under its event.
-func (s *server) createDecisionsQuery(ctx context.Context, tx pgx.Tx, id, slug, key, project string, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
-	actorJSON, err := encodeJSON(actor)
-	if err != nil {
-		return graphstore.Uncaused{}, err
-	}
+// decisionsQueryWrite is the node write of the decisions query of the issue key in project under
+// slug, planned (graphstore.PlanUncaused) for createDecisionsQuery to queue: a query node of query
+// `decisions` (graphstore.QueryNode), made by actor at at, with its part_of the issue.
+func decisionsQueryWrite(slug, key, project string, actor model.Actor, at time.Time) graphstore.Uncaused {
 	refKey := graphstore.ArtifactRefKey(key, project, "", slug)
 	node := graphstore.Created(graphstore.QueryNode(refKey, project, graphstore.QueryDecisions, actor, at))
-	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node},
+	return graphstore.PlanUncaused([]graphstore.Node{node},
 		graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)}, node))
+}
+
+// createDecisionsQuery queues on b the decisions query node id of the issue key in project, under
+// slug: a doc row with no fragment and no document_rooms row (D6 of this branch's plan), whose
+// node is written, as written plans it (decisionsQueryWrite), before the row that names it. Its
+// version 1, empty, with its version node and its index, is the read phase's
+// (planConvertedIssueRoom). The row carries no role: the read projects `decisions` from the node's
+// query value. What the node write states waits for the caller's event, which the caller causes it
+// under.
+func (s *server) createDecisionsQuery(b *store.WriteBatch, written graphstore.Uncaused, id, slug, key, project string, actor model.Actor) error {
+	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("write the decisions query's node: %w", err)
+		return err
 	}
-	if _, err := tx.Exec(ctx, `
+	if err := graphstore.QueueNodes(b, written); err != nil {
+		return fmt.Errorf("write the decisions query's node: %w", err)
+	}
+	b.Queue("create the decisions query", `
 		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
 		values ($1, $2, $3, $4, $5, 'doc', false, $6, $7, $8)
-	`, id, key, project, slug, issueDecisionsName, actorJSON, graphstore.KindArtifact, refKey); err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("create the decisions query: %w", err)
-	}
-	return written, nil
+	`, id, key, project, slug, issueDecisionsName, actorJSON, graphstore.KindArtifact, graphstore.ArtifactRefKey(key, project, "", slug))
+	return nil
 }

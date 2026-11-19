@@ -41,8 +41,10 @@ func TestAnIssuesTreeArtifactTakesItsSlugItsNodeAndItsIssueTreesRow(t *testing.T
 		if err != nil {
 			t.Fatalf("take the tree's slug: %v", err)
 		}
-		written, err := s.createIssueTree(ctx, tx, id, slug, key, "TREE", alice, time.Now().UTC())
-		if err != nil {
+		written := issueTreeWrite(slug, key, "TREE", alice, time.Now().UTC())
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			return s.createIssueTree(b, written, id, slug, key, "TREE", alice)
+		}); err != nil {
 			return "", err
 		}
 		joined, ledger := deps.Docs.Join(ctx, tx)
