@@ -21,7 +21,7 @@
 // does. A listing that reaches /proc by a route that calls no scanner of this module (a program in
 // another language, a raw read of the directory) is out of this package's sight; CI runs every test
 // binary of this module in a PID namespace of its own, whose /proc lists that binary's processes and
-// none of the machine's (.github/scripts/private-proc.py), which is what holds those routes.
+// none of the machine's (.github/scripts/private_proc.py), which is what holds those routes.
 package hostproc
 
 import (
