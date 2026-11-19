@@ -158,8 +158,8 @@ func (b *taskBucket) stream(ctx context.Context, name string) (jetstream.Stream,
 // refused is err, the failure of step on the bucket, as the daemon refuses it: naming the bucket,
 // and, where the server refused the daemon's user a subject — a request the grant does not allow
 // draws no answer, only the server's permissions violation on the connection
-// (natsauth.RefusedPermission) — the subject its grant is missing, which daemonpermissions.Grant
-// gives a Legion daemon. A daemon connected as the pane seed's user, the user every session of the
+// (natsauth.RefusedPermission) — the subject its grant is missing, which natsgrant.Daemon gives a
+// Legion daemon. A daemon connected as the pane seed's user, the user every session of the
 // deployment shares, is told so (paneSeedRefusal). The refusal carries the server's own error, so
 // natsauth.Unreachable reads it as the misconfiguration it is.
 func (b *taskBucket) refused(step string, err error) error {
@@ -169,7 +169,7 @@ func (b *taskBucket) refused(step string, err error) error {
 	if !denied {
 		return err
 	}
-	why := fmt.Sprintf("NATS refused the daemon's user (%s) the %s of %q, which the grant of a Legion daemon holds (daemonpermissions.Grant)",
+	why := fmt.Sprintf("NATS refused the daemon's user (%s) the %s of %q, which the grant of a Legion daemon holds (natsgrant.Daemon)",
 		b.nats.user, operation, subject)
 	if b.nats.paneUser {
 		why += "; " + paneSeedRefusal

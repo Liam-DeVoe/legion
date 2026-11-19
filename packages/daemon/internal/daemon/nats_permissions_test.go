@@ -19,8 +19,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
-	"github.com/sjawhar/envoy/daemonpermissions"
 	"github.com/sjawhar/envoy/legiontasks"
+	"github.com/sjawhar/envoy/natsgrant"
 	"github.com/sjawhar/envoy/testnatsimages"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -42,14 +42,14 @@ const (
 	wakeGrantSubject = "notifications.legion.wake"
 )
 
-// The deployment and this proof share daemonpermissions.Grant: core wraps the same values as the
+// The deployment and this proof share natsgrant.Daemon: core wraps the same values as the
 // NATS server grant, while this test drives the daemon's real connection, durable consumers,
 // acknowledgements, and exceptions subscription through it.
 func TestDaemonPermissionsOnRealServers(t *testing.T) {
 	for _, image := range testnatsimages.Images {
 		t.Run(image.Name, func(t *testing.T) {
 			t.Run("the daemon restarts, reads its consumers' lag, acknowledges Dispatch, GitHub and the listener's wake, and receives exceptions", func(t *testing.T) {
-				grant := daemonpermissions.Grant()
+				grant := natsgrant.Daemon()
 				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, grant)
 				defer admin.Close()
 				stream := createDaemonNotificationStream(t, js)
@@ -128,7 +128,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 
 			t.Run("without the dispatch consumer-create permission, the daemon and server report it", func(t *testing.T) {
 				const removed = "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>"
-				grant := daemonpermissions.Grant()
+				grant := natsgrant.Daemon()
 				held := len(grant.Publish)
 				grant.Publish = slices.DeleteFunc(grant.Publish, func(subject string) bool { return subject == removed })
 				if len(grant.Publish) != held-1 {
@@ -169,7 +169,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 			})
 
 			t.Run("the daemon creates the task bucket, and writes, reads, watches and deletes a claim's value", func(t *testing.T) {
-				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, daemonpermissions.Grant())
+				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, natsgrant.Daemon())
 				defer admin.Close()
 				logs := &syncBuffer{}
 				bucket := createTaskBucketUnderGrant(t, js, uri, daemonSeed, logs)
@@ -218,7 +218,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 
 			t.Run("without the task bucket's key writes, the daemon and server report the refused write", func(t *testing.T) {
 				removed := "$KV." + legiontasks.Bucket + ".>"
-				grant := daemonpermissions.Grant()
+				grant := natsgrant.Daemon()
 				held := len(grant.Publish)
 				grant.Publish = slices.DeleteFunc(grant.Publish, func(subject string) bool { return subject == removed })
 				if len(grant.Publish) != held-1 {
@@ -430,7 +430,7 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 	return stream
 }
 
-func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
+func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
 	t.Helper()
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)
@@ -450,7 +450,7 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 
 // grantPermissions is grant as a server's permissions block for one user
 // (testnats.NkeyUser.Permissions).
-func grantPermissions(t *testing.T, grant daemonpermissions.Permissions) string {
+func grantPermissions(t *testing.T, grant natsgrant.Permissions) string {
 	t.Helper()
 	// The server's configuration reads JSON, but not Go's HTML escaping of '>' as \u003e.
 	var permissions strings.Builder

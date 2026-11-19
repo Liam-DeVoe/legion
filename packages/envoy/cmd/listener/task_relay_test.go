@@ -674,11 +674,10 @@ func TestTaskRelayOnlyTheOwningListenerPublishes(t *testing.T) {
 	session.none(t, time.Second)
 }
 
-// listenerGrantWithoutTaskBucket is the publish grant envoy-infra renders for a listener of
-// machine machineID (core.ListenerPermissions) less the task bucket's reads (taskBucketReads): the
-// listener grant and the session consumers' calls. This module cannot import envoy-infra's core,
-// so the subjects are spelled here from the names that grant is built from, as
-// listenerGrantBeforeSessionConsumers spells the one before session consumers.
+// listenerGrantWithoutTaskBucket is the publish grant a listener of machine machineID holds
+// (natsgrant.Listener) less the task bucket's reads (natsgrant.KVRead of legiontasks.Bucket): the
+// listener grant and the session consumers' calls, spelled here from the names that grant is built
+// from, as listenerGrantBeforeSessionConsumers spells the one before session consumers.
 func listenerGrantWithoutTaskBucket(machineID string) []string {
 	durable := bus.ListenerDurable(machineID)
 	allow := []string{

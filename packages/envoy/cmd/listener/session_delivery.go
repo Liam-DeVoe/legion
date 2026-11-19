@@ -884,10 +884,10 @@ func (m *sessionDelivery) granted() {
 // the durable binding reads (sessionRelays.listConsumers), which ends no refusal episode of the
 // creates, since a grant may allow the list and refuse them. Any of them says the NATS user holds
 // the session consumers' calls, which only the grant of a listener that gives its sessions
-// consumer delivery holds (envoy-infra's ListenerPermissions and ListenerHostPermissions). The
-// server's answer is how this listener learns it gives consumer delivery: nothing in its
-// configuration says so, and a listener connecting as a host or Dispatch user is refused every one
-// of those calls. consumerGrantHeld is closed from here on.
+// consumer delivery holds (natsgrant.Listener and natsgrant.ListenerHost). The server's answer is
+// how this listener learns it gives consumer delivery: nothing in its configuration says so, and a
+// listener connecting as a host or Dispatch user is refused every one of those calls.
+// consumerGrantHeld is closed from here on.
 func (m *sessionDelivery) holdsConsumerGrant() {
 	m.grantHeldOnce.Do(func() { close(m.grantHeld) })
 }

@@ -73,7 +73,7 @@ cluster and the image:
 - **The task bucket is refused.** `open the task bucket legion_tasks: …`, `create the task
   bucket legion_tasks: …` or `read the epoch of the task bucket legion_tasks: …`, carrying `NATS
   refused the daemon's user (U…) the publish of "<subject>", which the grant of a Legion daemon
-  holds (daemonpermissions.Grant)` and then the server's own error in parentheses: the daemon
+  holds (natsgrant.Daemon)` and then the server's own error in parentheses: the daemon
   hands each worker its task through that bucket on Envoy's NATS and boots only once it opens or
   creates it, so it refuses rather than waiting, since no wait gives a user a grant it lacks. The
   open asks only the bucket stream's info and, for a bucket not created yet, JetStream's account

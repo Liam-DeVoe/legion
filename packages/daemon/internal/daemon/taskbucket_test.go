@@ -15,8 +15,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/sjawhar/envoy/daemonpermissions"
 	"github.com/sjawhar/envoy/legiontasks"
+	"github.com/sjawhar/envoy/natsgrant"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -855,7 +855,7 @@ func TestNoNATSLaunchesNoWorker(t *testing.T) {
 // notification stream an admin created on it.
 func taskBucketRefusalServer(t *testing.T, missing string) (uri, daemonSeed, sessionSeed string) {
 	t.Helper()
-	grant := daemonpermissions.Grant()
+	grant := natsgrant.Daemon()
 	held := len(grant.Publish)
 	grant.Publish = slices.DeleteFunc(grant.Publish, func(subject string) bool { return subject == missing })
 	if len(grant.Publish) != held-1 {
@@ -864,7 +864,7 @@ func taskBucketRefusalServer(t *testing.T, missing string) (uri, daemonSeed, ses
 	daemonSeed, daemonUser := testnkeys.User(t)
 	sessionSeed, sessionUser := testnkeys.User(t)
 	adminSeed, adminUser := testnkeys.User(t)
-	session := daemonpermissions.Permissions{Publish: []string{"$JS.API.INFO"}, Subscribe: []string{nats.InboxPrefix + ">"}}
+	session := natsgrant.Permissions{Publish: []string{"$JS.API.INFO"}, Subscribe: []string{nats.InboxPrefix + ">"}}
 	_, uri = testnats.StartNkeyAuthorizedUsers(t, testnats.Image,
 		testnats.NkeyUser{Public: daemonUser, Permissions: grantPermissions(t, grant)},
 		testnats.NkeyUser{Public: sessionUser, Permissions: grantPermissions(t, session)},

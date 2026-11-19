@@ -48,7 +48,7 @@ const (
 	taskRelayWaitLine = "task relay waits for the task bucket, which the Legion daemons create; it looks the bucket up again every interval, and relays no task value until it exists"
 	// taskRelayRefusedLine: the server refused the listener's user a call on the bucket (ERROR, once
 	// an interval), naming the subject refused (missing_subject).
-	taskRelayRefusedLine = "task relay cannot read the task bucket: the listener's NATS user lacks the bucket's reads (envoy-infra's ListenerPermissions grant them), so no task value is relayed while every other route serves; it tries again every interval"
+	taskRelayRefusedLine = "task relay cannot read the task bucket: the listener's NATS user lacks the bucket's reads (natsgrant.Listener grants them), so no task value is relayed while every other route serves; it tries again every interval"
 	// taskRelayFailedLine: any other failure to open or watch the bucket (WARN, once until it opens).
 	taskRelayFailedLine = "task relay could not open or watch the task bucket, so no task value is relayed while every other route serves; it tries again every interval"
 	// taskRelayRelayedLine: one task frame published (INFO).
@@ -101,8 +101,8 @@ type taskRelayed struct {
 // session consumer call of this listener has succeeded (sessionDelivery.consumerGrantHeld), which is
 // how the listener learns its NATS user holds the session consumers' calls. Only the grants of the
 // listeners no session shares a user with hold those calls, and they hold the task bucket's reads
-// beside them (envoy-infra's ListenerPermissions and ListenerHostPermissions), so a listener
-// connecting as a host or Dispatch user never opens the bucket, and logs nothing of it.
+// beside them (natsgrant.Listener and natsgrant.ListenerHost), so a listener connecting as a host
+// or Dispatch user never opens the bucket, and logs nothing of it.
 //
 // It opens the bucket and never creates it (bus.OpenKeyValue): the Legion daemons create it. A
 // bucket that does not exist yet is waited for quietly, looked up again every interval, with one

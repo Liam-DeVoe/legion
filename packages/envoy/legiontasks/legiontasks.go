@@ -1,9 +1,9 @@
 // Package legiontasks names the key-value bucket that carries each Legion claim's current task,
 // and what is written in it, for the programs that share it: the Legion daemon, which writes it,
 // and the Envoy listener, which reads it and relays each value to the session holding the claim's
-// role. The NATS grants that let each of them reach the bucket (daemonpermissions and
-// envoy-infra's core) are built from these names too, so the bucket, its keys and the relay's
-// headers are spelled in one place.
+// role. The NATS grants that let each of them reach the bucket (natsgrant.Daemon and
+// natsgrant.Listener, which envoy-infra's core renders for a hub's users) are built from these
+// names too, so the bucket, its keys and the relay's headers are spelled in one place.
 //
 // The bucket is the delivered copy of the daemon's record of each claim's current task, not a
 // second record: the daemon's store stays the truth, the daemon is the bucket's one writer, and it
