@@ -32,13 +32,15 @@
 nats_host=""
 nats_host_bin=""
 
+# The locals carry a prefix of their own: a sourcing script's readonly variable of the same name
+# (e2e-refill.sh's bin_dir) would refuse a plain `local bin_dir`.
 claim_nats_host() {
-  local bin_dir=$1 envoy
-  envoy="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-  nats_host_bin="$bin_dir/loopbackhost"
+  local _nats_host_dir=$1 _nats_host_envoy
+  _nats_host_envoy="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+  nats_host_bin="$_nats_host_dir/loopbackhost"
   if [ ! -x "$nats_host_bin" ]; then
-    mkdir -p -- "$bin_dir"
-    go -C "$envoy" build -o "$nats_host_bin" ./internal/testnats/cmd/loopbackhost || {
+    mkdir -p -- "$_nats_host_dir"
+    go -C "$_nats_host_envoy" build -o "$nats_host_bin" ./internal/testnats/cmd/loopbackhost || {
       echo "nats-host.sh: internal/testnats/cmd/loopbackhost did not build" >&2
       return 1
     }
