@@ -2285,19 +2285,18 @@ GATES = [
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
-        ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:167 sources it"),
+        ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:161 sources it"),
         ("scripts/e2e/lib/proof-wait.sh", "scripts/e2e/lib/rig.sh:71 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:113 sources it"),
         ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh:165,225 runs it, for "
-                                            "scripts/e2e/stage1-skeleton.sh:240,242's check of the DSN, "
-                                            ":257's psql and :277's start of the daemon"),
-        ("scripts/e2e/lib/containers.sh", "scripts/e2e/lib/rig.sh:119 sources it"),
-        ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:128 sources it"),
-        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:176,190 runs it to hold a port for the daemon"),
-        ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:209 runs it over the checkout"),
-        ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:326 copies its name, version and legion "
+                                            "scripts/e2e/stage1-skeleton.sh:235,237's check of the DSN, "
+                                            ":250's psql and :273's start of the daemon"),
+        ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:122 sources it"),
+        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:170,184 runs it to hold a port for the daemon"),
+        ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:203 runs it over the checkout"),
+        ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:312 copies its name, version and legion "
                                             "block with jq into the pi-legion plugin the proof's home holds"),
-        ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:327 copies its name and version with jq "
+        ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:313 copies its name and version with jq "
                                            "into the pi-envoy plugin the proof's home holds"),
         (".github/actions/install-uv/**", at("daemon-go", "./.github/actions/install-uv")),
         (".github/ci-tools.yaml", ".github/actions/install-uv/action.yml:25 installs the uv row's binary"),

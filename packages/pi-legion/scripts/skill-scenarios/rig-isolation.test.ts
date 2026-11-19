@@ -62,8 +62,8 @@ stagings.push(() => {
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
   for (const lib of [
     "rig.sh",
+    "proof-wait.sh",
     "loopback-dsn.sh",
-    "containers.sh",
     "loopback-dsn.py",
     "port-file.sh",
     "held-port.py",

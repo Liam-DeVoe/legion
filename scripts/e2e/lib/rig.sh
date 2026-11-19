@@ -112,12 +112,6 @@ until_true() {
 # shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
 
-# lib/containers.sh holds the starts of a run's NATS and Postgres containers, which publish no
-# port, and the polls that wait for each and read its address back. It needs nothing of this
-# rig's, and stage2-tmux-supervision.sh and verifiers-staging-token.sh source it without this file.
-# shellcheck source-path=SCRIPTDIR source=containers.sh
-. "$root/scripts/e2e/lib/containers.sh"
-
 # A service the run starts serves on a port the kernel chose, held from that choice until the
 # service serves on it, so no other process can take it in between (lib/held-port.py). A port
 # picked free and passed by number could be taken before the service binds it. Each helper below

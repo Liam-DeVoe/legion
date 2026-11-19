@@ -21,10 +21,8 @@
 # and dropped by the cleanup. The DSN must name a loopback host, which lib/loopback-dsn.py asks
 # libpq for, so the run needs psql and python3 with libpq beside tmux. The daemon is handed that
 # database in LEGION_POSTGRES_DSN, in its own environment alone: legion.yaml names no
-# postgres_dsn, and no variable of this shell holds the URI. The run's own container listens on a
-# unix socket in a directory of the run's own and publishes no port (start_postgres_container,
-# lib/rig.sh). Its guard is proof_guard's below, and every wait goes through lib/rig.sh's
-# wait_for, which gives up 30 s before it.
+# postgres_dsn, and no variable of this shell holds the URI. Its guard is proof_guard's below, and
+# every wait goes through lib/rig.sh's wait_for, which gives up 30 s before it.
 set -euo pipefail
 
 pid=
@@ -34,12 +32,9 @@ daemon_pid=
 daemon_keeper_pid=
 ok=
 container=legion-e2e-pg-$$
-# The caller's server the run makes its database on (LEGION_E2E_PG_DSN), and that database, once
-# made: cleanup drops it. The run's own container's socket directory, once it has one: cleanup
-# removes it after the container.
+# The server the run makes its database on, and that database, once made: cleanup drops it.
 pg_server=
 database=
-pg_sockets=
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e.XXXXXXXX")
 # lib/rig.sh's process helpers log each service to $evidence/logs/<name>.log.
 evidence=$work
@@ -56,7 +51,6 @@ cleanup() {
       echo "could not drop database $database; drop it by hand"
   fi
   docker rm -f -v "$container" >/dev/null 2>&1 || true
-  [ -z "${pg_sockets:-}" ] || rm -rf "$pg_sockets" || true
   if [ -n "${ok:-}" ]; then
     rm -rf "$work"
   else
@@ -208,9 +202,9 @@ keep_port daemon_keeper port
 go build -o "$work/legion" ./cmd/legion
 bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   /'
 
-# CI passes its service's DSN; the devbox brings its own container, on a unix socket in a
-# directory of the run's own. Either way the daemon's store is a database the run makes there, so
-# nothing the run writes lands in a database the caller's DSN names.
+# CI passes its service's DSN; the devbox brings its own container on an ephemeral port. Either
+# way the daemon's store is a database the run makes there, so nothing the run writes lands in a
+# database the caller's DSN names.
 if [ -n "${LEGION_E2E_PG_DSN:-}" ]; then
   pg_server=$LEGION_E2E_PG_DSN
 else
@@ -218,42 +212,38 @@ else
   # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
   # version CI's service and Cloud SQL run
   pg_password=legion # the scratch container's own login, which nothing outside this run reaches
-  start_postgres_container "$container" pg_sockets --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+  docker run -d --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$pg_password" \
-    -e POSTGRES_DB=legion -- ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
-  # Its second readiness line: the entrypoint's bootstrap server answers on the same socket first,
-  # then stops, and a daemon that connected to it would be reset.
-  wait_for "postgres in $container to be ready" postgres_container_ready "$container"
+    -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
+  # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
+  # socket while nothing listens on 5432 yet, and a daemon that connects then is reset.
+  wait_for "postgres in $container to be ready" \
+    docker exec "$container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion
+  pgport=$(docker port "$container" 5432/tcp | head -1 | sed 's/.*://')
+  pg_server="postgres://legion:${pg_password}@127.0.0.1:$pgport/legion"
 fi
 # lib/loopback-dsn.sh's require_loopback_dsn says why these three go before the first connection.
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 run_db=stage1_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 # The URI form: the settings check below reads a DSN that leaks into the state by its
 # `postgres://`, and that is the form the daemon is given, in LEGION_POSTGRES_DSN (with_store
-# below). A caller's DSN goes through the guard, which reads it with libpq and refuses any host
-# but a loopback one, here, before the database is made; the run's own container's is a socket
-# directory the run made, which the guard would refuse as no loopback host, so the run writes that
-# URI itself. The psql that makes and drops the database takes the libpq form (server_psql
-# below), so the guard checks that form as well, here, as it checks each form a caller hands on.
+# below). The DSN goes through the guard, which reads it with libpq and refuses any host but a
+# loopback one, here, before the database is made. The psql that makes and drops the database
+# takes the libpq form (server_psql below), so the guard checks that form as well, here, as it
+# checks each form a caller hands on.
 refusal='' # require_run_database assigns it with printf -v: the refusal line, or nothing
-if [ -z "$pg_sockets" ]; then
-  require_run_database refusal LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
-    "the run creates and drops a database there" --uri || fail "$refusal"
-  require_run_database refusal LEGION_E2E_PG_DSN "$pg_server" postgres \
-    "the run creates and drops a database there" --libpq-env || fail "$refusal"
-fi
+require_run_database refusal LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
+  "the run creates and drops a database there" --uri || fail "$refusal"
+require_run_database refusal LEGION_E2E_PG_DSN "$pg_server" postgres \
+  "the run creates and drops a database there" --libpq-env || fail "$refusal"
 # server_psql ARGS… runs psql on the run's PostgreSQL server, connected to its `postgres`
 # database, the one createdb and dropdb connect to when they make and drop another, since the
 # run's own database is the one the statements make and drop. psql is handed the connection in
 # libpq's own variables, PGPASSWORD among them, and takes no connection string, so no argument
-# list holds the password: lib/loopback-dsn.sh's exec_run_database hands a caller's DSN that way
-# (--libpq-env, as envoy-session-states.sh's run_psql takes it), and the run's own container's is
-# written the same way, as assignments. It runs in a subshell of its own, which the exec replaces.
+# list holds the password: lib/loopback-dsn.sh's exec_run_database hands the DSN that way
+# (--libpq-env, as envoy-session-states.sh's run_psql takes it). It runs in a subshell of its own,
+# which the exec replaces.
 server_psql() {
-  if [ -n "$pg_sockets" ]; then
-    (PGHOST=$pg_sockets PGUSER=legion PGPASSWORD=$pg_password PGDATABASE=postgres exec psql -X "$@")
-    return
-  fi
   (exec_run_database LEGION_E2E_PG_DSN "$pg_server" postgres \
     "the run creates and drops a database there" --libpq-env -- psql -X "$@")
 }
@@ -266,14 +256,10 @@ note "the daemon's store is the run's own database $database"
 # subshell that calls it, with LEGION_POSTGRES_DSN naming the run's own database as a URI. The
 # file names no postgres_dsn, so the loader takes that variable
 # (packages/daemon/internal/config/config.go), and every command that loads the file needs it:
-# the daemon, and `legion stop`. A caller's DSN reaches the daemon through lib/loopback-dsn.sh's
-# exec_run_database, so the URI is in no variable of this shell, no argument list and no file;
-# the run's own container's is the one the run writes, as an assignment. Run it in ( … ) or in
-# the background.
+# the daemon, and `legion stop`. The DSN reaches the daemon through lib/loopback-dsn.sh's
+# exec_run_database, so the URI is in no variable of this shell, no argument list and no file.
+# Run it in ( … ) or in the background.
 with_store() {
-  if [ -n "$pg_sockets" ]; then
-    LEGION_POSTGRES_DSN="postgres://legion:${pg_password}@/$run_db?host=$pg_sockets" exec "$@"
-  fi
   exec_run_database LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
     "the run creates and drops a database there" --uri --env LEGION_POSTGRES_DSN -- "$@"
 }

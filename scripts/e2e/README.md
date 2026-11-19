@@ -532,11 +532,11 @@ Each item below names an input and its default, then what it means.
 - `LEGION_E2E_PG_DSN` — unset
 
   the Postgres to run against.
-  Unset, the script starts its own PostgreSQL 18 container (`legion-e2e-pg-<pid>`) on a unix socket in a directory of its own, publishing no port ([`lib/containers.sh`](#libcontainerssh)), and removes both on the way out — the devbox path.
+  Unset, the script starts its own PostgreSQL 18 container (`legion-e2e-pg-<pid>`) on an ephemeral loopback port and removes it on the way out — the devbox path.
   Set, it starts no container: that is how CI hands it the job's service.
   Either way the daemon's store is a database the run makes there and drops on the way out, and the daemon is handed it in `LEGION_POSTGRES_DSN`, in its own environment alone: `legion.yaml` names no `postgres_dsn`.
   A set DSN must name a loopback host: [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_run_database` reads it with libpq before the database is made, and its `exec_run_database` hands the daemon, and `legion stop`, the run's database as a URI, so no variable of the script, no argument list and no file holds the password.
-  The psql that makes and drops that database connects to the server's `postgres` database, the one `createdb` and `dropdb` connect to, and takes the connection in libpq's own variables (`PGPASSWORD` among them), which `exec_run_database --libpq-env` sets for a set DSN and the script itself for its own container, so no argument list holds a password there either.
+  The psql that makes and drops that database connects to the server's `postgres` database, the one `createdb` and `dropdb` connect to, and takes the connection in libpq's own variables (`PGPASSWORD` among them), which `exec_run_database --libpq-env` sets, so no argument list holds a password there either.
 
 Everything the run takes is its own, so two runs on one box
 — a CI job and a devbox session, or two sessions — neither collide nor report each other as a leftover:
@@ -654,7 +654,7 @@ what only this run proves is OMP's real RPC frames, `--resume`'s same-agent beha
 What it stands up, all of it the run's own:
 
 - **Postgres**: `LEGION_E2E_PG_DSN` when set;
-  otherwise a PostgreSQL 18 container on tmpfs (`legion-e2e2-pg-<pid>`) on a unix socket in a directory of its own, publishing no port ([`lib/containers.sh`](#libcontainerssh))
+  otherwise a PostgreSQL 18 container on tmpfs (`legion-e2e2-pg-<pid>`) on an ephemeral loopback port
   — tmpfs rather than the image's anonymous volume, which a box whose docker volume subsystem stalls would hang on.
 
 - **NATS and the Envoy listener** on the host:
@@ -3612,7 +3612,7 @@ What the run touches, and nothing else:
 - `/tmp/verifiers-e2e` — the two built binaries, the boot logs, the refusal logs, the last response body, and the scratch `HOME` the binaries run under, so Dispatch's signing key never lands in the box's `~/.local/share/dispatch`.
   Recreated from empty each run.
 
-- the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) on a unix socket in a directory of the run's own, and `verifiers-e2e-nats` (the hub's nats-server with `-js`, [`lib/nats-image.sh`](#libnats-imagesh)) on the host's network on loopback ports the kernel chooses; neither publishes a port ([`lib/containers.sh`](#libcontainerssh)).
+- the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (the hub's nats-server with `-js`, [`lib/nats-image.sh`](#libnats-imagesh)), both on ephemeral loopback ports.
 
 - two ports the kernel chose, one for `dispatch` and one for the listener, each held by [`lib/held-port.py`](#libheld-portpy) from that choice until its binary serves on it (`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`).
   The boot refusals exit before any bind and get none.
@@ -5503,46 +5503,6 @@ read_port_file "$work/dispatch.port" "$server_pid" port || waited=$?
 `read_port_file FILE PID VAR` polls FILE every tenth of a second while PID lives and assigns VAR the port it names.
 It prints nothing, so each caller words its own failure:
 it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 after `port_file_seconds` (30).
-
-## lib/containers.sh
-
-The starts of a run's NATS and Postgres containers, which publish no port, and the polls that wait for each server and read its address back.
-`lib/rig.sh` sources it, and so do `stage2-tmux-supervision.sh` and `verifiers-staging-token.sh`, which source no rig.
-Sourced, never run; it needs docker, the caller's `fail` and `$work`.
-A container a run starts publishes no port: Docker's allocator chooses a published host port without asking the kernel whether another program holds it, and fails the start after ten taken ports in a row (`docs/testing.md`, "A container a test starts publishes no port").
-Each start returns once docker has started the container, and the caller waits through its own wait on the poll beside the start:
-
-```sh
-start_nats_container "$nats_container" --cpus 1 --memory 512m -- "$nats_image" -js
-until_true 60 "NATS to be ready" nats_container_ready "$nats_container" port_nats
-start_postgres_container "$pg_container" pg_sockets --cpus 2 --memory 2g -e POSTGRES_PASSWORD=ci -- "$pg_image"
-until_true 60 "Postgres to be ready" postgres_container_ready "$pg_container"
-dsn="postgres://postgres:ci@/postgres?host=$pg_sockets&sslmode=disable"
-```
-
-- `start_nats_container NAME [DOCKER_ARG]… -- IMAGE [SERVER_ARG]…`
-
-  runs the NATS image IMAGE as the container NAME on the host's network (`--network host`), the DOCKER_ARGs before the image and the SERVER_ARGs after it, then `-a 127.0.0.1 -p -1`, so the server binds a loopback port the kernel chooses; `-m -1` among the SERVER_ARGs opens its monitoring the same way.
-  The caller's cleanup removes NAME
-
-- `nats_container_ready NAME PORT_VAR [MONITOR_VAR]`
-
-  is the poll a proof's wait runs on that server.
-  It succeeds once the server has logged `Server is ready`, and sets PORT_VAR to the client port it logged and MONITOR_VAR, when given, to its monitoring port.
-  Once the container has stopped it sets `wait_impossible`, so a `wait_for` ends at once
-
-- `start_postgres_container NAME DIR_VAR [DOCKER_ARG]… -- IMAGE [SERVER_ARG]…`
-
-  runs the Postgres image IMAGE as the container NAME with no TCP listener (`-c listen_addresses=`) and its socket in a directory of the run's own mounted at `/sockets`, beside the image's own `/var/run/postgresql`, where `docker exec NAME psql` still reaches it.
-  It sets DIR_VAR to that directory, so the server's address on this machine is `postgres://USER:PASSWORD@/DATABASE?host=<DIR_VAR>`, which psql, the daemon and Dispatch under `DISPATCH_DEV_SIGNIN=1` all take.
-  A WHATWG URL reader (`new URL` in Bun) refuses userinfo before an empty host, so an address such a reader parses names the user and password in the query instead (`postgres:///DATABASE?host=<DIR_VAR>&user=USER&password=PASSWORD`), as the skill-scenario rig's `own_dispatch` does.
-  The directory is under `$work` when the socket's path there fits the 107 bytes a unix socket path holds and needs no quoting in a URL, and under `/tmp` otherwise; it is mode 0777, for the image's own user, and the caller's cleanup removes it after the container.
-  `lib/loopback-dsn.py` refuses such an address as no loopback host, so a proof that starts its own container writes its run's URL itself rather than through `exec_run_database`, as Stage 1 does
-
-- `postgres_container_ready NAME`
-
-  is the poll a proof's wait runs on that server: it succeeds once the server has logged `database system is ready to accept connections` twice, since the image's entrypoint first runs a server on the same socket to make the database and stops it.
-  Once the container has stopped it sets `wait_impossible`
 
 ## lib/built-from.sh
 
