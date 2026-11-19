@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -506,44 +507,73 @@ func TestTheFactsLineGoesOnPastARefusedValue(t *testing.T) {
 // readable repository, goes to pullRequestAbsent, and its proof sets attribution_absent_at. A
 // null repository proves nothing: it sets attribution_refused_at, and the row stays in the line.
 // The same holds for a timeline row with no results row: facts_refused_at on a refusal, and
-// unfetchable_at only on proof. A line that ends a row on a refusal, or that asks GitHub for no
-// proof, fails (readFactsLine, steps 5 and 6).
+// unfetchable_at only on proof. The absence query that asks for the proof can fail too: GitHub
+// answers it 502, or the installation's GraphQL rate limit (the client keeps GitHub's limits, as
+// the server's does). Then there is no proof, and #41 and #43 stay refused and in the line, as #42
+// and #44 do. A line that ends a row on a refusal, that asks GitHub for no proof, or that ends a
+// row whose proof it could not read, fails (readFactsLine, steps 5 and 6).
 func TestTheFactsLineEndsARowOnlyOnProofOfAbsence(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
-	const readable, gone = "acme/widgets", "acme/gone"
-	storeRowsWithNoFacts(t, ctx, pool, readable, []int{41}, nil, changeTitle)
-	storeRowsWithNoFacts(t, ctx, pool, gone, []int{42}, nil, changeTitle)
-	storeStatementRow(t, ctx, pool, statementRow{repo: readable, number: 43, title: changeTitle(43), noHead: true, timeline: &statementTimeline{}})
-	storeStatementRow(t, ctx, pool, statementRow{repo: gone, number: 44, title: changeTitle(44), noHead: true, timeline: &statementTimeline{}})
-	fake := newFakeGitHub(t)
-	github := serveBatchGitHub(t, fake)
-	github.set(readable, 40, mergedPull(40, time.Now().UTC().Add(-time.Hour).Truncate(time.Second)))
-	github.gone[gone] = true
+	for _, c := range []struct {
+		name string
+		// fails answers the absence query in place of GitHub's proof; nil answers it.
+		fails func(http.ResponseWriter)
+	}{
+		{name: "the_absence_query_answers"},
+		{name: "the_absence_query_answers_502", fails: answerGraphQLFailure},
+		{name: "the_absence_query_meets_the_installations_rate_limit", fails: answerGraphQLRateLimit},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pool, ctx := deliveryTestPool(t)
+			const readable, gone = "acme/widgets", "acme/gone"
+			storeRowsWithNoFacts(t, ctx, pool, readable, []int{41}, nil, changeTitle)
+			storeRowsWithNoFacts(t, ctx, pool, gone, []int{42}, nil, changeTitle)
+			storeStatementRow(t, ctx, pool, statementRow{repo: readable, number: 43, title: changeTitle(43), noHead: true, timeline: &statementTimeline{}})
+			storeStatementRow(t, ctx, pool, statementRow{repo: gone, number: 44, title: changeTitle(44), noHead: true, timeline: &statementTimeline{}})
+			fake := newFakeGitHub(t)
+			github := serveBatchGitHub(t, fake)
+			github.set(readable, 40, mergedPull(40, time.Now().UTC().Add(-time.Hour).Truncate(time.Second)))
+			github.gone[gone] = true
+			github.absenceFails = c.fails
+			proved := c.fails == nil
 
-	line := readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(), events.NewBroker()))
+			line := readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(githubapp.WithLimits(ratelimit.New(pool))), events.NewBroker()))
 
-	if refused, absent := headStampsOf(t, ctx, pool, readable, 41); refused || !absent {
-		t.Errorf("%s#41 holds attribution_refused_at %v and attribution_absent_at %v, want the proof of absence only", readable, refused, absent)
-	}
-	if refused, absent := headStampsOf(t, ctx, pool, gone, 42); !refused || absent {
-		t.Errorf("%s#42 holds attribution_refused_at %v and attribution_absent_at %v, want a refusal only: a null repository proves nothing", gone, refused, absent)
-	}
-	if refused, unfetchable := timelineStampsOf(t, ctx, pool, readable, 43); refused || !unfetchable {
-		t.Errorf("the timeline row %s#43 holds facts_refused_at %v and unfetchable_at %v, want unfetchable_at only", readable, refused, unfetchable)
-	}
-	if refused, unfetchable := timelineStampsOf(t, ctx, pool, gone, 44); !refused || unfetchable {
-		t.Errorf("the timeline row %s#44 holds facts_refused_at %v and unfetchable_at %v, want facts_refused_at only", gone, refused, unfetchable)
-	}
-	asked := github.absenceQueries()
-	slices.Sort(asked)
-	if want := []string{readable + "#41", readable + "#43"}; !slices.Equal(asked, want) {
-		t.Errorf("the absence query asked about %v, want %v: only an alias with NOT_FOUND on its own path", asked, want)
-	}
-	if counts := attributionCountsOrFail(t, ctx, pool); counts.ReadsLeft != 2 || counts.FactsRefused != 2 {
-		t.Errorf("after the pass reads_left = %d and facts_refused = %d, want 2 and 2: #42 and #44 stay in the line", counts.ReadsLeft, counts.FactsRefused)
-	}
-	if line.ReadsLeft != 2 || line.Refused != 2 {
-		t.Errorf("the facts line = %+v, want ReadsLeft 2 and Refused 2", line)
+			counts := attributionCountsOrFail(t, ctx, pool)
+			refused41, absent41 := headStampsOf(t, ctx, pool, readable, 41)
+			refused43, unfetchable43 := timelineStampsOf(t, ctx, pool, readable, 43)
+			asked := github.absenceQueries()
+			slices.Sort(asked)
+			t.Logf("proved=%v #41 refused=%v absent=%v #43 refused=%v unfetchable=%v asked=%v reads_left=%d facts_refused=%d",
+				proved, refused41, absent41, refused43, unfetchable43, asked, counts.ReadsLeft, counts.FactsRefused)
+			if refused41 == proved || absent41 != proved {
+				t.Errorf("%s#41 holds attribution_refused_at %v and attribution_absent_at %v, want refused %v and absent %v: only a proof of absence ends the row",
+					readable, refused41, absent41, !proved, proved)
+			}
+			if refused43 == proved || unfetchable43 != proved {
+				t.Errorf("the timeline row %s#43 holds facts_refused_at %v and unfetchable_at %v, want refused %v and unfetchable %v: only a proof of absence ends the row",
+					readable, refused43, unfetchable43, !proved, proved)
+			}
+			if refused, absent := headStampsOf(t, ctx, pool, gone, 42); !refused || absent {
+				t.Errorf("%s#42 holds attribution_refused_at %v and attribution_absent_at %v, want a refusal only: a null repository proves nothing", gone, refused, absent)
+			}
+			if refused, unfetchable := timelineStampsOf(t, ctx, pool, gone, 44); !refused || unfetchable {
+				t.Errorf("the timeline row %s#44 holds facts_refused_at %v and unfetchable_at %v, want facts_refused_at only", gone, refused, unfetchable)
+			}
+			if proved {
+				if want := []string{readable + "#41", readable + "#43"}; !slices.Equal(asked, want) {
+					t.Errorf("the absence query asked about %v, want %v: only an alias with NOT_FOUND on its own path", asked, want)
+				}
+			} else if !slices.Contains(asked, readable+"#41") || slices.ContainsFunc(asked, func(pull string) bool { return strings.HasPrefix(pull, gone) }) {
+				t.Errorf("the absence query asked about %v, want %s#41 among them and nothing of %s: the line asks for the proof before it keeps the row", asked, readable, gone)
+			}
+			left := map[bool]int{true: 2, false: 4}[proved]
+			if counts.ReadsLeft != left || counts.FactsRefused != left {
+				t.Errorf("after the pass reads_left = %d and facts_refused = %d, want %d and %d: each row with no proof of absence stays in the line", counts.ReadsLeft, counts.FactsRefused, left, left)
+			}
+			if line.ReadsLeft != left || line.Refused != left {
+				t.Errorf("the facts line = %+v, want ReadsLeft %d and Refused %d", line, left, left)
+			}
+		})
 	}
 }
 

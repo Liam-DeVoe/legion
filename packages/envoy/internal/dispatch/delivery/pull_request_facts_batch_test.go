@@ -27,10 +27,10 @@ import (
 // It records each query, each REST read of a pull request, and each page of commits asked.
 //
 // The fake answers the batched query before its mux sees it (fakeGitHub.facts). answerAbsence
-// answers the absence query (absenceQuery) on POST /graphql from the same pull requests. A
-// repository can be on a second installation (install). The bearer token of each query names its
-// installation (installationIDFromToken), and each query records it (queriesOf). GitHub's GraphQL
-// rate limit answers each query of limitedInstallation.
+// answers the absence query (absenceQuery) on POST /graphql from the same pull requests, or with
+// absenceFails where a test sets it. A repository can be on a second installation (install). The
+// bearer token of each query names its installation (installationIDFromToken), and each query
+// records it (queriesOf). GitHub's GraphQL rate limit answers each query of limitedInstallation.
 type batchGitHub struct {
 	t    *testing.T
 	fake *fakeGitHub
@@ -43,6 +43,7 @@ type batchGitHub struct {
 	limitedInstallation int64
 	queries             []batchQuery
 	absenceAsked        []string
+	absenceFails        func(http.ResponseWriter)
 	pullReads           map[string]int
 	commitPages         []int
 	commitBearer        []string
@@ -262,8 +263,8 @@ func (g *batchGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 // with NOT_FOUND on the path repository. Any other repository answers the count of its pull
 // requests beside the pull request. For a number it does not hold, it answers null beside the
 // count, with NOT_FOUND on the path repository.pullRequest. GitHub's GraphQL rate limit answers a
-// query of limitedInstallation. It records each query (absenceQueries). Any other query is a
-// test's mistake.
+// query of limitedInstallation, and absenceFails, where set, answers every query in place of
+// GitHub's answer. It records each query (absenceQueries). Any other query is a test's mistake.
 func (g *batchGitHub) answerAbsence(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Query     string         `json:"query"`
@@ -286,11 +287,14 @@ func (g *batchGitHub) answerAbsence(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	g.absenceAsked = append(g.absenceAsked, fmt.Sprintf("%s#%d", repo, int(number)))
 	limited := g.limitedInstallation != 0 && installationIDFromToken(r) == g.limitedInstallation
+	fails := g.absenceFails
 	gone := g.gone[repo]
 	_, held := g.pulls[repo][int(number)]
 	counted := map[string]any{"totalCount": len(g.pulls[repo])}
 	g.mu.Unlock()
 	switch {
+	case fails != nil:
+		fails(w)
 	case limited:
 		answerGraphQLRateLimit(w)
 	case gone:
