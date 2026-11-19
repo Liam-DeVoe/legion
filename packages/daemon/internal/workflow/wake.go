@@ -61,6 +61,10 @@ type Pods interface {
 	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error)
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
+	// PodBackstopArmedAt is when the open backstop id was armed, and whether it is open. The
+	// backstop of an issue the daemon records as waiting on another issue is measured from it
+	// (podBackstopDue, WaitSilenceBound).
+	PodBackstopArmedAt(ctx context.Context, tx pgx.Tx, id int64) (time.Time, bool, error)
 	// VolumeNoticeCounts and RecordVolumeNotice are the bounds on what an issue's architect is
 	// told about its pod's volume filling, counted in the store rather than in this process:
 	// a daemon that restarts in the middle of a filling pod's episode must not start the count
@@ -249,9 +253,22 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // release, whatever else did or did not happen. The row is fired under a conditional update, so a
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts.
+//
+// The backstop of an issue the daemon records as waiting on another issue
+// (record.Issue.ReleasedForWaitAt) wakes its pod only WaitSilenceBound after the release armed
+// it (backstopWaits), in place of backstop_minutes (dispatch://INFRA-2746 R9). Inside that bound
+// the fact leaves the row unfired and is not spent (intake.Result.Unspent), so the next wake tick
+// reads the same row again: past the bound it wakes the pod, and once the mark clears, at the
+// issue's next slot, it wakes the pod at the first tick after. The wake tick passes over such a
+// row itself (internal/daemon's fireDueBackstops), so this is the rule for a tick whose read of
+// the mark was older than this transaction.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
+	}
+	waits, err := e.backstopWaits(ctx, tx, fact)
+	if err != nil || waits {
+		return intake.Result{Unspent: waits}, err
 	}
 	fired, err := e.cfg.Pods.FirePodBackstop(ctx, tx, fact.ID)
 	if err != nil || !fired {
@@ -264,6 +281,22 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
 	_, err = e.wakeReleased(ctx, tx, released, pods.WakeBackstop, detail, e.now())
 	return intake.Result{}, err
+}
+
+// backstopWaits is whether the backstop fact names a row of an issue the daemon records as
+// waiting on another issue that was armed less than WaitSilenceBound ago. The mark is read first,
+// so the backstop of every other issue reads one record and no arm time. A row that is no longer
+// open waits for nothing: FirePodBackstop then fires nothing.
+func (e *Engine) backstopWaits(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (bool, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil || issue.ReleasedForWaitAt == nil {
+		return false, err
+	}
+	armed, open, err := e.cfg.Pods.PodBackstopArmedAt(ctx, tx, fact.ID)
+	if err != nil || !open {
+		return false, err
+	}
+	return !PastBound(armed, WaitSilenceBound, e.now()), nil
 }
 
 // wakeReleased is the one act every wake of this file performs, and the one place the gates are

@@ -98,15 +98,33 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 // the daemon was down is read by the first pass after it starts, and the row's conditional fire
 // (store.PodRecords.FirePodBackstop) is what makes two passes that read the same row wake its
 // pod once.
+//
+// A row of an issue the daemon records as waiting on another issue is passed over while it was
+// armed less than workflow.WaitSilenceBound ago, so such a pod is woken a day after its release
+// rather than backstop_minutes after it, and costs no fact transaction a tick meanwhile. Those
+// issues are read once a pass, and only for a pass that has a due row
+// (store.Store.IssuesReleasedForWait). The backstop's handler reads the mark again inside its own
+// transaction and is the rule (workflow's podBackstopDue), so a failed read here is logged and
+// every due row is applied.
 func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	due, err := w.idleStore.DuePodBackstops(ctx, w.projectID, now)
 	if err != nil {
 		w.log.Warn("wake: could not read the backstops that came due", "error", err)
 		return
 	}
+	if len(due) == 0 {
+		return
+	}
+	waiting, err := w.idleStore.IssuesReleasedForWait(ctx, w.dispatchProject)
+	if err != nil {
+		w.log.Warn("wake: could not read the issues waiting on another issue; every due backstop is applied", "error", err)
+	}
 	for _, backstop := range due {
 		if ctx.Err() != nil {
 			return
+		}
+		if waiting[backstop.Issue] && !workflow.PastBound(backstop.ArmedAt, workflow.WaitSilenceBound, now) {
+			continue
 		}
 		fact := intake.PodBackstopDue{ID: backstop.ID, Issue: backstop.Issue, Role: backstop.Role}
 		id := fmt.Sprintf("pod-backstop:%d", backstop.ID)
@@ -329,7 +347,9 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
 // worker of the pod's open phase (workflow.OpenPhaseRole). An architect gets none — nothing of
 // its own is due, and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — and neither does an issue whose phase no role works.
+// period — and neither does an issue whose phase no role works. The row records now as its arm
+// time, the instant its due time is computed from: the backstop of an issue the daemon records
+// as waiting on another issue is measured from it (workflow.WaitSilenceBound, fireDueBackstops).
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
@@ -352,11 +372,12 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		if c.Role != role || c.ServingGeneration != issue.Generation {
 			continue
 		}
-		due := r.now().UTC().Add(r.backstop)
+		armed := r.now().UTC()
+		due := armed.Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
 			"issue", issue.Key, "role", role, "due", due.Format(time.RFC3339))
 		return r.trees.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: r.project, Issue: issue.Key,
-			Role: role, DueAt: due})
+			Role: role, ArmedAt: armed, DueAt: due})
 	}
 	return nil
 }

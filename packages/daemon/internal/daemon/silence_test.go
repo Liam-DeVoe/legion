@@ -1229,3 +1229,117 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 		}
 	}
 }
+
+// silenceBlocker is the Dispatch issue the rig's issue waits on in the cases of R9, which no
+// event of these cases finishes until the case ends the wait itself.
+const silenceBlocker = "LEGION-485"
+
+// waitsOn records the rig's issue as an issue the daemon started that waits on blocker, as
+// seedStartedWaiter (controller_tick_foreign_blocker_test.go) records one of its own: Dispatch's
+// mirror names blocker, not done, as what the issue waits on, and admission's release for that
+// wait takes the issue's slot back and marks it, in one statement (record.Store.ReleaseSlotForWait).
+// The rig runs no admission pass, and a daemon's would clear no mark while the blocker stands
+// unfinished (admit's promoteHolds).
+func (r *podUpdateRig) waitsOn(blocker string) {
+	r.t.Helper()
+	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		for _, row := range []record.DispatchIssueRow{
+			{Key: podUpdateIssue, Project: "LEGION", Status: "in_progress", Blockers: []string{blocker}, Seq: 1},
+			{Key: blocker, Project: "LEGION", Status: "in_progress", Seq: 1},
+		} {
+			if err := r.records.PutDispatchIssue(r.ctx, tx, row); err != nil {
+				return err
+			}
+		}
+		return r.records.ReleaseSlotForWait(r.ctx, tx, podUpdateIssue, r.clock.Now())
+	}); err != nil {
+		r.t.Fatalf("record %s as waiting on %s: %v", podUpdateIssue, blocker, err)
+	}
+}
+
+// waitEnds is the end of that wait as admission makes it: blocker done in the mirror, and the
+// issue given its slot again with its mark cleared, in one transaction (admit's promoteHolds,
+// record.Store.ClearReleasedForWait).
+func (r *podUpdateRig) waitEnds(blocker string) {
+	r.t.Helper()
+	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.records.PutDispatchIssue(r.ctx, tx, record.DispatchIssueRow{Key: blocker, Project: "LEGION",
+			Status: "done", Seq: 2}); err != nil {
+			return err
+		}
+		if err := r.records.PutSlot(r.ctx, tx, record.Slot{Issue: podUpdateIssue, Index: 0, AdmittedAt: r.clock.Now()}); err != nil {
+			return err
+		}
+		return r.records.ClearReleasedForWait(r.ctx, tx, podUpdateIssue)
+	}); err != nil {
+		r.t.Fatalf("end the wait of %s on %s: %v", podUpdateIssue, blocker, err)
+	}
+}
+
+// R9 of dispatch://INFRA-2746, on the booted supervision. The issue's implementer goes quiet
+// while the daemon records the issue as waiting on another issue (record.Issue.ReleasedForWaitAt):
+// the sweeps under a day write no start row and no notice, though the worker is past
+// `worker_silence_minutes`, since the start would wait for the slot the issue gave back and hold
+// its pod meanwhile. The first sweep past workflow.WaitSilenceBound tells the architect once, with a
+// notice naming that bound, and still writes no start row; the sweep after it writes nothing
+// more. Once the blocker is done and the issue takes its slot back, which clears the mark, the
+// next sweep writes the start row, and the worker is prompted with its phase's task.
+//
+// INFRA-2753 is the case: its daemon wrote the start row and published the notice while the
+// issue waited on LINUX-1478, holding no slot. At #3712's head the first sweep past the bound
+// writes both.
+func TestSilentPhaseWorkerOfAnIssueWaitingOnAnotherGetsItsTaskOnceTheWaitEnds(t *testing.T) {
+	rig := aSilentPhaseWorker(t)
+	worker := claim.RoleImplementer
+	rig.waitsOn(silenceBlocker)
+	last := rig.clock.Now().UTC()
+	rig.goesQuiet(worker)
+	conn := rig.workers[worker]
+	before := len(conn.Prompts())
+
+	// Under a day: a sweep just past the configured bound, and one a minute short of the day.
+	rig.sweepForSilence()
+	rig.clock.advance(workflow.WaitSilenceBound - (podUpdateSilence + time.Minute) - time.Minute)
+	rig.sweepForSilence()
+
+	if got := rig.starts(); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s under a day = %+v, want none: the issue waits on %s and holds no slot for the start", podUpdateIssue, got, silenceBlocker)
+	}
+	if notices := rig.silenceNotices(); len(notices) != 0 {
+		t.Fatalf("the notices of %s under a day = %+v, want none: the bound of a worker of a waiting issue is %s", podUpdateIssue, notices, workflow.WaitSilenceBound)
+	}
+
+	// Past the day: one notice naming the day, then nothing more at the next minute's sweep.
+	rig.clock.advance(2 * time.Minute)
+	rig.sweepForSilence()
+	rig.clock.advance(time.Minute)
+	rig.sweepForSilence()
+
+	if got := rig.starts(); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s past a day = %+v, want none: the issue still waits", podUpdateIssue, got)
+	}
+	notices := rig.silenceNotices()
+	if len(notices) != 1 || notices[0].Kind != "worker-silent" || notices[0].Role != worker {
+		t.Fatalf("the notices of %s past a day = %+v, want the one worker-silent notice of the implementer", podUpdateIssue, notices)
+	}
+	for _, part := range []string{last.Format(time.RFC3339), "WaitSilenceBound", "24 hours", "wrote no start row"} {
+		if !strings.Contains(notices[0].Reason, part) {
+			t.Errorf("the notice's reason %q names no %q, which its architect needs to read the silence", notices[0].Reason, part)
+		}
+	}
+
+	// The wait ends.
+	rig.waitEnds(silenceBlocker)
+	rig.sweepForSilence()
+
+	want := record.SuperviseRequest{Op: "start", Tree: podUpdateIssue, Role: worker, Generation: 1,
+		Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), ResumeTask: true, NeedsSlot: true}
+	if got := rig.starts(); len(got) != 1 || got[0] != want {
+		t.Fatalf("the supervise rows of %s once the wait ended = %+v, want %+v: the first sweep after the slot sends the task", podUpdateIssue, got, want)
+	}
+	if notices := rig.silenceNotices(); len(notices) != 2 || !strings.Contains(notices[1].Reason, "worker_silence_minutes") {
+		t.Fatalf("the notices of %s once the wait ended = %+v, want the wait's notice and the repair's, which names worker_silence_minutes", podUpdateIssue, notices)
+	}
+	rig.drain()
+	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+}
