@@ -73,10 +73,7 @@ test("an opener handed a value no reading judges fails, naming it", () => {
 });
 
 test("a judgement that names no call the search lists fails, naming it", () => {
-  const judged = [
-    JUDGEMENT,
-    { ...JUDGEMENT, function: "gone", why: "a call since removed" },
-  ];
+  const judged = [JUDGEMENT, { ...JUDGEMENT, function: "gone", why: "a call since removed" }];
   expect(searched({ "a.ts": OPENER }, judged)).toEqual({
     exit: 1,
     lines: [
@@ -113,13 +110,13 @@ test("a judgement names the call's whole argument: a change past its printed par
     `import { SQL } from "bun";\nexport function open(url: string) {\n  return new SQL(${head}${rest} });\n}\n`;
   const judged = [{ ...JUDGEMENT, argument: `${head}"" }` }];
   expect(searched({ "a.ts": call('""') }, judged).exit).toBe(0);
-  expect(searched({ "a.ts": call('""').replace("password: ", "password:\n    ") }, judged).exit).toBe(
-    0
-  );
+  expect(
+    searched({ "a.ts": call('""').replace("password: ", "password:\n    ") }, judged).exit
+  ).toBe(0);
   const changed = searched({ "a.ts": call("process.env.OTHER_PASSWORD") }, judged);
   expect(changed.exit).toBe(1);
-  expect(changed.lines.filter((line) => /^(UNJUDGED|STALE) /.test(line)).map((l) => l.split(" ")[0])).toEqual(
-    ["UNJUDGED", "STALE"]
-  );
+  expect(
+    changed.lines.filter((line) => /^(UNJUDGED|STALE) /.test(line)).map((l) => l.split(" ")[0])
+  ).toEqual(["UNJUDGED", "STALE"]);
   expect(changed.lines.every((line) => line.length < 400)).toBe(true);
 });

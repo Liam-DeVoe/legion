@@ -72,6 +72,12 @@ func dbOpenersPlantedWrapper(ctx context.Context, url string) {
 // opener only when its error ends the function, it runs on every path to the opener, and the opener
 // passes the very value it read, which no line writes between the two.
 func dbOpenersPlantedGuards(ctx context.Context, check bool) error {
+	other := os.Getenv("OTHER_DATABASE_URL")
+	checked := os.Getenv("DATABASE_URL")
+	if pgsetting.Refuse("DATABASE_URL", checked) != nil {
+		return nil
+	}
+	_, _ = pgx.Connect(ctx, other) // planted: unjudged
 	byIf := os.Getenv("DATABASE_URL")
 	if err := pgsetting.Refuse("DATABASE_URL", byIf); err != nil {
 		return err

@@ -42,7 +42,13 @@ const BROKER_STORETEST = "packages/envoy/internal/broker/store/storetest/storete
 const BROKER_WHY = `${TEST_SERVER("BROKER_TEST_DATABASE_URL")}; the broker's test rig (brokertest and its requestseed command) is the one other importer`;
 
 export const JUDGED: readonly JudgedOpener[] = [
-  { file: PROTO, function: "EnsureDatabase", callee: PROTO_OPEN, argument: "u.String()", why: PROTOTYPE },
+  {
+    file: PROTO,
+    function: "EnsureDatabase",
+    callee: PROTO_OPEN,
+    argument: "u.String()",
+    why: PROTOTYPE,
+  },
   { file: PROTO, function: "Open", callee: PROTO_OPEN, argument: "databaseURL", why: PROTOTYPE },
   {
     file: DAEMON_TEMPLATE,
@@ -93,7 +99,13 @@ export const JUDGED: readonly JudgedOpener[] = [
     argument: "dsn",
     why: DAEMON_DSN,
   },
-  { file: DAEMON_TESTDB, function: "create", callee: `${PGX}.Connect`, argument: "admin", why: DAEMON_DSN },
+  {
+    file: DAEMON_TESTDB,
+    function: "create",
+    callee: `${PGX}.Connect`,
+    argument: "admin",
+    why: DAEMON_DSN,
+  },
   {
     file: DAEMON_TESTDB,
     function: "rewriteDSN",
