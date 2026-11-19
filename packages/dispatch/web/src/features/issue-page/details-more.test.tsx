@@ -56,6 +56,15 @@ const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
 beforeEach(() => setSystemTime(NOON));
 afterEach(() => setSystemTime());
 
+// Details' Steps reads the issue's step records each time Details opens, whatever the cache
+// holds, through the Steps tab's catch-up (`DetailsSteps.tsx`): each case answers that read with
+// the same no runs `readsHeld` holds, so it reaches no network and draws nothing new.
+let stepsRead: { mockRestore(): void } | undefined;
+beforeEach(() => {
+  stepsRead = spyOn(api, "listSteps").mockResolvedValue({ issue: KEY, tasks: [] });
+});
+afterEach(() => stepsRead?.mockRestore());
+
 const issue = {
   artifacts: [],
   key: KEY,
@@ -86,7 +95,7 @@ function readsHeld(): QueryClient {
   client.setQueryData(["comments", KEY], [OWN_COMMENT]);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["whoami"], { login: "alice" });
-  // Details' Steps reads the issue's step records while Details is open (`DetailsSteps.tsx`).
+  // Details' Steps draws the issue's step records held here before its own read answers.
   client.setQueryData(issueStepsQuery(KEY).queryKey, { issue: KEY, tasks: [] });
   return client;
 }

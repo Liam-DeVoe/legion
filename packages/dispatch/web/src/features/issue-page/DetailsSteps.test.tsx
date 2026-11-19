@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import { issueStepsQuery } from "../../api/queries";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
 import type { IssueDetails, IssueSteps } from "../../api/types";
 import { stepRecord } from "../steps/step-record-fixture";
@@ -21,10 +21,22 @@ const KEY = "CORE-1";
 // The runs are dated at hours of one day, built in the machine's own zone, and the section draws
 // each as the instant it is, with its year only where it is not this one: each case runs at one
 // fixed local midday of that day, so none reads the wall clock. `setSystemTime` holds `Date`
-// alone; the timers the cases wait on (React Query's retries, `waitFor`'s) run on the real clock.
+// alone; the timers most cases wait on (`waitFor`'s) run on the real clock, where the held `Date`
+// never lets the scheduler's second between two reads of a query end, so no read of the
+// catch-up's follows its first. A case that counts the catch-up's reads runs on the fake clock
+// instead (`onNoonClock`), which starts from the wall clock's time, so it is set to the same
+// midday before anything reads it.
 const NOON = new Date(2026, 10, 19, 12, 0, 0, 0);
 beforeEach(() => setSystemTime(NOON));
 afterEach(() => setSystemTime());
+
+/** Runs `body` on the fake clock (`onFakeClock`), from the cases' midday. */
+async function onNoonClock(body: () => Promise<void>): Promise<void> {
+  await onFakeClock(async () => {
+    setSystemTime(NOON);
+    await body();
+  });
+}
 
 /** The instant `hour`:`minute` of the cases' day, in the machine's own zone. */
 function at(hour: number, minute = 0): string {
@@ -102,6 +114,24 @@ const TWO_TASKS: IssueSteps = {
 
 const NO_STEPS: IssueSteps = { issue: KEY, tasks: [] };
 
+/** A second run of `docs`, whose record the daemon wrote after the others. */
+const LATER_RUN = stepRecord({
+  ended_at: at(11, 50),
+  id: "docs-2",
+  started_at: at(11, 20),
+  step: 2,
+  task: "docs",
+  type: "documentation",
+});
+
+/** `TWO_TASKS` once `LATER_RUN`'s record has reached the server. */
+const WITH_LATER_RUN: IssueSteps = {
+  issue: KEY,
+  tasks: (TWO_TASKS.tasks ?? []).map((task) =>
+    task.task === "docs" ? { ...task, steps: [...(task.steps ?? []), LATER_RUN] } : task
+  ),
+};
+
 /** The client of the page, with the app's own retry policy (`main.tsx`): a failed read is asked
  *  again twice, 500 ms apart. */
 function appClient(): DispatchQueryClient {
@@ -110,9 +140,14 @@ function appClient(): DispatchQueryClient {
   });
 }
 
-/** The section alone, reading the issue's steps through `read`, with Details open or shut. */
+/** The section alone, reading the issue's steps through `read`, with Details open or shut, and
+ *  opened (`open`) or shut (`shut`) after; `fetchedAt` holds the clock's time at each read. */
 function renderSteps(read: () => Promise<IssueSteps>, open = true) {
-  const listSteps = spyOn(api, "listSteps").mockImplementation(read);
+  const fetchedAt: number[] = [];
+  const listSteps = spyOn(api, "listSteps").mockImplementation(() => {
+    fetchedAt.push(Date.now());
+    return read();
+  });
   const client = appClient();
   const draw = (isOpen: boolean) => (
     <QueryClientProvider client={client}>
@@ -121,7 +156,7 @@ function renderSteps(read: () => Promise<IssueSteps>, open = true) {
   );
   const view = render(draw(open));
   return {
-    client,
+    fetchedAt,
     listSteps,
     open: () => view.rerender(draw(true)),
     restore: () => {
@@ -129,6 +164,7 @@ function renderSteps(read: () => Promise<IssueSteps>, open = true) {
       client.clear();
       listSteps.mockRestore();
     },
+    shut: () => view.rerender(draw(false)),
   };
 }
 
@@ -254,52 +290,60 @@ test("an issue with no runs reads None under its heading", async () => {
   }
 });
 
-// A read Dispatch refused is asked again twice, as every read of Details is, and then says so
-// with its Retry, under the heading that has no count yet. Retry reads again and draws the runs;
-// the focus it held goes to the heading once the line goes, never to the page. A later read that
-// fails stands above the runs the read before it drew.
+// A read Dispatch refused says so at once with its Retry, under the heading that has no count
+// yet. The section's read has no retry policy of its own, so nothing asks again before Retry or
+// the catch-up's next read, where the client's policy would ask twice within the second. Retry
+// reads again and draws the runs; the focus it held goes to the heading once the line goes, never
+// to the page. The catch-up's next read, 2 s after the opening, is refused too, and its failure
+// stands above the runs the read before it drew. On the fake clock each read is the one the case
+// names.
 test("a refused read says so with a Retry that reads again, and a later failure stands above the runs", async () => {
-  let refusals = 3;
-  const steps = renderSteps(async () => {
-    if (refusals > 0) {
-      refusals -= 1;
-      throw new ApiError(500, { code: "INTERNAL", error: "refused" });
+  await onNoonClock(async () => {
+    const user = userOnFakeClock();
+    let refusing = true;
+    const steps = renderSteps(async () => {
+      if (refusing) throw new ApiError(500, { code: "INTERNAL", error: "refused" });
+      return TWO_TASKS;
+    });
+    try {
+      await tick(0);
+      expect(screen.getByRole("alert").textContent).toBe(ANSWER_LINES.steps_unreadable);
+      expect(heading().textContent, "the heading counts runs no read has answered").toBe(
+        CONTROL_LABELS.steps
+      );
+      expect(screen.queryByText(ANSWER_LINES.loading_steps)).toBeNull();
+      await tick(1_000, 100);
+      expect(
+        steps.listSteps,
+        "the refused read was asked again before Retry or the catch-up's next read"
+      ).toHaveBeenCalledTimes(1);
+
+      refusing = false;
+      const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+      act(() => retry.focus());
+      await user.keyboard("{Enter}");
+      await tick(0);
+      expect(heading().textContent).toBe(`${CONTROL_LABELS.steps} (5)`);
+      expect(steps.listSteps).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(document.activeElement, "the Retry that went left the focus on the page").toBe(
+        heading()
+      );
+
+      refusing = true;
+      await tick(1_000, 100);
+      expect(steps.listSteps).toHaveBeenCalledTimes(3);
+      const later = screen.getByRole("alert");
+      expect(later.textContent).toBe(ANSWER_LINES.steps_unreadable);
+      expect(heading().textContent).toBe(`${CONTROL_LABELS.steps} (5)`);
+      expect(
+        later.compareDocumentPosition(run("docs-1")) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "the failure is not drawn above the runs"
+      ).toBeTruthy();
+    } finally {
+      steps.restore();
     }
-    return TWO_TASKS;
   });
-  try {
-    const failure = await screen.findByRole("alert");
-    expect(failure.textContent).toBe(ANSWER_LINES.steps_unreadable);
-    expect(steps.listSteps, "the refused read was not asked again twice").toHaveBeenCalledTimes(3);
-    expect(heading().textContent, "the heading counts runs no read has answered").toBe(
-      CONTROL_LABELS.steps
-    );
-    expect(screen.queryByText(ANSWER_LINES.loading_steps)).toBeNull();
-
-    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
-    act(() => retry.focus());
-    await userEvent.keyboard("{Enter}");
-    await headedWith(5);
-    expect(steps.listSteps).toHaveBeenCalledTimes(4);
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(document.activeElement, "the Retry that went left the focus on the page").toBe(
-      heading()
-    );
-
-    // A later read that fails, and its two retries, leave the runs drawn under the failure.
-    refusals = 3;
-    await act(() => steps.client.invalidateQueries({ queryKey: issueStepsQuery(KEY).queryKey }));
-    const later = await screen.findByRole("alert", {}, { timeout: 10_000 });
-    expect(later.textContent).toBe(ANSWER_LINES.steps_unreadable);
-    expect(steps.listSteps).toHaveBeenCalledTimes(7);
-    expect(heading().textContent).toBe(`${CONTROL_LABELS.steps} (5)`);
-    expect(
-      later.compareDocumentPosition(run("docs-1")) & Node.DOCUMENT_POSITION_FOLLOWING,
-      "the failure is not drawn above the runs"
-    ).toBeTruthy();
-  } finally {
-    steps.restore();
-  }
 });
 
 // Shut, Details reads no steps; opened, the section reads them once.
@@ -317,6 +361,97 @@ test("the section reads nothing while Details is shut", async () => {
   } finally {
     steps.restore();
   }
+});
+
+// Opening Details sends one request for the steps, the catch-up's first read, and the next read
+// is the catch-up's own, 2 s on. A query enabled while Details is open would read on its own as
+// Details opens, in the commit the catch-up reads in, and the scheduler answers a read it is asked
+// for only with a fetch begun after it, so the catch-up's read would follow a second later.
+test("opening Details sends one request for the steps, and the next read is the catch-up's", async () => {
+  await onNoonClock(async () => {
+    const steps = renderSteps(async () => TWO_TASKS, false);
+    try {
+      await tick(0);
+      expect(steps.listSteps, "the steps were read with Details shut").not.toHaveBeenCalled();
+
+      steps.open();
+      const openedAt = Date.now();
+      await tick(1_900, 100);
+      expect(heading().textContent).toBe(`${CONTROL_LABELS.steps} (5)`);
+      expect(
+        steps.fetchedAt.map((time) => time - openedAt),
+        "opening Details sent more than one request for the steps"
+      ).toEqual([0]);
+      await tick(100, 100);
+      expect(steps.fetchedAt.map((time) => time - openedAt)).toEqual([0, 2_000]);
+    } finally {
+      steps.restore();
+    }
+  });
+});
+
+// A step record leaves the daemon on a lane of its own and sends no event, so a run whose record
+// reaches the server only after the opening's read is drawn by the catch-up's next read, with no
+// event and no reload.
+test("with Details open, a run the server holds only after the first read shows at the catch-up's next read", async () => {
+  await onNoonClock(async () => {
+    let answer = TWO_TASKS;
+    const steps = renderSteps(async () => answer);
+    try {
+      await tick(0);
+      expect(heading().textContent).toBe(`${CONTROL_LABELS.steps} (5)`);
+
+      answer = WITH_LATER_RUN;
+      await tick(1_900, 100);
+      expect(heading().textContent).toBe(`${CONTROL_LABELS.steps} (5)`);
+      expect(document.querySelector(`[data-step-run="${LATER_RUN.id}"]`)).toBeNull();
+      await tick(100, 100);
+      expect(heading().textContent).toBe(`${CONTROL_LABELS.steps} (6)`);
+      expect(run(LATER_RUN.id).closest("[data-step-task]")?.getAttribute("data-step-task")).toBe(
+        "docs"
+      );
+      expect(fieldsOf(LATER_RUN.id)).toMatchObject({
+        ended: drawnAt(at(11, 50)),
+        started: drawnAt(at(11, 20)),
+        step: "2",
+      });
+      expect(steps.listSteps).toHaveBeenCalledTimes(2);
+    } finally {
+      steps.restore();
+    }
+  });
+});
+
+// Shutting Details stops its catch-up: nothing reads the steps after it, and Details opened again
+// reads on its new catch-up alone. A read asked while Details is shut is dropped, since nothing
+// holds the query then, so a timer of the first catch-up left running would show only once
+// Details holds the query again: Details opens again at 4 s, before that catch-up's 5 s read,
+// which would then land a second after the opening.
+test("shutting Details stops the catch-up: nothing reads after it, and Details opened again reads on its own", async () => {
+  await onNoonClock(async () => {
+    const openedAt = Date.now();
+    const steps = renderSteps(async () => TWO_TASKS);
+    try {
+      await tick(1_000, 100);
+      steps.shut();
+      await tick(3_000, 100);
+      expect(
+        steps.fetchedAt.map((time) => time - openedAt),
+        "the steps were read after Details shut"
+      ).toEqual([0]);
+
+      const openedAgainAt = Date.now();
+      steps.open();
+      await tick(2_000, 100);
+      expect(steps.fetchedAt.slice(1).map((time) => time - openedAgainAt)).toEqual([0, 2_000]);
+
+      steps.shut();
+      await tick(600_000, 1_000);
+      expect(steps.listSteps, "the steps were read after Details shut").toHaveBeenCalledTimes(3);
+    } finally {
+      steps.restore();
+    }
+  });
 });
 
 const issue = {

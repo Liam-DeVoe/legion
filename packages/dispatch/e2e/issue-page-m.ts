@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, type Request } from "@playwright/test";
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { gotoIssue, marginShell, openDetails } from "./issue-page";
@@ -185,6 +185,42 @@ export function stepsSection(page: Page): Locator {
 /** One run of the steps, by its record's id. */
 export function stepRun(page: Page, id: string): Locator {
   return stepsSection(page).locator(`[data-step-run="${id}"]`);
+}
+
+/** The page's reads of one issue's steps, as `watchStepsReads` sees them, counted from 0 in the
+ *  order the page sent them since the watch began. */
+export interface StepsReads {
+  /** Whether read `index` has its answer. */
+  answered(index: number): boolean;
+  /** Whether no read is out and none has been sent or answered for the last `ms`. */
+  quietFor(ms: number): boolean;
+  /** How many reads the page has sent. */
+  sent(): number;
+}
+
+/** Watches the page's reads of issue `key`'s steps (`GET /api/v1/issues/<key>/steps`) from the
+ *  call on, so a row calls it before the page could send one. A read the network failed counts
+ *  as answered, as one with a status does: either way it is no longer out. */
+export function watchStepsReads(page: Page, key: string): StepsReads {
+  const path = `/api/v1/issues/${key}/steps`;
+  const reads: { answeredAt: number | undefined; readonly request: Request }[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "GET" && new URL(request.url()).pathname === path) {
+      reads.push({ answeredAt: undefined, request });
+    }
+  });
+  const answer = (request: Request) => {
+    const read = reads.find((each) => each.request === request);
+    if (read !== undefined) read.answeredAt = Date.now();
+  };
+  page.on("requestfinished", answer);
+  page.on("requestfailed", answer);
+  return {
+    answered: (index) => reads[index]?.answeredAt !== undefined,
+    quietFor: (ms) =>
+      reads.every((read) => read.answeredAt !== undefined && Date.now() - read.answeredAt >= ms),
+    sent: () => reads.length,
+  };
 }
 
 /** What the steps draw of the instant `at`, worked out in the page from the browser's own locale,

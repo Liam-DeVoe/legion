@@ -98,6 +98,7 @@ import {
   stepRun,
   stepsSection,
   stepsUnread,
+  watchStepsReads,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { viewportAt } from "./issue-page-p";
@@ -4592,21 +4593,22 @@ test("Steps in Details lists each run of each task as its record holds it, whole
   });
 });
 
-// The steps are read only once Details opens. A read Dispatch refuses is asked again twice, as
-// every read of Details is, and then Details says so with its Retry under the heading, which has
-// no count yet; Retry reads the steps again and draws every run. An issue no step ran on reads
-// None under its heading.
-// SLOW(>=2s): five step records written, two refused retries 500 ms apart, and two issues loaded.
+// The steps are read only once Details opens. A read Dispatch refuses is not asked again on its
+// own: Details says so at once with its Retry under the heading, which has no count yet, and only
+// the catch-up's next reads, 2 and 5 s after the opening, ask again - refused here too - never
+// retries 500 ms apart. Retry, pressed after those two reads and long before the catch-up's next
+// at 15 s, reads the steps again and draws every run. An issue no step ran on reads None under
+// its heading.
+// SLOW(>=2s): five step records written, the catch-up's two refused reads, and two issues loaded.
 test("Steps in Details says a refused read with a Retry that reads it again, and None where no step ran", async ({
   browser,
 }) => {
   await phase(browser, seedSteps, async (page, seeded) => {
-    const reads: string[] = [];
-    let refusals = 3;
+    const reads: number[] = [];
+    let refusing = true;
     await page.route(`**/api/v1/issues/${seeded.key}/steps`, (route) => {
-      reads.push(route.request().url());
-      if (refusals === 0) return route.fallback();
-      refusals -= 1;
+      reads.push(Date.now());
+      if (!refusing) return route.fallback();
       return route.fulfill({
         body: JSON.stringify({ code: "INTERNAL", error: "refused" }),
         contentType: "application/json",
@@ -4621,10 +4623,21 @@ test("Steps in Details says a refused read with a Retry that reads it again, and
     await openDetails(page);
     const section = stepsSection(page);
     await expect(section.getByRole("alert")).toHaveText(ANSWER_LINES.steps_unreadable);
-    expect(reads, "a refused read was not asked again twice, and no more").toHaveLength(3);
     await expect(section.getByRole("heading", { level: 2 })).toHaveText(CONTROL_LABELS.steps);
     await expect(section.locator("[data-step-run]")).toHaveCount(0);
+    // The catch-up's reads 2 and 5 s after the opening, inside the default wait of 15 s.
+    await expect
+      .poll(() => reads.length, { message: "the catch-up did not read again after the refusal" })
+      .toBe(3);
+    const gaps = reads.slice(1).map((at, index) => at - (reads[index] ?? at));
+    expect(
+      gaps.every((gap) => gap >= 1_500),
+      `a refused read was asked again ${gaps.join(" ms and ")} ms after the one before`
+    ).toBe(true);
+    await expect(section.getByRole("alert")).toHaveText(ANSWER_LINES.steps_unreadable);
+    await expect(section.locator("[data-step-run]")).toHaveCount(0);
 
+    refusing = false;
     await section.getByRole("button", { exact: true, name: CONTROL_LABELS.retry }).click();
     await expect(section.getByRole("heading", { level: 2 })).toHaveText(
       `${CONTROL_LABELS.steps} (${seeded.runs.length})`
@@ -4640,5 +4653,68 @@ test("Steps in Details says a refused read with a Retry that reads it again, and
     );
     await expect(section.getByText(CONTROL_LABELS.none, { exact: true })).toBeVisible();
     await expect(section.locator("[data-step-run]")).toHaveCount(0);
+  });
+});
+
+/** How long the steps' reads stay quiet before the row below acts on the issue: longer than each
+ *  of the first two gaps of the catch-up Details' opening starts (2 s, then 3 s) and far shorter
+ *  than its third (10 s), so the act falls seconds before that catch-up would read again. */
+const STEPS_QUIET_MS = 3_500;
+
+// A step record leaves Legion's daemon on a lane of its own and sends no event, so the event of
+// the phase it ends can reach the page, and the read that event's refresh starts can answer,
+// before the record reaches the server. Details draws the run all the same, at a later read of
+// the catch-up that refresh started, with no other event and no reload: here the record is
+// written only once that read has answered, and the heading then counts one run more.
+// SLOW(>=2s): five step records written, the opening's catch-up waited out, and an event's.
+test("Steps in Details draws a run whose record reaches the server after its event's refresh has read", async ({
+  browser,
+}) => {
+  await phase(browser, seedSteps, async (page, seeded) => {
+    const reads = watchStepsReads(page, seeded.key);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await openDetails(page);
+    const heading = stepsSection(page).getByRole("heading", { level: 2 });
+    await expect(heading).toHaveText(`${CONTROL_LABELS.steps} (${seeded.runs.length})`);
+    // The opening's catch-up reads at once and 2 and 5 s on, then at 15 s: the quiet comes after
+    // its 5 s read, and so no read of that catch-up's falls between the act below and its event's.
+    await expect
+      .poll(() => reads.quietFor(STEPS_QUIET_MS), {
+        message: "the reads of the steps never went quiet after Details opened",
+        timeout: 30_000,
+      })
+      .toBe(true);
+
+    // A move of the status, an event the feed refreshes the steps for (`changesSteps` in
+    // `web/src/api/event-refresh.ts`): the first read after it is the one that refresh starts.
+    const eventRead = reads.sent();
+    await patchIssue(seeded.key, { status: "in_progress" });
+    await expect
+      .poll(() => reads.answered(eventRead), {
+        message: "no read of the steps after the status moved has answered",
+      })
+      .toBe(true);
+
+    const late = crypto.randomUUID();
+    await putStep(seeded.key, late, {
+      agent: `legion-core-${seeded.key.toLowerCase()}-reviewer`,
+      ended_at: stepAt("11:30"),
+      generation: 1,
+      kind: "step",
+      model: "openai/gpt-6.1-sol",
+      result: "passed",
+      role: "reviewer",
+      started_at: stepAt("11:05"),
+      step: 4,
+      task: "default",
+      type: "review",
+    });
+    // The catch-up the event started reads again 2 and 5 s after it: 10 s from here covers both
+    // reads and the drawing of the second's answer, and ends before that catch-up's 15 s read.
+    await expect(heading, "the run written after its event's read was never drawn").toHaveText(
+      `${CONTROL_LABELS.steps} (${seeded.runs.length + 1})`,
+      { timeout: 10_000 }
+    );
+    await expect(stepRun(page, late)).toHaveCount(1);
   });
 });

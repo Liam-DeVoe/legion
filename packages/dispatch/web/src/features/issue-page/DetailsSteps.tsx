@@ -11,6 +11,7 @@ import {
   pageStateText,
   pageStatusProgressText,
 } from "../../theme/classes";
+import { useCatchUp } from "../steps/StepsTab";
 import { type StepRow, stepTasks } from "../steps/steps-model";
 import { DetailsErrorLine } from "./details-error";
 import { authorText, pageChrome } from "./page-structure";
@@ -223,15 +224,25 @@ function Run({ row }: { row: StepRow }): ReactNode {
  * in the order of each task's first step (`stepTasks`), each run of the task in the order the
  * server read them, with its step, role, type, agent, model, attempt, start, end and result.
  *
- * It is read only while Details is open (`open`), with the app's own retry policy, so a load
- * that leaves Details shut costs no request for it; the event feed refreshes it while it is read
- * (`changesSteps` in `api/event-refresh.ts`). What a read answered stays drawn when a later read
- * fails, with the failure and its Retry above it; the failure is drawn alone only while no read
- * has answered. Retry joins a read already out (`cancelRefetch: false`) and, once a read lands
- * and takes the line with it, hands the focus it held to the heading rather than to the page.
+ * It reads through the Steps tab's own catch-up (`useCatchUp` in `features/steps/StepsTab.tsx`)
+ * while Details is open (`open`), and through its Retry, and in no other way, so a load that
+ * leaves Details shut costs no request for it. A step record leaves the daemon on a lane of its
+ * own, so the event that comes with it can reach the page before the record reaches the server:
+ * the catch-up reads at once and then a few times more, and starts again at each refresh the
+ * event feed sends the query (`changesSteps` in `api/event-refresh.ts`), which reaches it through
+ * the catch-up's hold on the query (`ownQuery` in `api/query-refresh.ts`). The query itself is
+ * never enabled - it would read on its own as Details opens, in the commit the catch-up reads in,
+ * and the scheduler, which takes only a read begun after the one asked for as its answer, would
+ * send the catch-up's as a second request - and has no retry policy: the catch-up's next read
+ * asks again for a read that failed, where the app's retries would go on after Details shuts.
+ * What a read answered stays drawn when a later read fails, with the failure and its Retry above
+ * it; the failure is drawn alone only while no read has answered. Retry joins a read already out
+ * (`cancelRefetch: false`) and, once a read lands and takes the line with it, hands the focus it
+ * held to the heading rather than to the page.
  */
 export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boolean }): ReactNode {
-  const query = useQuery({ ...issueStepsQuery(issueKey), enabled: open });
+  const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
+  useCatchUp(issueKey, open);
   const heading = useRef<HTMLHeadingElement>(null);
   const retried = useRef<Element | null>(null);
   useLayoutEffect(() => {
