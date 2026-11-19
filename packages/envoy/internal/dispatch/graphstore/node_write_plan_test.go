@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -324,7 +326,9 @@ type statementPart struct {
 	name, opens, closes, text string
 }
 
-// splicedInto is sql with p in place of the part between p's opening text and its closing one.
+// splicedInto is sql with p in place of the part between p's opening text and its closing one,
+// with p's markParameter and sentinelParameter replaced by the parameters sql binds its node
+// write's mark and its sentinel flag at, read off sql's own probe (appendParameters).
 func (p statementPart) splicedInto(t *testing.T, sql string) string {
 	t.Helper()
 	start := strings.Index(sql, p.opens)
@@ -332,30 +336,50 @@ func (p statementPart) splicedInto(t *testing.T, sql string) string {
 	if start < 0 || end < start {
 		t.Fatalf("the statement holds no %q followed by %q to put %s as it stood between:\n%s", p.opens, p.closes, p.name, sql)
 	}
-	spliced := sql[:start] + p.text + sql[end:]
+	mark, sentinel := appendParameters(t, sql)
+	text := strings.NewReplacer(markParameter, mark, sentinelParameter, sentinel).Replace(p.text)
+	spliced := sql[:start] + text + sql[end:]
 	if spliced == sql {
 		t.Fatalf("%s as it stood is the statement's own text: the control controls nothing", p.name)
 	}
 	return spliced
 }
 
+// markParameter and sentinelParameter stand in a control's text for the parameters the append
+// binds its mark and its sentinel flag at, which follow its node arrays, so their numbers move
+// with the base attributes those arrays carry.
+const markParameter, sentinelParameter = "$MARK", "$SENTINEL"
+
+// appendParameters reads, off the append's own probe, the parameters it binds its mark and its
+// sentinel flag at.
+func appendParameters(t *testing.T, sql string) (mark, sentinel string) {
+	t.Helper()
+	marked := regexp.MustCompile(`\(-held\.source_event\) / \d+ = (\$\d+)::bigint`).FindStringSubmatch(sql)
+	flagged := regexp.MustCompile(`or (\$\d+)::boolean and held\.source_event`).FindStringSubmatch(sql)
+	if marked == nil || flagged == nil {
+		t.Fatalf("the append names no parameter of its mark or of its sentinel flag:\n%s", sql)
+	}
+	return marked[1], flagged[1]
+}
+
 // markedBefore and settledBefore are the append's read of the marks and its move as queueAppend
-// wrote them before INFRA-1149, each a join of the batch to graph_nodes, with the parameters the
-// statement binds them at.
+// wrote them before INFRA-1149, each a join of the batch to graph_nodes, built from the helpers the
+// statement is built from (markedAttributes, markedBy, causeOf), with the parameters the statement
+// binds them at (appendParameters).
 var (
 	markedBefore = statementPart{name: "the read of the marks", opens: "marked as (", closes: "based as (", text: `marked as (
-			select written.*, ((-held.source_event) % 4)::integer & ~written.skip as attributes
+			select written.*, ` + markedAttributes("held") + ` & ~written.skip as attributes
 			from written join graph_nodes held on held.kind = written.kind and held.id = written.id
-			where (held.source_event < 0 and (-held.source_event) / 4 = $20::bigint)
+			where ` + markedBy("held", markParameter) + `
 		),
 		`}
 	settledBefore = statementPart{name: "the move", opens: "settled as (", closes: "insert into graph_tuples", text: `settled as (
-			update graph_nodes set source_event = (case when written.cause = -1 then currval(pg_get_serial_sequence('events', 'id')) else written.cause end)
+			update graph_nodes set source_event = ` + causeOf("written.cause") + `
 			from written
 			where graph_nodes.kind = written.kind and graph_nodes.id = written.id
-			  and ((graph_nodes.source_event < 0 and (-graph_nodes.source_event) / 4 = $20::bigint)
-			       or $22::boolean and graph_nodes.source_event = 0
-			          and written.cause <> 0)
+			  and (` + markedBy("graph_nodes", markParameter) + `
+			       or ` + sentinelParameter + `::boolean and graph_nodes.source_event = ` + strconv.FormatInt(NoEvent, 10) + `
+			          and written.cause <> ` + strconv.FormatInt(NoEvent, 10) + `)
 		)
 		`}
 )
