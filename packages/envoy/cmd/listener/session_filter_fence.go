@@ -220,10 +220,11 @@ func (m *sessionDelivery) fenceFilterWrite(ctx context.Context, logger *logging.
 			break
 		}
 		stands, landed = wrote, true
-		// The main client is asked first (mainLost), and the read is made under the session's lock
-		// (bus.WithLockHeld); a "down" is a read that failed, logged as one.
+		// The main client is asked first (mainLost); ctx is marked as made under the session's
+		// lock by the scope that took it (bus.WithLockHeld). A "down" is a read that failed,
+		// logged as one.
 		if err = m.mainLost(); err == nil {
-			_, newest, err = storedTopics(bus.WithLockHeld(ctx), registry, sessionID)
+			_, newest, err = storedTopics(ctx, registry, sessionID)
 		}
 		if err != nil {
 			logger.Warn("session consumer filter written and left unjudged: the interest row could not be read again; the session's next heartbeat sets it",
@@ -330,9 +331,12 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 	defer cancel()
 	unlock := m.locks.lock(sessionID)
 	defer func() { unlock() }()
+	// Every call made under the lock is made under a context marked so (bus.WithLockHeld); the
+	// wait for a lost connection, made with the lock released, is not.
+	locked := bus.WithLockHeld(ctx)
 	for {
-		lost := m.fenceFilterWrite(ctx, m.logger, registry, sessionID, after, func() (uint64, filterWriteOutcome, error) {
-			return m.storedFilterStep(ctx, registry, sessionID, after)
+		lost := m.fenceFilterWrite(locked, m.logger, registry, sessionID, after, func() (uint64, filterWriteOutcome, error) {
+			return m.storedFilterStep(locked, registry, sessionID, after)
 		})
 		if !m.relockAfterReconnect(ctx, sessionID, &unlock, lost) {
 			return
@@ -360,13 +364,13 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 // It takes no lock and bounds nothing: the caller holds the session's lock over every pass of
 // the fence and bounds ctx (storedFilterWrite, and sessionRelays.settleFilter under a restart).
 func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.Registry, sessionID, after string) (uint64, filterWriteOutcome, error) {
-	// The main client is asked first (mainLost), and the read is made under the session's lock
-	// (bus.WithLockHeld); a "down" is a read that failed, logged as one.
+	// The main client is asked first (mainLost); ctx is marked as made under the session's lock by
+	// the scope that took it (bus.WithLockHeld). A "down" is a read that failed, logged as one.
 	var topics []string
 	var revision uint64
 	err := m.mainLost()
 	if err == nil {
-		topics, revision, err = storedTopics(bus.WithLockHeld(ctx), registry, sessionID)
+		topics, revision, err = storedTopics(ctx, registry, sessionID)
 	}
 	if err != nil {
 		m.logger.Warn("session consumer filter left unchanged: the session's interests could not be read",

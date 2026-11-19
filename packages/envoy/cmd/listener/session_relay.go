@@ -914,7 +914,9 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		run.lockedAt = m.now()
 		callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 		defer cancel()
-		filter, _, err := m.storedFilter(callCtx, sessionID)
+		// Every call made under the lock is made under a context marked so (bus.WithLockHeld).
+		locked := bus.WithLockHeld(callCtx)
+		filter, _, err := m.storedFilter(locked, sessionID)
 		if err != nil {
 			unlock()
 			return m.storedFilterFailed(run, err)
@@ -922,7 +924,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		// A keep sends no call at all (bus.SessionConsumers.KeepListed): nothing of this filter
 		// lands on the server, so there is nothing for a fence to hold. A restart the row moved
 		// under is the one below.
-		start, kept, err := m.delivery.consumers.KeepListed(callCtx, sessionID, filter, listed)
+		start, kept, err := m.delivery.consumers.KeepListed(locked, sessionID, filter, listed)
 		unlock()
 		if err == nil && kept {
 			run.restartedAt.Store(run.listedAt)
@@ -950,18 +952,21 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	at := m.delivery.mark()
 	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
-	filter, revision, err := m.storedFilter(callCtx, sessionID)
+	// Every call made under the lock is made under a context marked so (bus.WithLockHeld); the
+	// pull, made once the lock is released, is not.
+	locked := bus.WithLockHeld(callCtx)
+	filter, revision, err := m.storedFilter(locked, sessionID)
 	if err != nil {
 		unlock()
 		return m.storedFilterFailed(run, err)
 	}
-	start, err := m.delivery.consumers.RestartAtFloor(callCtx, sessionID, filter)
+	start, err := m.delivery.consumers.RestartAtFloor(locked, sessionID, filter)
 	// A restart the server answered with a refusal left no filter of this row on the consumer; a
 	// restart whose answer did not come back may have created it on that filter, so it is settled
 	// against the bucket's newest row like one that answered (consumerCallAnswered).
 	var settleLost error
 	if err == nil || !consumerCallAnswered(err) {
-		settleLost = m.settleFilter(callCtx, sessionID, revision)
+		settleLost = m.settleFilter(locked, sessionID, revision)
 	}
 	unlock()
 	// A landed restart whose settle lost its connection waits for that connection in the relay's
@@ -984,8 +989,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 
 // storedFilter is the filter of sessionID's consumer for its stored interest topics, with the KV
 // revision of the interest row it was built from, read within ctx under the session's lock, which
-// the caller holds (the read is made under a context marked so, bus.WithLockHeld), or the read's
-// error.
+// the caller holds and marks ctx with (bus.WithLockHeld), or the read's error.
 //
 // The row is read from the bucket and not from the watched cache (storedTopics): a registration
 // on another listener may have added a topic this listener's watch has not delivered
@@ -996,7 +1000,7 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 	if lost := m.delivery.mainLost(); lost != nil {
 		return nil, 0, lost
 	}
-	topics, revision, err := storedTopics(bus.WithLockHeld(ctx), m.registry, sessionID)
+	topics, revision, err := storedTopics(ctx, m.registry, sessionID)
 	if err != nil {
 		return nil, 0, err
 	}

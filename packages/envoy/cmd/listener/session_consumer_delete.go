@@ -26,6 +26,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/internal/bus"
 )
 
 // awaitDeletes stops starting consumer deletes off a handler's goroutine and waits, within ctx,
@@ -177,8 +179,11 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 	defer func() { unlock() }()
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
+	// Every call made under the lock is made under a context marked so (bus.WithLockHeld); the
+	// wait for a lost connection, made with the lock released, is not.
+	locked := bus.WithLockHeld(ctx)
 	for {
-		switch _, err := m.recordFromLeader(ctx, d, sessionID); {
+		switch _, err := m.recordFromLeader(locked, d, sessionID); {
 		case errors.Is(err, nats.ErrKeyNotFound):
 		case m.relockAfterReconnect(ctx, sessionID, &unlock, err):
 			continue
@@ -191,7 +196,7 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 				slog.String("session_id", sessionID))
 			return false
 		}
-		floor, err := m.consumers.Delete(ctx, sessionID, listed)
+		floor, err := m.consumers.Delete(locked, sessionID, listed)
 		if m.relockAfterReconnect(ctx, sessionID, &unlock, err) {
 			continue
 		}
@@ -209,7 +214,7 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 		// at the floor the delete recorded. A repair whose connection was lost is made again on
 		// the new connection, and the delete is not: the consumer is gone already.
 		for {
-			lost := m.repairRegistered(ctx, d, sessionID, floor, repairAfterDelete)
+			lost := m.repairRegistered(locked, d, sessionID, floor, repairAfterDelete)
 			if !m.relockAfterReconnect(ctx, sessionID, &unlock, lost) {
 				return true
 			}

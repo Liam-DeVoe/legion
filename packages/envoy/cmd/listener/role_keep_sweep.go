@@ -139,6 +139,9 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 func sweptLaneHead(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (func(), keptLaneHead, bool) {
 	headCtx, cancel := context.WithTimeout(ctx, roleKeepDrainWindow)
 	defer cancel()
+	// Every read made under the guard is made under a context marked so (bus.WithLockHeld); the
+	// wait for a lost connection, made with the guard released, is not.
+	locked := bus.WithLockHeld(headCtx)
 	for {
 		release, taken := cfg.roleKeepDrains.tryHold(role)
 		if !taken {
@@ -147,7 +150,7 @@ func sweptLaneHead(ctx context.Context, cfg listenerDeliveryHandlerConfig, role 
 		var head keptLaneHead
 		err := cfg.client.LostNow()
 		if err == nil {
-			head, err = readKeptLaneHead(bus.WithLockHeld(headCtx), cfg.client, role)
+			head, err = readKeptLaneHead(locked, cfg.client, role)
 		}
 		if err == nil && head.left {
 			return release, head, true

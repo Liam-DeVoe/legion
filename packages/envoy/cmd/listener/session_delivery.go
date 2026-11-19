@@ -318,18 +318,21 @@ func (m *sessionDelivery) close() {
 // stream holds keeps its own position whatever start the call names, so what a repair of it
 // changes is the filter.
 //
-// unlock is the release of the session's lock the registration holds. A repair whose read or call
-// lost its connection (bus.ErrConnectionLost) is made again once the connection is back, inside
-// this repair's budget, with that lock released while it waits and taken again after it
-// (relockAfterReconnect); unlock is left holding whatever release the caller makes on its way out.
+// unlock is the release of the session's lock the registration holds. Every call the repair makes
+// under it is made under a context marked so (bus.WithLockHeld). A repair whose read or call lost
+// its connection (bus.ErrConnectionLost) is made again once the connection is back, inside this
+// repair's budget, with that lock released while it waits and taken again after it
+// (relockAfterReconnect, on the unmarked context); unlock is left holding whatever release the
+// caller makes on its way out.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, unlock *func()) {
 	if m == nil || m.consumers == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
+	locked := bus.WithLockHeld(ctx)
 	for {
-		lost := m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
+		lost := m.repairRegistered(locked, d, sessionID, ackFloor, repairAfterRegistration)
 		if !m.relockAfterReconnect(ctx, sessionID, unlock, lost) {
 			return
 		}
@@ -553,10 +556,8 @@ const (
 // record the bucket does not hold and one that records no consumer delivery are the bucket's
 // answers and no failure, so neither is logged here.
 func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) (registeredConsumer, registeredFinding, error) {
-	// The session's lock is held: the main client is asked first (mainLost), and every read below is
-	// made under a context marked so (bus.WithLockHeld), so a reconnect's handshake costs the lock
-	// the probe's budget. A "down" is a read that failed, logged as one.
-	ctx = bus.WithLockHeld(ctx)
+	// The session's lock is held, and ctx is marked so by the scope that took it (bus.WithLockHeld):
+	// the main client is asked first (mainLost). A "down" is a read that failed, logged as one.
 	var entry session.SessionEntry
 	err := m.mainLost()
 	if err == nil {
@@ -587,11 +588,12 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 
 // mainLost is the listener's main client's answer to LostNow (bus.Client.LostNow), which reads that
 // client's connection by the probe within its 100 ms budget: a caller that holds a session's lock
-// asks it before each read or write of the session and interest buckets on that client, and makes
-// the call under a context marked as made under a lock (bus.WithLockHeld), so a reconnect's
-// handshake there costs the caller the probe's budget with the lock held, not the handshake, and
-// its ErrConnectionLost goes the way every lost call under that lock goes (relockAfterReconnect,
-// storedFilterFailed). A sessionDelivery with no main client (a test's) answers nil.
+// asks it before each read or write of the session and interest buckets on that client, and the
+// scope that took the lock makes every call under a context marked so (bus.WithLockHeld), so a
+// reconnect's handshake under way costs the caller the probe's budget with the lock held, not the
+// handshake, and its ErrConnectionLost goes the way every lost call under that lock goes
+// (relockAfterReconnect, storedFilterFailed). A sessionDelivery with no main client (a test's)
+// answers nil.
 func (m *sessionDelivery) mainLost() error {
 	if m == nil || m.stream == nil {
 		return nil
@@ -600,16 +602,15 @@ func (m *sessionDelivery) mainLost() error {
 }
 
 // recordFromLeader is the session's record read from the session bucket's leader, made under the
-// session's lock (deleteConsumer): it asks the main client first whether its connection is up
-// (mainLost), makes the read under a context marked as made under a lock (bus.WithLockHeld), and
-// bounds it by ctx (bus.Bounded). A read ctx's end abandoned answers ctx's error.
+// session's lock (deleteConsumer), on a context the delete marks so (bus.WithLockHeld): it asks the
+// main client first whether its connection is up (mainLost), and bounds the read by ctx
+// (bus.Bounded). A read ctx's end abandoned answers ctx's error.
 func (m *sessionDelivery) recordFromLeader(ctx context.Context, d *listenerDeps, sessionID string) (session.SessionEntry, error) {
 	if lost := m.mainLost(); lost != nil {
 		return session.SessionEntry{}, lost
 	}
-	locked := bus.WithLockHeld(ctx)
 	entry, answered, err := bus.Bounded(ctx, func() (session.SessionEntry, error) {
-		return d.sessions.RefreshFromLeader(locked, sessionID)
+		return d.sessions.RefreshFromLeader(ctx, sessionID)
 	})
 	if !answered {
 		return session.SessionEntry{}, ctx.Err()
@@ -819,10 +820,13 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 		startSeq = *resume.Seq + 1
 	}
 	unlock := m.locks.lock(body.SessionID)
+	// Every call made under the lock is made under a context marked so (bus.WithLockHeld); the
+	// wait for a lost connection, made with the lock released, is not.
+	locked := bus.WithLockHeld(ctx)
 	filter := m.sessionConsumerFilter(body.SessionID, topics)
-	start, err := m.consumers.Ensure(ctx, body.SessionID, filter, startSeq)
+	start, err := m.consumers.Ensure(locked, body.SessionID, filter, startSeq)
 	for m.relockAfterReconnect(ctx, body.SessionID, &unlock, err) {
-		start, err = m.consumers.Ensure(ctx, body.SessionID, filter, startSeq)
+		start, err = m.consumers.Ensure(locked, body.SessionID, filter, startSeq)
 	}
 	if err != nil {
 		// A call the server answered - the grant it may not make, the stream's consumer cap, a
