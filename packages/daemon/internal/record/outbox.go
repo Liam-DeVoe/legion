@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/stateevent"
 )
 
 // OutboxKind names one durable side effect.
@@ -60,12 +61,12 @@ const (
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
 	// OutboxKindStateChange, OutboxKindStateAdmission and OutboxKindStateBoot are the daemon's
-	// state events (StateChange, StateAdmission, StateBoot). Like gated_steps_publish, each row's
-	// issue column holds the bare project key, so a project's state events run on one lane
-	// (LaneState).
-	OutboxKindStateChange    OutboxKind = "state_change"
-	OutboxKindStateAdmission OutboxKind = "state_admission"
-	OutboxKindStateBoot      OutboxKind = "state_boot"
+	// state events (StateChange, StateAdmission, StateBoot), named as package stateevent names
+	// them. Like gated_steps_publish, each row's issue column holds the bare project key, so a
+	// project's state events run on one lane (LaneState).
+	OutboxKindStateChange    OutboxKind = stateevent.KindChange
+	OutboxKindStateAdmission OutboxKind = stateevent.KindAdmission
+	OutboxKindStateBoot      OutboxKind = stateevent.KindBoot
 	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
 	// record of that step (StepRecord).
 	OutboxKindStepRecord OutboxKind = "step_record"
@@ -1247,95 +1248,43 @@ type RoleHoldersPublish struct {
 
 func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
 
-// StateChange is one write that moved what Dispatch observes of an issue: the issue and each field
-// the write moved, from its old value to its new one (StateFieldChange). Project is the Dispatch
-// project key the daemon works for, and the row's issue column holds that key too, so every state
-// row of the project runs on its one state lane (LaneState). Issue is the issue the change is of.
-// Run is the id of the daemon run that wrote the row. The row carries no sequence and no time: it
-// takes both when its transaction commits (OutboxRow.StateSeq, StateAt), and the executor puts
-// them, Project and Run on the message it publishes.
-type StateChange struct {
-	Project string             `json:"project"`
-	Run     string             `json:"run"`
-	Issue   string             `json:"issue"`
-	Changes []StateFieldChange `json:"changes"`
-}
+// StateChange is a state_change row's payload: one write that moved what Dispatch observes of an
+// issue (stateevent.Change, which documents its fields). Its shape and its checks are package
+// stateevent's, which the claim writes of internal/store build too, so every state row has one
+// shape. It is a type of its own over that shape, not an alias, only because an outbox payload
+// carries its kind as a method (OutboxPayload), and a method cannot be declared on another
+// package's type; StateChange(change) and stateevent.Change(value) convert between the two.
+type StateChange stateevent.Change
 
 func (StateChange) OutboxKind() OutboxKind { return OutboxKindStateChange }
 
-// StateField names one field of an issue that a state change can move.
-type StateField string
+// StateField names one field of an issue that a state change can move (stateevent.Field).
+type StateField = stateevent.Field
 
 // The five fields Dispatch observes of an issue, named as the state route serves them.
 const (
-	StateFieldPhase     StateField = "phase"
-	StateFieldTree      StateField = "tree"
-	StateFieldSlot      StateField = "slot"
-	StateFieldWaitingOn StateField = "waitingOn"
-	StateFieldClaim     StateField = "claim"
+	StateFieldPhase     = stateevent.FieldPhase
+	StateFieldTree      = stateevent.FieldTree
+	StateFieldSlot      = stateevent.FieldSlot
+	StateFieldWaitingOn = stateevent.FieldWaitingOn
+	StateFieldClaim     = stateevent.FieldClaim
 )
 
-// stateFields is every StateField, which is every field a change may name.
-var stateFields = []StateField{StateFieldPhase, StateFieldTree, StateFieldSlot, StateFieldWaitingOn, StateFieldClaim}
+// StateFieldChange is one field a write moved (stateevent.FieldChange).
+type StateFieldChange = stateevent.FieldChange
 
-// StateFieldChange is one field a write moved. Role names the claim's role on a claim change, and
-// is empty on a change of any other field. Old and New are the field's values before and after the
-// write, each encoded as the state route serves it at that issue: a phase string, a tree key, a
-// slot's index, the waitingOn object, a claim's state, or null where the issue holds none (and as
-// Old on the issue's first write). They are raw JSON so that a null stays null and a value is the
-// route's own encoding. A change carries both, so a nil value is refused: null is written as null.
-type StateFieldChange struct {
-	Field StateField      `json:"field"`
-	Role  claim.Role      `json:"role,omitempty"`
-	Old   json.RawMessage `json:"old"`
-	New   json.RawMessage `json:"new"`
-}
-
-// StateAdmission is the whole admission block the state route serves (api.Admission), written
-// when an admission pass changed it. Project and Run are a StateChange's. The block is raw JSON
-// because this package cannot import api: its producer encodes AdmissionBlock, whose JSON is the
-// route's own (QueueAdmissionBlock).
-type StateAdmission struct {
-	Project   string          `json:"project"`
-	Run       string          `json:"run"`
-	Admission json.RawMessage `json:"admission"`
-}
+// StateAdmission is a state_admission row's payload, the whole admission block the state route
+// serves (stateevent.Admission). Its producer encodes AdmissionBlock, whose JSON is the route's own
+// (QueueAdmissionBlock). It is a type of its own over that shape for the reason StateChange is.
+type StateAdmission stateevent.Admission
 
 func (StateAdmission) OutboxKind() OutboxKind { return OutboxKindStateAdmission }
 
-// StateBoot is a daemon run's first state event: the settings the state route serves
-// (api.SettingsOf), as raw JSON for the reason StateAdmission's block is, and SchemaVersion, the
-// highest migration version the store records once that boot's migrations ran (store.SchemaVersion),
-// which the state route serves as `daemon.schemaVersion`. A reader compares it with the version its
-// starting point holds: a boot that moved the schema can have rewritten what Dispatch observes
-// outside every write that queues a state event. Project and Run are a StateChange's.
-type StateBoot struct {
-	Project       string          `json:"project"`
-	Run           string          `json:"run"`
-	Settings      json.RawMessage `json:"settings"`
-	SchemaVersion int64           `json:"schemaVersion"`
-}
+// StateBoot is a state_boot row's payload, a daemon run's first state event (stateevent.Boot). It
+// is a type of its own over that shape for the reason StateChange is.
+type StateBoot stateevent.Boot
 
 func (StateBoot) OutboxKind() OutboxKind { return OutboxKindStateBoot }
-
-// validateStateRow holds the two fields every state row carries: the bare project key its lane
-// is keyed by, in the one shape the contract takes for one (claim.IsProjectKey), and the run that
-// wrote it.
-func validateStateRow(kind OutboxKind, project, run string) error {
-	if !claim.IsProjectKey(project) {
-		return fmt.Errorf("a %s row names the project %q, which is no bare Dispatch project key", kind, project)
-	}
-	if run == "" {
-		return fmt.Errorf("a %s row names no run", kind)
-	}
-	return nil
-}
-
-// jsonObject says whether raw is one JSON object.
-func jsonObject(raw json.RawMessage) bool {
-	trimmed := bytes.TrimSpace(raw)
-	return json.Valid(trimmed) && len(trimmed) > 0 && trimmed[0] == '{'
-}
 
 // StepRecord is one write of an issue's record of one step onto Dispatch (PUT
 // /api/v1/issues/{key}/steps/{id}): the start of the step, its end, or the report alone of a
@@ -2055,47 +2004,19 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a role-holders publish requires the issue whose role sessions it writes")
 		}
 	// A state row's message is what Dispatch writes its observations from, so a row that would
-	// publish a message the contract refuses (legionStateMessage) is refused here instead.
+	// publish a message the contract refuses (legionStateMessage) is refused here instead, by the
+	// checks package stateevent holds for every state row, the claim writes' among them.
 	case StateChange:
-		if err := validateStateRow(OutboxKindStateChange, value.Project, value.Run); err != nil {
+		if err := stateevent.Change(value).Validate(); err != nil {
 			return err
-		}
-		if !claim.IsIssueKey(value.Issue) {
-			return fmt.Errorf("a state change names the issue %q, which is no issue key", value.Issue)
-		}
-		if len(value.Changes) == 0 {
-			return fmt.Errorf("a state change of %s names no field the write moved", value.Issue)
-		}
-		for _, change := range value.Changes {
-			if !slices.Contains(stateFields, change.Field) {
-				return fmt.Errorf("a state change of %s names the field %q, which is none of %v", value.Issue, change.Field, stateFields)
-			}
-			if change.Field == StateFieldClaim && !claim.IsRole(change.Role) {
-				return fmt.Errorf("a claim change of %s names the role %q, which is none of a claim's six", value.Issue, change.Role)
-			}
-			if change.Field != StateFieldClaim && change.Role != "" {
-				return fmt.Errorf("a %s change of %s names the role %q; only a claim change names one", change.Field, value.Issue, change.Role)
-			}
-			if !json.Valid(change.Old) || !json.Valid(change.New) {
-				return fmt.Errorf("a %s change of %s carries an old or a new value that is no JSON value; write null as null", change.Field, value.Issue)
-			}
 		}
 	case StateAdmission:
-		if err := validateStateRow(OutboxKindStateAdmission, value.Project, value.Run); err != nil {
+		if err := stateevent.Admission(value).Validate(); err != nil {
 			return err
-		}
-		if !jsonObject(value.Admission) {
-			return fmt.Errorf("a state admission of %s carries no admission block", value.Project)
 		}
 	case StateBoot:
-		if err := validateStateRow(OutboxKindStateBoot, value.Project, value.Run); err != nil {
+		if err := stateevent.Boot(value).Validate(); err != nil {
 			return err
-		}
-		if !jsonObject(value.Settings) {
-			return fmt.Errorf("a state boot of %s carries no settings", value.Project)
-		}
-		if value.SchemaVersion < 0 {
-			return fmt.Errorf("a state boot of %s carries the schema version %d, which no store records", value.Project, value.SchemaVersion)
 		}
 	case CheckWakeDue:
 		if value.Look <= 0 {

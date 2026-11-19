@@ -25,14 +25,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/stateevent"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // Unrecorded is what this route reads for an issue the workflow does not record, where an
-// operator's claim exists and an issue does not (LEGION-272). It is not a workflow phase: no
-// issue record holds it, the transition table never reaches it, and no role works it — so it
-// lives with the wire shape that carries it rather than in the domain's phases.
-const Unrecorded phase.Phase = "unrecorded"
+// operator's claim exists and an issue does not (LEGION-272), and the phase a state event names for
+// such an issue: stateevent.Unrecorded, the one source of the word for both wire shapes.
+const Unrecorded = stateevent.Unrecorded
 
 // State is the daemon's own facts, and nothing another system owns (spec: State and store).
 type State struct {

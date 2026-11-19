@@ -735,15 +735,16 @@ func publishRecordStates(workflow *workflowRuntime, run string) {
 }
 
 // publishClaimStates turns the state events of the claim writes on (store.Store.PublishState) for
-// run, the id of this daemon run, under the workflow's Dispatch project, and routes their wake as
-// the role-holder publication's is routed: once a claim write that queued a state row commits, the
-// store tells it, and the project's state lane is woken (workflowRuntime.wakeOutbox), which every
-// state row of the project names by the bare project key in its issue column. Only a daemon with a
-// workflow runs the outbox that sends the rows, so only that daemon calls it; and it is called
-// before supervision restores a claim, as PublishRoleHolders is, so that no claim write of the boot
-// goes without its event.
+// run, the id of this daemon run, under the workflow's Dispatch project, through the record store's
+// queue (record.Postgres.EnqueueStateChange), which checks and inserts every state row, and routes
+// their wake as the role-holder publication's is routed: once a claim write that queued a state row
+// commits, the store tells it, and the project's state lane is woken (workflowRuntime.wakeOutbox),
+// which every state row of the project names by the bare project key in its issue column. Only a
+// daemon with a workflow runs the outbox that sends the rows, so only that daemon calls it; and it is
+// called before supervision restores a claim, as PublishRoleHolders is, so that no claim write of
+// the boot goes without its event.
 func publishClaimStates(st *store.Store, workflow *workflowRuntime, run string) {
-	st.PublishState(workflow.dispatchProject, run, func() {
+	st.PublishState(workflow.dispatchProject, run, workflow.recordStore.EnqueueStateChange, func() {
 		workflow.wakeOutbox(workflow.dispatchProject, record.OutboxKindStateChange)
 	})
 }

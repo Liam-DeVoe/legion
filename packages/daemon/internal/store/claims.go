@@ -364,31 +364,29 @@ type storedClaim struct {
 // lockedClaim reads the row of c before c is written, under the row's lock, so that no other write
 // of the claim lands between this read and the write that replaces it. A claim's first row is its
 // admission (AdmitClaim), which is globally serialized, so two first writes of one claim never race
-// past this read. With the state events on (state), the same statement reads whether the write
-// lists c's issue first (storedClaim.unlisted): never for a claim the store holds a row of, since
-// that row names the issue already; else whether the issue has a record of state's project, and,
-// only for an issue that has none, whether any claim of c's project names it.
+// past this read. With the state events on (state), a claim the store holds no row of is read for
+// whether the write lists c's issue first (storedClaim.unlisted): never for a claim the store holds
+// a row of, since that row names the issue already; else whether the issue has a record of state's
+// project, and, only for an issue that has none, whether any claim of c's project names it. That
+// second read is rare, since almost every claim write is of a claim the store already holds, and
+// the claims table has no index on the issue.
 func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *statePublication) (storedClaim, error) {
 	var stored storedClaim
 	var storedState, session *string
-	var err error
-	if state == nil {
-		err = tx.QueryRow(ctx, `select state, session from claims where token = $1 for update`,
-			string(c.Token)).Scan(&storedState, &session)
-	} else {
-		// One row whether or not the claim has one: the left join gives null state and session to
-		// a claim the store does not hold yet. The case reads the claims only for a claim the store
-		// holds no row of, on an issue with no record of the project, since the claims table has no
-		// index on the issue: almost every claim write is of a claim the store already holds.
-		err = tx.QueryRow(ctx, `select stored.state, stored.session,
-			case when stored.state is not null then false
-				when exists (select 1 from issues where key = $2 and project = $3) then false
-				else not exists (select 1 from claims where issue = $2 and project = $4) end
-			from (values (1)) as one (x)
-			left join (select state, session from claims where token = $1 for update) as stored on true`,
-			string(c.Token), c.Issue, state.project, c.Project).Scan(&storedState, &session, &stored.unlisted)
+	err := tx.QueryRow(ctx, `select state, session from claims where token = $1 for update`,
+		string(c.Token)).Scan(&storedState, &session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if state == nil {
+			return stored, nil
+		}
+		if err := tx.QueryRow(ctx, `select case when exists (select 1 from issues where key = $1 and project = $2) then false
+			else not exists (select 1 from claims where issue = $1 and project = $3) end`,
+			c.Issue, state.project, c.Project).Scan(&stored.unlisted); err != nil {
+			return storedClaim{}, fmt.Errorf("read whether %s lists %s first: %w", c.Token, c.Issue, err)
+		}
+		return stored, nil
 	}
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err != nil {
 		return storedClaim{}, fmt.Errorf("read the row of %s: %w", c.Token, err)
 	}
 	if storedState != nil {

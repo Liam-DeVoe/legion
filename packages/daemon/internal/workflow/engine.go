@@ -2137,7 +2137,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // claims, and suspends a root's architect with the rest of its tree. A third move names no role:
 // the gate's opening, the one move out of admitted (Table), whose role is the architect. A
 // phase-finished names the worker whose phase ended, and admitted has none: its role is an
-// architect, the role that reads this notice.
+// architect, the role that reads this notice. The empty role is also what starts the notice's owner
+// walk at the issue's parent (record.NoticeStartsAtParent), so a child's own architect, which this
+// move starts (gateOpened), learns of it from its catch-up and not from this notice.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the

@@ -47,12 +47,13 @@ type stateWakes struct {
 	visible []int
 }
 
-// publishStates turns s's state events on for stateProject and stateRun, and answers the wakes
-// the store tells from then on.
+// publishStates turns s's state events on for stateProject and stateRun, through the queue the
+// daemon hands it (record.Postgres.EnqueueStateChange), and answers the wakes the store tells from
+// then on.
 func publishStates(t *testing.T, s *Store) *stateWakes {
 	t.Helper()
 	wakes := &stateWakes{}
-	s.PublishState(stateProject, stateRun, func() {
+	s.PublishState(stateProject, stateRun, record.NewStore().EnqueueStateChange, func() {
 		var visible int
 		if err := s.pool.QueryRow(context.Background(), `select count(*) from outbox where kind = $1`,
 			string(record.OutboxKindStateChange)).Scan(&visible); err != nil {

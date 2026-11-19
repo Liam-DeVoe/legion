@@ -3,7 +3,9 @@ package record
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -55,45 +57,45 @@ func (b AdmissionBlock) MarshalJSON() ([]byte, error) {
 
 // QueueAdmissionBlock writes block as project's admission block (state_admission_blocks) where it
 // differs from the block stored there, and queues the state event of that change (StateAdmission,
-// carrying the run the state events were turned on with, PublishState) in the same statement,
-// from the upsert's returning: a block equal to the stored one writes nothing and queues nothing,
-// and neither does any block while the state events are off. The two are compared as jsonb, so no
-// key order or spacing can make two equal blocks differ. It answers whether it queued the event,
-// and tells the state events it did as every write that queues one does.
+// carrying the run the state events were turned on with, PublishState): a block equal to the stored
+// one writes nothing and queues nothing. The two are compared as jsonb, so no key order or spacing
+// can make two equal blocks differ. It answers whether it queued the event, and tells the state
+// events it did as every write that queues one does.
 //
-// The block is sent once, and the event's payload is built in the statement from the row the
-// upsert wrote, with the project and the run checked here as NewOutboxRow checks every state row's
-// (validateStateRow): almost every pass writes nothing, so it encodes nothing else. The row's issue
-// column is project, the bare Dispatch project key, so it runs on the project's one state lane
-// (LaneState) as a StateChange does (queueStateChange), and the commit trigger of migration
-// 20261118164019_state_events gives it its sequence and its time when tx commits. It is due at the
-// transaction's own time, now().
+// The caller holds the switch: it reads StatePublished first, since the block it hands in costs a
+// judgement of its own (admit's queueAdmissionBlock), so a call while the state events are off is
+// refused here. The event's row is built and checked (NewOutboxRow) before the upsert runs, so a
+// block whose event would be refused is not written either, and once the upsert returns a row it
+// goes in through the insert every outbox row takes (Enqueue), due at the time the upsert returned,
+// the transaction's own now(). A pass that leaves the block as it was runs the one statement. The
+// row's issue column is project, the bare Dispatch project key, so it runs on the project's one
+// state lane (LaneState) as a StateChange does (queueStateChange), and the commit trigger of
+// migration 20261118164019_state_events gives it its sequence and its time when tx commits.
 func (s *Postgres) QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project string, block AdmissionBlock) (bool, error) {
 	state := s.state.Load()
 	if state == nil {
-		return false, nil
-	}
-	if err := validateStateRow(OutboxKindStateAdmission, project, state.run); err != nil {
-		return false, fmt.Errorf("queue the admission block of %s: %w", project, err)
+		return false, fmt.Errorf("queue the admission block of %s: the state events are off (PublishState), and the caller reads StatePublished before it judges a block", project)
 	}
 	encoded, err := json.Marshal(block)
 	if err != nil {
 		return false, fmt.Errorf("queue the admission block of %s: encode it: %w", project, err)
 	}
-	tag, err := tx.Exec(ctx, `with written as (
-			insert into state_admission_blocks as stored (project, block) values ($1, $2::jsonb)
-			on conflict (project) do update set block = excluded.block
-				where stored.block is distinct from excluded.block
-			returning project, block)
-		insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
-		select $3::text, written.project, jsonb_build_object('project', written.project, 'run', $4::text, 'admission', written.block),
-			0, now(), '', '', null from written`,
-		project, string(encoded), string(OutboxKindStateAdmission), state.run)
+	row, err := NewOutboxRow(project, StateAdmission{Project: project, Run: state.run, Admission: encoded}, time.Time{})
 	if err != nil {
 		return false, fmt.Errorf("queue the admission block of %s: %w", project, err)
 	}
-	if tag.RowsAffected() == 0 {
+	err = tx.QueryRow(ctx, `insert into state_admission_blocks as stored (project, block) values ($1, $2::jsonb)
+		on conflict (project) do update set block = excluded.block
+			where stored.block is distinct from excluded.block
+		returning now()`, project, string(encoded)).Scan(&row.NextAt)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("queue the admission block of %s: %w", project, err)
+	}
+	if err := s.Enqueue(ctx, tx, row); err != nil {
+		return false, fmt.Errorf("queue the admission block of %s: %w", project, err)
 	}
 	state.queued(ctx)
 	return true, nil

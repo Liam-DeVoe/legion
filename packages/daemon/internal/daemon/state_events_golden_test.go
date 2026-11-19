@@ -135,7 +135,7 @@ func newStateGoldenRig(t *testing.T) *stateGoldenRig {
 	r.scoped = projectRecords{Store: r.records, project: cfg.Project}
 	r.claims = r.serveState(t, source{runtime: cfg.Runtime.Name, admissionCap: cfg.AdmissionCap, startedAt: stateGoldenStart,
 		gatedSteps: cfg.Gates.Steps(), experiments: cfg.ExperimentsDeclared(), settings: api.SettingsOf(cfg), stateRun: stateTestRun})
-	r.claims.PublishState(cfg.Project, stateTestRun, nil)
+	r.claims.PublishState(cfg.Project, stateTestRun, r.records.EnqueueStateChange, nil)
 	r.workflow = &workflowRuntime{pool: r.pool, records: r.scoped, dispatchProject: cfg.Project}
 	return r
 }

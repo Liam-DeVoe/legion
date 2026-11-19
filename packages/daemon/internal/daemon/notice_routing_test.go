@@ -172,12 +172,13 @@ func mustClaimToken(t *testing.T, issue string, role claim.Role) claim.Token {
 // Every notice but a catch-up goes to the architect that owns its issue, by the TypeScript daemon's
 // rule (record.OwningArchitect): the nearest issue at or above it whose architect claim holds its
 // role (not failed or retired, and not suspended except by the idle release), else the tree root;
-// a child's close or status change, and a worker-died or worker-stalled about a child's
-// architect, start at its parent. A catch-up goes to the architect of its own issue alone
-// (noticeArchitect). The walk stays inside the issue's tree: admission records a Dispatch
-// re-parent as it comes and leaves the issue's tree as it was, so a parent that is not an issue of
-// that tree — not recorded, or recorded in another tree — ends the walk at the tree's root. The
-// runs are the outbox's own (holdsRole), over the claim's state alone.
+// a child's close or status change, a worker-died or worker-stalled about a child's architect, and
+// the phase-finished of a child's gate opening, the one that names no role, start at its parent.
+// A catch-up goes to the architect of its own issue alone (noticeArchitect). The walk stays inside
+// the issue's tree: admission records a Dispatch re-parent as it comes and leaves the issue's tree
+// as it was, so a parent that is not an issue of that tree — not recorded, or recorded in another
+// tree — ends the walk at the tree's root. The runs are the outbox's own (holdsRole), over the
+// claim's state alone. A case that names no kind is a planner's phase-finished.
 func TestTheArchitectThatOwnsANotice(t *testing.T) {
 	root, child, unrecorded, elsewhere := "LEGION-1", "LEGION-2", "LEGION-77", "LEGION-50"
 	tree := map[string]record.Issue{
@@ -204,6 +205,9 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 		{name: "a child whose sub-architect was suspended", issue: "LEGION-2", subArchitect: supervise.StateSuspended, owner: "LEGION-1"},
 		{name: "a child's close under its running sub-architect", issue: "LEGION-2", kind: "child-closed", subArchitect: supervise.StateWorking, owner: "LEGION-1"},
 		{name: "a child's status change under its running sub-architect", issue: "LEGION-2", kind: "child-status", subArchitect: supervise.StateWorking, owner: "LEGION-1"},
+		{name: "a child's gate opening under its launching sub-architect", issue: "LEGION-2", kind: gateOpenedNotice, subArchitect: supervise.StateLaunching, owner: "LEGION-1"},
+		{name: "a grandchild's gate opening under the sub-architect's child", issue: "LEGION-3", kind: gateOpenedNotice, subArchitect: supervise.StateWorking, owner: "LEGION-2"},
+		{name: "the root's own gate opening", issue: "LEGION-1", kind: gateOpenedNotice, owner: "LEGION-1"},
 		{name: "a grandchild's close under the sub-architect's child", issue: "LEGION-3", kind: "child-closed", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
 		{name: "the root's own close", issue: "LEGION-1", kind: "child-closed", owner: "LEGION-1"},
 		{name: "a child whose parent is not recorded", issue: "LEGION-4", owner: "LEGION-1"},
@@ -216,11 +220,14 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 				mustClaimToken(t, root, claim.RoleArchitect):  supervise.StateWorking,
 				mustClaimToken(t, child, claim.RoleArchitect): tc.subArchitect,
 			}
-			kind := tc.kind
-			if kind == "" {
+			kind, role := tc.kind, claim.Role("")
+			switch kind {
+			case "":
+				kind, role = "phase-finished", claim.RolePlanner
+			case gateOpenedNotice:
 				kind = "phase-finished"
 			}
-			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], record.NoticeStartsAtParent(kind, ""), func(token claim.Token) bool {
+			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], record.NoticeStartsAtParent(kind, role), func(token claim.Token) bool {
 				return holdsRole(supervise.ClaimView{Claim: supervise.Claim{State: states[token]}})
 			})
 			if want := mustClaimToken(t, tc.owner, claim.RoleArchitect); err != nil || got != want {
@@ -229,6 +236,10 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 		})
 	}
 }
+
+// gateOpenedNotice stands in TestTheArchitectThatOwnsANotice's table for the phase-finished of the
+// move out of admitted, which names no role (workflow's noticeFor).
+const gateOpenedNotice record.NoticeKind = "gate-opened phase-finished"
 
 // The executor publishes a notice to its owner's role topic and to nothing else: no issue topic,
 // since every issue topic is a subject that issue's phase workers subscribe to, and no worker's role

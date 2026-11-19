@@ -1,8 +1,0 @@
-kind: Changed
-body: |-
-  `GET /legion/v1/state`'s `admission.active` now lists only the issues that hold one of the
-  project's own slots. On a database that more than one daemon shares, it listed every slot holder
-  the record knew, of any project, as active work of this project. The admission pass, the state
-  route and the admission event now read the block from one judgement of the project's own records.
-custom:
-  Issue: pr4432

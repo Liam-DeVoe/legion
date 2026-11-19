@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/stateevent"
 )
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (Awaiting), as the state
@@ -98,10 +99,6 @@ func (o IssueObservation) encoded() ([len(observedIssueFields)]json.RawMessage, 
 	return values, nil
 }
 
-// jsonNull is the JSON null, the value a state change names for a field that holds none: a tree
-// cleared, a slot released, a wait ended, and every field before an issue's first write.
-var jsonNull = json.RawMessage("null")
-
 // issueChanges is each field of an issue's observation that a write moved from before to after,
 // in the order phase, tree, waitingOn, each with its encoded old and new value; none when the write
 // moved nothing Dispatch observes. A nil before is an issue the write recorded for the first time:
@@ -111,7 +108,7 @@ func issueChanges(before *IssueObservation, after IssueObservation) ([]StateFiel
 	if err != nil {
 		return nil, err
 	}
-	olds := [len(observedIssueFields)]json.RawMessage{jsonNull, jsonNull, jsonNull}
+	olds := [len(observedIssueFields)]json.RawMessage{stateevent.Null, stateevent.Null, stateevent.Null}
 	if before != nil {
 		if olds, err = before.encoded(); err != nil {
 			return nil, err
