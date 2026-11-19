@@ -66,8 +66,9 @@ export const GITHUB_ROUTES: readonly GithubRoute[] = [
     route: "POST /app/installations/{id}/access_tokens",
     credential: "app",
     status: 201,
-    site: "githubapp/client.go Token",
-    asked: "githubapp.Client.RepositoryToken, once a token's life (an hour)",
+    site: "githubapp/client.go token",
+    asked:
+      "githubapp.Client.RepositoryToken → RepositoryTokenWithStatuses, once a token's life (an hour); since #4299 the request is built in token, which Token calls too",
     measured: "each worker world's seeds, at the first result a seed records",
   },
   {
@@ -189,6 +190,11 @@ export const UNREACHED: readonly UnreachedSite[] = [
     site: "githubapp/commits.go CommitCheckSuites",
     route: "GET /repos/{owner}/{repo}/commits/{sha}/check-suites",
     reason: NO_CI_RECONCILE,
+  },
+  {
+    site: "githubapp/commits.go CommitStatuses",
+    route: "GET /repos/{owner}/{repo}/commits/{sha}/status",
+    reason: `the commit statuses of a head the CI reconcile settles (cireconcile/heads.go, #4299), and ${NO_CI_RECONCILE}`,
   },
   {
     site: "githubapp/commits.go OpenPullRequests",

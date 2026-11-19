@@ -4105,15 +4105,23 @@ run_tester_proof() {
 # completion-answers.ts's ANSWERS["reviewer-text-findings"], which `rig.sh health` and the score
 # read.
 run_reviewer_text_findings() {
-  local name=$1 project=$2 index=$3 start=$4 review=$5 pr head version
+  local name=$1 project=$2 index=$3 start=$4 review=$5 pr head version round
   start_recorder "$project"
   worker_run_world "$index" "$start" "$review"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
   version=$(jq -r .test.version "$R/fixture.json")
+  # The daemon's two sentences of the review round end every task of the reviewer, as the label's
+  # daemon ends them (packages/daemon/internal/workflow/review_round.go, main's since #4328): this
+  # is the issue's first round, so no review of the reviewer's has read a commit, and its entry is
+  # 1, the one its start raises (daemon-standin.ts's ENTRIES, which the record answers as
+  # phaseEntry). A daemon of main ff2a10ef's shape ends no task with them, and the reader prints
+  # nothing for it (daemon-pane.ts's reviewRoundSentences).
+  round=$(bun "$here/daemon-pane.ts" review-round "$co" '' 1) ||
+    fail "the sentences the daemon of label checkout $co ends a reviewer's task with could not be read (above)"
   # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
   # record in (packages/daemon/internal/workflow/effects.go): for a review round, the tester's.
-  printf 'Architect → reviewer, %s. The tester has finished: PR #%s (%s, repository %s) is at %s. Handoff: test version %s (dispatch handoff-read --issue %s --phase test --version %s). Review it and finish your phase.\n' \
-    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+  printf 'Architect → reviewer, %s. The tester has finished: PR #%s (%s, repository %s) is at %s. Handoff: test version %s (dispatch handoff-read --issue %s --phase test --version %s). Review it and finish your phase.%s\n' \
+    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" "$round" >"$R/prompt.txt"
   worker_boot "$name" "$project" reviewer
   # What the run left on its issue: every handoff record, each with its body, beside the review
   # submission the gh stand-in recorded, which is what the score reads.

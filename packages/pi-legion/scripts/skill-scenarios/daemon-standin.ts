@@ -218,6 +218,7 @@ import {
   mergeableOf,
   mergeStateOf,
   recordedCalls,
+  type SubmittedReview,
   submittedReviews,
   threadState,
 } from "./gh-threads";
@@ -483,7 +484,10 @@ const startedAt = new Date().toISOString();
  *     neither moves the record; a `DIRTY` one is a conflict, above;
  *   - an approval of another head is set aside (`classify.ApprovalSetAside`, the round
  *     `stuckApprovedOtherCode`), which is what a push while the record is `reviewing` leaves, and
- *     the issue stays in `reviewing` until a review of the new head decides the round.
+ *     the issue stays in `reviewing` until a review of the new head decides the round;
+ *   - a review the review App submitted decides nothing where it is not the reviewer's own
+ *     (`takenForRound`): main's engine since #4328 takes one only where its Legion footer names
+ *     the session the reviewer's claim records, and waits while that claim records none.
  * Once the record has moved on its round it stays where it moved to: a push in `accepting` lands
  * outside any round (`review.go`'s `issue.Phase != phase.Reviewing`, `review_test.go`'s "the
  * approval of the head, then a push"), and only a conflict moves it on. A reviewer's completion
@@ -521,8 +525,9 @@ const MERGEABLE = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
  * and `mergeStateOf`), and the review that last decided the round, the last whose state decides
  * one (gh-threads.ts's DECIDES, `classify`'s `DecidesRound`: a COMMENT and a pending review
  * decide nothing, and leave the decision before them standing) among the reviews the world held
- * and those the run left (gh-threads.ts's `submittedReviews`), its head written whole where the
- * review names the pull request's head by a prefix. That is the round's decision, which main's
+ * and those the run left (gh-threads.ts's `submittedReviews`) that the engine takes as who wrote
+ * them goes (`takenForRound`), its head written whole where the review names the pull request's
+ * head by a prefix. That is the round's decision, which main's
  * record holds (`api.PullRequestView`'s `reviewDecision`, "the latest review round's decision"),
  * and not GitHub's review decision, which counts each reviewer's approvals against the base's
  * rule (gh-threads.ts's `reviewDecisionOf`). `round` is whether the world holds a round to read
@@ -545,7 +550,9 @@ function worldPull(): { pull: PullRequestFacts; round: boolean } {
   const record = `${runDir}/${CALLS}`;
   const calls = existsSync(record) ? recordedCalls(record) : [];
   const at = { routes, world };
-  const named = submittedReviews(at, calls).findLast((review) => DECIDES.includes(review.state));
+  const named = submittedReviews(at, calls).findLast(
+    (review) => DECIDES.includes(review.state) && takenForRound(review)
+  );
   const threads = threadState(at, calls);
   const held = heldPullRequest(routes).state;
   return {
@@ -564,6 +571,57 @@ function worldPull(): { pull: PullRequestFacts; round: boolean } {
     },
     round: true,
   };
+}
+
+/** Whether the label's engine takes `review` for the round, as who wrote it goes (review.go's
+ * `DecidesRound` and `byReviewer`, `SHAPES.decidesBySession`). A review the run made through a
+ * pane of the review App is the reviewer's own only where its Legion footer names the session the
+ * reviewer's claim records (`footerSession`): main's engine since #4328 reads that claim's
+ * session, which the reviewer's agent records at its registration (`register`), and takes no such
+ * review while it records none, so one submitted before the registration waits and is judged
+ * again at the next read (`RefusedWhileNoSession`); main `ff2a10ef`'s reads the session off the
+ * claim the reviewer's row names, which only the reviewer's taken completion writes there
+ * (`completed`), and lets the login decide alone until then. A review of any other App's pane is
+ * its writer's and decides as one, and a review the world held before the run is the history the
+ * world says the daemon took. Not modelled: the head its footer names (`refusesRound`), which the
+ * record reads off the review's `commit_id` instead. */
+function takenForRound(review: SubmittedReview): boolean {
+  if (review.made?.app !== "review") return true;
+  const recorded = CLAIMS.get("reviewer")?.session ?? "";
+  const named = footerSession(review.made.body);
+  if (SHAPES.decidesBySession) return recorded !== "" && named === recorded;
+  const held = completed("reviewer") ? recorded : "";
+  return held === "" || named === held;
+}
+/** The session the last Legion footer of a review's `body` names, as the daemon reads it
+ * (intake's `lastLegionFooter` and `LegionSession`): the JSON object between the last
+ * `<!-- legion:` and the `-->` after it, "" where the body has none, no `-->` closes it, or what
+ * it holds is no JSON object whose `session` and `head` are strings or null where it names them
+ * (Go's decoder refuses the whole footer then). Keys are matched as Go matches a field, without
+ * case. */
+function footerSession(body: string): string {
+  const marker = "<!-- legion:";
+  const at = body.lastIndexOf(marker);
+  if (at < 0) return "";
+  const rest = body.slice(at + marker.length);
+  const end = rest.indexOf("-->");
+  if (end < 0) return "";
+  let footer: unknown;
+  try {
+    footer = JSON.parse(rest.slice(0, end));
+  } catch {
+    return "";
+  }
+  if (footer === null) return "";
+  if (typeof footer !== "object" || Array.isArray(footer)) return "";
+  let session = "";
+  for (const [key, value] of Object.entries(footer)) {
+    const field = key.toLowerCase();
+    if (field !== "session" && field !== "head") continue;
+    if (value !== null && typeof value !== "string") return "";
+    if (field === "session" && value !== null) session = value;
+  }
+  return session;
 }
 
 /** The phase the review round moves the issue to on the pull request `pull` (`worldPull`), or

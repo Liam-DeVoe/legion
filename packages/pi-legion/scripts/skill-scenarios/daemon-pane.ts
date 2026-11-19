@@ -20,6 +20,11 @@
  * cannot be read, and 2 on a usage error or with no build or no work directory named. `bun
  * daemon-pane.ts gh-selectors <checkout> <file>` writes the checkout's gh selectors to `file`
  * (gh-selectors.ts's RUN_SELECTORS, rig.sh's worker_boot), exiting 1 when they cannot be read.
+ * `bun daemon-pane.ts review-round <checkout> <commit> <entry>` prints the two sentences the
+ * checkout's daemon ends a reviewer's task in `reviewing` with, for the commit its row holds (""
+ * for none) and the entry it stands at (0 for none), and nothing for a daemon that writes none
+ * (`reviewRoundSentences`, rig.sh's run_reviewer_text_findings), exiting 1 when its source is of
+ * no shape this reads.
  */
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
@@ -732,6 +737,19 @@ export interface LabelShapes {
    * client's `PutRoleHolders` and the route's row in Dispatch's table, main's since #4228,
    * 5a2d1f0637). */
   readonly publishesHolders: boolean;
+  /** Every task of the reviewer ends with the daemon's two sentences of its review round: the
+   * commit the reviewer's newest deciding review read, and the entry of its round
+   * (review_round.go's `namingTheReviewRound`, through reviewround.go's `Sentences`, main's since
+   * #4328, 480e2dc4ae), which `reviewRoundSentences` writes as that source does. */
+  readonly namesReviewRound: boolean;
+  /** A review the review App submitted is the reviewer's own, and so decides the round, only
+   * where its Legion footer names the session the claims record holds for the claim the daemon
+   * starts the reviewer under, which the reviewer's agent records at its registration; while that
+   * claim records none, such a review waits (review.go's `byReviewer`, `reviewersClaim` and
+   * `RefusedWhileNoSession`, main's since #4328). False for main `ff2a10ef`'s engine, which reads
+   * the session off the claim the reviewer's row names, which only the reviewer's completion
+   * writes there, and lets the login decide alone while the row names none. */
+  readonly decidesBySession: boolean;
 }
 
 const EFFECTS = "daemon/internal/workflow/effects.go";
@@ -757,12 +775,62 @@ const OUTBOX_WITHOUT_HOLDERS: Marker = {
   file: "daemon/internal/record/outbox.go",
   text: '\tOutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"\n)',
 };
+/** The file that words the two sentences ending a reviewer's task (main's since #4328). */
+const ROUND_WORDS = "daemon/internal/reviewround/reviewround.go";
+/** Those sentences' words as reviewround.go declares them: the label of the commit, the label of
+ * the entry, and the word either names where it has no value. */
+const ROUND_COMMIT = "Last reviewed commit";
+const ROUND_ENTRY = "Review entry";
+const ROUND_NONE = "none";
+/** What a daemon that ends every task of the reviewer with those sentences holds: the function
+ * that appends them to each task of the reviewer, the three words above as their constants
+ * declare them, and the one return of `Sentences` that joins them, so a source that words or
+ * joins the sentences otherwise is of no shape this reads. */
+const NAMES_ROUND: readonly Marker[] = [
+  { file: "daemon/internal/workflow/review_round.go", text: "func namingTheReviewRound(" },
+  { file: ROUND_WORDS, text: `const CommitLabel = "${ROUND_COMMIT}"` },
+  { file: ROUND_WORDS, text: `const EntryLabel = "${ROUND_ENTRY}"` },
+  { file: ROUND_WORDS, text: `const none = "${ROUND_NONE}"` },
+  {
+    file: ROUND_WORDS,
+    text: 'return " " + CommitLabel + ": " + commit + ". " + EntryLabel + ": " + named + "."',
+  },
+];
+/** The queue's row as main `ff2a10ef`'s daemon builds it, from the payload as it came: what that
+ * older daemon has in the place of the sentences, which main's since #4328 writes into each task
+ * of the reviewer as it queues it (effects.go's `queuedRow`). */
+const ROW_AS_QUEUED: Marker = {
+  file: EFFECTS,
+  text: "payload record.OutboxPayload, at time.Time) error {\n\trow, err := record.NewOutboxRow(issue, payload, at)",
+};
+/** The file the engine judges who wrote a review in. */
+const REVIEW = "daemon/internal/workflow/review.go";
+/** Who a review of the review App is the reviewer's own for, as main's engine since #4328 judges
+ * it: the session the reviewer's claim records, found by the claim's token, and none while it
+ * records none. */
+const BY_RECORDED_SESSION: readonly Marker[] = [
+  {
+    file: REVIEW,
+    text: 'return e.byReviewApp(review.Author) && reviewerSession != "" && review.LegionSession() == reviewerSession',
+  },
+  { file: REVIEW, text: "func (e *Engine) reviewersClaim(" },
+];
+/** The same judgement as main `ff2a10ef`'s engine makes it: any session while the reviewer's row
+ * names no claim, read off the claim that row names (`claimSession`). */
+const BY_ROW_SESSION: readonly Marker[] = [
+  {
+    file: REVIEW,
+    text: 'return e.byReviewApp(review.Author) && (reviewerSession == "" || review.LegionSession() == reviewerSession)',
+  },
+  { file: REVIEW, text: "func (e *Engine) claimSession(" },
+];
 
-/** What the daemon source of `checkout` posts, refuses and publishes, each read as one of two
- * shapes: main's since the change that brought it, by its own marker, or main `ff2a10ef`'s, which
- * predates all three changes, by the code it has in their place (`STATUS_WITHOUT_MESSAGE`,
- * `OUTBOX_WITHOUT_HOLDERS`). The completion refusals have one shape, every daemon the rig runs
- * holding them. Throws, naming each marker and its file, for a source of no shape or of both
+/** What the daemon source of `checkout` posts, refuses, publishes, ends a reviewer's task with and
+ * takes a review of the review App for, each read as one of two shapes: main's since the change
+ * that brought it, by its own marker, or main `ff2a10ef`'s, which predates all five changes, by
+ * the code it has in their place (`STATUS_WITHOUT_MESSAGE`, `OUTBOX_WITHOUT_HOLDERS`,
+ * `ROW_AS_QUEUED`, `BY_ROW_SESSION`). The completion refusals have one shape, every daemon the rig
+ * runs holding them. Throws, naming each marker and its file, for a source of no shape or of both
  * (`sourceShape`), which refuses the batch at rig.sh's label_facts and a stand-in's boot. */
 export function labelShapes(checkout: string): LabelShapes {
   for (const [code, file] of COMPLETION_REFUSALS)
@@ -805,7 +873,35 @@ export function labelShapes(checkout: string): LabelShapes {
         value: false,
       },
     ]),
+    namesReviewRound: sourceShape(checkout, "the sentences that end a reviewer's task", [
+      { name: "main's daemon since #4328", markers: NAMES_ROUND, value: true },
+      {
+        name: "main ff2a10ef's daemon, whose queue writes a task as it came",
+        markers: [ROW_AS_QUEUED],
+        value: false,
+      },
+    ]),
+    decidesBySession: sourceShape(checkout, "whose review of the review App decides a round", [
+      { name: "main's daemon since #4328", markers: BY_RECORDED_SESSION, value: true },
+      {
+        name: "main ff2a10ef's daemon, which reads the session off the reviewer's row",
+        markers: BY_ROW_SESSION,
+        value: false,
+      },
+    ]),
   };
+}
+
+/** The two sentences the daemon of `checkout` ends a task of the reviewer in `reviewing` with, as
+ * reviewround.go's `Sentences` writes them: `commit`, the head its row holds as the one the
+ * reviewer's newest deciding review read ("" for none), and `entry`, the entry its row stands at
+ * while it holds that entry's task (0 for none), each `none` where it has no value
+ * (review_round.go's `namingTheReviewRound`). "" for a daemon of main `ff2a10ef`'s shape, which
+ * ends no task with them (`labelShapes`' `namesReviewRound`). Throws for a source of no shape
+ * this reads, naming each marker and its file. */
+export function reviewRoundSentences(checkout: string, commit: string, entry: number): string {
+  if (!labelShapes(checkout).namesReviewRound) return "";
+  return ` ${ROUND_COMMIT}: ${commit === "" ? ROUND_NONE : commit}. ${ROUND_ENTRY}: ${entry > 0 ? entry : ROUND_NONE}.`;
 }
 
 /** `read()`, or an error naming `fact` of the daemon of `checkout` and why it could not be read. */
@@ -1039,9 +1135,23 @@ if (import.meta.main) {
     }
     process.exit(0);
   }
+  const [commit = "", entry = ""] = rest;
+  if (command === "review-round" && checkout !== undefined && rest.length === 2) {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(entry)) {
+      console.error(`daemon-pane review-round: entry ${JSON.stringify(entry)} is no entry number`);
+      process.exit(2);
+    }
+    try {
+      process.stdout.write(reviewRoundSentences(checkout, commit, Number(entry)));
+    } catch (error) {
+      console.error(`daemon-pane review-round: ${message(error)}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   if (command !== "facts" || checkout === undefined || rest.length === 0) {
     console.error(
-      "usage: bun daemon-pane.ts facts <checkout> <role>[:<phase>]... | gh-selectors <checkout> <file>"
+      "usage: bun daemon-pane.ts facts <checkout> <role>[:<phase>]... | gh-selectors <checkout> <file> | review-round <checkout> <commit> <entry>"
     );
     process.exit(2);
   }

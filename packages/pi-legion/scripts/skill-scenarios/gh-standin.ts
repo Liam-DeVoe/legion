@@ -428,12 +428,13 @@ function unmodelledWrite(): boolean {
  * on it (`unmodelledWrite`). GitHub answers such a write and the world does not, so it is refused
  * as every call the world has no answer for is, and `rig.sh health` names it. */
 const route = unmodelledWrite() ? undefined : matched;
-/** The review this call left on the pull request, as this stand-in answered it: its state and
- * the head it stands at. Set for a create the world answered with a review and for a submit of
- * the pending one; undefined for every other call. The daemon stand-in reads the run's reviews
- * from these and from nothing else (daemon-standin.ts's `roundOutcome`), so the approval the
- * record moves on is the one the world answered the agent with, read once, here. */
-let answered: { state: string; head: string } | undefined;
+/** The review this call left on the pull request, as this stand-in answered it: its state, the
+ * head it stands at and the body it carries. Set for a create the world answered with a review
+ * and for a submit of the pending one; undefined for every other call. The daemon stand-in reads
+ * the run's reviews from these and from nothing else (daemon-standin.ts's `roundOutcome`), so the
+ * approval the record moves on is the one the world answered the agent with, read once, here,
+ * and its body is the one whose Legion footer the daemon reads (intake's `LegionSession`). */
+let answered: { state: string; head: string; body: string } | undefined;
 /** What answered this call, which the record keeps (`handler`): `route`, the route the record
  * names, with its own answer; the name of a reading of the run that route names (its `answer`,
  * `fromRun`) or of this file's own answer (`comparison`, `pr view`, `pr list`, `pr diff`, `pr
@@ -1081,7 +1082,11 @@ if (threaded !== undefined && "refused" in threaded)
   refuse(threaded.refused, threaded.documentation);
 const submitted = reviewSubmission();
 if (submitted !== undefined)
-  answered = { state: String(submitted.state), head: String(submitted.commit_id) };
+  answered = {
+    state: String(submitted.state),
+    head: String(submitted.commit_id),
+    body: String(submitted.body),
+  };
 const created = reviewCreate();
 const read = reviewRead();
 /** This call's answer where it is this stand-in's own and no route's: the submit of the pending
@@ -2495,7 +2500,7 @@ if (
     ...(head === undefined ? {} : { commit_id: head }),
     ...(state === "PENDING" ? {} : { submitted_at: githubInstant(at) }),
   });
-  if (head !== undefined) answered = { state, head };
+  if (head !== undefined) answered = { state, head, body: written };
 }
 /** The pull request `one` as it stands: at the tip of the run's own remote (`tip`, its own head
  * for a run with no remote), with the checks of that head (`runs`), and the review decision,

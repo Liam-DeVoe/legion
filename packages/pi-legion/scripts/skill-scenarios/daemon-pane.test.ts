@@ -21,6 +21,7 @@ import {
   labelShapes,
   postRefusal,
   RIG_GH_TOKEN,
+  reviewRoundSentences,
   runDaemonPane,
   serves,
   workerPane,
@@ -1423,7 +1424,7 @@ describe("the label's build and its facts", () => {
   // The gh selectors facts reads once every boot's facts are read (daemon-pane.ts's
   // labelGhSelectors), by which the gh stand-in of every run of the label refuses an owner. The
   // checkout holds what facts reads, copied from this one as gh-standin.test.ts's per-label rows
-  // copy the wrapper: the daemon's API package and engine.go, the four other files the source
+  // copy the wrapper: the daemon's API package and engine.go, the seven other files the source
   // shapes are read from (labelShapes), and the wrapper's package, internal/ghconfig and saved gh
   // help, with an option kind the world's gh does not model added
   // to the wrapper's table. Catches: a facts read that passes over the label's gh selectors,
@@ -1442,6 +1443,9 @@ describe("the label's build and its facts", () => {
       for (const file of [
         "internal/workflow/engine.go",
         "internal/workflow/effects.go",
+        "internal/workflow/review_round.go",
+        "internal/workflow/review.go",
+        "internal/reviewround/reviewround.go",
         "internal/dispatch/client.go",
         "internal/record/outbox.go",
         "cmd/legion/testdata/gh-help",
@@ -1560,12 +1564,12 @@ describe("the label's build and its facts", () => {
   );
 });
 
-// The stand-in answers a label's daemon by what its source says it posts, refuses and publishes,
-// each read as one of two shapes (labelShapes): main's since the change that brought it, by its own
-// marker, or main `ff2a10ef`'s, which predates it, by the code it has in its place. A marker it
-// cannot find refuses the batch, naming the marker and its file, and is never read as an older
-// daemon (the architect's ruling of 2026-11-18). Each source here is a copy of the six files the
-// readers read, so a row reads them and nothing else.
+// The stand-in answers a label's daemon by what its source says it posts, refuses, publishes and
+// ends a reviewer's task with, each read as one of two shapes (labelShapes): main's since the
+// change that brought it, by its own marker, or main `ff2a10ef`'s, which predates it, by the code
+// it has in its place. A marker it cannot find refuses the batch, naming the marker and its file,
+// and is never read as an older daemon (the architect's ruling of 2026-11-18). Each source here is
+// a copy of the nine files the readers read, so a row reads them and nothing else.
 describe("the shapes of a label's daemon source", () => {
   const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
   /** The files labelShapes reads, under a checkout's `packages/`. */
@@ -1573,18 +1577,26 @@ describe("the shapes of a label's daemon source", () => {
     "daemon/internal/api/handoff.go",
     "daemon/internal/workflow/engine.go",
     "daemon/internal/workflow/effects.go",
+    "daemon/internal/workflow/review_round.go",
+    "daemon/internal/workflow/review.go",
+    "daemon/internal/reviewround/reviewround.go",
     "daemon/internal/dispatch/client.go",
     "daemon/internal/record/outbox.go",
     "envoy/internal/dispatch/api/routes_table.go",
   ];
   const EFFECTS = "daemon/internal/workflow/effects.go";
+  const ROUND_WORDS = "daemon/internal/reviewround/reviewround.go";
+  const REVIEW = "daemon/internal/workflow/review.go";
   let copies = 0;
   /** A checkout holding SOURCES of `from` alone, with `marker` written as `renamed` in `file`,
    * which must hold it. */
   function copyOf(from: string, file = "", marker = "", renamed = ""): string {
     const dir = path.join(rig, `source-shapes-${++copies}`);
     for (const one of SOURCES) {
-      let text = readFileSync(path.join(from, "packages", one), "utf8");
+      const source = path.join(from, "packages", one);
+      // main ff2a10ef predates review_round.go and reviewround.go, so a copy of it has neither.
+      if (!existsSync(source)) continue;
+      let text = readFileSync(source, "utf8");
       if (one === file) {
         expect(text).toContain(marker);
         text = text.replaceAll(marker, renamed);
@@ -1599,27 +1611,58 @@ describe("the shapes of a label's daemon source", () => {
     postsConflict: true,
     refusesReason: true,
     publishesHolders: true,
+    namesReviewRound: true,
+    decidesBySession: true,
   };
   const OLDER = {
     postsBackward: false,
     postsConflict: false,
     refusesReason: false,
     publishesHolders: false,
+    namesReviewRound: false,
+    decidesBySession: false,
   };
   const olderHost = process.env.SKILL_SCENARIOS_OLDER_CHECKOUT;
 
   // Catches: a reader whose marker is not this checkout's source (gone stale), read as an older
-  // daemon that lacks the behaviour, which the head label's runs met as no sentence, no refusal
-  // and no publication; and a reader that needs a file the six are not.
-  test("this checkout's daemon source posts each move's sentence, refuses a reason and publishes the role holders", () => {
+  // daemon that lacks the behaviour, which the head label's runs met as no sentence, no refusal,
+  // no publication, a reviewer's task with no sentence of its round and a review of the review
+  // App taken from any session; and a reader that needs a file the nine are not.
+  test("this checkout's daemon source posts each move's sentence, refuses a reason, publishes the role holders, names the review round and takes the reviewer's session alone", () => {
     expect(labelShapes(CHECKOUT)).toEqual(MAIN);
     expect(labelShapes(copyOf(CHECKOUT))).toEqual(MAIN);
   });
 
-  // Catches: an older daemon answered with this checkout's sentences, refusal or publication,
-  // which main `ff2a10ef`'s never gave; and an older shape's marker that is not that daemon's code.
+  // Catches: a reviewer's task whose end is not the daemon's two sentences, word for word as
+  // reviewround.go's `Sentences` writes them (#4328): `none` where the row holds no commit or no
+  // entry, and the commit and the number where it holds them. The base label, at main 7ce89a9b,
+  // tells its reviewers the same as the head's; a reader that wrote nothing left both labels'
+  // reviewers with no entry to put in their footers.
+  test("a reviewer's task ends with the daemon's two sentences of its round, in its words", () => {
+    expect(reviewRoundSentences(CHECKOUT, "", 1)).toBe(
+      " Last reviewed commit: none. Review entry: 1."
+    );
+    expect(reviewRoundSentences(copyOf(CHECKOUT), "a".repeat(40), 3)).toBe(
+      ` Last reviewed commit: ${"a".repeat(40)}. Review entry: 3.`
+    );
+    expect(reviewRoundSentences(CHECKOUT, "", 0)).toBe(
+      " Last reviewed commit: none. Review entry: none."
+    );
+  });
+
+  // Catches: an older daemon's reviewer told the sentences main `ff2a10ef`'s daemon never wrote.
   test.skipIf(olderHost === undefined)(
-    "main ff2a10ef's daemon source reads as that older daemon's: no sentence, no refusal of a reason, no publication",
+    "main ff2a10ef's daemon ends a reviewer's task with no sentence of its round",
+    () => {
+      expect(reviewRoundSentences(olderHost ?? "", "", 1)).toBe("");
+    }
+  );
+
+  // Catches: an older daemon answered with this checkout's sentences, refusal, publication or
+  // round, which main `ff2a10ef`'s never gave; and an older shape's marker that is not that
+  // daemon's code.
+  test.skipIf(olderHost === undefined)(
+    "main ff2a10ef's daemon source reads as that older daemon's: no sentence, no refusal of a reason, no publication, no round named",
     () => {
       expect(labelShapes(olderHost ?? "")).toEqual(OLDER);
       expect(labelShapes(copyOf(olderHost ?? ""))).toEqual(OLDER);
@@ -1636,6 +1679,29 @@ describe("the shapes of a label's daemon source", () => {
     [EFFECTS, "func backwardMoveReason(", "func backwardMoveSentence("],
     [EFFECTS, "func moveReason(", "func moveSentence("],
     [EFFECTS, '"BACKWARD_REASON_TOO_LONG"', '"BACKWARD_REASON_OVERLONG"'],
+    [
+      "daemon/internal/workflow/review_round.go",
+      "func namingTheReviewRound(",
+      "func withTheReviewRound(",
+    ],
+    [
+      ROUND_WORDS,
+      'const CommitLabel = "Last reviewed commit"',
+      'const CommitLabel = "Last read commit"',
+    ],
+    [ROUND_WORDS, 'const EntryLabel = "Review entry"', 'const EntryLabel = "Round entry"'],
+    [ROUND_WORDS, 'const none = "none"', 'const none = "-"'],
+    [
+      ROUND_WORDS,
+      'return " " + CommitLabel + ": " + commit + ". " + EntryLabel + ": " + named + "."',
+      'return " " + CommitLabel + " " + commit + ". " + EntryLabel + " " + named + "."',
+    ],
+    [
+      REVIEW,
+      'return e.byReviewApp(review.Author) && reviewerSession != "" && review.LegionSession() == reviewerSession',
+      "return e.byReviewApp(review.Author) && review.LegionSession() == reviewerSession",
+    ],
+    [REVIEW, "func (e *Engine) reviewersClaim(", "func (e *Engine) reviewerClaim("],
     ["daemon/internal/dispatch/client.go", '"/role-holders"', '"/role-sessions"'],
     [
       "envoy/internal/dispatch/api/routes_table.go",
@@ -1650,11 +1716,16 @@ describe("the shapes of a label's daemon source", () => {
     });
 
   // Catches: an older shape's marker renamed, read as that older daemon all the same, or as
-  // this checkout's: the code main `ff2a10ef` has in the place of each sentence and of the
-  // publication, whose loss leaves a source of neither shape.
+  // this checkout's: the code main `ff2a10ef` has in the place of each sentence, of the
+  // publication, of the round's sentences and of the reviewer's recorded session, whose loss
+  // leaves a source of neither shape.
   const STATUS =
     "func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {";
   const OUTBOX_END = '\tOutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"\n)';
+  const QUEUED =
+    "payload record.OutboxPayload, at time.Time) error {\n\trow, err := record.NewOutboxRow(issue, payload, at)";
+  const ANY_SESSION =
+    'return e.byReviewApp(review.Author) && (reviewerSession == "" || review.LegionSession() == reviewerSession)';
   for (const [file, marker, renamed] of [
     [EFFECTS, STATUS, STATUS.replace("status string", "state string")],
     [
@@ -1662,6 +1733,9 @@ describe("the shapes of a label's daemon source", () => {
       OUTBOX_END,
       OUTBOX_END.replace("\n)", '\n\tOutboxKindClaimRelease OutboxKind = "claim_release"\n)'),
     ],
+    [EFFECTS, QUEUED, QUEUED.replace("record.NewOutboxRow", "record.NewQueuedRow")],
+    [REVIEW, ANY_SESSION, ANY_SESSION.replace('reviewerSession == "" || ', "")],
+    [REVIEW, "func (e *Engine) claimSession(", "func (e *Engine) rowSession("],
   ] as const)
     test.skipIf(olderHost === undefined)(
       `main ff2a10ef's source with its older marker in ${file} renamed is refused, naming it and its file`,

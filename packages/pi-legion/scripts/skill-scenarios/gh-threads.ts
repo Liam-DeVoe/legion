@@ -49,7 +49,7 @@ export interface Recorded {
   readonly files?: Record<string, string> | undefined;
   readonly stdin?: string | undefined;
   readonly route?: string | null;
-  readonly review?: { state: string; head: string } | undefined;
+  readonly review?: { state: string; head: string; body?: string } | undefined;
   readonly handler?: string;
   /** The role whose pane made the call (gh-standin.ts's `by`), none where the pane named none. */
   readonly by?: string;
@@ -667,18 +667,22 @@ function ruleParameters(rules: readonly Json[], type: string): Json | undefined 
 }
 
 /** One review of the pull request as GitHub counts it toward the review decision: the login that
- * submitted it, its state and the head it stands at. */
+ * submitted it, its state and the head it stands at, and, for a review the run made, the App its
+ * pane called GitHub as (rest-objects.ts's `roleApp`) and the body it was answered with, whose
+ * Legion footer the daemon reads (`made`; a record from before the stand-in kept the body holds
+ * "" for it). A review the world held before the run has no `made`. */
 export interface SubmittedReview {
   readonly login: string;
   readonly state: string;
   readonly head: string;
+  readonly made?: { readonly app: string; readonly body: string };
 }
 /** The pull request's reviews, oldest first: each the world held (its reviews route's answer,
- * rig.sh's fixture_write), by its author, then each the run's record holds, in the state and at
- * the head the gh stand-in answered its create or its submit with (`Recorded`'s `review`), by
- * the bot of the App the role that made it acts as (`loginOf`), the user the world answers each
- * review the run creates with. A pending create and its submit are two entries, of which the
- * submit alone decides anything. */
+ * rig.sh's fixture_write), by its author, then each the run's record holds, in the state, at
+ * the head and with the body the gh stand-in answered its create or its submit with
+ * (`Recorded`'s `review`), by the bot of the App the role that made it acts as (`loginOf`), the
+ * user the world answers each review the run creates with. A pending create and its submit are
+ * two entries, of which the submit alone decides anything. */
 export function submittedReviews(at: ThreadWorld, calls: readonly Recorded[]): SubmittedReview[] {
   const { world } = at;
   const listed =
@@ -691,8 +695,17 @@ export function submittedReviews(at: ThreadWorld, calls: readonly Recorded[]): S
       state: String(review.state ?? ""),
       head: String(review.commit_id ?? ""),
     })),
-    ...calls.flatMap((call) =>
-      call.review === undefined ? [] : [{ login: loginOf(at, call.by), ...call.review }]
+    ...calls.flatMap(({ review, by }) =>
+      review === undefined
+        ? []
+        : [
+            {
+              login: loginOf(at, by),
+              state: review.state,
+              head: review.head,
+              made: { app: roleApp(by), body: review.body ?? "" },
+            },
+          ]
     ),
   ];
 }

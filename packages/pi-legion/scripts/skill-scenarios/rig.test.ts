@@ -2984,7 +2984,8 @@ describe("run_threads_closed", () => {
 describe("worker_boots", () => {
   const listed = /^worker_boots=\((.*)\)$/m.exec(rigScript)?.[1]?.split(" ") ?? [];
   /** Each stand-in `runner` boots with `args`, as `<role>` or `<role>:<phase>`, on a wake of
-   * `wake`, with its world, its services and its agents stubbed. */
+   * `wake`, with its world, its services and its agents stubbed, and this checkout as its
+   * label's, whose daemon ends a reviewer's task (daemon-pane.ts's `reviewRoundSentences`). */
   function boots(runner: string, args: string[], wake = "[]\n"): string[] {
     const dir = freshDir(`worker-boots-${runner}`);
     writeFileSync(path.join(dir, "threads.json"), "[]\n");
@@ -3005,10 +3006,10 @@ describe("worker_boots", () => {
         "await_start() { :; }",
         'reviewer_wake() { cat "$R/wake.json"; }',
         `worker_boot() { printf "%s%s\\n" "$3" "\${4:+:$4}" >>"$R/boots"; }`,
-        "R=$1 here=$2 worker_key=LWEVAL-1 worker_repo=example/widgets",
+        "R=$1 here=$2 co=$3 worker_key=LWEVAL-1 worker_repo=example/widgets",
         `${runner} the-run skillsproject1 1 100 ${args.join(" ")}`,
       ].join("\n"),
-      [dir, import.meta.dir]
+      [dir, import.meta.dir, root]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
     return readFileSync(path.join(dir, "boots"), "utf8").trim().split("\n");
@@ -8500,10 +8501,19 @@ echo done
     );
     expect(existsSync(path.join(skills, "writing-plans/SKILL.md"))).toBe(true);
     expect(existsSync(path.join(label, "superpowers"))).toBe(true);
-    const env = readFileSync(path.join(bin, "env.txt"), "utf8");
-    expect(env).toContain("ENVOY_URL=http://127.0.0.1:1\n");
-    expect(env).toContain("OMP_PROFILE=legion\n");
-    expect(env).toContain(`HOME=${label}/home\n`);
+    // Each variable is read whole, by name: a substring would also match a longer name such as
+    // X_OMP_PROFILE, and env can print any variable first.
+    const env = new Map(
+      readFileSync(path.join(bin, "env.txt"), "utf8")
+        .split("\n")
+        .flatMap((line): [string, string][] => {
+          const eq = line.indexOf("=");
+          return eq > 0 ? [[line.slice(0, eq), line.slice(eq + 1)]] : [];
+        })
+    );
+    expect(env.get("ENVOY_URL")).toBe("http://127.0.0.1:1");
+    expect(env.get("OMP_PROFILE")).toBe("legion");
+    expect(env.get("HOME")).toBe(`${label}/home`);
     expect(readFileSync(path.join(label, "built-from"), "utf8")).toContain(
       "superpowers-skill writing-plans "
     );
@@ -8572,7 +8582,7 @@ fi
 {
   printf 'argv %s\\n' "$0" "$@"
   printf 'env %s\\n' "PWD=$PWD" "HOME=$HOME" "OMP_PROFILE=$OMP_PROFILE"
-  env | grep -q LEGION_E2E && echo "env LEGION_E2E set"
+  compgen -e | grep -q '^LEGION_E2E' && echo "env LEGION_E2E set"
   probe read-outside cat "$OUTSIDE"
   probe read-home-ssh ls "$OPERATOR_HOME/.ssh"
   probe list-work ls "$WORK/runs"

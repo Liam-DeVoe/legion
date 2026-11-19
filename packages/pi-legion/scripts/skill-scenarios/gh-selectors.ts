@@ -416,25 +416,59 @@ function slotsOf(
   return { slots, passthrough };
 }
 
+/** One option line of a help as the wrapper reads it (gh_help.go's addFlag): its shorthand, its
+ * name, the placeholder of its value ("" for none) and its description. */
+export interface OptionLine {
+  readonly short: string;
+  readonly name: string;
+  readonly placeholder: string;
+  readonly description: string;
+}
+/** The reader of an option line under the wrapper's pattern `flagLine` (gh_help.go's
+ * ghFlagLine and addFlag), which answers undefined for a line the pattern does not read. The
+ * pattern has had two shapes, told apart by its capture groups: four before #4418 — the
+ * shorthand, the name, the placeholder and the description — and five since, with the boolean
+ * marker `[=true|false]` gh 2.104.0 prints right after a boolean option's name as the third. A
+ * pattern of any other shape throws here, naming it, and a line that marks its option boolean and
+ * names a value, which the wrapper refuses, throws when it is read. */
+export function optionLines(flagLine: RegExp): (line: string) => OptionLine | undefined {
+  const groups = (new RegExp(`${flagLine.source}|`).exec("")?.length ?? 1) - 1;
+  if (groups !== 4 && groups !== 5)
+    throw new Error(
+      `the wrapper's ghFlagLine ${JSON.stringify(flagLine.source)} has ${groups} capture groups, which is no shape of its option line this reads: four before #4418 (shorthand, name, placeholder, description), or five since (the boolean marker after the name third)`
+    );
+  return (line) => {
+    const match = flagLine.exec(line);
+    if (match === null) return undefined;
+    const [, short = "", name = "", ...rest] = match;
+    const [marker = "", placeholder = "", description = ""] = groups === 5 ? rest : ["", ...rest];
+    if (marker !== "" && placeholder !== "")
+      throw new Error(
+        `the wrapper refuses the option line ${JSON.stringify(line.trim())}, which marks its option boolean and names a value (gh_help.go's addFlag)`
+      );
+    return { short, name, placeholder, description };
+  };
+}
+
 /** The option lines `lines` of the leaf `leaf` (gh_help.go's addFlag and ghOptionKind): each
  * option's arity, and what its value selects, the table's kind keyed `<leaf> --<name>
  * <placeholder>` before `--<name> <placeholder>`, "unknown" for one whose help mentions a
  * selector the table does not hold, "" for any other, "nothing" for one taking no value. A line
- * the pattern does not read is left out, as no option of this leaf. */
+ * `option` does not read is left out, as no option of this leaf (`optionLines`). */
 function flagsOf(
   leaf: string,
   lines: readonly string[],
   table: GhTable,
-  flagLine: RegExp,
+  option: (line: string) => OptionLine | undefined,
   mentions: RegExp
 ): { flags: Record<string, Flag>; shorts: Record<string, string> } {
   const flags: Record<string, Flag> = {};
   const shorts: Record<string, string> = {};
   for (const line of lines) {
-    const match = flagLine.exec(line);
-    if (match === null) continue;
-    const [, short = "", name = "", spelled = "", description = ""] = match;
-    let placeholder = spelled;
+    const read = option(line);
+    if (read === undefined) continue;
+    const { short, name, description } = read;
+    let { placeholder } = read;
     let optional = false;
     let uncertain = false;
     const value = placeholder !== "";
@@ -472,6 +506,7 @@ export function selectorsOf(
 ): GhSelectors {
   const word = compiled(table.patterns.ghCommandWord);
   const flagLine = compiled(table.patterns.ghFlagLine);
+  const option = optionLines(flagLine);
   const slotName = compiled(table.patterns.ghSlotName);
   const mentions = compiled(table.patterns.ghMentionsSelector);
   const savedHelp = (leaf: readonly string[]) => {
@@ -512,13 +547,7 @@ export function selectorsOf(
         }
       }
     }
-    const { flags, shorts } = flagsOf(
-      leaf,
-      [...inherited, ...help.flags],
-      table,
-      flagLine,
-      mentions
-    );
+    const { flags, shorts } = flagsOf(leaf, [...inherited, ...help.flags], table, option, mentions);
     const { slots, passthrough } = slotsOf(leaf, help.args, table, slotName);
     const quirk = table.quirks[leaf]?.fields ?? {};
     leaves[leaf] = {

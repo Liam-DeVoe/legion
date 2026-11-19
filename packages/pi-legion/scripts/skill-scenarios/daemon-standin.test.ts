@@ -450,7 +450,8 @@ function git(dir: string, ...args: string[]): string {
  * (gh-call.ts's `mergeStateOn`), with the gh selectors worker_boot writes beside them
  * (`writeGhSelectors`). `push` puts a commit above the tip and returns it;
  * `approve` and `requestChanges` submit a review of a head through the gh stand-in itself, so the
- * review the daemon stand-in reads is the one the world answered the call with. */
+ * review the daemon stand-in reads is the one the world answered the call with: from a pane that
+ * names no role and with a body that holds no Legion footer, or from `as`'s role with its body. */
 function pullRequest(dir: string, state = "CLEAN") {
   const work = path.join(dir, "work");
   mkdirSync(work);
@@ -478,9 +479,12 @@ function pullRequest(dir: string, state = "CLEAN") {
     })
   );
   writeGhSelectors(dir);
-  const review = (event: string, commit: string) => {
+  const review = (event: string, commit: string, as?: { role: string; body: string }) => {
     const body = path.join(dir, `review-${event}.json`);
-    writeFileSync(body, JSON.stringify({ commit_id: commit, event, body: "the round's review" }));
+    writeFileSync(
+      body,
+      JSON.stringify({ commit_id: commit, event, body: as?.body ?? "the round's review" })
+    );
     const call = spawnChecked(
       [
         "bun",
@@ -493,7 +497,13 @@ function pullRequest(dir: string, state = "CLEAN") {
         "--input",
         body,
       ],
-      { env: { ...process.env, GH_DATA_DIR: dir } }
+      {
+        env: {
+          ...process.env,
+          GH_DATA_DIR: dir,
+          ...(as === undefined ? {} : { LEGION_ROLE: as.role }),
+        },
+      }
     );
     if (call.exitCode !== 0) throw new Error(`the review was refused: ${call.stderr.toString()}`);
   };
@@ -506,10 +516,49 @@ function pullRequest(dir: string, state = "CLEAN") {
       git(work, "push", "-q", path.join(dir, "remote.git"), "legion/LWEVAL-1");
       return git(work, "rev-parse", "HEAD");
     },
-    approve: (commit = head) => review("APPROVE", commit),
+    approve: (commit = head, as?: { role: string; body: string }) => review("APPROVE", commit, as),
     requestChanges: (commit = head) => review("REQUEST_CHANGES", commit),
   };
 }
+
+// Catches: a stand-in that takes any review of the review App for the round. Main's engine since
+// #4328 (review.go's `byReviewer`, `reviewersClaim`) takes one as the reviewer's own only where
+// its Legion footer names the session the reviewer's claim records, which the agent's
+// registration writes, and a review that comes while the claim records none waits and is judged
+// again at the next read (`RefusedWhileNoSession`). Before #4328 the login decided alone while
+// the reviewer's row named no claim, which is the whole of a reviewer's first round until it
+// completes, so a footer naming another session, or no footer, ended that round.
+test.skipIf(skip)(
+  "a review of the review App decides the round only where its footer names the session the reviewer's claim records",
+  async () => {
+    const footer = (session: string, head: string) =>
+      `the round's review\n\n<!-- legion: {"session":"${session}","phase":"review","head":"${head}","entry":"1"} -->`;
+    const waits = await standin("reviewer");
+    try {
+      const pull = pullRequest(waits.dir);
+      pull.approve(pull.head, { role: "reviewer", body: footer(AGENT, pull.head) });
+      expect(await waits.phase()).toBe("reviewing");
+      await boots(waits.post, AGENT);
+      expect(await waits.phase()).toBe("accepting");
+    } finally {
+      waits.stop();
+    }
+    const daemon = await standin("reviewer");
+    try {
+      const pull = pullRequest(daemon.dir);
+      await boots(daemon.post, AGENT);
+      pull.approve(pull.head, { role: "reviewer", body: footer("another-session", pull.head) });
+      expect(await daemon.phase()).toBe("reviewing");
+      pull.approve(pull.head, { role: "reviewer", body: "the round's review, with no footer" });
+      expect(await daemon.phase()).toBe("reviewing");
+      pull.approve(pull.head, { role: "reviewer", body: footer(AGENT, pull.head) });
+      expect(await daemon.phase()).toBe("accepting");
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
 
 // Catches: a stand-in that moves the issue to `accepting` on the reviewer's completion. Main's
 // engine ends the round on the review, not the completion (review.go's `reviewRound`,

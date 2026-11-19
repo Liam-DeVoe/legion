@@ -24,7 +24,7 @@ import {
   WORLD_ROUTES,
   worldRouteOf,
 } from "./gh-routes";
-import { type GhSelectors, type GhTable, MODELLED } from "./gh-selectors";
+import { type GhSelectors, type GhTable, MODELLED, optionLines } from "./gh-selectors";
 import {
   mergeableOf,
   mergeStateOf,
@@ -1570,6 +1570,42 @@ test("every form the wrapper's selector table holds, naming an owner outside the
   );
 }, 180_000);
 
+// Catches: an option line read by the group numbers of one shape of the wrapper's pattern. #4418
+// put the boolean marker gh 2.104.0 prints (`--web[=true|false]`) third in gh_help.go's
+// ghFlagLine, so a reader that kept taking the third group as the placeholder read every option of
+// both labels as taking no value: `--repo` named no repository, no option form was refused and
+// GH_REPO was never read beside an argument. Each shape reads its own groups, a line the wrapper
+// refuses (a boolean marker and a value both) is refused, and so is a pattern of a third shape.
+test("an option line is read by the shape of the wrapper's pattern: four groups before #4418, five since", () => {
+  const since = optionLines(new RegExp(labelGhTable(CHECKOUT).patterns.ghFlagLine));
+  const before = optionLines(
+    /^\s+(?:-([A-Za-z0-9]), )?--([A-Za-z0-9][A-Za-z0-9-]*)(?: (\S+))?(?:\s{2,}(.*)|\s*)$/
+  );
+  const repo = "  -R, --repo [HOST/]OWNER/REPO   Select another repository";
+  for (const read of [since, before])
+    expect(read(repo)).toEqual({
+      short: "R",
+      name: "repo",
+      placeholder: "[HOST/]OWNER/REPO",
+      description: "Select another repository",
+    });
+  expect(since("  -w, --web[=true|false]   Open in the browser")).toEqual({
+    short: "w",
+    name: "web",
+    placeholder: "",
+    description: "Open in the browser",
+  });
+  expect(before("  -w, --web[=true|false]   Open in the browser")).toBeUndefined();
+  expect(labelGhSelectors(CHECKOUT).leaves["pr view"]?.flags.repo).toMatchObject({
+    value: true,
+    selects: "repository",
+  });
+  expect(() => since("      --web[=true|false] string   Open it")).toThrow(
+    "which marks its option boolean and names a value"
+  );
+  expect(() => optionLines(/^--([a-z]+)$/)).toThrow("has 1 capture groups");
+});
+
 // Catches: a refusal for one role and not another; a refusal read from text a call sends (a body
 // naming another owner's URL); one of the world's own owner in another case; a pane naming no
 // owners directory answered as one that names it; and a world refusing for a run with no world.
@@ -2221,13 +2257,15 @@ test("the wrapper's owner refusal a tool result shows is no push-guard refusal, 
 }, 60_000);
 
 // Catches: a record that leaves the daemon stand-in to read the run's reviews a second way. It
-// moves the issue on a review of the head (daemon-standin.ts's `roundOutcome`),
-// and reading the calls again itself would be a third reader of one call beside this stand-in
-// and the score; so each call that left a review records the state and the head this stand-in
-// answered it with — a create and the submit of a pending one — and no other call records one: a
+// moves the issue on a review of the head (daemon-standin.ts's `roundOutcome`), and takes a
+// review of the review App by the session its body's Legion footer names (`takenForRound`), and
+// reading the calls again itself would be a third reader of one call beside this stand-in and
+// the score; so each call that left a review records the state, the head and the body this
+// stand-in answered it with — a create and the submit of a pending one, whose body is the
+// pending review's where the submit sends none — and no other call records one: a
 // `gh pr review`, which the world does not model and refuses (gh's 404, no review on GitHub), on
 // the world's pull request or on another repository's, among them.
-test("each call that leaves a review records the state and head it was answered with, and no other call does", () => {
+test("each call that leaves a review records the state, head and body it was answered with, and no other call does", () => {
   const { dir, first } = runDir({ fixture: true });
   answer(dir, ["pr", "review", "1001", "--approve"]);
   const body = path.join(dir, "review.json");
@@ -2241,9 +2279,9 @@ test("each call that leaves a review records the state and head it was answered 
   answer(dir, ["pr", "view", "1001"]);
   expect(recordedCalls(dir).map((call) => call.review)).toEqual([
     undefined,
-    { state: "APPROVED", head: first },
-    { state: "PENDING", head: first },
-    { state: "CHANGES_REQUESTED", head: first },
+    { state: "APPROVED", head: first, body: "approved" },
+    { state: "PENDING", head: first, body: "two findings" },
+    { state: "CHANGES_REQUESTED", head: first, body: "two findings" },
     undefined,
     undefined,
     undefined,

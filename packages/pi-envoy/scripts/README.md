@@ -926,18 +926,35 @@ the two shapes do not give alike
 keeps every reading that succeeded, and the process keeps each refusal, so a run whose daemon
 cannot be read costs no more than the first run that asked.
 
-What the label's daemon posts, refuses and publishes is read out of its source as text
-(`daemon-pane.ts`'s `labelShapes`), each as one of two shapes. A backward move's sentence, a
+What the label's daemon posts, refuses, publishes, ends a reviewer's task with and takes a review
+of the review App for is read out of its source as text (`daemon-pane.ts`'s `labelShapes`), each
+as one of two shapes. A backward move's sentence, a
 conflict's move and the refusal of a backward move's reason are main's since #4291 and #4309,
 read by `func backwardMoveReason(`, `func moveReason(` and `"BACKWARD_REASON_TOO_LONG"` in
 `effects.go`; main `ff2a10ef` predates them, read by the status write it has in their place,
 which takes no message. The role holders' publication is main's since #4228, read by
 `"/role-holders"` in the daemon's Dispatch client and the route's row in Dispatch's table;
-`ff2a10ef` is read by its outbox kinds, which end at `gated_steps_publish`. The three completion
+`ff2a10ef` is read by its outbox kinds, which end at `gated_steps_publish`. The two sentences that
+end every task of the reviewer, `Last reviewed commit: <sha|none>.` and `Review entry: <n|none>.`,
+are main's since #4328, read by `func namingTheReviewRound(` in `review_round.go` and by the three
+words and the one return that join them in `reviewround.go`; `ff2a10ef` is read by its queue,
+whose `enqueueAt` builds its row from the payload as it came. rig.sh's
+`run_reviewer_text_findings` ends the reviewer's task with them (`bun daemon-pane.ts review-round
+<checkout> '' 1`, the first round's: no commit, and the entry the reviewer's start raises), and
+with nothing for a daemon of `ff2a10ef`'s shape. The rule that a review the review App submitted
+decides the round only where its Legion footer names the session the reviewer's claim records,
+and waits while that claim records none, is main's since #4328, read by `byReviewer`'s return and
+`func (e *Engine) reviewersClaim(` in `review.go`; `ff2a10ef` is read by its `byReviewer`, which
+lets the login decide while the reviewer's row names no claim, and by `claimSession`. The stand-in
+takes the run's reviews by it (`daemon-standin.ts`'s `takenForRound`), each by the body the gh
+stand-in answered it with; a review the world held before the run is history it takes as it
+stands, and the head a footer names is not read. The three completion
 refusals (`HANDOFF_SESSION_MISMATCH`, `HANDOFF_ALREADY_RECORDED`, `HANDOFF_NOT_NEW`) have one
 shape: every daemon the rig runs names them. A source of neither shape, or of both, refuses the
 batch at `label_facts` and every stand-in's boot, naming each marker and its file. A marker that
-is not found is never read as an older daemon that lacks the behaviour.
+is not found is never read as an older daemon that lacks the behaviour. Both labels of a batch
+are now main `7ce89a9b` or after, so each reads as main's shape of all five; the `ff2a10ef` shape
+of each is read by the rows below alone.
 
 The rig's tests hold both shapes of each file to sources they write themselves, so they need no
 older checkout on the host. Some rows also read an older daemon's own source where one is given:
