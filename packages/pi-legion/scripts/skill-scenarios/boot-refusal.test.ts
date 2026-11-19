@@ -38,6 +38,7 @@ test("boot-refusal.ts loads neither health.ts nor score.ts, only the leaf module
     "gh-selectors.ts",
     "run-names.ts",
     "run-records.ts",
+    "step-records.ts",
     "transcript.ts",
   ]);
 });

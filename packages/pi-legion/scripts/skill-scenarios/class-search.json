@@ -47,6 +47,14 @@
       "ruled": "2026-11-19T05:18Z",
       "words": "The daemon's normalising of a session's capability report (`capabilities.Normalize`: the live table's order, unknown names dropped, unreported rows marked open, `cleanDetail`'s credential redaction and 1024-byte cut), which the stand-in does not model. Round 25's 69 agents each sent only the boot's `claims/ready`; a second is reachable only by an agent idle at a 5 s tick 30 s or more after registration (packages/pi-legion/extensions/legion.ts, capability-schedule.ts), and the redaction is code no marker reads. A run that sends one is unhealthy (`rig.sh health`'s rule 22, `capability report`); if a batch loses a run to it, that count buys the model.",
       "source": "packages/pi-envoy/scripts/README.md, \"The issue record a `read_record` answers\"; health.ts's rule 22"
+    },
+    {
+      "name": "a review whose webhook production applies before its push's",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ Not modelled: production's order of a review's webhook and its push's, in whose place the world reads the remote's tip live",
+      "ruled": "2026-11-19T09:42Z",
+      "words": "The world reads the remote's tip live, so a review whose webhook production applies before the push's is taken at the review in the world and at the handoff read in production; the verdict is the same, and k1 scores the verdict.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; daemon-standin.ts's `TAKEN`"
     }
   ],
   "unreachable": [

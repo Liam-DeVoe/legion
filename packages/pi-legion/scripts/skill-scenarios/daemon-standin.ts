@@ -205,6 +205,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { isLegionRole, roleToken } from "@legion/contracts";
+import { STEP_OTHER_ISSUE_CODE, STEP_WRITER_CODE } from "@legion/contracts/dispatch-tools";
 import {
   LegionGrantRequest,
   LegionHandoffCompleteRequest,
@@ -241,11 +242,25 @@ import { CALLS, Opened, openingLine } from "./run-records";
 import {
   type CapabilityFacts,
   type GateFacts,
+  GENERATION,
   type PullRequestFacts,
   phaseStatus,
   type RowFacts,
   stateBody,
 } from "./standin-record";
+import {
+  answeredModel,
+  endOf,
+  runsStep,
+  STEPS,
+  type StepPhase,
+  type StepRun,
+  type StepWrite,
+  stepEnd,
+  stepReport,
+  stepRun,
+  stepStart,
+} from "./step-records";
 
 const GRANT_TTL_MS = 60_000;
 const [
@@ -613,7 +628,14 @@ function worldPull(): { pull: PullRequestFacts; round: boolean } {
  * first read that finds it, the stand-in's delivery of it, and once taken stays taken; one the
  * engine refuses is judged again at the next read, as the daemon's read of the pull request's
  * reviews judges a review refused at the head the record held, or while the reviewer's claim
- * recorded no session, again (`RefusedAtThisHead`, `RefusedWhileNoSession`). */
+ * recorded no session, again (`RefusedAtThisHead`, `RefusedWhileNoSession`). Not modelled:
+ * production's order of a review's webhook and its push's, in whose place the world reads the
+ * remote's tip live (`worldPull`): production judges a review App review at the head the record
+ * holds when its webhook is applied, so one whose webhook it applies before the push's is refused
+ * there (`RefusedAtThisHead`) and taken at the per-issue read at the reviewer's handoff
+ * (issue_reads.go's `readHandedOff`, review_reads.go's `reviewToApply`), where the world takes it
+ * at the review. A residual of the class search (the architect's ruling of 2026-11-19T09:42Z):
+ * the verdict is the same, taken earlier, and k1 scores the verdict. */
 const TAKEN = new Map<number, string>();
 
 /** The head the label's engine records `review`'s decision against, where it takes `review` for
@@ -1321,11 +1343,12 @@ let shownStatus = phaseStatus(PHASE) || "in_progress";
  * message's marker names its row): a status a move gives the issue, with the sentence the move
  * posts before it where the move posts one (`record.StatusWrite`, a `dispatch_status` row); that
  * sentence alone, for a move into a phase that shows the status the issue already shows
- * (`record.MessagePost`, a `dispatch_message` row, as `Engine.status` queues it); and the
+ * (`record.MessagePost`, a `dispatch_message` row, as `Engine.status` queues it); the
  * publication of the issue's role holders (`record.RoleHoldersPublish`), one row for the issue,
- * which reads the live set when it runs (`queueHolders`). Each keeps when it was queued, which
- * bounds the outbox's search for a message it posted (`postMessage`), the attempts it made and
- * why the last failed. */
+ * which reads the live set when it runs (`queueHolders`); and one write of the record of a run of
+ * a step (`record.StepRecord`, a `step_record` row: `queueStep`), the record's id and the write.
+ * Each keeps when it was queued, which bounds the outbox's search for a message it posted
+ * (`postMessage`), the attempts it made and why the last failed. */
 type OutboxRow = {
   readonly id: number;
   readonly createdAt: number;
@@ -1340,6 +1363,7 @@ type OutboxRow = {
     }
   | { readonly kind: "message"; readonly body: string }
   | { readonly kind: "holders" }
+  | { readonly kind: "step"; readonly step: string; readonly write: StepWrite }
 );
 /** The rows the run's Dispatch is owed and has not taken, oldest first (`runOutbox`). */
 const OUTBOX: OutboxRow[] = [];
@@ -1386,6 +1410,94 @@ function liveHolders(): { role: string; session: string }[] {
     .sort((one, other) => (one.role < other.role ? -1 : one.role > other.role ? 1 : 0));
 }
 
+/** Whether the label's daemon records each run of a step of the issue on its Dispatch, and that
+ * Dispatch serves the route it writes to (daemon-pane.ts's `labelShapes`' `writesSteps`): main's
+ * since #4400 (53980e0e32). A daemon of main `ff2a10ef`'s shape writes none. */
+const WRITES_STEPS = SHAPES.writesSteps;
+/** The claim whose agent runs `phase`'s step (workflow/steps.go's `startAgent`): the phase's
+ * worker, and in `accepting` the architect that owns the issue, which for the world's issue, its
+ * tree's own root, is its own (`acceptingAgent`, `owningArchitect`). */
+function stepAgent(phase: StepPhase): string {
+  const named = roleFor(phase);
+  if (!isLegionRole(named)) throw new Error(`no Legion role runs the step of ${phase}`);
+  return roleToken(project, issue, named);
+}
+/** The latest run of each place of the issue's steps, by the phase whose step it is (record's
+ * `step_starts`): the count of starts of its place, the run, the moment its start wrote where
+ * this stand-in knows it, and whether it has ended. The world's history ran each seeded phase
+ * once, which its seeds recorded (seed-handoffs.ts's `stepsSeed`): ended where the issue stands
+ * past it, and open where it is the phase the issue stands in, whose start the seeds wrote at the
+ * moment the phase before it ended. The issue's own phase holds one open run, this stand-in's. */
+interface KnownRun {
+  readonly starts: number;
+  readonly run: StepRun;
+  readonly startedAt: string | undefined;
+  ended: boolean;
+}
+const RUNS = new Map<StepPhase, KnownRun>();
+for (const { phase: ran } of HISTORY?.seeded ?? [])
+  if (runsStep(ran))
+    RUNS.set(ran, {
+      starts: 1,
+      run: stepRun(issue, GENERATION, ran, stepAgent(ran), 1),
+      startedAt: undefined,
+      ended: ran !== PHASE,
+    });
+if (runsStep(PHASE) && !RUNS.has(PHASE))
+  RUNS.set(PHASE, {
+    starts: 1,
+    run: stepRun(issue, GENERATION, PHASE, stepAgent(PHASE), 1),
+    startedAt,
+    ended: false,
+  });
+/** Queues `write` of the record of `run`, as the daemon's workflow queues a `step_record` row in
+ * the transaction that starts or ends the run (workflow/steps.go's `startStep`, `endStep` and
+ * `reportEndedStep`). A run that names no Dispatch queues none, and neither does a label whose
+ * daemon writes none (`WRITES_STEPS`). */
+function queueStep(run: StepRun, write: StepWrite): void {
+  if (DISPATCH_URL === "" || !WRITES_STEPS) return;
+  queueRow({ kind: "step", step: run.id, write });
+}
+/** The move from `from` to `to` on `trigger`, as the record of the steps holds it
+ * (workflow/engine.go's `transition`): the end of the run of `from`'s step (workflow/steps.go's
+ * `endOfTransition`, `endStep`), with the result the trigger gives, the place of `to`'s step where
+ * the work returns there, the report the completion row of the move names where that row is the
+ * one of `from`'s own role, and the session and the model of one read of the run's agent; then
+ * the start of the next run of `to`'s step (`startStep`), under the claim that runs it. The
+ * session is the claim's as it holds it now, and the model the last its own agent's transcript
+ * names (step-records.ts's `answeredModel`): this stand-in's own agent, whose stream production's
+ * daemon reads the model off. Another claim's agent never answered this daemon, which booted with
+ * the run, so its record names no model, as a restarted daemon's names none until the agent
+ * answers again (supervise's `LastAnswer`). */
+function moveSteps(from: string, to: string, trigger: string, report: string | undefined): void {
+  const now = new Date().toISOString();
+  const left = runsStep(from) ? RUNS.get(from) : undefined;
+  if (left !== undefined && !left.ended) {
+    left.ended = true;
+    const { result, returns } = endOf(trigger);
+    const session = CLAIMS.get(roleFor(from))?.session ?? "";
+    queueStep(
+      left.run,
+      stepEnd(left.run, {
+        ...(left.startedAt === undefined ? {} : { startedAt: left.startedAt }),
+        endedAt: now,
+        result,
+        ...(returns && runsStep(to) ? { returnedTo: STEPS[to].place } : {}),
+        ...(report === undefined ? {} : { report }),
+        ...(session === "" ? {} : { session }),
+        ...(roleFor(from) === role && session !== ""
+          ? { model: answeredModel(runDir, session) }
+          : {}),
+      })
+    );
+  }
+  if (!runsStep(to)) return;
+  const starts = (RUNS.get(to)?.starts ?? 0) + 1;
+  const run = stepRun(issue, GENERATION, to, stepAgent(to), starts);
+  RUNS.set(to, { starts, run, startedAt: now, ended: false });
+  queueStep(run, stepStart(run, now));
+}
+
 /** Moves the record to `to`, as the engine's transition writes it (engine.go's `transition`):
  * the phase and, where the phase it enters shows another status than the record holds, that
  * status, queued for the run's Dispatch as the engine queues its outbox row (`Engine.status`),
@@ -1400,6 +1512,24 @@ function liveHolders(): { role: string; session: string }[] {
 function enter(to: string, back: "review" | "move" | "conflict" | undefined, reason = ""): void {
   const from = servedPhase;
   const now = new Date().toISOString();
+  // The completion row the move names (workflow's `transition`, its `handoff`): the reviewer's for
+  // the round's own moves (review.go's `settleRound`), the requester's for a backward move
+  // (engine.go's `backward`), and none for a conflict (review.go's `mergeability`); its record is
+  // the report of the run the move ends only where it is the row of `from`'s own role.
+  const reporter = back === "conflict" ? "" : back === "move" ? role : roleFor(from);
+  const report = reporter === roleFor(from) ? HANDOFFS.get(reporter)?.record?.id : undefined;
+  moveSteps(
+    from,
+    to,
+    back === "review"
+      ? "TriggerReviewRejected"
+      : back === "move"
+        ? "TriggerBackward"
+        : back === "conflict"
+          ? "TriggerConflict"
+          : "TriggerReviewApproved",
+    report
+  );
   servedPhase = to;
   movedAt = now;
   const shown = phaseStatus(to);
@@ -1500,9 +1630,19 @@ async function postMessage(row: OutboxRow, body: string): Promise<void> {
  * (outbox.go's `permanentRefusal`): a status write's and a message's, Dispatch's permanent
  * refusal (`permanentRefusal`); a role-holder publication's, a coded 400, which refuses the set
  * it read, and the route's own 404 ISSUE_NOT_FOUND, while the router's 404 of a Dispatch older
- * than the route is a wait. */
+ * than the route is a wait; and a step record's, exactly the refusals its route makes for good
+ * (`stepRecordRefused`): the route's 404 ISSUE_NOT_FOUND, a coded 400, 403 STEP_WRITER and 409
+ * STEP_OTHER_ISSUE, while the router's 404 NOT_FOUND of a Dispatch older than the route is a
+ * wait (`publishStepRecord`). */
 function finishes(kind: OutboxRow["kind"], error: unknown): error is DispatchRefusal {
   if (!(error instanceof DispatchRefusal)) return false;
+  if (kind === "step")
+    return (
+      (error.status === 404 && error.code === "ISSUE_NOT_FOUND") ||
+      (error.status === 400 && permanentRefusal(error.status, error.code)) ||
+      (error.status === 403 && error.code === STEP_WRITER_CODE) ||
+      (error.status === 409 && error.code === STEP_OTHER_ISSUE_CODE)
+    );
   if (kind !== "holders") return permanentRefusal(error.status, error.code);
   return (
     error.code !== "" &&
@@ -1530,6 +1670,16 @@ function finishes(kind: OutboxRow["kind"], error: unknown): error is DispatchRef
 async function runRow(row: OutboxRow): Promise<boolean> {
   const route = `/api/v1/issues/${encodeURIComponent(issue)}`;
   switch (row.kind) {
+    case "step":
+      try {
+        await dispatchWrite("PUT", `${route}/steps/${encodeURIComponent(row.step)}`, row.write);
+      } catch (error) {
+        if (!finishes(row.kind, error)) throw error;
+        console.error(
+          `daemon-standin: the run's Dispatch refused step record ${row.step} of ${issue} for good, and it is dropped: ${error.message}`
+        );
+      }
+      return true;
     case "message":
       try {
         await postMessage(row, row.body);
@@ -1579,24 +1729,28 @@ async function runRow(row: OutboxRow): Promise<boolean> {
 }
 /** Runs every row the run's Dispatch is owed, oldest first, as the daemon's outbox runs its lanes:
  * a status or a message that fails holds every later one behind it, as the issue's writes run in
- * the order they were made, and the role-holder publication runs on a lane of its own. A row not
- * finished stays owed, with why, for the next run, where the outbox waits out a backoff: the
- * state's `pendingStatusWrites` lists each status so owed. Each request this stand-in answers
- * runs the outbox before its answer, so a `dispatch read` after a move shows the status the
- * record names: the record moved and Dispatch kept the status of the phase it had left. One run
- * at a time, so no row is run twice at once. */
+ * the order they were made; the role-holder publication runs on a lane of its own; and the step
+ * records run on the record lane, in their order, so a record that fails holds every later record
+ * and no status, message or publication (record's `LaneRecord`). A row not finished stays owed,
+ * with why, for the next run, where the outbox waits out a backoff: the state's
+ * `pendingStatusWrites` lists each status so owed. Each request this stand-in answers runs the
+ * outbox before its answer, so a `dispatch read` after a move shows the status the record names:
+ * the record moved and Dispatch kept the status of the phase it had left. One run at a time, so
+ * no row is run twice at once. */
 let outboxTurn: Promise<void> = Promise.resolve();
 function runOutbox(): Promise<void> {
   outboxTurn = outboxTurn.then(async () => {
     let held = false;
+    let recordsHeld = false;
     for (const row of [...OUTBOX]) {
-      if (held && row.kind !== "holders") continue;
+      if (row.kind === "step" ? recordsHeld : held && row.kind !== "holders") continue;
       try {
         if (await runRow(row)) OUTBOX.splice(OUTBOX.indexOf(row), 1);
       } catch (error) {
         row.attempts += 1;
         row.lastError = error instanceof Error ? error.message : String(error);
-        if (row.kind !== "holders") held = true;
+        if (row.kind === "step") recordsHeld = true;
+        else if (row.kind !== "holders") held = true;
       }
     }
   });
@@ -2114,6 +2268,12 @@ async function handle(
             ? undefined
             : { id: handoffId, version: handoffVersion },
       });
+      // A completion of the phase this role has left is the report of the run of that phase's
+      // step the move ended (engine.go's `handoff`, workflow/steps.go's `reportEndedStep`): the
+      // record it names, written onto that run's record alone, where its latest run has ended.
+      const reported = runsStep(ROLE_PHASE) ? RUNS.get(ROLE_PHASE) : undefined;
+      if (phase !== ROLE_PHASE && handoffId !== undefined && reported?.ended === true)
+        queueStep(reported.run, stepReport(reported.run, handoffId));
       return { response: json(200, {}), phase };
     }
     case "/legion/v1/phase/backward": {
@@ -2172,6 +2332,13 @@ async function handle(
 // changed lately (`queueRoleHoldersPublish`), which this issue is: the world's history and the
 // agents before this one hold their roles on the run's Dispatch before this one's agent boots.
 queueHolders();
+// The run of the step the issue stands in, which the start of its phase opened before this boot:
+// its start, which the world's seeds wrote as the phase before it ended (seed-handoffs.ts's
+// `stepsSeed`) and Dispatch then keeps, since it writes each field of a record once, and which
+// this writes where no seed did.
+const opened = runsStep(PHASE) ? RUNS.get(PHASE) : undefined;
+if (opened !== undefined)
+  queueStep(opened.run, stepStart(opened.run, opened.startedAt ?? startedAt));
 await runOutbox();
 
 const server = Bun.serve({

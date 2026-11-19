@@ -69,6 +69,17 @@ const PATTERNS = [
   "ownerLogin",
 ] as const;
 type PatternName = (typeof PATTERNS)[number];
+/** The pattern of OWNER/REPO#N, which the wrapper reads in a number's place for a leaf whose quirk
+ * says so (readsRepositoryNumber), and which one shape of it declares and another does not: main's
+ * before #4424 (fdce4e94d2) declares it, with `agent-task view`'s quirk reading it, and main's
+ * since declares neither, refusing `gh agent-task` whole (gh-selectors.go's optionalPatterns). */
+const REPOSITORY_NUMBER = "ghRepositoryNumber";
+type RequiredPattern = Exclude<PatternName, typeof REPOSITORY_NUMBER>;
+/** The patterns a table holds: each but OWNER/REPO#N's always, and that one where its shape has
+ * it. */
+type Patterns = Readonly<Record<RequiredPattern, string>> & {
+  readonly [REPOSITORY_NUMBER]?: string;
+};
 
 /** One argument name's kind and whether it stands for more than one argument (ghArgKind). */
 interface ArgKind {
@@ -87,14 +98,16 @@ export interface GhTable {
     >
   >;
   readonly ranks: Readonly<Record<string, number>>;
-  readonly patterns: Readonly<Record<PatternName, string>>;
+  readonly patterns: Patterns;
   /** The file each pattern is declared in, under the daemon module the table was read from. */
-  readonly declared: Readonly<Record<PatternName, string>>;
+  readonly declared: Patterns;
 }
 
 /** The table gh-selectors.go printed as `printed` over the daemon module `module`, every kind and
  * quirk held to MODELLED, and each pattern's file named under `module`. Throws naming the first
- * line it cannot read and the first entry of a kind or a quirk this reading does not model. */
+ * line it cannot read, the first entry of a kind or a quirk this reading does not model, and a
+ * table of neither shape of OWNER/REPO#N's reading (`REPOSITORY_NUMBER`): its pattern with no
+ * quirk reading it, or a quirk reading it with no pattern. */
 export function tableOf(printed: string, module: string): GhTable {
   const slots: Record<string, ArgKind> = {};
   const options: Record<string, string> = {};
@@ -147,18 +160,29 @@ export function tableOf(printed: string, module: string): GhTable {
         `gh-selectors printed ${JSON.stringify(line)}, which is no line of its table`
       );
   }
-  const missing = PATTERNS.filter((name) => patterns[name] === undefined);
+  const missing = PATTERNS.filter(
+    (name) => name !== REPOSITORY_NUMBER && patterns[name] === undefined
+  );
   if (missing.length > 0 || Object.keys(slots).length === 0 || Object.keys(options).length === 0)
     throw new Error(
       `gh-selectors printed no ${missing.length > 0 ? `pattern ${missing.join(", ")}` : "argument or option kinds"}, so the wrapper's table is not read whole`
+    );
+  const reading = Object.entries(quirks)
+    .filter(([, { fields }]) => fields.readsRepositoryNumber === "true")
+    .map(([leaf]) => leaf);
+  if ((patterns[REPOSITORY_NUMBER] === undefined) !== (reading.length === 0))
+    throw new Error(
+      reading.length === 0
+        ? `the wrapper declares ${REPOSITORY_NUMBER} and no leaf's quirk reads it (readsRepositoryNumber), which is neither shape of its OWNER/REPO#N this reads: both before #4424, neither since`
+        : `the wrapper's ghLeafQuirks read OWNER/REPO#N for ${reading.join(", ")} (readsRepositoryNumber) and it declares no ${REPOSITORY_NUMBER}, which is neither shape of its OWNER/REPO#N this reads: both before #4424, neither since`
     );
   return {
     slots,
     options,
     quirks,
     ranks,
-    patterns: patterns as Record<PatternName, string>,
-    declared: declared as Record<PatternName, string>,
+    patterns: patterns as Patterns,
+    declared: declared as Patterns,
   };
 }
 
@@ -209,13 +233,14 @@ type Leaf = z.infer<typeof Leaf>;
 
 /** A label's selectors: every command of its gh, a group or a leaf, by its path's words joined
  * by a space; every cobra alias its helps list, by its spelling, the path it stands for; and the
- * wrapper's patterns of a value. This is the file rig.sh writes into a run (RUN_SELECTORS). */
+ * wrapper's patterns of a value, OWNER/REPO#N's only where its wrapper declares it
+ * (`REPOSITORY_NUMBER`). This is the file rig.sh writes into a run (RUN_SELECTORS). */
 export const GhSelectors = z.object({
   groups: z.array(z.string()),
   leaves: z.record(z.string(), Leaf),
   aliases: z.record(z.string(), z.string()),
   patterns: z.object({
-    ghRepositoryNumber: z.string(),
+    ghRepositoryNumber: z.string().optional(),
     ghPullRequestPath: z.string(),
     ghQualifier: z.string(),
     ghPlaceholder: z.string(),
@@ -583,7 +608,9 @@ export function selectorsOf(
     leaves,
     aliases,
     patterns: {
-      ghRepositoryNumber: table.patterns.ghRepositoryNumber,
+      ...(table.patterns.ghRepositoryNumber === undefined
+        ? {}
+        : { ghRepositoryNumber: table.patterns.ghRepositoryNumber }),
       ghPullRequestPath: table.patterns.ghPullRequestPath,
       ghQualifier: table.patterns.ghQualifier,
       ghPlaceholder: table.patterns.ghPlaceholder,
@@ -918,13 +945,18 @@ function fromCommand(
   else {
     const indexes = slotIndexes(leaf, parsed.positionals.length);
     if (indexes === undefined) throw new Unplaced("an argument the usage has no place for");
-    const number = new RegExp(selectors.patterns.ghRepositoryNumber);
+    // OWNER/REPO#N is read only by a wrapper that declares its pattern, main's before #4424, and
+    // only for a leaf whose quirk reads it (`REPOSITORY_NUMBER`).
+    const number =
+      selectors.patterns.ghRepositoryNumber === undefined
+        ? undefined
+        : new RegExp(selectors.patterns.ghRepositoryNumber);
     const pullRequest = new RegExp(selectors.patterns.ghPullRequestPath);
     const query: string[] = [];
     for (const [i, arg] of parsed.positionals.entries()) {
       const slot = leaf.slots[indexes[i] ?? -1];
       if (slot === undefined || slot.unknown !== "") throw new Unplaced(arg);
-      const repositoryNumber = number.exec(arg);
+      const repositoryNumber = number?.exec(arg) ?? null;
       if (
         slot.takes.includes("number") &&
         leaf.readsRepositoryNumber &&

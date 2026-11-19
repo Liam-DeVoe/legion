@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { z } from "zod";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { GITHUB_ROUTES, requestSites, UNREACHED } from "./github-routes";
 import { GITHUB_LOG, GITHUB_NOT_KEPT, githubRefusal, HEADS_NOT_KEPT, headUnmoved } from "./health";
@@ -821,6 +822,9 @@ function worldRun(call: string, after: string[] = []) {
     'declare -f own_dispatch | grep -q "database=$DATABASE_PREFIX" || { echo "own_dispatch did not take the suite database prefix" >&2; exit 3; }',
     "evidence=$R",
     'mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs"',
+    // The label's built-from, as cmd_run copies it into the run: the checkout whose daemon the
+    // run's seeds and stand-ins write as.
+    `printf 'checkout %s\\n' "$co" >"$R/built-from"`,
     "worker_boot() { :; }",
     "start_recorder() { :; }",
     "launch() { :; }",
@@ -933,6 +937,101 @@ test.skipIf(pg === undefined)(
         [],
       ]);
     }
+  },
+  600_000
+);
+
+// The record of each run of a step on a world's own Dispatch (main's since #4400), written as the
+// label's daemon writes it — the history's runs by the seeds (seed.ts's `steps`), the open one
+// and a move's end and next start by the daemon stand-in — and read back with the label's own
+// `dispatch steps` and the route's own GET, both the run's own Dispatch server's answer. Catches:
+// a world whose `dispatch steps` lists other runs than its handoffs and its record show (none at
+// all, which it listed), a run listed twice where the seeds and the stand-in derived two ids for
+// it, and a move whose end or next start the label's daemon writes and the world does not.
+test.skipIf(pg === undefined)(
+  "a world's dispatch steps lists its history and its open step, and after a move the ended step and the next",
+  () => {
+    const agent = "01a2d000-0000-7000-8000-00000000f006";
+    const { scratch, code, stderr } = worldRun("run_tester_proof pin proj 0 0", [
+      "steps() {",
+      '  env -i PATH="$PATH" HOME="$SCRATCH/home" DISPATCH_STATE_DIR="$SCRATCH/state" \\',
+      '    DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$tokens/dispatch-token" \\',
+      "    DISPATCH_HOST=omp DISPATCH_SESSION_ID=steps-pin \\",
+      `    bun '${CHECKOUT}/packages/envoy-client/bin/dispatch.ts' steps --issue "$worker_key" >"$SCRATCH/$1.txt" 2>&1`,
+      '  curl -fsS -H "Authorization: Bearer $(cat "$tokens/dispatch-token")" \\',
+      '    "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/steps" >"$SCRATCH/$1.json"',
+      "}",
+      'printf "rig-boot-token\\n" >"$SCRATCH/boot-token"',
+      'DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$tokens/dispatch-token" \\',
+      '  bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$SCRATCH/boot-token" proj "$worker_key" "$R" tester >"$SCRATCH/standin.out" 2>&1 &',
+      "standin=$!",
+      'for _ in $(seq 1200); do grep -q "listening on" "$SCRATCH/standin.out" && break; sleep 0.1; done',
+      'url=$(sed -n "s/^listening on //p" "$SCRATCH/standin.out")',
+      "steps before",
+      `curl -fsS -X POST "$url/legion/v1/claims/register" -d '{"bootToken":"rig-boot-token","sessionId":"${agent}","pluginContract":146}' >/dev/null`,
+      `curl -fsS -X POST "$url/legion/v1/claims/ready" -d '{"secret":"M4QZ7KWT2HXR5NBJ6YCPVD3LGE"}' >/dev/null`,
+      `grant=$(curl -fsS -X POST "$url/legion/v1/grants" -d "{\\"sessionId\\":\\"${agent}\\",\\"secret\\":\\"M4QZ7KWT2HXR5NBJ6YCPVD3LGE\\",\\"tree\\":\\"$worker_key\\",\\"issue\\":\\"$worker_key\\"}" | jq -r .grantId)`,
+      'curl -fsS -X POST "$url/legion/v1/phase/backward" -d "{\\"grantId\\":\\"$grant\\",\\"to\\":\\"implementing\\",\\"reason\\":\\"the fix needs code\\"}" >/dev/null',
+      "steps after",
+      'kill "$standin"',
+    ]);
+    expect({ code, stderr }).toMatchObject({ code: 0 });
+    const read = (name: string) => readFileSync(path.join(scratch, name), "utf8");
+    const at = "\\d{4}-\\d\\d-\\d\\dT[0-9:.]+Z";
+    const line = (step: string, role: string, type: string, attempt: number, end: string) =>
+      new RegExp(
+        `^default ${step} step ${role} ${type} attempt ${attempt} legion-proj-wid-\\d+-${role} - ${at} ${end}$`
+      );
+    const before = read("before.txt").trimEnd().split("\n");
+    expect(before[0]).toMatch(/^WID-\d+: 3 steps in 1 tasks$/);
+    expect(before.slice(1).map((one, index) => [index, one])).toEqual([
+      [0, expect.stringMatching(line("1", "planner", "planning", 1, `${at} passed`))],
+      [1, expect.stringMatching(line("2", "implementer", "implementation", 1, `${at} passed`))],
+      [2, expect.stringMatching(line("3", "tester", "testing", 1, "running running"))],
+    ]);
+    const after = read("after.txt").trimEnd().split("\n");
+    expect(after[0]).toMatch(/^WID-\d+: 4 steps in 1 tasks$/);
+    expect(after.slice(1).map((one, index) => [index, one])).toEqual([
+      [0, expect.stringMatching(line("1", "planner", "planning", 1, `${at} passed`))],
+      [1, expect.stringMatching(line("2", "implementer", "implementation", 1, `${at} passed`))],
+      [2, expect.stringMatching(line("3", "tester", "testing", 1, `${at} failed`))],
+      [3, expect.stringMatching(line("2", "implementer", "implementation", 2, "running running"))],
+    ]);
+    // What the listing does not print, read off the route's own answer: the move's end names the
+    // step the work returns to and the session of the agent that ran it, and each history run
+    // its handoff record and the session that wrote it.
+    const steps = z
+      .object({
+        tasks: z.array(
+          z.object({
+            steps: z.array(
+              z.looseObject({
+                step: z.number(),
+                attempt: z.number(),
+                session: z.string(),
+                returned_to: z.number().nullable(),
+                report: z.string().nullable(),
+              })
+            ),
+          })
+        ),
+      })
+      .parse(JSON.parse(read("after.json")))
+      .tasks.flatMap((task) => task.steps);
+    expect(
+      steps.map(({ step, attempt, session, returned_to, report }) => [
+        step,
+        attempt,
+        session === agent ? "agent" : session === "" ? "" : "seeded",
+        returned_to,
+        report === null ? null : "record",
+      ])
+    ).toEqual([
+      [1, 1, "seeded", null, "record"],
+      [2, 1, "seeded", null, "record"],
+      [3, 1, "agent", 2, null],
+      [2, 2, "", null, null],
+    ]);
   },
   600_000
 );

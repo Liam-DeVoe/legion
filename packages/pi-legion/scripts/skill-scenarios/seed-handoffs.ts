@@ -15,7 +15,7 @@
 // seed.ts's own header says what each writes and reads.
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { Actor, Handoff, HandoffSummary } from "@legion/contracts";
+import { type Actor, type Handoff, type HandoffSummary, roleToken } from "@legion/contracts";
 import { z } from "zod";
 import {
   baseUrl,
@@ -23,8 +23,12 @@ import {
   createIssueArtifact,
   e2eAgentToken,
   patchIssue,
+  putStep,
 } from "../../../dispatch/e2e/api";
+import { labelCheckout, labelShapes } from "./daemon-pane";
 import { WORLD_PROJECT } from "./run-names";
+import { GENERATION } from "./standin-record";
+import { runsStep, STEPS, stepEnd, stepRun, stepStart } from "./step-records";
 import { type CheckCovers, WORLD_REPO, worldPlan } from "./world-issue";
 
 /** One record a seed wrote on the run's issue. */
@@ -300,4 +304,87 @@ export async function captureHandoffs(file: string, runDir: string): Promise<voi
     records.push(await agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(summary.id)}`));
   writeFileSync(path.join(runDir, "handoffs.json"), `${JSON.stringify(records)}\n`);
   console.log(`captured ${issue}: ${records.length} handoff records`);
+}
+
+/** The phases a seed records, in the order the workflow runs them, each with the word its handoff
+ * is seeded under. */
+const SEEDED_PHASES = [
+  ["planning", "plan"],
+  ["implementing", "implement"],
+  ["testing", "test"],
+  ["reviewing", "review"],
+] as const;
+
+/** `steps <file> <project> <phase> [model]`: the record of each run of a step the world's history
+ * holds, as the label's daemon wrote it as each phase ran (workflow/steps.go's `startStep` and
+ * `endStep`, step-records.ts): for each phase whose handoff a seed recorded, in the order the
+ * workflow runs them, the start of its one run, at the moment the phase before it ended (the
+ * issue's filing for planning, which the seeds hand to Legion and whose spec they approve as they
+ * file it), under the claim of its role in the Legion project `project` (`roleToken`), and the end
+ * the move out of it wrote: passed, at the moment its handoff was recorded, the report that
+ * handoff, the session that wrote it and `model`, the model the label's agents answer with
+ * (rig.sh's `label_model`), where it is given. The run of `phase`, the one the issue stands in, is
+ * left open: its start alone, whether a seed recorded its handoff (a review round whose approval
+ * waits) or not, under its role's claim, the architect's in `accepting`. Each write goes through
+ * the run's own Dispatch as the daemon's outbox writes it, under `legion-daemon:<PROJECT>`
+ * (dispatch/e2e/api.ts's `putStep`). A label whose daemon writes no step record (daemon-pane.ts's
+ * `labelShapes`' `writesSteps`, read off the checkout the run's built-from names) gets none. A
+ * phase that runs no step is the caller's fault, refused before anything is written. */
+export async function stepsSeed(
+  file: string,
+  project: string,
+  phase: string,
+  model = ""
+): Promise<void> {
+  if (!runsStep(phase)) throw new Error(`${phase} runs no step`);
+  const fixture = loadFixture(file);
+  if (!labelShapes(labelCheckout(path.dirname(file))).writesSteps) {
+    console.log(`seeded no step of ${fixture.issue}: the label's daemon records none`);
+    return;
+  }
+  const filed = await agentGet<{ created_at: string }>(
+    `/api/v1/issues/${encodeURIComponent(fixture.issue)}`
+  );
+  let since = filed.created_at;
+  let written = 0;
+  for (const [ran, word] of SEEDED_PHASES) {
+    const record = fixture[word];
+    if (record === undefined) continue;
+    const run = stepRun(
+      fixture.issue,
+      GENERATION,
+      ran,
+      roleToken(project, fixture.issue, STEPS[ran].role),
+      1
+    );
+    await putStep(fixture.issue, run.id, stepStart(run, since));
+    written += 1;
+    if (ran === phase) continue;
+    const held = await agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(record.id)}`);
+    await putStep(
+      fixture.issue,
+      run.id,
+      stepEnd(run, {
+        startedAt: since,
+        endedAt: held.created_at,
+        result: "passed",
+        report: record.id,
+        session: held.author.id,
+        ...(model === "" ? {} : { model }),
+      })
+    );
+    since = held.created_at;
+  }
+  if (!SEEDED_PHASES.some(([ran, word]) => ran === phase && fixture[word] !== undefined)) {
+    const run = stepRun(
+      fixture.issue,
+      GENERATION,
+      phase,
+      roleToken(project, fixture.issue, phase === "accepting" ? "architect" : STEPS[phase].role),
+      1
+    );
+    await putStep(fixture.issue, run.id, stepStart(run, since));
+    written += 1;
+  }
+  console.log(`seeded ${fixture.issue}'s ${written} runs of steps, ${phase} open`);
 }

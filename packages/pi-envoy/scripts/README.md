@@ -1005,6 +1005,10 @@ decoder reads, and a footer that names no head, a prefix, the head in capitals o
 decides nothing and leaves the record in `reviewing`. A review is judged at the first read that
 finds it, and a taken one stays taken whatever the head comes to, as the engine keeps the
 decision it recorded; a review the world held before the run is history it takes as it stands.
+The head it is judged at is the remote's tip at that read, so a review production would refuse
+at an older head, its webhook applied before the push's, and take at the reviewer's handoff
+read, the world takes at the review: the same verdict, taken earlier (a residual, *Which of the
+world's answers are pinned*, below).
 The footer's `entry`, which moves the commit a later round's task names as `Last reviewed commit:
 <sha>`, is not read: no scenario gives a reviewer a later round's task (the class search's
 declared-unreachable entry). The three completion refusals (`HANDOFF_SESSION_MISMATCH`,
@@ -1014,7 +1018,7 @@ declared-unreachable entry). The three completion refusals (`HANDOFF_SESSION_MIS
 shape: every daemon the rig runs names them. A source of neither shape, or of both, refuses the
 batch at `label_facts` and every stand-in's boot, naming each marker and its file. A marker that
 is not found is never read as an older daemon that lacks the behaviour. Both labels of a batch
-are now main `7ce89a9b` or after, so each reads as main's shape of all six; the `ff2a10ef` shape
+are now main `9aff682b` or after, so each reads as main's shape of all six; the `ff2a10ef` shape
 of each is read by the rows below alone.
 
 The rig's tests hold both shapes of each file to sources they write themselves, so they need no
@@ -1072,7 +1076,7 @@ measurement each, named where the answer is described: a reply to a reply filed 
 one App's update of another's review, GitHub's 404 body for an endpoint it does not serve, and
 the merge state of an approved, green head on a merge-queue base. A few are stated as
 unmeasured: GitHub's 404 for another App's read of a pending review by id, and the
-rule-violation lines of a refused push beyond the three measured. Five differences are named
+rule-violation lines of a refused push beyond the three measured. Six differences are named
 residuals rather than defects, each an answer the world cannot give as production gives it:
 
 - `remote.origin.vcs`, the key that carries the world's remote. No production clone has it. The
@@ -1097,6 +1101,14 @@ residuals rather than defects, each an answer the world cannot give as productio
   is unhealthy from that call on (`rig.sh health`'s rule 22, `capability report`, naming the line
   and the claim), since the world's capability rows are not production's after it. If a batch
   loses a run to it, that count buys the model.
+- The order in which production applies a review's webhook and its push's. The world reads the
+  remote's tip live (`daemon-standin.ts`'s `worldPull`), so a review whose webhook production
+  applies before the push's is taken at the review in the world and at the handoff read in
+  production: main's daemon judges a review App review at the head the record holds when its
+  webhook is applied, refuses that one there (`RefusedAtThisHead`), and judges it again by the
+  per-issue read at the reviewer's handoff (`issue_reads.go`'s `readHandedOff`, then
+  `review_reads.go`'s `reviewToApply`). The verdict is the same, and k1 scores the verdict (the
+  architect's ruling of 2026-11-19T09:42Z).
 
 **A read with no pin, and an answer this section and the sections below do not name, is not
 claimed to answer as production does.**
@@ -1448,8 +1460,40 @@ live claims on a world built against a real Dispatch. A label whose daemon publi
 holder, or whose Dispatch serves no such route (main before #4228), is published nothing; both
 labels are built from main `0b2769e5` or after, whose daemon and Dispatch publish and serve it.
 
-Its shape is held to production's: `production-shapes.json`'s `legion read_record` is the shape
-of one issue's record as the tool answered it in a Legion issue pod at 2026-11-17T16:49Z, the
+The run's Dispatch holds the record of each run of a step of the issue, as the label's daemon
+writes it (main's since #4400, 53980e0e32): one write at the run's start, one at its end, and the
+report alone of a completion that lands after that end, each `PUT
+/api/v1/issues/{key}/steps/{id}` under the daemon's own session, as its outbox's executor sends a
+`step_record` row (`publishStepRecord`; `step-records.ts` restates the writes). The world's
+history is written before any agent boots (`seed.ts steps`, rig.sh's `steps_seed`): each phase
+a seed recorded a handoff of, planning to reviewing, as one run of its step under its role's
+claim, started where the phase before it ended and ended passed at its handoff's time, its
+report that handoff and its session the one that wrote it, and naming the model the label's
+profile answers with (rig.sh's `label_model`); the run of the phase the issue stands in is left
+open, its start alone. The stand-in writes that open run's start again at its boot, which
+Dispatch keeps as the seeds wrote it, since it writes each field of a record once; and at each
+move, the end of the run it leaves (failed for a request for changes or a worker's move back,
+stopped for a conflict, each naming the step the work returns to, and passed for an approval),
+its report the completion of the move's own role, its session the claim's and its model the last
+its own agent's transcript names, and the start of the next run of the step it enters, under
+that step's claim (the architect's in `accepting`). A taken completion of a phase the issue has
+left writes its record onto the ended run. Each record's id is the one the daemon derives, so the
+seeds' and the stand-in's writes of one run are one record. `dispatch steps` and `GET
+/api/v1/issues/{key}/steps` are the run's own Dispatch server's answer, the label's own build, so
+no read of them is faked. What the stand-in and the seeds write is read off the label's source by
+marker (`daemon-pane.ts`'s `labelShapes`, `writesSteps`): the outbox's `step_record` kind, the
+executor's write of every field of the row through the client's route, the body that route takes
+(`dispatch/types.go`'s `StepWrite`), the step of each phase and the result of each move
+(`workflow/steps.go`'s `stepOf` and `endOf`), the id's namespace and name, which fields each of
+the three writes carries, and the route's row in Dispatch's table. A label built before #4400
+(main `ff2a10ef`, read by its outbox's kinds) is written no step record, and its Dispatch serves
+no such route. Production's Dispatch, at `4055c4a5` when it was read on 2026-11-19T09:58Z, does
+not serve the route yet (`404 NOT_FOUND`, `no route for GET /api/v1/issues/INFRA-764/steps`):
+#4400's deploy is pending, so no production issue holds a step record to pin a world's against.
+
+The record's shape is held to production's: `production-shapes.json`'s `legion read_record` is
+the shape of one issue's record as the tool answered it in a Legion issue pod at
+2026-11-17T16:49Z, the
 two maps keyed by a name of the issue's (`workers`, by role, and `backwardMoves`, by pair) read
 as lists, so the pin names no role and no move of that one issue. The derivation refuses a
 record whose shape would carry a value as a key: every key of the daemon's record is one
@@ -1709,6 +1753,19 @@ Stated limits, each known and kept so:
   that the label's saved help does not show (`gh variable list -R`: no saved help shows that
   group's inherited `-R`). The world then answers such a call otherwise than production, health
   calls the run unhealthy, and the run is replaced.
+- Nor are the wrapper's refusals of a command, an option or a working directory whole, which it
+  holds outside its selector table (`gh.go`'s `ghRefusedCommands` and `ghRefusedOptions`,
+  `gh_gitconfig.go`'s `ghRepoGitConfigRefusal`, main's since #4424, fdce4e94d2): `gh agent-task`,
+  `gh auth login`, `logout`, `refresh`, `switch` and `setup-git`, `gh config set` and `gh gist
+  edit`; `--editor`, `--attach` and `--recurse-submodules`; a git flag `repo clone`, `repo fork`
+  or `gist clone` passes on that is not on its short list; and a repository configuration naming
+  an `http` ssl or proxy key, another credential helper, an include or `extensions.worktreeConfig`.
+  The world's issue workspace holds none of those keys (its helpers are `!legion git-credential`
+  and the empty one, which the wrapper takes), so that refusal never applies in it. A command the
+  world routes none of is refused as an unmodelled call (`gh: Not Found (HTTP 404)`, recorded
+  `unrouted`), which health reads as a refusal the scenario does not declare; a call carrying a
+  refused option that the world routes is answered by that route, where production's wrapper
+  refuses it.
 - Of gh's reads of the pull request, `gh pr list --search` is refused as a call the world does not
   model (`gh: Not Found (HTTP 404)`, recorded `unrouted`), and `--template`, `--web`, and `gh pr
   diff`'s `--patch`, `--exclude` and `--color always` are not read: such a call is answered as if

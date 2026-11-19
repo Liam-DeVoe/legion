@@ -697,11 +697,38 @@ load_label() {
   # unreviewed (packages/pi-envoy/README.md, "The time limit"): an askgate run would then score the
   # timeout, not the rule. The model route installers set the limit in the profile's settings
   # (scripts/e2e/lib/install-model-gateway.sh, install-key-file-model-route.sh); a profile built
-  # before they did is refused here.
-  local settings=$I/home/.omp/profiles/$profile/agent/config.yml remove=$P
+  # before they did is refused here. The read is bun's, which exits 0 where the key is set and 3
+  # where it is not: any other exit is a bun that could not run or could not read the settings,
+  # refused with bun's own words and never as a missing key.
+  local settings=$I/home/.omp/profiles/$profile/agent/config.yml remove=$P said read=0
   [ "$I" = "$P" ] || remove="$P and $I"
-  bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 1)' "$settings" 2>/dev/null ||
-    fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $remove and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it"
+  said=$(bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 3)' "$settings" 2>&1) || read=$?
+  case $read in
+    0) ;;
+    3) fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $remove and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it" ;;
+    *) fail "label $1: bun could not read the profile settings $settings: $said" ;;
+  esac
+}
+
+# label_model prints the model the agents of the label load_label loaded last answer with: the
+# `default` of the `modelRoles` its model route wrote into its profile's settings
+# (install_model_route), `<provider>/<model>`, the form the daemon names a step's model in
+# (packages/daemon/internal/stream's Answered); nothing for a profile whose settings are not there
+# or name none. The world's history names it at the end of each run of a step (seed.ts's `steps`),
+# as the label's daemon names the model each of those agents last answered with.
+label_model() {
+  local settings=${I:-}/home/.omp/profiles/${profile:-}/agent/config.yml
+  [ -n "${I:-}" ] && [ -f "$settings" ] || return 0
+  bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.modelRoles?.default; if (typeof v === "string") console.log(v);' "$settings"
+}
+
+# steps_seed PROJECT PHASE writes the record of each run of a step the run's world has run, as
+# the label's daemon wrote them onto the run's Dispatch, with PHASE's run open, under the claims of
+# the Legion project PROJECT (seed.ts's `steps`), before any agent of the run boots: so `dispatch
+# steps` lists the runs the handoffs and the record show. A label whose daemon writes none gets
+# none.
+steps_seed() {
+  seed_ts steps "$R/fixture.json" "$1" "$2" "$(label_model)"
 }
 
 # install_model_route CHECKOUT PROFILE DIR installs the model route of the profile whose HOME is
@@ -4181,6 +4208,7 @@ run_tester_proof() {
   # record in (packages/daemon/internal/workflow/effects.go).
   printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+  steps_seed "$project" testing
   worker_boot "$name" "$project" tester
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
@@ -4215,6 +4243,7 @@ run_reviewer_text_findings() {
   # record in (packages/daemon/internal/workflow/effects.go): for a review round, the tester's.
   printf 'Architect → reviewer, %s. The tester has finished: PR #%s (%s, repository %s) is at %s. Handoff: test version %s (dispatch handoff-read --issue %s --phase test --version %s). Review it and finish your phase.%s\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" "$round" >"$R/prompt.txt"
+  steps_seed "$project" reviewing
   worker_boot "$name" "$project" reviewer
   # What the run left on its issue: every handoff record, each with its body, beside the review
   # submission the gh stand-in recorded, which is what the score reads.
@@ -4322,6 +4351,7 @@ run_threads_closed() {
   open=$(jq -r '.[] | "- Thread \(.id), \(.path): \(.body)"' "$R/threads.json")
   printf 'Reviewer → implementer, %s. I approved PR #%s (%s, repository %s) at %s. Its only open findings are text, and each is the review thread I wrote on it:\n%s\nOver to you.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$open" >"$R/prompt.txt"
+  steps_seed "$project" "$phase"
   worker_boot "$name-implementer" "$project" implementer "$phase" "$completed"
   # Every push the implementer made has moved the head the run's Dispatch compares results with
   # (start_heads), as its own event moves it in production, and the reviewer is not booted before

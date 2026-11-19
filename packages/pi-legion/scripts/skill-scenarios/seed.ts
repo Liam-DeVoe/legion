@@ -56,6 +56,15 @@
 //                                          records none (review: {id, version} in <file>). The
 //                                          agents of threads-closed read it at the version their
 //                                          tasks name
+//   seed.ts steps <file> <project> <phase> [model]
+//                                          the record of each run of a step the issue <file>
+//                                          names has run, as the label's daemon writes it onto
+//                                          Dispatch (seed-handoffs.ts's stepsSeed): each seeded
+//                                          phase's run, started and ended, and the run of <phase>,
+//                                          which the issue stands in, left open; under the claims
+//                                          of the Legion project <project>, naming [model] at each
+//                                          end where it is given; none for a label whose daemon
+//                                          writes none
 //   seed.ts capture-handoffs <file> <run dir>
 //                                          every handoff record of the issue <file> names, newest
 //                                          first as Dispatch lists them, each with the body it
@@ -155,6 +164,7 @@ import {
   phaseHandoff,
   planSeed,
   pullRequestHead,
+  stepsSeed,
   type TesterFixture,
 } from "./seed-handoffs";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
@@ -872,7 +882,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name] | plan <file> <implement body file> <base commit> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> [no-name] | plan <file> <implement body file> <base commit> | pull-request <file> <gh answers file> <remote> | implement-handoff <file> <body file> <commit> | tester-result <file> <body file> <commit> | review-handoff <file> <body file> | steps <file> <project> <phase> [model] | capture-handoffs <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -941,6 +951,14 @@ async function main(argv: string[]): Promise<boolean> {
     await phaseHandoff(file, second, "test", third);
   else if (command === "review-handoff" && file !== undefined && second !== undefined && n === 3)
     await phaseHandoff(file, second, "review");
+  else if (
+    command === "steps" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    (n === 4 || n === 5)
+  )
+    await stepsSeed(file, second, third, argv[4] ?? "");
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
   else return false;

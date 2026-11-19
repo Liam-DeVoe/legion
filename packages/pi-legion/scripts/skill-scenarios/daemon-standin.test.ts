@@ -16,6 +16,7 @@ import {
 } from "./daemon-pane";
 import { pinnedRead, RECORD_READ, rolesListed, shapeDiff, shapeOf } from "./production-shapes";
 import { contractRefusal, issueRecord, sampleFacts } from "./standin-record";
+import { stepId } from "./step-records";
 import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
 
 // The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
@@ -92,13 +93,13 @@ const IssueWrite = z.strictObject({
   actor: z.unknown(),
 });
 
-/** The writes of `writes` to the run's issue but its role holders, each `[method, route, what]`,
- * `what` a status write's status or a message's body, its outbox marker held to the outbox's
- * shape (`<!-- legion-outbox:<row> -->` after a blank line: record's `MessagePost.Posted`) and
- * cut; each is held to the daemon's own session. */
+/** The writes of `writes` to the run's issue but its role holders and its step records, each
+ * `[method, route, what]`, `what` a status write's status or a message's body, its outbox marker
+ * held to the outbox's shape (`<!-- legion-outbox:<row> -->` after a blank line: record's
+ * `MessagePost.Posted`) and cut; each is held to the daemon's own session. */
 function issueWrites(writes: readonly DispatchWrite[]): [string, string, string | undefined][] {
   return writes
-    .filter((write) => !write.route.endsWith("/role-holders"))
+    .filter((write) => !write.route.endsWith("/role-holders") && !write.route.includes("/steps/"))
     .map(({ method, route, body }) => {
       const write = IssueWrite.parse(body);
       expect(write.actor).toEqual(DAEMON_ACTOR);
@@ -121,6 +122,20 @@ function published(writes: readonly DispatchWrite[]): unknown[] {
         .parse(body);
       expect(write.actor).toEqual(DAEMON_ACTOR);
       return write.holders;
+    });
+}
+
+/** Each step record write of `writes`, in the order it made them, `[record id, body]`, each held
+ * to `PUT /api/v1/issues/LWEVAL-1/steps/{id}` and the daemon's own session, the body without it. */
+function stepWrites(writes: readonly DispatchWrite[]): [string, Record<string, unknown>][] {
+  return writes
+    .filter((write) => write.route.includes("/steps/"))
+    .map(({ method, route, body }) => {
+      const [, id = ""] = /^\/api\/v1\/issues\/LWEVAL-1\/steps\/([^/]+)$/.exec(route) ?? [];
+      expect([method, id]).toEqual(["PUT", expect.stringMatching(/^[0-9a-f-]{36}$/)]);
+      const { actor, ...write } = z.looseObject({ actor: z.unknown() }).parse(body);
+      expect(actor).toEqual(DAEMON_ACTOR);
+      return [id, write];
     });
 }
 
@@ -151,7 +166,10 @@ function dispatchOf(
       const route = url.pathname;
       const body: unknown = request.method === "GET" ? undefined : await request.json();
       if (request.method !== "GET") writes.push({ method: request.method, route, body });
-      const sub = /^\/api\/v1\/issues\/LWEVAL-1(?:\/(messages|role-holders|events))?$/.exec(route);
+      const sub =
+        /^\/api\/v1\/issues\/LWEVAL-1(?:\/(messages|role-holders|events|steps\/[^/]+))?$/.exec(
+          route
+        );
       if (sub !== null && seeded === undefined)
         return Response.json(
           { code: "ISSUE_NOT_FOUND", error: "no issue LWEVAL-1" },
@@ -183,6 +201,8 @@ function dispatchOf(
           issue: "LWEVAL-1",
           holders: z.object({ holders: z.array(z.unknown()) }).parse(body).holders,
         });
+      if (sub?.[1]?.startsWith("steps/") && request.method === "PUT")
+        return Response.json({ issue: "LWEVAL-1", ...z.looseObject({}).parse(body) });
       if (seeded !== undefined && route === "/api/v1/issues/LWEVAL-1") {
         if (request.method === "PATCH" && (seeded.outages ?? 0) > 0) {
           seeded.outages = (seeded.outages ?? 0) - 1;
@@ -2765,6 +2785,85 @@ test.skipIf(skip)(
       expect(unsampled(issue)).toEqual(ALL_SAMPLED);
     } finally {
       tester.stop();
+    }
+  },
+  600_000
+);
+
+/** The identity of the run of `phase`'s step on LWEVAL-1, as every write of its record names it:
+ * the step's place, kind, role and type (workflow/steps.go's `stepOf`), the claim of the role that
+ * runs it in the rows' project `skills1`, and the issue's generation. */
+function stepIdentity(phase: "testing" | "implementing") {
+  const [step, role, type] =
+    phase === "testing" ? [3, "tester", "testing"] : [2, "implementer", "implementation"];
+  const agent = roleToken("skills1", "LWEVAL-1", role as LegionRole);
+  return { task: "default", step, kind: "step", role, type, agent, generation: 1 };
+}
+
+// Catches: a stand-in that writes no record of the steps the label's daemon records (main's since
+// #4400), or writes one otherwise than the daemon's executor sends it (outbox.go's
+// `publishStepRecord`, workflow/steps.go's `startStep` and `endStep`): the start of the step the
+// issue stands in at its boot, its identity and the moment alone; at a worker's move back, the end
+// of that step, failed, returning to the place of the step the move enters, at the moment its
+// start wrote and the moment now, with the session of the agent that ran it and no model, since
+// that agent's transcript names none; and the start of the next run of the step it enters, the
+// second of its place, under that role's claim. Each goes under the daemon's own session, by the
+// id the daemon derives, the end by its start's id.
+test.skipIf(skip)(
+  "a stand-in writes the start of its step at its boot, and at a move that step's end and the next one's start",
+  async () => {
+    const tester = await standin("tester", "", undefined, { seeds: ["plan", "implement"] });
+    try {
+      const opened = stepWrites(tester.writes);
+      expect(opened).toEqual([
+        [
+          stepId("LWEVAL-1", 1, "testing", 1),
+          { ...stepIdentity("testing"), started_at: expect.any(String) },
+        ],
+      ]);
+      await boots(tester.post);
+      expect(await movesBack(tester.post, "implementing")).toBe(200);
+      expect(stepWrites(tester.writes).slice(1)).toEqual([
+        [
+          stepId("LWEVAL-1", 1, "testing", 1),
+          {
+            ...stepIdentity("testing"),
+            started_at: opened[0]?.[1].started_at,
+            ended_at: expect.any(String),
+            result: "failed",
+            returned_to: 2,
+            session: AGENT,
+          },
+        ],
+        [
+          stepId("LWEVAL-1", 1, "implementing", 2),
+          { ...stepIdentity("implementing"), started_at: expect.any(String) },
+        ],
+      ]);
+    } finally {
+      tester.stop();
+    }
+  },
+  600_000
+);
+
+// Against main `ff2a10ef`'s own daemon, where the host has a checkout of it
+// (SKILL_SCENARIOS_OLDER_CHECKOUT): its outbox has no step record, so its stand-in writes none,
+// where this checkout's writes the start of its step on the same run. Catches: a stand-in that
+// writes a record no daemon of that label writes, whose Dispatch serves no route for it either.
+test.skipIf(skip || olderHost === undefined)(
+  "a stand-in of main ff2a10ef's daemon writes no step record",
+  async () => {
+    for (const [checkout, written] of [
+      [olderHost ?? "", 0],
+      [CHECKOUT, 1],
+    ] as const) {
+      const tester = await standin("tester", "", undefined, { checkout });
+      try {
+        expect([checkout, stepWrites(tester.writes).length]).toEqual([checkout, written]);
+      } finally {
+        tester.stop();
+      }
     }
   },
   600_000

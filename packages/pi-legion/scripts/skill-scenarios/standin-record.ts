@@ -33,7 +33,7 @@ import path from "node:path";
 import { type LegionRole, roleForPhase, roleToken } from "@legion/contracts";
 
 /** The issue's generation: one run of the workflow, which no world of the rig re-admits. */
-const GENERATION = 1;
+export const GENERATION = 1;
 /** The namespace of the issue pod a locator names. A deployment's own (`runtime.kubernetes.
  * namespace`, which has no default); the daemon's own fixtures name it so
  * (packages/daemon/internal/runtime/locator_test.go). */

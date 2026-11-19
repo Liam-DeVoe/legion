@@ -588,10 +588,10 @@ function routesOver(name: string, body: string): readonly string[] {
 
 // The routes the rig reads a label's daemon as serving, which the stand-in answers by and health
 // holds every 404 to, read out of that daemon's own source. Catches: a registration read in one
-// of its two shapes alone, a pattern read twice, a test file's registration read as the daemon's,
-// the mux's catch-all `/` read as a route, another pattern with no method read as one method's,
-// and a package registering none read as a daemon that serves nothing, under which the stand-in
-// would answer every request 404 and health would call each the daemon's own answer.
+// of its two call shapes alone, a pattern read twice, a test file's registration read as the
+// daemon's, the mux's catch-all `/` read as a route, another pattern with no method read as one
+// method's, and a package registering none read as a daemon that serves nothing, under which the
+// stand-in would answer every request 404 and health would call each the daemon's own answer.
 test.skipIf(skip)(
   "the routes reading takes each pattern a HandleFunc or Handle call registers, and refuses what it cannot read",
   () => {
@@ -611,8 +611,46 @@ test.skipIf(skip)(
       'registers ["/legion/v1/state"] with no method'
     );
     expect(() => routesOver("none", "\tm.Handle(ctx, event)")).toThrow(
-      "registers no route with a HandleFunc or Handle call naming its pattern"
+      "registers no route with a HandleFunc or Handle call or a []route table naming its pattern"
     );
+  },
+  600_000
+);
+
+// Main's daemon since #4400 (53980e0e32) registers its routes from one table, server.go's
+// `routes`, a `[]route` whose each element names its pattern first and its handler second, with
+// the catch-all `/` its last row, through one `mux.HandleFunc(route.pattern, route.handler)`.
+// Catches: a reading of the calls alone, which finds no pattern in that daemon (its one call names
+// a field, not a literal) and refused every batch of a label at main 9aff682b; a row's handler, or
+// a table of another type, read as a pattern; a keyed row's pattern missed; and the table's
+// catch-all read as a route, or a methodless row of it read as one method's.
+test.skipIf(skip)(
+  "the routes reading takes each pattern a []route table names, as main's daemon since #4400 registers them",
+  () => {
+    expect(
+      routesOver(
+        "table",
+        [
+          "\treturn []route{",
+          '\t\t{"GET /legion/v1/state", s.stateRoute},',
+          '\t\t{"POST /legion/v1/handoff/complete", s.handoffComplete},',
+          '\t\t{handler: s.signOff, pattern: "POST /legion/v1/signoff"},',
+          '\t\t{"/", noRoute},',
+          "\t}",
+          '\tother := []string{"POST /not/a/route"}',
+          "\tfor _, route := range s.routes() {",
+          "\t\tmux.HandleFunc(route.pattern, route.handler)",
+          "\t}",
+        ].join("\n")
+      )
+    ).toEqual([
+      "GET /legion/v1/state",
+      "POST /legion/v1/handoff/complete",
+      "POST /legion/v1/signoff",
+    ]);
+    expect(() =>
+      routesOver("table-methodless", '\treturn []route{\n\t\t{"/legion/v1/state", s.state},\n\t}')
+    ).toThrow('registers ["/legion/v1/state"] with no method');
   },
   600_000
 );
@@ -1427,7 +1465,7 @@ describe("the label's build and its facts", () => {
 
   /** A checkout under the row's directory holding what facts reads, copied from this one as
    * gh-standin.test.ts's per-label rows copy the wrapper: the daemon's API package and engine.go,
-   * the eight other files the source shapes are read from (labelShapes), and the wrapper's
+   * the eleven other files the source shapes are read from (labelShapes), and the wrapper's
    * package, internal/ghconfig and saved gh help, with `edit` applied to the wrapper's
    * gh_help.go: a later wrapper's own source. */
   function factsCheckout(at: string, edit: (source: string) => string): string {
@@ -1447,7 +1485,10 @@ describe("the label's build and its facts", () => {
       "internal/intake/facts.go",
       "internal/reviewround/reviewround.go",
       "internal/dispatch/client.go",
+      "internal/dispatch/types.go",
       "internal/record/outbox.go",
+      "internal/daemon/outbox.go",
+      "internal/workflow/steps.go",
       "cmd/legion/testdata/gh-help",
     ]) {
       mkdirSync(path.dirname(path.join(daemon, file)), { recursive: true });
@@ -1608,7 +1649,7 @@ describe("the label's build and its facts", () => {
 // (labelShapes): main's since the change that brought it, by its own marker, or main `ff2a10ef`'s,
 // which predates it, by the code it has in its place. A marker it cannot find refuses the batch,
 // naming the marker and its file, and is never read as an older daemon (the architect's ruling of
-// 2026-11-18). Each source here is a copy of the ten files the readers read, so a row reads them
+// 2026-11-18). Each source here is a copy of the thirteen files the readers read, so a row reads them
 // and nothing else.
 describe("the shapes of a label's daemon source", () => {
   const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
@@ -1623,6 +1664,9 @@ describe("the shapes of a label's daemon source", () => {
     "daemon/internal/reviewround/reviewround.go",
     "daemon/internal/dispatch/client.go",
     "daemon/internal/record/outbox.go",
+    "daemon/internal/daemon/outbox.go",
+    "daemon/internal/dispatch/types.go",
+    "daemon/internal/workflow/steps.go",
     "envoy/internal/dispatch/api/routes_table.go",
   ];
   const EFFECTS = "daemon/internal/workflow/effects.go";
@@ -1656,6 +1700,7 @@ describe("the shapes of a label's daemon source", () => {
     namesReviewRound: true,
     decidesBySession: true,
     decidesByFooterHead: true,
+    writesSteps: true,
   };
   const OLDER = {
     postsBackward: false,
@@ -1665,6 +1710,7 @@ describe("the shapes of a label's daemon source", () => {
     namesReviewRound: false,
     decidesBySession: false,
     decidesByFooterHead: false,
+    writesSteps: false,
   };
   const olderHost = process.env.SKILL_SCENARIOS_OLDER_CHECKOUT;
 
@@ -1672,15 +1718,48 @@ describe("the shapes of a label's daemon source", () => {
   // daemon that lacks the behaviour, which the head label's runs met as no sentence, no refusal,
   // no publication, a reviewer's task with no sentence of its round, a review of the review App
   // taken from any session and one taken on its `commit_id`; and a reader that needs a file the
-  // ten are not.
+  // thirteen are not.
   test("this checkout's daemon source posts each move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone and holds a review to its footer's head", () => {
     expect(labelShapes(CHECKOUT)).toEqual(MAIN);
     expect(labelShapes(copyOf(CHECKOUT))).toEqual(MAIN);
   });
 
+  // Catches: a step record written in a shape the label's daemon does not write, which `dispatch
+  // steps` then lists otherwise than production (main's since #4400). Each text the stand-in and
+  // the seeds restate is held to the label's source: a field the executor stops sending, a phase
+  // whose step moves, a result a move gives otherwise, and an id named another way each leave the
+  // source of neither shape, refused naming the reader, never read as a daemon that writes none.
+  test("a daemon source that writes a step record otherwise than step-records.ts restates is of no shape", () => {
+    for (const [file, marker, renamed] of [
+      [
+        "daemon/internal/daemon/outbox.go",
+        "ReturnedTo: payload.ReturnedTo, Report: payload.Report}",
+        "ReturnedTo: payload.ReturnedTo}",
+      ],
+      [
+        "daemon/internal/workflow/steps.go",
+        'return at(steprecord.KindStep, 4, "reviewer", "review")',
+        'return at(steprecord.KindStep, 4, "reviewer", "reviewing")',
+      ],
+      [
+        "daemon/internal/workflow/steps.go",
+        "case TriggerConflict:\n\t\treturn ResultStopped, true",
+        "case TriggerConflict:\n\t\treturn ResultFailed, true",
+      ],
+      [
+        "daemon/internal/workflow/steps.go",
+        '[]byte("legion-step-record")',
+        '[]byte("legion-step")',
+      ],
+    ] as const)
+      expect(() => labelShapes(copyOf(CHECKOUT, file, marker, renamed))).toThrow(
+        "is no shape of the record of each run of a step this rig reads"
+      );
+  });
+
   // Catches: a reviewer's task whose end is not the daemon's two sentences, word for word as
   // reviewround.go's `Sentences` writes them (#4328): `none` where the row holds no commit or no
-  // entry, and the commit and the number where it holds them. The base label, at main 7ce89a9b,
+  // entry, and the commit and the number where it holds them. The base label, at main 9aff682b,
   // tells its reviewers the same as the head's; a reader that wrote nothing left both labels'
   // reviewers with no entry to put in their footers.
   test("a reviewer's task ends with the daemon's two sentences of its round, in its words", () => {

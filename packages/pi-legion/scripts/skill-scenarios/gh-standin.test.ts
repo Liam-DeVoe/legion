@@ -24,7 +24,7 @@ import {
   WORLD_ROUTES,
   worldRouteOf,
 } from "./gh-routes";
-import { type GhSelectors, type GhTable, MODELLED, optionLines } from "./gh-selectors";
+import { type GhSelectors, type GhTable, ghTargetOf, MODELLED, optionLines } from "./gh-selectors";
 import {
   mergeableOf,
   mergeStateOf,
@@ -1548,11 +1548,16 @@ test("every form the wrapper's selector table holds, naming an owner outside the
   expect(Object.keys(LINES_OF.slot).sort()).toEqual([...MODELLED.slot].sort());
   expect(Object.keys(LINES_OF.option).sort()).toEqual([...MODELLED.option].sort());
   const { cases, unreached } = pinCases(table, selectors);
-  // Each kind naming an owner is a form some leaf of this checkout's gh spells.
+  // Each kind naming an owner is a form some leaf of this checkout's gh spells: a number only where
+  // the wrapper reads OWNER/REPO#N, which main's since #4424 reads for no leaf.
   const named = (type: "slot" | "option") =>
     Object.entries(LINES_OF[type])
       .filter(([, lines]) => lines.length > 0)
       .map(([kind]) => kind)
+      .filter(
+        (kind) =>
+          type === "option" || kind !== "number" || table.patterns.ghRepositoryNumber !== undefined
+      )
       .sort();
   const reached = (type: "slot" | "option") =>
     [
@@ -1573,6 +1578,45 @@ test("every form the wrapper's selector table holds, naming an owner outside the
     all.map(({ form, argv, line }) => [form, argv.join(" "), [2, "", line]])
   );
 }, 180_000);
+
+// Catches: OWNER/REPO#N read by one shape of the wrapper alone. Main's wrapper before #4424
+// (fdce4e94d2) declared ghRepositoryNumber and read it in `agent-task view`'s number
+// (readsRepositoryNumber); main's since declares neither and refuses `gh agent-task` whole. A
+// reader that required the pattern refused every batch of a label at main 9aff682b (`the
+// wrapper's ghRepositoryNumber: is not declared as regexp.MustCompile of one expression`), and one
+// that read a number as a repository with no quirk reading it would refuse a call that wrapper
+// reads no owner in. A table holding the pattern with no quirk reading it, or a quirk with no
+// pattern, is neither shape, and is refused.
+test("OWNER/REPO#N is read by the shape of the wrapper: its pattern and a quirk reading it before #4424, neither since", () => {
+  const view = ["agent-task", "view", "actions/checkout#1"];
+  const since = labelGhSelectors(CHECKOUT);
+  expect(labelGhTable(CHECKOUT).patterns.ghRepositoryNumber).toBeUndefined();
+  expect(since.patterns.ghRepositoryNumber).toBeUndefined();
+  expect(
+    Object.entries(since.leaves)
+      .filter(([, leaf]) => leaf.readsRepositoryNumber)
+      .map(([path]) => path)
+  ).toEqual([]);
+  expect(ghTargetOf(view, since, {})).toEqual({ owners: [], repo: "" });
+  const pattern = "var ghRepositoryNumber = regexp.MustCompile(`^([^/\\s#]+/[^/\\s#]+)#[0-9]+$`)\n";
+  const quirk = '"agent-task view": {readsRepositoryNumber: true, pullRequestFinder: true},';
+  const before = labelGhSelectors(
+    substituteCheckout((source) => `${withEntry(source, "ghLeafQuirks", quirk)}\n${pattern}`)
+  );
+  expect(before.patterns.ghRepositoryNumber).toBe("^([^/\\s#]+/[^/\\s#]+)#[0-9]+$");
+  expect(ghTargetOf(view, before, {})).toEqual({
+    owners: [["actions", "the issue or pull request actions/checkout#1"]],
+    repo: "checkout",
+  });
+  expect(() => labelGhSelectors(substituteCheckout((source) => `${source}\n${pattern}`))).toThrow(
+    "the wrapper declares ghRepositoryNumber and no leaf's quirk reads it (readsRepositoryNumber), which is neither shape"
+  );
+  expect(() =>
+    labelGhSelectors(substituteCheckout((source) => withEntry(source, "ghLeafQuirks", quirk)))
+  ).toThrow(
+    "the wrapper's ghLeafQuirks read OWNER/REPO#N for agent-task view (readsRepositoryNumber) and it declares no ghRepositoryNumber"
+  );
+}, 120_000);
 
 // Catches: an option line read by the group numbers of one shape of the wrapper's pattern. #4418
 // put the boolean marker gh 2.104.0 prints (`--web[=true|false]`) third in gh_help.go's

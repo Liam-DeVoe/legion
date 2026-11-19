@@ -12,8 +12,9 @@
 //	quirk	<leaf path>	<field>	<value>	every field ghLeafQuirks sets for a leaf
 //	quirk-slot	<leaf path>	<argument name>	<kind>	<many>	a leaf's own argument kinds
 //	rank	<kind>	<rank>	ghKindRank, which kind a slot of several names takes
-//	pattern	<variable>	<expression>	<file>	each regular expression of patternVars, and the
-//						file under the module it is declared in
+//	pattern	<variable>	<expression>	<file>	each regular expression of patternVars the wrapper
+//						declares (optionalPatterns), and the file under the
+//						module it is declared in
 //
 // It is the world's reading of the wrapper as daemon-routes.go is of the daemon's API: a program
 // of its own that imports the standard library alone and belongs to no module, which
@@ -65,6 +66,14 @@ var patternVars = []string{
 	"ghFlagLine", "ghCommandWord", "ghSlotName", "ghMentionsSelector",
 	"ghRepositoryNumber", "ghPullRequestPath", "ghQualifier", "ghPlaceholder", "ownerLogin",
 }
+
+// optionalPatterns are the patterns of patternVars one shape of the wrapper declares and another
+// does not: ghRepositoryNumber, OWNER/REPO#N, which main's wrapper declared before #4424
+// (fdce4e94d2) for the one leaf whose quirk read it (`agent-task view`'s readsRepositoryNumber)
+// and declares no longer, since it refuses `gh agent-task` whole. A source that does not declare
+// it prints no line for it; gh-selectors.ts holds the printout to one shape, the pattern and a
+// quirk reading it both, or neither.
+var optionalPatterns = map[string]bool{"ghRepositoryNumber": true}
 
 // table is every line of the wrapper's table, read from the package-level declarations of the
 // packages of the daemon module at module (their non-test files): the four maps and the patterns,
@@ -144,6 +153,9 @@ func table(module string) ([]string, error) {
 		return nil, err
 	}
 	for _, name := range patternVars {
+		if values[name] == nil && optionalPatterns[name] {
+			continue
+		}
 		pattern, err := patternOf(values[name])
 		if err != nil {
 			return nil, fmt.Errorf("the wrapper's %s: %w", name, err)

@@ -50,6 +50,14 @@ import {
 } from "./completion-answers";
 import { type GhSelectors, type GhTable, selectorsOf, tableOf } from "./gh-selectors";
 import { Refused } from "./run-records";
+import {
+  FAILED_TRIGGERS,
+  STEP_NAMESPACE_NAME,
+  STEP_TASK,
+  STEP_WRITE_FIELDS,
+  STEPS,
+  STOPPED_TRIGGERS,
+} from "./step-records";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
@@ -762,6 +770,14 @@ export interface LabelShapes {
    * for main `ff2a10ef`'s engine, which records a review's decision against its `commit_id` and
    * decodes the footer's `session` alone. */
   readonly decidesByFooterHead: boolean;
+  /** The daemon records each run of a step of an issue on its Dispatch: an outbox `step_record`
+   * row at the run's start and at its end, and one of the report alone of a completion that lands
+   * after that end, whose executor sends `PUT /api/v1/issues/{key}/steps/{id}` under the daemon's
+   * own session (outbox.go's `publishStepRecord`, workflow/steps.go's `startStep`, `endStep` and
+   * `reportEndedStep`, main's since #4400, 53980e0e32), in the fields, the words, the places and
+   * the id step-records.ts restates (`WRITES_STEPS`). False for main `ff2a10ef`'s daemon, whose
+   * outbox has no such kind. */
+  readonly writesSteps: boolean;
 }
 
 const EFFECTS = "daemon/internal/workflow/effects.go";
@@ -912,6 +928,82 @@ const BY_COMMIT_ID: readonly Marker[] = [
   },
 ];
 
+/** The files the daemon writes a run's record of a step through (main's since #4400). */
+const STEPS_GO = "daemon/internal/workflow/steps.go";
+const DAEMON_OUTBOX = "daemon/internal/daemon/outbox.go";
+/** The texts a daemon that records each run of a step holds, each built from step-records.ts's
+ * tables where one restates it, so a daemon that writes another field, word, place, result or id
+ * is of no shape the rig reads: the outbox's kind, its executor's write of every field of the row
+ * through the client's route under the daemon's actor and the body that route takes; the task,
+ * the step of each phase, the result of each move and the id's namespace and name; and which
+ * fields each of the three writes carries — the identity on every one, the moment alone at the
+ * start, the moments, the result, the return, the report and the agent's session and model at the
+ * end, and the report alone after it. */
+const WRITES_STEPS: readonly Marker[] = [
+  {
+    file: "daemon/internal/record/outbox.go",
+    text: 'OutboxKindStepRecord OutboxKind = "step_record"',
+  },
+  {
+    file: DAEMON_OUTBOX,
+    text: "write := dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,\n\t\tType: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,\n\t\tModel: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,\n\t\tReturnedTo: payload.ReturnedTo, Report: payload.Report}",
+  },
+  {
+    file: DAEMON_OUTBOX,
+    text: "if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, write); err != nil {",
+  },
+  {
+    file: "daemon/internal/dispatch/client.go",
+    text: 'return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{\n\t\tStepWrite: write,\n\t\tActor:     daemonActor(key),\n\t}, nil)',
+  },
+  {
+    file: "daemon/internal/dispatch/types.go",
+    text: `type StepWrite struct {\n${STEP_WRITE_FIELDS.map(([name, type, key]) => `\t${name.padEnd(11)}${type.padEnd(11)}\`json:"${key}"\``).join("\n")}\n}`,
+  },
+  { file: STEPS_GO, text: `const defaultTask = "${STEP_TASK}"` },
+  {
+    file: STEPS_GO,
+    text: `\tswitch p {\n${Object.values(STEPS)
+      .map(
+        ({ go, kind, place, role, type }) =>
+          `\tcase phase.${go}:\n\t\treturn at(steprecord.Kind${kind[0]?.toUpperCase()}${kind.slice(1)}, ${place}, "${role}", "${type}")`
+      )
+      .join("\n")}\n\t}\n\treturn record.StepPlace{}, "", "", false`,
+  },
+  {
+    file: STEPS_GO,
+    text: `\tswitch trigger {\n\tcase ${FAILED_TRIGGERS.join(", ")}:\n\t\treturn ResultFailed, true\n\tcase ${STOPPED_TRIGGERS.join(", ")}:\n\t\treturn ResultStopped, true\n\t}\n\treturn ResultPassed, false`,
+  },
+  {
+    file: STEPS_GO,
+    text: `var stepRecordNamespace = uuid.NewSHA1(uuid.NameSpaceOID, []byte("${STEP_NAMESPACE_NAME}"))`,
+  },
+  {
+    file: STEPS_GO,
+    text: 'name := fmt.Sprintf("%s/%d/%s/%s/%d/%d", issue, generation, place.Task, place.Kind, place.Place, starts)',
+  },
+  {
+    file: STEPS_GO,
+    text: "return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,\n\t\tStep: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation}",
+  },
+  {
+    file: STEPS_GO,
+    text: "write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)\n\t\twrite.StartedAt = new(now)\n\t\treturn write",
+  },
+  {
+    file: STEPS_GO,
+    text: 'write := stepWrite(before, step.place, step.role, step.typ, string(agent), start.Starts)\n\tif !startedAt.IsZero() {\n\t\twrite.StartedAt = new(startedAt)\n\t}\n\twrite.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo\n\tif end.Report != "" {\n\t\twrite.Report = new(end.Report)\n\t}\n\tread := e.readAgent(agent)\n\tif read.Session != "" {\n\t\twrite.Session = new(read.Session)\n\t}\n\tif read.Model != "" {\n\t\twrite.Model = new(read.Model)\n\t}',
+  },
+  {
+    file: STEPS_GO,
+    text: "write := stepWrite(issue, step.place, step.role, step.typ, latest.Agent, latest.Starts)\n\twrite.Report = new(report)",
+  },
+  {
+    file: STEPS_GO,
+    text: "if into, _, _, ok := stepOf(to); returns && ok {\n\t\tend.ReturnedTo = new(into.Place)\n\t}\n\tif handoff.Role == phase.RoleFor(from) {\n\t\tend.Report = handoff.HandoffRecord\n\t}",
+  },
+];
+
 /** What the daemon source of `checkout` posts, refuses, publishes, ends a reviewer's task with and
  * takes a review of the review App for, each read as one of two shapes: main's since the change
  * that brought it, by its own marker, or main `ff2a10ef`'s, which predates all six changes, by
@@ -985,6 +1077,24 @@ export function labelShapes(checkout: string): LabelShapes {
       {
         name: "main ff2a10ef's daemon, which records a review's decision against its commit_id",
         markers: BY_COMMIT_ID,
+        value: false,
+      },
+    ]),
+    writesSteps: sourceShape(checkout, "the record of each run of a step", [
+      {
+        name: "main's daemon and Dispatch since #4400",
+        markers: [
+          ...WRITES_STEPS,
+          {
+            file: "envoy/internal/dispatch/api/routes_table.go",
+            text: '{http.MethodPut, "/api/v1/issues/{key}/steps/{id}", authAny,',
+          },
+        ],
+        value: true,
+      },
+      {
+        name: "main ff2a10ef's daemon, whose outbox kinds end at gated_steps_publish",
+        markers: [OUTBOX_WITHOUT_HOLDERS],
         value: false,
       },
     ]),
