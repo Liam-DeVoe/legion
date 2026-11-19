@@ -11,7 +11,7 @@ runs.
 
 Every job declares its own permissions (legion_build, pi_envoy_build, pi_legion_build,
 claude_envoy_build, publish,
-worker_image, worker_image_attest, worker_image_release below); nothing runs under this
+worker_image, worker_image_attest, worker_image_release); nothing runs under this
 workflow-level default, so it stays empty rather than becoming an unreviewed grant to a job
 added later with no block of its own.
 
@@ -21,7 +21,7 @@ module it links, so it holds no write scope and no secret, uploads what it made 
 and ends in a tripwire (`release-push.sh no-credential`) that fails when a credential is reachable
 from it anyway. The publish job holds the credentials and runs no dependency code: only
 release-push.sh, git, gh, jq, sha256sum, npm (view, and publish of a handed tarball) and the
-pinned actions below, with no cache restored (`cache-mode: none`) and the deploy key in the env
+pinned actions its steps use (actions/checkout, actions/setup-node, actions/download-artifact, actions/attest-build-provenance), with no cache restored (`cache-mode: none`) and the deploy key in the env
 of the steps that push. release-push.sh handed checks what each build job handed over before
 anything acts on it.
 
@@ -76,7 +76,7 @@ too, so they get the same patch release.
 
 The Claude Code plugin, @sjawhar/claude-envoy. Its build runs from
 packages/claude-envoy/scripts/build-inputs.txt, the one statement of what can change this
-plugin's bundles and its generated legion/ plugin, so the paths below are that list's, in its
+plugin's bundles and its generated legion/ plugin, so the paths of `CLAUDE_ENVOY_VERSION_ARGS` are that list's, in its
 order: this package, the workspace packages its bundles inline, pi-legion's agents and all of
 skills/ (scripts/pi-plugin-prepack.sh stages pi-legion's share into legion/skills and this
 package's skills/ links into skills/), the notices generator, the prepack and patches/ (the
@@ -91,7 +91,7 @@ history.
 The Go `legion`. The binary embeds its prompts (internal/prompts/roles and go), so a docs:
 commit there still releases. The notices scripts and the target list are runtime inputs of the
 release archives and worker image, so any change to one needs a new tag rather than a CI-only
-rebuild. The envoy packages below are every package `go list -deps ./cmd/legion` reaches
+rebuild. The envoy packages of `LEGION_VERSION_ARGS` are every package `go list -deps ./cmd/legion` reaches
 through the module's `replace` on ../envoy, public and internal, so a change to any of them
 changes the binary and must release one, and the envoy module's own go.mod and go.sum decide
 which versions of their dependencies it links. That list is written here by hand; this is the
@@ -114,7 +114,7 @@ The Go `legion`: linux and darwin archives of the binary, which embeds its role 
 its THIRD_PARTY_NOTICES, on a legion-v* tag of the commit the run checked out. Nothing is
 committed: a Go module carries no version file, so the tag alone records the version, and
 `legion version` names it. Only main releases one: a workflow_dispatch from another branch skips
-this job, and the worker image job below then publishes that commit's sha- tag alone, as it does
+this job, and the worker image job, worker_image, then publishes that commit's sha- tag alone, as it does
 for any branch.
 
 legion_build versions, builds and smoke-tests the archives and hands them to publish as an
@@ -244,7 +244,7 @@ link with the skill's files and the postpack puts the links back.
 
 ## What the Codex plugin's build and pack step builds
 
-The Codex plugin's package, built from the checked dist/ the step above packed rather than
+The Codex plugin's package, built from the checked dist/ the "Pack plugin" step packed rather than
 bundled again, with the manifests and skills of this tree (scripts/build.ts --codex-out).
 It is written outside the checkout, as every build here is.
 
@@ -255,11 +255,11 @@ waits for a runner once: pi-envoy, pi-legion, claude-envoy, then legion, which l
 Oh My Pi plugins and so goes only once both are on npm. It runs no bun, no node, no Go,
 nothing a build job made and no scripts/
 program, only release-push.sh, git, gh, jq, sha256sum, npm (view, and publish of a handed
-tarball) and the pinned actions below, so the scopes and the deploy key it holds never meet the
+tarball) and the pinned actions its steps use (actions/checkout, actions/setup-node, actions/download-artifact, actions/attest-build-provenance), so the scopes and the deploy key it holds never meet the
 code the build jobs ran. release-push.sh itself also runs curl, tar and one binary of its own:
 the gitleaks release it fetches and holds to a pinned sha256, which runs this repository's
 private-name rules (packages/daemon/internal/leakguard/private-names.toml, from this checkout)
-over every write below to a public repository and refuses the write when they match. That
+over every write this job's steps make to a public repository and refuses the write when they match. That
 binary reads what is about to be published and nothing else, and it is a pinned upstream
 release, not code from a build job.
 It runs on main even when nothing releases: its pair_ok output decides
@@ -276,7 +276,7 @@ reads the same tags its first attempt pushed.
 
 ## Why the publish job holds each of its scopes
 
-contents: write creates the GitHub releases (`release-push.sh release`, below); id-token: write
+contents: write creates the GitHub releases (`release-push.sh release`, in each "Create GitHub release" step); id-token: write
 is the OIDC token npm trusted publishing exchanges for the publish credential (the registry
 records `trustedPublisher: github` for each plugin; no NPM_TOKEN is set), which also signs npm
 provenance (`npm publish --provenance`) and is the Sigstore signing certificate's token for
@@ -290,7 +290,7 @@ pi_envoy_build chooses the tarball's bytes, and hands over only it and the versi
 step puts the checkout back on the run's commit, then names the tarball itself, from that
 version and the committed manifest's name (Bun names a scoped tarball
 sjawhar-pi-legion-1.2.3.tgz); release-push.sh handed refuses a version that is not X.Y.Z and
-an artifact that is not exactly that one regular file, and prints the tag. The steps below
+an artifact that is not exactly that one regular file, and prints the tag. The "pi-envoy: Publish to npm" and "pi-envoy: Create GitHub release" steps
 take the name's stem and spell the `.tgz` themselves, so each reads as the publish of a
 tarball (check-release-credentials.sh allows `npm publish` of nothing else).
 
@@ -298,7 +298,7 @@ tarball (check-release-credentials.sh allows `npm publish` of nothing else).
 
 The deploy key reaches this step alone of this package's. release-push.sh push-tag writes
 it to a directory of its own, pushes over SSH to GitHub's pinned host keys, and removes the
-key again. The tag goes before the release below, which verifies it on GitHub; the tag is
+key again. The tag goes before the release, the "pi-envoy: Create GitHub release" step, which verifies it on GitHub; the tag is
 all this package puts in the repository.
 
 ## How the Envoy plugin's changelog reaches the release body
@@ -310,8 +310,8 @@ artifact holds the one file fold-notes wrote, under the name the build job gave 
 
 ## Why the Claude plugin is not part of the plugin pair
 
-claude-envoy: what claude_envoy_build packed, published as the two Oh My Pi plugins above
-are. It is not part of the plugin pair below: that pair is the two Oh My Pi plugins the
+claude-envoy: what claude_envoy_build packed, published as the two Oh My Pi plugins, pi-envoy and pi-legion,
+are. It is not part of the plugin pair the "Check the plugin pair npm carries" step decides: that pair is the two Oh My Pi plugins the
 Go `legion` links and the worker image installs, and neither the binary nor the image
 reads this one, which Claude Code installs for itself from the marketplace. So a run whose
 steps for this plugin fail still releases legion, in the steps after them. This job does
@@ -326,7 +326,7 @@ claude-envoy's tag alone. npm's trusted publishing cannot create a package, so u
 owner of the @sjawhar scope has published the name once by hand and named this workflow
 its trusted publisher, this step says so and publishes nothing; any other failure of the
 registry read is an error. Like claude-envoy's steps, none of these gates the legion
-release below.
+release, the "legion:" steps.
 
 ## What the plugin pair check decides
 
@@ -352,7 +352,7 @@ step puts the checkout back on the run's commit, then names the archives itself,
 version and that commit's target list; release-push.sh handed refuses a version that is not
 X.Y.Z and an artifact that is not exactly those archives, each a regular file, and prints the
 tag. SHA256SUMS is then written over them, and the tag and the explicit lists go to the
-steps below.
+steps after it, from "legion: Tag release" on.
 
 ## Why the deploy key reaches legion's tag step alone
 
@@ -363,7 +363,7 @@ package of this job checks out and tags.
 
 ## What the archives' attestation is for and how a consumer verifies it
 
-Build provenance for the archives a mise pin installs, which the release below uploads
+Build provenance for the archives a mise pin installs, which the "legion: Create GitHub release" step uploads
 exactly, so a downloaded asset is checked against a run of this workflow on main rather than
 against SHA256SUMS, which sits in the same mutable release. `--repo` alone accepts an
 archive any workflow of this repository attested, so the check pins the signer as
@@ -378,7 +378,7 @@ another commit) leaves no attestation for archives no release carries.
 ## What legion's GitHub release step does on a re-run
 
 release-push.sh `release`: creates the release, reuses a published one, or publishes a draft
-an earlier attempt left, with the files the check above listed. Its version and tag are the
+an earlier attempt left, with the files the "legion: Check build's archives and write SHA256SUMS" step listed. Its version and tag are the
 job's outputs, which worker_image_release names the worker image on.
 
 ## What the worker image build is given and what it pushes
@@ -400,7 +400,7 @@ PR-authored Dockerfile. This job's permissions must cover every scope worker-ima
 block (the build, with actions: read and checks: write for the ci-ok report its build runs
 only on ci.yaml's pull_request call) and its `attest` job's (id-token and attestations:
 write, for the image's GitHub attestation). The legion version tag and the release note,
-which need contents: write, are worker_image_release below.
+which need contents: write, are the worker_image_release job's.
 
 ## Why the image attestation is a second call of worker-image.yaml
 
@@ -421,7 +421,7 @@ image is attested, as a branch dispatch's image always was.
 The image repository the attestation names. worker-image.yaml derives it from
 $GITHUB_REPOSITORY in its build job, which this call skips (attest_digest), and its attest
 job holds id-token and attestations: write, so it runs no script to derive it for itself.
-The build-only call above reported the repository it pushed to as its `image` output, so
+The build-only call, the worker_image job, reported the repository it pushed to as its `image` output, so
 this call hands that value back: both calls name one image, whatever the repository is
 called.
 
@@ -446,7 +446,7 @@ from; no credential is left in the checkout.
 
 The runner's own docker buildx runs imagetools, so this job sets up no BuildKit builder.
 --prefer-index=false makes the tag a carbon copy of the single manifest the build pushed,
-where the default would wrap it in a new index of another digest; the read-back below fails
+where the default would wrap it in a new index of another digest; the read-back in this step's `run:` (`docker buildx imagetools inspect`) fails
 the job unless the tag names exactly the digest the release note and the attestation name.
 
 ## What the release's worker image section holds

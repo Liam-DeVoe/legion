@@ -1,7 +1,7 @@
 # why: .github/ci-notes/ci.md#why-the-filters-are-one-file-and-the-steps-they-stood-in
 # why: .github/ci-notes/ci.md#how-a-filter-of-this-file-is-written
 
-# why: .github/ci-notes/ci.md#ci_router-ciyaml-which-every-gate-filter-below-names-through
+# why: .github/ci-notes/ci.md#ci_router-ciyaml-which-every-gate-filter-names-through
 ci_router:
   - &ci_router '.github/workflows/ci.yaml'
   - &ci_filters_data '.github/ci-filters.yaml'
@@ -1833,7 +1833,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
-# why: .github/ci-notes/ci.md#dispatch_two_builds-the-two-build-job-its-go-steps-reads-above-named-again
+# why: .github/ci-notes/ci.md#dispatch_two_builds-the-two-build-job-its-go-steps-reads-named-again
 dispatch_two_builds:
   - *ci_router
   - *ci_filters_data
@@ -2342,7 +2342,7 @@ worker_image:
   - '!packages/envoy/internal/smoke/**'
   - '!packages/envoy/deploy/**'
   - '!packages/envoy/infra/**'
-  # why: .github/ci-notes/ci.md#worker_image-changelog-fragments-which-the-packages-above-match-and
+  # why: .github/ci-notes/ci.md#worker_image-changelog-fragments-which-worker_images-package-patterns-match-and
   - '!packages/*/.changes/**'
 # why: .github/ci-notes/ci.md#browser_image-every-file-the-browser-images-build-reads-for-the-browser-image
 browser_image:

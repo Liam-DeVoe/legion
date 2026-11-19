@@ -6,7 +6,7 @@ derivation or the record its step, its job or its key rests on, and the sections
 order their comment blocks stood in the workflow file. A value's own arithmetic stays beside the
 value, and a comment inside a `run:` body stays beside its command, in the script that body is
 now in.
-In the text moved here, "this file", "above" and "below" refer to the workflow,
+In the text moved here, "this file" refers to the workflow,
 `.github/workflows/ci-job-tool-fallback.yaml`.
 
 ## The steps of ci.yaml's tool-fallback job, in a file of their own
@@ -102,7 +102,7 @@ twelve seconds late, so a bound is a ceiling and not a stopwatch.
 
 ## Why the merge base is checked out
 
-The merge base, for the negative control below: a second tree of this same repository,
+The merge base, for the negative control the steps `base-crane` to `base-pulumi` run: a second tree of this same repository,
 whose seven installs that control drives with nowhere left to go.
 .github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
 says what keeps this checkout here.
@@ -128,7 +128,7 @@ second digest in an action to read it out of, which is the point.
 
 ## What the machine watch records, and what it cannot show
 
-What the machine had, every second from here to the report below: free disk, the memory
+What the machine had, every second from here to the report of the `Report what this job ran on` step: free disk, the memory
 the kernel reports available, and the one-minute load, one line per second, then the
 worst each of them reached (.github/scripts/disk_watch.py, which envoy-smoke drives
 around its live-tests step and which prints the series there too).
@@ -152,7 +152,7 @@ That directory is where .github/actions/install-jj reads an installed jj from, s
 changed binary there is the primary path's own mismatch: `mise install` finds the tool
 installed, the action holds the binary mise points at to the jj row, and refuses it.
 It runs before the fault because `mise install` resolves the tool's version list over
-api.github.com even when the install directory already holds it, and the fault below
+api.github.com even when the install directory already holds it, and the fault that the `Start the fault in front of GitHub's release assets` step starts
 holds every host under github.com. Under the fault that resolve fails, the action takes
 its second source instead, and this case would read the fallback rather than the
 primary — which is what happened at 1725f7ce before this step moved.
@@ -163,11 +163,11 @@ with one.
 
 ## Why mise's install directory is taken away again
 
-What that case seeded goes, so nothing of it reaches the installs below: the head's own
+What that case seeded goes, so nothing of it reaches the later installs of this job: the head's own
 install-jj meets an empty mise directory, as a fresh runner would.
 It is not what decides that install. Measured in CI at run 42507815176, `mise install`
 resolves the tool's version list over api.github.com even when its install directory
-already holds the tool, so under the fault below that install fails whether this
+already holds the tool, so under the fault that the `Start the fault in front of GitHub's release assets` step starts, that install fails whether this
 directory is here or not, and the action reads the copy either way. What a directory
 left here would leave behind is the one-byte-changed jj this case seeded, on a runner
 whose later steps run what this job installed.
@@ -184,24 +184,24 @@ the fault proxy and none of which it faults. No case reading of this job counts
 requests or durations, so a shortened ladder takes no statement away: what a case
 proves is which source served its bytes and that the digest held, and the stand-in
 changes neither. The ladder-report step is the one reading of durations.
-One case keeps the pinned ladder, the head's own install-crane below, and the
+One case keeps the pinned ladder, the head's own install-crane (the step whose `env:` sets `CI_TOOLS_PROOF_FULL_LADDER: crane-head`), and the
 ladder-report step at the end of this job reads what that one measured. That install
 carries no seam, so its primary is the real faulted host and its second source the real
 package copy, and it drives the whole claim the shortened cases give up: a real ladder,
 then a second source, then the digest check. The negative controls cannot be that case,
 because a control ends in failure and proves no fall-through. The head's installs
-cannot move above the controls either, because .github/actions/setup-bun takes its
+cannot move before the controls either, because .github/actions/setup-bun takes its
 existing-install branch when a Bun of the pinned version is already on the runner,
 which is exactly what the base-bun control must not find.
 It runs here, immediately before the fault comes up, and the window it may run in is
-the one between `stage` and that step. It cannot run above `stage`, because `stage`
+the one between `stage` and that step. It cannot run before `stage`, because `stage`
 fetches about 303 MB from the real sources while the network is whole and must keep
 the pinned ladder for them, and because $GITHUB_PATH reaches the steps after the step
 that writes it and not that step itself.
 It cannot stay straight after `stage` either, which is where it ran before: the
 jj-primary case runs in that window, and its install-jj makes a real fetch of
 github.com through mise which succeeds. github.com is one of the hosts this rig
-faults, so a stand-in installed above that case shortened a fetch this job means to
+faults, so a stand-in installed before that case shortened a fetch this job means to
 succeed and took the pinned ladder off it, while the fault that makes the shortening
 true was not up yet. In job 129841257239 that fetch is the first one the ladder-report
 step printed, `github.com: shortened, curl exit 0, 0s`: 2 attempts over 1 s where the
@@ -234,7 +234,7 @@ merge base has no action for, as the head's own action with its second source on
 port — so every one of them must fail here.
 What it asserts is a property of this change and not a fact about history: an install
 whose primary meets the fault and whose second source cannot be reached fails. That is
-what makes the passes below a reading of the second source rather than of a cache, of a
+what makes the passes of the head's own installs a reading of the second source rather than of a cache, of a
 tool the runner image already carries, or of a proxy that let the asset through.
 The merge base's seven fail for two reasons, and which one is each install's depends on
 whether that install already read the helper there. Its crane, changie, jj and Bun do,
@@ -251,7 +251,7 @@ fault, each second source would reach the real ghcr — whose blobs redirect to
 pkg-containers.githubusercontent.com, which this fault leaves alone on purpose — or the
 real npm, PyPI or get.pulumi.com, every one of them would succeed, and this step would
 fail every pull request and merge group that selects this job. On a workflow_dispatch
-the ref below falls through to github.sha, the head itself, so that control is wrong
+the `ref:` of the `Check out the merge base the negative control installs from` step falls through to github.sha, the head itself, so that control is wrong
 already.
 A dead port rather than a manifest with its `second_source` rows deleted: a row with no
 second source makes ci_tools__second_source refuse the empty field, so the install would
@@ -262,14 +262,14 @@ always did.
 The merge-base checkout stays. It is this repository's only caller of the rule
 .github/scripts/check-image-trigger-paths.sh keeps about a local `uses:` under a second
 checkout of this same repository, and that check's own comment names this job for it.
-After this change is on main the checkout is redundant to the dead ports below, which
+After this change is on main the checkout is redundant to the dead ports (`http://127.0.0.1:1`) of the controls' `env:`, which
 drive the control by themselves, so a later reader who deletes the merge base's seven
 steps is deleting that caller too and should move the rule's exercise rather than lose
 it.
 
 ## Why each install with nowhere to go carries a mark step
 
-When the install below started. Each of the eight with nowhere to go carries a mark step
+When the install a mark step names started (`mark-base-crane` for `base-crane`, and so on). Each of the eight with nowhere to go carries a mark step
 of its own, and the control step after them reads every one, because a bound that fires
 on one of them is otherwise silent: each carries `continue-on-error` and the control
 accepts a step whose `outcome` is `failure`, which is exactly what the runner leaves
@@ -289,7 +289,7 @@ and installs nothing at all.
 ## Which seam sends uv's control to a dead port
 
 uv's second source is PyPI, which .github/scripts/ci-tools.sh reads through
-CI_TOOLS_URL_BASE and not through either seam above, so that is the one this control
+CI_TOOLS_URL_BASE and not through either seam the other controls set (CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE), so that is the one this control
 sends to a dead port.
 
 ## The docker provider plugin's control, and why it does not expire
@@ -320,7 +320,7 @@ why the rig writes the four spellings of the fault through $GITHUB_ENV.
 ## Why the control step reads the clock as well
 
 A bound belongs only where firing it is loud, and on these eight it is not: each carries
-`continue-on-error`, and the test below accepts a step whose `outcome` is `failure`,
+`continue-on-error`, and this step's test, .github/scripts/tool-fallback-nowhere-controls.sh, accepts a step whose `outcome` is `failure`,
 which is what the runner leaves when it ends a step at its bound. So this step reads the
 clock as well. Without it an install that hung would satisfy its own control and leave
 the job green, where before those bounds the same hang held the job to its own ceiling,
@@ -354,7 +354,7 @@ the whole reason that row's second source is PyPI.
 
 The docker provider plugin's release asset is behind the fault, so this install must
 read get.pulumi.com, which serves that tarball byte for byte. The step carries an id
-because the reading below is of the tarball it hands back.
+because the reading of the `Check every tool is the version its row pins` step is of the tarball it hands back.
 
 ## The Pulumi CLI's own fallback, and why the origin serves its second source
 
@@ -396,7 +396,7 @@ version is already at ~/.bun/bin/bun, and the first step found it there, so the 
 one writes for it is `existing-install` — and the fourth step refuses those bytes.
 Measured on 2026-11-08: the 107308936-byte binary of the bun-linux-x64 row answers
 `--revision 1.4.4+38afee6c8` with its final byte changed, as it does whole, so the
-branch this case needs is the branch it takes. The step below reads that answer again
+branch this case needs is the branch it takes. The `Change the last byte of the installed Bun` step reads that answer again
 and refuses the case rather than proving another one, should a later Bun read its own
 last byte.
 
@@ -447,7 +447,7 @@ name on its two routes, and which route a case read is what its report prints.
 ## Case 15 of 16, and why the untried reading is a reading
 
 Case 15 of 16: the Pulumi CLI's primary serves one byte changed, and the release asset
-must stay untried. This row's two sides are the four cases above reversed: its primary
+must stay untried. This row's two sides are cases 11 to 14 of 16 reversed: its primary
 is get.pulumi.com, so the seam that puts a corrupted primary in front of it is the URL
 one, and the GitHub seam is here so that the untried reading is a reading: with it the
 origin can serve this row's second source, and what the case says is that it was never
@@ -460,14 +460,14 @@ Case 16 of 16: the Pulumi CLI's second source, the pulumi/pulumi release asset, 
 one byte changed, after its primary found a dead port where get.pulumi.com is.
 The dead port and not the fault, because this job leaves get.pulumi.com alone; the
 origin stands in for the release asset, as it does in the install that must succeed
-above, and here it serves those bytes with one changed.
+(the Pulumi CLI's own fallback), and here it serves those bytes with one changed.
 
 ## What this runner holds after the sixteen refusals
 
 What this runner holds after the sixteen refusals, said plainly: no corrupted byte was
 installed, and what the installs themselves left is what this step reads.
 .github/scripts/ci-tools.sh verifies the bytes before it puts them at their destination,
-so every refused fetch above left nothing behind, and the two installs that meet a
+so every refused fetch of the sixteen cases left nothing behind, and the two installs that meet a
 binary a third party put there refuse it without leaving it either. install-jj verifies
 the binary where mise left it and copies to ~/.local/bin/jj only after that passes, so
 the jj here is the pinned one the head's own install under the fault wrote and neither
@@ -496,6 +496,6 @@ that count beside the bound, whether the reading passes or refuses.
 ## Why the fault stops before the last steps
 
 The proxy stops with this job, and the steps after this one must not be routed through
-it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
+it: the ci-ok-report step, `Report ci-ok when this job decides a merge-group run`, runs actions/upload-artifact, which would otherwise
 upload through a proxy that is about to go. The rig writes the emptied variables, as it
 wrote the proxy ones.

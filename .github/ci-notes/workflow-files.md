@@ -5,7 +5,7 @@ The derivations of `.github/workflows/workflow-files.yaml`, which points into th
 its concurrency, its job or its step rests on, and the sections stand in the order their comment
 blocks stood in the workflow file. A comment block of at most two lines stays where it is,
 beside the value or the step it is about.
-In the text moved here, "this workflow", "here", "above" and "below" refer to the workflow,
+In the text moved here, "this workflow" and "here" refer to the workflow,
 `.github/workflows/workflow-files.yaml`.
 
 ## Why the check has a workflow of its own, and when it runs
