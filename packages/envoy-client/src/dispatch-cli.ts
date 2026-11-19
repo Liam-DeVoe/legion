@@ -25,7 +25,7 @@ import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/tab
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -409,9 +409,12 @@ export async function runDispatchCli(
             env,
             ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
             signal: deadline,
-            // The waits before asking a route again would outlast the deadline, and the step has
-            // an answer of its own to a Dispatch that holds no such route.
+            // The waits before asking a route again, and before sending the round trip again
+            // after a failed attempt, would outlast the deadline: the step asks once and says what
+            // Dispatch answered, and has an answer of its own to a Dispatch that holds no such
+            // route.
             retryNoRoute: false,
+            writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [] },
           };
           return sessionContext(input, checked).newClient();
         },
