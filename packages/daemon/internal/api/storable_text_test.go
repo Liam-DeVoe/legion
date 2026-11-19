@@ -181,6 +181,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/issues/status":                          reads("status"),
 		"POST /legion/v1/claims/fresh-session":                   reads("issue"),
 		"POST /legion/v1/claims/compact":                         reads("issue"),
+		"POST /legion/v1/claims/relaunch":                        reads("claim"),
 		"POST /legion/v1/gates/register":                         reads("artifactId"),
 		"POST /legion/v1/waves/release":                          {map[string]any{"issues": []string{nulText}}, nulError("issues[0]", 2)},
 		"POST /legion/v1/phase/backward":                         reads("reason"),
