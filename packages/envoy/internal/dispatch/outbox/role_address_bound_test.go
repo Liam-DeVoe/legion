@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestADeliveredRoleIsLeftOutPastTheAddressBound is dispatch://INFRA-1149's R2 at the bound for the
+// TestADeliveredRoleIsLeftOutPastTheAddressBound is this change's R2 at the bound for the
 // outbox: a role name carries no length bound, and a role of 1,400 bytes once failed
 // graph_tuples_once with "index row size ... exceeds ... 2704" inside recordBatch's one statement,
 // so the issue's outbox never drained again. deliveredGraph now leaves out every node, page and

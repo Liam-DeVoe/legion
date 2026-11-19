@@ -108,16 +108,35 @@ func blockKindList(kinds ...string) string {
 // not: that block's own edge is listed and counted in its place, so each link shows once. A
 // typed block's pointer is also written in the document's text, so the document's mention of the
 // target is hidden behind the pointer's edge, and stays hidden while the pointer's target has a
-// type the pointer does not allow (block_ref_listed). An item the block index has not reached
-// holds no block link, so its own edge stays; an ask's question part holds the links its row
-// holds, so the row's edge is the one hidden.
+// type the pointer does not allow (block_ref_listed). A pointer at a block is stored at the node
+// its address resolves to (resolvePointerPairs), while the document's mention keeps the address
+// written, so a document's mention of a block is also held by a pointer at the node that address
+// resolves to (ResolvedBlockSQL): a pointer at a block of a document converted into its issue's
+// room, written at the document's own address, holds the room's node. An item the block index has
+// not reached holds no block link, so its own edge stays; an ask's question part holds the links
+// its row holds, so the row's edge is the one hidden.
 func heldByABlock(alias string) string {
-	holders := []string{blockHolds(alias, "artifact", "block_refs", "artifact_id")}
+	holders := []string{`(` + alias + `.from_kind = 'artifact' and ` + documentBlockHolds(alias, alias+".from_id") + `)`}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
 		holders = append(holders, blockHolds(alias, string(item), tables.refs, tables.item))
 	}
 	return `(` + alias + `.kind = 'mentions' and (` + strings.Join(holders, " or ") + `))`
+}
+
+// documentBlockHolds is heldByABlock's test of a document's mention edge alias: a block of the
+// document whose uuid as text the SQL expression document names holds a link of any kind to the
+// edge's target, at the address the edge names or, for a block, at the node that address resolves
+// to (ResolvedBlockSQL). The document is an expression of its own because the store's reading of a
+// document's mention (mentionBacklinkArms) names the document by its node, whose uuid it reads
+// off the document's row, where the view's edge names it by its uuid.
+func documentBlockHolds(alias, document string) string {
+	return `(exists (
+		select 1 from block_refs b where b.to_kind = ` + alias + `.to_kind and b.to_id = ` + alias + `.to_id
+		and b.artifact_id::text = ` + document + `)
+		or ` + alias + `.to_kind = '` + BlockNodeKind + `' and exists (
+		select 1 from block_refs b where b.to_kind = '` + BlockNodeKind + `' and b.to_id = ` + ResolvedBlockSQL(alias+".to_id") + `
+		and b.artifact_id::text = ` + document + `))`
 }
 
 // blockHolds is true of a graph_edges row alias written by an item of fromKind when one of the
@@ -175,8 +194,7 @@ func documentBlockIDs(param string) string {
 		  and not exists (select 1 from document_rooms moved where moved.artifact_id = a.id)
 		union all
 		select d.node_id from artifacts a
-		join issue_room_blocks r on r.tree_artifact_id = coalesce(
-			(select moved.room from document_rooms moved where moved.artifact_id = a.id), a.id) and r.document_id = a.id
+		join issue_room_blocks r on r.tree_artifact_id = ` + DocumentRoomSQL("a.id") + ` and r.document_id = a.id
 		join document_blocks d on d.artifact_id = r.tree_artifact_id and d.block_id = r.block_id
 		where a.ref_key = ` + param + `)`
 }
@@ -192,6 +210,68 @@ func documentBlockIDs(param string) string {
 // one document's row by its key, and a document of an issue room has its blocks read in its room.
 func documentBlockIDArray(param string) string {
 	return `array` + documentBlockIDs(param)
+}
+
+// documentRoomBlockAddresses is every address of a block of the document whose ref_key is the
+// numbered parameter param that is no node id but resolves to one, as a reference writes it: for a
+// document of an issue room, `<ref_key>#<block id>` of each document edited in that room
+// (document_rooms) for each block the room's index holds in the document's fragment
+// (issue_room_blocks). block_moved_to resolves such an address to the room's node of the block
+// (ResolvedBlockSQL: moved_to, then the room, then itself), whatever document of the room the
+// address names, since a block id is unique across a room; a mention keeps the address it was
+// written at (resolvePointerPairs resolves pointers alone). A document that is its own room holds
+// none, so its read pays nothing for them. A reader matches an edge's far end against them and
+// then holds the edge to the block its far end resolves to, which is one of documentBlockIDs only
+// while no moved_to tuple takes the address elsewhere.
+func documentRoomBlockAddresses(param string) string {
+	return `(select joined_document.ref_key || '#' || r.block_id from artifacts a
+		join issue_room_blocks r on r.tree_artifact_id = ` + DocumentRoomSQL("a.id") + ` and r.document_id = a.id
+		join document_rooms joined on joined.room = r.tree_artifact_id
+		join artifacts joined_document on joined_document.id = joined.artifact_id
+		where a.ref_key = ` + param + `)`
+}
+
+// documentRoomBlockAddressArray is documentRoomBlockAddresses as one array, for the reason
+// documentBlockIDArray is one.
+func documentRoomBlockAddressArray(param string) string {
+	return `array` + documentRoomBlockAddresses(param)
+}
+
+// roomOwnEdge is true of the graph_edges row alias while it is an edge out of an issue room's own
+// tree artifact (issue_trees): the room's index writes the references of the whole room's text
+// under its tree (the document's own references of docs' indexRenderedVersion), and the room's
+// blocks hold each of them, every one in the fragment of the document it is written in. Such an
+// edge belongs to no one document of the room, so a read that lists citers by their document
+// lists the document holding the block instead (roomCitersOfTheDocument).
+func roomOwnEdge(alias string) string {
+	return `(` + alias + `.from_kind = '` + graphstore.KindArtifact + `' and ` + alias + `.from_id in (select tree.artifact_id::text from issue_trees tree))`
+}
+
+// roomCitersOfTheDocument lists, as the document holding it, each block of an issue room that
+// cites the document whose ref_key is the numbered parameter param, or one of that document's
+// current blocks at its node or at an address that resolves to it (documentRoomBlockAddresses):
+// the arms a whole-document "in" read adds for a citer whose own edges are its room's
+// (roomOwnEdge). The holding document is refs.BlockDocumentSQL's answer for the citing block's
+// row, and the citer is held to that document's predicate, as a citing document's own edge is
+// (VisibleEnd over the from side). The read's own dedupe (ReferencedBy) keeps each citer once.
+func roomCitersOfTheDocument(param, seen string) string {
+	at := func(target string) string {
+		return `select g.kind, '` + graphstore.KindArtifact + `', citer.document::text, g.created_at, g.source_seq, null::text
+			from graph_edges g
+			cross join lateral (
+				select ` + BlockDocumentSQL("held") + ` as document from document_blocks held
+				join issue_trees tree on tree.artifact_id = held.artifact_id
+				where held.node_id = g.from_id limit 1
+			) citer
+			where g.from_kind = '` + BlockNodeKind + `' and ` + target + `
+			  and ` + VisibleEnd(`'`+graphstore.KindArtifact+`'`, "citer.document::text", false, seen)
+	}
+	return at(`g.to_kind = '`+graphstore.KindArtifact+`' and g.to_id = (select `+param+`::text)`) + `
+			union all
+			` + at(`g.to_kind = '`+BlockNodeKind+`' and g.to_id = any(`+documentBlockIDArray(param)+`)`) + `
+			union all
+			` + at(`g.to_kind = '`+BlockNodeKind+`' and g.to_id = any(`+documentRoomBlockAddressArray(param)+`)
+			  and `+ResolvedBlockSQL("g.to_id")+` = any(`+documentBlockIDArray(param)+`)`)
 }
 
 // itemBlockIDs is the node id of every current block of the item of kind whose uuid is the
@@ -342,7 +422,9 @@ func excerptOf(node resolvedNode) *model.GraphExcerpt {
 // narrow. A document's, comment's, message's or ask's read adds the edges at its blocks — an
 // ask's parts among them (see Query) — and every inbound read lists an item's mention from the
 // block holding it (heldByABlock). A whole-document read lists each citer by its item instead,
-// an ask citing the document from a part included (asksCitingTheDocument).
+// an ask citing the document from a part included (asksCitingTheDocument). An issue's inbound
+// read leaves out the attached_to edges of its own tree and decisions query (issueOwnAttachment),
+// as its count does.
 //
 // Every arm carries the visibility predicate of the end it answers, bound from the registry
 // (visibility.go) and never applied to the rows in Go: an edge whose far end who may not see is
@@ -402,8 +484,10 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		source := `not ` + heldByABlock("g")
 		if document && query.WholeDocuments {
 			// The document's citers, each by its own edges: a document's, an ask's, a comment's
-			// or a message's blocks are listed by their item.
-			source = `g.from_kind not in ` + blockNodeKinds
+			// or a message's blocks are listed by their item. An issue room's own edges, its
+			// tree's, belong to no one document of the room, so they are left out, and a block of
+			// a room is listed as the document holding it (roomCitersOfTheDocument).
+			source = `g.from_kind not in ` + blockNodeKinds + ` and not ` + roomOwnEdge("g")
 		}
 		// The citer is the far end of an inbound edge, and the from side of an edge names an
 		// artifact by its uuid (edgeFrom).
@@ -413,21 +497,37 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		if itemBlocks {
 			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", blocks)
 		}
+		if query.Kind == graphstore.KindIssue {
+			// An issue's own tree and decisions query are no backlinks of it, as its count holds
+			// (issueOwnArtifact).
+			own += ` and not ` + issueOwnAttachment("g", `(select `+id+`::text)`)
+		}
 		arms = `select g.kind, g.from_kind, ` + from + `, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.to_kind = ` + kind + ` and g.to_id = (select ` + id + `::text) and ` + own
 		switch {
 		case document:
+			// The edges at its blocks: at each block's node, and at an address of it a reference
+			// wrote that resolves to it (documentRoomBlockAddresses), held to the predicate of the
+			// node the address resolves to and listed at that node.
 			arms += `
 			union all
 			select g.kind, g.from_kind, ` + from + `, g.created_at, g.source_seq, g.to_id
 			from graph_edges g where g.to_kind = 'block' and g.to_id = any(` + documentBlockIDArray(id) + `)
-			and ` + VisibleKind("block", "g.to_id", seen) + ` and ` + source
+			and ` + VisibleKind("block", "g.to_id", seen) + ` and ` + source + `
+			union all
+			select g.kind, g.from_kind, ` + from + `, g.created_at, g.source_seq, resolved.node_id
+			from graph_edges g cross join lateral (select ` + ResolvedBlockSQL("g.to_id") + ` as node_id) resolved
+			where g.to_kind = 'block' and g.to_id = any(` + documentRoomBlockAddressArray(id) + `)
+			  and resolved.node_id = any(` + documentBlockIDArray(id) + `)
+			and ` + VisibleKind("block", "resolved.node_id", seen) + ` and ` + source
 			if query.WholeDocuments {
 				// An ask's row holds its question's links alone, so the only edge from an ask
 				// that cites the document in an option or in its answer is that part's.
 				arms += `
 			union all
-			` + asksCitingTheDocument(id, seen)
+			` + asksCitingTheDocument(id, seen) + `
+			union all
+			` + roomCitersOfTheDocument(id, seen)
 			}
 		case itemBlocks:
 			arms += `
@@ -439,7 +539,8 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 	case query.Direction == "out" && document:
 		// The document's own edges name it by its uuid, but the one the store states out of it
 		// with no projection row behind it, which names it by its ref_key (edgeFrom), read through
-		// that ref_key.
+		// that ref_key. Its blocks' links are the block_refs rows of the room it is edited in whose
+		// block it holds (DocumentRoomBlocksSQL): an issue born converted keys them under its tree.
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
@@ -450,7 +551,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
-			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b", "b.to_id") + `
+			from block_refs b where ` + DocumentRoomBlocksSQL("b", blocks+"::uuid") + ` and ` + blockRefListed("b", "b.to_id") + `
 			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd("b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
@@ -469,8 +570,17 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 	default:
 		return nil, fmt.Errorf("reference direction %q must be in or out", query.Direction)
 	}
+	// An out read's far end is the node it resolves to: a block's address resolves through its
+	// moved_to tuples, then the room its document is edited in, then itself (ResolvedBlockSQL), so
+	// a mention of a block of a document converted into its issue's room, written at the
+	// document's own address, names the room's node, and the node's loader holds it to that
+	// node's predicate (resolveNodes).
+	other := `e.other_id`
+	if query.Direction == "out" {
+		other = `case when e.other_kind = '` + BlockNodeKind + `' then coalesce(` + ResolvedBlockSQL("e.other_id") + `, e.other_id) else e.other_id end`
+	}
 	var sql strings.Builder
-	sql.WriteString(`select kind, other_kind, other_id, created_at, source_seq, at_block from (` + arms + `)
+	sql.WriteString(`select e.kind, e.other_kind, ` + other + ` as other_id, e.created_at, e.source_seq, e.at_block from (` + arms + `)
 		as e (kind, other_kind, other_id, created_at, source_seq, at_block) where true`)
 	if len(query.Kinds) > 0 {
 		args = append(args, query.Kinds)
@@ -604,7 +714,7 @@ func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 	return resolveNodes(ctx, q, who, byRefKey, rows)
 }
 
-// TargetNames is the words each of targets is named by where a reader is shown a reference to it
+// TargetNames is the words each of targets is named by where who is shown a reference to it
 // rather than its own text: an issue's title, a document's name, an ask's question, a comment's
 // or a message's body, a component's title, a block's text and any other node's own text, each
 // cut to the bound an edge's excerpt is cut to (resolvedNode.name), which is what GET
@@ -612,11 +722,13 @@ func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 // the to side of an edge addresses them (TargetOf), so an artifact's id is its ref_key, and each
 // is resolved for who, as Nodes resolves it.
 //
-// One entry per target that resolves: a target with no entry is one nothing addresses now — its
-// node was deleted, or its kind is one this build cannot address (resolveNodes) — or one reserved
-// for an author who is not who, which answers exactly what a deleted node answers (visibility.go),
-// and is what a caller draws as a reference whose target is gone. Each kind is read in one
-// statement whatever the number of targets, so a batch costs a statement per kind, not per target.
+// One entry per target that resolves for who: a target with no entry is one nothing addresses
+// now — its node was deleted, or its kind is one this build cannot address (resolveNodes) — or
+// one who may not see, which each kind's loader leaves out as it leaves out a node that does not
+// exist (visibility.go), a target reserved for an author who is not who among them, which answers
+// as an address nobody holds does (Node). A caller draws either as a reference whose target is
+// gone. Each kind is read in one statement whatever the number of targets, so a batch costs a
+// statement per kind, not per target.
 func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
 	nodes, err := resolveTargets(ctx, q, who, true, targets)
 	if err != nil {
@@ -753,7 +865,7 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 }
 
 // RetiredDecisionsSlug is the slug of an issue's decisions document, which the decisions step
-// retires (dispatch://INFRA-1150 R11): the address `dispatch://KEY/artifact/<this slug>` of a
+// retires: the address `dispatch://KEY/artifact/<this slug>` of a
 // retired one resolves to the issue KEY, as every retired document's address does
 // (loadArtifactNodes). It is the one place the server spells that slug: api refuses a new
 // document that would take it.
@@ -765,7 +877,7 @@ const RetiredDecisionsSlug = "decisions-md"
 //
 // The address of a retired document of an issue (artifacts.retired_at, docs.RetireDocument),
 // `dispatch://KEY/artifact/<slug>` read by its ref_key, resolves to the issue KEY, whose node it
-// answers in the document's place (dispatch://INFRA-1150 R8, R11): the document plays no part in
+// answers in the document's place: the document plays no part in
 // its issue any more, and a citation of it stays valid and reaches what took its place, the issue
 // and its reads. The document read by its uuid is the document still, so its versions, its blocks
 // and its own edges stay readable.
@@ -1011,8 +1123,10 @@ func anchorVersion(alias string) string {
 // (edited_at: its wording, a block ask's settlement, an approval request's version move), by the
 // editor the latest ask.edited event names; an answer or a resolution is no change of it. It
 // belongs to the document it is written on: the one its anchor names, when the anchor's
-// artifact_id casts to a uuid, at the anchored version; a block ask's document, at the version
-// that first held its block when Dispatch knows it (blockFirstVersion); an approval request's
+// artifact_id casts to a uuid, at the anchored version; a block ask's document, the one holding
+// its block (AskBlockDocumentSQL: the document whose fragment holds it for an ask of an issue
+// room, whose row names the room's tree), at the version that first held its block when Dispatch
+// knows it (blockFirstVersion, over the block's row under that key); an approval request's
 // document, at the version it named when it opened (written_version); the document that owns it,
 // at the version current when it was written (written_version). An ask written on no document
 // belongs to its issue.
@@ -1039,7 +1153,7 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		left join artifacts a on a.id = k.artifact_id
 		left join artifacts doc on doc.id = case
 		  when `+anchorArtifact+` is not null then `+anchorArtifact+`
-		  when k.block_artifact_id is not null then k.block_artifact_id
+		  when k.block_artifact_id is not null then `+AskBlockDocumentSQL("k")+`
 		  when k.kind = 'approval' then (k.approval->>'artifact_id')::uuid
 		  else k.artifact_id
 		end

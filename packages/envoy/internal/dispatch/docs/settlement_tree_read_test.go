@@ -32,7 +32,7 @@ func settlementTreeReads(t *testing.T, at corpusRoom) error {
 		t.Fatalf("%s: read the room's point: %v", at.stage, err)
 	}
 	want, _, wantErr := stateTree(state, []string{fragmentName})
-	got, _, gotPoint, _, gotErr := at.service.treePoint(at.room, at.live)
+	got, _, gotPoint, _, gotErr := at.service.treePoint(at.room, at.live, at.service.layoutOf(at.live))
 	if describeError(gotErr) != describeError(wantErr) {
 		t.Fatalf("%s: the tree read answered %s, want the read point's %s", at.stage, describeError(gotErr), describeError(wantErr))
 	}
@@ -177,7 +177,7 @@ func TestTheSettlementTreeReadOfAResidentRoomMatchesTheReadPointsTree(t *testing
 		encoded = copied
 	}
 	want, _, wantErr := stateTree(encoded, []string{fragmentName})
-	got, _, gotPoint, _, gotErr := service.treePoint(artifactID, live)
+	got, _, gotPoint, _, gotErr := service.treePoint(artifactID, live, service.layoutOf(live))
 	if describeError(gotErr) != describeError(wantErr) {
 		t.Fatalf("the tree read answered %s, want the read point's %s", describeError(gotErr), describeError(wantErr))
 	}

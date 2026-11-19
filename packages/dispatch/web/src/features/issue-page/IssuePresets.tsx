@@ -15,7 +15,7 @@ import {
   pagePaperBg,
   pageQuietText,
 } from "../../theme/classes";
-import { useMediaQuery } from "../shell/useDialog";
+import { dialogOpen, useMediaQuery } from "../shell/useDialog";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
 import { authorText, pageChrome } from "./page-structure";
@@ -137,11 +137,13 @@ export function IssuePresets({
     };
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
     // the next one. The menu reads it in the capture phase, so it marks the press before any
-    // listener of the page's that a layer under it added earlier. A modal dialog open over the
-    // row takes the press even before its focus has moved into it, the frame after it opens.
+    // listener of the page's that a layer under it added earlier. A dialog open over the row
+    // takes the press wherever the focus is: not yet in it, the frame after it opens, or gone to
+    // the page. Whether one is open is `useDialog`'s registry's answer (`dialogOpen()`), which
+    // also decides which dialog the key closes, as Details' drawer asks it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
+      if (dialogOpen()) return;
       event.preventDefault();
       setOpen(undefined);
     };
@@ -247,9 +249,7 @@ export function IssuePresets({
               </span>
               <Signal preset={active} signal={signals[active]} />
             </span>
-            <span aria-hidden="true" {...pageChrome}>
-              ▾
-            </span>
+            <MenuMark />
           </button>
           {open === "presets" ? (
             <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
@@ -363,6 +363,24 @@ export function IssuePresets({
       <span className="flex-1" />
       <div className="mb-[7px]">{atTheEnd}</div>
     </div>
+  );
+}
+
+/** The one control's ▾, drawn one em square so it takes the size of the control's text, in its
+ *  colour. It is a shape and not text, as `StatusGlyph`'s are, because the page's typeface lacks
+ *  ▾: as text, it is drawn in a face of the reader's own machine, at that face's width. The
+ *  control's `aria-haspopup` says it opens a menu, so the shape is hidden from assistive
+ *  technology. */
+function MenuMark(): ReactNode {
+  return (
+    <svg
+      aria-hidden="true"
+      className="inline-block size-[1em] shrink-0 align-middle"
+      focusable="false"
+      viewBox="0 0 16 16"
+    >
+      <path d="M4.5 6.5h7L8 10.5z" fill="currentColor" />
+    </svg>
   );
 }
 

@@ -13,8 +13,8 @@ import (
 )
 
 // An answer an agent made for its person under an act - the agent's session and the scopes its
-// credential held - is held on the ask's node and its row like any other answer
-// (dispatch://INFRA-1150 R3), so on a fleet of one build it writes no version and the person's
+// credential held - is held on the ask's node and its row like any other answer, so on a fleet
+// of one build it writes no version and the person's
 // approval stands through it, whatever the act holds. The release before carried an approval to
 // the version an answer wrote, and read the act's scopes to decide whether it could; that carry is
 // gone, and no carry reads an act: the version the roll window writes while two builds serve is
@@ -65,9 +65,9 @@ func answerWithAct(login string, selected []string, act *model.ActorAct) model.A
 // An answer an agent made for its person carries no approval, whatever its act holds, and needs
 // none: on a fleet of one build an answer is held on the ask's node and its row alone, so it
 // changes no byte of the document, the settlement after it writes no version, and the approval
-// the person gave stands at the version she gave it to (dispatch://INFRA-1150 R3: "Once the whole
-// fleet runs this build, a person's answer changes no byte of any document, and an approval of
-// that document stands through it"). That holds for an act holding the person scope alone, for
+// the person gave stands at the version she gave it to: once the whole fleet runs this build, a
+// person's answer changes no byte of any document, and an approval of that document stands
+// through it. That holds for an act holding the person scope alone, for
 // one holding approve, and for a narrow agent's answer beside the person's own, so no act's scopes
 // decide anything here. The release before carried an approval to the version an answer wrote,
 // and only where the act held approve; that carry is gone, and the version the roll window writes

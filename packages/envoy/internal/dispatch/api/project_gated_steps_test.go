@@ -216,7 +216,7 @@ func TestGatedStepsOnTheProjectRow(t *testing.T) {
 	}
 }
 
-// The `decisions` step is gone (dispatch://INFRA-1150 R11, ruling F2), and a page of the release
+// The `decisions` step is gone, and a page of the release
 // before still publishes it, so the gated-steps write takes it and stores the list without it: a
 // list of that step and others stores the others, and a list of that step alone stores [spec],
 // never the empty list, which would gate nothing. A list this build reads back holds no

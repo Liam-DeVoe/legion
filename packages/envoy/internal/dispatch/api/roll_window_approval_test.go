@@ -34,7 +34,7 @@ func registerTwoBuilds(t *testing.T, database *store.Store) {
 }
 
 // baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
-// before registers: legion/INFRA-1149's pmdoc/schema/blocks.json is version 4, and creates nothing
+// before registers: the base release's pmdoc/schema/blocks.json is version 4, and creates nothing
 // past it.
 const (
 	baseSchemaVersion   = 4

@@ -395,7 +395,7 @@ func TestTheObjectBatchTakesTheStoreLockOrder(t *testing.T) {
 		owner, project := holdLockOwner(t, database)
 		node := holdWrite(t, database, &lockstep.Hold{
 			Name: "issue LOCK-1's node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindIssue, ID: "LOCK-1",
-			Statement: "with incoming as (",
+			Statement: "insert into graph_nodes (",
 		}, []graphstore.Node{graphstore.IssueNode("LOCK-1", "LOCK", model.Actor{Kind: "user", ID: "alice"}, time.Now())}, nil)
 
 		report := followTheBackfill(t, database, "writeObjectBatch", []*lockstep.Hold{owner, project, node})
@@ -434,7 +434,7 @@ func TestTheObjectBatchTakesTheStoreLockOrder(t *testing.T) {
 		owner, project := holdLockOwner(t, database)
 		node := holdWrite(t, database, &lockstep.Hold{
 			Name: "the document's node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindArtifact, ID: refKey,
-			Statement: "with incoming as (",
+			Statement: "insert into graph_nodes (",
 		}, []graphstore.Node{graphstore.ArtifactNode(refKey, "LOCK", "", alice, time.Now())}, nil)
 		row := lockstep.HoldRow(t, database, &lockstep.Hold{
 			Name: "the document's artifacts row", Step: lockstep.StepProjection, Taken: true,
@@ -463,16 +463,16 @@ func seedLockProject(t *testing.T, database *store.Store) {
 	}
 }
 
-// holdLockOwner holds issue LOCK-1's row, the owner row every batch here takes first, at the
-// statement events.LockOwnerRows takes it with and before any node or tuple, and project LOCK's
-// row, which no batch here takes.
+// holdLockOwner holds issue LOCK-1's owner lock, the owner lock every batch here takes first
+// (events.LockOwnerRows), at the statement that lock is taken with and before any node or tuple,
+// and project LOCK's row, which no batch here takes.
 func holdLockOwner(t *testing.T, database *store.Store) (owner, project *lockstep.Hold) {
 	t.Helper()
-	owner = lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue LOCK-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: "LOCK-1",
-		Statement: "select closed_at is null from issues where key = $1 for no key update",
+	owner = lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue LOCK-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"graph_nodes", "graph_tuples"},
-	}, `select 1 from issues where key = $1 for update`, "LOCK-1")
+	}, store.IssueOwner("LOCK-1"))
 	project = lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project LOCK's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "LOCK")
 	return owner, project

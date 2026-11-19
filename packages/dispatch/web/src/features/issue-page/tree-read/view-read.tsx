@@ -22,19 +22,20 @@ import {
  * age. A filter's observer here watches its view only while the filter is on (`ViewRead`), and
  * `useIssueTree`'s, which never read, keep every view in the cache for the load, so a filter
  * turned off and on again finds its answer held and sends nothing; it finds a refused view
- * refused, whether it holds an answer or not, and sends nothing either, unless the page's
- * subscription asked for that view again while the filter was off (`TREE_FRESH`). Once the
- * stage goes, the views are collected as any query nothing observes is. `useIssueTree` watches
- * the four reads without ever sending one, and sets what they hold on the tree's root
- * (`TreeNode.views`), which is what each filter draws from.
+ * refused, whether it holds an answer or not, and sends nothing either, unless something asked
+ * for that view again while the filter was off (`TREE_FRESH`): an event of the issue, which
+ * reaches the views through its own target (`event-refresh.ts`). Once the stage goes, the views
+ * are collected as any query nothing observes is. `useIssueTree` watches the four reads without
+ * ever sending one, and sets what they hold on the tree's root (`TreeNode.views`), which is what
+ * each filter draws from.
  *
  * The page mounts the stage once for each issue it opens (`IssueOutlinePage`'s `key`), so a mount
  * here is a load: it drops whatever view a past load of the issue held, so no load draws a view
  * older than its own tree. It holds the subscription that keeps the tree and its views fresh
- * (`subscribeTreeFreshness`): a write marks every held view stale, so the open one is read again
- * and draws what it held until its new answer lands, and another is read again when its filter
- * is next on; a write or an event asks for a refused view again, which reads the open one again
- * and another when its filter is next on.
+ * (`subscribeTreeFreshness`), which holds them while a write of the issue is out: at the write's
+ * settle, with the live feed up, only what the hold owes is asked for, and nothing for a write
+ * Dispatch refused; with the feed down, every view is, so the open one is read again and draws
+ * what it held until its new answer lands, and another is read again when its filter is next on.
  */
 export function ViewReadProvider({
   children,

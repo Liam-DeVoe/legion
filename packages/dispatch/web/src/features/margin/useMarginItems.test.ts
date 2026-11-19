@@ -735,13 +735,20 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
   }
 });
 
-function decisionLink(fromBlock: string, to: string, document = "CORE-1/spec"): DecisionLink {
+/** A `shaped` link to block `to` of the document at `document`, as the server answers a block of
+ *  an issue room: its node the room's (`CORE-1/tree#<id>`), and the document holding it named on
+ *  the link (`to.document`). */
+function decisionLink(
+  fromBlock: string,
+  to: string,
+  document = "dispatch://CORE-1/spec"
+): DecisionLink {
   return {
     created_at: "2026-10-01T00:00:00Z",
     created_version: 1,
     from_block: fromBlock,
     stale: false,
-    to: graphNode({ block_id: to, id: `${document}#${to}`, kind: "block" }),
+    to: graphNode({ block_id: to, document, id: `CORE-1/tree#${to}`, kind: "block" }),
   };
 }
 
@@ -802,7 +809,7 @@ const issueDecisions: IssueDecisions = {
     decisionOf("d-1", [
       decisionLink("d-1", "p-a"),
       decisionLink("d-1", "p-b"),
-      decisionLink("d-1", "n-1", "CORE-1/notes-md"),
+      decisionLink("d-1", "n-1", "dispatch://CORE-1/artifact/notes-md"),
     ]),
     decisionOf("d-2", [decisionLink("d-2", "p-b")], { unsure: true }),
     // A decision of another document under the same block id: an item of its own.
@@ -907,6 +914,8 @@ function renderDecisionItems(document: Artifact) {
   );
 }
 
+// An item names the spec block it stands beside by the spec's own address, never by the room's
+// node the server answers on the link, which belongs to no one document of the room.
 test("each decision is a margin item beside every spec block it links, in the spec's order", async () => {
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(issueDecisions);
   const view = renderDecisionItems(artifact);

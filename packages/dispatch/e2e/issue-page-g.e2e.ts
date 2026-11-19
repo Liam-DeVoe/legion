@@ -40,7 +40,9 @@ import {
   rowWords,
   seedLongRows,
   seedRows,
+  seedWideNote,
   unfoldEveryBranch,
+  WIDE_NOTE_COLUMNS,
 } from "./issue-page-g";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -48,7 +50,7 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 // What this file's init script keeps on the page's window.
 declare global {
   interface Window {
-    /** The long row in the first view at each frame from the first it was drawn in. */
+    /** The long row in the first view at each frame from the first it drew its words in. */
     __firstViewFrames?: FirstViewFrame[];
   }
 }
@@ -393,6 +395,57 @@ test("at 390 px a focused row stands below the view row that stays at the top, a
   });
 });
 
+// Decision 282: at 390 px a note whose body holds a table of sixteen columns, drawn in its row and
+// not edited, made the whole page 794 px wide. A wide block in a node's words scrolls sideways
+// inside itself, as a table does in a document's reading: the page is no wider than the screen,
+// and the table's own scroll still reaches its last column.
+// SLOW(>=2s): an issue with one note seeded and loaded at 390 px, and its table waited for until
+// the batched read that carries a block's words draws it.
+test("at 390 px a note's table of sixteen columns scrolls inside its row, and the page is no wider than the screen", async ({
+  browser,
+}) => {
+  test.setTimeout(60_000);
+  await phase(browser, seedWideNote, async (page, seeded) => {
+    await page.setViewportSize(PHONE);
+    await openIssue(page, seeded.key);
+    const table = rowWords(nodeRow(page, seeded.note)).locator("table");
+    await expect
+      .poll(
+        async () => {
+          await unfoldEveryBranch(page);
+          return table.locator("th").count();
+        },
+        { message: "the note's row never drew the heads of its table" }
+      )
+      .toBe(WIDE_NOTE_COLUMNS);
+    await expect(table, "the note's table is not drawn").toBeVisible();
+    // The poll above waited until the row drew the whole table, and a read of the page's widths
+    // lays the page out first, so one read gives the widths the table leaves the page.
+    const widths = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    expect(widths.client, "the page is laid out wider than the screen").toBeLessThanOrEqual(
+      PHONE.width
+    );
+    expect(widths.scroll, "the note's table makes the page wider than the screen").toBe(
+      widths.client
+    );
+    // The table is drawn whole and a read of its widths lays it out first, and the scroll this
+    // sets is read back in the same task, where nothing else can move it, so one read holds.
+    const own = await table.evaluate((element) => {
+      const box = { client: element.clientWidth, scroll: element.scrollWidth };
+      element.scrollLeft = element.scrollWidth;
+      return { ...box, left: element.scrollLeft };
+    });
+    expect(
+      own.scroll,
+      "the table is no wider than its own box, so it has nothing to scroll"
+    ).toBeGreaterThan(own.client);
+    expect(own.left, "the table does not scroll sideways to its last column").toBeGreaterThan(0);
+  });
+});
+
 // c-cut: ruling 1 on R2 at 1440 px.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
 // ten presses and focus moves, each waited on until the row redraws.
@@ -693,8 +746,8 @@ test("a long jump that lands on the reader's own rows keeps the first of them wh
   });
 });
 
-/** What a row read of the long row in the first view at each frame from the first it was drawn
- *  in, from a script that runs before the page's own. */
+/** What a row read of the long row in the first view at each frame from the first it drew its
+ *  words in, from a script that runs before the page's own. */
 interface FirstViewFrame {
   readonly cut: boolean;
   readonly height: number;
@@ -707,8 +760,11 @@ interface FirstViewFrame {
 // before the page's own reads the planner's long statement, the body's first row, which a check
 // nothing proves keeps open in an outline folded to what is open, at each animation frame from
 // the first one it is drawn in: it is cut on that first frame, and its height is the same 60
-// frames later. It carries `@phone` because the phone's first view is another set of rows, laid
-// out at three device pixels to the CSS pixel.
+// frames later. The row is drawn from the spec's blocks before the coverage read brings its
+// words, and a row with no words has nothing to cut, so it is read from the first frame it draws
+// its words in: CI run 44547033390 read it at 390 px with none for two frames, and then whole,
+// 472 px tall, for the 59 after. It carries `@phone` because the phone's first view is another
+// set of rows, laid out at three device pixels to the CSS pixel.
 // SLOW(>=2s): sixty-six long rows seeded, and the page loaded at two widths, each watched over
 // 61 frames.
 test("a long row in the first view is drawn cut on the first frame it is drawn in, and its height holds 60 frames later @phone", async ({
@@ -721,7 +777,8 @@ test("a long row in the first view is drawn cut on the first frame it is drawn i
       window.__firstViewFrames = frames;
       const read = () => {
         const row = document.querySelector(`[data-node-row][data-node-id="${id}"]`);
-        if (row !== null) {
+        const words = row?.querySelector("[data-node-words] [data-author-text]");
+        if (row !== null && (words?.textContent ?? "").trim() !== "") {
           const box = row.getBoundingClientRect();
           frames.push({
             cut: row.querySelector("[data-node-more]") !== null,
@@ -739,9 +796,11 @@ test("a long row in the first view is drawn cut on the first frame it is drawn i
       await page.setViewportSize(size);
       await openIssue(page, seeded.key);
       await page.waitForFunction(() => (window.__firstViewFrames?.length ?? 0) > 60);
+      // The wait above saw more than 60 frames recorded, and the script stops recording once it
+      // holds 61, so one read holds every frame the checks below read.
       const frames = await page.evaluate(() => window.__firstViewFrames ?? []);
       const [first] = frames;
-      if (first === undefined) throw new Error(`${where} the row was never drawn`);
+      if (first === undefined) throw new Error(`${where} the row never drew its words`);
       expect(first.top, `${where} the row was drawn outside the first view`).toBeLessThan(
         first.view
       );
@@ -792,6 +851,8 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
           message: "a row draws its author other than by the stored actor's name and kind",
         })
         .toEqual([]);
+      // The poll above waited until every row drew its stored author, and nothing moved since,
+      // so one read lists the rows that poll saw.
       const rows = await drawnRows(page);
       const where = `at ${size.width} px`;
       for (const row of rows) {
@@ -819,6 +880,8 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
     const unknown = await rowBody(statement)
       .locator("[data-node-author] svg[data-glyph]")
       .getAttribute("data-glyph");
+    // The rows drew their stored authors at both widths above, and since then only the width and
+    // the focus moved, which leave each row's margin shape as drawn, so one read gives each one.
     const rows = await drawnRows(page);
     expect(
       new Set([

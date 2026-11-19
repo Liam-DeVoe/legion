@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -42,17 +43,24 @@ func conversationItem(t *testing.T, tx pgx.Tx, table, issueKey, author, body str
 	switch table {
 	case "asks":
 		ask := model.Ask{ID: id, IssueKey: &issueKey, Question: body, State: "open"}
-		if _, err := IndexAskParts(ctx, tx, NewReader(ctx, tx, "ask", id, itemBlockServer), ask, at); err != nil {
+		stored, err := ReadItemIndex(ctx, tx, ItemAsk, id)
+		if err != nil {
+			t.Fatalf("read the part index of ask %s: %v", id, err)
+		}
+		indexing, err := PlanAskParts(stored, NewReader(ctx, tx, "ask", id, itemBlockServer), ask, at)
+		if err != nil {
 			t.Fatalf("index the parts of ask %s: %v", id, err)
 		}
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			indexing.Queue(b)
+			return nil
+		}); err != nil {
+			t.Fatalf("write the parts of ask %s: %v", id, err)
+		}
 	case "comments":
-		if _, err := ReplaceCountedItem(ctx, tx, ItemComment, id, body, itemBlockServer, at); err != nil {
-			t.Fatalf("index comment %s: %v", id, err)
-		}
+		indexItemAsAWriteDoes(t, tx, ItemComment, id, body, itemBlockServer, at)
 	case "messages":
-		if _, err := ReplaceCountedItem(ctx, tx, ItemMessage, id, body, itemBlockServer, at); err != nil {
-			t.Fatalf("index message %s: %v", id, err)
-		}
+		indexItemAsAWriteDoes(t, tx, ItemMessage, id, body, itemBlockServer, at)
 	}
 	var block string
 	tables := map[string]string{"asks": "ask_blocks where ask_id", "comments": "comment_blocks where comment_id", "messages": "message_blocks where message_id"}
@@ -195,7 +203,7 @@ func TestAConversationNodeIsWhatRTwoSaysItIs(t *testing.T) {
 			t.Fatalf("parse a criterion under %s: %v", parent, err)
 		}
 		return pmdoc.CheckBlockPointers(tree, nil, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
-			return BlockTargets(ctx, tx, spec, nil, targets)
+			return BlockTargets(ctx, tx, spec, storedAddress(t, tx, spec), nil, targets)
 		})
 	}
 	blockRef := func(item, nodeID string) string {

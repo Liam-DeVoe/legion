@@ -38,25 +38,40 @@
 #       that lens is the project's and settles nothing, yet it names the session its body names as
 #       its writer through authored_by and its write stated that session's node (spec v46 R12),
 #       so the session is on both sides; the driver reads that authored_by tuple.
-#   B2  The base build again, as after a rollback, through run-server.sh: one new run, whose frames
-#       it writes with no frame value; with psql the hand-written run's ends_at moves into the past,
-#       standing for time passing, on both sides in one transaction (its row, and its node's
-#       attribute and value tuple), and a third run is dated two hours back, and the driver waits
-#       ten minutes at most until that build's sweep has ended the first and deleted the row of the
-#       second.
+#   B2  The base build again, as in a rollback, through run-server.sh, booted beside this head's
+#       server, which still serves: two builds serve the one database at once, each on a port of
+#       its own, and both sign cookies with the run's one dev sign-in key. While both serve, alice
+#       proposes the requirement r3 through this head's state route, the base build's own edit
+#       route writes a version of the spec that changes the words of r3's second paragraph, a block
+#       of its own whose text r3's holds, so that build's index pass writes r3's node again, and
+#       this head reads r3 still proposed (dispatch://INFRA-1149's keep-state rule). dave, a login
+#       no other row names, writes through this head a lens reserved for him, his only node, and
+#       reads his own page through this head with that lens on it; bob reads dave's page through
+#       the base build and is answered, status and body byte for byte, what that build answers him
+#       for a login nobody holds (dispatch://INFRA-1149's person-page rule). Then this head's
+#       server stops and the base build serves alone: one new run, whose frames it writes with no
+#       frame value; with psql the hand-written run's ends_at moves into the past, standing for time
+#       passing, on both sides in one transaction (its row, and its node's attribute and value
+#       tuple), and a third run is dated two hours back, and the driver waits ten minutes at most
+#       until that build's sweep has ended the first and deleted the row of the second.
 #   H3  This head again. Each boot wrote one announcement once processes.Live read every live
-#       process as its build, so they name the base build, this head, the base build and this head,
-#       in order: two builds. Before the backfill, a census beside a planted instance: it names the
-#       new run, a row with no node, and the terminal frame of the run row written by hand, a row
-#       with no frame value. Then the backfill again: a node for the new run, a frame value for each
-#       frame that build appended, and the run whose row it deleted at state gone. alice moves her
+#       process as its build - the base build of B2, booted beside this head, once this head
+#       stopped - so they name the base build, this head, the base build and this head, in order:
+#       two builds. Before the backfill, a census beside a planted instance: it names the new run,
+#       a row with no node, and the terminal frame of the run row written by hand, a row with no
+#       frame value. Then the backfill again: a node for the new run, a frame value for each frame
+#       that build appended, and the run whose row it deleted at state gone. alice moves her
 #       pre-mortem to proposed, the finding to settled and her risk to overtaken. Only then the
 #       census, the store-to-projection comparison, which is reported apart from the inventory's: a
 #       run the migration lost shows in the first and never in the second. It reads zero
 #       differences for the interaction and frame kinds, for both block projections of
 #       dispatch://INFRA-1149, for person and session, and for the visibility and state of every
 #       node of this child's kinds, each kind having checked more than zero rows, the moved nodes
-#       counted as live ones are, and every interaction at `author`.
+#       counted as live ones are, and every interaction at `author`. Then, with psql, one
+#       interaction node no going_requests row projects, a copy of bob's run's node under an id no
+#       row names, and one frame value no going_events row projects, of the run row written by hand
+#       at the sequence after its one frame's: the census reads each as one difference of its kind
+#       naming its run, two in all, and once both are deleted, exactly as planted, zero again.
 #   S   The store-only kinds (lens, finding, risk, constraint, lens_kind) and their constrained_by,
 #       has_kind, triggered_by and prevented_by tuples against the inventory of the routes' writes
 #       and the migration's seed, node for node and tuple for tuple.
@@ -145,9 +160,11 @@ readonly session="census-$stamp"
 readonly carol_session="census-carol-$stamp"
 readonly bearer_session="census-bearer-lens-$stamp"
 readonly project=CENSUS
-# The two seeded people, the person of the identity table, and karol, a login one character from
-# hers, who must stay a person of his own.
-readonly alice=alice bob=bob carol=carol twin=karol
+# The two seeded people, the person of the identity table, karol, a login one character from
+# hers, who must stay a person of his own, dave, a login no other row names, whose only node is a
+# lens reserved for him (B2), and a login nobody holds, which no row names at all.
+readonly alice=alice bob=bob carol=carol twin=karol third=dave
+readonly nobody="nobody-$stamp"
 readonly added_kind="census-$stamp"
 # How long each of the two waits below may take: the owed block versions, and the older build's
 # sweep.
@@ -155,12 +172,20 @@ readonly wait_limit=600
 # The words of the requirement edited under a run, before the edit and after it.
 readonly edited_from="The words of this requirement are edited under a run."
 readonly edited_to="The words of this requirement were edited under a run."
+# The words of the second paragraph of the requirement r3, which the base build's version changes
+# while both builds serve (B2), before that version and after it.
+readonly paragraph_from="The words of this paragraph are changed by the older build."
+readonly paragraph_to="The words of this paragraph were changed by the older build."
 
 work_dir
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
+# The pid of this head's server while the base build serves beside it (B2): boot_server keeps the
+# pid of the server it started last alone, which stop_processes stops, so this one is stopped here.
+beside_pid=""
 cleanup() {
   local code=$?
+  baseline_stop_pid "$beside_pid"
   stop_processes
   baseline_stop
   rm -rf "$work"
@@ -273,6 +298,15 @@ move_state() {
   expect "$1" "$alice moves $2 from $4 to $5" \
     "$(jq -cnS --arg a "$2" --arg f "$4" --arg t "$5" '{address: $a, previous: $f, state: $t}')" \
     '{address: .node.address, previous, state: .node.state}'
+}
+
+# at URL COMMAND ARGS…: runs COMMAND, a function of this driver or of lib.sh, with $base set to URL,
+# the server it talks to while two builds serve (B2). Every function that sends a request reads
+# $base when it runs, so it reads the local below, and $base is the same again once COMMAND ends.
+at() {
+  local base="$1"
+  shift
+  "$@"
 }
 
 # census_kind FILE KIND: KIND's counts in the census report FILE, into $c_nodes, $c_rows,
@@ -450,7 +484,9 @@ sign_in B1 "$carol" " at $base"
 request agent POST /api/v1/projects "$(jq -cn --arg k "$project" --arg l "$alice" --argjson a "$(actor)" \
   '{key: $k, name: "Census check", default_assignee: $l, actor: $a}')"
 want_status 201 B1 "create the project $project"
-cat >"$work/spec.md" <<'SPEC'
+# r3 holds two paragraphs, each a block of its own, so a version that changes the words of the
+# second changes r3's text too (B2).
+cat >"$work/spec.md" <<SPEC
 The spec the census reads.
 
 :::requirement{#r1}
@@ -458,7 +494,13 @@ Every run of the command bar is one node of the store.
 :::
 
 :::requirement{#r2}
-The words of this requirement are edited under a run.
+$edited_from
+:::
+
+:::requirement{#r3}
+This requirement is proposed while two builds serve.
+
+$paragraph_from
 :::
 SPEC
 request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --rawfile s "$work/spec.md" --argjson a "$(actor)" \
@@ -466,8 +508,8 @@ request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --rawfile s "$wor
 want_status 201 B1 "create the issue"
 key="$(jq -er '.key' "$work/body")" || fail B1 "create the issue" "no key: $(body)"
 readonly key spec="dispatch://$key/spec"
-readonly requirement="$spec#b-r1"
-pass B1 "the base build created $key in $project, whose spec holds the requirements r1 and r2"
+readonly requirement="$spec#b-r1" requirement3="$spec#b-r3"
+pass B1 "the base build created $key in $project, whose spec holds the requirements r1, r2 and r3"
 cat >"$work/verification.md" <<VERIFICATION
 How $key is proved.
 
@@ -756,14 +798,118 @@ census_zero H2 h2 session
 # without a row, on which census_zero fails: the session is on both sides.
 pass H2 "the census reads no session node without a row while $bearer_session, the writer the lens on the shared bearer names through authored_by, is a session node, so its row side holds that session too: it is on both sides"
 
-# --- B2: the base build again, as after a rollback ------------------------------------------------
+# --- B2: the base build beside this head, then alone, as in a rollback ----------------------------
 
-stop_server B2 "this head's server"
+# A rollback rolls the older pods in while this head's still serve: the base build boots beside this
+# head's server, over the one database and on a port of its own, and both sign cookies with the
+# run's one dev sign-in key (boot_server, baseline_start), so a person signed in on one build is
+# signed in on the other. Each request below names the build it goes to (at).
+readonly head_url="$base"
+beside_pid="$server_pid"
 boot_server B2 "the base build after a rollback" "$baseline_binary"
-registered_commit B2 "read the base build's row of server_processes"
+readonly older_url="$base"
+want_value B2 "both builds serve the one database at once: server_processes holds a row of the base build and a row of this head" \
+  "2|1|1" \
+  "select count(*) || '|' || count(*) filter (where commit = '$baseline_commit')
+          || '|' || count(*) filter (where commit = '$head_commit')
+   from server_processes"
+pass B2 "the base build serves $older_url beside this head at $head_url, stamped with $baseline_commit"
+
+# While both builds serve, alice proposes the requirement r3 through this head, and the base build
+# writes a version of the spec that changes the words of r3's second paragraph, a block of its own.
+# The index pass writes again only the node of a block whose text a version changed
+# (refs.IndexBlocks), and r3's text holds its paragraphs, so that version's pass, the base build's,
+# writes r3's node again: the write dispatch://INFRA-1149's keep-state rule (its R8) keeps r3's
+# state through. A version that changed only a block outside r3 would leave r3's node unwritten,
+# and r3 proposed whatever the base build's rule, so the driver first reads that the version moved
+# r3's text.
+readonly r3_changed_sql="select coalesce(max(b.changed_version), 0) from document_blocks b
+  join artifacts a on a.id = b.artifact_id where a.ref_key = '$key/spec' and b.block_id = 'r3'"
+at "$head_url" sign_in B2 "$alice" " at this head, $head_url"
+at "$head_url" move_state B2 "$requirement3" "$key/spec#r3" live proposed
+query B2 "read the version r3's text last changed in" "$r3_changed_sql"
+readonly r3_proposed_at="$answer"
+[[ "$r3_proposed_at" -gt 0 ]] || fail B2 "read the version r3's text last changed in" "document_blocks holds no row of r3"
+at "$older_url" sign_in B2 "$alice" " at the base build, $older_url"
+at "$older_url" request "cookie:$alice" POST "/api/v1/issues/$key/artifacts/spec/edits" \
+  "$(jq -cn --arg f "$paragraph_from" --arg t "$paragraph_to" '{ops: [{op: "replace", find: $f, with: $t}]}')"
+[[ "$status" == 200 || "$status" == 201 ]] ||
+  fail B2 "$alice edits the words of r3's second paragraph through the base build" "HTTP $status: $(body)"
+pass B2 "$alice edited the words of r3's second paragraph through the base build's own edit route (HTTP $status)"
+query B2 "read the version r3's text last changed in" "$r3_changed_sql"
+waited=0
+until [[ "$answer" -gt "$r3_proposed_at" ]]; do
+  [[ "$waited" -lt 60 ]] ||
+    fail B2 "the base build's version changes r3's text within 60 s" "r3's text last changed in version $answer, as when it was proposed"
+  sleep 1
+  waited=$((waited + 1))
+  query B2 "read the version r3's text last changed in" "$r3_changed_sql"
+done
+readonly r3_changed="$answer"
+want_value B2 "the base build's version $r3_changed changed the words of r3's second paragraph, a block of its own, and with them r3's text, so its index pass wrote r3's node again" 1 \
+  "select count(*) from document_blocks b join artifacts a on a.id = b.artifact_id
+   where a.ref_key = '$key/spec' and b.block_id <> 'r3' and b.changed_version = $r3_changed
+     and position('$paragraph_to' in b.excerpt) > 0"
+at "$head_url" request "cookie:$alice" GET "/api/v1/issues/$key/proposed"
+want_status 200 B2 "this head reads the proposed nodes of $key"
+listed="$(jq -r --arg a "$requirement3" '[.nodes[] | select(.node.ref == $a) | .node.state] | join(" ")' "$work/body")" ||
+  fail B2 "this head reads the proposed nodes of $key" "unreadable: $(body)"
+query B2 "read the state the store holds r3 at" "select state from graph_nodes where kind = 'block' and id = '$key/spec#r3'"
+[[ "$listed" == proposed && "$answer" == proposed ]] ||
+  fail B2 "this head reads the requirement $requirement3 still proposed after the base build's version $r3_changed" \
+    "this head reads it ${listed:-not proposed: GET /api/v1/issues/$key/proposed lists no $requirement3}, and the store holds the block $key/spec#r3 at '$answer'"
+pass B2 "this head reads the requirement $requirement3 still proposed after the base build's version $r3_changed wrote its node again"
+
+# While both builds serve, dave, a login no other row names, writes through this head a lens
+# reserved for him, the one node he holds, and reads his own page through this head with that lens
+# on it. bob then reads dave's page through the base build, which registers no lens kind, so no
+# node dave holds is one bob may see there, and it answers him what it answers for a login nobody
+# holds: the status and the body, byte for byte once the login is substituted
+# (dispatch://INFRA-1149's person-page rule, its R15).
+at "$head_url" sign_in B2 "$third" " at this head, $head_url"
+at "$head_url" request "cookie:$third" POST "/api/v1/issues/$key/lenses" \
+  "$(jq -cn --arg on "$spec" '{on: $on, kind: "boring-solution", visibility: "author"}')"
+want_status 201 B2 "$third invokes a lens on the spec reserved for him, through this head"
+third_lens="$(jq -er '.address' "$work/body")" || fail B2 "$third invokes a lens through this head" "no address: $(body)"
+readonly third_lens third_lens_id="${third_lens#dispatch://lens/}"
+expect B2 "the lens $third invoked is reserved for its author" '"author"' '.visibility'
+written lens "$third_lens_id"
+written has_kind "lens:$third_lens_id has_kind lens_kind:boring-solution"
+want_value B2 "the one node the store ties $third to is that lens, $third_lens, reserved for its author" \
+  "lens:$third_lens_id:author" \
+  "select coalesce(string_agg(n.kind || ':' || n.id || ':' || n.visibility, ' ' order by n.kind, n.id), '')
+   from (select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted from graph_tuples t
+         where t.to_kind = 'person' and t.to_id = '$third'
+         order by t.from_kind, t.from_id, t.seq desc) held
+   join graph_nodes n on n.kind = held.from_kind and n.id = held.from_id
+   where held.asserted"
+at "$head_url" request "cookie:$third" GET "/api/v1/people/$third/nodes"
+want_status 200 B2 "$third reads his own page through this head"
+jq -e --arg id "$third_lens_id" '[.rows[] | select(.kind == "lens" and .id == $id)] | length == 1' "$work/body" >/dev/null ||
+  fail B2 "$third reads his own page through this head with the lens $third_lens on it" "$(body)"
+pass B2 "$third reads his own page through this head with the lens $third_lens on it"
+at "$older_url" sign_in B2 "$bob" " at the base build, $older_url"
+at "$older_url" request "cookie:$bob" GET "/api/v1/people/$third/nodes"
+readonly third_page_status="$status"
+cp "$work/body" "$work/page.$third"
+at "$older_url" request "cookie:$bob" GET "/api/v1/people/$nobody/nodes"
+readonly nobody_page_status="$status"
+cp "$work/body" "$work/page.$nobody"
+pages="$third's page: HTTP $third_page_status $(head -c 600 "$work/page.$third"); $nobody's page: HTTP $nobody_page_status $(head -c 600 "$work/page.$nobody")"
+readonly pages
+[[ "$third_page_status" == "$nobody_page_status" ]] ||
+  fail B2 "$bob reads $third's page through the base build and is answered the status a login nobody holds answers" "$pages"
+cmp -s <(sed "s/$third/$nobody/g" "$work/page.$third") "$work/page.$nobody" ||
+  fail B2 "$bob reads $third's page through the base build and is answered, byte for byte once the login is substituted, the body a login nobody holds answers" "$pages"
+pass B2 "$bob reads $third's page through the base build and is answered what $nobody, a login nobody holds, is answered, byte for byte: HTTP $nobody_page_status $(head -c 200 "$work/page.$nobody")"
+
+# The rollback goes on: this head's server stops, and the base build serves the database alone.
+baseline_stop_pid "$beside_pid"
+beside_pid=""
+registered_commit B2 "read server_processes once this head's server stopped"
 [[ "$answer" == "$baseline_commit" ]] ||
-  fail B2 "the base build serves the database again, stamped with its commit" "its row names '$answer', want $baseline_commit"
-pass B2 "the base build serves the database again at $base, stamped with $baseline_commit"
+  fail B2 "the base build alone serves the database once this head's server stopped" "its one row names '$answer', want $baseline_commit"
+pass B2 "this head's server stopped, and the base build alone serves the database at $base, stamped with $baseline_commit"
 fleet_reads B2 "$baseline_commit"
 sign_in B2 "$alice" " at $base"
 ask B2 "$alice" "What did the census read?"
@@ -811,6 +957,10 @@ registered_commit H3 "read this head's row of server_processes"
 [[ "$answer" == "$head_commit" ]] || fail H3 "this head serves the database again" "its row names '$answer', want $head_commit"
 pass H3 "this head serves the database again at $base, stamped with $head_commit"
 fleet_reads H3 "$head_commit"
+# A process announces the build the fleet serves only once processes.Live reads every live process
+# as serving its own commit (startup.Announcer, servedByEvery). While both builds served (B2) the
+# fleet agreed on none, so neither wrote a row then; the base build wrote its row once this head's
+# server stopped, which fleet_reads B2 read. So the window of two builds adds no announcement.
 want_value H3 "processes.Live read the base build and this head as two builds: the announcements, in their order, name the base build, this head, the base build after the rollback and this head again" \
   "$baseline_commit $head_commit $baseline_commit $head_commit" \
   "select coalesce(string_agg(commit, ' ' order by seq), '') from server_build_announcements"
@@ -942,6 +1092,111 @@ want_value C "the store still holds the node of the session $bearer_session, the
 # As at H2: the census's session node side is every session node, so a session node off its row
 # side would be a node without a row, on which census_zero above fails.
 pass C "the census reads no session node without a row while $bearer_session is a session node, so its row side still holds that session: it is on both sides"
+
+# The census beside two differences planted after its zero reading (Verification v53): with psql,
+# one interaction node no going_requests row projects - run $run_bob's node copied under an id no
+# row names, every column of its row and every value tuple the store holds of a run but its frames
+# (its visibility, its state, its words and its ends_at), so the census of a run's visibility and
+# state reads the copy as it reads any run - and one frame value no going_events row projects, of
+# run $run_ahead, whose one going_events row is its terminal frame $ahead_frame, at the sequence
+# after that frame's, stated by the writer of that frame's value. The census names each as one
+# difference of its kind naming its run, two in all: the copy, a node no row projects, and the row
+# of run $run_ahead's frame $ahead_frame, whose node's frames no longer digest as its rows do. Both
+# are deleted, exactly as planted, and the census reads zero again.
+want_value C "run $run_ahead holds one going_events row, its terminal frame $ahead_frame, and its node one frame value" "1|1" \
+  "select (select count(*) from going_events where request_id = '$run_ahead') || '|'
+          || (select count(distinct t.to_id) from graph_tuples t
+              where t.from_kind = 'interaction' and t.from_id = '$run_ahead' and t.kind = 'frame' and t.to_kind = 'value' and t.asserted)"
+with_vars C "plant an interaction node no going_requests row projects, a copy of run $run_bob's node" "
+  with planted as (select gen_random_uuid()::text as id),
+  node as (
+    insert into graph_nodes
+    select copied.*
+    from graph_nodes n cross join planted
+    cross join lateral jsonb_populate_record(null::graph_nodes, to_jsonb(n) || jsonb_build_object('id', planted.id)) copied
+    where n.kind = 'interaction' and n.id = :'source'
+    returning id
+  ),
+  tuples as (
+    insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+    select t.from_kind, node.id, t.kind, t.to_kind, t.to_id, t.at, t.who, t.source_event, t.legacy_source_seq, t.asserted
+    from graph_tuples t cross join node
+    where t.from_kind = 'interaction' and t.from_id = :'source' and t.to_kind = 'value' and t.kind <> 'frame'
+    returning seq
+  )
+  select node.id || '|' || (select string_agg(seq::text, ',' order by seq) from tuples) from node" "source=$run_bob"
+IFS='|' read -r planted_run planted_seqs <<<"$answer"
+[[ "$planted_run" =~ ^[0-9a-f-]{36}$ && "$planted_seqs" =~ ^[0-9]+(,[0-9]+)*$ ]] ||
+  fail C "plant an interaction node no going_requests row projects, a copy of run $run_bob's node" "psql answered '$answer'"
+readonly planted_run planted_seqs
+want_value C "no going_requests row names the planted run $planted_run, and its node holds a visibility and a state tuple" "0|1|1" \
+  "select (select count(*) from going_requests where id::text = '$planted_run') || '|'
+          || (select count(*) from graph_tuples where from_kind = 'interaction' and from_id = '$planted_run' and kind = 'visibility') || '|'
+          || (select count(*) from graph_tuples where from_kind = 'interaction' and from_id = '$planted_run' and kind = 'state')"
+with_vars C "plant a frame value of run $run_ahead that no going_events row projects" "
+  insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+  select 'interaction', :'run', 'frame', 'value',
+         jsonb_build_object('sequence', max(e.sequence) + 1, 'name', 'end',
+                            'data', to_jsonb('A frame value no going_events row projects.'::text))::text,
+         now(),
+         (select t.who from graph_tuples t
+          where t.from_kind = 'interaction' and t.from_id = :'run' and t.kind = 'frame' order by t.seq limit 1),
+         0, null, true
+  from going_events e where e.request_id = :'run'::uuid
+  returning seq || '|' || (to_id::jsonb ->> 'sequence')" "run=$run_ahead"
+IFS='|' read -r planted_frame_seq planted_frame <<<"$answer"
+[[ "$planted_frame_seq" =~ ^[0-9]+$ && "$planted_frame" == $((ahead_frame + 1)) ]] ||
+  fail C "plant a frame value of run $run_ahead at sequence $((ahead_frame + 1)), which no going_events row holds" "psql answered '$answer'"
+readonly planted_frame_seq planted_frame
+pass C "planted the interaction node $planted_run, a copy of run $run_bob's node under an id no row names, and a frame value of run $run_ahead at sequence $planted_frame, which no going_events row holds"
+
+take_census C plants
+census_kind "$work/census.plants" interaction ||
+  fail C "the census reads the kind interaction" "no line of it in: $(<"$work/census.plants")"
+found="$(grep -E '^census: store kind=interaction difference at ' "$work/census.plants" || true)"
+want_re="^census: store kind=interaction difference at interaction $planted_run: an? [a-z]+ node no row projects\$"
+[[ "$c_row_differences" == 0 && "$c_node_differences" == 1 && "$found" =~ $want_re ]] ||
+  fail C "the census reads the planted node as one difference of the kind interaction, naming the run $planted_run" \
+    "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: ${found:-no difference named}"
+pass C "the census reads the planted node as one difference of the kind interaction, naming the run: $found"
+census_kind "$work/census.plants" frame ||
+  fail C "the census reads the kind frame" "no line of it in: $(<"$work/census.plants")"
+found="$(grep -E '^census: store kind=frame difference at ' "$work/census.plants" || true)"
+want_re="^census: store kind=frame difference at frame $run_ahead $ahead_frame: the row and its node disagree: the row digests [0-9a-f]{32} and the node [0-9a-f]{32}\$"
+[[ "$c_row_differences" == 1 && "$c_node_differences" == 0 && "$found" =~ $want_re ]] ||
+  fail C "the census reads the planted frame value as one difference of the kind frame, naming the run $run_ahead" \
+    "$c_row_differences row(s) without a node and $c_node_differences node(s) without a row: ${found:-no difference named}"
+pass C "the census reads the planted frame value as one difference of the kind frame, naming the run: $found"
+census_zero C plants interaction_visibility_state
+line="$(grep -m 1 -E '^census: store rows_checked=' "$work/census.plants")" ||
+  fail C "the census reads its total of differences" "no total in: $(<"$work/census.plants")"
+[[ "$line" =~ differences=2$ ]] ||
+  fail C "the census reads the two planted differences and no other" "$line: $(grep -E '^census: store kind=[a-z_]+ difference' "$work/census.plants" | tr '\n' ' ')"
+pass C "the census reads the two planted differences and no other: $line"
+
+IFS=, read -r -a planted_tuples <<<"$planted_seqs,$planted_frame_seq"
+with_vars C "delete the planted node, its tuples and the planted frame value" "
+  with tuples as (
+    delete from graph_tuples where seq = any(string_to_array(:'seqs', ',')::bigint[]) returning 1
+  ),
+  node as (
+    delete from graph_nodes where kind = 'interaction' and id = :'planted' returning 1
+  )
+  select (select count(*) from tuples) || '|' || (select count(*) from node)" \
+  "seqs=$planted_seqs,$planted_frame_seq" "planted=$planted_run"
+[[ "$answer" == "${#planted_tuples[@]}|1" ]] ||
+  fail C "delete exactly the ${#planted_tuples[@]} planted tuples and the planted node" "psql deleted '$answer' (tuples|nodes)"
+want_value C "no node and no tuple names the planted run $planted_run, and run $run_ahead's node holds its one frame value again" "0|0|1" \
+  "select (select count(*) from graph_nodes where kind = 'interaction' and id = '$planted_run') || '|'
+          || (select count(*) from graph_tuples where (from_kind = 'interaction' and from_id = '$planted_run')
+                                                   or (to_kind = 'interaction' and to_id = '$planted_run')) || '|'
+          || (select count(distinct t.to_id) from graph_tuples t
+              where t.from_kind = 'interaction' and t.from_id = '$run_ahead' and t.kind = 'frame' and t.to_kind = 'value' and t.asserted)"
+take_census C unplanted
+census_zero C unplanted interaction
+census_zero C unplanted frame
+census_zero C unplanted interaction_visibility_state
+census_differences C unplanted
 
 # --- S: the store-only kinds against the inventory of the writes and the migration's seed ---------
 

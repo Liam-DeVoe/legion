@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -1918,7 +1917,7 @@ func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *te
 		})
 		settleCurrentGeneration(t, service, artifactID)
 		before := liveTree(t, service, artifactID)
-		// The holder is decided on its ask, which holds its answer state (dispatch://INFRA-1150 R3);
+		// The holder is decided on its ask, which holds its answer state;
 		// no attribute of its block in the document does.
 		if state := blockAskOn(t, service, artifactID, "ask-lists").State; state != "answered" {
 			t.Fatalf("the decision holding it is %v, want it answered", state)
@@ -3411,7 +3410,7 @@ func answerIndexedAsk(t *testing.T, service *Service, artifactID, blockID string
 
 // A decided ask given a second list is marked invalid and keeps its decided row; once the second
 // list is gone, settlement clears invalid and the block carries its decided wording again. Its
-// decided state is its ask's, on its node and its row (dispatch://INFRA-1150 R3), and no attribute
+// decided state is its ask's, on its node and its row, and no attribute
 // of the block holds it.
 func TestSettlementMarksADecidedAskWithASecondBulletListInvalid(t *testing.T) {
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
@@ -4071,14 +4070,14 @@ func pendingAuthors(t *testing.T, service *Service, artifactID string) []model.A
 	state := service.room(artifactID)
 	state.mu.Lock()
 	for _, record := range state.unconsumedInflightLocked(state.creditSeq.Load()) {
-		maps.Copy(owed, record.authors)
+		mergeAuthors(owed, record.authors)
 	}
 	state.mu.Unlock()
 	durable, err := readPendingAuthors(context.Background(), service.store.Pool, artifactID)
 	if err != nil {
 		t.Fatalf("read the document's pending authors: %v", err)
 	}
-	maps.Copy(owed, durable)
+	mergeAuthors(owed, durable)
 	return actorSlice(owed)
 }
 
@@ -5403,9 +5402,7 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 		t.Fatalf("begin blocker transaction: %v", err)
 	}
 	defer blocker.Rollback(context.Background())
-	if _, err := blocker.Exec(context.Background(), `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
+	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -5593,9 +5590,7 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin blocker transaction: %v", err)
 	}
-	if _, err := blocker.Exec(context.Background(), `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
+	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	settled := make(chan struct{})
@@ -5888,10 +5883,10 @@ func joinedApplyOps(service *Service, artifactID string, ops []model.EditOp, act
 	return outcome, err
 }
 
-func joinedMarkQuote(service *Service, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error) {
+func joinedMarkQuote(service *Service, artifactID string, mark MarkSpec, quote string, scope *QuoteScope) (Anchored, error) {
 	var anchored Anchored
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
-		anchored, err = service.MarkQuote(ctx, artifactID, mark, quote, occurrence)
+		anchored, err = service.MarkQuote(ctx, artifactID, mark, quote, scope)
 		return err
 	})
 	return anchored, err
@@ -6161,14 +6156,15 @@ func waitForDocumentText(t *testing.T, service *Service, artifactID, want string
 	t.Fatalf("document text = %q (%v), want %q", got, err, want)
 }
 
-// waitForAnswersText waits for the document as an agent reads it (TextWithAnswers), each ask block
-// carrying its ask's answer state and answer rendered on read from the ask, to be want.
-func waitForAnswersText(t *testing.T, service *Service, artifactID, want string) {
+// waitForAgentText waits for the document as an agent reads it (TextWithAsks) to be markdown, with
+// asks the lines of its asks member (askLines).
+func waitForAgentText(t *testing.T, service *Service, artifactID, markdown, asks string) {
 	t.Helper()
 	read := func() (string, error) {
-		text, _, _, err := service.TextWithAnswers(context.Background(), artifactID, false)
-		return text, err
+		text, err := service.TextWithAsks(context.Background(), artifactID, false)
+		return text.Markdown + "\nasks:\n" + askLines(text.Asks), err
 	}
+	want := markdown + "\nasks:\n" + asks
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if got, err := read(); err == nil && got == want {
@@ -6177,7 +6173,7 @@ func waitForAnswersText(t *testing.T, service *Service, artifactID, want string)
 		time.Sleep(5 * time.Millisecond)
 	}
 	got, err := read()
-	t.Fatalf("document text with its asks' answers = %q (%v), want %q", got, err, want)
+	t.Fatalf("document text with its asks = %q (%v), want %q", got, err, want)
 }
 
 func waitForDocumentVersion(t *testing.T, database *store.Store, artifactID string, number int) model.Version {
@@ -6342,8 +6338,12 @@ func TestAWarmedReadSurvivesItsRoomsEviction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("name a version of a room evicted once warm: %v", err)
 			}
+			// The version's insert is a write, which the transaction's write phase runs at Commit.
+			if err := ledger.Commit(ctx); err != nil {
+				t.Fatalf("commit the named version: %v", err)
+			}
 			var markdown string
-			if err := tx.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, result.Version.Number).Scan(&markdown); err != nil {
+			if err := service.store.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, result.Version.Number).Scan(&markdown); err != nil {
 				t.Fatal(err)
 			}
 			if markdown != "The quick brown fox\n" {

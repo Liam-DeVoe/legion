@@ -260,8 +260,8 @@ type removedEvent struct {
 // artifact id. A document that holds anything, or that anything names, is refused in words that
 // say which test it failed and is still there after the refusal; a project's document is not
 // removed at all; the removal closes the document's editor room once its transaction has
-// committed; and a settlement of the document that queued behind the removal for the issue's row
-// reads on only after the commit, finds the document gone and ends saying nothing of it.
+// committed; and a settlement of the document that queued behind the removal for the issue's owner
+// lock reads on only after the commit, finds the document gone and ends saying nothing of it.
 func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) {
 	// The settlement is held back for the test's duration, so an edit written into a room is
 	// still unsettled when the removal reads it. The room test below runs a server of its own,
@@ -544,8 +544,10 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// What a room's batch of browser updates holds on any process while it appends: the
 		// document's lock, taken here as the transaction-level form of the session lock that
 		// batch's opening pipeline takes (docs/room_appends.go), and the doc_updates row it has
-		// written and not committed. Such a writer takes no owner row, so the issue's row the
-		// removal holds does not order it: the room's lock is what does.
+		// written and not committed. Such a writer takes no owner lock, so the issue's owner lock the
+		// removal holds does not order it: the room's lock is what does. The document plays no
+		// role of its converted issue, so it is a room of its own (requireOwnRoom).
+		requireOwnRoom(t, document)
 		appending, err := database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the append in flight: %v", err)
@@ -571,8 +573,8 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 
 		removals := make(chan *httptest.ResponseRecorder, 1)
 		go func() { removals <- removeDocument(t, handler, document.ID) }()
-		// The removal takes the issue's row, reads the refusals that row answers, and then waits
-		// for this room's lock.
+		// The removal takes the issue's owner lock, reads the refusals the issue's row answers, and
+		// then waits for this room's lock.
 		waitForDatabaseLocks(t, appending, 1)
 		select {
 		case answered := <-removals:
@@ -644,7 +646,9 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			t.Fatalf("the settlement pass over the untouched document wrote %#v (%v); want nothing written", version, err)
 		}
 		// The room is read live before the removal, so what is said of it after is said of a room
-		// that existed.
+		// that existed. The document plays no role of its converted issue, so it is a room of its
+		// own (requireOwnRoom).
+		requireOwnRoom(t, document)
 		if rooms := documents.ResidentRooms(); !slices.Contains(rooms, document.ID) {
 			t.Fatalf("this process holds the rooms %v, and not %s, whose room the removal must close", rooms, document.ID)
 		}
@@ -682,31 +686,36 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			t.Fatalf("read the live document = %q, %v; want the empty document it was made as", text, err)
 		}
 
-		// The issue's row is held, so the two writers queue for it in this order: the removal
-		// first, then a settlement that has read the document's row and waits for its owner's
-		// (lockArtifactOwner). The settlement is under way before the removal deletes anything,
+		// The issue's owner lock is held, so the two writers queue for it in this order: the
+		// removal first (beginArtifactWrite), then a settlement that has read the document's row
+		// and waits for its owner's lock (lockArtifactOwner). Both wait on the one statement that
+		// takes the lock (store.OwnerLockStatement), and each reads the issue's row plainly only in
+		// the statement after it. The settlement is under way before the removal deletes anything,
 		// and it reads on only after the removal has committed.
 		holder, err := queueDatabase.Pool.Begin(ctx)
 		if err != nil {
-			t.Fatalf("begin the transaction holding the issue's row: %v", err)
+			t.Fatalf("begin the transaction holding the issue's owner lock: %v", err)
 		}
 		defer holder.Rollback(context.Background())
-		if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
-			t.Fatalf("hold the issue's row: %v", err)
+		if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
+			t.Fatalf("hold the issue's owner lock: %v", err)
 		}
 		// The log is taken from before the removal: the settlement reads on as soon as the
 		// removal commits, which can be before the removal's request has returned.
 		logs := captureLogs(t)
 		removal := startRequest(func() *httptest.ResponseRecorder { return removeDocument(t, queueHandler, document.ID) })
-		awaitLockWaits(t, ctx, queueDatabase, "the removal never queued for the issue's row", func(waiting func(string) int) bool {
-			return waiting("%select status, closed_at is null from issues where key = $1 for no key update%") == 1
+		awaitLockWaits(t, ctx, queueDatabase, "the removal never queued for the issue's owner lock", func(waiting func(string) int) bool {
+			return waiting(store.OwnerLockStatement) == 1
 		})
+		// The document plays no role of its converted issue, so the settlement that versions it is
+		// its own room's (requireOwnRoom).
+		requireOwnRoom(t, document)
 		documents.SettleNow(document.ID)
-		awaitLockWaits(t, ctx, queueDatabase, "the settlement never queued for the issue's row behind the removal", func(waiting func(string) int) bool {
-			return waiting("%select closed_at is null from issues where key = $1 for no key update%") == 1
+		awaitLockWaits(t, ctx, queueDatabase, "the settlement never queued for the issue's owner lock behind the removal", func(waiting func(string) int) bool {
+			return waiting(store.OwnerLockStatement) == 2
 		})
 		if err := holder.Rollback(ctx); err != nil {
-			t.Fatalf("let the issue's row go: %v", err)
+			t.Fatalf("let the issue's owner lock go: %v", err)
 		}
 		<-removal.done
 		if removal.response.Code != http.StatusNoContent {
@@ -806,7 +815,9 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 
 	// Each process is read holding a room of the document, so what is said of the two rooms
 	// after the removal is said of rooms that existed. The removing process loaded its own when
-	// the document was made.
+	// the document was made. The document plays no role of its converted issue, so it is a room of
+	// its own (requireOwnRoom).
+	requireOwnRoom(t, document)
 	for _, process := range []struct {
 		what    string
 		service *docs.Service
@@ -898,6 +909,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	if text, err := third.Text(ctx, untouched.ID); err != nil || text != "" {
 		t.Fatalf("the third process reads the live document as %q, %v; want the empty document it was made as", text, err)
 	}
+	requireOwnRoom(t, untouched)
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
 		return slices.Contains(third.ResidentRooms(), untouched.ID)
 	}) {
@@ -923,6 +935,17 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 			untouched.ID, third.ResidentRooms())
 	}
 	assertNoRowNamesTheDocument(t, database, untouched.ID)
+}
+
+// requireOwnRoom fails unless the document's read names it a room of its own: its own id as its
+// room and that room's own fragment, as every document of an issue is but the issue's spec,
+// Verification document and plan, which join a converted issue's room (R5 of this branch's spec).
+func requireOwnRoom(t *testing.T, document model.Artifact) {
+	t.Helper()
+	if document.Room != document.ID || document.Fragment != model.ArtifactFragmentOwn {
+		t.Fatalf("%s (%s) reads room %q fragment %q, want a room of its own: room %s and fragment %s",
+			document.Name, document.ID, document.Room, document.Fragment, document.ID, model.ArtifactFragmentOwn)
+	}
 }
 
 // documentAppendCount is how many stored appends the database holds of a document's room. After

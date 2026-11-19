@@ -8,6 +8,7 @@ import type { Artifact } from "../../api/types";
 import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { parseIssuePath } from "../refs/routes";
+import { useDocumentAdmissions } from "./document-admission";
 import { issueAddress } from "./issue-address";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
@@ -20,6 +21,7 @@ import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
+import { nodeEditable } from "./useNodeEditing";
 
 /**
  * The rows of the issue's tree, drawn.
@@ -50,6 +52,7 @@ export function TreeRows({
   tabStop,
   threads,
   unplaced,
+  zoomRoot,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
@@ -88,6 +91,10 @@ export function TreeRows({
    *  reader on, each until the reader acts, and the row the reader is editing in, which the
    *  editor's caret places as the reader writes. */
   unplaced: string | undefined;
+  /** The id of the node the tree is zoomed to, whose row is drawn open by definition, so it
+   *  draws no fold control, whose press drew nothing. Undefined where the tree is drawn from the
+   *  issue, which is no row. */
+  zoomRoot: string | undefined;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
   // every row rather than once a row: a name and a shape for every node, the page's own words
@@ -95,6 +102,9 @@ export function TreeRows({
   const agentText = useAgentText();
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink.
   const reader = useQuery(whoAmIQuery()).data?.login;
+  // What each document's room last admitted the page to, read once for every row: a row of a
+  // document its room admitted read-only takes no typing (`nodeEditable`).
+  const admissions = useDocumentAdmissions();
   // The Lens act a focused row offers: the issue the address names and whether its preset is
   // the outline, read as the page's slots read their address. A route that names no issue
   // offers no act. One value while the address stands, so no row draws again.
@@ -159,9 +169,11 @@ export function TreeRows({
               }
               context={context.has(row.node.id)}
               {...(place === undefined ? {} : { document: place.artifact })}
+              editable={nodeEditable(place, isClosed, admissions)}
               {...(editing?.row === key ? { editing: editing.artifactId } : {})}
               expanded={row.expanded}
               focused={focused === key}
+              foldable={!(row.level === 1 && row.node.id === zoomRoot)}
               folded={row.folded}
               isClosed={isClosed}
               key={key}
@@ -188,8 +200,10 @@ export function TreeRows({
 /**
  * How much of the whole tree the cycle key draws, in the three states it steps through: its
  * rows as the fold left them, those rows with every body down to the second level open, and
- * every branch unfolded with every body open, each line of overtaken nodes left as it was. The
- * reader's own folds and pins are untouched by it, so the cycle comes back to their tree.
+ * everything - every branch unfolded and every body open, but for a branch the reader folds
+ * while it is drawn, which is drawn folded at once, and each line of overtaken nodes left as it
+ * was. The key leaves the reader's own folds and pins as they are, so the cycle comes back to
+ * the tree they had, with any fold made in the last state among them.
  */
 export const CYCLE_STATES = 3;
 

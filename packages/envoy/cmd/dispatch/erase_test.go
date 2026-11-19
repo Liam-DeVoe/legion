@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -37,16 +38,38 @@ func confirmErase(ctx context.Context, databaseURL, kind, id string, window time
 
 // blockHolding is the node address of the block of document whose text, at the latest version
 // that recorded one holding text, holds it - a block a later version dropped included - as
-// ref_key, '#' and the block id (migration 0121), after reading that the store holds its node.
+// ref_key, '#' and the block id (migration 0121), after reading that the store holds its node. A
+// converted document's blocks are keyed by its issue's room (refs.DocumentRoomSQL), each in the
+// document its fragment holds it in (refs.BlockDocumentOrSQL), and its address is the room's. A
+// block a version dropped has no issue_room_blocks row left, and its document is the one its
+// node's last asserted in_document names, as the erase reads it.
 func blockHolding(t *testing.T, database *store.Store, document, text string) string {
 	t.Helper()
 	var address string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select a.ref_key || '#' || t.block_id from document_block_texts t join artifacts a on a.id = t.artifact_id
-		where t.artifact_id = $1::uuid and position($2 in t.text) > 0
+		where t.artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`
+		  and `+refs.BlockDocumentOrSQL("t", `coalesce((select named.id from graph_tuples g join artifacts named on named.ref_key = g.to_id
+		      where g.from_kind = 'block' and g.from_id = a.ref_key || '#' || t.block_id and g.kind = '`+refs.TupleInDocument+`'
+		        and g.to_kind = 'artifact' and g.asserted
+		      order by g.seq desc limit 1), t.artifact_id)`)+` = $1::uuid
+		  and position($2 in t.text) > 0
 		  and exists (select 1 from graph_nodes n where n.kind = 'block' and n.id = a.ref_key || '#' || t.block_id)
 		order by t.version desc limit 1`, document, text).Scan(&address); err != nil {
 		t.Fatalf("read the block node of %s whose text holds %q: %v", document, text, err)
+	}
+	return address
+}
+
+// roomAddress is the ref_key of the room document is edited in (refs.DocumentRoomSQL): its
+// issue's tree for a converted document, which holds the room's one stored history, and the
+// document itself otherwise. An erase that replaces a document's history lists that room.
+func roomAddress(t *testing.T, database *store.Store, document string) string {
+	t.Helper()
+	var address string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select ref_key from artifacts where id = `+refs.DocumentRoomSQL("$1::uuid"), document).Scan(&address); err != nil {
+		t.Fatalf("read the room of %s: %v", document, err)
 	}
 	return address
 }
@@ -65,6 +88,10 @@ func blockHolding(t *testing.T, database *store.Store, document, text string) st
 //   - the display tree of an erased text stored inside the window after the commit, as a read
 //     that began before the commit stores one: the sweep after the window deletes it, and the
 //     report counts it.
+//
+// A converted issue's documents share its room's one stored history, which the erase replaces
+// whole, so the notes are a document of an issue of their own: in the spec's room the seed of
+// the notes' erase would hold the spec's live line, which repeats the secret.
 func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -75,9 +102,10 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 
 	secret := eraseTestSecret()
 	leak := "The passphrase is " + secret + " and nobody else may read it."
-	issue, spec := createEraseIssue(t, server, "ERS", "A spec that held a secret", "# Spec\n\n"+leak+"\n")
-	notes := uploadEraseDocument(t, server, issue, "notes.md", "# Notes\n\n"+leak+"\n")
-	uploadEraseDocument(t, server, issue, "notes.md", "# Notes\n\nNothing secret is left here.\n")
+	_, spec := createEraseIssue(t, server, "ERS", "A spec that held a secret", "# Spec\n\n"+leak+"\n")
+	notesIssue, _ := createEraseIssue(t, server, "ERS", "Notes of their own", "# Spec\n\nNothing here.\n")
+	notes := uploadEraseDocument(t, server, notesIssue, "notes.md", "# Notes\n\n"+leak+"\n")
+	uploadEraseDocument(t, server, notesIssue, "notes.md", "# Notes\n\nNothing secret is left here.\n")
 	if text := eraseDocumentText(t, server, notes); strings.Contains(text, secret) {
 		t.Fatalf("the edit left the secret in the live text of the notes: %q", text)
 	}
@@ -101,7 +129,7 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 		t.Errorf("after the erase %d stored update(s) of the notes still hold the secret's bytes", held)
 	}
 	var updates int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from doc_updates where artifact_id = $1`, notes).Scan(&updates); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select count(*) from doc_updates where artifact_id = `+refs.DocumentRoomSQL("$1::uuid"), notes).Scan(&updates); err != nil {
 		t.Fatalf("count the notes' stored updates: %v", err)
 	}
 	if updates != 1 {
@@ -110,9 +138,9 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if text := eraseDocumentText(t, server, notes); !strings.Contains(text, "Nothing secret is left here.") {
 		t.Errorf("the notes no longer read their own text after the erase: %q", text)
 	}
-	if len(erased.Documents) != 1 || !strings.HasSuffix(erased.Documents[0].Document, "/notes-md") ||
+	if len(erased.Documents) != 1 || erased.Documents[0].Document != roomAddress(t, database, notes) ||
 		!erased.Documents[0].Read || erased.Documents[0].Held || erased.Documents[0].Left {
-		t.Errorf("the erase of the notes' block lists the documents %+v, want the notes alone, their live text holding none of the text", erased.Documents)
+		t.Errorf("the erase of the notes' block lists the documents %+v, want the notes' room alone, their live text holding none of the text", erased.Documents)
 	}
 
 	// The spec, with a tree a read that began before the commit stores after it: planted the
@@ -166,8 +194,8 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if !strings.Contains(report.String(), "  redacted: issues 1\n") {
 		t.Errorf("the report counts no rewritten issue vector:\n%s", report.String())
 	}
-	if len(erasure.Documents) != 1 || !strings.HasSuffix(erasure.Documents[0].Document, "/spec") || !erasure.Documents[0].Held {
-		t.Errorf("the erase of the spec's block lists the documents %+v, want the spec, its live text holding the text", erasure.Documents)
+	if len(erasure.Documents) != 1 || erasure.Documents[0].Document != roomAddress(t, database, spec) || !erasure.Documents[0].Held {
+		t.Errorf("the erase of the spec's block lists the documents %+v, want the spec's room, its live text holding the text", erasure.Documents)
 	}
 	if planted := treesUnder(t, database, sum); planted != 0 {
 		t.Errorf("the tree stored inside the window after the commit is still there")
@@ -203,7 +231,8 @@ func TestTheEraseRefusesADocumentWhoseMarkdownSpellsTheTextOtherwise(t *testing.
 	}
 	block := blockHolding(t, database, notes, escaped)
 	if tag, err := database.Pool.Exec(ctx, `
-		update document_block_texts set text = replace(text, $2, $3) where artifact_id = $1::uuid and position($2 in text) > 0`,
+		update document_block_texts set text = replace(text, $2, $3)
+		where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and position($2 in text) > 0`,
 		notes, escaped, secret); err != nil || tag.RowsAffected() == 0 {
 		t.Fatalf("record the block's text unescaped: %d rows, %v", tag.RowsAffected(), err)
 	}
@@ -221,10 +250,11 @@ func TestTheEraseRefusesADocumentWhoseMarkdownSpellsTheTextOtherwise(t *testing.
 	if erasure.Applied {
 		t.Fatalf("the erase removed what it could not redact")
 	}
-	if unredacted := erasure.Unredacted(); len(unredacted) != 1 || !strings.HasSuffix(unredacted[0], "/notes-md") {
-		t.Errorf("the erase names %v as not redacted, want the notes", unredacted)
+	room := roomAddress(t, database, notes)
+	if unredacted := erasure.Unredacted(); len(unredacted) != 1 || unredacted[0] != room {
+		t.Errorf("the erase names %v as not redacted, want the notes' room %s", unredacted, room)
 	}
-	if !strings.Contains(report.String(), "/notes-md of "+issue+": not redacted: ") {
+	if !strings.Contains(report.String(), room+" of "+issue+": not redacted: ") {
 		t.Errorf("the report lists no not-redacted line for the notes:\n%s", report.String())
 	}
 	var nodes int
@@ -374,13 +404,14 @@ func issuesHolding(t *testing.T, database *store.Store, text string) int {
 	return held
 }
 
-// updatesHolding counts the stored updates of document whose bytes hold text's.
+// updatesHolding counts the stored updates of the room document is edited in
+// (refs.DocumentRoomSQL: its issue's room for a converted document) whose bytes hold text's.
 func updatesHolding(t *testing.T, database *store.Store, document, text string) int {
 	t.Helper()
 	var held int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from doc_updates
-		where artifact_id = $1 and position(convert_to($2, 'UTF8') in update) > 0`, document, text).Scan(&held); err != nil {
+		where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and position(convert_to($2, 'UTF8') in update) > 0`, document, text).Scan(&held); err != nil {
 		t.Fatalf("count the stored updates holding the text: %v", err)
 	}
 	return held

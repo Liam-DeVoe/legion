@@ -107,7 +107,7 @@ func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Durati
 // element only the newer one knows: here an attribute on the ask block, which the newer
 // build's editor keeps on the block. While two builds serve, his answer is written into the block
 // for the release before's pages (docs' rollWindowAskAttributes), so settlement writes a version
-// of it, whose approval the attribute case would carry (dispatch://INFRA-1150 R10); but this build
+// of it, whose approval the attribute case would carry; but this build
 // cannot read the approved version, so it cannot decide whether the approval carries. Its
 // settlement writes no version, leaves his approval as it was and logs that a build that reads the
 // element must write the version. The newer build then writes the version, with the attribute its
@@ -120,8 +120,8 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "Approved newer content", "Context\n\n"+regionAsk)
 	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
-	awaitDocumentText(t, handler, issue.PrimaryArtifactID, "the block written in step with its open ask",
-		contains(`:::ask{#region urgency="low" multiple="false" state="open"}`), nil)
+	awaitVersionText(t, handler, issue.PrimaryArtifactID, "the block written in step with its open ask",
+		contains(`:::ask{#region urgency="low" multiple="false" state="open"}`))
 	awaitSettled(t, database, issue.PrimaryArtifactID)
 	approved := latestVersion(t, database, issue.PrimaryArtifactID).Number
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", approved)
@@ -172,7 +172,7 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 	newer, service := newerBuildDocuments(t, database, 20*time.Millisecond)
 	// The newer build's editor keeps the attribute on the live block, as the approved version
 	// shows it.
-	setLiveBlockAttributes(t, service, issue.PrimaryArtifactID, "region", map[string]any{newerAskAttribute: "first"})
+	setLiveBlockAttributes(t, handler, service, issue.PrimaryArtifactID, "region", map[string]any{newerAskAttribute: "first"})
 	leases := storetest.Leases(t, database.Pool)
 	resumption, stop := context.WithCancel(ctx)
 	resumed := make(chan struct{})

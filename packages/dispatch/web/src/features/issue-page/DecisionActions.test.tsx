@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
+import { issueTreeKey } from "../../api/queries";
 import type { Artifact, DecisionKeep } from "../../api/types";
 import {
   borderDefault,
@@ -22,7 +23,6 @@ import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import {
-  issueTreeKey,
   issueTreeQuery,
   type TreeAnswer,
   type TreeAnswerNode,

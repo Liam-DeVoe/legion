@@ -14,9 +14,10 @@
 # its first check: a function resolves them when it runs, not when it is read. The HTTP vocabulary
 # at the end reads `driver`, the script's name its first PASS line names, `session`, the session
 # its bearer writes act for, `stamp`, the run's own suffix, `login`, the person person_send sends
-# as, and `key`, the issue invoke writes a lens on. Those are named below so a reader of this file -
-# and shellcheck, which reads one file at a time - sees what it reads of its caller. The caller
-# assigns each it uses before its first check, and may make its own readonly afterwards.
+# as, and `key`, the issue invoke writes a lens on; checked_issue adds to `keys`, the issues the
+# caller closes when it exits. Those are named below so a reader of this file - and shellcheck,
+# which reads one file at a time - sees what it reads of its caller. The caller assigns each it
+# uses before its first check, and may make its own readonly afterwards.
 : "${work:=}" "${status:=}" "${base:=}" "${database_url:=}"
 : "${driver:=}" "${session:=}" "${stamp:=}" "${login:=}" "${key:=}" "${cli_entry:=}"
 
@@ -30,6 +31,31 @@ require_env() {
       exit 2
     fi
   done
+}
+
+# loopback_database_url URL: succeeds only for a single loopback postgres URL authority.
+# Connection overrides and escaped parameter names are refused, and so is any `@` after the
+# authority: libpq reads user credentials up to the first `@` or `/`, not stopping at `?`, so a query
+# value holding `@` can name the host, and an override can replace even an explicit loopback one.
+loopback_database_url() {
+  local url="$1" authority host query parameter name
+  [[ "$url" == postgres://* || "$url" == postgresql://* ]] || return 1
+  [[ "$url" != *\#* ]] || return 1
+  authority="${url#*://}"
+  authority="${authority%%[/?]*}"
+  [[ "${url#*://"$authority"}" != *@* ]] || return 1
+  host="${authority#*@}"
+  [[ "$host" =~ ^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?$ ]] || return 1
+  if [[ "$url" == *\?* ]]; then
+    query="${url#*\?}"
+    while :; do
+      parameter="${query%%&*}"
+      name="${parameter%%=*}"
+      case "$name" in host | hostaddr | service | *%*) return 1 ;; esac
+      [[ "$query" == *'&'* ]] || break
+      query="${query#*&}"
+    done
+  fi
 }
 
 # require_commands COMMAND…: refuses the first named command that is not on PATH.
@@ -133,11 +159,13 @@ expect() {
 q() { jq -rn --arg v "$1" '$v|@uri'; }
 
 # query SECTION WHAT SQL: one value of one row, read through DATABASE_URL into $answer. psql runs
-# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host.
+# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host, and without
+# PGSERVICE and PGSERVICEFILE, whose service entry can carry a hostaddr of its own: the DSN alone
+# names the server, as the loopback guard read it.
 # shellcheck disable=SC2034 # $answer is this function's answer, read by its caller
 query() {
   local section="$1" what="$2" sql="$3"
-  answer="$(env -u PGHOSTADDR psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
+  answer="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
     fail "$section" "$what" "psql: $(<"$work/psql")"
 }
 
@@ -190,8 +218,10 @@ cli() {
     if [[ -n "$saved_tmpdir" ]]; then
       export TMPDIR="$saved_tmpdir"
     fi
+    # shellcheck disable=SC2154 # session is set by the driver that sources this file
     export DISPATCH_HOST=omp DISPATCH_SESSION_ID="$session" DISPATCH_URL="$base"
     export DISPATCH_TOKEN="$token"
+    # shellcheck disable=SC2154 # cli_entry is set by the driver that sources this file
     exec "$bun_bin" "$cli_entry" "$@"
   )
 }
@@ -329,4 +359,42 @@ seeded_catalogue() {
   [[ "$held" == "$seeded_kinds" ]] ||
     fail "$driver" "the catalogue holds its ten kinds" "it holds $held of $seeded_kinds"
   pass "$driver" "the catalogue holds its ten kinds"
+}
+
+# checked_issue SECTION PROJECT TITLE: the agent bearer creates an issue in PROJECT titled TITLE,
+# adds it to the caller's `keys`, the issues it closes when it exits, and writes the issue's
+# verification document holding one check, c1, which it reads back among that document's blocks as
+# a check. It sets $checked_key to the issue, $checked_check to the check's address and
+# $checked_assignee to the person the issue went to: the project's default assignee, since the
+# bearer acts for no person, and so a person who has signed in.
+# shellcheck disable=SC2034 # $checked_assignee is this function's answer, read by its caller
+checked_issue() {
+  send POST /api/v1/issues "$(jq -cn --arg p "$2" --arg t "$3" --argjson a "$(actor)" \
+    '{project: $p, title: $t, spec: "An issue whose verification document holds one check.", force: true, actor: $a}')"
+  want_status 201 "$1" "create the issue \"$3\" in $2"
+  checked_key="$(jq -er '.key' "$work/body")" || fail "$1" "create the issue \"$3\" in $2" "no key: $(body)"
+  keys+=("$checked_key")
+  checked_assignee="$(jq -r '.assignee // empty' "$work/body")"
+  send POST "/api/v1/issues/$checked_key/artifacts" "$(jq -cn --arg k "$checked_key" --argjson a "$(actor)" \
+    '{name: "verification.md", content: "How \($k) is proved.\n\n:::check{#c1}\nThe one check of \($k).\n:::\n", actor: $a}')"
+  want_status 201 "$1" "write the verification document of $checked_key"
+  checked_check="dispatch://$checked_key/artifact/verification-md#b-c1"
+  send GET "/api/v1/issues/$checked_key/artifacts/verification-md/blocks"
+  want_status 200 "$1" "read the blocks of the verification document of $checked_key"
+  expect "$1" "created $checked_key in $2, whose verification document holds the check $checked_check" '["check"]' \
+    '[.[] | select(.id == "c1") | .type]'
+}
+
+# another_project SECTION ASSIGNEE: the agent bearer creates a project of the run's own, whose
+# default assignee is ASSIGNEE, a person who has signed in: the bearer acts for no person, so the
+# create names one (createProject in packages/envoy/internal/dispatch/api/projects.go). It sets
+# $other_project to the project's key, an X and nine letters spelling the run's second, modulo
+# 100 000, and the last four digits of its process id. No route removes a project, so it stays on
+# the server.
+another_project() {
+  other_project="X$(printf '%09d' "$((($(date +%s) % 100000) * 10000 + $$ % 10000))" | tr 0-9 A-J)"
+  send POST /api/v1/projects "$(jq -cn --arg k "$other_project" --arg d "$2" --arg n "${driver%.sh} $stamp" \
+    --argjson a "$(actor)" '{key: $k, name: "Another project of \($n)", default_assignee: $d, actor: $a}')"
+  want_status 201 "$1" "create the project $other_project, whose default assignee is $2"
+  pass "$1" "created the project $other_project, whose default assignee is $2"
 }

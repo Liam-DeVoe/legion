@@ -162,7 +162,7 @@ const askBlockType = "ask"
 // creditedBlock reports whether a node of type typeName is a credited block: a block whose author
 // the document service keeps from the write that introduced it until a settlement reads it - an
 // ask, whose row a settlement opens, and a decision and a reading, whose node a version's index
-// writes with that author (dispatch://INFRA-1150 R1 and R2). WalkCreditedBlocks visits these and
+// writes with that author. WalkCreditedBlocks visits these and
 // blockHoldsCredited flags a block for them.
 func creditedBlock(typeName string) bool {
 	switch typeName {

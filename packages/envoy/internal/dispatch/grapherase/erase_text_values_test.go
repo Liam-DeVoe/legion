@@ -54,7 +54,7 @@ func TestTheEraseTakesABlocksWordsOutOfTheTextValueOfEveryBlockHoldingIt(t *test
 			document.artifactID).Scan(&versionAt); err != nil {
 			return err
 		}
-		_, won, write, err := refs.IndexBlocks(ctx, tx, document.artifactID, refs.OneVersion(document.artifactID, 1, versionAt), markdown, blocks, nil, nil, refs.TypedFacts{})
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, document.artifactID, refs.OneVersion(document.artifactID, 1, versionAt), markdown, blocks, nil, nil, refs.TypedFacts{})
 		if err != nil {
 			return err
 		}
@@ -220,7 +220,7 @@ func TestTheEraseOfARoomBlockReachesItsDocumentsVersionsItsTextsAndTheRoomsHisto
 				}
 				versions[document] = refs.Version{Number: number, At: at}
 			}
-			_, won, write, err := refs.IndexBlocks(ctx, tx, tree, versions, markdown.String(), blocks, nil, nil, refs.TypedFacts{})
+			_, won, write, _, err := refs.IndexBlocks(ctx, tx, tree, versions, markdown.String(), blocks, nil, nil, refs.TypedFacts{})
 			if err != nil {
 				return err
 			}

@@ -161,6 +161,11 @@ func TestTheRunWithoutConfirmTakesNoLockAndTheConfirmErasesOnlyItsListing(t *tes
 			t.Fatalf("hold %q: %d rows, %v", hold.statement, tag.RowsAffected(), err)
 		}
 	}
+	// The comment's owner is serialised on its advisory lock, which every writer of the issue and
+	// the confirmed erase take first (store.LockOwner); the holder takes it too.
+	if err := store.LockOwner(ctx, holder, store.IssueOwner("CORE-1")); err != nil {
+		t.Fatalf("hold issue CORE-1's owner lock: %v", err)
+	}
 	type answer struct {
 		erasure *Erasure
 		err     error
@@ -178,7 +183,7 @@ func TestTheRunWithoutConfirmTakesNoLockAndTheConfirmErasesOnlyItsListing(t *tes
 		}
 		listing = got.erasure
 	case <-time.After(20 * time.Second):
-		t.Fatalf("the run without --confirm waited 20 s behind the comment's owner row, node row and comments row, which another transaction held: it takes a lock")
+		t.Fatalf("the run without --confirm waited 20 s behind the comment's owner lock and row, node row and comments row, which another transaction held: it takes a lock")
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("let go of the held rows: %v", err)
@@ -346,6 +351,94 @@ func TestTheEraseRefusesABlockThatHoldsBlocksUntilTheyGo(t *testing.T) {
 	requireErased(t, database, refs.BlockNodeKind, seeded.inner)
 	requireErased(t, database, refs.BlockNodeKind, seeded.outer)
 	requireCensusZero(t, database, "after the erases")
+}
+
+// A recorded result is a node whose check_results row states its part_of and its result_of to its
+// check (T11 of this branch's plan), and the row names the node by its own id rather than by node
+// columns. An erase of the check would delete both tuples and leave the row stating them, which
+// the census reads as a difference. So the erase of the inner block, whose run a result an earlier
+// release recorded and the backfill gave its node, refuses, naming the result for each tuple, and
+// changes nothing; the census reads zero before the erase and after it.
+func TestTheEraseRefusesACheckARecordedResultNames(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	seeded := seedAgreeingStore(t, database)
+	var result string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+			check_sha256, role, commit_sha, verdict, failed, actor)
+		values ('CORE-1', 'CORE-1', $1::uuid, 'inner', 1, 'inner-sum', 'implementer',
+		        '1111111111111111111111111111111111111111', 'fail', 1, '{"kind":"user","id":"alice"}')
+		returning id::text
+	`, seeded.document.artifactID).Scan(&result); err != nil {
+		t.Fatalf("write the result an earlier release recorded against the inner block: %v", err)
+	}
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("give the result its node: %v", err)
+	}
+	requireCensusZero(t, database, "once the backfill gave the result its node")
+	for _, kind := range []string{graphstore.TuplePartOf, graphstore.TupleResultOf} {
+		requireRefused(t, database, refs.BlockNodeKind, seeded.inner, graphstore.KindResult+":"+result+" states "+kind)
+	}
+	requireCensusZero(t, database, "after the refused erase")
+}
+
+// A comment anchored in a block states its anchored_in to that block (T17b of
+// dispatch://INFRA-1253's plan), and the erase treats it as it treats the comment's anchored_to and
+// its row: no blocker. The comment, which the agreeing store's build wrote anchored on the inner
+// block, takes its node and its anchored_in from the backfill, and the census reads zero. The erase
+// of the inner block then runs, as it ran before the tuple existed: it deletes the anchored_in with
+// the block's other tuples, leaves the comment's row naming the block it anchored, and the census
+// reads zero after it, because a row states no anchored_in to a block erased since its comment was
+// written; a second backfill states nothing again.
+func TestTheEraseOfABlockACommentIsAnchoredInRunsAndTheCensusAgrees(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	seeded := seedAgreeingStore(t, database)
+	var comment string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into comments (artifact_id, author, body, anchor, created_at)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', 'A remark on the inner block.',
+		        jsonb_build_object('artifact_id', $1::text, 'block_id', 'inner', 'mark_id', 'm-inner', 'version', 1,
+		                           'quote', 'Block inner.', 'orphaned', false),
+		        now() - interval '1 day')
+		returning id::text
+	`, seeded.document.artifactID).Scan(&comment); err != nil {
+		t.Fatalf("write the comment anchored in the inner block: %v", err)
+	}
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the anchored comment: %v", err)
+	}
+	anchoredIn := func() []graphstore.Tuple {
+		held, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindComment, comment, []string{graphstore.TupleAnchoredIn})
+		if err != nil {
+			t.Fatalf("read the comment's anchored_in: %v", err)
+		}
+		return held
+	}
+	if held := anchoredIn(); len(held) != 1 || held[0].ToID != seeded.inner {
+		t.Fatalf("before the erase the comment states anchored_in %+v, want one to %s", held, seeded.inner)
+	}
+	requireCensusZero(t, database, "before the erase")
+	requireErased(t, database, refs.BlockNodeKind, seeded.inner)
+	if held := anchoredIn(); len(held) != 0 {
+		t.Errorf("after the erase the comment states anchored_in %+v, want none", held)
+	}
+	var block string
+	if err := database.Pool.QueryRow(ctx, `select coalesce(anchor->>'block_id', '') from comments where id = $1::uuid`, comment).Scan(&block); err != nil {
+		t.Fatalf("read the comment's anchor: %v", err)
+	}
+	if block != "inner" {
+		t.Errorf("after the erase the comment's anchor names block %q, want the row left naming inner", block)
+	}
+	requireCensusZero(t, database, "after the erase")
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill again after the erase: %v", err)
+	}
+	if held := anchoredIn(); len(held) != 0 {
+		t.Errorf("a backfill after the erase states anchored_in %+v, want none to the erased block", held)
+	}
+	requireCensusZero(t, database, "after a backfill after the erase")
 }
 
 // R5, and R16 of dispatch://INFRA-1253: an erase that deletes a version ends that version's node.

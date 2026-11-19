@@ -5,16 +5,11 @@ import type { ReactNode } from "react";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
+import { issueTreeKey } from "../../../api/queries";
 import type { Actor, Comment } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
-import {
-  issueTreeKey,
-  issueTreeQuery,
-  type TreeAnswer,
-  viewKey,
-  viewQuery,
-} from "../tree-read/tree-read";
+import { issueTreeQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   answeredAsk,

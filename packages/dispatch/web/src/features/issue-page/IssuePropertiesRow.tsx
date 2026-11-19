@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { issueCoverageQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
@@ -24,19 +24,18 @@ import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
 import { gatedStepEntries } from "../issue/gated-steps";
-import { issuePriority } from "../issue/issue-priority";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { refetchFailedOnFocus } from "../refs/reference-target";
-import { wordsOf } from "../refs/tree-fragment";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
-import { treeContext } from "./tree-drafts";
+import { StatusGlyph } from "./StatusGlyph";
+import { coverageStatements } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
@@ -100,18 +99,19 @@ export function IssuePropertiesRow({
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the coverage's statements, and the decisions the tree read answers as nodes,
   // with each Change it hangs under one - and kept fresh as the outline keeps them
-  // (`EVENT_FRESH`), so it costs no request of its own (`waiting.ts`).
+  // (`EVENT_FRESH`), so it costs no request of its own (`waiting.ts`). A statement is one by the
+  // rule the outline's review list reads (`coverageStatements`), so the count counts the very
+  // decisions the outline marks as waiting.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
-  const statements = useMemo(
-    () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
-    [coverage.data, nodeIdOf]
+  const isCoverageStatement = useMemo(
+    () => coverageStatements(issue, coverage.data),
+    [issue, coverage.data]
   );
   const waiting = useMemo(
-    () => waitingOnReader(issue, viewer, (reference) => statements.has(nodeIdOf(reference)), tree),
-    [issue, viewer, statements, nodeIdOf, tree]
+    () => waitingOnReader(issue, viewer, isCoverageStatement, tree),
+    [issue, viewer, isCoverageStatement, tree]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -164,14 +164,16 @@ export function IssuePropertiesRow({
       data-testid="issue-state-actions"
       ref={line}
     >
-      {/* The prototype's `.pill`: the status's glyph and word inside a rule of its colour. The
+      {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour. The
           rule is drawn inside the pill's box, so the select can fill that box: 24 px tall at
-          every width, the least a target may be (WCAG 2.5.8). */}
+          every width, the least a target may be (WCAG 2.5.8). The shape is an svg and not text,
+          since the page's typeface lacks ◐; it hides itself from assistive technology and holds
+          no words, so its span only centres it on the pill while the select stretches. */}
       <label
         className={`inline-flex min-h-6 shrink-0 items-stretch gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] ${statusTone(status)}`}
       >
-        <span aria-hidden="true" className="self-center" {...pageChrome}>
-          {statusGlyph(status)}
+        <span className="self-center">
+          <StatusGlyph glyph={statusGlyph(status)} />
         </span>
         {/* Sized to the status it shows, as the prototype's pill is; a browser with no
             `field-sizing` draws the select at its longest option, which is its own width. */}
@@ -195,7 +197,6 @@ export function IssuePropertiesRow({
       <PriorityEditor
         disabled={isClosed}
         issueKey={issue.key}
-        priority={issuePriority(issue.priority)}
         variant="header"
         write={priorityWrite}
       />
@@ -263,7 +264,6 @@ export function IssuePropertiesRow({
       )}
       {entries.length === 0 ? null : (
         <ApprovalSteps
-          actions={waiting.approvals.length > 0}
           actionsOn={waiting.approvals}
           entries={entries}
           layout="contents"
@@ -470,9 +470,14 @@ function HeaderLabels({
   // A width the line changes to is read again on the next frame, so the reading is a commit
   // of its own rather than one inside the observer's notification. A typeface that loads after
   // the reading can widen the chips while the box keeps its width, which the observer does not
-  // see, so the line is read again on each `loadingdone` of the document's fonts too.
+  // see, so the line is read again on each `loadingdone` of the document's fonts too. Both are
+  // added in a layout effect, which runs in the same commit right after the reading above, so no
+  // event falls between the two. Added after the page is drawn, they would miss a typeface that
+  // finished loading in that gap: its `loadingdone` would fire with no listener, and the
+  // observer's first notification would find the width unchanged, so the line would keep the
+  // fit it read with the old typeface.
   const hasLabels = labels.length > 0;
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = box.current;
     if (!hasLabels || element === null || typeof ResizeObserver === "undefined") return;
     let frame = 0;

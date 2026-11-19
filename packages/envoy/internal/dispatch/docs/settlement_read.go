@@ -29,7 +29,7 @@ func (st *settlement) documentRemoved(ctx context.Context) bool {
 	return removed
 }
 
-// readLocked is what the settlement reads once its transaction holds the document's owner row: the
+// readLocked is what the settlement reads once its transaction holds the document's owner lock: the
 // layout of an issue room, read again, the latest version, the document's cursor lock, the
 // catch-up that brings the room's instance to the document's durable head, the tree it reconciles
 // and the rendering of that tree, and whom its version credits.
@@ -55,7 +55,8 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 		}
 		if !slices.Equal(layout, st.layout) {
 			_ = tx.Rollback(ctx)
-			refusal := fmt.Errorf("%w: room %s holds the fragments of %v, and its documents are now %v", errRoomLayoutMoved, room, st.layout, layout)
+			refusal := fmt.Errorf("%w: room %s loaded the fragments of %d documents, and its %d documents now are not those",
+				errRoomLayoutMoved, room, len(st.layout), len(layout))
 			if parent.Err() != nil {
 				return settleDone, st.stoppedShort(refusal)
 			}
@@ -157,7 +158,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	// credited at its commit and published after the read; the supersession check in applyStamp
 	// then writes no version, since the write still holds its slot or its publish moved the
 	// generation.
-	first, err := s.readSettlementTree(state, st.doc, room, s.afterSettleAuthorsTake, false)
+	first, err := s.readSettlementTree(state, st.doc, room, st.layout, s.afterSettleAuthorsTake, false)
 	if err != nil {
 		if skipUnreadableSettlement(room, err) {
 			return settleDone, settleOutcome{}

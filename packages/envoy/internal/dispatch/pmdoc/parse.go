@@ -115,7 +115,7 @@ func ParseRendering(markdown string) (*Node, error) {
 // blocks begin (itemblocks.Split).
 func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	var starts []int
-	doc, err := parseMarkdown(markdown, fromStart, true, NewWriteBudget(), &starts)
+	doc, err := parseMarkdown(markdown, fromStart, true, "", NewWriteBudget(), &starts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -145,7 +145,7 @@ func parseStampedAt(markdown string, at origin, budget *WriteBudget) (*Node, err
 // (RepeatedBlockID), and the repair keeps it for its first block, as settlement would. Each untyped
 // block of live the markdown leaves unchanged keeps its id (carryBlockIDs), which the markdown
 // cannot name, so the write leaves it as it was. A block id of any length is written; one longer
-// than text.MaxBlockIDBytes is simply no graph node (refs.IndexBlocks). A document whose rendering,
+// than text.MaxBlockIDBytes is simply no graph node (refs.PlanBlocks). A document whose rendering,
 // the markdown it is stored as, reads back otherwise is refused (RefuseMisreadDocument);
 // ParseWritten is this parse with that read-back, for a write that goes on to read the same
 // rendering.
@@ -160,7 +160,7 @@ func ParseForWrite(markdown string, live *Node) (*Node, error) {
 // for its blocks - shares this parse rather than making a second one of the same markdown. A
 // refused parse answers the zero read-back.
 func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
-	doc, err := parseForWrite(markdown, live, true, NewWriteBudget())
+	doc, err := parseForWrite(markdown, live, true, "", NewWriteBudget())
 	if err != nil {
 		return nil, WrittenReadBack{}, err
 	}
@@ -177,17 +177,30 @@ func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
 // front-matter block opening the markdown is front matter, as Parse reads it. Its tables' short
 // rows are padded on budget, the caller write's, which its other fragments share.
 func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*Node, error) {
-	return parseForWrite(markdown, nil, opensDocument, budget)
+	return parseForWrite(markdown, nil, opensDocument, "", budget)
 }
 
-// parseForWrite is the parse ParseForWrite and ParseFragment share. The markdown's tree is judged
-// for repeated ids (RepeatedBlockID) with only the ids it names, then takes the ids of the blocks
-// of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
-// without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
-// The tree is held to the content rule of each block a live document keeps in any order
-// (writtenContentError), since a caller wrote it in one piece.
-func parseForWrite(markdown string, live *Node, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
-	doc, err := parseUnstamped(LineFeeds(markdown), fromStart, readFrontmatter, budget)
+// ParseFragmentInto parses markdown a caller writes inside a block of type parent, after that
+// block's last child, as ParseFragment parses one written between blocks: its blocks are read as
+// that block's children rather than a document's, so a block of a type whose parents name parent
+// - a reading in a decision or an ask (TypedContent) - is read where it is written, as it is
+// nowhere at a document's level. A block's children hold no front matter, so none is read. The
+// tree is a document holding those blocks, as ParseFragment's is; whether they may close the block
+// is InsertInto's to judge, against the children the block holds already.
+func ParseFragmentInto(markdown, parent string, budget *WriteBudget) (*Node, error) {
+	return parseForWrite(markdown, nil, false, parent, budget)
+}
+
+// parseForWrite is the parse ParseForWrite, ParseFragment and ParseFragmentInto share. The
+// markdown's tree is judged for repeated ids (RepeatedBlockID) with only the ids it names, then
+// takes the ids of the blocks of live it leaves unchanged (carryBlockIDs), and only then is an id
+// minted for each block still without one (EnsureBlockIDs), so the refusal and the carry see only
+// the ids the markdown named. The tree is held to the content rule of each block a live document
+// keeps in any order (writtenContentError), since a caller wrote it in one piece. within is the
+// type of the block whose children the markdown's blocks are, "" for a document's
+// (validateWithin).
+func parseForWrite(markdown string, live *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
+	doc, err := parseMarkdown(LineFeeds(markdown), fromStart, readFrontmatter, within, budget, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -258,11 +271,12 @@ func LineFeedAttrs(attrs map[string]any) map[string]any {
 // as the blocks its lines make. at is where markdown stands in what the caller wrote, which a
 // refusal's line number counts from.
 func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
-	return parseMarkdown(markdown, at, readFrontmatter, budget, nil)
+	return parseMarkdown(markdown, at, readFrontmatter, "", budget, nil)
 }
 
 // parseMarkdown is parseUnstamped that, given starts, also sets it to where each of the tree's
-// top-level children starts in markdown (sourceStarts).
+// top-level children starts in markdown (sourceStarts), and whose top-level children are those
+// of a block of type within where within names one (validateWithin).
 //
 // Every U+0000 in markdown is read as U+FFFD (nulAsReplacement) before any parser sees a byte of
 // it, as CommonMark requires of a reader (§2.3 Insecure characters) and the browser editor's parser
@@ -275,7 +289,7 @@ func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *Wr
 // prefix the server itself wrote ahead of the caller's text (parseTableRows), which holds no
 // U+0000 and so keeps its length, and starts are offsets into source until startsInMarkdown maps
 // each of them back to the byte of markdown it stands at.
-func parseMarkdown(markdown string, at origin, readFrontmatter bool, budget *WriteBudget, starts *[]int) (doc *Node, err error) {
+func parseMarkdown(markdown string, at origin, readFrontmatter bool, within string, budget *WriteBudget, starts *[]int) (doc *Node, err error) {
 	defer recoverPanic(&doc, &err, "reading markdown")
 	source := []byte(nulAsReplacement(markdown))
 	var front *Node
@@ -309,7 +323,7 @@ func parseMarkdown(markdown string, at origin, readFrontmatter bool, budget *Wri
 		doc.Children = []*Node{{Type: "paragraph"}}
 	}
 	sortNodeMarks(doc)
-	if err := doc.Validate(); err != nil {
+	if err := validateWithin(doc, within); err != nil {
 		return nil, err
 	}
 	if starts != nil {

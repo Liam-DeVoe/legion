@@ -21,20 +21,33 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// decisionDocument is one document a decision test writes, as the store addresses its blocks.
+// decisionDocument is one document a decision test writes, as the store addresses its blocks:
+// its id and its ref_key, which a pointer at one of its blocks spells (`<ref_key>#<block>`, a
+// shaped tuple's far end), and the id and ref_key of the artifact its blocks' rows and nodes are
+// keyed under - the document itself, or for a document converted into its issue's room the room's
+// tree artifact (T12a of this branch's plan).
 type decisionDocument struct {
-	id, refKey string
+	id, refKey, room, nodeKey string
 }
 
 // address is a block's node address in the document.
-func (d decisionDocument) address(block string) string { return d.refKey + "#" + block }
+func (d decisionDocument) address(block string) string { return d.nodeKey + "#" + block }
 
-// readDecisionDocument reads the id and ref_key of the issue's document slug.
+// pointed is the node a pointer at a block of the document resolves to, which a shaped tuple's far
+// end and a decision's link name: a tuple's ends are nodes, and the node of a block of a document
+// converted into its issue's room is the room's (address), whatever address the pointer spells.
+func (d decisionDocument) pointed(block string) string { return d.address(block) }
+
+// readDecisionDocument reads the id and ref_key of the issue's document slug, and those of the
+// artifact its blocks are keyed under (refs.DocumentRoomSQL).
 func readDecisionDocument(t *testing.T, database *store.Store, issueKey, slug string) decisionDocument {
 	t.Helper()
 	var document decisionDocument
-	if err := database.Pool.QueryRow(context.Background(),
-		`select id::text, ref_key from artifacts where issue_key = $1 and slug = $2`, issueKey, slug).Scan(&document.id, &document.refKey); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `
+		select a.id::text, a.ref_key, room.id::text, room.ref_key
+		from artifacts a join artifacts room on room.id = `+refs.DocumentRoomSQL("a.id")+`
+		where a.issue_key = $1 and a.slug = $2
+	`, issueKey, slug).Scan(&document.id, &document.refKey, &document.room, &document.nodeKey); err != nil {
 		t.Fatalf("read the document %s of %s: %v", slug, issueKey, err)
 	}
 	return document
@@ -276,19 +289,19 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	// The event names the block whose backlink count the new tie moved, as a version event names
 	// what its block index moved, so a page reading counts off the event refreshes it.
 	if !slices.ContainsFunc(openedPayload.ReferencesChanged, func(changed model.ChangedReference) bool {
-		return changed.Kind == refs.BlockNodeKind && changed.ID == issue.Key+"/spec#r1"
+		return changed.Kind == refs.BlockNodeKind && changed.ID == spec.pointed("r1")
 	}) {
-		t.Errorf("the ask.opened of %s names the changed references %+v, want the block %s/spec#r1 its shaped tie reaches", askID, openedPayload.ReferencesChanged, issue.Key)
+		t.Errorf("the ask.opened of %s names the changed references %+v, want the block %s its shaped tie reaches", askID, openedPayload.ReferencesChanged, spec.pointed("r1"))
 	}
-	if len(askShaped) != 1 || askShaped[0].ToKind != refs.BlockNodeKind || askShaped[0].ToID != issue.Key+"/spec#r1" {
-		t.Fatalf("the ask %s states the shaped %+v once its settlement opened it, want one tuple to %s/spec#r1", askID, askShaped, issue.Key)
+	if len(askShaped) != 1 || askShaped[0].ToKind != refs.BlockNodeKind || askShaped[0].ToID != spec.pointed("r1") {
+		t.Fatalf("the ask %s states the shaped %+v once its settlement opened it, want one tuple to %s", askID, askShaped, spec.pointed("r1"))
 	}
 	requireCaused(t, "the new ask's shaped", askShaped[0], "alice", opened)
 	var marked int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from block_refs
 		where block_id = 'a1' and kind = 'shaped' and node_kind = $1 and node_address = $2 and to_id = $3
-	`, graphstore.KindAsk, askID, issue.Key+"/spec#r1").Scan(&marked); err != nil {
+	`, graphstore.KindAsk, askID, spec.pointed("r1")).Scan(&marked); err != nil {
 		t.Fatalf("read the new ask's shaped row: %v", err)
 	}
 	if marked != 1 {
@@ -325,7 +338,7 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 		t.Fatalf("d1 states %d shaped tuples, want one for each of the three requirements: %+v", len(shapedTies), shapedTies)
 	}
 	for index, tuple := range shapedTies {
-		if want := issue.Key + "/spec#r" + string(rune('1'+index)); tuple.ToKind != refs.BlockNodeKind || tuple.ToID != want {
+		if want := spec.pointed("r" + string(rune('1'+index))); tuple.ToKind != refs.BlockNodeKind || tuple.ToID != want {
 			t.Errorf("shaped tuple %d of d1 reaches %s/%s, want block %s", index+1, tuple.ToKind, tuple.ToID, want)
 		}
 		requireCaused(t, "a shaped tuple of d1", tuple, "alice", uploaded)
@@ -389,13 +402,30 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	uploadAs(t, handler, issue.Key, "choices.md", decided+":::decision{#u1}\nBob rewords the upload's decision.\n:::\n", "bob")
 	requireDecidedBy(t, database, "another writer's upload", decisions.address("u1"), "alice")
 
-	// An index pass over the document leaves from_ask and decided_by standing.
+	// An index pass over the document leaves from_ask and decided_by standing. The pass is read by
+	// what it did: it indexes choices.md, the one document owed, at its newest version, so a pass
+	// that indexed nothing cannot stand in for it.
 	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = null where artifact_id = $1`, decisions.id); err != nil {
 		t.Fatalf("leave choices.md owed its block index: %v", err)
 	}
-	if _, err := documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+	var owed int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from document_block_versions where version is null`).Scan(&owed); err != nil || owed != 1 {
+		t.Fatalf("%d documents are owed their block index (%v), want choices.md alone", owed, err)
+	}
+	tick, err := documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil)
+	if err != nil {
 		t.Fatalf("run the block-index reconciliation: %v", err)
 	}
+	newest := latestVersion(t, database, decisions.id).Number
+	var indexed int
+	if err := database.Pool.QueryRow(ctx, `select coalesce(version, 0) from document_block_versions where artifact_id = $1`, decisions.id).Scan(&indexed); err != nil {
+		t.Fatalf("read the version choices.md is indexed at: %v", err)
+	}
+	if tick.Documents != 1 || tick.LiveAhead != 0 || tick.OwedDocuments != 0 || indexed != newest {
+		t.Fatalf("the index pass read %+v and left choices.md indexed at version %d (0 for owed), want it to index that one document at its newest version %d and leave none owed",
+			tick, indexed, newest)
+	}
+	t.Logf("the index pass indexed %d document, choices.md at version %d, and left %d owed", tick.Documents, indexed, tick.OwedDocuments)
 	if held := currentTies(t, database, d1, refs.TupleFromAsk); len(held) != 1 || held[0].ToID != askID {
 		t.Errorf("after an index pass d1 states the from_ask %+v, want the ask %s still standing", held, askID)
 	}
@@ -454,7 +484,7 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	// editor reads a value the store does not hold.
 	uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
 	browser := readDecisionDocument(t, database, issue.Key, "browser-md")
-	peer := connectBrowserPeer(t, documents, browser.id)
+	peer := connectBrowserPeer(t, handler, documents, browser.id)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = append(tree.Children, decisionNode("b1", "The browser decides.", pmdoc.Attrs{
@@ -502,7 +532,7 @@ func requireLiveDecision(t *testing.T, database *store.Store, peer *syncedPeer, 
 		t.Fatalf("read the stored tree of %s: %v", artifactID, err)
 	}
 	peer.barrier(t)
-	editor, err := pmdoc.Read(peer.doc.GetXmlFragment("prosemirror"))
+	editor, err := pmdoc.Read(peer.doc.GetXmlFragment(peer.fragment))
 	if err != nil {
 		t.Fatalf("read the browser editor's tree: %v", err)
 	}
@@ -576,7 +606,7 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 	uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
 	browser := readDecisionDocument(t, database, issue.Key, "browser-md")
 	own := "dispatch://" + issue.Key + "/spec#b-r1"
-	peer := connectBrowserPeer(t, documents, browser.id)
+	peer := connectBrowserPeer(t, handler, documents, browser.id)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = append(tree.Children, decisionNode("b1", "The browser ties elsewhere.", pmdoc.Attrs{
@@ -590,7 +620,7 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 		t.Fatalf("settlement refused the browser's write, want it stored")
 	}
 	address := browser.address("b1")
-	if held := currentTies(t, database, address, refs.TupleShaped); len(held) != 1 || held[0].ToID != issue.Key+"/spec#r1" {
+	if held := currentTies(t, database, address, refs.TupleShaped); len(held) != 1 || held[0].ToID != readDecisionDocument(t, database, issue.Key, "spec").pointed("r1") {
 		t.Errorf("the browser's decision states the shaped %+v, want its tie inside %s alone", held, issue.Key)
 	}
 	if held := currentTies(t, database, address, refs.TupleFromAsk); len(held) != 0 {
@@ -599,7 +629,7 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 	var rows int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from block_refs where artifact_id = $1 and block_id = 'b1' and (to_id = $2 or to_id like $3)
-	`, browser.id, foreignAsk, other.Key+"/%").Scan(&rows); err != nil {
+	`, browser.room, foreignAsk, other.Key+"/%").Scan(&rows); err != nil {
 		t.Fatalf("count the browser's rows into %s: %v", other.Key, err)
 	}
 	if rows != 0 {
@@ -609,15 +639,16 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 }
 
 // connectPeerAs connects login's browser to artifactID's room, as connectBrowserPeer connects
-// alice's.
-func connectPeerAs(t *testing.T, documentService *docs.Service, artifactID, login string) *syncedPeer {
+// alice's, binding the fragment the artifact read through handler answers.
+func connectPeerAs(t *testing.T, handler http.Handler, documentService *docs.Service, artifactID, login string) *syncedPeer {
 	t.Helper()
 	sockets := &servedSockets{finished: make(map[string]chan struct{})}
 	server := httptest.NewServer(sockets.serve(documentService.ServeHTTP))
 	t.Cleanup(server.Close)
 	peer := &syncedPeer{
 		wsURL: "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID, sockets: sockets,
-		headers: http.Header{"X-Dispatch-User": []string{login}}, artifactID: artifactID, doc: crdt.New(),
+		headers: http.Header{"X-Dispatch-User": []string{login}}, artifactID: artifactID,
+		fragment: artifactFragment(t, handler, artifactID), doc: crdt.New(),
 	}
 	peer.connect(t)
 	return peer
@@ -647,9 +678,9 @@ func TestADecisionInASettlementOfSeveralWritersNamesTheOneWhoWroteIt(t *testing.
 	uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
 	browser := readDecisionDocument(t, database, issue.Key, "browser-md")
 
-	bob := connectPeerAs(t, documents, browser.id, "bob")
+	bob := connectPeerAs(t, handler, documents, browser.id, "bob")
 	t.Cleanup(bob.close)
-	alice := connectPeerAs(t, documents, browser.id, "alice")
+	alice := connectPeerAs(t, handler, documents, browser.id, "alice")
 	alice.appendParagraph(t, "Alice adds an unrelated line.")
 	alice.barrier(t)
 	alice.closeAndWait(t)
@@ -725,8 +756,9 @@ func TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows(t *testing.T) {
 	t.Run("a browser's new ask block", func(t *testing.T) {
 		uploadAs(t, handler, issue.Key, "browser.md", "Before.\n", "alice")
 		browser := readDecisionDocument(t, database, issue.Key, "browser-md")
-		writeBrowserDocument(t, documents, browser.id, "Before.\n\n::::ask{#a9 urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait\n\n"+
+		writeBrowserDocument(t, handler, documents, browser.id, "Before.\n\n::::ask{#a9 urgency=\"med\" multiple=\"false\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait\n\n"+
 			":::reading{#g9}\nThe agent reads it as shipping.\n:::\n::::\n")
+
 		settleIssue(t, documents, issue.Key)
 		if latestVersion(t, database, browser.id).Number < 2 {
 			t.Fatalf("settlement wrote no version of the browser's ask block")

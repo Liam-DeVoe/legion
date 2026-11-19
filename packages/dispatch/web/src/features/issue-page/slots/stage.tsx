@@ -24,17 +24,37 @@ import { ViewVerificationSlot } from "./view-verification";
  * slot under Spec, Verification, Plan or Decisions. Each slot draws its own measure, so the
  * stage adds no box and no width. A view whose slot is not filled yet draws nothing.
  *
+ * An address that names a node beside a view's own address and opens no document - an item
+ * beside it (`?ask=`, `?comment=`), as `documentItemPath` writes the address of an item of the
+ * spec, or a `#b-` fragment on it - is the outline's on that node (`issue-address.ts`). A view
+ * whose part has not filled its slot draws nothing to land on, which left the reader on the
+ * page's body: under such a view the stage draws the body, which lands on the node, or says in
+ * the outline's place that the tree holds none.
+ *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`).
  *
  * Under Decisions, an address naming an overtaken node, or a node under one, which that view
  * draws nowhere, is replaced by the same address under no filter (`useOvertakenTarget`).
  */
-export function StageSlot(props: SlotProps): ReactNode {
+export function StageSlot({
+  filled = SLOT_FILLED,
+  views = VIEW_SLOTS,
+  ...props
+}: SlotProps & {
+  /** Whether each slot's own part has filled it: `SLOT_FILLED` where none is given, and a
+   *  view's slot set filled in a test, as that view's part will set it. */
+  readonly filled?: SlotsFilled;
+  /** The slot each view draws in place of the outline: `VIEW_SLOTS` where none is given, and a
+   *  stand-in view in a test, which reads the stage's rule apart from what each view draws. */
+  readonly views?: ViewSlots;
+}): ReactNode {
   const { hash, search } = useLocation();
-  const { preset } = issueAddress(props.route, search, hash, primarySpec(props.issue)?.slug);
+  const address = issueAddress(props.route, search, hash, primarySpec(props.issue)?.slug);
+  const { preset } = address;
   useOvertakenTarget(props.issue, props.route);
-  const View = VIEW_SLOTS[preset];
+  const outline = !filled[preset] && address.target !== undefined && address.document === undefined;
+  const View = outline ? undefined : views[preset];
   return (
     <ViewReadProvider issue={props.issue} preset={preset}>
       <DocumentStages>
@@ -50,14 +70,33 @@ export function StageSlot(props: SlotProps): ReactNode {
   );
 }
 
+/** The slot each view draws in place of the outline, by preset. */
+export type ViewSlots = Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | undefined>>;
+
 /** The slot each view draws in place of the outline; none for Conversation, which is the
  *  outline itself. */
-const VIEW_SLOTS: Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | undefined>> = {
+export const VIEW_SLOTS: ViewSlots = {
   conversation: undefined,
   decisions: ViewDecisionsSlot,
   plan: ViewPlanSlot,
   spec: ViewSpecSlot,
   verification: ViewVerificationSlot,
+};
+
+/** Whether each slot's own part has filled it, by preset. */
+export type SlotsFilled = Readonly<Record<Preset, boolean>>;
+
+/** Whether each slot's own part has filled it: a view whose part has not draws nothing, and an
+ *  address naming a node beside it draws the outline (`StageSlot`). Each view's part sets its
+ *  entry here when it fills its slot; from then the address is that view's, which is to land on
+ *  the node in its own tree. Each of the four views draws its own tree here (`view-spec.tsx`,
+ *  `view-plan.tsx`, `view-verification.tsx`, `view-decisions.tsx`), so each is filled. */
+export const SLOT_FILLED: SlotsFilled = {
+  conversation: true,
+  decisions: true,
+  plan: true,
+  spec: true,
+  verification: true,
 };
 
 /** A view's tree itself, which holds the focus only where it has no row to give it to. */

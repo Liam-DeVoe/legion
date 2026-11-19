@@ -40,6 +40,7 @@ test("the page binds prosemirror for an artifact read that names no fragment", (
   const room = issueRoom();
 
   expect(fragmentOf(plan)).toBe("prosemirror");
-  expect(fragmentOf({ ...plan, fragment: null })).toBe("prosemirror");
+  // An answer naming `null`, which the generated Artifact does not spell, names none either.
+  expect(fragmentOf({ ...plan, fragment: null } as unknown as Artifact)).toBe("prosemirror");
   expect(room.getXmlFragment(fragmentOf(plan)).toString()).toBe("The issue's own node.");
 });

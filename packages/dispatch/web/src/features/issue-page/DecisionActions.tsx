@@ -2,6 +2,7 @@ import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-quer
 import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
+import { issueTreeKey } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
 import type { AnchorInput, Artifact } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
@@ -24,7 +25,7 @@ import {
 } from "./decision-nodes/decision-nodes";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { dropViews, issueTreeKey, issueTreeQuery } from "./tree-read/tree-read";
+import { dropViews, issueTreeQuery } from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
@@ -206,6 +207,7 @@ function DecisionControls({
   const quote = useMemo(() => decisionQuote(decision), [decision]);
   const keep = useKeyedWrite({
     inline: true,
+    issue: issueKey,
     label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
     // The node's own block, and the sum of the text this node showed: a decision the agent
     // changed since is refused (`409 DECISION_CHANGED`), so a Keep never stands over words the

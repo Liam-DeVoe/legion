@@ -20,6 +20,12 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * assignee moves its questions to that person's count. Nothing waits on a reader whose login has
  * not resolved.
  *
+ * A decision is on the review list by its tie to a statement, and `isCoverageStatement` answers
+ * which addresses name one: the header's count (`IssuePropertiesRow.tsx`) passes
+ * `coverageStatements(issue, coverage)` (`tree-drafts.ts`), the rule the outline's
+ * `draftDecision` (`tree-read/tree-nodes.ts`) marks a decision waiting by, so the count counts
+ * the decisions the outline marks as waiting and no other.
+ *
  * A decision is a decision node of the tree read (`tree`), read once per answer
  * (`decision-nodes.ts`' `decisionsOfAnswer`) with no asks: they only make an answered question a
  * person's decision, which never waits for review, and an agent's decision reads none, so the
@@ -49,7 +55,7 @@ export interface WaitingOnReader {
 export function waitingOnReader(
   issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
-  isStatement: (reference: string) => boolean,
+  isCoverageStatement: (reference: string) => boolean,
   tree: TreeAnswer | undefined
 ): WaitingOnReader {
   // Each open ask and node of the tree at or under an overtaken node taken out, the decisions
@@ -87,7 +93,7 @@ export function waitingOnReader(
     viewer === undefined
       ? 0
       : decisions.filter((decision) =>
-          inReviewList(decision, isStatement, changes?.has(decision.node.id) === true)
+          inReviewList(decision, isCoverageStatement, changes?.has(decision.node.id) === true)
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
 }

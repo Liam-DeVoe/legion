@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestTheBackfillLeavesOutAnOwnedByTuplePastTheBound is dispatch://INFRA-1149's R2 at the bound for
+// TestTheBackfillLeavesOutAnOwnedByTuplePastTheBound is this change's R2 at the bound for
 // the backfill. A pre-store comment owned by a document whose ref_key is past the store's address
 // bound is left whole out of the store: the backfill writes no node and no tuple for it and leaves
 // its row's node columns null, so the old comments arm of graph_edges answers its owned_by edge.
