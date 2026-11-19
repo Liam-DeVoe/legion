@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
-import { type TaskValue, taskWaitingNote } from "@legion/pi-shared/task-take";
+import { taskWaitingNote } from "@legion/pi-shared/task-notes";
+import type { TaskValue } from "@legion/pi-shared/task-take";
 import {
   type Block,
   type Cleanup,

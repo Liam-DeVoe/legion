@@ -53,10 +53,11 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * At each tool result of the run the host asks `noteFor`, which gives the number of an owed value
  * the worker did not take — one not asked about, a take in flight, or a take the daemon refused at
  * this revision, whatever its hold — once for each task number in this process, and the host adds
- * `taskWaitingNote` to that tool result, which the model reads at its next step. The note carries
- * no task and starts no turn: the take still goes at the run's end. `heldTakeNote` is R2's note,
- * for a take of another claim of the issue that the daemon holds behind this claim's turn, which
- * the host learns of from the `holds` of a `claims/task` read.
+ * `taskWaitingNote` (`./task-notes`) to that tool result, which the model reads at its next step.
+ * The note carries no task and starts no turn: the take still goes at the run's end.
+ * `heldTakeNote` (`./task-notes`) is R2's note, for a take of another claim of the issue that the
+ * daemon holds behind this claim's turn, which the host learns of from the `holds` of a
+ * `claims/task` read.
  *
  * The take is pending (`pending`, R6) while it holds an owed value it has not asked about at this
  * revision, while a take is in flight, while an accepted take's turn has not started, its text
@@ -84,27 +85,6 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
 /** The daemon's hold for a take refused because the claim is in a turn (`supervise.HoldInTurn`,
  * `packages/daemon/internal/supervise/take.go`): it writes the value again at that turn's end. */
 const HOLD_IN_TURN = "in-turn";
-
-/** R1's note: the claim's own task `number` waits for the end of the turn going now. */
-export function taskWaitingNote(number: number): string {
-  return (
-    `Legion: task ${number} of this claim waits for this turn to end. It starts as your next ` +
-    "turn when this turn ends, unless the daemon holds or drops it then. Finish what is in hand, " +
-    "stop at a safe point, and end this turn. This note carries no task: do not start its work " +
-    "in this turn."
-  );
-}
-
-/** R2's note: the `role`'s task `number` on this issue waits for the end of this claim's turn,
- * which holds it because the roles of an issue share one working copy. */
-export function heldTakeNote(role: string, number: number): string {
-  return (
-    `Legion: the ${role}'s task ${number} on this issue waits for this turn to end, because the ` +
-    "roles of an issue share one working copy. It starts when this turn ends, unless the daemon " +
-    "holds it then. Finish what is in hand, stop at a safe point, and end this turn. This note " +
-    "carries no task."
-  );
-}
 
 /** A claim's task value: the task's number, and the bucket's epoch and revision of the write that
  * put it there. */

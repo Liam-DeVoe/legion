@@ -77,6 +77,10 @@
       "types": "./src/legion-claim-core.ts",
       "bun": "./src/legion-claim-core.ts"
     },
+    "./task-notes": {
+      "types": "./src/task-notes.ts",
+      "bun": "./src/task-notes.ts"
+    },
     "./task-take": {
       "types": "./src/task-take.ts",
       "bun": "./src/task-take.ts"

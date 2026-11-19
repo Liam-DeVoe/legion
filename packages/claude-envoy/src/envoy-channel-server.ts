@@ -115,6 +115,7 @@ import { claudeProjectDirectory, claudeSessionId, configuredValue } from "./clau
 import { inboundOffChannelSession, serveEnvoyOff } from "./envoy-off"
 import { installedPluginVersion } from "./installed-build"
 import {
+  createHoldsRead,
   endPane,
   type LegionClaim,
   legionPane,
@@ -2328,7 +2329,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const bundlePath = process.argv[1] ?? ""
   // One connection to the bridge carries every line this server writes into the session: each
   // Envoy delivery, the reminders and notices the phase endpoint writes, and the claim's task
-  // values, ready line and finished numbers (`./legion-claim`).
+  // values, ready line and finished numbers (`./legion-claim`). The phase endpoint's take-pending
+  // query alone dials a connection of its own, which nothing queues behind a delivery.
   const inbox = inboxSocket === undefined ? undefined : createInboxNotifier(inboxSocket)
   /** Writes `what`, one line of the claim's, to the bridge: a pane that names no inbox, and a
    *  line the bridge refused, are logged, and nothing waits for the answer. */
@@ -2371,8 +2373,14 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The claim's boot, for the endpoint's resume reminder and its recreated-workspace notice: both
   // need the claim, and the claim starts further down, once the channel session exists.
   const claimBooted = Promise.withResolvers<void>()
+  // dispatch://INFRA-4130 R2: the claim's own `claims/task`, read at the worker's tool calls for
+  // the takes of the issue's other claims the daemon holds behind its turn.
+  const holdsRead =
+    daemon === undefined
+      ? undefined
+      : createHoldsRead({ daemon, claim: () => claim?.capability(), now: Date.now, log: logLegion })
   const phaseHook =
-    pane === undefined || daemon === undefined
+    pane === undefined || daemon === undefined || holdsRead === undefined
       ? undefined
       : createPhaseHookEndpoint({
           stateFile: phaseStallFile(pane.configDir, identity.id),
@@ -2384,6 +2392,11 @@ export async function runEnvoyChannelServer(): Promise<void> {
           publish: client.publish,
           env: process.env,
           log: phaseLog,
+          // R6 and R1: the bridge holds the claim's take, and says whether it holds one pending
+          // and which task the turn running did not take. A pane with no inbox has none to ask.
+          takePending: async () => inbox?.takePending(),
+          holds: holdsRead.holds,
+          turnEnded: holdsRead.turnEnded,
         })
   const toolDefinitions = [
     ...channelToolDefinitions(),

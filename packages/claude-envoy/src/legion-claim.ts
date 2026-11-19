@@ -7,7 +7,7 @@ import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery"
 import { messageFor } from "@legion/envoy-client/errors"
 import { readSecretFile } from "@legion/envoy-client/secret-file"
 import type { EnvoyClient } from "@legion/envoy-client/transport"
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import { claimCaller, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { legion } from "../package.json" with { type: "json" }
@@ -381,6 +381,85 @@ export function startLegionClaim(deps: {
     },
     readTask: async () => {
       await claimBoot?.readTask()
+    },
+  }
+}
+
+/** A take of another claim of the issue that the daemon holds behind this claim's turn: that
+ * claim's role, and its task's number (`holds` of `POST /legion/v1/claims/task`). */
+export type HeldTake = NonNullable<LegionTask["holds"]>[number]
+
+/** How long after a holds read started the next may start: R2's own bound of a minute. */
+export const HOLDS_READ_EVERY_MS = 60_000
+
+/** How long a holds read is waited for: the request is aborted then, and the read names
+ * nothing. */
+export const HOLDS_READ_BOUND_MS = 3_000
+
+/** The claim's holds read (`createHoldsRead`). */
+export interface HoldsRead {
+  /**
+   * The takes the latest holds read of this turn named, and the start of the next read where one
+   * is due: at the first call once the claim is registered, and at the first call a minute or
+   * more after the last read started. The phase hook calls it at each `PostToolUse` of the
+   * session's own agent, and does not wait for the read it starts, so its answer is noted at the
+   * first `PostToolUse` after it. Empty before the claim is registered.
+   */
+  readonly holds: () => readonly HeldTake[]
+  /** The session's turn ended: what this turn's reads named is dropped, and so is the answer of
+   * a read still unanswered, since the daemon accepts each take they name at that end. */
+  readonly turnEnded: () => void
+}
+
+/**
+ * The read that tells this claim's worker of the takes it holds (dispatch://INFRA-4130 R2): the
+ * claim's own `claims/task`, through the pane's daemon client and with the claim's caller, of
+ * which only `holds` is kept. The bridge holds the claim's own value and is handed it from the
+ * relay and the claim's own reads (`startLegionClaim`), so this read hands it nothing. A read is
+ * bounded at {@link HOLDS_READ_BOUND_MS}, and one that fails or is bounded out is logged and names
+ * nothing.
+ */
+export function createHoldsRead(deps: {
+  readonly daemon: Pick<LegionDaemonClient, "task">
+  /** The pane's registered claim, or undefined while its boot is still registering. */
+  readonly claim: () => ClaimCapability | undefined
+  /** The clock the reads are a minute apart by. */
+  readonly now: () => number
+  /** Writes one line to the pane's log, the server's stderr. */
+  readonly log: (line: string) => void
+}): HoldsRead {
+  let lastRead: number | undefined
+  // Counts the session's turns, so that an answer that comes after its turn ended is dropped.
+  let turn = 0
+  let held: readonly HeldTake[] = []
+  return {
+    holds: () => {
+      const claim = deps.claim()
+      if (claim === undefined) return []
+      const now = deps.now()
+      if (lastRead === undefined || now - lastRead >= HOLDS_READ_EVERY_MS) {
+        lastRead = now
+        const during = turn
+        void deps.daemon
+          .task(claimCaller(claim, claim.sessionID), {
+            signal: AbortSignal.timeout(HOLDS_READ_BOUND_MS),
+          })
+          .then(
+            (reading) => {
+              if (turn === during) held = reading.holds ?? []
+            },
+            (error: unknown) => {
+              deps.log(
+                `a claims/task read of the takes held behind this turn failed or had no answer within ${HOLDS_READ_BOUND_MS} ms; it notes nothing: ${messageFor(error)}`,
+              )
+            },
+          )
+      }
+      return held
+    },
+    turnEnded: () => {
+      turn += 1
+      held = []
     },
   }
 }

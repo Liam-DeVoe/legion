@@ -203,7 +203,7 @@ test("background work reopens nothing: a closed phase settles closed, and the wa
 });
 
 // dispatch://INFRA-4130 R1 and R2: Oh My Pi puts a tool result's `additionalContext`, which is how
-// the task notes reach the model (`taskWaitingNote` and `heldTakeNote` in `./task-take`), into the
+// the task notes reach the model (`taskWaitingNote` and `heldTakeNote` in `./task-notes`), into the
 // run as a `developer` message. A note tells the worker a task waits; it is neither the task's
 // assignment nor an event the worker waited on, so the reminder's count does not start again on
 // it.

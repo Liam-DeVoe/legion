@@ -56,7 +56,7 @@ import {
   type StallProcessTree,
   type StallWatchdogProcesses,
 } from "@legion/pi-shared/stall-watchdog";
-import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-take";
+import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";

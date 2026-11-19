@@ -58,7 +58,7 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { clearStartupTurn } from "@legion/pi-shared/startup-turn";
 import { subagentSessionCheck } from "@legion/pi-shared/subagent-session";
-import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-take";
+import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
   type CapabilityBudgets,

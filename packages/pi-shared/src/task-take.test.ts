@@ -14,7 +14,7 @@ import {
   DAEMON_RESEND_MAX_DELAY_MS,
   LegionDaemonApiError,
 } from "./daemon-client";
-import { createTaskTake, heldTakeNote, taskWaitingNote } from "./task-take";
+import { createTaskTake } from "./task-take";
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): unknown {
@@ -733,15 +733,6 @@ async function refusedInTurnDuringRun() {
   expect(taking.routed("take")).toEqual([body(4, 12)]);
   return taking;
 }
-
-test("the two notes name the task, say it starts when this turn ends, and carry no task", () => {
-  expect(taskWaitingNote(5)).toBe(
-    "Legion: task 5 of this claim waits for this turn to end. It starts as your next turn when this turn ends, unless the daemon holds or drops it then. Finish what is in hand, stop at a safe point, and end this turn. This note carries no task: do not start its work in this turn."
-  );
-  expect(heldTakeNote("tester", 7)).toBe(
-    "Legion: the tester's task 7 on this issue waits for this turn to end, because the roles of an issue share one working copy. It starts when this turn ends, unless the daemon holds it then. Finish what is in hand, stop at a safe point, and end this turn. This note carries no task."
-  );
-});
 
 test("a value held while the host is busy sends one note naming its number, asks no take until the run ends, and takes at the run's end", async () => {
   const { take, routed, takes, ran, advance } = rig();
