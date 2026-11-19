@@ -367,9 +367,9 @@ test("at a 20 px default font the navigation is reachable and the shell draws no
       await page.goto("/inbox");
       const main = page.getByTestId("main-content");
       // The Inbox page's first row: its heading, which the page draws before its list arrives.
-      const firstRow = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
-      await expect(main).toBeVisible();
-      await expect(firstRow).toBeVisible();
+      const firstRow = main.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
+      await expect(main, `${at}: main`).toBeVisible();
+      await expect(firstRow, `${at}: the page's first row`).toBeVisible();
       // The page is drawn at the size the row says it reads, so a 16 px reading cannot pass
       // for this one.
       await expect
@@ -400,6 +400,10 @@ test("at a 20 px default font the navigation is reachable and the shell draws no
             .getByRole("link", { name: "Inbox" }),
           `${at}: the drawer's navigation`
         ).toBeInViewport();
+        // The drawer is a modal, so the page behind it is out of the accessibility tree while it
+        // stands: close it, as a reader does, so the next width reads the page and not the drawer.
+        await page.keyboard.press("Escape");
+        await expect(drawer, `${at}: the drawer after Escape`).toBeHidden();
       } else {
         await expect(sidebar, `${at}: the sidebar`).toBeVisible();
         await expect(menu, `${at}: the compact bar's Menu beside the sidebar`).toBeHidden();
