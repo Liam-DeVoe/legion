@@ -410,6 +410,15 @@ Each item below names a script, then what it proves.
   its controls delete an issue's plan rows, during its planner's work and before its gate opens, and give a plan with a role nobody defines, which is refused `409 PLAN_REFUSED`.
   No GitHub, no cluster
 
+- `owner-steps-client.sh`
+
+  the calls the `legion` tool makes for an owner's plan, made by the plugin's own daemon client (`createLegionDaemonClient` under bun, each grant from `mintClaimGrant`, each completion through the phase op `executePhaseOp`) against the whole daemon booted as [`owner-steps.sh`](#owner-stepssh) boots it, over four issues of one project:
+  `register_plan` with the architect's grant is taken, and `register_plan` and `stop_task` with an implementer's are refused `403 ARCHITECT_REQUIRED`;
+  a tester's `handoff_complete` with `return_to 1` returns task `a` to its step 1, and `return_to 2` is refused `409 RETURN_REFUSED`;
+  `stop_task` holds the issue `task-stopped`, and the stopped task's report is refused `409 TASK_STOPPED`;
+  the plugin of the release before, which the run builds from main itself, reads this daemon's state and its `TASK_STOPPED` within the turn its pane was in at the upgrade, and its own registration is refused `409`.
+  No GitHub, no cluster
+
 - `plan-pointer-drive.sh`
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
@@ -5127,6 +5136,43 @@ The planner's launch follows the move into planning, so the list the line names 
 
 What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
 `OWNER_STEPS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## owner-steps-client.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/owner-steps-client.sh     # → "owner steps client e2e: PASS in <n>s", exit 0
+```
+
+The live proof that the plugin's own daemon client makes the calls of an owner's plan as the daemon takes them, and that the plugin of the release before reads this daemon's answers, run before the change merges.
+It needs what [`owner-steps.sh`](#owner-stepssh) needs, and `tar`: before the checks of [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) the script refuses a host with no `bun`, no `node_modules`, no `git` or no `tar`, and exports `LEGION_E2E_REPO_ROOT`.
+The script starts no database, and the broker is the run's own.
+One run measured on a loaded host (load 619 to 703) took 864 s: 72 s building the driver, 311 s building the plugin of the release before, and about seven minutes between the daemon's stop and the driver's pass, in the driver's cleanup.
+The driver is `TestOwnerStepsClientLive` (`internal/daemon/owner_steps_client_live_test.go`, `-tags e2e`), on the rig of [`owner-steps.sh`](#owner-stepssh) (`ownerStepsRig`) over four issues of one project of the run's own, with the project's `default_steps` named so the state the client reads carries the key.
+Each call is one run of `scripts/e2e/owner-steps-client.ts` under bun: it imports `packages/pi-shared` from the tree it is given, makes the call as `packages/pi-legion/src/tools.ts` and `packages/pi-shared/src/legion-phase-ops.ts` make it, and prints what the client answered or threw as one JSON line.
+
+The plugin of the release before is built by the driver itself, in the first check: the newest commit of main's first-parent line whose `DaemonAPIVersion` is below this checkout's.
+In a pull request's run that is the main it merges into; on main it is the commit before the last change of the contract.
+A clone that holds main's history reads `origin/main` as it stands and fetches nothing; a shallow clone, as CI's checkout is, fetches main from origin 64 commits deep, then 256, 1024 and 4096, until the walk finds such a commit.
+The commit is taken with `git archive` into a directory of the run's own and given `bun install --frozen-lockfile` there, as [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh) takes its base tree, and the directory goes when the run ends.
+
+| check | driven by | read back as | its control, which must fail the check |
+| :--- | :--- | :--- | :--- |
+| `older-client-tree` | the walk of main and the build above | the commit, its date and subject, its contract and its tree | — |
+| `control-client-plan-version-absent`, `client-register-plan` | `planRegister` with the architect's grant, version 1 of the first issue's `plan.md` | `200` with version 1 and one task `a` naming `implementer` and `tester` | the same call naming version 2, which Dispatch does not hold: `409 VERSION_NOT_IN_DISPATCH` |
+| `client-phase-worker-refused` | `planRegister` and `taskStop` with the implementer's grant | each `403 ARCHITECT_REQUIRED` | the architect's `200` above |
+| `client-return-to` | the tester's phase op `handoff_complete {verdict fail, return_to 1}` | taken; the issue stands in implementing and task `a`'s step 1 started a second time | `control-client-return-to-refused`: `return_to 2`, the tester's own place, is refused `409 RETURN_REFUSED` and the second issue stays in testing; its pass after that is taken |
+| `older-client-reads` | the fourth issue's tester registered at this contract, its claim's `plugin_contract` set to the release before's while no daemon runs, and the daemon restarted; that release's client | the state of the issue in testing; no `planRegister` and no `taskStop` among its calls; `409 TASK_STOPPED` for its report after the owner's stop; its own registration at its contract refused `409` | — |
+| `client-stop-task` | `taskStop` of task `a` with the architect's grant | `200 {}`, and the issue held `task-stopped` | task `zz`, which the plan does not hold: `404 TASK_NOT_FOUND` |
+| `client-stopped-report-refused` | the stopped task's tester's phase op `handoff_complete` | `409 TASK_STOPPED` | the second issue's taken pass |
+
+Three things are stood in for, beside what [`step-records.sh`](#step-recordssh) stands in for:
+
+- the package's test config leaves `review_round_cap` at 0, which the plugin's client refuses in the state's settings, so the driver sets 3, the default the config loader gives every deployment;
+- no daemon of the release before registers the older pane: this daemon refuses a registration at any contract but its own and relaunches a pane of another contract once its turn ends, so the pane is one registered here whose claim the store records at the release before's contract, as that release leaves it;
+- the older client's read of the state once an issue is held for a new reason is printed, not asserted: the daemon narrows the state for an older caller only in a pod (`stateFor` in `internal/api/server.go`), the fake runtime runs none, and `TestAnOlderCallerIsServedNoNewHoldReason` (`internal/api/hold_reason_test.go`) holds the pod's path.
+
+`OWNER_STEPS_CLIENT_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## plan-pointer-drive.sh
 
