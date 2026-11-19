@@ -108,6 +108,15 @@ itself, whose tests import its sources by relative path.
   `scripts/e2e/lib/row-waits.test.ts` reads the files whose rows do this and refuses a row or hook
   there that starts a process and states no limit, or a `rowMs` its row does not count.
 
+- A test that starts a process which loads `@oh-my-pi/pi-natives` gives it the environment
+  `nativesEnvironment` of `@legion/test-fixtures/natives-environment` returns, which sets
+  `TOKIO_WORKER_THREADS` to 1 where the caller sets none. Such a process is a Bun process whose
+  modules import `@oh-my-pi/pi-utils` or `@oh-my-pi/pi-tui` (every extension of pi-envoy,
+  pi-legion and pi-shared does), or the `omp` binary, which embeds the addon. The addon's Tokio
+  runtime otherwise starts a worker for each CPU of the machine, 288 on a shared dev box, and
+  under a limit of tasks a second such process cannot start its threads: it exits 1 having
+  printed nothing.
+
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
   no value is captured as unset and the restore deletes it again; setting it to the empty string

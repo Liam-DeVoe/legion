@@ -91,6 +91,7 @@ import {
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { nativesEnvironment } from "@legion/test-fixtures/natives-environment";
 import { rowMs, rowOf, type Wait } from "@legion/test-fixtures/row-waits";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
@@ -5048,14 +5049,12 @@ describe("envoy OMP extension", () => {
     const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
     const { ENVOY_URL: _url, ENVOY_NATS_URL: _nats, ...rest } = process.env;
     rowOf(oneEntry).charge(theEntry);
-    // The entry loads @oh-my-pi/pi-natives, whose Tokio runtime starts a worker for each CPU the
-    // machine has unless TOKIO_WORKER_THREADS says how many: on a shared Linux machine of 288 CPUs,
-    // on 2026-11-19, this process and the child each held over 300 threads, the child could not
-    // start its own under a limit of 512 tasks, and it exited 1 having printed nothing. The child
-    // runs one session_start, which one worker serves.
+    // The entry loads @oh-my-pi/pi-natives, so the child gets the worker count of
+    // nativesEnvironment: beside this process, a child that starts one worker for each CPU of a
+    // large machine cannot start them under a limit of tasks, and exits 1 having printed nothing.
     const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
       cwd: import.meta.dir,
-      env: { ...rest, DISPATCH_SESSION_ID: "parent-session", TOKIO_WORKER_THREADS: "1" },
+      env: nativesEnvironment({ ...rest, DISPATCH_SESSION_ID: "parent-session" }),
       stdout: "pipe",
       stderr: "pipe",
       timeout: theEntry.ms,

@@ -20,6 +20,7 @@ import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { nativesEnvironment } from "@legion/test-fixtures/natives-environment";
 
 const packageDirectory = join(import.meta.dir, "..");
 const heldPreload = join(packageDirectory, "test", "nats-default-port-held.ts");
@@ -80,7 +81,10 @@ function rowEnds(junit: string): Map<string, RowEnd> {
 
 /**
  * One run of the two dial rows, as a developer runs them, in a process of its own; `args` go to
- * `bun test` before the file, and `env` over this process's environment.
+ * `bun test` before the file, and `env` over this process's environment. The run loads the
+ * extension, and so @oh-my-pi/pi-natives, so it gets the worker count of nativesEnvironment: two
+ * runs at once that each start one worker for each CPU of a large machine cannot all start them
+ * under a limit of tasks.
  */
 async function runDialRows(
   args: readonly string[] = [],
@@ -100,7 +104,12 @@ async function runDialRows(
       "-t",
       rows,
     ],
-    { cwd: packageDirectory, env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" }
+    {
+      cwd: packageDirectory,
+      env: nativesEnvironment({ ...process.env, ...env }),
+      stdout: "pipe",
+      stderr: "pipe",
+    }
   );
   running.add(child);
   try {
