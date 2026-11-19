@@ -248,7 +248,7 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
 `daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
 detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
-and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+and `go vet ./...` in the `typecheck` job still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job

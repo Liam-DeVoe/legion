@@ -165,44 +165,30 @@ Each item below names a script, then what it proves.
   That installs Chrome Headless Shell 156.0.8078.4 under that directory, and a run that exports the same `PLAYWRIGHT_BROWSERS_PATH` launches it with no `executablePath` of its own.
   No script CI runs downloads it
 
-## On a GitHub-hosted runner
+## Where each script runs
 
-[`.github/workflows/e2e.yaml`](../../.github/workflows/e2e.yaml) runs one proof per job on `ubuntu-24.04`, against a Postgres service.
-Every script the `hosted` list of `.github/e2e-scripts.json` names runs there, and the `daemon-go` job of `ci.yaml` also runs `stage1-skeleton.sh`.
-None of them needs a secret, and none there may:
+Every script here but one is a step of a job of `ci.yaml`, and that job gives it what it needs:
+
+- `stage1-skeleton.sh` is a step of the `daemon-go` job ([In CI](#in-ci) says what the job gives it).
+
+- `dispatch-claimant-delivery.sh` and `verification-results.sh` are steps of the `envoy-session-stall` job, each against a database of its own on that job's Postgres.
+
+- `stage2-tmux-supervision.sh`, `controller-start-tmux.sh` and `clean-session-stop-tmux.sh` are steps of the `tmux-scripts` part of the `agent-harness` job;
+  `dispatch-session-settings.sh` is a step of its `session-settings` part, and `dispatch-user-turns.sh` and `envoy-session-delivery.sh` are steps of its `session-scripts` part.
+  That job runs in the merge queue and on a pull request labelled `full-ci`.
+  Each of these scripts takes Oh My Pi, and Claude Code, Chromium or Postgres where it uses them, from the job, starts its own NATS and, where it calls a model, its own model stand-in, and prints one `CHECK` line for each check it makes.
+
+- `leak-guard-image-probe.sh` is a step of the `worker-image` job, which runs it inside the image it has just built.
+
+- `step-records-read.sh` is a tool, not a test:
+  an operator runs it after the merge against a deployed Dispatch, with the operator's own credential, and its header says for which decision.
+
+None of them needs a secret, and none may:
 Sami answered that no API key goes into this repository, and that a smoke test which calls a model runs in the deployment repository on workload identity federation (sjawhar/legion#2512).
-The scripts that drive real agents on tmux, `stage2-tmux-supervision.sh`, `controller-start-tmux.sh` and `clean-session-stop-tmux.sh`, are steps of the `tmux-scripts` part of the `agent-harness` job of `ci.yaml`, which runs in the merge queue and on a pull request labelled `full-ci`:
-each takes Oh My Pi, Claude Code and Postgres from the job, starts its own NATS and, where it calls a model, its own model stand-in, and prints one `CHECK` line for each check it makes.
-Every other script needs a devbox, a throwaway kind cluster, a real cluster or a model key, and the workflow refuses it by name with what its own header says it needs.
-`.github/e2e-scripts.json` holds both lists, and a script in neither fails the run.
 The whole-daemon live proofs that drive no agent are not scripts:
 they are Go tests of `packages/daemon/internal/daemon` that the `daemon-live` job of `ci.yaml` runs by name on each pull request whose paths select it, and each test's own header says what it proves.
 The whole-daemon live proofs that drive real Oh My Pi panes are Go tests of that package too, which the `agent-harness` job of `ci.yaml` runs by name in the merge queue and on a pull request labelled `full-ci`;
 so is the Claude Code backend's proof on tmux, `claude_backend_live_test.go`, which that job's `tmux-scripts` part runs.
-
-A person or a role starts a proof two ways, and takes no devbox for either:
-
-```sh
-gh workflow run e2e.yaml -f script=stage1-skeleton  # one proof, with or without the .sh
-gh pr edit <number> --add-label e2e                    # every hosted proof, on that pull request
-```
-
-A nightly run makes the whole hosted set on `main`:
-GitHub starts a scheduled run from the default branch alone, so it proves main's scripts, never a pull request's.
-
-Read the result, and take the evidence:
-
-```sh
-gh run list --workflow e2e.yaml --limit 5
-gh run view <run id>        # one job per proof, each named for its script, and which one failed
-gh run view --log --job <job id>
-gh run download <run id>    # every evidence directory the run uploaded
-```
-
-Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-A script whose row names an evidence variable writes its transcript and its logs there, since the job sets that variable to the directory.
-It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh` and `verification-results.sh` leave a reader:
-they take no evidence variable and keep a work directory of their own, whose path that output names.
 
 ## stage1-skeleton.sh
 
@@ -298,7 +284,7 @@ Two notes on what the script had to learn about its own surface:
 
 ### In CI
 
-On every pull request whose diff selects them, the `typecheck` job of `.github/workflows/ci.yaml` runs `go vet -tags e2e ./...` (which also compiles the e2e-tagged Stage 4a harness) in `packages/daemon`, and its `daemon-go` job installs `tmux` — the tmux runtime's tests drive a real tmux server and skip without one, and the daemon refuses to start without it
+On every pull request whose diff selects them, the `typecheck` job of `.github/workflows/ci.yaml` runs `go vet ./...` in `packages/daemon`, and its `daemon-go` job installs `tmux` — the tmux runtime's tests drive a real tmux server and skip without one, and the daemon refuses to start without it
 — and the pinned `jj` (through mise, as the pi-legion job does)
 — the workspace tests drive a real jj, and the daemon resolves jj at boot and refuses to start without it
 — then runs `go test ./...` against its Postgres service (`LEGION_TEST_PG_DSN`, and `BROKER_TEST_DATABASE_URL` for the real broker that `internal/agentsecrets`'s contract tests drive, which fail there rather than skip without it), then this script with `LEGION_E2E_PG_DSN` pointing at the same service, so the script runs no docker of its own there.

@@ -73,7 +73,7 @@ name: CI caches
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
 # with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
-# writes it on main, and five workflows that run there call it.
+# writes it on main, and the workflows that run there call it (its description names them).
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
@@ -142,14 +142,14 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
-      # What typecheck builds: the vet behind the e2e tag. It is the one build of this family an
+      # What typecheck builds: the vet of every package. It is the one build of this family an
       # arm64 job makes (.github/workflows/ci-job-typecheck.yaml), so both legs run it.
       # typecheck's darwin vet is the one build left out: its darwin objects, about 1.65 GB of build
       # cache on a devbox, would ride in an entry every job that restores go-daemon downloads, and
       # the step builds them in about two minutes (run 43990864191).
       - name: Build what typecheck builds of the daemon module
         if: steps.go-daemon.outputs.cache-hit != 'true'
-        run: go vet -tags e2e ./...
+        run: go vet ./...
         working-directory: packages/daemon
 
       # What daemon-go builds: the test binary of every package, and the race build of the three

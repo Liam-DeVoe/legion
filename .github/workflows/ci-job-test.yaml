@@ -160,10 +160,6 @@ on:
         description: "ci.yaml's needs.changes.outputs.repo_paths_test: repo-paths.test.sh and what it tests."
         type: string
         required: true
-      select_e2e_proofs_test:
-        description: "ci.yaml's needs.changes.outputs.select_e2e_proofs_test: select-e2e-proofs.test.sh and what it tests."
-        type: string
-        required: true
       go_tagged_tests_test:
         description: "ci.yaml's needs.changes.outputs.go_tagged_tests_test: go-tagged-tests.test.sh and what it tests."
         type: string
@@ -419,12 +415,6 @@ jobs:
       - name: Test the repository path derivation
         if: inputs.changes-result != 'success' || inputs.repo_paths_test == 'true'
         run: .github/scripts/repo-paths.test.sh
-
-      # The proof selector e2e.yaml's select job runs, over fixture trees and over this
-      # repository's own .github/e2e-scripts.json and scripts/e2e/.
-      - name: Test the e2e proof selector
-        if: inputs.changes-result != 'success' || inputs.select_e2e_proofs_test == 'true'
-        run: .github/scripts/select-e2e-proofs.test.sh
 
       # The lister the build-tag steps take their `-run` from, over fixture packages and over
       # this repository's own tagged test files.

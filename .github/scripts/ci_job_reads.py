@@ -173,7 +173,7 @@ def darwin_vet_reads(job, step, workdir):
 
 
 # The three darwin vet steps, one per Go module that ships for darwin.
-DAEMON_DARWIN_VET = "Vet the Go daemon for darwin, its e2e-tagged live proofs included"
+DAEMON_DARWIN_VET = "Vet the Go daemon for darwin"
 ENVOY_DARWIN_VET = "Vet envoy for darwin, its tagged tests included"
 INFRA_DARWIN_VET = "Vet envoy-infra for darwin, its live-test tags included"
 
@@ -2780,11 +2780,6 @@ SCRIPT_TEST_GATES = [
     harness("repo_paths_test", "Test the repository path derivation", f"{SCRIPTS}/repo-paths.test.sh", [
         (f"{SCRIPTS}/repo-paths.sh", "the script under test"),
     ]),
-    harness("select_e2e_proofs_test", "Test the e2e proof selector", f"{SCRIPTS}/select-e2e-proofs.test.sh", [
-        (f"{SCRIPTS}/select-e2e-proofs.sh", "the script under test"),
-        (".github/e2e-scripts.json", "its last case runs the selector over this repository's own list"),
-        ("scripts/e2e/*.sh", "that same case: the selector names one row per scripts/e2e/*.sh (select-e2e-proofs.sh:175 globs them)"),
-    ]),
     harness("go_tagged_tests_test", "Test the build-tag test lister", f"{SCRIPTS}/go-tagged-tests.test.sh", [
         (f"{SCRIPTS}/go-tagged-tests.sh", "the script under test"),
         ("packages/envoy/cmd/listener/*_test.go",
@@ -2913,8 +2908,7 @@ PUSH_WORKFLOWS = {"docs": ".github/workflows/docs-pages.yaml"}
 
 GATES = [
     gate("typecheck", "typecheck", runs=[
-        step_run("typecheck", "Vet the Go daemon, its e2e-tagged live proofs included", "go vet -tags e2e ./...", DAEMON, ["./..."],
-                 tags="e2e", mode="vet"),
+        step_run("typecheck", "Vet the Go daemon", "go vet ./...", DAEMON, ["./..."], mode="vet"),
     ], exact=[
         darwin_vet("typecheck", DAEMON_DARWIN_VET, DAEMON),
     ], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON)),
@@ -3357,8 +3351,8 @@ GATES = [
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6,28 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
-        ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
-                           f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
+        ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans "
+                           "scripts/e2e/*.sh and lib/*)"),
         (CONTRACTS_SRC, "scripts/e2e/lib/session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
                         "scripts/priorities-seed.ts:29"),
         (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),

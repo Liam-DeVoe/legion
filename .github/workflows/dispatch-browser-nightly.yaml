@@ -17,16 +17,16 @@ name: Dispatch browser nightly
 # would then have to replace.
 #
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
-# this file and of the workflow it calls, never a pull request's (e2e.yaml's head comment states
-# the same of its own nightly). A change to either is proven before main by ci.yaml's
-# dispatch-browser job: the pull-request lane on the pull request that makes it, and the full
-# lane in the merge group that lands it. It runs here only once it is on main.
+# this file and of the workflow it calls, never a pull request's. A change to either is proven
+# before main by ci.yaml's dispatch-browser job: the pull-request lane on the pull request that
+# makes it, and the full lane in the merge group that lands it. It runs here only once it is on
+# main.
 
 on:
   schedule:
-    # Nightly, hours from e2e.yaml's 04:41, the repository's other schedule: a full lane takes
-    # four shard machines, three alone machines and a two-process machine at once, and two
-    # nightlies starting together would queue behind each other for the account's runners.
+    # Nightly, hours from codeql.yaml's weekly 04:17, the repository's other schedule: a full
+    # lane takes four shard machines, three alone machines and a two-process machine at once, and
+    # a second scheduled run starting with it would queue behind it for the account's runners.
     - cron: "17 2 * * *"
   workflow_dispatch:
 
