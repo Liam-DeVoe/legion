@@ -191,22 +191,31 @@ func tableRunes(table *unicode.RangeTable) []rune {
 // out. The strings are a letter, an emoji that takes a skin-tone modifier, and the left side of
 // each rule of Unicode Standard Annex #29 that keeps two code points in one grapheme cluster: CR
 // (GB3); the first Hangul L, V, T, LV and LVT, and the first Kirat Rai V (GB6 to GB8); each of the
-// 27 Prepends (GB9b) and each of the 23 linkers, after the first consonant of its script (GB9c),
-// since GB9b keeps any code point but a control after a Prepend, and GB9c any consonant after a
-// linker; two pictographs, each with a zero-width joiner (GB11); and the first regional indicator
-// (GB12 and GB13). The fifth row cuts between the two code points of each pair that GB6 to GB8,
-// GB12 and GB13 keep together, every one of them; before each letter of the script of a linker's
-// consonant, after each letter of that script and the linker; and before the first pictograph,
-// after each code point and a joiner. The sixth cuts before each code point that GB9 and GB9a
-// keep after any other, a combining mark or one of 107 more, after each letter of its own script,
-// and after each letter among its 128 code points (those that share all but its last seven bits),
-// so that a mark of the script Inherited, which takes the script of the letter before it, is cut
-// after the letters near it. So a count that keeps a code point with one of these before it fails
-// a row, whatever its length: a character is one code point, not a grapheme cluster. A count keyed
-// on code points that no row cuts together can pass, such as a mark after a code point that is no
-// letter of its script and not among its 128 code points (U+0301 after e), a consonant after a
-// linker and a letter of another script, or a pictograph after another and a joiner, neither of
-// them U+00A9 or U+1F44D.
+// 27 Prepends (GB9b), since GB9b keeps any code point but a control after a Prepend; each of the
+// 23 linkers, after the first consonant of its script or, for the two Vedic signs, whose script
+// Common has no consonant, after Devanagari's (GB9c); two pictographs, each with a zero-width
+// joiner (GB11); and the first regional indicator (GB12 and GB13). The fifth row cuts between the
+// two code points of each pair that GB6 to GB8, GB12 and GB13 keep together, every one of them;
+// before each letter of the script of a linker's consonant, after each letter of that script and
+// the linker, and after the consonant, the linker and each code point the sixth row cuts before,
+// since GB9c, as Unicode 18.0 writes it, keeps a consonant after a linker and any InCB=Extend, and
+// those code points hold each InCB=Extend of Go's tables; and before the first pictograph, after
+// each code point and a joiner. A linker that makes no cut fails the fifth row, so tables with no
+// script for its consonant cannot make the row hold less unseen. The sixth cuts before each
+// combining mark and each of 107 more code points, which GB9 and GB9a keep after any other but
+// for 31 spacing marks of Myanmar, Tai Tham and Ahom, after each letter of its own script, and
+// after each letter among its 128 code points (those that share all but its last seven bits); it
+// cuts each of these of the script Inherited, which takes the script of the letter before it,
+// after the first letter of each script, each mark of SignWriting, which has no letter, after each
+// SignWriting base, and each emoji modifier after each emoji modifier base. So a count that keeps
+// a code point with one of these before it fails a row, whatever its length: a character is one
+// code point, not a grapheme cluster. A count keyed on code points that no row cuts together can
+// pass, such as a mark after a code point that is no letter of its script and not among its 128
+// code points (U+0301 after e, or a tag after U+1F3F4), an Inherited mark after a letter that is
+// not the first of its script, a consonant after a linker that comes after a code point that is no
+// letter of its script (U+093C, the nukta) or after a linker and two InCB=Extend, or a pictograph
+// after another and a joiner, where the first is neither U+00A9 nor U+1F44D and the second is not
+// U+00A9.
 //
 // The code points that a rule names are written here from the data of Unicode 18.0, since Go's
 // unicode package gives no grapheme property. The letters, the marks and their scripts are read
@@ -217,12 +226,13 @@ func tableRunes(table *unicode.RangeTable) []rune {
 // An answer that is, by the reference, the value's own first bytes is a slice of the value, and
 // HeadRunes copies nothing for it. One row for each shape of such a pair (shapeOf) cuts every
 // pair of that shape and wants no allocation, so a copy of any one pair fails its row; two rows
-// cut a value of letters and one that starts with 界, at each length from 0 to 8,001 bytes and at
-// every 32nd from 8,001 to 32,001, to its own length and to one character short. The last rows
-// hold values longer than five bytes, each cut to a slice with no copy, up to 32,000 characters,
-// the most an embedding input keeps. Among them, a cut after characters outside the BMP fails a
-// count of UTF-16 units, and a cut before a combining mark fails a count that keeps a mark with
-// its letter.
+// cut four values, one of letters and one each of characters of two, three and four bytes, at each
+// length from 0 to 8,001 bytes, at every 32nd from 8,001 to 32,001 and at every 199th from 32,001
+// to 128,001, to its own length and to one character short, since an embedding input of any script
+// reaches each of those lengths. The last rows hold values longer than five bytes, each cut to a
+// slice with no copy, up to 32,000 characters, the most an embedding input keeps. Among them, a cut
+// after characters outside the BMP fails a count of UTF-16 units, and a cut before a combining mark
+// fails a count that keeps a mark with its letter.
 func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	const longest, limits = 5, 6
 	var values []string
@@ -356,6 +366,23 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 			}
 		}
 	}
+	// joins holds each combining mark of Go's tables and, of Unicode 18.0
+	// (GraphemeBreakProperty.txt), these 107 code points that are no mark in Go's tables: the
+	// spacing marks of Thai and Lao that are letters, the two joiners, the halfwidth sound marks,
+	// the emoji modifiers and the tags. GB9 and GB9a keep each of them after any code point but 31
+	// spacing marks of Myanmar, Tai Tham and Ahom, whose Grapheme_Cluster_Break in 18.0 is Other;
+	// a cut before those leaves them out too, as before any code point. joined lists them in order.
+	others := map[rune]bool{}
+	for _, r := range spanRunes(0x0E33, 0x0E33, 0x0EB3, 0x0EB3, 0x200C, 0x200D, 0xFF9E, 0xFF9F, 0x1F3FB, 0x1F3FF, 0xE0020, 0xE007F) {
+		others[r] = true
+	}
+	joins := func(r rune) bool { return unicode.Is(unicode.M, r) || others[r] }
+	var joined []rune
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if joins(r) {
+			joined = append(joined, r)
+		}
+	}
 
 	t.Run("a cut before each code point leaves it out, after the code point itself and after each of 62 strings of one or two code points", func(t *testing.T) {
 		befores := append([]string{
@@ -416,10 +443,15 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 				}
 			}
 		}
-		// GB9c: each letter of the script of a linker's consonant, the linker, then each letter of
-		// that script, which holds each consonant of the script that Go's tables call a letter.
+		// GB9c, as Unicode 18.0 writes it, keeps a consonant after a linker and any InCB=Extend:
+		// each letter of the script of a linker's consonant, the linker, then each letter of that
+		// script, which holds each consonant of the script that Go's tables call a letter; and the
+		// consonant, the linker and each code point of joined, which holds each InCB=Extend of Go's
+		// tables, then each letter of that script. A linker that makes no cut here, since Go's tables
+		// give its consonant no script with a letter, fails the row by name.
 		for _, linked := range linkers {
 			consonant, size := utf8.DecodeRuneInString(linked)
+			made := cuts.cuts
 			for name, table := range unicode.Scripts {
 				if unicode.Is(table, consonant) {
 					for _, letter := range letters[name] {
@@ -427,7 +459,15 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 							cuts.cut(string(letter)+linked[size:], string(next)+"a")
 						}
 					}
+					for _, extend := range joined {
+						for _, next := range letters[name] {
+							cuts.cut(linked+string(extend), string(next)+"a")
+						}
+					}
 				}
+			}
+			if cuts.cuts == made {
+				t.Errorf("no cut was made after the linker %+q: Go's tables give its consonant %+q no script with a letter", linked[size:], consonant)
 			}
 		}
 		// GB11: each code point and a joiner, then the first pictograph.
@@ -439,16 +479,8 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		cuts.check("before a code point that a grapheme rule joins to the one before it")
 	})
 
-	t.Run("a cut before each mark that a grapheme rule keeps after any code point, after each letter of its own script or of its 128 code points, leaves it out", func(t *testing.T) {
-		// GB9 and GB9a keep after any code point each combining mark and, of Unicode 18.0
-		// (GraphemeBreakProperty.txt), these 107 code points that are no mark in Go's tables: the
-		// spacing marks of Thai and Lao that are letters, the two joiners, the halfwidth sound
-		// marks, the emoji modifiers and the tags.
-		others := map[rune]bool{}
-		for _, r := range spanRunes(0x0E33, 0x0E33, 0x0EB3, 0x0EB3, 0x200C, 0x200D, 0xFF9E, 0xFF9F, 0x1F3FB, 0x1F3FF, 0xE0020, 0xE007F) {
-			others[r] = true
-		}
-		joins := func(r rune) bool { return unicode.Is(unicode.M, r) || others[r] }
+	t.Run("a cut before each mark that a grapheme rule keeps after any code point, after each letter of its own script or of its 128 code points, an Inherited mark after the first letter of each script, a SignWriting mark after each SignWriting base and an emoji modifier after each emoji it modifies, leaves it out", func(t *testing.T) {
+		// GB9 and GB9a keep each code point of joins after any code point but 31 (above).
 		cuts := keptCuts{t: t}
 		for _, name := range slices.Sorted(maps.Keys(unicode.Scripts)) {
 			for _, mark := range tableRunes(unicode.Scripts[name]) {
@@ -459,36 +491,78 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 				}
 			}
 		}
-		for mark := rune(0); mark <= unicode.MaxRune; mark++ {
+		for _, mark := range joined {
+			for letter := mark &^ 0x7F; letter < mark&^0x7F+0x80; letter++ {
+				if unicode.IsLetter(letter) {
+					cuts.cut(string(letter), string(mark)+"a")
+				}
+			}
+		}
+		// A mark of the script Inherited takes the script of the letter before it, and Inherited holds
+		// no letter: each of its code points of joins after the first letter of each script, which
+		// stands for its script. SignWriting holds no letter either: each of its marks after each of
+		// its code points that joins nothing, its bases. And each emoji modifier after each emoji
+		// modifier base of Unicode 18.0 (emoji-data.txt), which Go's tables do not name.
+		inherited := tableRunes(unicode.Inherited)
+		for _, name := range slices.Sorted(maps.Keys(letters)) {
+			for _, mark := range inherited {
+				if joins(mark) {
+					cuts.cut(string(letters[name][0]), string(mark)+"a")
+				}
+			}
+		}
+		signWriting := tableRunes(unicode.SignWriting)
+		for _, mark := range signWriting {
 			if joins(mark) {
-				for letter := mark &^ 0x7F; letter < mark&^0x7F+0x80; letter++ {
-					if unicode.IsLetter(letter) {
-						cuts.cut(string(letter), string(mark)+"a")
+				for _, base := range signWriting {
+					if !joins(base) {
+						cuts.cut(string(base), string(mark)+"a")
 					}
 				}
+			}
+		}
+		modifierBases := spanRunes(0x261D, 0x261D, 0x26F9, 0x26F9, 0x270A, 0x270D, 0x1F385, 0x1F385, 0x1F3C2, 0x1F3C4,
+			0x1F3C7, 0x1F3C7, 0x1F3CA, 0x1F3CC, 0x1F442, 0x1F443, 0x1F446, 0x1F450, 0x1F466, 0x1F478, 0x1F47C, 0x1F47C,
+			0x1F481, 0x1F483, 0x1F485, 0x1F487, 0x1F48F, 0x1F48F, 0x1F491, 0x1F491, 0x1F4AA, 0x1F4AA, 0x1F574, 0x1F575,
+			0x1F57A, 0x1F57A, 0x1F590, 0x1F590, 0x1F595, 0x1F596, 0x1F645, 0x1F647, 0x1F64B, 0x1F64F, 0x1F6A3, 0x1F6A3,
+			0x1F6B4, 0x1F6B6, 0x1F6C0, 0x1F6C0, 0x1F6CC, 0x1F6CC, 0x1F90C, 0x1F90C, 0x1F90F, 0x1F90F, 0x1F918, 0x1F91F,
+			0x1F926, 0x1F926, 0x1F930, 0x1F939, 0x1F93C, 0x1F93E, 0x1F977, 0x1F977, 0x1F9B5, 0x1F9B6, 0x1F9B8, 0x1F9B9,
+			0x1F9BB, 0x1F9BB, 0x1F9CD, 0x1F9CF, 0x1F9D1, 0x1F9DD, 0x1FAC3, 0x1FAC5, 0x1FAF0, 0x1FAFA)
+		for _, base := range modifierBases {
+			for modifier := rune(0x1F3FB); modifier <= 0x1F3FF; modifier++ {
+				cuts.cut(string(base), string(modifier)+"a")
 			}
 		}
 		cuts.check("before a mark")
 	})
 
-	// lengthPairs gives two values, one of letters and one that starts with 界, each at every
-	// step-th length from from to to bytes, cut to its own length in characters and to one short.
+	// lengthPairs gives four values at every step-th length from from to to bytes, each cut to its
+	// own length in characters and to one short: one of letters, and one each of é, 界 and U+1F54C,
+	// characters of two, three and four bytes, with at its end as many letters as its length leaves
+	// over. Each value is the end of one string of its character and its letters, so it is a slice
+	// of that string and the row makes no value of its own.
 	lengthPairs := func(from, to, step int) []pair {
 		var pairs []pair
-		for _, first := range []string{"", "界"} {
-			long := first + strings.Repeat("a", to-len(first))
-			for n := max(from, len(first)); n <= to; n += step {
-				characters := utf8.RuneCountInString(long[:n])
-				pairs = append(pairs, pair{long[:n], characters}, pair{long[:n], max(characters-1, 0)})
+		for _, character := range []string{"a", "é", "界", "\U0001F54C"} {
+			width := len(character)
+			ends := make([]string, width)
+			for over := range ends {
+				ends[over] = strings.Repeat(character, to/width) + strings.Repeat("a", over)
+			}
+			for n := from; n <= to; n += step {
+				end := ends[n%width]
+				value := end[len(end)-n:]
+				characters := utf8.RuneCountInString(value)
+				pairs = append(pairs, pair{value, characters}, pair{value, max(characters-1, 0)})
 			}
 		}
 		return pairs
 	}
-	t.Run("a value of each length up to 8,001 bytes, unchanged or cut one short, copies nothing", func(t *testing.T) {
+	t.Run("a value of letters or of characters of two, three or four bytes, of each length up to 8,001 bytes, unchanged or cut one short, copies nothing", func(t *testing.T) {
 		copiesNothing(t, lengthPairs(0, 8001, 1))
 	})
-	t.Run("a value of every 32nd length from 8,001 to 32,001 bytes, unchanged or cut one short, copies nothing", func(t *testing.T) {
-		copiesNothing(t, lengthPairs(8001, 32001, 32))
+	t.Run("a value of letters or of characters of two, three or four bytes, of every 32nd length from 8,001 to 32,001 bytes and of every 199th to 128,001, unchanged or cut one short, copies nothing", func(t *testing.T) {
+		copiesNothing(t, append(lengthPairs(8001, 32001, 32), lengthPairs(32001, 128001, 199)...))
 	})
 
 	shapes := map[string][]pair{}
