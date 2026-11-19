@@ -6,7 +6,7 @@ sessions they were owed to (sjawhar/legion#2366):
 - `comments.sql` lists every comment a person (an author of kind `user`) created in a time window,
   ask-thread replies included, with each agent session or role the comment was owed or was
   addressed to: one row per (comment, target). Its output, `comments.csv`, is the input of
-  `tq receipts` (theorem-labs/agent-infra `transcript-store/`).
+  `tq receipts` (example-org/deployment `transcript-store/`).
 - `trace.sql` shows everything Dispatch recorded about one comment's delivery. Its
   `transaction_events` rows give each event's `published_destinations`, the subjects the outbox
   sent it to, and its `refused_destinations`, the subjects NATS refused for good, each with its
@@ -79,7 +79,7 @@ A target's subject is the subject the outbox's `addRoute` uses for it: `session:
 
 ## `comments.csv` columns
 
-The columns, in this order, are a contract that other scripts consume. `tq receipts` (theorem-labs/agent-infra `transcript-store/`)
+The columns, in this order, are a contract that other scripts consume. `tq receipts` (example-org/deployment `transcript-store/`)
 reads `comment_id`, `event_id`, `published_at`, `target`, `mention_session_id`,
 `mention_envelope_ids`, `mention_btw_reply_id` and `mention_modes` by name. The other columns are
 for `report.ts` (`scripts/dispatch/comment-delivery/`) and for people.
