@@ -239,6 +239,11 @@ func (m *Machine) Retree(ctx context.Context, tree string) error {
 // started with the claim's role's prompt and App, so the role it holds is the one it runs.
 var ErrRunsAProcess = errors.New("the claim still runs a process")
 
+// ErrStepLeft is Rerole's refusal of a role whose step its issue no longer asks for: the record
+// moved on after the start that asked read it, and the start of the step the issue stands in now
+// gives the claim its role.
+var ErrStepLeft = errors.New("the issue no longer asks for the step the role is for")
+
 // Rerole gives a claim the role of its agent's next step, which a step of another role than the
 // claim holds asks for (the daemon's outbox, the start of a phase entry): one key is one claim
 // across roles, and its next generation registers, is prompted and acts as the App of the role it
@@ -246,7 +251,12 @@ var ErrRunsAProcess = errors.New("the claim still runs a process")
 // started with; one that still runs is ErrRunsAProcess, and the start suspends it first, keeping
 // its session, and waits for its turn to end. The claim keeps its session, so its next generation
 // resumes it.
-func (m *Machine) Rerole(ctx context.Context, role claim.Role) error {
+//
+// The start read the step from the record before this lock, so the step is judged again under
+// it, by stands, the start's own reading of the record: a step the issue has left since, by a move
+// back or a later entry, is ErrStepLeft, and the claim keeps the role it holds. Judged here, a
+// role is never stored for a step the record no longer asks for, whatever reaches the claim next.
+func (m *Machine) Rerole(ctx context.Context, role claim.Role, stands func(context.Context) (bool, error)) error {
 	m.mu.Lock()
 	defer m.unlock()
 	if m.claim.Role == role {
@@ -255,6 +265,13 @@ func (m *Machine) Rerole(ctx context.Context, role claim.Role) error {
 	if !m.claim.RunsNothing() {
 		return fmt.Errorf("give claim %s the role %s for its agent's next step: it is %s as %s: %w",
 			m.claim.Token, role, m.claim.State, m.claim.Role, ErrRunsAProcess)
+	}
+	ok, err := stands(ctx)
+	if err != nil {
+		return fmt.Errorf("give claim %s the role %s: read its step: %w", m.claim.Token, role, err)
+	}
+	if !ok {
+		return fmt.Errorf("give claim %s the role %s for its agent's next step: %w", m.claim.Token, role, ErrStepLeft)
 	}
 	m.log.Info("supervise: the claim takes the role of its agent's next step", "claim", m.claim.Token, "from", m.claim.Role, "to", role)
 	m.claim.Role = role

@@ -47,7 +47,7 @@ func TestALostSessionOfAKeyedAgentStartsItFreshForItsKey(t *testing.T) {
 
 	// A failed review sends the work back to step 1, the implementer's, which key a's agent does.
 	h.must(RequestSuspend{Claim: testToken, By: SuspendedByDaemon})
-	if err := h.m.Rerole(context.Background(), claim.RoleImplementer); err != nil {
+	if err := h.m.Rerole(context.Background(), claim.RoleImplementer, stepStands); err != nil {
 		t.Fatalf("give key a's claim the implementer's role: %v", err)
 	}
 	h.must(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's phase"})
