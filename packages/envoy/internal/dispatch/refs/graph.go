@@ -759,10 +759,23 @@ const RetiredDecisionsSlug = "decisions-md"
 // its issue any more, and a citation of it stays valid and reaches what took its place, the issue
 // and its reads. The document read by its uuid is the document still, so its versions, its blocks
 // and its own edges stay readable.
+//
+// One artifact is bound as itself, as one block is (blockNodesAddressed): that is what every read
+// of one node asks for - the document a block's address names, read before the block - and an
+// equality on a unique index is a plan Postgres builds the same whether or not it knows the value,
+// so it keeps one plan for the statement. Bound as an array of one, the plan made for the value in
+// hand, which reads one element, was costed below the generic plan, which reads an array of
+// unknown length as one of ten, so the read of one document was planned again on every
+// execution: 0.5 to 1.0 ms of planning against 0.2 ms to run, over the read-cost corpus (check
+// c-read-cost).
 func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string, byRefKey bool, ids []string, nodes map[[2]string]resolvedNode) error {
-	predicate := `a.id::text = any($1)`
+	column := `a.id::text`
 	if byRefKey {
-		predicate = `a.ref_key = any($1)`
+		column = `a.ref_key`
+	}
+	predicate, addressed := column+` = any($1)`, any(ids)
+	if len(ids) == 1 {
+		predicate, addressed = column+` = $1`, ids[0]
 	}
 	storedJoin, storedColumns := storedNode("artifact", "a.ref_key")
 	rows, err := q.Query(ctx, `
@@ -774,7 +787,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 			where v.artifact_id = a.id order by v.number desc limit 1
 		) latest on true
 		`+storedJoin+`
-		where `+predicate+` and `+VisibleKind("artifact", "a.ref_key", "$2"), ids, VisibilityArg(who))
+		where `+predicate+` and `+VisibleKind("artifact", "a.ref_key", "$2"), addressed, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load artifact nodes: %w", err)
 	}
@@ -918,9 +931,9 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // and the read stops paying to plan it again: measured on this pod over the read-cost corpus,
 // 2.5 ms a call against 0.2 ms once the plan is the connection's.
 //
-// Two or more arrive as an array, under QueryExecModeDescribeExec so that the statement is
-// planned with its values. An array tells a generic plan nothing about its length, so that
-// plan reads it as an unknown-length scalar-array operation rather than a constant it can
+// More than blockNodesKeptPlan arrive as an array, under QueryExecModeDescribeExec so that the
+// statement is planned with its values. An array tells a generic plan nothing about its length,
+// so that plan reads it as an unknown-length scalar-array operation rather than a constant it can
 // hash: measured on this pod over a document of 8,001 blocks, 460 ms against 90 ms with the
 // values in hand. They are also held to the documents they name (blockDocuments), which every
 // one of them is a block of: IndexBlocks writes a row's node_id as the ref_key of the row's own
@@ -931,13 +944,32 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // 5,001 blocks of a list of links were read by scanning the whole table rather than its index,
 // once the block predicate no longer sat on that scan to deter it (visibleStoredKind): 98 ms
 // against 75 ms over the read-cost corpus (check c-read-cost).
+//
+// Two to blockNodesKeptPlan arrive as the same two arrays, each compared as a value Postgres reads
+// once, before the read - `(select $1::text[])::text[]`, the cast making it the array itself
+// rather than a subquery whose rows `any` would read - so the plan made for the ids in hand is the
+// plan made for any of them, Postgres keeps it from the sixth execution on, and the read stops
+// paying to plan it again. That plan reads the ids through the node_id index, as the plan made with
+// the values does for so few: the far ends of the edges into one node, the 7 blocks citing a node
+// of the read-cost corpus, are read in 0.4 ms against 2.3 ms planned each time.
 func blockNodesAddressed(ids []string, who model.Actor) (string, []any) {
-	if len(ids) == 1 {
+	switch {
+	case len(ids) == 1:
 		return `d.node_id = $1`, []any{ids[0], VisibilityArg(who)}
+	case len(ids) <= blockNodesKeptPlan:
+		return `d.node_id = any((select $1::text[])::text[])
+			and d.artifact_id in (select named.id from artifacts named where named.ref_key = any((select $3::text[])::text[]))`,
+			[]any{ids, VisibilityArg(who), blockDocuments(ids)}
 	}
 	return `d.node_id = any($1) and d.artifact_id in (select named.id from artifacts named where named.ref_key = any($3))`,
 		[]any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who), blockDocuments(ids)}
 }
+
+// blockNodesKeptPlan is the most blocks loadBlockNodes reads under one plan Postgres keeps rather
+// than one it makes for the values in hand (blockNodesAddressed). Measured on this pod over the
+// read-cost corpus, the kept plan read 2, 20 and 50 blocks in 0.3, 0.7 and 2.4 ms against 1.7, 4.6
+// and 6.0 ms planned each time, and the two met at 100: 5.9 ms against 5.6.
+const blockNodesKeptPlan = 100
 
 // blockDocuments is the ref_key of the document each block node id of ids names, each once: the
 // part of the id before its first '#', since a ref_key holds none.
