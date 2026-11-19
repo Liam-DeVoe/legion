@@ -77,6 +77,7 @@ func answerText(body []byte, notWhat, token string) string {
 	}
 	return strings.TrimSpace(string(body[:min(len(body), refusalBodyLimit)]))
 }
+
 // The reasons of a role publish the listener answers 504 (ErrNotDelivered). ReasonReceiptTimeout
 // says the last forward reached the NATS server and the holder's session sent no receipt for it,
 // which a holder that stopped running while its registration lives gives; ReasonDeliveryFailed
