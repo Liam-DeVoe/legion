@@ -124,13 +124,15 @@ readonly session
 # own, so the role this driver routes a comment to is nobody else's, and a second forward of it
 # resolves another holder (G9). The session the broker proves a person's (G13) is no session of
 # the listener's: nothing is delivered to it.
-readonly loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
-readonly holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
-readonly second_holder_session="019a1c09-1112-7000-8000-$(printf '%012d' "$$")"
-readonly mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
-readonly stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
-readonly answering_session="019a1c09-aaaa-7000-8000-$(printf '%012d' "$$")"
-readonly proved_session="019a1c09-9999-7000-8000-$(printf '%012d' "$$")"
+loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
+holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
+second_holder_session="019a1c09-1112-7000-8000-$(printf '%012d' "$$")"
+mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
+stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
+answering_session="019a1c09-aaaa-7000-8000-$(printf '%012d' "$$")"
+proved_session="019a1c09-9999-7000-8000-$(printf '%012d' "$$")"
+readonly loose_session holder_session second_holder_session mentioned_session stopped_session \
+  answering_session proved_session
 readonly role="acceptance-$stamp"
 # The role the message of G10 is delivered to, the route of an issue of that section's own: no
 # other issue or write of this run names it, so its role and page nodes are that route's and the

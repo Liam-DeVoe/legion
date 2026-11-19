@@ -116,7 +116,8 @@ func TestACommentThePreviousReleaseWritesAfterTheBackfillReachesTheStore(t *test
 // author on issue CORE-1, a reply to comment replyTo where that is not empty, as that release's API
 // writes one: the comments row, which names no node, and in the same transaction the event that
 // stores it, comment.created for a comment and comment.answered for a reply, whose payload is the
-// comment (model.CommentEventPayload). It answers the comment and the event.
+// comment (model.CommentEventPayload) and whose seq it takes off the issue's own counter as that
+// release's events.Append does. It answers the comment and the event.
 func commentAsThePreviousRelease(t *testing.T, database *store.Store, author model.Actor, replyTo, body string) (string, int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -150,9 +151,10 @@ func commentAsThePreviousRelease(t *testing.T, database *store.Store, author mod
 	}
 	var event int64
 	if err := tx.QueryRow(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, $1, $2, $3, false
-		from events where issue_key = 'CORE-1'
+		select 'CORE-1', bumped.last_seq, $1, $2, $3, false
+		from bumped
 		returning id
 	`, kind, encoded, payload).Scan(&event); err != nil {
 		t.Fatalf("append the %s event of %s: %v", kind, written.ID, err)
