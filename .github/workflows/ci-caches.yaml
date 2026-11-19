@@ -15,7 +15,8 @@ name: CI caches
 #
 # Five Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 # architecture and on the Go version the family's own module installs (go-envoy and
-# go-envoy-infra on the hash of their module files too, for the reason each job gives):
+# go-envoy-infra on the hash of their module files and of the tool pins their fills install too,
+# for the reason each job gives):
 # go-notices (lint's notices step), go-daemon (typecheck, daemon-go, plugin-pack and pi-legion),
 # go-envoy (envoy-go-checks, envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change,
 # envoy-e2e-local and envoy-session-stall, and the embedder job of
@@ -269,14 +270,18 @@ jobs:
       # go.work, go.work.sum and the go.mod and go.sum of both modules it binds. Keyed on the Go
       # version alone, an entry went stale as those files moved, and every reader then fetched
       # what moved; with the hash, a push to main that changes them misses the lookup and fills a
-      # fresh entry, and a pull request that changes them restores the newest by prefix.
+      # fresh entry, and a pull request that changes them restores the newest by prefix. It
+      # carries the hash of loadtest/cluster/tools.txt too, the helm pin the fill below installs,
+      # as go-envoy-infra's carries gcp's live-tools.txt: a helm bump alone then fills an entry
+      # that holds the new helm, where an entry keyed without the pin would be found and skip the
+      # fill, and envoy-go-checks' fetch step would download the new helm's modules on every run.
       - id: go-envoy
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', 'packages/envoy/loadtest/cluster/tools.txt') }}
           lookup-only: true
 
       # The lookup's key and whether this leg fills it, as the job's outputs name them: RUNNER_ARCH
@@ -320,7 +325,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', 'packages/envoy/loadtest/cluster/tools.txt') }}
 
       - id: go-envoy-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
