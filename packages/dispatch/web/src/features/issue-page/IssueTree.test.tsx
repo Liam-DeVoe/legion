@@ -6898,27 +6898,105 @@ test("the row the tree is zoomed to draws no fold control and stays expanded, an
   }
 });
 
-// An address's own path is drawn open over the reader's folds, so the row it names stays drawn:
-// in the cycle's last state too, where the reader's folds there are drawn and no other. Left on
-// a branch the address goes through folds nothing there.
-test("in the cycle's last state a branch on the address's own path stays open under Left", async () => {
+/** The tree of `twoBranchesTree` with the address naming `reply-1`, which is drawn by the path
+ *  the address holds open, `comment-1` folded in the first state. `reply-1` holds a row of its
+ *  own, so the path's last branch is one a reader can fold too. */
+function renderAddressedBranches(): ReturnType<typeof renderTree> {
+  const root = node({
+    children: [
+      node({
+        children: [
+          node({
+            children: [node({ id: "reply-1a", text: "Under the reply.", type: "comment" })],
+            id: "reply-1",
+            text: "Under the first.",
+            type: "comment",
+          }),
+        ],
+        id: "comment-1",
+        text: "The first words.",
+        type: "comment",
+      }),
+      node({
+        children: [node({ id: "reply-2", text: "Under the second.", type: "comment" })],
+        id: "comment-2",
+        text: "The second words.",
+        type: "comment",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const first = root.children[0] as TreeNode;
+  return renderTree(root, { reveal: [root, first, first.children[0] as TreeNode] });
+}
+
+// An address's own path is held open to land the reader on its row. A branch of it the reader
+// folded after the landing was held open still: Left at 1440 px, or the row's Fold control,
+// recorded a fold that drew nothing, and Left said nothing, until the address named another
+// node. The fold lets that branch, and the path below it, go of the hold, so it folds at once.
+test("Left on a branch of the address's own path folds it at once after the landing", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const root = twoBranchesTree();
-  const first = root.children[0] as TreeNode;
-  const view = renderTree(root, { reveal: [root, first, first.children[0] as TreeNode] });
+  const view = renderAddressedBranches();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("reply-1"));
+  await user.keyboard("k");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() =>
+    expect(
+      rowsFor(view.container, "reply-1").length,
+      "Left drew the branch the address goes through still open"
+    ).toBe(0)
+  );
+  expect(rowsFor(view.container, "comment-1")[0]?.getAttribute("aria-expanded")).toBe("false");
+  expect(focusedRow(view.container), "Left moved off the row it folded").toBe("comment-1");
+  view.unmount();
+});
+
+// At 390 px the tree is read one node at a time, zoomed to the parent of the node the address
+// names, so the path's own branch on screen is the node itself: its Fold control folds it.
+test("the Fold control of the address's own node folds it at once at 390 px", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const view = renderAddressedBranches();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("reply-1"));
+  await waitFor(() => expect(rowsFor(view.container, "reply-1a").length).toBe(1));
+  const control = rowsFor(view.container, "reply-1")[0]?.querySelector<HTMLElement>(
+    "button[data-node-bullet]"
+  );
+  expect(control?.getAttribute("aria-label")).toBe(CONTROL_LABELS.fold);
+  await user.click(control as HTMLElement);
+  await waitFor(() =>
+    expect(
+      rowsFor(view.container, "reply-1a").length,
+      "the Fold control drew the address's own node still open"
+    ).toBe(0)
+  );
+  expect(rowsFor(view.container, "reply-1")[0]?.getAttribute("aria-expanded")).toBe("false");
+  view.unmount();
+});
+
+// In the cycle's last state, which draws its own folds and no other, the path is held over
+// those folds as it is over the reader's others, and a fold of it after the landing is let go
+// of the hold the same way.
+test("in the cycle's last state Left on a branch of the address's own path folds it at once", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderAddressedBranches();
   await waitFor(() => expect(focusedRow(view.container)).toBe("reply-1"));
   await user.keyboard("zz");
   await waitFor(() => expect(rowsFor(view.container, "reply-2").length).toBe(1));
   await user.keyboard("k");
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await user.keyboard("{ArrowLeft}");
-  await act(async () => {});
-  expect(
-    rowsFor(view.container, "reply-1").length,
-    "Left folded the branch the address goes through"
-  ).toBe(1);
-  expect(rowsFor(view.container, "comment-1")[0]?.getAttribute("aria-expanded")).toBe("true");
+  await waitFor(() =>
+    expect(
+      rowsFor(view.container, "reply-1").length,
+      "Left drew the branch the address goes through still open"
+    ).toBe(0)
+  );
+  expect(rowsFor(view.container, "reply-2").length, "Left folded another branch").toBe(1);
   view.unmount();
 });
 

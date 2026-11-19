@@ -240,6 +240,16 @@ export function IssueTree({
       setZoom(undefined);
     }
   }
+  // The branches of the address's path the reader folded since its landing (`landingKey`): each
+  // is let go of the path's hold for that following, and the next following holds it again.
+  const [released, setReleased] = useState<{
+    readonly ids: ReadonlySet<string>;
+    readonly landing: string | undefined;
+  }>({ ids: NO_FOLDS, landing: undefined });
+  // The address's path and following as last drawn, which a fold reads (`unfold`).
+  const pathHold = useRef<{ readonly ids: readonly string[]; readonly landing?: string }>({
+    ids: [],
+  });
   // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
   // on a phone sees the whole issue and can reach any branch of it; an address that names a
   // node opens it on that node's parent, so the node the address named is one of the rows.
@@ -268,21 +278,27 @@ export function IssueTree({
   // depth: a `#b-` fragment names a block of a document the page opens folded. A branch of
   // that path the reader folded shut is opened again, since the row the address names is
   // drawn nowhere while anything above it is closed - which is the one thing the filter's own
-  // opens do not do.
+  // opens do not do. The hold is there to land the reader: a branch of the path they fold
+  // after it, and every branch below it on the path, is theirs to fold for that following
+  // (`released`), since held open it recorded a fold that drew nothing and Left said nothing.
   const path = reveal ?? [];
-  /** `closed` with the address's own path taken out of it. */
+  pathHold.current = { ids: path.map((above) => above.id), landing: landingKey };
+  const releasedHere = released.landing === landingKey ? released.ids : NO_FOLDS;
+  const heldPath =
+    releasedHere.size === 0 ? path : path.filter((above) => !releasedHere.has(above.id));
+  /** `closed` with the address's own path, as it is held, taken out of it. */
   const openPath = (closed: ReadonlySet<string>): ReadonlySet<string> =>
-    path.length === 0 || closed.size === 0
+    heldPath.length === 0 || closed.size === 0
       ? closed
       : withoutIds(
           closed,
-          path.map((above) => above.id)
+          heldPath.map((above) => above.id)
         );
   const shown: OpenedBranches =
-    path.length === 0
+    heldPath.length === 0
       ? filtered
       : {
-          branches: new Set([...filtered.branches, ...path.map((above) => above.id)]),
+          branches: new Set([...filtered.branches, ...heldPath.map((above) => above.id)]),
           closed: openPath(filtered.closed),
           deeper: new Set([...filtered.deeper, ...path.map((above) => above.id)]),
         };
@@ -394,6 +410,16 @@ export function IssueTree({
         }
         return { branches, closed, deeper: held.deeper };
       });
+      // A fold of a branch the address's path holds open lets that branch, and the path below
+      // it, go of the hold for this following, so the fold is drawn.
+      const { ids, landing } = pathHold.current;
+      const at = open ? -1 : ids.indexOf(id);
+      if (at !== -1) {
+        setReleased((held) => ({
+          ids: new Set([...(held.landing === landing ? held.ids : []), ...ids.slice(at)]),
+          landing,
+        }));
+      }
       if (cycle !== EVERYTHING) return;
       setFoldedInEverything((held) => {
         const next = new Set(held);
