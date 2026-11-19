@@ -98,8 +98,8 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 //     the settings), and a run's jobs write (UpsertRunJobs), which writes the run row and every job
 //     in one statement.
 //   - Last, in the statement that ends its transaction: the issue.deployed write
-//     (recordDeployedEvent), which locks its pull request's row first, appends the event, and
-//     marks the row last.
+//     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
+//     the update that locks the row.
 //   - First, with LockChanges: every write of the session groups (writeSessionGroup, after the
 //     reads that decide it) and of a repository's project mapping (LockRepoProjectWrite, which
 //     every writer of repo_projects goes through); and the drain (DrainPending), which takes it

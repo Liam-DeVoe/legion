@@ -148,11 +148,19 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	// The project's evals and its `evals-md` (dispatch://INFRA-2916, R5) are written in the
 	// transaction that creates it, which the document service joins, so no reader ever sees the
-	// project without them and a refused create leaves neither. The seed's versions record their
-	// changes in the change log's outbox and take no lock (evals.Store.EnsureTx); Committed moves
-	// them into the log once the transaction has committed.
+	// project without them and a refused create leaves neither. The seed runs first, in the
+	// transaction's read phase: its locks, its reads and the document work of `evals-md` hold no
+	// transaction id, and its writes are queued on the ledger (evals.Store.EnsureTx), which Commit
+	// sends after the project's row and its event, the first writes, which the queued rows name.
+	// The seed's versions record their changes in the change log's outbox and take no lock;
+	// Committed moves them into the log once the transaction has committed.
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	seeded, err := s.registry().EnsureTx(documentCtx, tx, ledger, input.Key, input.Name)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
 		insert into projects (key, name, default_assignee) values ($1, $2, $3)
@@ -167,11 +175,6 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(created.Key).event("project.created", actor, created.Project))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	seeded, err := s.registry().EnsureTx(documentCtx, tx, created.Key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

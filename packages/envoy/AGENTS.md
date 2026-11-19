@@ -3182,9 +3182,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   | --- | --- | --- |
   | the one-statement writes of `delivery/store.go` (a pull request, a run, `MarkRunJobsUnfetchable`, `PutSettings` with the reconcile progress it clears), `AttributePullRequests`, and the fixtures' inserts (`deliverytest`, `legiontest`, `evalfixture`) | the rows it writes of `delivery_pull_requests`, `delivery_runs`, `delivery_run_jobs`, `delivery_settings`, `delivery_reconcile_progress` | last, in its one statement |
   | `UpsertRunJobs` | the run's jobs, in their names' byte order, then the run | last, in its one statement |
-  | `recordDeployedEvent` | its pull request and its issue (`for no key update`), a new `events` row, the pull request's marker | last, in its last statement |
+  | `recordDeployedEvent` | its issue (`for no key update`, in the event's append), a new `events` row, then its pull request, in the marker's update | last, in its last statement |
   | a session group's create, update or delete (`delivery/groups.go`) | `delivery_session_groups`, `delivery_session_group_members` | first, after its reads |
-  | every mapping write, through `delivery.LockRepoProjectWrite` | `projects` (`for no key update`), `repo_projects` (`for update`), new `events` rows, `session_titles` at commit | first |
+  | every mapping write, through `delivery.LockRepoProjectWrite` | `projects` (their owner locks, `events.Broker.LockOwners`, and beside an earlier build their rows `for no key update`), `repo_projects` (`for update`), new `events` rows, `session_titles` at commit | first |
   | the drain (`delivery.DrainPending`) | `delivery_changes_pending` | first |
 
   Each table's one position: last for `delivery_pull_requests`, `delivery_runs`, `delivery_run_jobs`, `delivery_settings`, `delivery_reconcile_progress` and `issues`;

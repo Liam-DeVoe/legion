@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -91,17 +92,21 @@ type PendingSeed struct {
 	write *writeTx
 }
 
-// EnsureTx writes the catalogue into project in tx, the transaction that created the project, so
-// the project and its evals commit together or not at all. ctx is the context the document
-// service's Join of tx returned, whose ledger the caller commits. The seed's versions record their
-// changes in the change log's outbox and take no lock, as every registry write's do (inWrite).
-// Once tx has committed, the caller calls Committed on the answer, and never when tx did not
-// commit.
-func (s *Store) EnsureTx(ctx context.Context, tx pgx.Tx, project string) (PendingSeed, error) {
-	w, err := openWrite(ctx, tx, project)
+// EnsureTx writes the catalogue into project, whose name is name, in tx, the transaction that
+// creates the project, so the project and its evals commit together or not at all. ctx is the
+// context the document service's Join of tx returned, and ledger is that Join's ledger, which the
+// caller commits. The seed runs in the transaction's read phase, before the project's row is
+// written: it reads, takes its locks and does its document work holding no transaction id, and
+// queues every write on ledger, so they run in the write phase after the caller's own insert of
+// the project, which their rows name. The seed's versions record their changes in the change
+// log's outbox and take no lock, as every registry write's do (inWrite). Once tx has committed,
+// the caller calls Committed on the answer, and never when tx did not commit.
+func (s *Store) EnsureTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, project, name string) (PendingSeed, error) {
+	now, err := ledger.Now(ctx)
 	if err != nil {
 		return PendingSeed{}, err
 	}
+	w := &writeTx{Tx: tx, ledger: ledger, now: now.UTC(), project: project, projectName: name}
 	seeded, err := s.ensure(ctx, w)
 	if err != nil {
 		return PendingSeed{}, err
@@ -173,7 +178,7 @@ func (s *seeding) note(project string, err error) {
 
 // seedRefusals is the projects whose seed was refused because their `evals-md` artifact is no
 // document (CodeDocumentNotDocument). The seed reads that artifact whatever else it writes
-// (ensure, existingDocument), so it refuses such a project again for as long as the artifact
+// (ensure, lockDocument), so it refuses such a project again for as long as the artifact
 // stands, and only a person's write of the artifact moves it. A seed of such a project is
 // therefore not tried again while one read says the artifact is still no document (pending),
 // rather than once a pass, each a transaction of about ten statements. The zero value holds none.
@@ -242,16 +247,15 @@ type seedWrite struct {
 // catalogue, in one statement and in the byte order of their ids (lockEvals), the order the zero
 // fill takes several evals' locks in, before it reads what the project holds, so a second seed of
 // the project, a register write, a readings write and the fill of one of those evals each wait for
-// it and then read what it wrote, and none of them waits for it in a cycle. It then queues behind
-// the project's other registry writes of `evals-md` (lockDocumentWrites), as each of those takes
-// that lock after its eval locks, and reads the newest version of each eval, the version the seed
-// last wrote, the current series and the series as the seed last wrote them, the first version of
-// an eval it takes over, and the blocks of `evals-md`, a read that takes the document's owner row
-// (docs' joinRead) before the document's write takes its writer slot (ApplyOps); writes the
-// missing sections and the methods it takes over in one write of the document; and writes the
-// versions, as one batch of statements sent in one round trip and run in the order it was queued:
-// a project's first seed writes 20 versions and 95 of series, which one statement each would make
-// 115 round trips.
+// it and then read what it wrote, and none of them waits for it in a cycle. It then takes the
+// owner lock of the project's `evals-md` (lockDocument), as every other registry write of the
+// document takes it after its eval locks, and reads the newest version of each eval, the version
+// the seed last wrote, the current series and the series as the seed last wrote them, the first
+// version of an eval it takes over, and the blocks of `evals-md`. All of that, and the document
+// work of the missing sections and the methods it takes over, one write of the document, runs in
+// the transaction's read phase, holding no transaction id; the document's writes and then the
+// versions are queued on the write's ledger, whose Commit sends them as one batch: a project's
+// first seed writes 20 versions and 95 of series, which one round trip each would make 115.
 func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	ids := make([]string, len(catalogue))
 	for i, entry := range catalogue {
@@ -260,7 +264,8 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	if err := lockEvals(ctx, w.Tx, ids); err != nil {
 		return Seeded{}, fmt.Errorf("lock the seeded evals of %s: %w", w.project, err)
 	}
-	if err := lockDocumentWrites(ctx, w.Tx, w.project); err != nil {
+	document, found, err := lockDocument(ctx, w)
+	if err != nil {
 		return Seeded{}, err
 	}
 	newest, err := readDefinitions(ctx, w.Tx, `
@@ -298,10 +303,6 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 		return Seeded{}, err
 	}
 	taken, err := readTakeovers(ctx, w, newest, lastSeeded)
-	if err != nil {
-		return Seeded{}, err
-	}
-	document, found, err := existingDocument(ctx, w)
 	if err != nil {
 		return Seeded{}, err
 	}
@@ -368,33 +369,50 @@ func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 			return Seeded{}, err
 		}
 	}
-	inserts := &pgx.Batch{}
+	// The versions' inserts, encoded here, in the read phase, and queued as one step after the
+	// document's writes. A series insert writes nothing where that version exists, which only a
+	// write that holds no lock of the eval could have stored, so its callback refuses that.
+	type seedInsert struct {
+		statement string
+		args      []any
+		series    *Series
+	}
+	var inserts []seedInsert
 	for _, write := range writes {
-		statement, args, err := definitionInsert(write.definition, false)
+		statement, args, err := definitionInsert(write.definition)
 		if err != nil {
 			return Seeded{}, err
 		}
-		inserts.Queue(statement, args...)
+		inserts = append(inserts, seedInsert{statement: statement, args: args})
 		seeded.Versions++
 		for _, series := range write.series {
 			statement, args, err := seriesInsert(series)
 			if err != nil {
 				return Seeded{}, err
 			}
-			inserts.Queue(statement, args...).Exec(func(tag pgconn.CommandTag) error {
-				if tag.RowsAffected() != 1 {
-					return fmt.Errorf("version %d of series %s of %s was written by a write that holds no lock of the eval", series.Version, series.Series, series.EvalID)
-				}
-				return nil
-			})
+			inserts = append(inserts, seedInsert{statement: statement, args: args, series: &series})
 			seeded.Series++
 		}
 	}
-	if inserts.Len() == 0 {
+	if len(inserts) == 0 {
 		return seeded, nil
 	}
-	if err := w.SendBatch(ctx, inserts).Close(); err != nil {
-		return Seeded{}, fmt.Errorf("write the seeded versions of %s: %w", w.project, err)
+	what := "write the seeded versions of " + w.project
+	if err := w.ledger.Queue(func(b *store.WriteBatch) error {
+		for _, insert := range inserts {
+			queued := b.Queue(what, insert.statement, insert.args...)
+			if series := insert.series; series != nil {
+				queued.Exec(func(tag pgconn.CommandTag) error {
+					if tag.RowsAffected() != 1 {
+						return fmt.Errorf("version %d of series %s of %s was written by a write that holds no lock of the eval", series.Version, series.Series, series.EvalID)
+					}
+					return nil
+				})
+			}
+		}
+		return nil
+	}); err != nil {
+		return Seeded{}, err
 	}
 	return seeded, nil
 }

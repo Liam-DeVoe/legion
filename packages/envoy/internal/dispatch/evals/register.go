@@ -256,8 +256,9 @@ type Registered struct {
 // write of a min_n no read ranks by (rankedByMinN). A version that lists or unlists a logged
 // eval's series lists or unlists that series' stored day rows in the same transaction
 // (relistDays). A write that may write the eval's section, one carrying doc_text or the first of
-// an eval, queues behind the project's other registry writes of `evals-md` before it stores
-// anything (readyDocumentWrite), and writes the section last, after its versions (writeMethod).
+// an eval, takes the document's owner lock before it stores anything (lockDocument) and does the
+// section's document work there, in its read phase, queued for the commit after its versions'
+// rows (writeMethod).
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
 	if err := validateRegistration(change); err != nil {
 		return Registered{}, err
@@ -265,6 +266,7 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 	evalID := EvalID(change.Project, change.Slug)
 	var answer Registered
 	err := s.inWrite(ctx, change.Project, func(ctx context.Context, w *writeTx) error {
+		answer = Registered{}
 		if err := lockEval(ctx, w.Tx, evalID); err != nil {
 			return err
 		}
@@ -297,15 +299,16 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 		}
 		change.applyTo(&next, w.now)
 		next.WrittenVia, next.WrittenBy = ViaRegister, change.Caller.Recorded()
-		// section writes the method the new version's doc_block names, once the versions are
-		// stored: nil where the write leaves the eval's section as it is.
-		var section func() error
+		// The section's document work runs here, before the versions are stored, and queues the
+		// document's writes for the commit: nothing where the write leaves the eval's section as
+		// it is.
 		switch {
 		case change.DocText.Set:
-			if err := s.readyDocumentWrite(ctx, w); err != nil {
+			document, documentFound, err := lockDocument(ctx, w)
+			if err != nil {
 				return err
 			}
-			held, err := s.holdsMethod(ctx, w, current.DocBlock, change.DocText.Value)
+			held, err := s.holdsMethod(ctx, w, document, documentFound, current.DocBlock, change.DocText.Value)
 			if err != nil {
 				return err
 			}
@@ -313,23 +316,24 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			// definition stand as they are.
 			if !held {
 				next.DocBlock = uuid.NewString()
-				section = func() error {
-					return s.writeMethod(ctx, w, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller)
+				if err := s.writeMethod(ctx, w, document, documentFound, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller); err != nil {
+					return err
 				}
 			}
 		case !found && next.DocBlock == "":
-			if err := s.readyDocumentWrite(ctx, w); err != nil {
+			document, documentFound, err := lockDocument(ctx, w)
+			if err != nil {
 				return err
 			}
 			next.DocBlock = uuid.NewString()
-			section = func() error {
-				return s.writeMethod(ctx, w, next.Slug, "", next.DocBlock, registrationSentence(ViaRegister, change.Caller, w.now), RegistryActor)
+			if err := s.writeMethod(ctx, w, document, documentFound, next.Slug, "", next.DocBlock, registrationSentence(ViaRegister, change.Caller, w.now), RegistryActor); err != nil {
+				return err
 			}
 		}
 		answer.Definition = current
 		if !found || !sameDefinition(current, next) {
 			next.Version = current.Version + 1
-			stored, _, err := insertDefinition(ctx, w.Tx, next, false)
+			stored, err := insertDefinition(ctx, w.Tx, next)
 			if err != nil {
 				return err
 			}
@@ -361,9 +365,6 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			series[stored.Series], answer.Wrote = stored, true
 		}
 		answer.Series = sortedSeries(series)
-		if section != nil {
-			return section()
-		}
 		return nil
 	})
 	if err != nil {

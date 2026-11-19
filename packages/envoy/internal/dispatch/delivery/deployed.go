@@ -8,11 +8,8 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -109,29 +106,33 @@ func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo str
 // recordDeployedEvent marks pr and appends its event in one transaction, and reports whether it did:
 // false when another writer marked the row first, or the row no longer names pr's issue.
 //
-// It locks the pull request's row first, at the level the marker's update takes, while it is still
-// unmarked and names pr's issue, then appends the event, and marks the row in its last statement,
-// whose change trigger takes the change log's lock (delivery.LockChanges): after every row lock the
-// transaction takes, the issue's included, and held for that statement and the commit alone. Every
-// other writer of a delivery_pull_requests row is one statement that takes the row's lock and then
-// the change log's, so the two wait on each other in one order.
+// It runs in the two phases every writer runs in (INFRA-636): a read phase holding no
+// transaction id, which takes the issue's owner lock, and a write phase of the event's append and
+// the marking update, back to back. The issue is known before the write - the pass read it off
+// the row (listUnrecordedShipped) - and it is the event's owner, so its lock is the one the
+// append would otherwise be the first to take (events' lockEventOwner), by which time a write
+// before it had already given this transaction a transaction id to wait on it with, holding back
+// every reader's snapshot while this pass queued behind the issue's own writers.
+//
+// Nothing is read under that lock: what the write is decided on is the row's own state, and the
+// marking update's predicate is what reads it. No lock holds that row still - the intake's upsert
+// and the attribution pass write it in statements of their own, outside any owner's lock - so a
+// read before the update could only be read again by the update itself. The update is the
+// transaction's last statement, after the append, because its change trigger takes the change
+// log's lock (delivery.LockChanges): after every row lock the transaction takes, the issue's
+// included, and held for that statement and the commit alone. Every other writer of a
+// delivery_pull_requests row is one statement that takes the row's lock and then the change
+// log's, so the two wait on each other in one order. Of two passes that cross here, intake's and
+// the reconcile's, the second finds deployed_event_at set, or the row naming another issue: its
+// update marks nothing, and it rolls back with the event it appended, so it writes nothing.
 func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.Broker, pr shippedPullRequest) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	var unmarked bool
-	err = tx.QueryRow(ctx, `
-		select true from delivery_pull_requests
-		where repo = $1 and number = $2 and issue_key = $3 and deployed_event_at is null
-		for no key update
-	`, pr.Repo, pr.Number, pr.IssueKey).Scan(&unmarked)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("lock the pull request: %w", err)
+	if err := store.LockOwner(ctx, tx, store.IssueOwner(pr.IssueKey)); err != nil {
+		return false, err
 	}
 	event, err := broker.Append(ctx, tx, model.Event{
 		IssueKey: &pr.IssueKey,
@@ -144,10 +145,15 @@ func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.B
 	if err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(ctx, `
-		update delivery_pull_requests set deployed_event_at = now() where repo = $1 and number = $2
-	`, pr.Repo, pr.Number); err != nil {
+	tag, err := tx.Exec(ctx, `
+		update delivery_pull_requests set deployed_event_at = now()
+		where repo = $1 and number = $2 and issue_key = $3 and deployed_event_at is null
+	`, pr.Repo, pr.Number, pr.IssueKey)
+	if err != nil {
 		return false, fmt.Errorf("mark the pull request: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
