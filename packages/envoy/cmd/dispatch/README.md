@@ -3084,6 +3084,9 @@ A tick with nothing owed and no other build live reads the live processes, the n
 
 Last it states every kind dispatch://INFRA-1152 moves into the store but the mention tuples, for the rows a build of the release before this one wrote during a roll or before it, which carry none of that child's markers (`graphcensus/backfill_inbox.go`, `backfill_inbox_threads.go`).
 Each pass walks only the rows its marker test passes, writes what this release's writer of that row writes for it, dated by the row's own `created_at` (or by the moment of the mark the row stands for, where it holds none) and caused by the older write's own event, found in the log, or the sentinel where the log holds none, and sets the row's marker in the same transaction; each batch takes the writers' lock order: owner rows, then the project row an ask's waiting person is read under, then the item rows and an item's block state, then the `user_threads` rows in ascending login, then the store.
+Before its first pass it runs one `analyze` of every table those passes read or write: the migrations add the marker columns each pass tests, and a table holds no statistics of a column until something analyzes it, so a run straight after a deploy would plan every test at Postgres's defaults.
+The passes grow the store they probe, so the run analyzes `graph_tuples` and `graph_nodes` again whenever the store has grown by a tenth of what it held at the last analyze (and by at least a thousand rows), as autovacuum would but without waiting for its schedule.
+The command runs on the database URL the server migrates the schema with, whose login owns those tables and may analyze them; Postgres skips, with a warning, a table its login may not analyze.
 The passes, each with its `kind=` line:
 
 - `messages`: each row whose node pair is null takes its pointer tuples, the page a message on no issue hangs from and its `part_of`, `authored_by`, and what it owed its thread, then its node pair.

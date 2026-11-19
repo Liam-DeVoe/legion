@@ -576,7 +576,7 @@ func TestTheAttemptPassReadsItsRowsOncePerWriter(t *testing.T) {
 
 	recorder := &storetest.StatementRecorder{}
 	traced := storetest.Reopened(t, writes.database, func(config *pgxpool.Config) { config.ConnConfig.Tracer = recorder })
-	done, err := runInboxPass(ctx, traced, attemptsPass(commentAttempts))
+	done, err := runInboxPass(ctx, traced, attemptsPass(commentAttempts), &storeGrowth{})
 	if err != nil {
 		t.Fatalf("run the comment attempt pass: %v", err)
 	}
@@ -1213,5 +1213,155 @@ func TestRecordOlderLocksAndReadsTheDismissalsInOneRoundTrip(t *testing.T) {
 	if batches != 1 || len(recorded) != 5 {
 		t.Errorf("recording bob's reply took %d round trips, %d of them a batch or a lone lock: %q; want 5 with the lock and the read in one batch",
 			len(recorded), batches, recorded)
+	}
+}
+
+// unanalyzedConversations is how many one-off conversations the linear-pass test seeds: a person's
+// message to a session and the session's reply, each pair the shape of the corpus's piles.
+const unanalyzedConversations = 1500
+
+// messageReadsPerMessage bounds the rows the whole backfill reads out of messages for each message
+// it states: the batch reads, each message's walk up and down its thread, the update that marks
+// it, and the other passes' joins through it. Measured at 23 a message over 3,000 messages and 17
+// over 6,000; a plan that reads every unmarked message for each reply read 9,069 a message here.
+const messageReadsPerMessage = 40
+
+// storeReadsPerMessage bounds the rows the whole backfill reads out of graph_tuples for each
+// message it states: the probes of each message's thread walk, of the persons it reaches and of
+// what it states. Measured at 23 a message over 3,000 messages and 27 over 6,000; probes planned on
+// the store's statistics as they stood before the passes grew it read 795 a message here and
+// 3,907 over 6,000.
+const storeReadsPerMessage = 60
+
+// The backfill reads each message, and the store for each message, a bounded number of times on a
+// table no analyze has ever read, so it is linear in the messages owed. A deploy's migrations add
+// the marker columns this child's passes test (messages.node_kind among them), and a table holds
+// no statistics for a column until something analyzes it; a plan made without them estimated
+// `node_kind is null` at Postgres's default of half a percent, and reachedBefore's walk of a
+// message thread then read the whole node_kind-is-null range of messages_node_address - every
+// message still unmarked - for each step of the walk, and hashed every message for each reply. And
+// the passes grow the store they probe: on statistics taken before they ran, each probe of a
+// thread walk read every tuple of its kind. The corpus is written as the release before this one
+// writes it, in a database whose tables autovacuum is told to leave alone, so no analyze runs but
+// the ones the backfill runs itself, and the test asserts the table holds no statistics when the
+// backfill starts. The rows read are Postgres's own counters of each table's scans
+// (pg_stat_user_tables, pg_stat_user_indexes), read once the backfill's connections have closed,
+// which is when a backend's counters are flushed: they count what the plans read whatever else the
+// pod runs, where the backfill's wall time moves with the pod's load (28s over 3,000 messages and
+// 67s over 6,000 when measured, 33s and 113s on the statistics taken once).
+func TestTheMessagesPassIsLinearOnATableNoAnalyzeHasRead(t *testing.T) {
+	writes := newAddressingWrites(t)
+	ctx := context.Background()
+	rows, err := writes.database.Pool.Query(ctx, `
+		select c.relname::text from pg_class c
+		where c.relnamespace = 'public'::regnamespace and c.relkind = 'r'
+		order by 1
+	`)
+	if err != nil {
+		t.Fatalf("read the tables: %v", err)
+	}
+	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the tables: %v", err)
+	}
+	for _, table := range tables {
+		if _, err := writes.database.Pool.Exec(ctx, `alter table `+pgx.Identifier{table}.Sanitize()+` set (autovacuum_enabled = false)`); err != nil {
+			t.Fatalf("keep autovacuum off %s: %v", table, err)
+		}
+	}
+	// A pool of its own for each phase, closed when the phase ends, so the counters of its
+	// connections are flushed and read whole.
+	phase := func(name string, run func(database *store.Store)) {
+		t.Helper()
+		pooled := storetest.Reopened(t, writes.database, func(config *pgxpool.Config) {
+			config.ConnConfig.RuntimeParams["application_name"] = name
+		})
+		run(pooled)
+		pooled.Pool.Close()
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			var open int
+			if err := writes.database.Pool.QueryRow(ctx, `
+				select count(*) from pg_stat_activity where datname = current_database() and application_name = $1
+			`, name).Scan(&open); err != nil {
+				t.Fatalf("read the connections of %s: %v", name, err)
+			}
+			if open == 0 {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%d connections of %s are still open 30s after its pool closed", open, name)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	phase("seed-older-conversations", func(database *store.Store) {
+		tag, err := database.Pool.Exec(ctx, `
+			with roots as (
+				insert into messages (author, body, target, created_at)
+				select jsonb_build_object('kind', 'user', 'id', 'person-' || n || '@example.com'), 'A question.',
+				       'session:session-' || n, now() - interval '1 day' + n * interval '1 second'
+				from generate_series(1, $1::int) n
+				returning id, target, created_at
+			)
+			insert into messages (author, body, target, in_reply_to, created_at)
+			select jsonb_build_object('kind', 'session', 'id', substr(roots.target, length('session:') + 1)), 'An answer.',
+			       roots.target, roots.id, roots.created_at + interval '30 seconds'
+			from roots
+		`, unanalyzedConversations)
+		if err != nil {
+			t.Fatalf("write the conversations as an older build writes them: %v", err)
+		}
+		if tag.RowsAffected() != unanalyzedConversations {
+			t.Fatalf("wrote %d replies, want %d", tag.RowsAffected(), unanalyzedConversations)
+		}
+	})
+	var analyzed, columnStatistics int
+	if err := writes.database.Pool.QueryRow(ctx, `
+		select (select count(*) from pg_stat_user_tables
+		        where relname = 'messages' and (last_analyze is not null or last_autoanalyze is not null)),
+		       (select count(*) from pg_stats where schemaname = 'public' and tablename = 'messages')
+	`).Scan(&analyzed, &columnStatistics); err != nil {
+		t.Fatalf("read the statistics of messages: %v", err)
+	}
+	if analyzed != 0 || columnStatistics != 0 {
+		t.Fatalf("messages was analyzed %d times and holds statistics of %d columns before the backfill, want a table never analyzed",
+			analyzed, columnStatistics)
+	}
+	// reads is the rows the scans of table have read so far.
+	reads := func(table string) int64 {
+		t.Helper()
+		var read int64
+		if err := writes.database.Pool.QueryRow(ctx, `
+			select (select coalesce(seq_tup_read, 0) from pg_stat_user_tables where relname = $1)
+			     + (select coalesce(sum(idx_tup_read), 0) from pg_stat_user_indexes where relname = $1)
+		`, table).Scan(&read); err != nil {
+			t.Fatalf("read the rows read out of %s: %v", table, err)
+		}
+		return read
+	}
+	messagesBefore, storeBefore := reads("messages"), reads("graph_tuples")
+	started := time.Now()
+	var report BackfillReport
+	phase("backfill-older-conversations", func(database *store.Store) {
+		report = backfillInboxOnce(t, database)
+	})
+	took := time.Since(started)
+	messages := int64(2 * unanalyzedConversations)
+	if done := reportedKind(t, report, "messages"); done.Rows != messages {
+		t.Fatalf("the messages pass reports %#v, want %d rows", done, messages)
+	}
+	read, storeRead := reads("messages")-messagesBefore, reads("graph_tuples")-storeBefore
+	t.Logf("the backfill stated %d messages in %s, reading %d rows out of messages (%.1f a message) and %d out of graph_tuples (%.1f a message)",
+		messages, took.Round(time.Millisecond), read, float64(read)/float64(messages), storeRead, float64(storeRead)/float64(messages))
+	if read > messageReadsPerMessage*messages {
+		t.Errorf("the backfill read %d rows out of messages to state %d messages, %.1f a message, above %d: a pass that reads the "+
+			"unmarked messages for each reply is quadratic in the messages owed", read, messages, float64(read)/float64(messages),
+			messageReadsPerMessage)
+	}
+	if storeRead > storeReadsPerMessage*messages {
+		t.Errorf("the backfill read %d rows out of graph_tuples to state %d messages, %.1f a message, above %d: probes planned on "+
+			"statistics the passes outgrew read every tuple of a kind each", storeRead, messages, float64(storeRead)/float64(messages),
+			storeReadsPerMessage)
 	}
 }

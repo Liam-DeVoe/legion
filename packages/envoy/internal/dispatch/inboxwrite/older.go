@@ -262,35 +262,58 @@ func reachedBefore(ctx context.Context, tx pgx.Tx, thread thread, at time.Time, 
 			where c.reply_to::text = $1 and c.ask_id is null and not c.tuples_stored
 			  and c.author->>'kind' = 'user' and c.created_at < $2`
 	case graphstore.KindMessage:
+		// Every read here is a probe by key, each made for one row of the walk. The walk reads each
+		// unmarked child's row, its writer with it, through in_reply_to alone and tests the marker
+		// on the rows it read, rather than as an index condition of its own: planned with no
+		// statistics of node_kind, that test took the node_kind-is-null range of
+		// messages_node_address, every message still unmarked, for each step of the walk. The
+		// root's own row is read by its key, and the writer of each stored message of the walk by
+		// that message's own node: a join of the walk against messages or the store was hashed,
+		// reading every message, or every authored_by out of one, for each reply the backfill
+		// walked. So no plan over messages here hangs on its statistics; the probes of the store
+		// are planned on the store's, which the backfill takes again as it grows the store
+		// (graphcensus's storeGrowth).
 		args = append(args, graphstore.KindMessage, maxThreadDepth)
 		with = `
-			with recursive tree (id, depth) as (
-				select $1::text, 0
+			with recursive tree (id, depth, login) as (
+				select $1::text, 0, null::text
 				union all
-				select child.id, tree.depth + 1
+				select child.id, tree.depth + 1, child.login
 				from tree
 				cross join lateral (
-					select t.from_id as id
+					select t.from_id as id, null::text as login
 					from graph_tuples t
 					where t.to_kind = $7 and t.to_id = tree.id and t.kind = $6 and t.from_kind = $7 and t.asserted
 					union
-					select m.id::text
-					from messages m
-					where m.in_reply_to::text = tree.id and m.node_kind is null
+					select older.id, older.login
+					from (
+						select array_agg(m.id::text) filter (where m.node_kind is null) as ids,
+						       array_agg(case when m.author->>'kind' = 'user' and m.created_at < $2
+						                      then user_threads_login(m.author->>'id') end)
+						         filter (where m.node_kind is null) as logins
+						from messages m
+						where m.in_reply_to::text = tree.id
+					) unmarked
+					cross join lateral unnest(unmarked.ids, unmarked.logins) as older (id, login)
 				) child
 				where tree.depth < $8
 			)`
 		earlier = `
-			select written.to_id
+			select stored.login
 			from tree
-			join graph_tuples written
-			  on written.from_kind = $7 and written.from_id = tree.id and written.kind = $4
-			 and written.to_kind = $5 and written.asserted and written.at < $2
+			cross join lateral (
+				select array_agg(written.to_id) as logins
+				from graph_tuples written
+				where written.from_kind = $7 and written.from_id = tree.id and written.kind = $4
+				  and written.to_kind = $5 and written.asserted and written.at < $2
+			) writers
+			cross join lateral unnest(writers.logins) as stored (login)
+			union all
+			select tree.login from tree
 			union all
 			select user_threads_login(m.author->>'id')
-			from tree
-			join messages m on m.id::text = tree.id
-			where m.node_kind is null and m.author->>'kind' = 'user' and m.created_at < $2`
+			from messages m
+			where m.id = $1::uuid and m.node_kind is null and m.author->>'kind' = 'user' and m.created_at < $2`
 	default:
 		return nil, fmt.Errorf("read who wrote in %s/%s: not a thread kind", thread.kind, thread.id)
 	}

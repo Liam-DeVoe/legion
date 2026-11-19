@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -117,8 +118,10 @@ func (w *inboxWrote) add(more inboxWrote) {
 }
 
 // runInboxPass walks pass's owed rows in batches of backfillBatch, each written in a transaction
-// of its own, and answers what it did and how many rows it still owes.
-func runInboxPass(ctx context.Context, database *store.Store, pass inboxPass) (KindBackfill, error) {
+// of its own, and answers what it did and how many rows it still owes. After each batch it hands
+// growth what the batch wrote, which takes the store's statistics again once the store has grown
+// past them.
+func runInboxPass(ctx context.Context, database *store.Store, pass inboxPass, growth *storeGrowth) (KindBackfill, error) {
 	done := KindBackfill{Kind: pass.kind}
 	after := slices.Clone(pass.start)
 	for {
@@ -157,6 +160,9 @@ func runInboxPass(ctx context.Context, database *store.Store, pass inboxPass) (K
 		done.Rows += wrote.rows
 		done.Nodes += wrote.nodes
 		done.Tuples += wrote.tuples
+		if err := growth.wrote(ctx, database, wrote); err != nil {
+			return done, err
+		}
 		if len(keys) < backfillBatch {
 			break
 		}
@@ -178,8 +184,16 @@ func column(keys [][]string, index int) []string {
 }
 
 // backfillInbox runs this child's passes in the order their facts hang on each other, and answers
-// what each did.
+// what each did, once it has taken the statistics of every table they walk (analyzeInboxTables),
+// and taking the store's again as the passes grow it (storeGrowth).
 func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
+	if err := analyzeInboxTables(ctx, database); err != nil {
+		return nil, err
+	}
+	growth := &storeGrowth{}
+	if err := growth.read(ctx, database); err != nil {
+		return nil, err
+	}
 	var done []KindBackfill
 	passes := []inboxPass{messagesPass(), commentPointersPass()}
 	for _, kind := range inboxItemKinds {
@@ -191,13 +205,100 @@ func backfillInbox(ctx context.Context, database *store.Store) ([]KindBackfill, 
 		passes = append(passes, readStatePass(table))
 	}
 	for _, pass := range passes {
-		report, err := runInboxPass(ctx, database, pass)
+		report, err := runInboxPass(ctx, database, pass, growth)
 		done = append(done, report)
 		if err != nil {
 			return done, err
 		}
 	}
 	return done, nil
+}
+
+// inboxTables is every table this child's passes read or write: the rows each pass walks, with its
+// item and block tables, the store's two tables, the log each row's event is read from, and the
+// owner rows a batch takes and an ask's waiting person is read under.
+func inboxTables() []string {
+	tables := []string{"messages", "comments", "asks", "refs", "user_threads", "graph_nodes", "graph_tuples", "events",
+		"issues", "artifacts", "projects"}
+	for _, kind := range inboxItemKinds {
+		tables = append(tables, kind.blocks, kind.links, kind.state)
+	}
+	for _, table := range []attemptTable{commentAttempts, messageAttempts} {
+		tables = append(tables, table.table)
+	}
+	for _, table := range readStateTables {
+		tables = append(tables, table.table)
+	}
+	return tables
+}
+
+// analyzeInboxTables takes the statistics of every table the passes walk (inboxTables), in one
+// ANALYZE, before the first pass reads any of them. Each pass tests a marker column this
+// release's migrations add, and a table holds no statistics of a column until something analyzes
+// it, so on a database nothing has analyzed since the deploy Postgres plans each test at its
+// defaults, half a percent of the rows for `node_kind is null` where every message is unmarked.
+// The walk of a message thread is planned the same whatever that estimate (inboxwrite.RecordOlder's
+// reachedBefore), but the pass's other statements are not: over 3,000 messages no analyze had
+// read, the backfill read 207 thousand rows out of messages without this and 70 thousand with
+// it (TestTheMessagesPassIsLinearOnATableNoAnalyzeHasRead). The command runs on the database URL
+// the server migrates the schema with, whose login owns these tables and so may analyze them;
+// Postgres skips a table its login may not analyze with a warning, and the pass then plans on
+// whatever statistics the table holds.
+func analyzeInboxTables(ctx context.Context, database *store.Store) error {
+	tables := inboxTables()
+	named := make([]string, len(tables))
+	for index, table := range tables {
+		named[index] = pgx.Identifier{table}.Sanitize()
+	}
+	if _, err := database.Pool.Exec(ctx, `analyze `+strings.Join(named, ", ")); err != nil {
+		return fmt.Errorf("analyze the tables the backfill walks: %w", err)
+	}
+	return nil
+}
+
+// storeGrowth is how far the store has grown since the backfill last took its statistics: the
+// rows graph_tuples held then, and the nodes and tuples the passes have handed the store since.
+// The passes write the store as they read it, and each step of a thread walk and each person a
+// write reaches is a probe of graph_tuples or graph_nodes planned on those statistics. Taken once,
+// while the store held a few thousand tuples, they had the planner skip-scan graph_tuples_inbound
+// over every node's address rather than seek graph_tuples_current by the one a probe names, which
+// reads every tuple of the kind for each probe: over 3,000 messages the backfill read 795 rows out
+// of graph_tuples a message, and over 6,000 messages 3,907, where with its statistics taken again
+// as the store grew it read 23 and 27 (TestTheMessagesPassIsLinearOnATableNoAnalyzeHasRead).
+// Autovacuum takes them again once a table has grown by a tenth, but on its own schedule, which a
+// pass may outrun, so the backfill takes them itself at that same growth.
+type storeGrowth struct {
+	rows, grown int64
+}
+
+// storeGrowthFloor is the growth below which the store's statistics are not taken again however
+// small the store, as autovacuum's own threshold has a floor: a store of a few rows would
+// otherwise be analyzed after every batch.
+const storeGrowthFloor = 1000
+
+// read takes how many rows graph_tuples holds by its statistics, which the analyze before it
+// has just taken, and starts the count of what was written since.
+func (g *storeGrowth) read(ctx context.Context, database *store.Store) error {
+	if err := database.Pool.QueryRow(ctx, `
+		select greatest(reltuples, 0)::bigint from pg_class where oid = 'graph_tuples'::regclass
+	`).Scan(&g.rows); err != nil {
+		return fmt.Errorf("read the size of the store: %w", err)
+	}
+	g.grown = 0
+	return nil
+}
+
+// wrote counts what one batch handed the store, and once the store has grown by a tenth of the
+// rows it held when its statistics were last taken, past storeGrowthFloor, takes them again.
+func (g *storeGrowth) wrote(ctx context.Context, database *store.Store, wrote inboxWrote) error {
+	g.grown += wrote.nodes + wrote.tuples
+	if g.grown < storeGrowthFloor+g.rows/10 {
+		return nil
+	}
+	if _, err := database.Pool.Exec(ctx, `analyze graph_tuples, graph_nodes`); err != nil {
+		return fmt.Errorf("analyze the store the backfill has grown: %w", err)
+	}
+	return g.read(ctx, database)
 }
 
 // lockOwnersOf takes the owner row of each row read names `for no key update`, in ascending owner
