@@ -172,6 +172,44 @@ function otherTab(id: string, unsent: readonly UnsentChange[] | "silent" = []): 
 /** A change a sign-out would discard, as a tab names it: by its key and label. */
 const change = (label: string, key = `key of ${label}`): UnsentChange => ({ key, label });
 
+/** One turn of the event loop that moves no clock, the fake one included: a `MessageChannel`
+ *  round trip. The sign-in channel's messages are delivered on such turns, so a test holding the
+ *  fake clock still lets the other tabs' answers through with this and runs no timer. */
+function realTurn(): Promise<void> {
+  const { port1, port2 } = new MessageChannel();
+  return new Promise((resolve) => {
+    port1.onmessage = () => {
+      port1.close();
+      port2.close();
+      resolve();
+    };
+    port2.postMessage(null);
+  });
+}
+
+/** How many answers to a sign-out's question `listener` has heard: a tab hears every word the
+ *  other tabs say, so a silent one hears each answer the answering tabs give. */
+function answersHeardBy(listener: OtherTab | undefined): number {
+  return (listener?.told ?? []).filter(
+    (message) => typeof message === "object" && message !== null && "answer" in message
+  ).length;
+}
+
+/** Holds the fake clock until `listener` has heard `count` answers, then runs one more turn, on
+ *  which the app's own copy of the last of them is delivered too. A test that then moves the clock
+ *  through a question's answer window moves it only once the answers are in, however long the
+ *  machine takes to deliver them. */
+async function answersIn(listener: OtherTab | undefined, count: number): Promise<void> {
+  while (answersHeardBy(listener) < count) {
+    await act(async () => {
+      await realTurn();
+    });
+  }
+  await act(async () => {
+    await realTurn();
+  });
+}
+
 // W48. A sign-out discards only once Dispatch has answered it. While it is out nothing more goes
 // out here - every write stops trying after the attempt in flight - and every other tab is told to
 // hold the person's writes too. Refused, it leaves the person signed in with every write, here and
@@ -744,9 +782,11 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
 // same changes. A tab that did not answer the last question is taken for gone, so the next one
 // neither waits for it nor says the other tabs may hold more, until it speaks again.
 test("the sign-out question names a duplicated tab's copies once, and forgets a tab that missed it", async () => {
-  // On the fake clock, so the span the second question does not wait out is the clock this test
-  // moves: read under the real one, a loaded machine can spend the whole window on scheduling
-  // and fail a question that waited for nothing (dispatch://INFRA-1505). The clock is installed
+  // On the fake clock, which this test holds still while the answering tabs' answers come on real
+  // turns, and moves only once they are in: through the answer window for the first and third
+  // questions, which wait for the silent tab, and not at all for the second, which must not.
+  // Under the real clock, or a clock moved while the answers are still on their way, a loaded
+  // machine's scheduling would decide the row (dispatch://INFRA-1505). The clock is installed
   // before the user, which captures the timers it will advance.
   jest.useFakeTimers();
   const user = userOnFakeClock();
@@ -773,13 +813,24 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
     const elsewhere = ", and any unsent changes in your other Dispatch tabs";
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await answersIn(tabs[2], 2);
     await waitFor(() => expect(app.asked).toHaveLength(1));
     expect(app.asked[0]).toBe(`Sign out and discard ${named}${elsewhere}?${listed}`);
 
-    const started = Date.now();
+    // The click's own steps move the clock a few milliseconds, far short of the answer window.
+    // From its end the clock is held: the second question has to come on real turns alone, which
+    // let the answering tabs' answers through and run no timer, so no part of the window passes
+    // while this waits. A sign-out that waits again for the tab that missed the last question,
+    // or for the window after every tab answered, waits on a timer that never fires here, so it
+    // never asks, and the row's own limit fails it.
     await user.click(screen.getByRole("button", { name: "Sign out" }));
-    await waitFor(() => expect(app.asked).toHaveLength(2));
-    expect(Date.now() - started).toBeLessThan(OTHER_TABS_ANSWER_MS);
+    const held = Date.now();
+    while (app.asked.length < 2) {
+      await act(async () => {
+        await realTurn();
+      });
+    }
+    expect(Date.now()).toBe(held);
     expect(app.asked[1]).toBe(`Sign out and discard ${named}?${listed}`);
 
     const beforeHello = tabs[2]?.told.length ?? 0;
@@ -792,7 +843,9 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
         expect.objectContaining({ here: true })
       )
     );
+    const heard = answersHeardBy(tabs[2]);
     await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await answersIn(tabs[2], heard + 2);
     await waitFor(() => expect(app.asked).toHaveLength(3));
     expect(app.asked[2]).toBe(`Sign out and discard ${named}${elsewhere}?${listed}`);
     expect(app.logout).not.toHaveBeenCalled();
@@ -801,7 +854,12 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
     for (const other of tabs) other.close();
     app.teardown();
   }
-});
+  // A hang guard: what can hang is a sign-out question that waits on the answer window while the
+  // clock is held, which is the defect this row exists to catch. 100_000, above the suite's 60 s
+  // flag, which is twice its slowest loaded test and less than twice this row's: worst measured
+  // cost 31 992.94 ms at 36 busy loops (the 96 rung) on a two-CPU, 8 GiB pod, where main's form
+  // of this row costs the same. The row's rung is 96: at 240 one run cost 56 679.57 ms.
+}, 100_000);
 
 // W51. Another tab's sign-out holds the person's writes here as a lease, and each held write says
 // what it waits for. A signing-out tab that dies without a word - crashed, killed, frozen - stops
