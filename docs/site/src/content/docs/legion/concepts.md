@@ -173,11 +173,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 
 A failed test or a review that requests changes sends the issue back to `implementing` from
 testing or review, and the change goes through the tester again before the reviewer sees it. A
-review requests changes only for a behavioural finding, one whose closing changes code that runs;
-an approval that leaves text threads open is followed by the implementer's one push of text
-fixes, which goes to the reviewer and not through the tester, under the carry rule in
-`skills/legion-worker/references/merge-gate.md`. A head that starts conflicting with its base
-moves no phase (below). Red CI sends nothing
+head that starts conflicting with its base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own, and the
 reviewer's approval of the head ends the round whatever CI says at that commit, since the
 reviewer reads the code commit's checks on GitHub before it approves
@@ -432,10 +428,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   phase the issue has already left is recorded as before. Past review the daemon asks the reviewer
   to read the merge and approve the new head by its SHA, or request changes, and a merger that
   enters `merging` while that approval is owed merges the new head only once the approval is on
-  the pull request. A pass carries across a merge of the base only to a check that neither the
-  files the base brought in nor the merge's resolution can reach, beside the carry rule in
-  `skills/legion-worker/references/merge-gate.md`, which carries one across a push that changes
-  no code that runs.
+  the pull request.
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue
