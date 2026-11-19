@@ -41,12 +41,14 @@ export interface IssueDrafts {
 const routePattern = /^(role:[a-z0-9-]+|session:[0-9a-f-]{16,})$/;
 
 /** Whose value a field's draft is (decision 332). "issue": the issue's value, which the draft
- *  follows while nothing is out. "typed": text the reader typed that differs from the value it
- *  was judged against at its last keystroke, or was typed while a value was queued, and that no
- *  end has chosen since. "ended": a choice the reader ended - queued, out, or refused by Dispatch
- *  and not yet sent - and, while a write is out, the value out, as a discard or an unchanged end
- *  puts it back or a keystroke with nothing queued returns the draft to it. A refused end (an
- *  empty title, a closed issue) keeps whichever the draft was. */
+ *  follows; nothing is out or queued while it is. "typed": text the reader typed that differs
+ *  from the value it was judged against at its last keystroke, or that was typed while a value
+ *  was queued. "ended": a choice the reader ended, while it is queued, out, refused by Dispatch
+ *  and not sent again, or left unsent because the issue came to hold it; and, while a write is
+ *  out, the value out, which a discard, an unchanged end or a keystroke back to it with nothing
+ *  queued puts in the draft. A refused end (an empty title, a closed issue) keeps whichever the
+ *  draft was. A typed or ended draft is handed back to the issue only as the field's own write
+ *  settles, never by another reader's value. */
 type Own = "issue" | "typed" | "ended";
 
 /** One field's draft (decisions 315 and 332). */
@@ -141,9 +143,9 @@ function requestOutcome(rules: FieldRules, state: FieldState, closed: boolean): 
  *   typed and deleted leaves the draft following the issue, and the end of the edit sends no old
  *   title over the one another reader set since. With a write out it is then the value out, the
  *   reader's ended choice, as a discard or an unchanged end makes it, so a refusal of that write
- *   leaves the refused title in the field. With a value queued no keystroke hands the draft back:
- *   while a value waits to be sent the draft does not follow the issue's value (decision 324).
- *   Any other keystroke makes the draft typed.
+ *   leaves the refused title in the field, and its landing makes the draft the issue's. With a
+ *   value queued no keystroke hands the draft back: while a value waits to be sent the draft does
+ *   not follow the issue's value (decision 324). Any other keystroke makes the draft typed.
  * - `request`, the end of an edit, a blur, a switch's send: the reader's choice, which replaces
  *   any value queued. Refused for a closed issue or a value Dispatch would not take, it asks for
  *   nothing, keeps whose the draft is, and drops the value queued: an end on an empty title is
@@ -162,7 +164,7 @@ function requestOutcome(rules: FieldRules, state: FieldState, closed: boolean): 
  *   nothing. While a value is out the reference stays that value.
  * - `settled(landed)`, this field's write ended: a landed write's draft that is still its value
  *   takes the value it landed with. A refusal keeps the draft, which is then judged against the
- *   issue's value: the reader's unsent choice, which Retry and the end of the next edit send.
+ *   issue's value, so Retry and the end of the next edit send it.
  *   Here, and on no `server` event, the draft is handed back to the issue: it is the issue's
  *   again once nothing is queued, it equals the issue's value, and either the write landed with
  *   it or it was the reader's ended choice, as an undo to the issue's own value is once a refusal

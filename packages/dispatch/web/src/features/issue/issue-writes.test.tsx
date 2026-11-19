@@ -1480,6 +1480,59 @@ test("IssuePage gives the issue a title the reader typed back to while its write
   }
 });
 
+// The same keystroke while the write is out, a character typed and taken back out, and Dispatch
+// then refuses the write. The keystroke handed the draft back as the reader's ended choice, the
+// title out (decision 332), as an Escape would leave it, so the refusal keeps "a" in the field,
+// the reader's unsent choice: another reader's title leaves it in place, and the end of the edit
+// sends "a" again, over that title. Main's hook does the same: [a, a]. Handed back to the issue
+// instead, the draft followed the other reader's title, and the end of the edit sent nothing.
+test("IssuePage keeps a title the reader typed back to while its write was out once Dispatch refuses that write, and sends it again as the edit ends", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
+    );
+
+    title = await openTitleEditor();
+    expect(title.value).toBe("a");
+    // A character typed and taken back out, so the draft goes from "a" to "ax" and back.
+    await user.type(title, "x{Backspace}");
+    act(() => {
+      firstSave.reject(
+        new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" })
+      );
+    });
+    await screen.findByText("Could not update this issue.");
+    otherReader(queryClient, "Plan the review");
+    const editor = title.value;
+
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect({ editor, writes: patchIssue.mock.calls }).toEqual({
+      editor: "a",
+      writes: [
+        ["CORE-1", { title: "a" }, keyedAttempt],
+        ["CORE-1", { title: "a" }, keyedAttempt],
+      ],
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 // A title Dispatch refuses stays in the field, the reader's unsent choice, which Retry or the end
 // of the next edit sends. A status picked next is a write of its own, and nothing drains after a
 // refusal (decision 315), so the status write's landing does not send the refused title again.

@@ -1,6 +1,4 @@
 import { beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), a blur of the window and its focus as the reader comes back, and a key pressed during an IME composition or, as Safari sends it, just after one.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -26,6 +24,7 @@ import type {
   Project,
   UserIssueState,
 } from "../../api/types";
+import { subsetRanges } from "../../fonts/inter/subset-script";
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -514,18 +513,7 @@ test("the header keeps the primary document's chip when no gated step reviews it
 // drawn as the shell gives it below the phone's width, and once every read the header made has
 // answered.
 test("the header draws no character the page's typeface lacks", async () => {
-  const subsetSh = readFileSync(
-    join(import.meta.dir, "..", "..", "fonts", "inter", "subset.sh"),
-    "utf8"
-  );
-  const unicodes = /^UNICODES=(\S+)$/m.exec(subsetSh)?.[1];
-  if (unicodes === undefined) throw new Error("subset.sh has no UNICODES= line");
-  const ranges = unicodes.split(",").map((entry) => {
-    const match = /^U\+([0-9A-F]{4,6})(?:-([0-9A-F]{4,6}))?$/i.exec(entry.trim());
-    if (match === null) throw new Error(`${entry} in subset.sh's UNICODES is no U+ entry`);
-    const first = Number.parseInt(match[1], 16);
-    return [first, match[2] === undefined ? first : Number.parseInt(match[2], 16)] as const;
-  });
+  const ranges = subsetRanges();
   const restore = stubHeader({ ...issue, status: "in_progress" });
   const queryClient = headerClient();
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
@@ -1465,6 +1453,124 @@ test("a title a switch sent and the reader writes back after another write chang
       { title: "Review the plan" },
       keyedAttempt
     );
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The reader opens the title's editor, types a character and takes it back out, and another
+// reader then renames the issue. The keystroke that left the draft on the issue's title handed it
+// back to the issue (decision 332), so the editor follows the rename, and the end of the edit
+// sends nothing. Main's hook does the same on today's page: no write. Kept as text the reader
+// typed, the draft held the issue's old title in the editor and sent it over the rename.
+test("a character typed and taken back out leaves the title's editor following another reader's title, and the end of the edit sends nothing", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue(issue);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor, heading } = await openTitleEditor(user);
+    await user.keyboard("x{Backspace}");
+    expect(editor).toHaveValue(issue.title);
+    titleWrittenElsewhere(queryClient, "Plan the review");
+    const shown = (editor as HTMLTextAreaElement).value;
+
+    await endTitleEditByPress(user);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect({ shown, heading: heading.textContent, writes: patchIssue.mock.calls }).toEqual({
+      shown: "Plan the review",
+      heading: "Plan the review",
+      writes: [],
+    });
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A switch to another window sends the reader's title and leaves the edit open (decision 295).
+// While that write is out the reader comes back, types a character and takes it back out. The
+// keystroke that left the draft on the title out, with nothing queued, handed it back (decision
+// 332): it is the reader's ended choice, as an Escape would leave it, and the write's landing
+// makes it the issue's. So the editor follows the title another reader sets next, and the end of
+// the edit sends nothing: the title went once. Kept as text the reader typed, the draft held the
+// title the switch sent over the other reader's, and the end of the edit sent it a second time.
+test("a character typed and taken back out while a switch's write of the title is out leaves the editor following another reader's title once that write lands, and the end of the edit sends nothing", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => landing.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    blurWindow(editor);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    await user.keyboard("x{Backspace}");
+    expect(editor).toHaveValue("Review the plan");
+
+    await act(async () => {
+      landing.resolve({ ...issue, title: "Review the plan" });
+      await landing.promise;
+    });
+    await titleLanded(queryClient, "Review the plan");
+    titleWrittenElsewhere(queryClient, "Plan the review");
+    const shown = (editor as HTMLTextAreaElement).value;
+
+    await endTitleEditByPress(user);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect({ shown, heading: heading.textContent, writes: patchIssue.mock.calls }).toEqual({
+      shown: "Plan the review",
+      heading: "Plan the review",
+      writes: [["CORE-1", { title: "Review the plan" }, keyedAttempt]],
+    });
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A switch to another window sends the reader's title, and Dispatch refuses it, so the title stays
+// in the open editor, the reader's unsent choice. Another reader then sets the issue to that very
+// title, and then to a title of their own. Only the settle of the title's own write hands the
+// editor back to the issue (decision 332), and none has settled since the refusal, so the editor
+// keeps the reader's title through both. Handed back as the other reader's title matched it, the
+// editor took their next title, which the reader never typed.
+test("a title a switch sent and Dispatch refused stays in the open editor as another reader sets the issue to it and then to a title of their own", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" })
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan");
+    blurWindow(editor);
+    await screen.findByText("Could not update this issue.");
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+
+    titleWrittenElsewhere(queryClient, "Review the plan");
+    const matched = (editor as HTMLTextAreaElement).value;
+    titleWrittenElsewhere(queryClient, "Plan the review");
+    expect({ matched, shown: (editor as HTMLTextAreaElement).value }).toEqual({
+      matched: "Review the plan",
+      shown: "Review the plan",
+    });
   } finally {
     view.unmount();
     patchIssue.mockRestore();

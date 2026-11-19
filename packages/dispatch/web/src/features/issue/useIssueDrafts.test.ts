@@ -272,7 +272,7 @@ class Reader {
   /**
    * Whether `lastTyped` is the reader's ended choice: the title an end or a hide chose, or the
    * title out that a keystroke back to it with nothing owed, an escape or an end that chose
-   * nothing puts back while that write is out. A keystroke that marks the text ends it.
+   * nothing puts back while that write is out. A keystroke that marks the text clears it.
    */
   private ended = false;
   /** The drafts an escape put away, until the reader types one of them again. */
@@ -447,8 +447,7 @@ class Reader {
   private settle(title: string, landedWithIt: boolean): void {
     if (this.owed === title) this.owed = null;
     if (landedWithIt) this.marked = false;
-    const handedBack =
-      this.owed === null && this.shown() === title && (landedWithIt || this.ended);
+    const handedBack = this.owed === null && this.shown() === title && (landedWithIt || this.ended);
     if (handedBack) {
       this.lastTyped = null;
       this.marked = false;
@@ -668,9 +667,9 @@ function explore(): Violation[] {
 }
 
 // The seven tests below share one exploration: it is the slow part, and it judges all seven at
-// once. It plays about 88,000 sequences of five events, which judge about 97,000 sequences of one
-// to five, near a minute and a half on one core, so each of the seven has a time limit of its own
-// above the suite's minute: whichever runs first pays for the exploration.
+// once. It plays about 111,000 sequences of five events, which judge about 122,000 sequences of
+// one to five, near two minutes and a half on one core, so each of the seven has a time limit of
+// its own above the suite's minute: whichever runs first pays for the exploration.
 let explored: Violation[] | undefined;
 function exploration(): Violation[] {
   explored ??= explore();
@@ -697,7 +696,10 @@ const invariants: [Invariant, string][] = [
   ],
   ["I4", "at rest the field shows the server's value or the reader's unsent choice"],
   ["I5", "a choice the reader ended is sent"],
-  ["I6", "text the reader typed in an open editor is never replaced by a value they did not type"],
+  [
+    "I6",
+    "text the reader typed in an open editor, differing from the title it was judged against at its last keystroke or typed while a title was queued, and not yet seen land, is never replaced by a value they did not type",
+  ],
   ["I7", "at the end of an edit the field holds what the reader left in it"],
 ];
 
