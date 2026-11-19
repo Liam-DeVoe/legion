@@ -11,16 +11,19 @@
 #
 # resolve_paths sets SRC to LOADTEST_SRC (default: the checkout holding this file) and ROOT to
 # LOADTEST_ROOT (default ${TMPDIR:-/tmp}/dispatch-loadtest, created), both as physical paths, and
-# exports them as LOADTEST_SRC and LOADTEST_ROOT.
+# exports them as LOADTEST_SRC and LOADTEST_ROOT. It sets DISPATCH_SRC, the checkout envoy-dispatch
+# is built from, to LOADTEST_DISPATCH_SRC (default SRC).
 #
 # stack_ports ROOT: the stack's ports for ROOT, "KEY PORT" a line. The defaults follow the root's
-# physical path (port_block, default_port): a root always gets the same block of 7 ports, and two
+# physical path (port_block, default_port): a root always gets the same block of 8 ports, and two
 # roots get two blocks out of 200, so they share every port about 1 pair of roots in 200 (the block
 # is a hash modulo 200, not a per-root reservation). Each LOADTEST_*_PORT (PORT_VAR) overrides its
 # own port. So two Legion roles of one pod, each with its own LOADTEST_ROOT, almost always run a
 # stack each with no port variable set; when their blocks do collide, check_port refuses the second
 # stack and the roles set the LOADTEST_*_PORT variables (or pick another root). stack.sh setup
-# records the ports in ROOT/stack.json, and `stack.sh status` prints them.
+# records the ports in ROOT/stack.json, and `stack.sh status` prints them. The blocks sit below the
+# machine's ephemeral range (port_base), and stack_ports refuses, naming both ranges, when they
+# cannot.
 #
 # lock_root ROOT: one run at a time per root (README.md, "One run at a time"). It takes an
 # exclusive, non-blocking flock on ROOT/.run.lock and keeps it on file descriptor 9. The lock lasts
@@ -45,11 +48,12 @@
 # namespace is this one. stack.sh closes descriptor 9 in every stack process that it starts, so no
 # stack process keeps the lock.
 #
-# prepare_stack runs stack.sh setup (an incremental build of SRC), start and seed, each of which
-# does nothing when its work is already done, and the migration check: a build that lacks a
-# migration the seed holds is refused with exit 1, and one that holds migrations the seed lacks is
-# noted. Then it sets BUILD to `stack.sh build-info` ("<commit> <dirty>"). run-step.sh calls it
-# before a step that is not part of a series; run-series.sh calls it once, before its first step.
+# prepare_stack runs stack.sh setup (an incremental build of SRC, and of DISPATCH_SRC's
+# envoy-dispatch), start and seed, each of which does nothing when its work is already done, and the
+# migration check: a Dispatch build that lacks a migration the seed holds is refused with exit 1,
+# and one that holds migrations the seed lacks is noted. Then it sets BUILD to `stack.sh build-info`
+# ("<commit> <dirty>"). run-step.sh calls it before a step that is not part of a series;
+# run-series.sh calls it once, before its first step.
 #
 # The replay's inputs (README.md, The replay): stack.sh replay-get and cluster.sh replay-prepare
 # both download and verify the manifest's parts with replay_fetch_parts and replay_get_bundle
@@ -86,6 +90,7 @@ resolve_paths() {
   mkdir -p -- "$ROOT"
   ROOT=$(cd -- "$ROOT" && pwd -P)
   export LOADTEST_SRC=$SRC LOADTEST_ROOT=$ROOT
+  DISPATCH_SRC=${LOADTEST_DISPATCH_SRC:-$SRC}
 }
 
 # ---- the stack's ports ---------------------------------------------------------------------------
@@ -97,17 +102,17 @@ resolve_paths() {
 # the second stack; the remedy is the LOADTEST_*_PORT variables). PORT_KEYS names stack.json's
 # ports, PORT_VAR each one's environment variable and PORT_OFFSET its place in a root's block of
 # ports.
-PORT_KEYS=(postgres proxy proxy_stats nats nats_monitor listener dispatch pprof)
+PORT_KEYS=(postgres proxy proxy_stats nats nats_monitor listener dispatch pprof envoy_proxy)
 declare -A PORT_VAR=(
   [postgres]=LOADTEST_PG_PORT [proxy]=LOADTEST_PROXY_PORT [proxy_stats]=LOADTEST_PROXY_STATS_PORT
   [nats]=LOADTEST_NATS_PORT [nats_monitor]=LOADTEST_NATS_MONITOR_PORT [listener]=LOADTEST_LISTENER_PORT
-  [dispatch]=LOADTEST_DISPATCH_PORT [pprof]=LOADTEST_PPROF_PORT
+  [dispatch]=LOADTEST_DISPATCH_PORT [pprof]=LOADTEST_PPROF_PORT [envoy_proxy]=LOADTEST_ENVOY_PROXY_PORT
 )
 declare -A PORT_OFFSET=(
   [postgres]=0 [proxy]=1 [nats]=2 [nats_monitor]=3 [listener]=4 [dispatch]=5 [pprof]=6
-  [proxy_stats]=7
+  [proxy_stats]=7 [envoy_proxy]=8
 )
-PORT_BASE=15000
+PORT_BASE_DEFAULT=15000
 PORT_STRIDE=10
 PORT_BLOCKS=200
 
@@ -119,25 +124,86 @@ port_block() {
   printf '%s\n' "$((16#$hex % PORT_BLOCKS))"
 }
 
-# default_port KEY BLOCK: the default port of KEY in block BLOCK:
+# ephemeral_range: this machine's ephemeral port range, "LOW HIGH", read from
+# /proc/sys/net/ipv4/ip_local_port_range (LOADTEST_PORT_RANGE_FILE names another file, for a test
+# of a range this machine does not have); nothing when the file cannot be read or does not hold two
+# numbers. The kernel takes the source port of every outgoing connection from this range, so a
+# stack port inside it can be taken by any connection of the stack before its own process binds it,
+# which then fails with "address already in use".
+ephemeral_range() {
+  local low high
+  { read -r low high <"${LOADTEST_PORT_RANGE_FILE:-/proc/sys/net/ipv4/ip_local_port_range}"; } 2>/dev/null || return 0
+  [[ $low =~ ^[0-9]+$ && $high =~ ^[0-9]+$ ]] || return 0
+  printf '%s %s\n' "$low" "$high"
+}
+
+# port_base: the first port of block 0. The PORT_BLOCKS blocks of PORT_STRIDE ports take
+# PORT_BLOCKS * PORT_STRIDE ports from it (2000). It is PORT_BASE_DEFAULT (15000) when they end
+# below the ephemeral range, which holds for Linux's default range (32768-60999). Otherwise it is
+# the 2000 ports just below the range: a gVisor pod's range starts at 16000, so there the blocks
+# take 14000-15998. When no range can be read it is the default. When the range starts too low for
+# 2000 ports above 1023, it prints a refusal naming both ranges on stderr and returns 1.
+port_base() {
+  local span=$((PORT_BLOCKS * PORT_STRIDE)) range low high base
+  range=$(ephemeral_range)
+  if [ -z "$range" ]; then
+    printf '%s\n' "$PORT_BASE_DEFAULT"
+    return 0
+  fi
+  read -r low high <<<"$range"
+  if ((PORT_BASE_DEFAULT + span <= low)); then
+    printf '%s\n' "$PORT_BASE_DEFAULT"
+    return 0
+  fi
+  base=$((low - span))
+  if ((base < 1024)); then
+    printf 'loadtest: the stack needs %d ports below the ephemeral range %d-%d (ip_local_port_range) and above 1023, and the range starts too low for them; set every LOADTEST_*_PORT to a port outside %d-%d\n' \
+      "$span" "$low" "$high" "$low" "$high" >&2
+    return 1
+  fi
+  printf '%s\n' "$base"
+}
+
+# port_in_ephemeral PORT: PORT is inside this machine's ephemeral range.
+port_in_ephemeral() {
+  local range low high
+  range=$(ephemeral_range)
+  [ -n "$range" ] || return 1
+  read -r low high <<<"$range"
+  (($1 >= low && $1 <= high))
+}
+
+# default_port KEY BLOCK [BASE]: the default port of KEY in block BLOCK:
 #
-#   PORT_BASE + BLOCK * PORT_STRIDE + PORT_OFFSET[KEY] = 15000 + 10k + 0..7
+#   BASE + BLOCK * PORT_STRIDE + PORT_OFFSET[KEY] = BASE + 10k + 0..8
 #
-# The 8 offsets differ and all are below the stride, so no two ports of a block and no two ports of
-# two different blocks ever meet (two roots in one block hold the same 8 ports);
-# every port is between 15000 and 16997, inside 1024-65535 and below the ephemeral range.
-default_port() { printf '%s\n' "$((PORT_BASE + $2 * PORT_STRIDE + PORT_OFFSET[$1]))"; }
+# BASE is port_base's unless given. The 9 offsets differ and all are below the stride, so no two
+# ports of a block and no two ports of two different blocks ever meet (two roots in one block hold
+# the same 9 ports); every port is between BASE and BASE + 1998, inside 1024-65535 and below the
+# ephemeral range (port_base).
+default_port() {
+  local base=${3:-}
+  if [ -z "$base" ]; then
+    base=$(port_base) || return 1
+  fi
+  printf '%s\n' "$((base + $2 * PORT_STRIDE + PORT_OFFSET[$1]))"
+}
 
 # stack_ports ROOT: ROOT's ports, "KEY PORT" a line in PORT_KEYS' order: the block's default port,
 # or the value of the key's PORT_VAR when this environment sets it. stack.sh setup records them in
-# ROOT/stack.json, which `stack.sh status` prints.
+# ROOT/stack.json, which `stack.sh status` prints. It fails, printing nothing, when a key takes its
+# default and port_base refuses.
 stack_ports() {
-  local block key var
+  local block key var base="" out=""
   block=$(port_block "$1")
   for key in "${PORT_KEYS[@]}"; do
     var=${PORT_VAR[$key]}
-    printf '%s %s\n' "$key" "${!var:-$(default_port "$key" "$block")}"
+    if [ -z "${!var:-}" ] && [ -z "$base" ]; then
+      base=$(port_base) || return 1
+    fi
+    out+="$key ${!var:-$(default_port "$key" "$block" "$base")}"$'\n'
   done
+  printf '%s' "$out"
 }
 
 # lock_field NAME RECORD: the value of NAME= in a lock record.
@@ -334,8 +400,8 @@ prepare_stack() {
   "$stack" seed
   # A build cannot start on a seed that a newer build migrated: compare the migrations of the
   # Dispatch that setup built (bin/envoy-dispatch.json, which names LOADTEST_DISPATCH_COMMIT's tree
-  # when that is set, and the checkout's otherwise) with the set the seed records. Without that
-  # record, the checkout's migration files stand for it.
+  # when that is set, and the Dispatch checkout's otherwise) with the set the seed records. Without
+  # that record, the Dispatch checkout's migration files stand for it.
   # A record written before setup recorded the build's versions holds only its highest one.
   local build_json=$ROOT/bin/envoy-dispatch.json build_versions build_what only_highest=""
   if [ -f "$build_json" ]; then
@@ -347,8 +413,8 @@ prepare_stack() {
       only_highest=1
     fi
   else
-    build_versions=$(build_migration_versions "$SRC/packages/envoy/internal/dispatch/store/migrations")
-    build_what="the checkout's migrations"
+    build_versions=$(build_migration_versions "$DISPATCH_SRC/packages/envoy/internal/dispatch/store/migrations")
+    build_what="the Dispatch checkout's migrations"
   fi
   seed_migration_check "$ROOT/seed.meta.json" "$build_versions" "$build_what" "$only_highest"
   BUILD=$("$stack" build-info)
@@ -359,18 +425,20 @@ random_hex() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }
 
 # SEED_COUNTS_SQL: the seed's counts that seed.meta.json records, one JSON object, the same for
 # stack.sh seed and cluster.sh seed, so the record tells a seed with the reference documents
-# (loadgen seed-refs) from one without them.
+# (loadgen seed-refs) from one without them. Every table names public, as every statement of this
+# package does: the default search_path is "$user", public, so an unqualified name counts a schema
+# of the login's name first wherever one exists (dispatch://INFRA-988).
 SEED_COUNTS_SQL="select json_build_object(
-  'projects', (select count(*) from projects),
-  'issues', (select count(*) from issues),
-  'comments', (select count(*) from comments),
-  'artifacts', (select count(*) from artifacts),
-  'artifact_versions', (select count(*) from artifact_versions),
-  'ref_targets', (select count(*) from artifacts where name like 'ref-target-%'),
-  'ref_target_versions', (select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.name like 'ref-target-%'),
-  'ref_sources', (select count(*) from artifacts where name = 'references.md'),
-  'artifact_refs', (select count(*) from refs where to_kind = 'artifact'),
-  'events', (select count(*) from events))"
+  'projects', (select count(*) from public.projects),
+  'issues', (select count(*) from public.issues),
+  'comments', (select count(*) from public.comments),
+  'artifacts', (select count(*) from public.artifacts),
+  'artifact_versions', (select count(*) from public.artifact_versions),
+  'ref_targets', (select count(*) from public.artifacts where name like 'ref-target-%'),
+  'ref_target_versions', (select count(*) from public.artifact_versions v join public.artifacts a on a.id = v.artifact_id where a.name like 'ref-target-%'),
+  'ref_sources', (select count(*) from public.artifacts where name = 'references.md'),
+  'artifact_refs', (select count(*) from public.refs where to_kind = 'artifact'),
+  'events', (select count(*) from public.events))"
 export SEED_COUNTS_SQL
 
 # ---- the replay's inputs ------------------------------------------------------------------------------

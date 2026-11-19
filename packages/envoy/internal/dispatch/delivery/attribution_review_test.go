@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -17,8 +16,7 @@ import (
 // (source 3) credit it whatever case either side spells them in.
 func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	// URLs no other test links: a link's URL is unique across every issue, and the tests share
-	// one database.
+	// URLs no other row of this test links: a link's URL is unique across every issue.
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-201", "ATTR-202"}, map[string][]string{
 		"ATTR-201": {"https://github.com/acme/widgets/pull/201"},
 		"ATTR-202": {"https://github.com/acme/widgets/issues/277"},
@@ -45,11 +43,8 @@ func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
 // the wrong source.
 func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	if _, err := pool.Exec(ctx, `delete from issue_external_links where url like 'https://github.com/acme/widgets/pull/21_' or url = 'https://github.com/acme/widgets/issues/213'`); err != nil {
-		t.Fatalf("clear an earlier run's links: %v", err)
-	}
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-211", "ATTR-212", "ATTR-213", "ATTR-214", "ATTR-215"}, map[string][]string{
-		"ATTR-212": {"https://github.com/acme/widgets/pull/211"},
+		"ATTR-212": {"https://github.com/acme/widgets/pull/210"},
 		"ATTR-213": {"https://github.com/acme/widgets/issues/213"},
 	})
 	cited := []string{"https://github.com/acme/widgets/issues/213"}
@@ -58,12 +53,13 @@ func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 		inputs AttributionInputs
 		want   string
 	}{
-		// Every source names an issue: the title and body win.
-		{210, AttributionInputs{TitleKeys: []string{"ATTR-211"}, CitedIssues: cited, BranchKeys: []string{"ATTR-214"}, CommitKeys: []string{"ATTR-215"}}, "ATTR-211"},
-		// ATTR-212's link names #211 itself: the external link wins over what the body cites.
-		{211, AttributionInputs{TitleKeys: []string{}, CitedIssues: cited, BranchKeys: []string{"ATTR-214"}, CommitKeys: []string{"ATTR-215"}}, "ATTR-212"},
-		{212, AttributionInputs{TitleKeys: []string{}, CitedIssues: cited, BranchKeys: []string{"ATTR-214"}, CommitKeys: []string{"ATTR-215"}}, "ATTR-213"},
-		{213, AttributionInputs{TitleKeys: []string{}, CitedIssues: []string{}, BranchKeys: []string{"ATTR-214"}, CommitKeys: []string{"ATTR-215"}}, "ATTR-214"},
+		// Every source names an issue, and ATTR-212's link names #210 itself: the external
+		// link wins.
+		{210, AttributionInputs{TitleKeys: []string{"ATTR-211"}, CitedIssues: cited, BranchKeys: []string{"ATTR-214"}, CommitKeys: []string{"ATTR-215"}}, "ATTR-212"},
+		// No issue links #211, so what the body cites wins.
+		{211, AttributionInputs{TitleKeys: []string{"ATTR-211"}, CitedIssues: cited, BranchKeys: []string{"ATTR-214"}, CommitKeys: []string{"ATTR-215"}}, "ATTR-213"},
+		{212, AttributionInputs{TitleKeys: []string{"ATTR-211"}, CitedIssues: []string{}, BranchKeys: []string{"ATTR-214"}, CommitKeys: []string{"ATTR-215"}}, "ATTR-214"},
+		{213, AttributionInputs{TitleKeys: []string{"ATTR-211"}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{"ATTR-215"}}, "ATTR-211"},
 		{214, AttributionInputs{TitleKeys: []string{}, CitedIssues: []string{}, BranchKeys: []string{}, CommitKeys: []string{"ATTR-215"}}, "ATTR-215"},
 	}
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
@@ -93,8 +89,8 @@ func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 // which holds the same title to pull_request_heads. One rule answers both — every candidate the
 // five sources name (attributionCandidates), the first of them held to the pull request's own
 // repository (attributionHeld) — and the two tables must never disagree about which issue one
-// pull request belongs to: pull_request_heads is what a check result's currency is measured
-// against, delivery_pull_requests what the Delivery timeline credits.
+// pull request belongs to: pull_request_heads is what a check result's commit is compared
+// with, delivery_pull_requests what the Delivery timeline credits.
 func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 9)
@@ -174,14 +170,6 @@ func TestAttributingAStoredPullRequestReadsOneCanonicalNameFromTwoMappingsOfOneR
 	`, gadgetsRepo); err != nil {
 		t.Fatalf("record a second mapping of %s: %v", gadgetsOldRepo, err)
 	}
-	// The row outlives the test's own context, which is cancelled before any cleanup runs, so the
-	// delete takes one of its own: left behind, this mapping would put every later test's reads
-	// of the old name through two rows.
-	t.Cleanup(func() {
-		if _, err := pool.Exec(context.Background(), `delete from repo_projects where repo = 'OldCo/Gadgets'`); err != nil {
-			t.Errorf("drop the second mapping of %s: %v", gadgetsOldRepo, err)
-		}
-	})
 
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
 	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{

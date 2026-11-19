@@ -11,11 +11,11 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -93,9 +93,13 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 	testwait.Eventually(t, "the claim to read working in the database", func() bool {
 		return storedClaimState(t, pool, token) == supervise.StateWorking
 	})
-	if !strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine)) {
-		t.Fatalf("the daemon never logged %q: %s", owedWriteMadeLine, logs.String())
-	}
+	// The line is waited for rather than read once: the row and the line are written by the one
+	// decision but not in one step, so a loaded machine can serve the working row to the wait
+	// above before the line reaches the log (measured on 2026-11-14, under another Go suite of
+	// this pod, where this read failed at 0.59s and the line stood in the log it printed).
+	testwait.Eventually(t, "the daemon to log the claim write it made for the broken connection", func() bool {
+		return strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine))
+	})
 
 	// No daemon was restarted: the one boot this test started is the one that wrote the row.
 	if count, _ := boots(t, cfg); count != 1 {
@@ -106,7 +110,7 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 // daemonDSN is the database pool holds, as the daemon under test is given it: the test's own
 // database, with the application name the kill selects on, one connection, and a health check far
 // enough away that the pool never replaces that connection on its own.
-func daemonDSN(t *testing.T, pool *pgxpool.Pool, application string) string {
+func daemonDSN(t *testing.T, pool *store.Pool, application string) string {
 	t.Helper()
 	dsn, err := url.Parse(pool.Config().ConnString())
 	if err != nil {
@@ -124,7 +128,7 @@ func daemonDSN(t *testing.T, pool *pgxpool.Pool, application string) string {
 // own connection, and answers how many it ended. It selects on that name and on nothing else: the
 // name is this test's alone, and a kill by database or by login would end the connections of
 // whatever else runs against the same PostgreSQL.
-func terminateDaemonBackends(t *testing.T, pool *pgxpool.Pool, application string) int {
+func terminateDaemonBackends(t *testing.T, pool *store.Pool, application string) int {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
 		"select pg_terminate_backend(pid) from pg_stat_activity where application_name = $1", application)
@@ -146,7 +150,7 @@ func terminateDaemonBackends(t *testing.T, pool *pgxpool.Pool, application strin
 
 // storedClaimState is token's state as the database holds it, read on the test's own connection:
 // what the daemon's memory holds is no part of this test's question.
-func storedClaimState(t *testing.T, pool *pgxpool.Pool, token claim.Token) supervise.ClaimState {
+func storedClaimState(t *testing.T, pool *store.Pool, token claim.Token) supervise.ClaimState {
 	t.Helper()
 	var state supervise.ClaimState
 	if err := pool.QueryRow(context.Background(), "select state from claims where token = $1", string(token)).Scan(&state); err != nil {

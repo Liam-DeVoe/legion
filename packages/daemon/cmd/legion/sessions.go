@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -14,24 +13,33 @@ import (
 	"syscall"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
-// sessionsCommands is `legion sessions`, the operator's hand on Oh My Pi's session database
-// (either database kind of runtime.kubernetes.session_store, postgres or cloudsql-iam), and the one
-// list of its subcommands.
-var sessionsCommands = map[string]command{
-	"import": runSessionsImport,
-}
-
-func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runSubcommand(ctx, "sessions", sessionsCommands, args, stdout, stderr)
-}
-
 const sessionsImportUsage = "usage: legion sessions import --dsn-file <file> --claims <file|-> [--tree <KEY>] [--tree-volume <dir>]"
+
+// newSessionsImportCommand is `legion sessions import` (runSessionsImport), the one command of
+// `legion sessions`, the operator's hand on Oh My Pi's session database (either database kind of
+// runtime.kubernetes.session_store, postgres or cloudsql-iam).
+func newSessionsImportCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "import --dsn-file <file> --claims <file|->",
+		Short: "copy every recorded session file of a claims list into the session database",
+	}
+	input := addSessionsInput(cmd.Flags())
+	tree := cmd.Flags().String("tree", "", "copy the sessions of this tree's claims alone")
+	treeVolume := cmd.Flags().String("tree-volume", "", "read each session from the tree volume mounted here rather than at its recorded path")
+	cmd.RunE = runs(func(ctx context.Context, args []string) int {
+		return runSessionsImport(ctx, input, *tree, *treeVolume, args, stdout, stderr)
+	})
+	return cmd
+}
 
 // sessionsInput is what `legion sessions import` reads first: --dsn-file and --claims, registered
 // on its flag set by addSessionsInput.
@@ -39,7 +47,7 @@ type sessionsInput struct {
 	dsnFile, claimsFile *string
 }
 
-func addSessionsInput(flags *flag.FlagSet) sessionsInput {
+func addSessionsInput(flags *pflag.FlagSet) sessionsInput {
 	return sessionsInput{
 		dsnFile:    flags.String("dsn-file", "", "file holding the session database's postgres:// URL (required)"),
 		claimsFile: flags.String("claims", "", "the claims `legion claims list --json` printed, or - for stdin (required)"),
@@ -49,9 +57,9 @@ func addSessionsInput(flags *flag.FlagSet) sessionsInput {
 // open refuses a positional argument or a missing required flag, its own two, as a usage error,
 // then reads the claims list and connects to the session database. code is the command's exit
 // when conn is nil.
-func (in sessionsInput) open(ctx context.Context, flags *flag.FlagSet, stderr io.Writer) (claims []importedClaim, conn *pgx.Conn, code int) {
-	if flags.NArg() != 0 {
-		fmt.Fprintf(stderr, "legion sessions import: unexpected argument %q\n%s\n", flags.Arg(0), sessionsImportUsage)
+func (in sessionsInput) open(ctx context.Context, args []string, stderr io.Writer) (claims []importedClaim, conn *pgx.Conn, code int) {
+	if len(args) != 0 {
+		fmt.Fprintf(stderr, "legion sessions import: unexpected argument %q\n%s\n", args[0], sessionsImportUsage)
 		return nil, nil, 2
 	}
 	for _, pair := range [][2]string{{"dsn-file", *in.dsnFile}, {"claims", *in.claimsFile}} {
@@ -99,21 +107,14 @@ type importedClaim struct {
 // content) or a recorded session of the claims it was asked to copy is missing from the table; a
 // missing one of another tree is reported and leaves the exit as it is. A rerun copies nothing
 // twice: a session the table already holds byte for byte is reported as copied before.
-func runSessionsImport(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("sessions import", sessionsImportUsage, stderr)
-	input := addSessionsInput(flags)
-	tree := flags.String("tree", "", "copy the sessions of this tree's claims alone")
-	treeVolume := flags.String("tree-volume", "", "read each session from the tree volume mounted here rather than at its recorded path")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	claims, conn, code := input.open(ctx, flags, stderr)
+func runSessionsImport(ctx context.Context, input sessionsInput, tree, treeVolume string, args []string, stdout, stderr io.Writer) int {
+	claims, conn, code := input.open(ctx, args, stderr)
 	if conn == nil {
 		return code
 	}
 	defer conn.Close(context.Background())
 
-	selected := func(c importedClaim) bool { return *tree == "" || c.Tree == *tree }
+	selected := func(c importedClaim) bool { return tree == "" || c.Tree == tree }
 	counts := map[string]int{}
 	matched := 0
 	for _, c := range claims {
@@ -121,7 +122,7 @@ func runSessionsImport(ctx context.Context, args []string, stdout, stderr io.Wri
 			continue
 		}
 		matched++
-		outcome, file, err := importClaimSession(ctx, conn, c, *treeVolume)
+		outcome, file, err := importClaimSession(ctx, conn, c, treeVolume)
 		if file == "" {
 			fmt.Fprintf(stdout, "%s recorded no session: nothing to copy\n", c.Token)
 			counts["nothing recorded"]++
@@ -145,8 +146,8 @@ func runSessionsImport(ctx context.Context, args []string, stdout, stderr io.Wri
 		}
 	}
 
-	if matched == 0 && *tree != "" {
-		fmt.Fprintf(stderr, "legion sessions import: the claims list %s has no claim of %s\n", *input.claimsFile, *tree)
+	if matched == 0 && tree != "" {
+		fmt.Fprintf(stderr, "legion sessions import: the claims list %s has no claim of %s\n", *input.claimsFile, tree)
 		return 1
 	}
 	missing, err := missingSessions(ctx, conn, claims)
@@ -302,7 +303,7 @@ func importSession(ctx context.Context, conn *pgx.Conn, file, treeVolume string)
 			return importedSession{}, err
 		}
 		source = onVolume
-		root = filepath.Join(treeVolume, sandbox.SessionsSubPath)
+		root = treeVolume
 	}
 	content, info, err := readSessionFile(source, root)
 	if err != nil {
@@ -315,9 +316,119 @@ func importSession(ctx context.Context, conn *pgx.Conn, file, treeVolume string)
 	return importedSession{Outcome: outcome, Summary: ompsessions.Summarize(content)}, nil
 }
 
-// readSessionFile reads one regular session file. When root names a mounted
-// legacy sessions directory, os.Root resolves source beneath its descriptor so
-// a path or symlink cannot escape between validation and the read.
+// ignoringEINTR calls fn until the error it answers with is not EINTR, and returns that error. A
+// signal can interrupt any open or fstat of the walk, and the rooted-directory API this walk
+// replaced retried each of its own calls the same way (src/os/root_unix.go).
+func ignoringEINTR(fn func() error) error {
+	for {
+		err := fn()
+		if !errors.Is(err, unix.EINTR) {
+			return err
+		}
+	}
+}
+
+// openNoFollow opens name in the directory the descriptor parent holds, refusing a symbolic link
+// at name with ELOOP, and retries the EINTR an open may answer with. Every component of
+// openSessionFileBeneath's walk and its leaf are opened through it, so the flag set is written
+// once and a later change to it cannot reach only one of them.
+func openNoFollow(parent int, name string) (int, error) {
+	var fd int
+	err := ignoringEINTR(func() error {
+		var err error
+		fd, err = unix.Openat(parent, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		return err
+	})
+	return fd, err
+}
+
+// openSessionFileBeneath opens the session file at relative, the path below the sessions
+// directory of the tree volume mounted at volume, one component at a time, and returns the leaf's
+// open file for the caller to close.
+//
+// The walk's one open by a path is volume itself, the mount the operator named on --tree-volume:
+// a link there is the operator's own, so it is followed. Every directory below it, the sessions
+// directory first, was writable by every agent of a legion-v10.0.0 deployment, so any of them may
+// be a link an agent left pointing off the volume; each is therefore opened from the descriptor
+// of the one before it with O_NOFOLLOW and refused when it is a link.
+//
+// The flag set is O_RDONLY|O_NOFOLLOW rather than O_PATH, which is Linux's alone while legion is
+// released for darwin/amd64 and darwin/arm64. Measured on 2026-11-08 under gVisor 4.19.0, the
+// kernel every Legion pod runs: openat of a link to a directory with
+// O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC answers ELOOP, as it does under an ordinary Linux
+// kernel, while Go's rooted-directory API follows that link out of its root. O_NONBLOCK stops the
+// open of a named pipe from waiting for a writer: measured in this pod on 2026-11-08, a FIFO at
+// the leaf is refused in 0.47 s with the flag, and the same open blocks without end without it.
+//
+// A component's kind comes from fstat of the handle just opened rather than from a second reading
+// of the name, so a rename between the check and the open cannot change what was opened. Every
+// open and every fstat runs through ignoringEINTR, keeping the behaviour of the loop Go's
+// rooted-directory API wraps each of its own opens in (src/os/root_unix.go).
+func openSessionFileBeneath(volume, relative string) (*os.File, error) {
+	sessions := filepath.Join(volume, sandbox.SessionsSubPath)
+	if !filepath.IsLocal(relative) {
+		return nil, fmt.Errorf("%s is not under the sessions directory %s", filepath.Join(sessions, relative), sessions)
+	}
+	if relative == "." {
+		return nil, fmt.Errorf("%s is the sessions directory itself, not a session file", sessions)
+	}
+	var parent int
+	if err := ignoringEINTR(func() error {
+		var err error
+		parent, err = unix.Open(volume, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("the tree volume %s cannot be opened: %w", volume, err)
+	}
+	// The walk starts at the volume, so the sessions directory's own components come first.
+	// relative is filepath.Rel's output, which is clean, and IsLocal has refused an absolute, an
+	// empty and an escaping one, so splitting on the separator yields the components themselves.
+	components := append(strings.Split(sandbox.SessionsSubPath, string(filepath.Separator)), strings.Split(relative, string(filepath.Separator))...)
+	walked := volume
+	for _, name := range components[:len(components)-1] {
+		walked = filepath.Join(walked, name)
+		directory, err := openNoFollow(parent, name)
+		unix.Close(parent)
+		if err != nil {
+			switch {
+			case errors.Is(err, unix.ELOOP):
+				return nil, fmt.Errorf("%s is a symbolic link", walked)
+			case errors.Is(err, unix.ENOENT):
+				return nil, fmt.Errorf("%s is not on the tree volume", walked)
+			}
+			return nil, fmt.Errorf("%s cannot be opened: %w", walked, err)
+		}
+		var st unix.Stat_t
+		if err := ignoringEINTR(func() error { return unix.Fstat(directory, &st) }); err != nil {
+			unix.Close(directory)
+			return nil, fmt.Errorf("%s cannot be opened: %w", walked, err)
+		}
+		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+			unix.Close(directory)
+			return nil, fmt.Errorf("%s is not a directory", walked)
+		}
+		parent = directory
+	}
+	leaf := components[len(components)-1]
+	path := filepath.Join(walked, leaf)
+	file, err := openNoFollow(parent, leaf)
+	unix.Close(parent)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("%s is a symbolic link", path)
+		}
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// The name carried on the handle is what a later Stat or read error prints, so it is the leaf's
+	// own path on the tree volume.
+	return os.NewFile(uintptr(file), path), nil
+}
+
+// readSessionFile reads one regular session file. When root names a mounted tree volume,
+// openSessionFileBeneath walks source beneath that volume's sessions directory one descriptor at
+// a time, rather than through Go's rooted-directory API, which under a gVisor kernel follows a
+// directory symlink out of its root, so a path or symlink cannot escape between validation and
+// the read.
 func readSessionFile(source, root string) ([]byte, os.FileInfo, error) {
 	var (
 		opened *os.File
@@ -329,16 +440,15 @@ func readSessionFile(source, root string) ([]byte, os.FileInfo, error) {
 			return nil, nil, errors.New("refuses a symbolic link")
 		}
 	} else {
-		volume, err := os.OpenRoot(root)
+		// The path is taken relative to the sessions directory rather than to the volume: against
+		// the volume, a source under `sessions/..` would look local and the walk would climb out.
+		sessions := filepath.Join(root, sandbox.SessionsSubPath)
+		var relative string
+		relative, err = filepath.Rel(sessions, source)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("%s is not under the sessions directory %s", source, sessions)
 		}
-		defer volume.Close()
-		relative, err := filepath.Rel(root, source)
-		if err != nil {
-			return nil, nil, err
-		}
-		opened, err = volume.Open(relative)
+		opened, err = openSessionFileBeneath(root, relative)
 	}
 	if err != nil {
 		return nil, nil, err

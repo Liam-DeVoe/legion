@@ -32,6 +32,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -79,22 +80,7 @@ func cachePod(repo ghrepo.Repository, uid, ownerUID, image string, phase corev1.
 }
 
 // logBuffer is a log the runtime writes while a test reads it.
-type logBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *logBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *logBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+type logBuffer = testlog.Buffer
 
 // withLog has the runtime log at info and above to buffer.
 func withLog(buffer *logBuffer) rigOption {
@@ -195,7 +181,7 @@ func TestCacheIdentityIsTheAnnotationAndTheNameIsNeverParsed(t *testing.T) {
 
 // A repository's cache is made as an issue pod is: its Sandbox created Suspended, with a headless
 // Service, then its Secret written owned by the created Sandbox's uid, holding the implement App's
-// token for the repository's owner and a random bearer token of the cache's own, then one patch
+// token for the repository and a random bearer token of the cache's own, then one patch
 // sets its pod template and Running. The pod runs the cache process alone, ready once /readyz
 // answers, with both tokens read-only and the volume at CacheRoot, placed as every Legion pod is,
 // and with nothing of an agent's: no providers, no Dispatch. A cache already as it should be is
@@ -896,6 +882,115 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 	}
 }
 
+// The set the sweep judges caches against is the repositories the project works, which is the
+// mapping's and those of its live issue records (Options.Mapped), so a repository no mapping
+// names gets and keeps a cache for as long as a live record names it: one volume and one pod per
+// such repository. Once no record and no mapping names it — its last issue is done — the cache is
+// marked, kept for its retention and retired, which is the one rule the sweep has.
+func TestReconcileOrphansKeepsTheCacheOfARepositoryOnlyARecordNames(t *testing.T) {
+	// The mapping names acme/widgets; stranger/tools is named by a live issue record alone.
+	recorded := ghrepo.MustParse("stranger/tools")
+	var live atomic.Bool
+	live.Store(true)
+	logs := &logBuffer{}
+	g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
+		o.Mapped = func() []ghrepo.Repository {
+			if live.Load() {
+				return []ghrepo.Repository{cacheRepo, recorded}
+			}
+			return []ghrepo.Repository{cacheRepo}
+		}
+	}))
+	name := CacheSandboxName(testProject, recorded)
+	sweep := func(what string) {
+		t.Helper()
+		g.clearActions()
+		if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
+			t.Fatalf("ReconcileOrphans %s: %v", what, err)
+		}
+	}
+
+	sweep("with a repository only a record names")
+	if writes := g.sandboxWrites(); !slices.Contains(writes, "create sandboxes "+name) {
+		t.Fatalf("the sweep wrote %q, want the cache of the repository a record names made", writes)
+	}
+	g.eventually("the cache pod of "+recorded.String(), func() bool { return g.r.storedPod(name) != nil })
+
+	sweep("of the cache of a repository a live record still names")
+	if writes := g.sandboxWrites(); len(writes) != 0 {
+		t.Errorf("the sweep of a cache a live record names wrote %q, want it kept untouched", writes)
+	}
+	if s := g.sandbox(name); s == nil || s.Annotations[annotationCacheUnmappedAt] != "" {
+		t.Fatalf("the cache of %s is %v, want it kept unmarked while a record names it: no mapping names it and it is served all the same", recorded, s)
+	}
+
+	live.Store(false)
+	sweep("once no record and no mapping names it")
+	g.eventually("the mark in the store", func() bool {
+		s, _ := g.r.storedSandbox(name)
+		return s != nil && s.Annotations[annotationCacheUnmappedAt] != ""
+	})
+	g.advance(168 * time.Hour)
+	sweep("past the retention")
+	if g.sandbox(name) != nil {
+		t.Fatalf("the cache of %s past its retention is %v, want it retired", recorded, g.sandbox(name))
+	}
+	if g.sandbox(CacheSandboxName(testProject, cacheRepo)) == nil {
+		t.Fatal("the mapped repository's cache was retired with it, want it kept")
+	}
+	if !strings.Contains(logs.String(), recorded.String()) {
+		t.Errorf("the retirement was not logged with its repository:\n%s", logs)
+	}
+}
+
+// The sweep reads a cache's repository as its annotation spells it, against the repositories the
+// mapping serves, and resolves no configured rename: nothing under this package does. With the
+// pair's two names both named in the configuration and the load serving them as one entry, the
+// repository GitHub holds the pair under now, the cache of that served name is kept and the cache
+// of the recorded name is marked unmapped, to be kept for its retention and retired after it, as
+// any cache whose repository left the mapping is.
+//
+// That is the sweep's verdict today, and resolving a rename per repository rather than per owner
+// does not move it: the sweep asks the mapping about a name, never about an owner, so neither
+// state of the owner set changes what it keeps. While the recorded name's cache is kept it stays
+// at its own address, with a token minted for the owner serving the repository now, which is what
+// keeps the pods addressed at it fetching.
+func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
+	g := newRig(t, nil, withOptions(servingRenamed(servingSmoke)))
+	for _, repo := range []ghrepo.Repository{recordedSmoke, servingSmoke} {
+		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
+			t.Fatalf("make the cache of %s: %v", repo, err)
+		}
+		name := CacheSandboxName(testProject, repo)
+		g.eventually("the cache pod of "+repo.String(), func() bool { return g.r.storedPod(name) != nil })
+	}
+	kept, unmapped := CacheSandboxName(testProject, servingSmoke), CacheSandboxName(testProject, recordedSmoke)
+
+	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
+		t.Fatalf("ReconcileOrphans over both of the pair's caches: %v", err)
+	}
+
+	g.eventually("the recorded name's cache marked unmapped", func() bool {
+		s, _ := g.r.storedSandbox(unmapped)
+		return s != nil && s.Annotations[annotationCacheUnmappedAt] != ""
+	})
+	marked := g.sandbox(unmapped)
+	if marked == nil || marked.Annotations[annotationCacheRepo] != recordedSmoke.String() {
+		t.Fatalf("the cache of %s is %+v, want it kept at its own address, annotated with the repository the record names", recordedSmoke, marked)
+	}
+	if at, err := time.Parse(time.RFC3339, marked.Annotations[annotationCacheUnmappedAt]); err != nil || !at.Equal(rigNow.Truncate(time.Second)) {
+		t.Errorf("the cache of %s is marked %q, want the sweep's time %s: the mapping serves the pair as one entry, %s", recordedSmoke, marked.Annotations[annotationCacheUnmappedAt], rigNow, servingSmoke)
+	}
+	if s := g.sandbox(kept); s == nil || s.Annotations[annotationCacheUnmappedAt] != "" {
+		t.Errorf("the cache of %s is %+v, want the mapped cache kept and marked with nothing", servingSmoke, s)
+	}
+	for name, repo := range map[string]ghrepo.Repository{kept: servingSmoke, unmapped: recordedSmoke} {
+		if got := string(g.secret(cacheSecretName(name)).Data[provisionTokenKey]); got != "ghs_provision_"+servingSmoke.Owner() {
+			t.Errorf("the cache of %s holds the token %q, want one minted for %s, the owner serving the repository now", repo, got, servingSmoke.Owner())
+		}
+	}
+}
+
 // A cache pod created under a ServiceAccount other than the configured one is made again, as one
 // on another image is (accountDrift beside imageDrift): the account is fixed for the pod's life,
 // so the cache's pod reaches the configured one no other way, and the pod the sweep makes names
@@ -986,7 +1081,7 @@ func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *t
 	})
 }
 
-// A mapped repository whose cache cannot be made — its owner's token cannot be minted — is logged
+// A mapped repository whose cache cannot be made — its token cannot be minted — is logged
 // as the sweep's warning naming the cache and tried at the next sweep; ReconcileOrphans answers
 // nil, since its error holds the claims' launches back at boot and each launch ensures its own
 // repository's cache.

@@ -24,8 +24,8 @@ func acceptPhase(t *testing.T, h *harness, key string, at phase.Phase) {
 }
 
 // holdFrom stands key at phase.Held, held from at: where a root whose worker died stands. Its
-// reviewed head is wherever the hold left it, so a root held from retro, merging or
-// awaiting_merge is accepted still (record.Accepted).
+// reviewed head is wherever the hold left it, so a root held from retro or merging is accepted
+// still (record.Accepted).
 func holdFrom(t *testing.T, h *harness, key string, at phase.Phase) {
 	t.Helper()
 	if _, err := h.store.Pool().Exec(context.Background(), "update issues set phase = $2, held_from = $3 where key = $1",
@@ -40,7 +40,7 @@ func holdFrom(t *testing.T, h *harness, key string, at phase.Phase) {
 // Read by the phase alone the hold let work in beneath such a head — rerun_child and
 // release_children both took it — and the waiting line offered that work a slot of its own.
 func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
-	for _, from := range []phase.Phase{phase.Retro, phase.Merging, phase.AwaitingMerge} {
+	for _, from := range []phase.Phase{phase.Retro, phase.Merging} {
 		t.Run(string(from), func(t *testing.T) {
 			h, _, statuses := statusHarness(t)
 			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
@@ -50,11 +50,8 @@ func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
 			holdFrom(t, h, statusRoot, from)
 
 			recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)
-			if recorder.Code != http.StatusConflict {
-				t.Fatalf("rerun under a root held from %s = %d %s, want 409", from, recorder.Code, recorder.Body)
-			}
-			if body := recorder.Body.String(); !strings.Contains(body, "CHILD_UNDER_ACCEPTED_PARENT") || !strings.Contains(body, statusRoot) {
-				t.Fatalf("rerun refusal = %s, want CHILD_UNDER_ACCEPTED_PARENT naming %s", body, statusRoot)
+			if sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"); !strings.Contains(sentence, statusRoot) {
+				t.Fatalf("rerun refusal under a root held from %s says %q, want it to name %s", from, sentence, statusRoot)
 			}
 
 			// The same for a child Dispatch holds in backlog that the daemon has never recorded,
@@ -66,11 +63,8 @@ func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
 			writes := len(statuses.writes)
 
 			recorder = h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{grandchild}}, nil)
-			if recorder.Code != http.StatusConflict {
-				t.Fatalf("release under a root held from %s = %d %s, want 409", from, recorder.Code, recorder.Body)
-			}
-			if body := recorder.Body.String(); !strings.Contains(body, "CHILD_UNDER_ACCEPTED_PARENT") || !strings.Contains(body, statusRoot) {
-				t.Fatalf("release refusal = %s, want CHILD_UNDER_ACCEPTED_PARENT naming %s", body, statusRoot)
+			if sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"); !strings.Contains(sentence, statusRoot) {
+				t.Fatalf("release refusal under a root held from %s says %q, want it to name %s", from, sentence, statusRoot)
 			}
 			if len(statuses.writes) != writes {
 				t.Fatalf("Dispatch writes of the refused release = %#v, want none", statuses.writes[writes:])
@@ -83,7 +77,7 @@ func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
 // entering the workflow beneath a head on its way to the merge queue would let that head merge
 // without carrying it. The refusal names the ancestor, and is lifted once that ancestor closes.
 func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
-	for _, at := range []phase.Phase{phase.Retro, phase.Merging, phase.AwaitingMerge} {
+	for _, at := range []phase.Phase{phase.Retro, phase.Merging} {
 		t.Run(string(at), func(t *testing.T) {
 			h, _, _ := statusHarness(t)
 			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
@@ -93,12 +87,8 @@ func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
 			acceptPhase(t, h, statusRoot, at)
 
 			recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)
-			if recorder.Code != http.StatusConflict {
-				t.Fatalf("rerun under a root in %s = %d %s, want 409", at, recorder.Code, recorder.Body)
-			}
-			body := recorder.Body.String()
-			if !strings.Contains(body, "CHILD_UNDER_ACCEPTED_PARENT") || !strings.Contains(body, statusRoot) {
-				t.Fatalf("rerun refusal = %s, want CHILD_UNDER_ACCEPTED_PARENT naming %s", body, statusRoot)
+			if sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"); !strings.Contains(sentence, statusRoot) {
+				t.Fatalf("rerun refusal under a root in %s says %q, want it to name %s", at, sentence, statusRoot)
 			}
 
 			// Once the ancestor has closed there is no order left to keep, and the rerun runs.
@@ -117,7 +107,7 @@ func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
 func TestWaveReleaseIsRefusedForAGrandchildUnderADoneParent(t *testing.T) {
 	h, _, statuses := statusHarness(t)
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
-	acceptPhase(t, h, statusRoot, phase.AwaitingMerge)
+	acceptPhase(t, h, statusRoot, phase.Merging)
 	acceptPhase(t, h, statusChild, phase.Done)
 	const grandchild = "LEGION-300"
 	parent := statusChild
@@ -125,12 +115,9 @@ func TestWaveReleaseIsRefusedForAGrandchildUnderADoneParent(t *testing.T) {
 		Status: "backlog", Parent: &parent, Rank: "C", LastSeq: 7}
 
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{grandchild}}, nil)
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("release of a grandchild under a merged root = %d %s, want 409", recorder.Code, recorder.Body)
-	}
-	body := recorder.Body.String()
-	if !strings.Contains(body, "CHILD_UNDER_ACCEPTED_PARENT") || !strings.Contains(body, statusRoot) || !strings.Contains(body, grandchild) {
-		t.Fatalf("release refusal = %s, want CHILD_UNDER_ACCEPTED_PARENT naming %s and %s", body, grandchild, statusRoot)
+	sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
+	if !strings.Contains(sentence, statusRoot) || !strings.Contains(sentence, grandchild) {
+		t.Fatalf("release refusal of a grandchild under a merged root says %q, want it to name %s and %s", sentence, grandchild, statusRoot)
 	}
 	if len(statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %#v, want none: the whole wave is refused before anything is written", statuses.writes)
@@ -147,8 +134,8 @@ func TestWaveReleaseIsRefusedForAGrandchildUnderADoneParent(t *testing.T) {
 }
 
 // A6. The refusal is the daemon's own reading of its records, so the ancestor it names is the
-// one record.AcceptedAncestor finds over the tree: the nearest issue above the child in retro,
-// merging or awaiting_merge, found by walking past a parent that is already done.
+// one record.AcceptedAncestor finds over the tree: the nearest issue above the child in retro or
+// merging, found by walking past a parent that is already done.
 func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 	h, _, _ := statusHarness(t)
 	acceptPhase(t, h, statusRoot, phase.Merging)

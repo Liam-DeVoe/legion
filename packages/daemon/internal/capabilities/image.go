@@ -68,7 +68,7 @@ var imageChecks = map[Name]imageCheck{
 // image rows present or missing with their evidence (with img.SkipBrowser, the browser row
 // unchecked and no browser run), live rows reported as what a claimed session reports while it
 // runs, which the probe cannot check and `legion state` renders, deployment rows reported as what
-// the daemon reports from the deployment's configuration, withheld rows with their ruling. It
+// the daemon reports from the deployment's configuration, withheld rows with their citations. It
 // runs after the launch probes (daemon.ProbeImage) passed: the eval-js and skills rows are
 // present by those probes, which ran Oh My Pi — its own JavaScript runtime — and resolved the
 // prompt-named skills. err is nil when every image row's check passed; otherwise it names every
@@ -477,7 +477,7 @@ func envMap(env []string) map[string]string {
 }
 
 // ran is one command's run: its exit code, what it printed, and the error when it could not run
-// to an exit of its own — it never started, or its budget killed it.
+// to an exit of its own — it never started, its budget killed it, or a signal ended it.
 type ran struct {
 	exit           int
 	stdout, stderr string
@@ -528,7 +528,7 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	case ctx.Err() == nil && killed():
 		r.err = fmt.Errorf("timed out after %s", budget)
 	case procgroup.Err(err) != nil:
-		r.err = procgroup.Err(err)
+		r.err = procgroup.Said(procgroup.Err(err), r.output())
 	default:
 		r.exit = cmd.ProcessState.ExitCode()
 	}

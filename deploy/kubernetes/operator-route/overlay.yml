@@ -14,8 +14,8 @@
 # Google and the local servers Oh My Pi uses with no key, as scripts/e2e/lib/install-model-gateway.sh
 # does for the tmux proofs, and OpenAI. Records merge key by key across settings layers, so every
 # role Legion's prompts reach is named: the shipped review, oracle and deep-worker agents' @review,
-# @oracle and @deep (the planner's plan-reviewer and plan-gap-analyst run on @review and @oracle),
-# and the bundled scout's @smol and reviewer's @slow.
+# @oracle and @deep (the planner's plan-reviewer and the architect's goal-red-team run on @review,
+# the planner's plan-gap-analyst on @oracle), and the bundled scout's @smol and reviewer's @slow.
 enabledModels:
   - anthropic/claude-fable-5
   - anthropic/claude-fable-5-1
@@ -51,7 +51,7 @@ modelRoles:
   oracle: anthropic/claude-opus-5:high
   deep: anthropic/claude-fable-5-1:xhigh
 retry:
-  # A failed model call is retried on another model (Sami's ruling of 2026-10-08 on
+  # A failed model call is retried on another model (Sami's decision of 2026-10-08 on
   # dispatch://LEGION-578): the daemon's image probe reads this key and reports the model-fallback
   # capability open while a deployment's copy still turns it off. Which model it falls back to is
   # the repository's to add, as retry.fallbackChains keys (a record), under the models.yml route

@@ -1,19 +1,25 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/pmezard/go-difflib/difflib"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -43,6 +49,9 @@ var subcommands = []subcommand{
 	{"census", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
 		return census(ctx, env.get("DATABASE_URL"), stdout, stderr)
 	}},
+	{"versions", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
+		return versions(ctx, env.get("DATABASE_URL"), stdout, stderr)
+	}},
 	{"backfill-files", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
 	}},
@@ -63,6 +72,9 @@ var subcommands = []subcommand{
 		}
 		return 0
 	}},
+	{"openapi", func(_ context.Context, args []string, _ settingValues, stdout, stderr io.Writer) int {
+		return writeOpenAPIDocument(args, stdout, stderr)
+	}},
 }
 
 // runSubcommand runs the subcommand args name and returns its exit code. A name it does not know
@@ -80,6 +92,98 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 	}
 	fmt.Fprintf(stderr, "envoy-dispatch: unknown subcommand %q; the subcommands are %s, and envoy-dispatch with no argument serves\n", args[0], strings.Join(names, ", "))
 	return 2
+}
+
+// writeOpenAPIDocument runs `envoy-dispatch openapi`. With no flag it writes the OpenAPI document
+// of the route table to stdout; --out <path> writes it there; --check writes nothing at all — it
+// renders the document to memory and holds the committed artifact to it, printing a unified diff
+// and then the line that names the file stale and the command that fixes it, the convention
+// packages/contracts/scripts/gen-go.ts follows for every file it generates, and exiting 1.
+func writeOpenAPIDocument(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("openapi", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	out := flags.String("out", "", "write the document to this path instead of stdout; the file --check compares")
+	check := flags.Bool("check", false, "compare the committed document with a fresh render, write nothing, and exit 1 on a difference")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "openapi: unexpected argument %q; the flags are --out and --check\n", flags.Arg(0))
+		return 2
+	}
+	var document bytes.Buffer
+	if err := api.WriteOpenAPI(&document); err != nil {
+		fmt.Fprintf(stderr, "openapi: %v\n", err)
+		return 1
+	}
+	switch {
+	case *check:
+		path := *out
+		if path == "" {
+			found, err := committedOpenAPIPath()
+			if err != nil {
+				fmt.Fprintf(stderr, "openapi: %v\n", err)
+				return 1
+			}
+			path = found
+		}
+		committed, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(stderr, "openapi: %v\n", err)
+			return 1
+		}
+		if bytes.Equal(committed, document.Bytes()) {
+			return 0
+		}
+		diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+			A:        difflib.SplitLines(string(committed)),
+			B:        difflib.SplitLines(document.String()),
+			FromFile: path,
+			ToFile:   "envoy-dispatch openapi",
+			Context:  3,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "openapi: diff the committed document: %v\n", err)
+			return 1
+		}
+		fmt.Fprint(stdout, diff)
+		fmt.Fprintf(stderr, "%s is stale: run `envoy-dispatch openapi --out %s` and commit the result.\n", path, path)
+		return 1
+	case *out != "":
+		if err := os.WriteFile(*out, document.Bytes(), 0o644); err != nil {
+			fmt.Fprintf(stderr, "openapi: %v\n", err)
+			return 1
+		}
+		return 0
+	default:
+		if _, err := stdout.Write(document.Bytes()); err != nil {
+			fmt.Fprintf(stderr, "openapi: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+}
+
+// committedOpenAPIPath finds the committed document by walking up from the working directory, so
+// `openapi --check` reads the same file whether it is run from the repository root or from a
+// package in it.
+func committedOpenAPIPath() (string, error) {
+	directory, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("read the working directory: %w", err)
+	}
+	for {
+		candidate := filepath.Join(directory, filepath.FromSlash(api.OpenAPIDocumentPath))
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return "", fmt.Errorf("no %s in any directory above the working directory: run it "+
+				"inside the repository, or name the file with --out", api.OpenAPIDocumentPath)
+		}
+		directory = parent
+	}
 }
 
 // openMigrated opens the database a DB subcommand works on and brings it to the current
@@ -160,7 +264,8 @@ func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer
 // --restore, the rollback, it writes every moved file's bytes back into its row from the bucket
 // (files.RestoreRows). Each pass names the rows it could not do and goes on past them, exits 1
 // when any failed, and can be run again at any time; the server serves a row from its bytes
-// whenever it holds them.
+// whenever it holds them. The move refuses, with exit 1 and before it touches a row, while a live
+// server process has no bucket (bucketlessProcesses): that process serves a file only from its row.
 func backfillFiles(ctx context.Context, args []string, databaseURL, bucket string, out io.Writer) int {
 	flags := flag.NewFlagSet("backfill-files", flag.ContinueOnError)
 	flags.SetOutput(out)
@@ -186,6 +291,19 @@ func backfillFiles(ctx context.Context, args []string, databaseURL, bucket strin
 		return 1
 	}
 	defer database.Pool.Close()
+	if !*verifyOnly && !*restore {
+		bucketless, err := bucketlessProcesses(ctx, database)
+		if err != nil {
+			fmt.Fprintf(out, "backfill-files: %v\n", err)
+			return 1
+		}
+		if len(bucketless) > 0 {
+			fmt.Fprintf(out, "backfill-files: refused: these live server processes have no bucket and serve a file only from its row, "+
+				"so no row may lose its bytes: %s. Give each one DISPATCH_FILE_STORE_BUCKET, or stop it, then run backfill-files again\n",
+				strings.Join(bucketless, "; "))
+			return 1
+		}
+	}
 	fileStore, err := files.Open(ctx, bucket)
 	if err != nil {
 		fmt.Fprintf(out, "backfill-files: %v\n", err)
@@ -212,6 +330,26 @@ func backfillFiles(ctx context.Context, args []string, databaseURL, bucket strin
 		return 1
 	}
 	return 0
+}
+
+// bucketlessProcesses names each live server process with no bucket (processes.Bucketless): one
+// started without DISPATCH_FILE_STORE_BUCKET, or one of a build that predates the fleet columns
+// (PredatesFleetColumns), which registers no file_store. Each is named by its instance id, its
+// build and when it started.
+func bucketlessProcesses(ctx context.Context, database *store.Store) ([]string, error) {
+	bucketless, err := processes.Bucketless(ctx, database.Pool)
+	if err != nil {
+		return nil, err
+	}
+	var named []string
+	for _, process := range bucketless {
+		build := process.Build()
+		if process.PredatesFleetColumns() {
+			build += ", a build that does not register file_store"
+		}
+		named = append(named, fmt.Sprintf("%s (%s, started %s)", process.ID, build, process.StartedAt.UTC().Format(time.RFC3339)))
+	}
+	return named, nil
 }
 
 // loadServerURL resolves the dashboard origin exactly as the server does, for a subcommand

@@ -1,20 +1,11 @@
-import { afterAll, expect, test } from "bun:test";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { expect, test } from "bun:test";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { isYes, main, QUESTIONS } from "./label-comments";
 
-const scratch = realpathSync(mkdtempSync(path.join(tmpdir(), "label-comments-")));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+const scratch = temporaryDirectory("label-comments", { real: true });
 
 function dir(name: string): string {
   const made = path.join(scratch, name);
@@ -181,7 +172,7 @@ function io(fetch: (input: string, init: RequestInit) => Promise<Response>) {
       env: {
         HOME: scratch,
         DISPATCH_URL: "http://dispatch.test",
-        DISPATCH_TOKEN: "dispatch-token",
+        DISPATCH_TOKEN: fixtureSecret("dsp"),
       },
       cwd: scratch,
       fetch,

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -59,6 +60,18 @@ type bundleRestore struct {
 	// the daemon keeps its saved copy until one arrives, so this is held until a connection
 	// carries it and sent again on every connection until one does (manager.reportRestore).
 	confirm *shimwire.LauncherRestored
+	// start starts each jj and git of the restore (restoreWorkspace): the launcher's pidGuard,
+	// which holds each one out of PID 1's reaper until its own wait has read its exit.
+	start procgroup.Starter
+}
+
+// newBundleRestore is a pod's restore, whose jj and git start starts. A nil start panics here, at
+// the launcher's start, rather than at the pod's first put-back.
+func newBundleRestore(start procgroup.Starter) *bundleRestore {
+	if start == nil {
+		panic("launcher: the workspace restore was given no starter")
+	}
+	return &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: start}
 }
 
 // restoreResult is what one start's call on the pod's restore answers: whether the workspace
@@ -100,7 +113,7 @@ func (r *bundleRestore) receive(frame shimwire.LauncherBundle) shimwire.Launcher
 	}
 	r.slices[frame.Index] = frame.Payload
 	result := shimwire.LauncherBundleResult{ID: frame.ID, Index: frame.Index, OK: true}
-	if whole := r.whole(); whole != nil {
+	if whole := joined(r.slices); whole != nil {
 		if got := shimwire.BundleDigest(whole); got != r.digest {
 			r.sequence, r.count, r.digest, r.release, r.slices = "", 0, "", 0, nil
 			clear(r.results)
@@ -123,17 +136,18 @@ func (r *bundleRestore) sliceAt(id string, index int) []byte {
 	return r.slices[index]
 }
 
-// whole joins the sequence once every slice has arrived, and nil while one has not.
-func (r *bundleRestore) whole() []byte {
+// joined is a slice sequence's whole body once every slice has arrived, and nil while one has
+// not: the pod's workspace bundle (bundleRestore) and its leak check (checkInstall) alike.
+func joined(slices [][]byte) []byte {
 	size := 0
-	for _, slice := range r.slices {
+	for _, slice := range slices {
 		if slice == nil {
 			return nil
 		}
 		size += len(slice)
 	}
 	body := make([]byte, 0, size)
-	for _, slice := range r.slices {
+	for _, slice := range slices {
 		body = append(body, slice...)
 	}
 	return body
@@ -174,7 +188,7 @@ func (r *bundleRestore) apply(ctx context.Context, env []string) restoreResult {
 		r.notice = fmt.Sprintf("the released workspace's saved work could not be read (%v); this workspace holds only what was pushed,"+
 			" and the bundle of release %d stays in the daemon's database, which sends it to no pod again", err, r.release)
 	} else {
-		r.restored, r.notice = restoreWorkspace(ctx, dir, env, r.release, bundle)
+		r.restored, r.notice = restoreWorkspace(ctx, r.start, dir, env, r.release, bundle)
 	}
 	r.confirm = &shimwire.LauncherRestored{ID: r.sequence, Release: r.release, OK: r.restored}
 	if !r.restored {
@@ -207,13 +221,13 @@ func (r *bundleRestore) sent(report *shimwire.LauncherRestored) {
 }
 
 // restoreWorkspace puts one saved bundle back into the workspace at dir and answers the notice of
-// what it restored, or of what was lost and why. release is the idle release whose save built the
-// bundle, which the notice of a failure names: that is the bundle an operator reads out of the
-// daemon's database, since the daemon records one restore attempt per bundle and sends it to no
-// pod again. A restore that fails leaves the workspace as provisioning made it — what the issue's
-// branch holds — and the roles start on that, with the saved work in the database alone for the
-// life of the issue's pods.
-func restoreWorkspace(ctx context.Context, dir string, env []string, release int64, b shimwire.WorkspaceBundle) (bool, string) {
+// what it restored, or of what was lost and why. start starts each of its jj and git commands
+// (procgroup.Starter). release is the idle release whose save built the bundle, which the notice
+// of a failure names: that is the bundle an operator reads out of the daemon's database, since the
+// daemon records one restore attempt per bundle and sends it to no pod again. A restore that fails
+// leaves the workspace as provisioning made it — what the issue's branch holds — and the roles
+// start on that, with the saved work in the database alone for the life of the issue's pods.
+func restoreWorkspace(ctx context.Context, start procgroup.Starter, dir string, env []string, release int64, b shimwire.WorkspaceBundle) (bool, string) {
 	// Every reason is written as one line (oneLine), however many lines the tool that failed
 	// wrote: the notice goes to the container's log, where one line is one notice.
 	lost := func(reason string) (bool, string) {
@@ -267,7 +281,7 @@ func restoreWorkspace(ctx context.Context, dir string, env []string, release int
 	// what stops a child holding the pipe past the budget.
 	started := time.Now()
 	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, restoreBudget, started, env, dir, stdin, args)
+		return workspace.RunCommand(ctx, start, restoreBudget, started, env, dir, stdin, args)
 	}
 	// The bundle's own prerequisites are the commits the new pod's workspace fetch was expected
 	// to hold; one that is gone — a branch force-pushed away since the release — is what git

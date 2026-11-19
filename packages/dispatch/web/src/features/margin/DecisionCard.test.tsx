@@ -1,11 +1,18 @@
-import { expect, test } from "bun:test";
-import { fireEvent, screen } from "@testing-library/react";
+import { beforeAll, expect, test } from "bun:test";
+import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import type { Decision } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionCard } from "./DecisionCard";
 import type { DecisionMarginItem } from "./useMarginItems";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function item(decision: Partial<Decision>): DecisionMarginItem {
   const full: Decision = {
@@ -27,7 +34,10 @@ function item(decision: Partial<Decision>): DecisionMarginItem {
   };
   return {
     blockId: "p-plan",
-    decision: full,
+    // The card draws the reading Go made of the decision's text and parses none of it itself,
+    // so a decision this test invents carries the reading the page's own engine makes of that
+    // text (`__tests__/display-trees`).
+    decision: { ...full, text_tree: displayTree(full.text) },
     id: `decision:${full.block_id}:p-plan`,
     kind: "decision",
   };
@@ -45,12 +55,12 @@ test("a decision card names the decision, who made it, and opens it in decisions
   const view = renderCard({});
   try {
     const card = screen.getByRole("article", { name: "Decision: Store notices in a table" });
-    expect(card.getAttribute("data-margin-item")).toBe("decision:d-1:p-plan");
+    expect(card).toHaveAttribute("data-margin-item", "decision:d-1:p-plan");
     expect(card.getAttribute("data-decision-unsure")).toBeNull();
     expect(screen.getByText("Agent's decision")).toBeDefined();
     expect(await screen.findByText("A table keeps them through a restart.")).toBeDefined();
     const link = screen.getByRole("link", { name: "Store notices in a table" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/artifacts/decisions-md#b-d-1");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/decisions-md#b-d-1");
   } finally {
     view.unmount();
   }
@@ -60,7 +70,7 @@ test("an unsure decision is drawn in the unsure colour and says so; a person's s
   const view = renderCard({ kind: "person", unsure: true });
   try {
     const card = screen.getByRole("article", { name: "Decision: Store notices in a table" });
-    expect(card.getAttribute("data-decision-unsure")).toBe("true");
+    expect(card).toHaveAttribute("data-decision-unsure", "true");
     expect(screen.getByText("Unsure")).toBeDefined();
     expect(screen.getByText("A person's decision")).toBeDefined();
   } finally {
@@ -68,11 +78,12 @@ test("an unsure decision is drawn in the unsure colour and says so; a person's s
   }
 });
 
-test("selecting a decision card selects its margin item", () => {
+test("selecting a decision card selects its margin item", async () => {
+  const user = userEvent.setup();
   const selected: string[] = [];
   const view = renderCard({}, (id) => selected.push(id));
   try {
-    fireEvent.click(screen.getByRole("article", { name: "Decision: Store notices in a table" }));
+    await user.click(screen.getByRole("article", { name: "Decision: Store notices in a table" }));
     expect(selected).toEqual(["decision:d-1:p-plan"]);
   } finally {
     view.unmount();

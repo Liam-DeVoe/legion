@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store) {
@@ -147,11 +148,10 @@ func (g *firstReplaceGate) AcceptSuggestion(ctx context.Context, artifactID, mar
 
 func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, secondReplacement <-chan struct{}) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	if !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
 		select {
 		case <-secondReplacement:
-			return
+			return true
 		default:
 		}
 		var waiting int
@@ -161,12 +161,10 @@ func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, 
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+		return waiting > 0
+	}) {
+		t.Fatal("second accept did not reach document service or wait for the comment lock")
 	}
-	t.Fatal("second accept did not reach document service or wait for the comment lock")
 }
 
 func TestAskWithoutOptionsEmitsEmptyOptionsArray(t *testing.T) {
@@ -367,7 +365,7 @@ func TestListIssueAsksFiltersByState(t *testing.T) {
 }
 
 func TestAnswerAskLocksIssueBeforeAskRow(t *testing.T) {
-	// The seeded spec's settlement would lock the issue row this test holds; keep it
+	// The seeded spec's settlement would take the issue's owner lock this test holds; keep it
 	// out of the lock queue so the counted waiter is the answer handler.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Answer lock order", "A spec")
@@ -386,9 +384,8 @@ func TestAnswerAskLocksIssueBeforeAskRow(t *testing.T) {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
 	defer func() { _ = edit.Rollback(context.Background()) }()
-	var lockedKey string
-	if err := edit.QueryRow(context.Background(), `select key from issues where key = $1 for update`, issue.Key).Scan(&lockedKey); err != nil {
-		t.Fatalf("lock issue for edit: %v", err)
+	if err := store.LockOwner(context.Background(), edit, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("take the issue's owner lock for edit: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -424,12 +421,12 @@ func TestClosedIssueAsksCannotBeAnsweredOrShown(t *testing.T) {
 	}
 	// The close withdrew the ask; an answer on the closed issue is still refused, and leaves the
 	// close's record as it was.
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	answer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{}, "alice")
 	if answer.Code != http.StatusConflict || !strings.Contains(answer.Body.String(), `"code":"ISSUE_CLOSED"`) {
 		t.Fatalf("answer ask on closed issue: status=%d body=%s", answer.Code, answer.Body.String())
 	}
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?project=TEST", nil, "alice")
 	if inbox.Code != http.StatusOK || strings.Contains(inbox.Body.String(), ask.ID) {
 		t.Fatalf("closed issue ask appeared in inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
@@ -1066,7 +1063,7 @@ func TestSuggestionAcceptEmitsAnchorRefreshEventsForChangedOpenRows(t *testing.T
 		commentEvent.Deliveries == nil || len(commentEvent.Mentions) != 0 || len(commentEvent.Deliveries) != 0 ||
 		commentEvent.ArtifactName != "spec.md" || commentEvent.ProjectKey != "TEST" ||
 		commentEvent.ArtifactSlug != "spec" ||
-		commentEvent.Event.Actor != (model.Actor{Kind: "user", ID: "alice"}) ||
+		commentEvent.Event.Actor != (model.Actor{Kind: "user", ID: "alice", Proven: true}) ||
 		commentEvent.Event.Notify || commentEvent.Event.CreatedAt.IsZero() || commentEvent.Event.Seq == 0 ||
 		acceptedSuggestionSeq == 0 || commentEvent.Event.Seq >= acceptedSuggestionSeq {
 		t.Fatalf("comment.anchor_refreshed payload = %#v, want full orphaned earlier-comment payload", commentEvent)
@@ -1087,7 +1084,7 @@ func TestSuggestionAcceptEmitsAnchorRefreshEventsForChangedOpenRows(t *testing.T
 		askEvent.AnchorArtifact.Project != "TEST" || askEvent.AnchorArtifact.Slug != "spec" ||
 		askEvent.AnchorArtifact.Name != "spec.md" || !askEvent.AnchorArtifact.Primary ||
 		askEvent.OpenedEventID == nil || !askEvent.CreatedAt.Equal(ask.CreatedAt) ||
-		askEvent.Event.Actor != (model.Actor{Kind: "user", ID: "alice"}) || askEvent.Event.Notify ||
+		askEvent.Event.Actor != (model.Actor{Kind: "user", ID: "alice", Proven: true}) || askEvent.Event.Notify ||
 		askEvent.Event.CreatedAt.IsZero() || askEvent.Event.Seq == 0 || askEvent.Event.Seq >= acceptedSuggestionSeq ||
 		askEvent.Event.Seq == commentEvent.Event.Seq {
 		t.Fatalf("ask.anchor_refreshed payload = %#v, want full orphaned ask payload", askEvent)
@@ -1353,7 +1350,7 @@ func TestSuggestionAcceptClearsPendingAuthorBeforeNextVersion(t *testing.T) {
 func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.T) {
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Upload timing", "First.\n\nSecond.\n")
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 
@@ -1375,11 +1372,11 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 	if err := tx.QueryRow(ctx, `select coalesce(max(number), 0) + 1 from artifact_versions where artifact_id = $1`, issue.PrimaryArtifactID).Scan(&nextNumber); err != nil {
 		t.Fatalf("read next upload version number: %v", err)
 	}
-	uploadVersion, err := writeDocumentVersion(ctx, tx, issue.PrimaryArtifactID, nextNumber, uploaded, []model.Actor{alice}, nil)
+	uploadVersion, err := ledger.QueueVersion(ctx, issue.PrimaryArtifactID, uploaded, []model.Actor{alice}, nil)
 	if err != nil {
 		t.Fatalf("write the upload version: %v", err)
 	}
-	ledger.WroteVersion(issue.PrimaryArtifactID, uploadVersion)
+	ledger.WroteVersion(issue.PrimaryArtifactID, uploadVersion, uploaded)
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit upload transaction: %v", err)
 	}
@@ -1396,7 +1393,7 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 // edit or kept it. An upload that changes nothing clears nothing (LEGION-503).
 func TestAnUploadClearsPendingCreditOnlyWhenItChangesTheDocument(t *testing.T) {
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	for _, test := range []struct {
 		name        string
 		replacement string
@@ -1591,8 +1588,9 @@ func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 		t.Fatalf("begin issue blocker: %v", err)
 	}
 	defer blocker.Rollback(context.Background())
-	if _, err := blocker.Exec(context.Background(), `select 1 from issues where key = $1 for update`, issue.Key); err != nil {
-		t.Fatalf("lock issue: %v", err)
+	// The blocker closes the issue as a PATCH does, under the issue's owner lock.
+	if err := store.LockOwner(context.Background(), blocker, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("take the issue's owner lock: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -1854,7 +1852,9 @@ func TestAskReplyMustBelongToItsIssue(t *testing.T) {
 	}
 }
 
-func TestAskReplyOnClosedIssueIsRefused(t *testing.T) {
+// A closed issue still takes a comment, a reply on one of its asks included: the ask stays open
+// and unanswerable, but the conversation under it goes on.
+func TestAskReplyOnClosedIssueIsPosted(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Closing soon", "before")
 	askResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -1870,11 +1870,26 @@ func TestAskReplyOnClosedIssueIsRefused(t *testing.T) {
 	reply := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Too late?", "ask_id": ask.ID,
 	}, "alice")
-	if reply.Code != http.StatusConflict || !strings.Contains(reply.Body.String(), `"code":"ISSUE_CLOSED"`) {
+	if reply.Code != http.StatusCreated {
 		t.Fatalf("reply on closed issue: status=%d body=%s", reply.Code, reply.Body.String())
+	}
+	if posted := decodeBody[model.Comment](t, reply); posted.AskID == nil || *posted.AskID != ask.ID {
+		t.Fatalf("reply on closed issue = %#v, want it under ask %s", posted, ask.ID)
+	}
+	agentReply := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Not too late.", "ask_id": ask.ID, "actor": sessionActor(),
+	})
+	if agentReply.Code != http.StatusCreated {
+		t.Fatalf("agent's reply on closed issue: status=%d body=%s", agentReply.Code, agentReply.Body.String())
+	}
+	answer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{"text": "Yes"}, "alice")
+	if answer.Code != http.StatusConflict || !strings.Contains(answer.Body.String(), `"code":"ISSUE_CLOSED"`) {
+		t.Fatalf("answer on closed issue: status=%d body=%s, want 409 ISSUE_CLOSED", answer.Code, answer.Body.String())
 	}
 }
 
+// A done issue refuses every mutation but a comment and a message, which a closed issue still
+// takes (TestClosedIssueTakesCommentsAndMessagesFromPeopleAndAgents).
 func TestDoneIssueRejectsEveryMutation(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Done issue", "before")
@@ -1952,22 +1967,26 @@ func TestDoneIssueRejectsEveryMutation(t *testing.T) {
 		"question": "Later ask", "actor": sessionActor(),
 	}))
 	// The close withdrew the open ask; its answer is refused with the rest.
-	requireWithdrawn(t, handler, issue.Key, askID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, askID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	assertClosed("ask answer", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{}, "alice"))
 	assertClosed("ask resolution", sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/resolve", map[string]any{
 		"kind": "retracted", "reason": "Later retraction.", "actor": sessionActor(),
 	}))
-	assertClosed("comment", sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+	if later := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Later comment", "actor": sessionActor(),
-	}))
+	}); later.Code != http.StatusCreated {
+		t.Fatalf("comment after done: status=%d body=%s, want 201", later.Code, later.Body.String())
+	}
 	assertClosed("comment resolution", sessionRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/resolve", map[string]any{
 		"actor": sessionActor(),
 	}))
 	assertClosed("suggestion acceptance", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+suggestionID+"/accept", map[string]any{}, "alice"))
 	assertClosed("suggestion rejection", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+secondSuggestionID+"/reject", map[string]any{}, "alice"))
-	assertClosed("message", sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+	if later := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": "Later message", "actor": sessionActor(),
-	}))
+	}); later.Code != http.StatusCreated {
+		t.Fatalf("message after done: status=%d body=%s, want 201", later.Code, later.Body.String())
+	}
 	assertClosed("upload", multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "later.md",
 	}, "later.md", "text/markdown", []byte("later"), "alice"))
@@ -2563,13 +2582,13 @@ func TestResolveAskRejectsInvalidInputAndClosedIssues(t *testing.T) {
 		t.Fatalf("close issue: status=%d body=%s", response.Code, response.Body.String())
 	}
 	// The close withdrew the ask, and its record stays the close's.
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	if response := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/resolve", map[string]any{
 		"kind": "resolved", "reason": "Found the answer.", "actor": sessionActor(),
 	}); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"ISSUE_CLOSED"`) {
 		t.Fatalf("resolve ask on closed issue: status=%d body=%s", response.Code, response.Body.String())
 	}
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 }
 
 func TestInboxGroupsAsksWaitingOnTheirAskerAfterThoseNeedingAHuman(t *testing.T) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // publishedSender sends one message from source to target through the send route and returns the
@@ -26,7 +28,7 @@ import (
 // the route's answer carries the same.
 func publishedSender(t *testing.T, state *listenerDeps, source, target string) *contracts.EnvelopeSender {
 	t.Helper()
-	probe, err := state.client.Conn.SubscribeSync(contracts.AgentSubject(target))
+	probe, err := state.client.Conn.SubscribeSync(contracts.LegacyAgentSubject(target))
 	if err != nil {
 		t.Fatalf("subscribe to %s: %v", target, err)
 	}
@@ -63,18 +65,18 @@ func publishedSender(t *testing.T, state *listenerDeps, source, target string) *
 }
 
 // sessionRows is GET /v1/sessions by session id.
-func sessionRows(t *testing.T, registry *store.Registry, state *listenerDeps) map[string]sessionInfo {
+func sessionRows(t *testing.T, registry *store.Registry, state *listenerDeps) map[string]listenerwire.SessionInfo {
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	sessionsHandler(registry, state.sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d, body %s; want 200", recorder.Code, recorder.Body.String())
 	}
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 		t.Fatalf("decode GET /v1/sessions: %v", err)
 	}
-	byID := map[string]sessionInfo{}
+	byID := map[string]listenerwire.SessionInfo{}
 	for _, row := range rows {
 		byID[row.SessionID] = row
 	}
@@ -214,7 +216,13 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 // still be applying under the registry's lock this goroutine does not hold. Package store's own
 // tests drive the registry's real watcher through the same state; from here the watcher field is
 // reached the way api_test.go reaches the session registry's.
-func refuseRoleClaimView(t *testing.T, registry *store.Registry) {
+//
+// It returns the refill's end: calling it starts that replacement watcher, which reads the bucket
+// and makes the copy servable again, and waits until the view answers (store.Registry.RoleViewErr,
+// the state every read of the view is refused by). It feeds nothing while it reads, so the view
+// answers with the holders it already had - the listener's own refill is the state a caller that
+// does not want it simply leaves alone, as every caller before this one does.
+func refuseRoleClaimView(t *testing.T, registry *store.Registry) func() {
 	t.Helper()
 	fields := reflect.ValueOf(registry).Elem()
 	field := fields.FieldByName("roleWatcher")
@@ -224,6 +232,13 @@ func refuseRoleClaimView(t *testing.T, registry *store.Registry) {
 	refilling := kvwatch.New("role claims", current.KV(), feedsNothing{})
 	watcher.Set(reflect.ValueOf(refilling))
 	t.Cleanup(refilling.Stop)
+	return func() {
+		t.Helper()
+		refilling.Start()
+		waitFor(t, 30*time.Second, "the role claim view to answer again", func() bool {
+			return registry.RoleViewErr() == nil
+		})
+	}
 }
 
 // feedsNothing is a kvwatch.Cache that keeps nothing: the replacement watcher must leave the
@@ -264,10 +279,10 @@ func requireRolesOrUnanswered(t *testing.T, what string, recorder *httptest.Resp
 	}
 }
 
-// A role claim view whose first scan nats.go's idle timer ended is not complete, so it says
-// nothing about who holds a role. The two session routes answer the bus-unavailable 503 with
-// Retry-After: 1, never the claim's holder listed with no roles, and a send still goes out, its
-// sender carrying no roles.
+// A role claim view whose first scan its idle wait ended (kvwatch.ScanIdleTimeout) is not
+// complete, so it says nothing about who holds a role. The two session routes answer the
+// bus-unavailable 503 with Retry-After: 1, never the claim's holder listed with no roles, and a
+// send still goes out, its sender carrying no roles.
 func TestARoleViewWhoseFirstScanTimedOutIsTheBusNotAnsweringOnTheSessionRoutes(t *testing.T) {
 	const (
 		holder = "ses_timed_out_view_holder"
@@ -359,7 +374,7 @@ func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T
 		put(fmt.Sprintf("filler-%04d", i), filler)
 	}
 	put("reviewer", holder)
-	if err := registry.Rewatch(client.Conn); err != nil {
+	if err := registry.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 
@@ -368,14 +383,14 @@ func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T
 	// of the new bucket completes and sweeps it.
 	kept := []string{"planner", "reviewer"}
 	entryRoles := func(body []byte) []string {
-		var info sessionInfo
+		var info listenerwire.SessionInfo
 		if err := json.Unmarshal(body, &info); err != nil {
 			t.Fatalf("decode GET /v1/registry/%s: %v", holder, err)
 		}
 		return info.Roles
 	}
 	listedRoles := func(body []byte) []string {
-		var rows []sessionInfo
+		var rows []listenerwire.SessionInfo
 		if err := json.Unmarshal(body, &rows); err != nil {
 			t.Fatalf("decode GET /v1/sessions: %v", err)
 		}

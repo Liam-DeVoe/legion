@@ -33,7 +33,7 @@ var touchedTablePatterns = []struct {
 	writes  rowWrite
 }{
 	{regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?([\w."]+)`), 0},
-	{regexp.MustCompile(`(?is)\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?[\w."]+\s+on\s+(?:only\s+)?([\w."]+)`), 0},
+	{regexp.MustCompile(`(?is)\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:(?:if\s+not\s+exists\s+)?[\w."]+\s+)?on\s+(?:only\s+)?([\w."]+)`), 0},
 	{regexp.MustCompile(`(?is)\bdrop\s+table\s+(?:if\s+exists\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), dropsTable},
 	{regexp.MustCompile(`(?is)\btruncate\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), truncatesRows},
 	{regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+[\w."]+.*?\bon\s+([\w."]+)`), 0},
@@ -153,8 +153,9 @@ func matchedNames(code string, pattern *regexp.Regexp) []matchedName {
 	return names
 }
 
-// Querier is what CensusTables reads the catalog through: the census's transaction (pgx.Tx), or
-// the connection the lock audit applies a set on (*pgx.Conn).
+// Querier is what the package reads the catalog and a version table through: the census's
+// transaction (pgx.Tx), the connection the lock audit applies a set on (*pgx.Conn), a runner's
+// transaction or connection (ReadRecorded, VersionTableColumns), and a pool.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row

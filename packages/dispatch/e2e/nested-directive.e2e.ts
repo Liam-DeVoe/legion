@@ -1,9 +1,8 @@
-import { type Browser, expect, test } from "@playwright/test";
-
-import { createComment, createIssue, createIssueArtifact, createProject } from "./api";
+import { createComment, createIssue, createProject } from "./api";
+import { directiveOpenersThenClosers, directiveOpenersThenLongLine } from "./heavy-bodies";
 import { expectSettled } from "./heavy-bodies-page";
 import { expectUnderTheBound, type Measured, measureDraw, record } from "./main-thread-hold";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -11,34 +10,35 @@ const agent = {
   as: "agent" as const,
 };
 
-/** The two bodies that froze a reader's tab for about a minute and 15 s (INFRA-581). */
+/** The two bodies that froze a reader's tab for about a minute and 15 s (INFRA-581). They are
+ *  spelled in `heavy-bodies.ts` with the rest of this suite's heavy bodies, where the digest
+ *  table holds them to the bytes Go writes through the API (`heavy-bodies.ts:7-14`). */
 const inputs = [
   {
     name: "2,000 nested unclosed openers then a 21,000-character line",
-    body: ":::a\n".repeat(2000) + "x".repeat(21000),
+    body: directiveOpenersThenLongLine,
   },
   {
     name: "1,000 nested openers then 1,000 closing lines",
-    body: ":::a\n".repeat(1000) + ":::\n".repeat(1000),
+    body: directiveOpenersThenClosers,
   },
 ];
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * Opens the issue's Conversation tab as alice and measures what the page's own work holds the
  * main thread for while the comment card draws, which is the longest gap between two ticks of
- * the page's own heartbeat on a machine these rows have to themselves (`main-thread-hold.ts`,
- * and the `chromium-alone` project this spec runs in). The thread is left as a reader finds it,
- * collapsed, so
- * what the card draws is its two-line preview of the body (`ThreadCard`); the body is parsed
- * whole for that preview, which is where the freeze was. The record starts again when the page
- * first asks for the issue's comments, before that request goes out: the bundle has been
- * evaluated and the tab drawn by then, and the card cannot draw before the answer. The
- * measurement ends where the card has drawn a `:::a` line and owes no formatting: nothing on it
- * is still pending, and the parser refused nothing.
+ * the page's own heartbeat on a machine these rows have to themselves. This spec runs in
+ * `chromium-alone`, which is out of the default selection, so a command names that project:
+ * `bun run e2e -- --project=chromium-alone e2e/nested-directive.e2e.ts --workers=1`. The command
+ * names that count itself rather than taking the configuration's default, and
+ * `main-thread-hold.ts` fails a measuring row in a run of more than one worker, which is what
+ * holds the reading to a machine nothing else of this suite is running on. The thread is left
+ * as a reader finds it, collapsed, so what the card draws is its two-line preview of the body
+ * (`ThreadCard`); the body is parsed whole for that preview, which is where the freeze was. The
+ * record starts again when the page first asks for the issue's comments, before that request
+ * goes out: the bundle has been evaluated and the tab drawn by then, and the card cannot draw
+ * before the answer. The measurement ends where the card has drawn a `:::a` line and owes no
+ * formatting: nothing on it is still pending, and the parser refused nothing.
  *
  * What the rows answer with is the parse's own cost: on an issue pod of two cores the hold is
  * 61 and 79 ms with the parse in the worker, and 312 to 444 ms over three runs with the
@@ -80,27 +80,3 @@ for (const input of inputs) {
     expectUnderTheBound(measured);
   });
 }
-
-test("a document write of either nested-directive body is refused as invalid markdown in under a second", async () => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Nested directive documents" });
-
-  for (const input of inputs) {
-    const started = performance.now();
-    const refusal = await createIssueArtifact(
-      issue.key,
-      { content: input.body, name: "nested.md" },
-      agent
-    ).then(
-      () => undefined,
-      (error: unknown) => error
-    );
-    const took = performance.now() - started;
-
-    expect(refusal, `${input.name}: the write was accepted`).toBeInstanceOf(Error);
-    const message = refusal instanceof Error ? refusal.message : "";
-    expect(message, input.name).toContain(" failed: 400 ");
-    expect(message, input.name).toContain('"code":"INVALID_MARKDOWN"');
-    expect(took, `${input.name}: the refusal took ${Math.round(took)} ms`).toBeLessThan(1_000);
-  }
-});

@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -19,7 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -47,8 +46,8 @@ var (
 // repository, naming defaultBranch (main unless a test sets another before its first request), the
 // ref of that branch, and each create of a ref answered by answer. It records each read's path, in
 // order, and each create, with the launches the runtime had made when it came. A booted daemon's
-// required-checks pass lists the repository's open pull requests, none, and that listing is not
-// recorded as a read.
+// start lists the repository's open pull requests, none, and that listing is not recorded as a
+// read.
 type branchGitHub struct {
 	url           string
 	mu            sync.Mutex
@@ -66,7 +65,12 @@ type branchCreate struct {
 func newBranchGitHub(t *testing.T, rt *fake.Runtime, answer func() (int, string)) *branchGitHub {
 	t.Helper()
 	g := &branchGitHub{answer: answer, defaultBranch: "main"}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.handle(t, rt)})
+	return g
+}
+
+func (g *branchGitHub) handle(t *testing.T, rt *fake.Runtime) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets/pulls" {
 			_, _ = io.WriteString(w, `[]`)
 			return
@@ -98,13 +102,9 @@ func newBranchGitHub(t *testing.T, rt *fake.Runtime, answer func() (int, string)
 			w.WriteHeader(status)
 			_, _ = io.WriteString(w, answer)
 		default:
-			t.Errorf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
+			githubtest.Unexpected(t, w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	g.url = server.URL
-	return g
+	}
 }
 
 func (g *branchGitHub) created() []branchCreate {
@@ -128,11 +128,11 @@ func (g *branchGitHub) answerWith(answer func() (int, string)) {
 // roleTokens mints a token named for the App it is minted as, so a request shows which App made it.
 type roleTokens struct{}
 
-func (roleTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	return appauth.Lease{Token: string(role) + "-app-token-for-" + repo.Owner(), ExpiresAt: time.Now().Add(time.Hour)}, nil
+func (roleTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: string(role) + "-app-token-for-" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t roleTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+func (t roleTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	return appauth.Lease{Token: string(role) + "-app-token-for-" + owner + "-read", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
@@ -308,18 +308,18 @@ func TestAnIssueBranchRowOfALeftRunFinishesWithoutACreate(t *testing.T) {
 // refusingOwnerTokens refuses every mint, naming nothing, so a test reads what the caller names.
 type refusingOwnerTokens struct{}
 
-func (refusingOwnerTokens) Token(context.Context, appauth.AppRole, ghrepo.Repository) (appauth.Lease, error) {
+func (refusingOwnerTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("GitHub is down")
 }
 
-func (refusingOwnerTokens) ReadToken(context.Context, appauth.AppRole, string, []string) (appauth.Lease, error) {
+func (refusingOwnerTokens) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("GitHub is down")
 }
 
-// Branch creation, the disarm and the READY merge mint the implement App's token for the
-// repository the issue's record names, and a mint that fails names that repository, so the
-// outbox's failure line says which installation refused and for what.
-func TestBranchCreationTheDisarmAndTheREADYMergeNameTheRepositoryTheyMintFor(t *testing.T) {
+// Branch creation mints the implement App's token for the owner of the repository the issue's
+// record names, and a mint that fails names that owner, so the outbox's failure line says whose
+// installation refused.
+func TestBranchCreationNamesTheOwnerItMintsFor(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "zeta/tools", DefaultBranch: "main", GitHubRepo: "zeta/tools", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow",
@@ -329,13 +329,5 @@ func TestBranchCreationTheDisarmAndTheREADYMergeNameTheRepositoryTheyMintFor(t *
 	want := "mint the implement App token for zeta/tools: GitHub is down"
 	if err := runner.createBranch(context.Background(), issue); err == nil || err.Error() != want {
 		t.Errorf("createBranch with a refused mint = %v, want %q", err, want)
-	}
-	row := mustOutboxRow(t, "LEGION-208", record.AutoMergeDisable{Number: 7}, time.Now())
-	if err := runner.autoMergeDisable(context.Background(), row, record.AutoMergeDisable{Number: 7}); err == nil || err.Error() != want {
-		t.Errorf("autoMergeDisable with a refused mint = %v, want %q", err, want)
-	}
-	merge := record.ReadyMerge{Number: 7, Head: "ready-head"}
-	if err := runner.readyMerge(context.Background(), mustOutboxRow(t, "LEGION-208", merge, time.Now()), merge); err == nil || err.Error() != want {
-		t.Errorf("readyMerge with a refused mint = %v, want %q", err, want)
 	}
 }

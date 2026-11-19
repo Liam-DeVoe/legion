@@ -1,17 +1,22 @@
 #!/usr/bin/env bun
 /**
  * omp-client.ts — one Oh My Pi Envoy extension instance in an OS process of its own, for
- * `scripts/smoke-role-takeover.sh` only.
+ * `scripts/smoke-role-takeover.sh` and `scripts/e2e/nats-callout-sessions.sh`.
  *
  * It loads the real `extensions/envoy.ts` from this checkout and hands it the stand-in host the
  * package's own suite is driven against (`createStandInHost` in `test/stand-in-host.ts`, which
  * `extensions/envoy.test.ts` wraps as `createPi`): one session manager whose id and branch the
  * driver moves, `pi.appendEntry` writing into that branch, and
- * `context.setInterval` dropping the heartbeat timer rather than arming one, so no tick of it
- * interleaves with what the smoke drives. Nothing else is faked: the extension dials the smoke's
- * natsd, and every listener call goes over HTTP to the smoke's recording proxy (`envoy.url` in
- * the `ENVOY_CONFIG_FILE` the smoke writes). One process is one client instance, which is what
- * the listener's rule turns on (R5, R6 of dispatch://INFRA-404/spec).
+ * `context.setInterval` keeping the heartbeat callback rather than arming a timer on it, so a
+ * pass runs when the smoke asks for one (`{"op":"heartbeat"}`) and no tick of its own interleaves
+ * with what the smoke drives. Nothing else is faked: the extension dials the driver's natsd, and
+ * every listener call goes over HTTP to the listener `envoy.url` names in the `ENVOY_CONFIG_FILE`
+ * the driver writes (`smoke-role-takeover.sh`'s recording proxy, the stack's own listener in
+ * `nats-callout-sessions.sh`). One process is one client instance, which is what the listener's
+ * rule turns on (R5, R6 of the role takeover's spec).
+ *
+ * Its input ending is the host going away: the extension's `session_shutdown` runs (it deregisters
+ * the session and drains NATS), bounded at 10 s, and the process exits, writing its notices.
  *
  * Run it as `bun --preload <dir>/host-stub.ts <dir>/omp-client.ts`: the preload supplies the host
  * package the extension imports.
@@ -20,13 +25,19 @@
  *
  *   {"id":"1","op":"start","session":"ses_a","roles":["reviewer"]}
  *   {"id":"2","op":"tool","name":"envoy_role_set","args":{"role":"reviewer"}}
- *   {"id":"3","op":"switch","session":"ses_b","reason":"fork","detach":true}
- *   {"id":"4","op":"join"}
+ *   {"id":"3","op":"switch","session":"ses_b","reason":"fork"}
+ *   {"id":"4","op":"heartbeat"}
+ *   {"id":"5","op":"deliveries"}
  *
  * `roles` replaces the session's branch with one `envoy-role-claim` entry per element (a string
  * is a claim, null a release), which is what a resumed or forked transcript carries; omitted, the
- * branch carries on as it is. `detach` answers before the handler settles, for a step the smoke
- * holds at the proxy; `join` then waits for every detached handler.
+ * branch carries on as it is. `heartbeat` runs the pass the extension's own interval would have
+ * run: it re-registers the session, which is how a holder says it still answers for the role
+ * claims it made, and it re-asserts the role that session holds. It answers as soon as the pass
+ * is under way, as a timer tick does; the smoke reads the pass's own calls at the proxy.
+ * `deliveries` answers every message the extension handed the host, in order: each card it showed
+ * (`pi.sendMessage`) and each user turn it started (`pi.sendUserMessage`), the two ways an Envoy
+ * delivery reaches the session.
  */
 import { appendFileSync } from "node:fs";
 import type { PiApi } from "@legion/pi-shared/pi-types";
@@ -43,19 +54,21 @@ interface Command {
   readonly roles?: readonly (string | null)[];
   readonly name?: string;
   readonly args?: Record<string, unknown>;
-  readonly detach?: boolean;
 }
 
-const { ROLE_TAKEOVER_CWD, ROLE_TAKEOVER_CLIENT_LOG } = process.env;
+const { ROLE_TAKEOVER_CWD, ROLE_TAKEOVER_CLIENT_LOG, ENVOY_HEARTBEAT_MS } = process.env;
 const cwd = ROLE_TAKEOVER_CWD ?? process.cwd();
+// The interval the extension arms its heartbeat on (`settings.heartbeatMs`), so the callback kept
+// below is that one and not another timer the extension arms on a period of its own.
+const heartbeatMs = Number(ENVOY_HEARTBEAT_MS);
 
 let sessionID = "";
+/** The extension's heartbeat callback, kept by `context.setInterval` and run by `heartbeat`. */
+let heartbeatPass: (() => void) | undefined;
 // One host, shared with the package's own suite: its `entries` are this session's branch, which
 // the extension's `pi.appendEntry` writes into.
-const { entries, handlers, pi, tools } = createStandInHost();
+const { entries, handlers, messages, pi, tools, userMessages } = createStandInHost();
 const notices: string[] = [];
-/** Handlers a `detach` command left running, awaited by `join`. */
-const detached: Promise<unknown>[] = [];
 
 const sessionManager = {
   getSessionId: () => sessionID,
@@ -74,9 +87,12 @@ const context = {
   agent: { kind: "main" as const },
   sessionManager,
   isIdle: () => true,
-  // The extension arms its heartbeat here; the smoke drives every pass itself, so the timer is
-  // dropped rather than armed.
-  setInterval: () => undefined,
+  // The extension arms its heartbeat here. The smoke drives every pass itself, so the callback is
+  // kept for `{"op":"heartbeat"}` rather than armed on a timer; a timer on any other period is
+  // dropped, as every timer here was.
+  setInterval: (callback: () => void, intervalMs: number) => {
+    if (intervalMs === heartbeatMs) heartbeatPass = callback;
+  },
   setTimeout: (callback: () => void) => {
     setTimeout(callback, 0);
   },
@@ -87,6 +103,22 @@ const context = {
     onTerminalInput: () => () => undefined,
     getEditorText: () => "",
   },
+};
+
+// A host writes each card it is handed and then tells the extension so (`message_end`), which is
+// what settles the delivery and answers the listener `done`, so the session's consumer acks it; the
+// suite's host records the card alone, so this one writes it too, as the package's tests do.
+const recordCard = pi.sendMessage;
+// The host's own record of the API, through which the wrapper below replaces sendMessage.
+const host: { sendMessage: typeof recordCard } = pi;
+host.sendMessage = (message, options) => {
+  recordCard(message, options);
+  queueMicrotask(() => {
+    void handlers.get("message_end")?.(
+      { message: { role: "custom", ...message, timestamp: Date.now() } },
+      context
+    );
+  });
 };
 
 // The stand-in host is a subset of the real `PiApi`: the extension reads only what the suite's
@@ -139,11 +171,18 @@ async function run(command: Command): Promise<Record<string, unknown>> {
     case "shutdown":
       await handlerFor("session_shutdown")({}, context);
       return { session: sessionID };
-    case "join": {
-      const waiting = detached.splice(0);
-      await Promise.allSettled(waiting);
-      return { joined: waiting.length };
+    case "heartbeat": {
+      // One tick of the interval the extension armed: the pass runs behind it, as it does behind
+      // a timer tick, and what it sent is read at the smoke's proxy.
+      if (heartbeatPass === undefined) throw new Error("the extension armed no heartbeat yet");
+      heartbeatPass();
+      return { session: sessionID };
     }
+    case "deliveries":
+      return {
+        deliveries: [...messages],
+        turns: userMessages.map((turn) => turn.content),
+      };
     default:
       throw new Error(`unknown op ${command.op}`);
   }
@@ -166,18 +205,13 @@ for await (const line of console) {
   if (text === "") continue;
   const command = JSON.parse(text) as Command;
   const id = command.id ?? "";
-  if (command.detach === true) {
-    answer({ id, ok: true, started: true });
-    detached.push(
-      run(command).catch((error: unknown) => {
-        notices.push(`detached ${command.op} failed: ${String(error)}`);
-      })
-    );
-    continue;
-  }
   try {
     answer({ id, ok: true, ...(await run(command)) });
   } catch (error) {
     answer({ id, ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }
+await Promise.race([handlerFor("session_shutdown")({}, context), Bun.sleep(10_000)]).catch(
+  () => undefined
+);
+process.exit(0);

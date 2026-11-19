@@ -32,15 +32,7 @@ type wireTokenLogin struct {
 // (negative for one already expired), signed by the local OIDC issuer the test server trusts.
 func (ts *testServer) accountToken(t *testing.T, account, podUID string, lifetime time.Duration) string {
 	t.Helper()
-	claims := ts.podIssuer.Claims(account, podAudience)
-	now := time.Now()
-	claims["iat"] = now.Add(min(lifetime, 0) - 5*time.Second).Unix()
-	claims["nbf"] = claims["iat"]
-	claims["exp"] = now.Add(lifetime).Unix()
-	if podUID != "" {
-		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
-	}
-	return ts.podIssuer.Mint(t, ts.podKey, claims)
+	return ts.audienceToken(t, account, podUID, podAudience, lifetime)
 }
 
 // tokenLogin posts token and request to POST /v1/launcher-credentials/token.
@@ -560,9 +552,9 @@ func TestAnyoneRevokesAServicesTokenLoginAndItLogsInAgain(t *testing.T) {
 
 // TestATokenLoginEnrolsOnlyItsOwnPodAndItsServicesOverTheWire: a login whose token came from a pod
 // enrols that pod when the pod presents its own token; any other pod of the same account is 403
-// POD_SELF_ENROLL_ONLY; a pod of the account BROKER_SERVICES binds to its service — every pod this
-// login launches — enrols as before; and a pod of an account no setting binds is 403
-// POD_NOT_LAUNCHED.
+// POD_SELF_ENROLL_ONLY, and its own pod under a session name is 403 POD_SELF_ENROLL_NO_SESSION; a
+// pod of the account BROKER_SERVICES binds to its service — every pod this login launches —
+// enrols as before; and a pod of an account no setting binds is 403 POD_NOT_LAUNCHED.
 func TestATokenLoginEnrolsOnlyItsOwnPodAndItsServicesOverTheWire(t *testing.T) {
 	ts := newTestServer(t)
 	key := newSigningKey(t)
@@ -573,20 +565,27 @@ func TestATokenLoginEnrolsOnlyItsOwnPodAndItsServicesOverTheWire(t *testing.T) {
 	}
 	credentialID := decode[wireTokenLogin](t, body).CredentialID
 
-	enrol := func(account, podUID string) (int, []byte) {
+	enrol := func(account, podUID, session string) (int, []byte) {
 		t.Helper()
-		return ts.launcher(t, key, credentialID, http.MethodPost, "/v1/enrollments", map[string]any{
+		enrolment := map[string]any{
 			"kind": "pod", "runtime_id": podUID, "thumbprint": thumbprintOf(t, newSigningKey(t)),
 			"pod_token": ts.podToken(t, account, podUID),
-		})
+		}
+		if session != "" {
+			enrolment["session_id"] = session
+		}
+		return ts.launcher(t, key, credentialID, http.MethodPost, "/v1/enrollments", enrolment)
 	}
-	if status, body := enrol(daemonAccount, uuid.NewString()); status != http.StatusForbidden || decode[wireError](t, body).Code != "POD_SELF_ENROLL_ONLY" {
+	if status, body := enrol(daemonAccount, uuid.NewString(), ""); status != http.StatusForbidden || decode[wireError](t, body).Code != "POD_SELF_ENROLL_ONLY" {
 		t.Fatalf("enrol another pod of its own account = %d %s, want 403 POD_SELF_ENROLL_ONLY", status, body)
 	}
-	if status, body := enrol(daemonAccount, ownPod); status != http.StatusCreated {
+	if status, body := enrol(daemonAccount, ownPod, "worker-g1"); status != http.StatusForbidden || decode[wireError](t, body).Code != "POD_SELF_ENROLL_NO_SESSION" {
+		t.Fatalf("enrol its own pod under a session name = %d %s, want 403 POD_SELF_ENROLL_NO_SESSION", status, body)
+	}
+	if status, body := enrol(daemonAccount, ownPod, ""); status != http.StatusCreated {
 		t.Fatalf("enrol its own pod = %d %s, want 201", status, body)
 	}
-	if status, body := enrol("system:serviceaccount:other:stranger", uuid.NewString()); status != http.StatusForbidden || decode[wireError](t, body).Code != "POD_NOT_LAUNCHED" {
+	if status, body := enrol("system:serviceaccount:other:stranger", uuid.NewString(), ""); status != http.StatusForbidden || decode[wireError](t, body).Code != "POD_NOT_LAUNCHED" {
 		t.Fatalf("enrol a pod of an account no setting binds = %d %s, want 403 POD_NOT_LAUNCHED", status, body)
 	}
 	if status, body := ts.enrollPodWith(t, key, credentialID); status != http.StatusCreated {

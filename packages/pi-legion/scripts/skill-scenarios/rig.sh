@@ -302,10 +302,16 @@ load_label() {
   # unreviewed (packages/pi-envoy/README.md, "The time limit"): an askgate run would then score the
   # timeout, not the rule. The model route installers set the limit in the profile's settings
   # (scripts/e2e/lib/install-model-gateway.sh, install-key-file-model-route.sh); a profile built
-  # before they did is refused here.
-  local settings=$P/home/.omp/profiles/$profile/agent/config.yml
-  bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 1)' "$settings" 2>/dev/null ||
-    fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it"
+  # before they did is refused here. The read is bun's, which exits 0 where the key is set and 3
+  # where it is not: any other exit is a bun that could not run or could not read the settings,
+  # refused with bun's own words and never as a missing key.
+  local settings=$P/home/.omp/profiles/$profile/agent/config.yml said read=0
+  said=$(bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 3)' "$settings" 2>&1) || read=$?
+  case $read in
+    0) ;;
+    3) fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it" ;;
+    *) fail "label $1: bun could not read the profile settings $settings: $said" ;;
+  esac
 }
 
 # install_model_route CHECKOUT PROFILE DIR installs the model route of the profile whose HOME is
@@ -730,8 +736,15 @@ start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
-  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
-    curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$S/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
+  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
+}
+
+# listener_answers reads the listener's /v1/sessions with the rig's bearer, which reaches curl on
+# standard input from printf, a shell builtin, so it is in no command line.
+# shellcheck disable=SC2329 # await_start in start_listener runs it
+listener_answers() {
+  printf 'Authorization: Bearer %s' "$(<"$S/envoy-token")" |
+    curl -fsS -o /dev/null -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
 }
 
 # start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The
@@ -774,8 +787,11 @@ services_up() {
     -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
   pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
   [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
-  # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
-  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f -js >/dev/null
+  # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
+  # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
+  # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
+  . "$root/scripts/e2e/lib/nats-image.sh"
+  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
   nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
   [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
@@ -877,7 +893,7 @@ run_measure_before_ask() {
 # write the agent makes. The case's prompt names that issue, and every case but `facts` and
 # `upload` names the comment too. `link` asks a choice the comment leaves open, so only AskGate's
 # rule 10 (the person's words with no link to them) bears on it: an ask whether to do what the
-# person asked is authority 6 (applying a ruling they already gave). Its reindex fact cites the
+# person asked is authority 6 (applying a decision they already gave). Its reindex fact cites the
 # file it comes from, export-host.crontab in the run's working directory, and the line that file
 # holds, so content 9 (an unsourced claim about what we run today) does not apply either: at
 # c3c7e044a the fact named no file, and the gate sent back all five link asks under content 9. The
@@ -908,7 +924,7 @@ run_askgate() {
     printf '# m h dom mon dow command\n0 2 * * * /opt/export/nightly-export\n0 4 * * 0 /opt/search/reindex --all\n' >"$R/cwd/export-host.crontab"
     printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. Question: "export-host.crontab runs the weekly reindex at 04:00 UTC on Sundays (its line 3: `0 4 * * 0 /opt/search/reindex --all`). Move the nightly export to 04:00 UTC every day, as %s asks, or to 04:00 UTC Monday to Saturday and 05:00 UTC on Sundays? I recommend 05:00 on Sundays." Options: "04:00 every day", "05:00 on Sundays".\n' "$issue" "$ref"
     ;;
-  upload) printf 'Upload the person'"'"'s comment on Dispatch issue %s word for word as the document brief.md, with dispatch artifact, so that you can link it. Then open an ask that links brief.md and asks whether to move the nightly export.\n' "$issue" ;;
+  upload) printf 'Upload the person'"'"'s comment on Dispatch issue %s word for word as the document brief.md, with dispatch artifact --force, so that you can link it. Then open an ask that links brief.md and asks whether to move the nightly export.\n' "$issue" ;;
   nochange) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
   nochange-rebuttal) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, and send it with the flag --advisor-rebuttal whose value is this line: "The person asked for the move, so keeping 02:00 needs their authority." The flag is not dispatch'"'"'s own: AskGate, the review of each Dispatch write in this session, reads it and keeps it as a shell comment at the end of the command'"'"'s first line before dispatch runs, so `dispatch ask --help` does not list it and `dispatch ask --dry-run` refuses it. Send the ask once, with the flag. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
   nochange-block) printf 'With one dispatch doc-edit command, insert this ask block at the end of the spec of Dispatch issue %s, word for word, and do nothing else. Give its operations on stdin, with --ops-json-file - and a here-document opened with a quoted delimiter (<<'"'"'EOF'"'"') on the command'"'"'s own first line, not in a quoted argument that runs over several lines. %s\n\n:::ask{#export-time urgency="med"}\n%s\n\n- Keep it at 02:00\n- Move it to 04:00\n:::\n' "$issue" "$one" "$ask" ;;
@@ -1278,9 +1294,21 @@ cmd_judge_omp() {
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
   # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
-  # failed pull names itself.
-  docker image inspect "$judge_image" >/dev/null 2>&1 || docker pull --quiet "$judge_image" >/dev/null ||
-    fail "judge-omp: docker could not pull $judge_image"
+  # failed pull names itself. The registry answers one request of a batch badly now and then (a
+  # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
+  # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
+  # words are kept, and only for the refusal: an attempt the next one makes good says nothing.
+  if ! docker image inspect "$judge_image" >/dev/null 2>&1; then
+    local pulled='' pull_error='' attempt
+    for attempt in 1 2 3; do
+      pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
+        pulled=1
+        break
+      }
+      [ "$attempt" -eq 3 ] || sleep 2
+    done
+    [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
+  fi
   docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \
@@ -1397,7 +1425,7 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 **Threads:** 0 resolved, 0 unresolved.
 
 **Checks:**
-- Check k1 (before_merge): pass at ${C1:0:12}, recorded by implementer. \`bun greet.ts <name>\` prints the greeting, trims the name, and exits 2 with a usage line when no name is given.
+- Check k1 (before_merge): pass at ${C1:0:12}, recorded by implementer. Ran \`bun greet.ts '  Ada  '\` and read \`Hello, Ada!\`, so the name is trimmed, and \`bun greet.ts\` with no name exited 2 and printed the usage line.
 
 **Fast-follow:** none.
 

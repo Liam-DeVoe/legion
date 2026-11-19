@@ -282,6 +282,8 @@ func TestWaveReleaseRecordsABacklogChildFromItsOwnWrite(t *testing.T) {
 	if wantWrites := []statusWrite{{blocked, "todo"}, {free, "todo"}}; !reflect.DeepEqual(statuses.writes, wantWrites) {
 		t.Fatalf("Dispatch writes = %#v, want %#v", statuses.writes, wantWrites)
 	}
+	// A child the release starts shows its phase's status, in_progress, from its first phase; one
+	// held at admitted has started nothing and stays todo.
 	wantPhase := map[string]phase.Phase{blocked: phase.Admitted, free: phase.Planning}
 	// The held child keeps the todo the release wrote, since admitted has no status of its own;
 	// the free child's entry into planning writes in_progress over it.
@@ -441,7 +443,7 @@ func TestWaveReleaseNamesAFailedReadTheListingDoesNotCover(t *testing.T) {
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil)
 
 	body := recorder.Body.String()
-	assertFailure(t, recorder, http.StatusBadGateway, "DISPATCH_FAILED")
+	refused(t, recorder, http.StatusBadGateway, "DISPATCH_FAILED")
 	if !strings.Contains(body, "detail read timed out") || !strings.Contains(body, "listing read timed out") {
 		t.Fatalf("answer = %s, want it to name both Dispatch failures", body)
 	}
@@ -500,7 +502,7 @@ func TestWaveReleaseWritesAndRecordsTheWaveBeforeAStuckTodoChildAnswers(t *testi
 
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{stuck, free}}, nil)
 
-	assertFailure(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
+	refused(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
 	if wantWrites := []statusWrite{{free, "todo"}}; !reflect.DeepEqual(statuses.writes, wantWrites) {
 		t.Fatalf("Dispatch writes = %#v, want %s released whatever %s answered", statuses.writes, free, stuck)
 	}
@@ -530,7 +532,7 @@ func TestWaveReleaseWritesNoChildUnderATodoChildItCannotRecord(t *testing.T) {
 
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{under, stuck}}, nil)
 
-	assertFailure(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
+	refused(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
 	if len(statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %#v, want none: %s waits for %s to be recorded", statuses.writes, under, stuck)
 	}
@@ -691,7 +693,7 @@ func TestWaveReleaseRetryRecordsATodoChildOnceItsParentIsRecorded(t *testing.T) 
 		return h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil)
 	}
 
-	assertFailure(t, release(), http.StatusConflict, "CHILD_NOT_RECORDED")
+	refused(t, release(), http.StatusConflict, "CHILD_NOT_RECORDED")
 	if got := recordedChild(t, h, child); got != nil {
 		t.Fatalf("the child before its parent is recorded = %#v, want none", got)
 	}

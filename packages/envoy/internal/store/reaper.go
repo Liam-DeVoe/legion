@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -46,8 +45,10 @@ func InterestReapAllowance(grace time.Duration) time.Duration {
 // becomes live again.
 //
 // A candidate is deleted at exactly the revision the copy holds for it when the delete is sent
-// (deleteInterestAt), so a write that lands after the re-read is kept: the delete fails with
-// JetStream's wrong last sequence (10071, nats.ErrKeyExists), and the candidate counts as skipped.
+// (reapInterest), so a write that lands after the re-read is kept: the delete fails with
+// JetStream's wrong last sequence (10071, nats.ErrKeyExists), and the candidate counts as
+// skipped. Where the copy holds no revision for it, the row and the revision come from the
+// bucket instead, and the delete is made only for the very row this pass judged.
 func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow time.Duration) (int, error) {
 	now := r.now().UnixMilli()
 	allowanceMs := InterestReapAllowance(graceWindow).Milliseconds()
@@ -78,7 +79,7 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 		if item, ok := r.Cached(c.sessionID); !ok || item.UpdatedAt != c.updatedAt {
 			continue // removed, or written again, since it was collected
 		}
-		deleted, err := r.deleteInterestAt(context.Background(), c.sessionID)
+		deleted, err := r.reapInterest(context.Background(), c.sessionID, c.updatedAt)
 		if errors.Is(err, bus.ErrRefused) {
 			r.logger().Warn("reaper skipped an interest it cannot delete", slog.Int("key_bytes", len(c.sessionID)), slog.String("error", err.Error()))
 			continue
@@ -93,37 +94,45 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 	return reaped, nil
 }
 
-// deleteInterestAt deletes sessionID's interest only while its latest revision is the one the copy
-// holds for it, and reports whether it did, each bucket call waiting no longer than ctx
-// (bus.Bounded). A write since then makes JetStream refuse the delete with wrong last sequence
-// (10071, which nats.go names nats.ErrKeyExists), and the interest is kept: false and no error. A
-// copy that holds no revision for the key, because a watch moved the epoch since its read began
-// (kvwatch.Copy.FenceFor), names no revision, which a conditional delete cannot express, so that
-// interest is deleted at the revision it reads (deleteInterest). The cache follows the bucket
-// afterwards as it does after deleteInterest. A delete ctx abandoned may still land after this
-// answer, and that is safe: it deletes only the revision it checked.
-func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string) (bool, error) {
+// reapInterest deletes sessionID's interest, which this pass judged past its allowance at
+// judged, its UpdatedAt when the pass collected it, and reports whether the bucket took the
+// delete; each bucket call waits no longer than ctx (bus.Bounded). A delete the bucket took is
+// one row off the pass's count (Reap's reaped); a delete it refused, and a row this call keeps,
+// are counted nowhere, and the next pass judges whatever the bucket holds then. An error is the
+// pass's: Reap returns it with no count at all, since a bucket that failed this call fails the
+// candidates behind it too.
+//
+// The delete is fenced on the revision the copy holds for the key (deleteInterestAt), and a
+// write since then makes JetStream refuse it with wrong last sequence (10071, which nats.go
+// names nats.ErrKeyExists): the interest is kept, false and no error.
+//
+// A copy that holds no revision for the key, because a watch moved the epoch since its read
+// began (kvwatch.Copy.FenceFor), names no revision for the delete to be fenced on, and that
+// window is a recreated bucket, whose rows a registration on another listener is writing. So the
+// row and its revision are read from the bucket (getWithRevision) and the delete is fenced on
+// that revision, and only the row this pass judged is deleted: a row the bucket answers with
+// another UpdatedAt is a row no pass has judged past its allowance, and deleting it would take a
+// session's live registration away and count it reaped. A key the bucket holds no row for is
+// already gone, and a row this build cannot decode is not the row the pass judged either, since
+// the copy holds no record it cannot decode; both are kept, and neither is counted.
+func (r *Registry) reapInterest(ctx context.Context, sessionID string, judged int64) (bool, error) {
 	r.mu.RLock()
-	kv, epoch := r.watcher.Handle()
+	_, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	if revision == 0 {
-		return true, r.deleteInterest(ctx, sessionID)
+		item, read, err := r.getWithRevision(ctx, sessionID, true)
+		switch {
+		case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, ErrMalformedInterest):
+			return false, nil
+		case err != nil:
+			return false, err
+		case item.UpdatedAt != judged:
+			return false, nil
+		}
+		revision = read
 	}
-	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
-	})
-	if !answered {
-		return false, fmt.Errorf("delete %s's interest record at revision %d: %w", sessionID, revision, err)
-	}
-	if errors.Is(err, nats.ErrKeyExists) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision)
-	return true, nil
+	return r.deleteInterestAt(ctx, sessionID, revision)
 }
 
 // RoleClaimSweep is what one pass of ReapRoleClaims did: Reaped, the claims it released or
@@ -140,14 +149,52 @@ type RoleClaimSweep struct {
 	Skipped int
 }
 
-// ReapRoleClaims removes claims whose holders did not re-register before the
-// session TTL elapsed. It is intentionally separate from Reap: the interest
-// reaper must not tear down a role during a listener restart grace window. A
+// ReapRoleClaims removes claims whose holders have stopped answering for them and did not
+// re-register before the session TTL elapsed. It is intentionally separate from Reap: the
+// interest reaper must not tear down a role during a listener restart grace window. A
 // claim this build cannot read (one stored under a key NATS refuses, too long or
 // outside its key alphabet, which bus.KeyValue.RefusesRead answers for the key
 // the scan handed over) no build can resolve or write again, so it is deleted
 // too; one it cannot delete either (a key outside the alphabet) is passed
 // over, uncounted, and the sweep goes on.
+//
+// What a pass weighs is the liveness of the session id a claim's holder registered under,
+// exactly as it did before a claim named the process holding it: a claim whose holder answered
+// for it less than liveWindow ago (RoleClaim.LastAnsweredAt, through
+// Registry.ClaimRenewedWithin) is kept, and one whose renewal has lapsed is kept while isAlive
+// reports its holder session alive and freed once that session is gone. That is the rule
+// dispatch://INFRA-392 settled, and it stands here unchanged for a claim that names a process
+// (RoleClaim.ClientInstanceID) and a claim that names none alike: a holder that has stopped
+// answering keeps its role, and the paths that need a live holder report an unresponsive one
+// rather than taking the role from it.
+//
+// The one thing that moves a claim past a live holder session is the hand-back mark
+// (RoleClaim.HandedBack): a marked claim whose own renewal has lapsed is freed whatever isAlive
+// says. Nothing can move that renewal again, since no registration renews a marked claim
+// (renewRoleClaim), so the lapse is final rather than a holder briefly out of touch. The mark
+// is the session's own word that it gave the role up, written by a hand-back of that role's lane
+// topic that stated no process (Registry.markRoleClaimHandedBack, over a claim of that session
+// the release could not free, whether it names a process or none). Any process of the session
+// can send that release - a client built before a release named its process, or any caller that
+// leaves client_instance_id out of POST /v1/interests/unsubscribe; no current client sends it for
+// a role's lane, since pi-envoy's and claude-envoy's hand-back of a role states its instance - so
+// the mark is not proof that the holder itself gave the role up; it is what the window below is
+// for.
+//
+// A marked claim is freed one live window after its last renewal and not at once, and that
+// window is load-bearing: a holder whose claim names its process and a hand-back marked wrongly
+// claims the role again at its next heartbeat and has it back, the record that grant writes
+// carrying no mark (SetRoleWithPrevious). A marked claim that names no process is not granted
+// back to a soft claim inside the window (POST /v1/roles/set weighs it by its renewal); its
+// holder takes it back with an outright claim, or claims it once the reaper has freed it. The
+// window must stay longer than a heartbeat. Nothing else holds a marked claim: the restart grace
+// is for a holder to register again and no registration renews a marked claim, so the release
+// gives it none (releaseReadExpiredRoleClaim).
+//
+// Only a claim neither rule keeps is released (releaseReadExpiredRoleClaim, which weighs
+// sessionTTL, the restart grace, and reads the renewal no second time: this pass has read it
+// already, over the very claim it hands on). The renewal and the mark are read off the record
+// the scan carried, so no test costs the pass a bucket call of its own.
 //
 // Every bucket call the pass makes after its scan - each release, and the delete of a key this
 // build cannot read - waits no longer than ctx (bus.Bounded), which is the reaper loop's own
@@ -176,13 +223,14 @@ type RoleClaimSweep struct {
 // revision, and then nothing per role but the deletes it owes: no Get of its own per key. One
 // role's undecodable record, failed delete or failed release costs that one role: it is logged
 // in a line of its own, counted in Skipped, and the pass goes on. This reaper is the backstop
-// for the claim a deregistration left standing - the one its role claim view had not been
-// delivered when the session left, which releaseAllRoleClaims leaves here - and a pass that ends
-// at the first transient failure is no backstop at the role count that made the view miss the
-// claim: one failure would leave every role after it unswept until the next interval, and a
-// failure that lasts would leave them unswept for as long as it does. A role counted Skipped for
-// a read is a stored record this build cannot decode (ErrMalformedRoleClaim), which reads the
-// same on every pass.
+// for the claim a deregistration left standing - the one its interest record did not name and its
+// role claim view had not been delivered when the session left, which releaseAllRoleClaims leaves
+// here, and the one that deregistration was not authorised to free (RoleReleaseAuthority) - and a
+// pass that ends at the first transient failure is no backstop at the role count that made the
+// view miss the claim: one failure would leave every role after it unswept until the next
+// interval, and a failure that lasts would leave them unswept for as long as it does. A role
+// counted Skipped for a read is a stored record this build cannot decode (ErrMalformedRoleClaim),
+// which reads the same on every pass.
 //
 // Two failures still end the pass. The scan, because a pass over part of the bucket is not the
 // pass over every role its counts would claim it was, and because there is no per-role read
@@ -208,7 +256,13 @@ type RoleClaimSweep struct {
 // pass's one scan: the release is handed the claim that scan carried
 // (releaseReadExpiredRoleClaim) rather than reading it again, because a pass runs over the whole
 // bucket on every interval.
-func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool, sessionTTL time.Duration) (RoleClaimSweep, error) {
+//
+// Each pass also prunes this registry's record of the renewals that failed
+// (renewalFailures.prune) at liveWindow, before its scan, so a pass whose scan fails prunes it
+// too: the reaper is the one caller handed the deployment's live window, and a failure older
+// than that window answers no reader of it (RenewalFailedWithin).
+func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool, sessionTTL, liveWindow time.Duration) (RoleClaimSweep, error) {
+	r.renewalFailures.prune(r.now(), liveWindow)
 	claims, err := r.roleClaimsUntil(ctx)
 	if err != nil {
 		return RoleClaimSweep{}, err
@@ -239,7 +293,10 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 			continue
 		}
 		claim := scanned.Claim
-		if claim.HolderSessionID == "" || isAlive(claim.HolderSessionID) {
+		if claim.HolderSessionID == "" || r.ClaimRenewedWithin(claim, liveWindow) {
+			continue
+		}
+		if !claim.HandedBack && isAlive(claim.HolderSessionID) {
 			continue
 		}
 		release, err := r.releaseReadExpiredRoleClaim(ctx, role, claim, sessionTTL)
@@ -275,12 +332,21 @@ func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) 
 	})
 }
 
-// StartRoleClaimReaper expires role holders that fail to re-register after a
-// listener restart. It is independent of interest reaping because a role is a
-// point-to-point route rather than a general subscription. It runs until ctx ends, and the
-// channel it returns is closed once it has returned, as StartReaper's is. Each pass logs what it
-// reaped beside what it skipped, since only a reaper whose failures are visible from its own line
-// can be read as the backstop it is (RoleClaimSweep).
+// StartRoleClaimReaper expires role holders that stop answering for their claims and fail to
+// re-register after a listener restart. It is independent of interest reaping because a role is
+// a point-to-point route rather than a general subscription. It runs until ctx ends, and the
+// channel it returns is closed once it has returned, as StartReaper's is. Each pass keeps a
+// claim renewed inside liveWindow, a lapsed claim no hand-back marked whose holder session
+// isAlive reports alive, and a restored claim no hand-back marked inside sessionTTL
+// (ReapRoleClaims), and logs what it reaped beside what it skipped, since only a reaper whose
+// failures are visible from its own line can be read as the backstop it is (RoleClaimSweep).
+//
+// isAlive is given the holder session id of every claim whose renewal has lapsed, and it
+// decides each of them but one: a claim its holder handed back (RoleClaim.HandedBack) is freed
+// one live window after its last renewal though that session answers, because the mark is the
+// holder's own word that it gave the role up and no registration renews a marked claim. A
+// holder that is merely out of touch keeps its role, which is what every other reader of a
+// session's state says too.
 //
 // A pass that skipped anything logs that line at WARN, because a pass goes on past the failures
 // that once ended it with an ERROR: a sweep that read nothing it swept - every role failed, the
@@ -304,9 +370,9 @@ func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) 
 // (bus.KeyValue.ReadStreamState) while this loop runs on, which is the outage an operator must
 // see. What makes a failed pass an ordered shutdown is that this loop's ctx has ended, so that
 // is what the level reads.
-func (r *Registry) StartRoleClaimReaper(ctx context.Context, isAlive func(string) bool, interval, sessionTTL time.Duration) <-chan struct{} {
+func (r *Registry) StartRoleClaimReaper(ctx context.Context, isAlive func(string) bool, interval, sessionTTL, liveWindow time.Duration) <-chan struct{} {
 	return everyInterval(ctx, interval, func() {
-		sweep, err := r.ReapRoleClaims(ctx, isAlive, sessionTTL)
+		sweep, err := r.ReapRoleClaims(ctx, isAlive, sessionTTL, liveWindow)
 		if err != nil {
 			if ctx.Err() != nil {
 				r.logger().Info("role claim reaper cycle ended with its loop",

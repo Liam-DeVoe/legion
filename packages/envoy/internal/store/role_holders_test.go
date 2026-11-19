@@ -27,7 +27,7 @@ func (r *Registry) applyRoleClaim(entry natsgo.KeyValueEntry) {
 func (r *Registry) resetRoleHolders() {
 	r.holdersMu.Lock()
 	defer r.holdersMu.Unlock()
-	r.roleHolders = newRoleHolderCopy()
+	r.roleHolders = newRoleHolderCopy(r)
 }
 
 // holderOf is the session the view names for role, empty when it names none.
@@ -116,7 +116,7 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 	}
 	putRoleClaim(t, rawRoles, "restored", "ses_a")
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -182,13 +182,11 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool {
 		return servableView(reg)
 	})
-	if _, err := reg.SetRole("ses_c", "m1", "planner", false); err != nil {
-		t.Fatalf("SetRole: %v", err)
-	}
+	claimRoleAs(t, reg, "ses_c", "m1", "planner", roleClaimInstance)
 	if got := heldRoles(t, reg, "ses_c"); !slices.Equal(got, []string{"planner"}) {
 		t.Fatalf("a claim this registry wrote is not in its view as the write answers: %v", got)
 	}
-	if err := reg.Remove(context.Background(), "ses_c", []string{"notifications.role.planner"}); err != nil {
+	if _, err := reg.Remove(context.Background(), "ses_c", []string{"notifications.role.planner"}, releasedByItsProcess); err != nil {
 		t.Fatalf("release planner: %v", err)
 	}
 	if got := heldRoles(t, reg, "ses_c"); len(got) != 0 {
@@ -203,7 +201,7 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 func TestRolesHeldByRefusesWhenItsViewCannotAnswer(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -290,14 +288,15 @@ func restartRoleViewTimingOutAfter(t *testing.T, conn *natsgo.Conn, reg *Registr
 	reg.roleWatcher.Start()
 }
 
-// A role claim view whose first scan nats.go's idle timer ended holds only the claims that scan
-// delivered, so it is no answer: RolesHeldBy refuses it as not ready rather than report the holder
-// of a claim the scan did not deliver without its roles. The watcher scans the bucket again
-// (newRoleWatcher's kvwatch.WithRescan), and the view answers once that scan completes.
+// A role claim view whose first scan kvwatch's own idle wait ended (kvwatch.WithScanIdleTimeout)
+// holds only the claims that scan delivered, so it is no answer: RolesHeldBy refuses it as not
+// ready rather than report the holder of a claim the scan did not deliver without its roles. The
+// watcher reads the bucket again itself, a re-read of the timed-out scan (kvwatch's rereadDelay
+// after it), and the view answers once that read completes.
 func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -332,15 +331,15 @@ func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *tes
 
 // The listener's startup gate is this wait, so it decides whether GET /v1/sessions and
 // GET /v1/registry/<session_id> are served before the role claim view can answer. Readiness is no
-// gate for them: a first scan nats.go's idle timer ended releases it with the view short of the
-// bucket, and RolesHeldBy goes on refusing (ErrRoleViewNotReady) until the rescan completes, which
-// both routes answer a live client as the bus-unavailable 503 while the bus is healthy. So
-// WaitForCacheReady returns only once that view is complete, and RolesHeldBy answers the moment it
-// returns, with no retry and no poll.
+// gate for them: a first scan that its idle wait ended (kvwatch.ScanIdleTimeout) releases it with
+// the view short of the bucket, and RolesHeldBy goes on refusing (ErrRoleViewNotReady) until the
+// watcher's re-read completes, which both routes answer a live client as the bus-unavailable 503
+// while the bus is healthy. So WaitForCacheReady returns only once that view is complete, and
+// RolesHeldBy answers the moment it returns, with no retry and no poll.
 func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -388,7 +387,7 @@ func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -447,7 +446,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 		t.Fatalf("the new bucket's architect claim is at revision %d, the old one's at %d; the test needs the new one lower", newArchitect, oldArchitect)
 	}
 	putRoleClaim(t, recreated, "reviewer", "ses_holder")
-	if err := reg.Rewatch(conn); err != nil {
+	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	select {
@@ -511,7 +510,8 @@ func TestAClaimWhoseRequestEndsDuringItsCleanupSucceedsAndLogsNoFailure(t *testi
 	interests := reg.watcher.KV()
 	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(&endingGetKeyValue{KeyValue: kv, key: oldSession, end: cancel}, interests.WatchHandle(), interests.Streams()), interestCache{reg})
 
-	if _, err := reg.SetRoleWithPrevious(ctx, newSession, "example-host", role, "", false, nil); err != nil {
+	claim := RoleClaimRequest{SessionID: newSession, MachineID: "example-host", ClientInstanceID: roleClaimInstance, Role: role}
+	if _, err := reg.SetRoleWithPrevious(ctx, claim); err != nil {
 		t.Fatalf("a claim that landed returned %v when its request ended during the cleanup, want success", err)
 	}
 	assertRoleHolder(t, reg, role, newSession)
@@ -535,7 +535,7 @@ func TestAClaimWhoseRequestEndsDuringItsCleanupSucceedsAndLogsNoFailure(t *testi
 func TestAClaimWriteAnsweredAcrossARecreatedRoleBucketLeavesTheNewBucketsView(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

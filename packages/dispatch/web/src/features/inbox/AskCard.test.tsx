@@ -2,24 +2,36 @@ import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { act, render, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { installIntersectionObserver } from "../../__tests__/intersection-observer";
+import { graphNode } from "../../__tests__/graph-fixture";
+import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
-import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
+import type {
+  AnswerAskInput,
+  Ask,
+  AskAnswer,
+  AskRead,
+  Comment,
+  CreateCommentInput,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
+import { ThreadBody } from "./ThreadBody";
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
+let getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
 
 beforeEach(() => {
   whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
@@ -29,13 +41,17 @@ beforeEach(() => {
   });
   getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
-    node: { id: "ask-1", kind: "ask" },
+    node: graphNode({ id: "ask-1", kind: "ask" }),
   });
+  // Every card with an issue names who the ask reaches, which reads the issue's subscribers;
+  // nobody is subscribed here, so the card lists its followers alone.
+  getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
 });
 
 afterEach(() => {
   whoAmI.mockRestore();
   getReferences.mockRestore();
+  getIssueSubscribers.mockRestore();
   jest.useRealTimers();
 });
 
@@ -50,7 +66,12 @@ function answeredAsk(overrides: Partial<Ask> = {}): Ask {
   return {
     anchor: null,
     answer: firstAnswer,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-10-08T00:00:00Z",
     edited_at: null,
     id: "ask-1",
@@ -95,6 +116,7 @@ function renderCard(node: ReactNode) {
 }
 
 test("the answerer can change an answer and sees both answers immediately", async () => {
+  const user = userEvent.setup();
   const before = answeredAsk();
   const secondAnswer: AskAnswer = {
     at: "2026-10-08T02:00:00Z",
@@ -123,13 +145,13 @@ test("the answerer can change an answer and sees both answers immediately", asyn
   );
 
   try {
-    fireEvent.click(await view.findByRole("button", { name: "Change answer" }));
+    await user.click(await view.findByRole("button", { name: "Change answer" }));
     const ship = (await view.findByRole("radio", { name: "Ship" })) as HTMLInputElement;
     expect(ship.checked).toBe(true);
     expect((view.getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe("First note");
-    fireEvent.click(view.getByRole("radio", { name: "Hold" }));
-    fireEvent.change(view.getByLabelText("Your answer"), { target: { value: "" } });
-    fireEvent.click(view.getByRole("button", { name: "Save answer" }));
+    await user.click(view.getByRole("radio", { name: "Hold" }));
+    await user.clear(view.getByLabelText("Your answer"));
+    await user.click(view.getByRole("button", { name: "Save answer" }));
 
     await waitFor(() =>
       expect(sent).toEqual([
@@ -142,7 +164,7 @@ test("the answerer can change an answer and sees both answers immediately", asyn
     );
     await waitFor(() => expect(view.getByText("Show 1 earlier answer")).toBeTruthy());
     expect(threadReads).toBe(1);
-    fireEvent.click(view.getByText("Show 1 earlier answer"));
+    await user.click(view.getByText("Show 1 earlier answer"));
     expect(view.getByText("First note")).toBeTruthy();
     expect(
       within(view.getByTestId("ask-ask-1")).getAllByRole("listitem")[1]?.dataset.selected
@@ -164,7 +186,7 @@ test("Change answer is offered only to the person who gave a non-approval answer
   );
   try {
     await waitFor(() => expect(bob.view.getByText(/Answered by/)).toBeTruthy());
-    expect(bob.view.queryByRole("button", { name: "Change answer" })).toBeNull();
+    expect(bob.view.queryByRole("button", { name: "Change answer" })).not.toBeInTheDocument();
   } finally {
     bob.view.unmount();
   }
@@ -176,14 +198,18 @@ test("Change answer is offered only to the person who gave a non-approval answer
   const review = renderCard(<AskCard ask={approval} initialThread={thread(approval)} />);
   try {
     await waitFor(() => expect(review.view.getByText(/Answered by/)).toBeTruthy());
-    expect(review.view.queryByRole("button", { name: "Change answer" })).toBeNull();
+    expect(review.view.queryByRole("button", { name: "Change answer" })).not.toBeInTheDocument();
   } finally {
     review.view.unmount();
   }
 });
 
 test("a stale change says the answer changed", async () => {
+  const user = userEvent.setup();
   const before = answeredAsk();
+  // The refusal sends the card back to the server for the answer of record, which is the one it
+  // was already showing.
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(before));
   const { view } = renderCard(
     <AskCard
       answerAsk={async () => {
@@ -195,15 +221,17 @@ test("a stale change says the answer changed", async () => {
   );
 
   try {
-    fireEvent.click(await view.findByRole("button", { name: "Change answer" }));
-    fireEvent.click(view.getByRole("radio", { name: "Hold" }));
-    fireEvent.click(view.getByRole("button", { name: "Save answer" }));
+    await user.click(await view.findByRole("button", { name: "Change answer" }));
+    // "Hold" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await view.findByRole("radio", { name: "Hold" }));
+    await user.click(view.getByRole("button", { name: "Save answer" }));
     expect(
       await view.findByText("The answer changed since you opened it; here is the current one.")
     ).toBeTruthy();
-    expect(view.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    getAsk.mockRestore();
   }
 });
 
@@ -212,7 +240,10 @@ for (const [code, message] of [
   ["ASK_APPROVAL_REVIEW", "An approval is a review; record a new review on the document."],
 ] as const) {
   test(`a change refused ${code} closes the form and shows the recorded answer`, async () => {
+    const user = userEvent.setup();
     const before = answeredAsk();
+    // The refusal sends the card back to the server for the answer of record.
+    const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(before));
     const { view } = renderCard(
       <AskCard
         answerAsk={async () => {
@@ -223,16 +254,18 @@ for (const [code, message] of [
       />
     );
     try {
-      fireEvent.click(await view.findByRole("button", { name: "Change answer" }));
-      fireEvent.click(view.getByRole("radio", { name: "Hold" }));
-      fireEvent.click(view.getByRole("button", { name: "Save answer" }));
+      await user.click(await view.findByRole("button", { name: "Change answer" }));
+      // "Hold" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+      await user.click(await view.findByRole("radio", { name: "Hold" }));
+      await user.click(view.getByRole("button", { name: "Save answer" }));
       expect(await view.findByText(message)).toBeTruthy();
       // The refusal meets the same send again, so the form it was sent from closes.
-      expect(view.queryByRole("button", { name: "Save answer" })).toBeNull();
+      expect(view.queryByRole("button", { name: "Save answer" })).not.toBeInTheDocument();
       expect(view.getByText(/Answered by/)).toBeTruthy();
-      expect(view.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(view.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     } finally {
       view.unmount();
+      getAsk.mockRestore();
     }
   });
 }
@@ -242,8 +275,9 @@ test("mode change opens the seeded form only when the viewer can change the answ
   const editable = renderCard(<AskCard ask={mine} initialThread={thread(mine)} mode="change" />);
   try {
     expect(await editable.view.findByRole("button", { name: "Save answer" })).toBeTruthy();
-    expect(editable.view.queryByText(/Answered by/)).toBeNull();
-    const ship = editable.view.getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    expect(editable.view.queryByText(/Answered by/)).not.toBeInTheDocument();
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const ship = (await editable.view.findByRole("radio", { name: "Ship" })) as HTMLInputElement;
     expect(ship.checked).toBe(true);
   } finally {
     editable.view.unmount();
@@ -255,13 +289,14 @@ test("mode change opens the seeded form only when the viewer can change the answ
   );
   try {
     await waitFor(() => expect(readOnly.view.getByText(/Answered by/)).toBeTruthy());
-    expect(readOnly.view.queryByRole("button", { name: "Save answer" })).toBeNull();
+    expect(readOnly.view.queryByRole("button", { name: "Save answer" })).not.toBeInTheDocument();
   } finally {
     readOnly.view.unmount();
   }
 });
 
 test("a compact card's change shows the seeded note, so nothing is sent unseen", async () => {
+  const user = userEvent.setup();
   const mine = answeredAsk();
   const { view } = renderCard(
     <AskCard
@@ -273,7 +308,7 @@ test("a compact card's change shows the seeded note, so nothing is sent unseen",
     />
   );
   try {
-    fireEvent.click(await view.findByRole("button", { name: "Change answer" }));
+    await user.click(await view.findByRole("button", { name: "Change answer" }));
     const note = (await view.findByLabelText("Your answer")) as HTMLTextAreaElement;
     expect(note.value).toBe("First note");
     expect(view.getByRole("button", { name: "Save answer" })).toBeTruthy();
@@ -284,18 +319,19 @@ test("a compact card's change shows the seeded note, so nothing is sent unseen",
 });
 
 test("Change answer then Cancel leaves the recorded answer alone and no draft behind", async () => {
+  const user = userEvent.setup();
   const mine = answeredAsk();
   const { view } = renderCard(<AskCard ask={mine} initialThread={thread(mine)} />);
   const card = within(view.container);
   try {
-    fireEvent.click(await view.findByRole("button", { name: "Change answer" }));
+    await user.click(await view.findByRole("button", { name: "Change answer" }));
     expect((card.getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe("First note");
-    fireEvent.click(card.getByRole("button", { name: "Cancel" }));
+    await user.click(card.getByRole("button", { name: "Cancel" }));
 
     // The card is back to the recorded answer, and the reader's own answer is not handed back
     // to them as text no form will send.
     expect(await card.findByText(/Answered by/)).toBeTruthy();
-    expect(card.queryByTestId("ask-unsent-answer")).toBeNull();
+    expect(card.queryByTestId("ask-unsent-answer")).not.toBeInTheDocument();
     // Nor is any of it left in the draft every card for this ask reads, and the Inbox's reading
     // column holds the question in the column by (`pane-selection.ts`, `paneAsk`).
     expect(answerDraft(mine.id)).toBe("");
@@ -307,7 +343,6 @@ test("Change answer then Cancel leaves the recorded answer alone and no draft be
 function askReply(id: string, createdAt: string): Comment {
   return {
     anchor: null,
-    artifact_id: null,
     ask_id: "ask-1",
     author: { id: "session-1", kind: "session" },
     body: `Reply ${id}`,
@@ -328,11 +363,13 @@ function askReply(id: string, createdAt: string): Comment {
 /** An answered ask with two replies, unread for alice on CORE-1, rendered with time and the
  *  screen in the test's hands: the replies follow the first answer, or precede `answer` when one
  *  is given. */
-function renderUnreadAsk(props: {
+async function renderUnreadAsk(props: {
   markRead: boolean;
   thread: "inline" | "collapsed";
   answer?: AskAnswer;
 }) {
+  // A reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads in real time.
+  await warmMarkdownRenderer();
   jest.useFakeTimers();
   const screen = installIntersectionObserver();
   const mark = answerThreadReads().mockResolvedValue(undefined);
@@ -375,16 +412,12 @@ function renderUnreadAsk(props: {
 
 for (const shape of ["inline", "collapsed"] as const) {
   test(`with markRead, the ${shape} thread is marked read once its newest reply is on screen`, async () => {
-    const card = renderUnreadAsk({ markRead: true, thread: shape });
+    const card = await renderUnreadAsk({ markRead: true, thread: shape });
     try {
       const newest = (await card.view.findByText("Reply reply-2")).closest("li");
       if (newest === null) throw new Error("expected the newest reply's item");
       expect(card.screen.observed()).toEqual([newest]);
-      act(() => card.screen.show(newest));
-      act(() => {
-        jest.advanceTimersByTime(1_000);
-      });
-      for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+      await dwellOn(card.screen, newest);
       expect(card.mark.mock.calls).toEqual([
         ["ask-1", { read_through: "2026-10-08T04:00:00.5Z" }, keyedAttempt],
       ]);
@@ -394,7 +427,7 @@ for (const shape of ["inline", "collapsed"] as const) {
   });
 
   test(`without markRead, the ${shape} thread watches nothing`, async () => {
-    const card = renderUnreadAsk({ markRead: false, thread: shape });
+    const card = await renderUnreadAsk({ markRead: false, thread: shape });
     try {
       await card.view.findByText("Reply reply-2");
       expect(card.screen.observed()).toEqual([]);
@@ -414,16 +447,12 @@ test("an answer given after every reply is what the mark watches and reads throu
     text: "Wait for the fix.",
     user: "bob@example.com",
   };
-  const card = renderUnreadAsk({ answer, markRead: true, thread: "collapsed" });
+  const card = await renderUnreadAsk({ answer, markRead: true, thread: "collapsed" });
   try {
     const record = await card.view.findByTestId("ask-ask-1");
     await card.view.findByText("Reply reply-2");
     expect(card.screen.observed()).toEqual([record]);
-    act(() => card.screen.show(record));
-    act(() => {
-      jest.advanceTimersByTime(1_000);
-    });
-    for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+    await dwellOn(card.screen, record);
     expect(card.mark.mock.calls).toEqual([["ask-1", { read_through: answer.at }, keyedAttempt]]);
   } finally {
     card.cleanup();
@@ -448,6 +477,7 @@ function approvalAsk(approval: Partial<NonNullable<Ask["approval"]>> = {}): Ask 
     answer: null,
     approval: {
       artifact_id: "artifact-1",
+      documents: null,
       name: "spec.md",
       requested_version: 12,
       version: 12,
@@ -477,6 +507,10 @@ function mockVersions(versions: Record<number, string>) {
 // unmounts stays in the shared document; these tests read their own card alone (`within`).
 for (const variant of ["full", "compact"] as const) {
   test(`a ${variant} approval card names the earlier approval and diffs the two versions only when asked`, async () => {
+    // The question is read in the commit that mounts the card, which only a loaded engine draws
+    // (`MarkdownBody`): the first body of a file takes the asynchronous path.
+    await warmMarkdownRenderer();
+    const user = userEvent.setup();
     const ask = approvalAsk(earlierApproval);
     const getArtifactVersion = mockVersions({ 11: "Before\n", 12: "After\n" });
     const { view } = renderCard(
@@ -494,12 +528,12 @@ for (const variant of ["full", "compact"] as const) {
       expect(time?.getAttribute("datetime")).toBe("2026-10-05T14:30:00Z");
       expect(time?.getAttribute("title")).toBe("2026-10-05T14:30:00Z");
       expect(card.getByText("Approve spec.md (version 12)?")).toBeTruthy();
-      expect(card.queryByTestId("change-view")).toBeNull();
+      expect(card.queryByTestId("change-view")).not.toBeInTheDocument();
       expect(getArtifactVersion).not.toHaveBeenCalled();
 
       const show = card.getByRole("button", { name: "Show diff" });
-      expect(show.getAttribute("aria-expanded")).toBe("false");
-      fireEvent.click(show);
+      expect(show).toHaveAttribute("aria-expanded", "false");
+      await user.click(show);
       const diff = await card.findByTestId("change-view");
       expect(getArtifactVersion.mock.calls).toEqual([
         ["artifact-1", 11],
@@ -507,12 +541,12 @@ for (const variant of ["full", "compact"] as const) {
       ]);
       expect(diff.querySelector("del")?.textContent).toBe("Before");
       expect(diff.querySelector("ins")?.textContent).toBe("After");
-      expect(card.queryByRole("button", { name: "Show diff" })).toBeNull();
+      expect(card.queryByRole("button", { name: "Show diff" })).not.toBeInTheDocument();
 
       const hide = card.getByRole("button", { name: "Hide diff" });
-      expect(hide.getAttribute("aria-expanded")).toBe("true");
-      fireEvent.click(hide);
-      expect(card.queryByTestId("change-view")).toBeNull();
+      expect(hide).toHaveAttribute("aria-expanded", "true");
+      await user.click(hide);
+      expect(card.queryByTestId("change-view")).not.toBeInTheDocument();
       expect(card.getByRole("button", { name: "Show diff" })).toBeTruthy();
     } finally {
       view.unmount();
@@ -528,14 +562,15 @@ test("a first approval request shows no earlier approval and no diff control", a
   try {
     await card.findByRole("radio", { name: "Approve" });
     expect(card.getByText("Approval requested")).toBeTruthy();
-    expect(card.queryByText(/Approved at version/)).toBeNull();
-    expect(card.queryByRole("button", { name: "Show diff" })).toBeNull();
+    expect(card.queryByText(/Approved at version/)).not.toBeInTheDocument();
+    expect(card.queryByRole("button", { name: "Show diff" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
 });
 
 test("the diff cuts every decision block, so answers alone leave nothing changed", async () => {
+  const user = userEvent.setup();
   const ask = approvalAsk(earlierApproval);
   const getArtifactVersion = mockVersions({
     11: decisionBlockFixture("approved.md"),
@@ -544,10 +579,10 @@ test("the diff cuts every decision block, so answers alone leave nothing changed
   const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
   const card = within(view.container);
   try {
-    fireEvent.click(card.getByRole("button", { name: "Show diff" }));
+    await user.click(card.getByRole("button", { name: "Show diff" }));
     const diff = await card.findByTestId("change-view");
     expect(diff.querySelector("ins, del")).toBeNull();
-    expect(diff.textContent).toContain("The platform team asked for a rollback path.");
+    expect(diff).toHaveTextContent("The platform team asked for a rollback path.");
     expect(diff.textContent).not.toContain("ask{");
   } finally {
     view.unmount();
@@ -556,6 +591,7 @@ test("the diff cuts every decision block, so answers alone leave nothing changed
 });
 
 test("the diff keeps a paragraph changed beside the decision blocks", async () => {
+  const user = userEvent.setup();
   const ask = approvalAsk(earlierApproval);
   const getArtifactVersion = mockVersions({
     11: decisionBlockFixture("approved.md"),
@@ -564,7 +600,7 @@ test("the diff keeps a paragraph changed beside the decision blocks", async () =
   const { view } = renderCard(<AskCard ask={ask} initialThread={thread(ask)} />);
   const card = within(view.container);
   try {
-    fireEvent.click(card.getByRole("button", { name: "Show diff" }));
+    await user.click(card.getByRole("button", { name: "Show diff" }));
     const diff = await card.findByTestId("change-view");
     const changed = diff.querySelector('[data-change="changed"]');
     expect(changed?.querySelector("ins")?.textContent).toBe(" and a canary");
@@ -578,12 +614,15 @@ test("the diff keeps a paragraph changed beside the decision blocks", async () =
 });
 
 test("a question closed under the reader keeps their unsent answer, out of the form", async () => {
+  const user = userEvent.setup();
   const open = answeredAsk({ answer: null, state: "open" });
   const typed = "Only on a cold start, and only back to the last lease.";
   const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
   const card = within(view.container);
   try {
-    fireEvent.change(card.getByLabelText("Your answer"), { target: { value: typed } });
+    await user.clear(card.getByLabelText("Your answer"));
+    await user.click(card.getByLabelText("Your answer"));
+    await user.paste(typed);
 
     // The server withdraws the question while that answer is still a draft.
     act(() => {
@@ -610,11 +649,262 @@ test("a question closed under the reader keeps their unsent answer, out of the f
     await waitFor(() =>
       expect(card.getByTestId("ask-resolution-badge").textContent).toBe("Retracted")
     );
-    expect(card.queryByRole("button", { name: "Answer" })).toBeNull();
+    expect(card.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
     expect(view.container.querySelector("[data-ask-answer]")).toBeNull();
-    expect(card.getByTestId("ask-unsent-answer").textContent).toContain(typed);
+    expect(card.getByTestId("ask-unsent-answer")).toHaveTextContent(typed);
   } finally {
     view.unmount();
+  }
+});
+
+/** An ask resolved as `kind`, which a session did before anyone replied. */
+function resolvedAsk(kind: string, overrides: Partial<Ask> = {}): Ask {
+  return answeredAsk({
+    answer: null,
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-10-08T03:00:00Z",
+      kind,
+      reason: "Settled elsewhere.",
+    },
+    state: "resolved",
+    ...overrides,
+  });
+}
+
+/** A `createReply` that records what it was asked to post, and answers the comment posted. */
+function recordingReply(sent: [string, CreateCommentInput][]) {
+  return async (issueKey: string, input: CreateCommentInput): Promise<Comment> => {
+    sent.push([issueKey, input]);
+    return { ...askReply(`reply-${sent.length}`, "2026-10-08T04:00:00Z"), body: input.body ?? "" };
+  };
+}
+
+// The collapsed thread the Conversation and a decision block draw (`AskThreadDisclosure`) keeps
+// its Write a reply under a resolved ask, as under an answered one, before anyone has replied
+// too: however the question was settled, the conversation under it goes on.
+test("a collapsed thread under a resolved ask offers Write a reply, and its reply goes on that ask", async () => {
+  const user = userEvent.setup();
+  for (const kind of ["resolved", "retracted", "declined", "withdrawn"]) {
+    const resolved = resolvedAsk(kind);
+    const sent: [string, CreateCommentInput][] = [];
+    const { view } = renderCard(
+      <AskCard
+        ask={resolved}
+        createReply={recordingReply(sent)}
+        getAskThread={async () => thread(resolved)}
+        initialThread={thread(resolved)}
+        thread="collapsed"
+      />
+    );
+    const card = within(view.container);
+    try {
+      await user.click(await card.findByRole("button", { name: "Write a reply" }));
+      await user.click(card.getByRole("textbox", { name: "Reply" }));
+      await user.paste(`After the ${kind} ask.`);
+      await user.click(card.getByRole("button", { name: "Reply" }));
+      await waitFor(() =>
+        expect(sent).toEqual([["CORE-1", { ask_id: "ask-1", body: `After the ${kind} ask.` }]])
+      );
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
+// A reply being written belongs to the ask's thread, which a resolved ask keeps: the ask
+// resolving under the reader, and a card mounted for it since, leave the draft where it was,
+// and it is sent on that ask.
+test("a reply draft outlives its ask resolving and its card remounting, and goes on that ask", async () => {
+  const user = userEvent.setup();
+  const answered = answeredAsk();
+  const retracted = resolvedAsk("retracted", { answer: firstAnswer });
+  const typed = "One more thing before this closes.";
+  const sent: [string, CreateCommentInput][] = [];
+  const first = renderCard(
+    <AskCard ask={answered} createReply={recordingReply(sent)} initialThread={thread(answered)} />
+  );
+  try {
+    const card = within(first.view.container);
+    await user.click(await card.findByRole("textbox", { name: "Reply" }));
+    await user.paste(typed);
+
+    // Document settlement retracts the answered ask while the reply is still a draft.
+    act(() => {
+      first.queryClient.setQueryData<AskRead>(["ask-thread", answered.id], thread(retracted));
+    });
+    await waitFor(() =>
+      expect(card.getByTestId("ask-resolution-badge").textContent).toBe("Retracted")
+    );
+    expect(card.getByRole("textbox", { name: "Reply" })).toHaveValue(typed);
+  } finally {
+    first.view.unmount();
+  }
+
+  // A card mounted for the retracted ask since, as a margin tab switched back mounts one.
+  const again = renderCard(
+    <AskCard
+      ask={retracted}
+      createReply={recordingReply(sent)}
+      getAskThread={async () => thread(retracted)}
+      initialThread={thread(retracted)}
+    />
+  );
+  try {
+    const card = within(again.view.container);
+    expect(await card.findByRole("textbox", { name: "Reply" })).toHaveValue(typed);
+    await user.click(card.getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(sent).toEqual([["CORE-1", { ask_id: "ask-1", body: typed }]]));
+  } finally {
+    again.view.unmount();
+  }
+});
+
+// A reply typed under a settled ask that then opens again (a withdrawn ask whose issue is
+// reopened, a retracted question a document's settlement restores) has no composer left to sit
+// in, since an open ask takes none: each thread shows the text read-only where its composer
+// stood, so the reader can still copy it.
+for (const surface of ["inline", "collapsed"] as const) {
+  test(`a reply typed under a retracted ask that opens again stays on screen in the ${surface} thread`, async () => {
+    const user = userEvent.setup();
+    const retracted = resolvedAsk("retracted");
+    const reopened = answeredAsk({ answer: null, state: "open" });
+    const typed = "Before this is picked up again: the lease is the cause.";
+    const card = (ask: Ask) => (
+      <AskCard
+        ask={ask}
+        getAskThread={async () => thread(ask, [])}
+        initialThread={thread(ask, [])}
+        thread={surface}
+      />
+    );
+    const { queryClient, view } = renderCard(card(retracted));
+    const scope = within(view.container);
+    try {
+      if (surface === "collapsed") {
+        await user.click(await scope.findByRole("button", { name: "Write a reply" }));
+      }
+      await user.click(await scope.findByRole("textbox", { name: "Reply" }));
+      await user.paste(typed);
+
+      // The ask opens again: its thread and the list the card is drawn from both read it open.
+      act(() => {
+        queryClient.setQueryData<AskRead>(["ask-thread", retracted.id], thread(reopened, []));
+      });
+      view.rerender(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>{card(reopened)}</QueryClientProvider>
+        </MemoryRouter>
+      );
+      expect(await scope.findByLabelText("Your answer")).toBeInTheDocument();
+      expect(await scope.findByTestId("ask-unsent-reply")).toHaveTextContent(typed);
+      expect(scope.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+// Handing a question to somebody else is a move on a question still waiting for an answer, so
+// the control is part of an open card and of no record: an answered, a resolved or a withdrawn
+// question waits on nobody.
+test("the hand-on control is on an open question and on no closed one", async () => {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  try {
+    expect(
+      await within(view.container).findByLabelText("Hand this question to")
+    ).toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+
+  const closedBy = (kind: "resolved" | "withdrawn"): Ask =>
+    answeredAsk({
+      answer: null,
+      resolution: {
+        actor: { id: "session-1", kind: "session" },
+        at: "2026-10-08T03:00:00Z",
+        kind,
+        reason: "Settled elsewhere.",
+      },
+      state: "resolved",
+    });
+  for (const closed of [answeredAsk(), closedBy("resolved"), closedBy("withdrawn")]) {
+    const card = renderCard(<AskCard ask={closed} initialThread={thread(closed)} />);
+    try {
+      // The record the card draws instead of the open question, which is what carries the
+      // control: the open card's own article (`data-ask-card`) is not on screen at all.
+      await waitFor(() => expect(card.view.getByTestId(`ask-${closed.id}`)).toBeInTheDocument());
+      expect(card.view.container.querySelector("[data-ask-card]")).toBeNull();
+      expect(
+        within(card.view.container).queryByLabelText("Hand this question to")
+      ).not.toBeInTheDocument();
+    } finally {
+      card.view.unmount();
+    }
+  }
+});
+
+// A hand-on moves whom the ask waits on, and the Inbox's Reply-thread card reads that person
+// from the ask's own thread (`ThreadBody`, `askThreadQuery`), which is kept for the session and
+// never goes stale of itself: without this read its picker would show the person from before
+// the hand-on until the `ask.asked_of` event landed. Drawn through `ThreadBody`, because that
+// is what hands the thread's own ask to the card: a card draws the `ask` it is given while the
+// question is open (`useAskAnswerForm`), so one given a fixed ask could not show the write at
+// all and the read alone would prove nothing.
+test("a hand-on reads the ask's thread again, so a card reading that thread follows the write", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({ answer: null, state: "open" });
+  const handedOn: Ask = {
+    ...open,
+    asked_of: "bob",
+    asked_of_at: "2026-10-08T04:00:00Z",
+    asked_of_by: "alice",
+    waiting_on_person: "bob",
+  };
+  let threadReads = 0;
+  let handed = false;
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async () => {
+    threadReads += 1;
+    return thread(handed ? handedOn : open, []);
+  });
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(async () => {
+    handed = true;
+    return handedOn;
+  });
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  // The card marks the thread read off its owner's unread set, which holds nothing here.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-08T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [],
+    total: 0,
+  });
+  const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
+  const card = within(view.container);
+  try {
+    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
+    expect(control.value).toBe("");
+    // The people are read only once the reader reaches for the control (`AskHandOn`).
+    await user.click(control);
+    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    const before = threadReads;
+    await user.selectOptions(control, "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalled());
+    await waitFor(() => expect(threadReads).toBeGreaterThan(before));
+    // What that read is for: the person the write moved the ask to is on the screen.
+    await waitFor(() => expect(control.value).toBe("bob"));
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    handAskTo.mockRestore();
+    listMyReplies.mockRestore();
+    listUsers.mockRestore();
   }
 });
 

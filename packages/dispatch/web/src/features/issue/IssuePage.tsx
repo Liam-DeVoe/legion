@@ -30,12 +30,15 @@ import {
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { StepsTab } from "../steps/StepsTab";
 import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
+import { CollaboratorsTab } from "./CollaboratorsTab";
 import { DecisionsPanel } from "./DecisionsPanel";
 import { IssueHeader } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
+import { issuePriority } from "./issue-priority";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
@@ -147,12 +150,16 @@ const tabChords: readonly { keys: string; label: string; tab: IssueTab }[] = [
   // is free (`p` alone focuses the priority, which is a different scope of key).
   { keys: "t k", label: "Verification tab", tab: "verification" },
   { keys: "t p", label: "Plan tab", tab: "plan" },
+  // `t s` is the Spec, so Steps takes the next letter of its name.
+  { keys: "t e", label: "Steps tab", tab: "steps" },
   { keys: "t c", label: "Conversation tab", tab: "conversation" },
   { keys: "t h", label: "Children tab", tab: "children" },
   { keys: "t a", label: "Artifacts tab", tab: "artifacts" },
   // `t a` is Artifacts and `l` is the issue's label editor, so Activity takes `t v`.
   { keys: "t v", label: "Activity tab", tab: "activity" },
   { keys: "t d", label: "Decisions tab", tab: "decisions" },
+  // `s k p e c h a v d` are taken, so Collaborators, the last tab, takes `t o`.
+  { keys: "t o", label: "Collaborators tab", tab: "collaborators" },
 ];
 
 /** One of the two role-document tab panels, Verification and Plan. They differ only in the tab
@@ -256,7 +263,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // digits go through `useIssuePriority` on the route's key, the query key this page reads, so
   // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the
   // palette-only issue actions into this same scope; it never pushes one of its own.
-  const priorityWrite = useIssuePriority(route.key);
+  const priorityWrite = useIssuePriority(route.key, issuePriority(issue.data?.priority));
   useKeymapScope("issue");
   useKeymap("issue", [
     {
@@ -342,10 +349,12 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     activity: activeTab === "activity",
     artifacts: activeTab === "artifacts",
     children: activeTab === "children",
+    collaborators: activeTab === "collaborators",
     conversation: activeTab === "conversation",
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
     spec: activeTab === "spec",
+    steps: activeTab === "steps",
     verification: activeTab === "verification",
   }));
   if (!activatedTabs[activeTab]) {
@@ -433,7 +442,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       />
       <IssueTabs
         activeTab={activeTab}
-        artifactCount={issue.data.artifacts.length}
+        artifactCount={(issue.data.artifacts ?? []).length}
         issueKey={issueKey}
         onBeforeTabChange={(current) => {
           panelScroll.current[current] = window.scrollY;
@@ -506,6 +515,17 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         onVersionChange={selectDocumentVersion}
         tab="plan"
       />
+      <div
+        aria-hidden={activeTab !== "steps"}
+        aria-labelledby="issue-steps-tab"
+        hidden={activeTab !== "steps"}
+        id="issue-steps-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.steps ? (
+          <StepsTab active={activeTab === "steps"} issueKey={issueKey} />
+        ) : null}
+      </div>
       <div
         aria-hidden={activeTab !== "conversation"}
         aria-labelledby="issue-conversation-tab"
@@ -587,6 +607,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             issueKey={issueKey}
           />
         ) : null}
+      </div>
+      <div
+        aria-hidden={activeTab !== "collaborators"}
+        aria-labelledby="issue-collaborators-tab"
+        hidden={activeTab !== "collaborators"}
+        id="issue-collaborators-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.collaborators ? <CollaboratorsTab issueKey={issueKey} /> : null}
       </div>
     </section>
   );

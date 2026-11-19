@@ -1,14 +1,20 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, jest, test } from "bun:test";
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { act, render, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
   artifact,
   createQueryClient,
+  documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import type { Ask, AskRead, IssueReferenceSummary } from "../../api/types";
@@ -17,6 +23,20 @@ import { DocumentRuntime } from "./runtime";
 import { VersionView } from "./VersionView";
 
 answerTextReadsWithTheSeededText();
+
+/**
+ * The document surface's own shared reads (`documentSurfaceHandlers`), and the read this file
+ * adds to them: the two issues the text names are seeded in the query cache below, so the only
+ * key that reaches the summary route is one no issue holds.
+ */
+beforeEach(() => {
+  answerRequests(
+    http.get("/api/v1/issues/:key/summary", ({ params }) =>
+      Response.json({ code: "NOT_FOUND", error: `no issue ${String(params.key)}` }, { status: 404 })
+    ),
+    ...documentSurfaceHandlers()
+  );
+});
 
 /** The text every editor below holds: a bare issue key, a `#id` and a bare `dispatch://`
  *  reference, the three forms a document's own text writes. */
@@ -29,6 +49,10 @@ const AUTOLINK = "dispatch://CORE-1/artifact/design";
 const ask: Ask = {
   anchor: null,
   answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   author: { id: "alice", kind: "user" },
   block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
   block_id: "q2",
@@ -193,6 +217,7 @@ test("a #id the author left a hyphen on draws its title over the id alone", asyn
 });
 
 test("a key no issue holds and a #id no question declares are left as the author wrote them", async () => {
+  jest.useFakeTimers();
   await warmMarkdownRenderer();
   const queryClient = seededQueryClient();
   const { editors, sync, view } = renderProofDocument({ queryClient });
@@ -205,9 +230,10 @@ test("a key no issue holds and a #id no question declares are left as the author
       editors[0]?.references?.onKeys(["#q9", "CORE-404"]);
     });
 
-    await Bun.sleep(20);
+    await tick(20);
     expect(drawnTitles(editors[0]?.references)).toEqual({ "#q9": null, "CORE-404": null });
   } finally {
+    realClock();
     view.unmount();
   }
 });
@@ -251,6 +277,10 @@ function renderVersion(markdown: string = TEXT) {
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-09-09T00:00:00Z",
     markdown,
+    // The version page draws the server's reading of the stored text and parses nothing itself,
+    // so a version a test invents carries the reading the page's own engine makes of that text
+    // (`__tests__/display-trees`). `warmMarkdownRenderer` must have resolved first.
+    markdown_tree: displayTree(markdown),
     named: false,
     number: 1,
     summary: null,
@@ -263,7 +293,6 @@ function renderVersion(markdown: string = TEXT) {
           <VersionView
             artifactId="artifact-1"
             asks={[]}
-            blockSchema={fake.runtime.blockSchema}
             createdAt="2026-09-09T00:00:00Z"
             highlight={undefined}
             owner={undefined}
@@ -302,6 +331,7 @@ test("a past version is told to draw the same three titles over its own text", a
 });
 
 test("a past version is told to draw the title for a link whose text is its own address", async () => {
+  await warmMarkdownRenderer();
   const { editors, view } = renderVersion(`See [${AUTOLINK}](${AUTOLINK}) here.`);
 
   try {
@@ -324,6 +354,8 @@ test("a past version is told to draw the title for a link whose text is its own 
 });
 
 test("a click on a reference in a past version opens what it names", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
   const { editors, view } = renderVersion();
 
   try {
@@ -339,7 +371,7 @@ test("a click on a reference in a past version opens what it names", async () =>
     const anchor = root.querySelector("a");
     if (anchor === null) throw new Error("anchor missing");
 
-    fireEvent.click(anchor);
+    await user.click(anchor);
     expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-2");
   } finally {
     view.unmount();

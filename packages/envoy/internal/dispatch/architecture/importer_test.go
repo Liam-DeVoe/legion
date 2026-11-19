@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"reflect"
 	"sort"
@@ -25,12 +24,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // archRepo is the repository newImporterFixture's source of CORE reads.
@@ -74,22 +75,27 @@ func writeNoCommit(w http.ResponseWriter, r *http.Request) {
 // fakeSource is the GitHub App surface a sync walks: installation lookup,
 // token mint, branch commit, the architecture directory's subtree, and blob
 // reads. Each repository answers its own head, files and failures: archRepo,
-// the fixture's source, answers commit, files, branchMissing and treeFailure,
-// and every other repository answers its entry in repos (a repository in
-// neither has no installation, and its reads answer 404). branchMissing
-// answers the commits route as GitHub does for a branch that does not exist:
-// 422 (see writeNoCommit). files is keyed by the file name inside SourceDir;
-// the subtree sha is derived from the files, so identical files under a new
-// commit answer the same sha exactly like git would.
+// the fixture's source, answers commit, files, branchMissing, treeFailure,
+// treeStatus and blobStatus, and every other repository answers its entry in
+// repos (a repository in neither has no installation, and its reads answer
+// 404). branchMissing answers the commits route as GitHub does for a branch
+// that does not exist: 422 (see writeNoCommit). files is keyed by the file name
+// inside SourceDir; the subtree sha is derived from the files, so identical
+// files under a new commit answer the same sha exactly like git would.
+// installationStatus, when not zero, answers every installation lookup with
+// that status and GitHub's error body instead of the installation.
 type fakeSource struct {
-	t              *testing.T
-	installationID int64
-	contents       string
-	commit         string
-	files          map[string]string
-	branchMissing  bool
-	treeFailure    bool
-	repos          map[string]*fakeRepo
+	t                  *testing.T
+	installationID     int64
+	installationStatus int
+	contents           string
+	commit             string
+	files              map[string]string
+	branchMissing      bool
+	treeFailure        bool
+	treeStatus         int
+	blobStatus         int
+	repos              map[string]*fakeRepo
 	// treeShaFollowsCommit makes every commit answer a distinct subtree sha
 	// even for identical files, so a test can force the full projection path.
 	treeShaFollowsCommit bool
@@ -174,6 +180,12 @@ type fakeRepo struct {
 	files         map[string]string
 	branchMissing bool
 	treeFailure   bool
+	// treeStatus and blobStatus, when not zero, answer the subtree read and
+	// every blob read with that status and GitHub's error body: a 404 subtree
+	// is a commit without the directory (Dir reads it as empty), and a 422 is
+	// an answer the client leaves to its caller.
+	treeStatus int
+	blobStatus int
 	// holdBlobs holds this repository's blob reads until the test releases
 	// them, so one source can be the slow one while another answers at once.
 	holdBlobs bool
@@ -185,7 +197,8 @@ func (f *fakeSource) repo(r *http.Request) (fakeRepo, bool) {
 	if name == archRepo {
 		return fakeRepo{
 			commit: f.commit, files: f.files, branchMissing: f.branchMissing,
-			treeFailure: f.treeFailure, holdBlobs: f.holdArchBlobs,
+			treeFailure: f.treeFailure, treeStatus: f.treeStatus, blobStatus: f.blobStatus,
+			holdBlobs: f.holdArchBlobs,
 		}, true
 	}
 	repo, ok := f.repos[name]
@@ -217,6 +230,10 @@ func (f *fakeSource) handler() http.Handler {
 		f.mu.Unlock()
 		if f.holdInstallations {
 			f.installations.wait(f.t, r)
+		}
+		if f.installationStatus != 0 {
+			writeStatus(w, f.installationStatus)
+			return
 		}
 		if _, ok := f.repo(r); !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -274,6 +291,10 @@ func (f *fakeSource) handler() http.Handler {
 			fmt.Fprint(w, `{"message":"upstream is sad"}`)
 			return
 		}
+		if repo.treeStatus != 0 {
+			writeStatus(w, repo.treeStatus)
+			return
+		}
 		names := make([]string, 0, len(repo.files))
 		for name := range repo.files {
 			names = append(names, name)
@@ -304,6 +325,10 @@ func (f *fakeSource) handler() http.Handler {
 		if repo.holdBlobs {
 			f.blobs.wait(f.t, r)
 		}
+		if repo.blobStatus != 0 {
+			writeStatus(w, repo.blobStatus)
+			return
+		}
 		content, ok := repo.files[strings.TrimPrefix(r.PathValue("sha"), "blob-")]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -318,6 +343,13 @@ func (f *fakeSource) handler() http.Handler {
 	return mux
 }
 
+// writeStatus answers status with GitHub's JSON error body for it.
+func writeStatus(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, `{"message":%q,"status":"%d"}`, http.StatusText(status), status)
+}
+
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // newGitHubClient serves handler as the GitHub API and returns an App client
@@ -329,9 +361,8 @@ func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, server.URL)
+	base := githubtest.Server(t, githubtest.Spec{Handle: handler.ServeHTTP})
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, base)
 	if err != nil {
 		t.Fatalf("new github client: %v", err)
 	}
@@ -354,7 +385,7 @@ func newImporterFixture(t *testing.T, fake *fakeSource) (*Importer, *store.Store
 
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(),
-		`insert into projects (key, name) values ('CORE', 'Core')`); err != nil {
+		`insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice')`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -849,7 +880,7 @@ func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}');
 	`); err != nil {
@@ -917,7 +948,7 @@ func TestSyncAbortsWhenTheSourceMovedMidFetch(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database = storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}');
 	`); err != nil {
@@ -1054,7 +1085,7 @@ func TestRecordedFailureIsCapped(t *testing.T) {
 	for n := range members {
 		files[fmt.Sprintf("c%d.md", n)] = []byte(fmt.Sprintf("---\nparent: c%d\n---\n", (n+1)%members))
 	}
-	_, err := Parse(files)
+	_, err := notes.Parse(files)
 	if err == nil || len(err.Error()) <= maxFailureMessage {
 		t.Fatalf("a %d-member cycle produced err=%v; want a problem longer than the cap", members, err)
 	}
@@ -1177,7 +1208,7 @@ func TestListEnabledNamesEveryEnabledSource(t *testing.T) {
 	ctx := context.Background()
 	importer, database := newImporterFixture(t, &fakeSource{t: t, files: validFiles()})
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('OPS', 'Operations'), ('OLD', 'Retired');
+		insert into projects (key, name, default_assignee) values ('OPS', 'Operations', 'alice'), ('OLD', 'Retired', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('OPS', 'legion/ops', 'main', 1, '{"kind":"user","id":"alice"}'),
 		       ('OLD', 'legion/old', 'main', 1, '{"kind":"user","id":"alice"}'),
@@ -1481,7 +1512,7 @@ func TestSyncAcrossProcessesEmitsOneEventForOneHead(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}');
 	`); err != nil {
@@ -1823,7 +1854,7 @@ func TestACollisionRacedAcrossProcessesFailsOneSourceByName(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by) values
 			('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}'),
 			('CORE', 'acme/infra', 'main', 11, '{"kind":"user","id":"alice"}');
@@ -1912,7 +1943,7 @@ func TestTheLegacySourceResyncsThroughTheUnchangedHeadShortcut(t *testing.T) {
 	database := storetest.Open(t)
 	// One multi-statement Exec takes no parameters, so the commit is spelled into the text.
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by, last_sync_at, last_commit, last_tree_sha)
 			values ('CORE', 0, 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}', now() - interval '1 hour', '`+commitOne+`', 'tree-legacy');
 		insert into architecture_snapshots (id, project_key, commit, files) values (700, 'CORE', '`+commitOne+`', '{}');
@@ -1964,7 +1995,7 @@ func TestSyncProjectLeavesOutASourceDeletedMidCall(t *testing.T) {
 	client := newGitHubClient(t, mux)
 	database = storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core'), ('BARE', 'Bare');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice'), ('BARE', 'Bare', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by) values
 			('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}'),
 			('CORE', 'acme/infra', 'main', 11, '{"kind":"user","id":"alice"}');
@@ -1985,20 +2016,23 @@ func TestSyncProjectLeavesOutASourceDeletedMidCall(t *testing.T) {
 // movingBranch is archRepo's main branch as a GitHub the test pushes to while a sync is in
 // flight: the head is whatever the test last moved it to, each commit answers its own files
 // (the subtree sha derived from them, the blob shas naming their commit), and one read can be
-// held — the next head lookup, answering the head as it stood when the lookup arrived, or every
-// blob read of one commit — until the test releases it, so another process's sync lands while
-// the held one is mid-fetch.
+// held — the next head lookup, answering the head as it stood when the lookup arrived or the
+// status the test named, or every blob read of one commit — until the test releases it, so
+// another process's sync lands while the held one is mid-fetch.
 type movingBranch struct {
 	t *testing.T
 	// hold is the one read held open at a time, with the channels and the cleanup that releases
 	// them (releasableHold).
 	hold releasableHold
 
-	mu          sync.Mutex
-	head        string
-	commits     map[string]map[string]string
-	holdHead    bool
-	holdBlobsOf string
+	mu       sync.Mutex
+	head     string
+	commits  map[string]map[string]string
+	holdHead bool
+	// heldHeadStatus, when not zero, is what the held head lookup answers instead of the head:
+	// that status with GitHub's error body for it (writeStatus).
+	heldHeadStatus int
+	holdBlobsOf    string
 }
 
 func newMovingBranch(t *testing.T, head string, commits map[string]map[string]string) *movingBranch {
@@ -2017,6 +2051,15 @@ func (b *movingBranch) holdNextHeadLookup() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.holdHead = true
+}
+
+// holdNextHeadLookupAnswering is holdNextHeadLookup for a lookup GitHub then answers status
+// rather than the head.
+func (b *movingBranch) holdNextHeadLookupAnswering(status int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.holdHead = true
+	b.heldHeadStatus = status
 }
 
 func (b *movingBranch) holdBlobs(commit string) {
@@ -2042,11 +2085,15 @@ func (b *movingBranch) handler() http.Handler {
 	mux.Handle("/", (&fakeSource{t: b.t, installationID: 11}).handler())
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{branch}", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
-		head, hold := b.head, b.holdHead
-		b.holdHead = false
+		head, hold, status := b.head, b.holdHead, b.heldHeadStatus
+		b.holdHead, b.heldHeadStatus = false, 0
 		b.mu.Unlock()
 		if hold {
 			b.wait(r)
+		}
+		if status != 0 {
+			writeStatus(w, status)
+			return
 		}
 		writeCommit(w, r, head)
 	})
@@ -2104,7 +2151,7 @@ func twoProcesses(t *testing.T, branch *movingBranch) (a, b *Importer, database 
 	client := newGitHubClient(t, branch.handler())
 	database = storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 		values ('CORE', 'legion/arch', 'main', 11, '{"kind":"user","id":"alice"}');
 	`); err != nil {

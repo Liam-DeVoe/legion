@@ -1,17 +1,25 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue, listIssues, patchIssue, putIssueState } from "./api";
 import { pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
-import { resetDatabase } from "./seed";
+import {
+  expectReadWhileHeld,
+  holdIssuePatches,
+  lastEventSeq,
+  listRead,
+  logReads,
+  PICK_HOLD_MS,
+  pagePicker,
+  readAnsweredSince,
+  savesEnded,
+  storedValues,
+  watchShown,
+} from "./pick-writes";
+import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The visible priority tag inside a card or row - the `<select>` options carry the same text. */
 function priorityBadge(scope: Locator, label: string): Locator {
@@ -80,6 +88,7 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
   // `hover` presses only once the card holds still and is the element under the pointer; a bare
   // `mouse.move` to a measured box would press on whatever is painted there.
   await source.hover();
+  // The hover above waited for the card to be visible and still, so its box is there.
   const sourceBox = await source.boundingBox();
   if (sourceBox === null) {
     throw new Error("drag source is not visible");
@@ -87,6 +96,7 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
   await page.mouse.down();
   await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 10, sourceBox.y + sourceBox.height / 2);
   await target.scrollIntoViewIfNeeded();
+  // The scroll above waited for the target to be visible and still, so its box is there.
   const targetBox = await target.boundingBox();
   if (targetBox === null) {
     throw new Error("drag target is not visible");
@@ -102,7 +112,8 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
 
 // SLOW(>=2s): four whole-card drags, each paying dnd-kit's own 200 ms landing, plus the board's
 // two fresh renders.
-test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle", async ({
+// @pr: Create through answer to close: the board is where a person moves an issue's status, and the drag has to order List and Board alike.
+test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -149,9 +160,8 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await page.reload();
     await expect(triage.getByRole("article")).toHaveText([/Third card/, /Second card/]);
     await page.getByRole("button", { name: "List" }).click();
-    await expect(
-      page.getByRole("list", { name: "Triage issues" }).getByRole("listitem")
-    ).toHaveText([/Third card/, /Second card/]);
+    await page.getByRole("button", { name: "Triage 2", exact: true }).click();
+    await expect(page.locator("[data-issue-row]")).toHaveText([/Third card/, /Second card/]);
     expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
       third.key,
       second.key,
@@ -467,7 +477,7 @@ test("board cards carry the unread dot the project list shows", async ({ browser
   const page = await context.newPage();
   try {
     await page.goto("/projects/CORE");
-    const unreadRow = page.getByRole("listitem", { name: `${unread.key} Unread card` });
+    const unreadRow = page.getByRole("row", { name: `${unread.key} Unread card`, exact: true });
     await expect(unreadRow.locator('[title="Unread"]')).toHaveCount(1);
     await page.getByRole("button", { name: "Board" }).click();
     const unreadCard = page.getByRole("article", { name: `${unread.key} Unread card` });
@@ -492,7 +502,7 @@ test("project list rows and board cards set an issue's priority in place", async
   try {
     const page = await context.newPage();
     await page.goto("/projects/CORE");
-    const listRow = page.getByRole("listitem", { name: `${issue.key} Prioritized card` });
+    const listRow = page.getByRole("row", { name: `${issue.key} Prioritized card`, exact: true });
     const listControl = listRow.getByLabel(`Priority of ${issue.key}`);
     await expect(priorityBadge(listRow, "P1")).toBeVisible();
     // The badge stays small; the tap target around it is 32 px from md.
@@ -712,6 +722,8 @@ async function scrollerAtRest(scroller: Locator): Promise<void> {
 
 /** Puts the `index`-th column's start edge at the scroller's start and waits for the scroll to end. */
 async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
+  await scrollerAtRest(scroller);
+  // The scroller came to rest above, so the offsets read here are the ones it holds still at.
   const target = await scroller.evaluate((element, index) => {
     const section = element.querySelectorAll("section")[index];
     if (section === undefined) {
@@ -734,10 +746,9 @@ async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
 
 // SLOW(>=2s): a real finger: per-frame touch steps, two snap-scroll flings, the sensor's own
 // 150 ms activation twice over, an issue opened and left, and a carried card.
-test("on the phone a finger drives the board: hold lifts, tap opens, swipes scroll and snap @phone", async ({
+test("on the phone a finger drives the board: hold lifts, tap opens, swipes scroll and snap @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "touch gestures exercise the phone project");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const cards = [];
   for (const title of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"]) {
@@ -768,6 +779,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // K5: a horizontal swipe lands on a column or rail edge (snap-x snap-mandatory).
     const start = await snapOffsets(scroller);
     expect(start.scrollLeft).toBe(0);
+    await expect(scroller).toBeVisible();
+    // The wait above drew the scroller, and a drawn element has a box, so the box is there.
     const box = await scroller.boundingBox();
     if (box === null) {
       throw new Error("board scroller is not visible");
@@ -850,6 +863,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     const movePatch = patchOf(page, bravo.key);
     const finger = await pressFinger(page, from);
     await expect(bravoCard).toHaveClass(/opacity-50/);
+    await expect(scroller).toBeVisible();
+    // The wait above drew the scroller, and a drawn element has a box, so the box is there.
     const scrollerBox = await scroller.boundingBox();
     if (scrollerBox === null) {
       throw new Error("board scroller is not visible");
@@ -868,6 +883,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     const drop = scrollerBox.x + scrollerBox.width / 2;
     await finger.moveTo({ x: drop, y: from.y }, 1);
     await scrollerAtRest(scroller);
+    // The scroller came to rest above, so the column's box read now is where the drop lands.
     const landing = await inProgress.boundingBox();
     if (landing === null || landing.x > drop - 40 || landing.x + landing.width < drop + 40) {
       throw new Error(
@@ -891,7 +907,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
   }
 });
 
-test("one URL-backed filter strip drives List and Board alike and survives a reload", async ({
+test("URL-backed labels drive the List table and Board strip and survive a reload", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -905,10 +921,9 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
   try {
     await page.goto("/projects/CORE");
     await expect(page.getByText("Plain card")).toBeVisible();
-    // Apply the label from the List's strip's Labels multi-select: the filter lands in the URL.
-    await page.getByRole("button", { name: "Filters · 0 active" }).click();
+    // Pick a label from the table header; the Board reads the same label parameter.
     await pickFilterOption(page, "Labels", "frontend");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=frontend$/);
+    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
     await expect(page.getByText("Labelled card")).toBeVisible();
     await expect(page.getByText("Plain card")).toBeHidden();
 
@@ -916,7 +931,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
     await page.getByRole("button", { name: "Board" }).click();
     const board = page.getByRole("region", { name: "Project board" });
     await expect(board.getByRole("article")).toHaveText([/Labelled card/]);
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=frontend$/);
+    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
 
     // A reload keeps the filter, on the Board.
     await page.reload();
@@ -926,7 +941,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
     // Removing the chip on the Board shows every card again.
     await page.getByRole("button", { name: "Remove Label: frontend filter" }).click();
     await expect(board.getByRole("article")).toHaveCount(3);
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).not.toHaveURL(/[?&]label=/);
   } finally {
     await context.close();
   }
@@ -934,8 +949,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
 
 test("a filtered drag names the visible neighbours and the hidden card interleaves without error", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the mouse drag exercises a desktop viewport");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   // Todo ranks Alpha < Bravo < Charlie < Delta (creation order); the filter hides Bravo -
   // every other Todo card carries the label.
@@ -1074,10 +1088,9 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
 
 // The board's own toggles are controls a finger presses, so on a phone each holds the 44 px
 // touch target; what the toggles do is the two walks above, which assert it at any width.
-test("the board's view, lanes and edge toggles keep touch-sized targets @phone", async ({
+test("the board's view, lanes and edge toggles keep touch-sized targets @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the 44 px touch rule applies below 1280 px");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Toggle card" });
 
@@ -1091,6 +1104,224 @@ test("the board's view, lanes and edge toggles keep touch-sized targets @phone",
     for (const name of ["Show lanes", "Show Icebox & Done"]) {
       await expect(page.getByRole("button", { name })).toHaveCSS("min-height", "44px");
     }
+  } finally {
+    await context.close();
+  }
+});
+
+// The rows of dispatch://INFRA-299 on the board: while a pick is live - held by Playwright's
+// route control at least `PICK_HOLD_MS` (`holdIssuePatches`) - the card shows it over every
+// answer of the project's list, whose read a rename of another issue starts (every event of an
+// issue reads its project's list again, `api/event-refresh.ts`), and after the picker that made
+// it has left the screen. Each row records every value the card's picker shows, at every
+// animation frame (`watchShown`), from the pick until the saves end.
+
+/** A project with an issue at P3 to pick on and another issue whose rename reads the list. */
+async function boardWithIssueAtP3(): Promise<{ key: string; other: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  await Promise.all([
+    patchIssue(issue.key, { priority: 3, status: "todo" }),
+    patchIssue(other.key, { status: "todo" }),
+  ]);
+  return { key: issue.key, other: other.key };
+}
+
+/** The project's issues as the Board view, read from the server. */
+async function openBoard(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Board" }).click();
+  await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+}
+
+// SLOW(>=2s): a save held three seconds while the board reads its list again.
+test("picker keeps a pick on screen: the priority on the project board, over a list read that answers while its save is out", async ({
+  browser,
+}) => {
+  const { key, other } = await boardWithIssueAtP3();
+  const renamed = "Another issue, renamed while a save is out";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`);
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, listRead("project", "CORE"));
+    await page.goto("/projects/CORE");
+    await openBoard(page);
+    const picker = page.getByRole("combobox", { name: `Priority of ${key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of another issue, straight to the server: its live event has the board read the
+    // project's list again, and the answer, carrying P3, lands while the pick's save is held.
+    const renamedAt = Date.now();
+    await patchIssue(other, { title: renamed });
+    await expect(page.getByRole("article", { name: `${other} ${renamed}` })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    expect(shown.values.slice(fromPick), "every value the card showed from the pick on").toEqual([
+      "1",
+    ]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1 });
+    await expect(picker).toHaveValue("1");
+  } finally {
+    await context.close();
+  }
+});
+
+// The board split by priority: with every save of the issue held at least `PICK_HOLD_MS`, a pick
+// on a card and then two drags of it, each to another priority lane. The row sends no write of
+// its own straight to the server: the project's list read waits for the board's moves
+// (`boardMovesSettled`), so no answer of it lands while they are out.
+// SLOW(>=2s): three saves each held three seconds, two drags across lanes, dnd-kit's landings and
+// a reload.
+test("picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane", async ({
+  browser,
+}, testInfo) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const anchor = await createIssue({ project: "CORE", title: "P0 card" });
+  const issue = await createIssue({ project: "CORE", title: "Picked card" });
+  await Promise.all([
+    patchIssue(anchor.key, { priority: 0, status: "todo" }),
+    patchIssue(issue.key, { priority: 3, status: "todo" }),
+  ]);
+  const seq = await lastEventSeq(issue.key);
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1920, height: 900 });
+  try {
+    const shown = await watchShown(page, `Priority of ${issue.key}`);
+    const held = await holdIssuePatches(page, issue.key);
+    await page.goto("/projects/CORE");
+    await openBoard(page);
+    await page.getByRole("button", { name: "Show lanes" }).click();
+    const card = page.getByRole("article", { name: `${issue.key} Picked card` });
+    const picker = card.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    const p1Lane = page.getByRole("region", { name: "P1 lane" });
+    await expect(p1Lane.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+
+    // The pick is still out when the card is dragged into the P0 lane: the move joins the
+    // issue's line behind it, and the server will store the move's priority after the pick's.
+    const p0Todo = page.getByRole("region", { name: "P0 lane" }).getByRole("region", {
+      name: "Todo",
+    });
+    await mouseDrag(page, card, p0Todo.getByRole("article").first());
+    await expect.poll(() => shown.values.at(-1)).toBe("0");
+    const fromDrop = shown.values.length - 1;
+    await expect(p0Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    // A second drag, into the P2 lane, while the pick and the first drag are both out: the newer
+    // drag is the card's lane from the moment it is made, although its save waits for the first
+    // drag's answer before it goes out.
+    const p2Todo = page.getByRole("region", { name: "P2 lane" }).getByRole("region", {
+      name: "Todo",
+    });
+    await mouseDrag(page, card, p2Todo);
+    await expect.poll(() => shown.values.at(-1)).toBe("2");
+    const fromSecondDrop = shown.values.length - 1;
+    await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    // Every save of the issue - the pick's and each drag's - was held at least `PICK_HOLD_MS`.
+    const holds = held.sent.map((patch) => ({
+      body: patch.body,
+      heldMs: (patch.endedAt ?? Number.NaN) - patch.arrivedAt,
+    }));
+    console.log(`PICK-HOLDS [${testInfo.project.name}] ${JSON.stringify(holds)}`);
+    expect(holds.length, `the pick's save and each drag's: ${JSON.stringify(holds)}`).toBe(3);
+    expect(
+      holds.every((hold) => hold.heldMs >= PICK_HOLD_MS),
+      `every save of the issue was held at least ${PICK_HOLD_MS} ms: ${JSON.stringify(holds)}`
+    ).toBe(true);
+
+    expect(
+      shown.values.slice(fromPick, fromDrop).some((value) => value.split("|").includes("3")),
+      `every value the card showed from the pick to the first drop: ${JSON.stringify(shown.values.slice(fromPick, fromDrop))}`
+    ).toBe(false);
+    expect(
+      shown.values.slice(fromDrop, fromSecondDrop),
+      "every value the card showed from the first drop to the second"
+    ).toEqual(["0"]);
+    expect(
+      shown.values.slice(fromSecondDrop),
+      "every value the card showed from the second drop on"
+    ).toEqual(["2"]);
+    await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    expect(await storedValues(issue.key, "priority", seq)).toEqual([1, 0, 2]);
+    expect(await getIssue(issue.key)).toMatchObject({ priority: 2 });
+    // A fresh read of the board, once every save has ended: the card is in the P2 lane.
+    await page.reload();
+    await expect(p2Todo.getByRole("article", { name: `${issue.key} Picked card` })).toBeVisible();
+    await expect(picker).toHaveValue("2");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a save held three seconds while the project's board is opened and read, and read
+// again for a rename of another issue.
+test("picker keeps a pick on screen: a pick made on the issue page shows on the board opened while its save is out", async ({
+  browser,
+}) => {
+  const { key, other } = await boardWithIssueAtP3();
+  const renamed = "Another issue, renamed while the board shows the pick";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`);
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, listRead("project", "CORE"));
+    await page.goto(`/issues/${key}`);
+    const picker = pagePicker(page, `Priority of ${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // The picker leaves the screen with its save still out, and the project's list is read
+    // from the server, which still holds P3.
+    const leftAt = Date.now();
+    await navigateInApp(page, "/projects/CORE");
+    await openBoard(page);
+    const card = page.getByRole("article", { name: `${key} Priority under a held save` });
+    await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
+    await expect.poll(() => reads.some((read) => read.answeredAt !== undefined)).toBe(true);
+    // A rename of another issue of the project, straight to the server, with the save still
+    // held: its live event has the board read the project's list again, and the answer, carrying
+    // P3, lands while the save is out.
+    const renamedAt = Date.now();
+    await patchIssue(other, { title: renamed });
+    await expect(page.getByRole("article", { name: `${other} ${renamed}` })).toBeVisible();
+    await expect.poll(() => readAnsweredSince(reads, renamedAt)).toBe(true);
+    await nextFrames(page);
+    await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, leftAt);
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    // The issue page's picker, then the table's row and the board's card, with no picker drawn
+    // between them (`(none)`): each shows the pick.
+    expect(
+      [...new Set(shown.values.slice(fromPick).filter((value) => value !== "(none)"))],
+      `every value shown from the pick on: ${JSON.stringify(shown.values.slice(fromPick))}`
+    ).toEqual(["1"]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1 });
+    await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");
   } finally {
     await context.close();
   }

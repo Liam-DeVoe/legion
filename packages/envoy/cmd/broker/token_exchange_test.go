@@ -9,6 +9,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
@@ -18,12 +20,20 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
@@ -38,15 +48,24 @@ const (
 	// with the project and the person its entry gives it; listedAccount is listed too, for another
 	// project and another person; otherAccount is listed nowhere; apiAccount is the listed caller
 	// of the introspection route, BROKER_API_ACCOUNTS' own; registrarAccount is the deployment's
-	// own daemon, which BROKER_SERVICE_LOGINS lets log in as legion-daemon and which registers the
-	// pods it starts under their session names.
+	// own daemon, which BROKER_SERVICE_LOGINS lets log in as registrarService, which
+	// BROKER_POD_REGISTRARS lists as the registrar of podAccount's and listedAccount's pods, and
+	// which registers the pods it starts under their session names.
 	podAccount       = "system:serviceaccount:example-ns:example-worker"
 	listedAccount    = "system:serviceaccount:other-ns:example-worker"
 	otherAccount     = "system:serviceaccount:example-ns:example-other"
 	apiAccount       = "system:serviceaccount:example-ns:example-dispatch"
 	registrarAccount = "system:serviceaccount:example-ns:example-daemon"
+	registrarService = "legion-daemon"
 	person           = "ada@example.com"
 	project          = "ACME"
+	// readerAccount is the account BROKER_EXCHANGE_READ_ACCOUNTS lists here: its pods are minted
+	// a token that only reads, naming readerService and the session readerSession the entry
+	// fixes, and readerPodUID is the pod of it this test drives.
+	readerAccount = "system:serviceaccount:example-ns:example-reader"
+	readerService = "example-reader"
+	readerSession = "example-reader-session"
+	readerPodUID  = "pod-uid-reader"
 	// enrolmentAudience is what a pod's enrolment token and a listed caller's own token carry;
 	// exchangeAudience is what a token presented to the exchange must carry, and workflowAudience
 	// what a GitHub workflow run's would. A token minted for one is not spendable at another.
@@ -151,15 +170,19 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 	t.Run("the real binary boots on a fresh schema with its token exchange on", func(t *testing.T) {
 		// The binary logs the state of its exchange after the bind line startBroker synchronises
 		// on, so the boot is read once that line has arrived.
-		boot := broker.Await(t, "token exchange")
+		broker.AwaitRecord(t, "token exchange", nil)
+		boot := broker.Log()
 		t.Logf("the broker's own boot lines:\n%s", boot)
 		requireHealthy(t, addr)
-		for _, want := range []string{
-			"broker listening addr=" + addr,
-			"token exchange state=on kubernetes=true github=true accounts=2",
+		for _, want := range []struct {
+			message string
+			fields  map[string]any
+		}{
+			{"broker listening", map[string]any{"addr": addr}},
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1}},
 		} {
-			if !strings.Contains(boot, want) {
-				t.Fatalf("the boot log carries no %q; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers and the two listed accounts:\n%s", want, boot)
+			if len(recordsWith(boot, want.message, want.fields)) == 0 {
+				t.Fatalf("the boot log has no %q line carrying %v; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers, the two listed accounts and the one read entry:\n%s", want.message, want.fields, boot)
 			}
 		}
 	})
@@ -198,8 +221,8 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 		}{
 			{"session", body["session"], heldSession, "the session the token's writes are recorded as"},
 			{"person", body["person"], person, "the person the entry gives that account"},
-			{"project", body["project"], project, "the project the entry gives that account"},
-			{"project_scope", body["project_scope"], oauthwire.ProjectScopeNamed, "that the project is the one named project it may write"},
+			{"projects", fmt.Sprint(body["projects"]), "[" + project + "]", "the one project the entry gives that account"},
+			{"project_scope", body["project_scope"], oauthwire.ProjectScopeNamed, "that the projects are the one its entry names"},
 			{"client_id", body["client_id"], oauthwire.ExchangeClientID, "the client the exchange issued it to"},
 			{"jkt", body["jkt"], jkt, "the thumbprint of this test's own key, which is what makes a stolen token useless"},
 		} {
@@ -422,6 +445,297 @@ func TestAPodWritesOnlyUnderASessionRegisteredForIt(t *testing.T) {
 	})
 }
 
+// pairedPodAccount is the account a deployment moves podAccount's pods to: the rows that pair the
+// two (BROKER_SESSION_ACCOUNT_PAIRS) list it beside podAccount for the same project and person, as
+// an operator moving a deployment lists its new account. pairedSession is the role's session name
+// those rows move from one account's pods to the other's.
+const (
+	pairedPodAccount = "system:serviceaccount:example-next:example-worker"
+	pairedSession    = "example-paired-session"
+)
+
+// exchangeTookName is the line the broker logs once a token exchange that took its session name
+// from the account paired with its own has committed.
+const exchangeTookName = "broker: the token exchange took a session name from the account paired with its own"
+
+// pairedExchangeEnv is exchangeEnv with pairedPodAccount listed for the exchange beside
+// podAccount, and listedAccount's entry kept: the third listed account, which no pair here names.
+// registrarAccount is listed as the registrar of pairedPodAccount's pods too
+// (BROKER_POD_REGISTRARS), since a row registers a moved pod of that account. It pairs nothing
+// itself; a row adds BROKER_SESSION_ACCOUNT_PAIRS to it.
+func pairedExchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer) []string {
+	t.Helper()
+	return append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds), "BROKER_EXCHANGE_ACCOUNTS="+
+		podAccount+"="+project+"="+person+" "+pairedPodAccount+"="+project+"="+person+" "+listedAccount+"=OTHER=mallory@example.com",
+		"BROKER_POD_REGISTRARS="+registrarAccount+"="+podAccount+" "+registrarAccount+"="+pairedPodAccount+" "+registrarAccount+"="+listedAccount)
+}
+
+// pairedRegistrar is a broker serving pairedExchangeEnv with podAccount and pairedPodAccount
+// paired (BROKER_SESSION_ACCOUNT_PAIRS) and both bound to registrarService (BROKER_SERVICES), so
+// the registrar's one login enrols the pods of both: the broker's process, the test's own
+// connection to its database, the podBroker that enrols its pods with the cluster's tokens, and
+// the registrar's launcher credential.
+type pairedRegistrar struct {
+	broker   *brokerProcess
+	db       *pgx.Conn
+	pods     podBroker
+	launcher launcher
+}
+
+// startPairedRegistrar starts that broker on databaseURL, with env beside its own settings, waits
+// for its "session account pairs" line to say on, and logs registrarService in as
+// registrarAccount.
+func startPairedRegistrar(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, clusterKey *oidctest.Key, env ...string) pairedRegistrar {
+	t.Helper()
+	broker := startBroker(t, brokerOptions{Env: append(append(pairedExchangeEnv(t, databaseURL, cluster, github),
+		"BROKER_SERVICES="+registrarService+"="+podAccount+" "+registrarService+"="+pairedPodAccount,
+		"BROKER_SESSION_ACCOUNT_PAIRS="+podAccount+"="+pairedPodAccount), env...)})
+	broker.AwaitRecord(t, "session account pairs", map[string]any{"state": "on"})
+	pods := podBroker{t: t, base: "http://" + broker.Addr, issuer: cluster, key: clusterKey, audience: enrolmentAudience}
+	return pairedRegistrar{broker: broker, db: connectToBroker(t, databaseURL), pods: pods, launcher: pods.logIn(registrarService, registrarAccount)}
+}
+
+// TestAPairedAccountsPodExchangesUnderTheNameItsPairHolds is BROKER_SESSION_ACCOUNT_PAIRS at the
+// token exchange, on the real binary: a deployment moves a role's pods from podAccount to
+// pairedPodAccount, and the role's next pod trades under the session name the role's earlier pod
+// claimed. Three accounts are listed for the exchange and each one's pod is registered for that
+// name, so what decides each trade is who holds the name and nothing else. Served by a broker
+// started without the setting, the moved account's trade is refused invalid_grant, as it always
+// was. Served by a broker started with the pair on the same database, as the next generation of a
+// rollout is, the same trade is answered a token under that name, the name is the moved account's
+// from then on, and the broker logs the take once, naming the name, the account it took the name
+// from and the account that took it. listedAccount, which no pair names, is refused the name by
+// both brokers.
+func TestAPairedAccountsPodExchangesUnderTheNameItsPairHolds(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	db := connectToBroker(t, databaseURL)
+	binary := buildBroker(t)
+	key := proofKey(t)
+	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(podAccount), exchange.AccountPrincipal(pairedPodAccount)
+	// Each account's one pod, which its deployment's daemon registers for the name before it
+	// trades under it.
+	podUIDs := map[string]string{podAccount: "pod-uid-old", pairedPodAccount: "pod-uid-moved", listedAccount: "pod-uid-unpaired"}
+	trade := func(broker *liveBroker, account string) (int, map[string]any) {
+		t.Helper()
+		return broker.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, account, exchangeAudience, podUIDs[account]), pairedSession))
+	}
+	refusedTheName := func(status int, body map[string]any) bool {
+		description, _ := body["error_description"].(string)
+		return status == http.StatusBadRequest && body["error"] == "invalid_grant" && body["access_token"] == nil &&
+			strings.Contains(description, "The session name '"+pairedSession+"' belongs to another identity")
+	}
+
+	t.Log("--- a broker started without the pair: the old account's pod claims the name")
+	unpaired := startBroker(t, brokerOptions{Binary: binary, Env: pairedExchangeEnv(t, databaseURL, cluster, github)})
+	unpaired.AwaitRecord(t, "session account pairs", map[string]any{"state": "off"})
+	before := newLiveBroker(unpaired.Addr, key)
+	registrarToken := accountToken(t, cluster, clusterKey, registrarAccount)
+	for account, uid := range podUIDs {
+		before.registered(t, mintPodToken(t, cluster, clusterKey, account, enrolmentAudience, uid), pairedSession, registrarToken)
+	}
+	if status, body := trade(before, podAccount); status != http.StatusOK || body["access_token"] == nil {
+		t.Fatalf("the old account's pod trading under %s = %d %v, want 200 with an access token", pairedSession, status, body)
+	}
+
+	t.Log("--- unpaired, the moved account's pod is refused the name")
+	if status, body := trade(before, pairedPodAccount); !refusedTheName(status, body) {
+		t.Fatalf("the moved account's pod trading under %s with no pair = %d %v, want 400 invalid_grant naming the name another identity's", pairedSession, status, body)
+	}
+	if holder, _ := sessionHolder(t, db, pairedSession); holder != oldPrincipal {
+		t.Fatalf("after the refusal the name %s is held by %q, want the old account %q still", pairedSession, holder, oldPrincipal)
+	}
+
+	t.Log("--- a broker started with the pair on the same database: the moved account's pod takes the name")
+	paired := startBroker(t, brokerOptions{Binary: binary, Env: append(pairedExchangeEnv(t, databaseURL, cluster, github),
+		"BROKER_SESSION_ACCOUNT_PAIRS="+podAccount+"="+pairedPodAccount)})
+	paired.AwaitRecord(t, "session account pairs", map[string]any{"state": "on"})
+	after := newLiveBroker(paired.Addr, key)
+	status, body := trade(after, pairedPodAccount)
+	token, _ := body["access_token"].(string)
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("the moved account's pod trading under %s with the pair = %d %v, want 200 with an access token: a paired account takes the name its pair holds", pairedSession, status, body)
+	}
+	if status, answer := after.introspect(t, token, accountToken(t, cluster, clusterKey, apiAccount)); status != http.StatusOK || answer["active"] != true || answer["session"] != pairedSession {
+		t.Fatalf("introspection of the moved account's token = %d %v, want 200, live, under the session %s", status, answer, pairedSession)
+	}
+	if holder, _ := sessionHolder(t, db, pairedSession); holder != movedPrincipal {
+		t.Fatalf("after the take the name %s is held by %q, want the moved account %q", pairedSession, holder, movedPrincipal)
+	}
+	paired.AwaitRecord(t, exchangeTookName, map[string]any{"severity": "WARNING", "session": pairedSession, "from": oldPrincipal, "to": movedPrincipal})
+	if takes := recordsWith(paired.Log(), exchangeTookName, nil); len(takes) != 1 {
+		t.Fatalf("the paired broker logged %d %q lines, want the one take: %v", len(takes), exchangeTookName, takes)
+	}
+	if takes := recordsWith(unpaired.Log(), exchangeTookName, nil); len(takes) != 0 {
+		t.Fatalf("the unpaired broker logged %v, want no take: its refusal took nothing", takes)
+	}
+
+	t.Log("--- an account no pair names is refused the name, by either broker")
+	for _, broker := range []*liveBroker{before, after} {
+		if status, body := trade(broker, listedAccount); !refusedTheName(status, body) {
+			t.Fatalf("the unpaired account's pod trading under %s at %s = %d %v, want 400 invalid_grant naming the name another identity's: a pair takes for its two accounts alone",
+				pairedSession, broker.base, status, body)
+		}
+	}
+	if holder, _ := sessionHolder(t, db, pairedSession); holder != movedPrincipal {
+		t.Fatalf("after the unpaired account's refusals the name %s is held by %q, want the moved account %q still", pairedSession, holder, movedPrincipal)
+	}
+}
+
+// TestAPairedAccountsPodThatExchangedFirstEnrolsAndReadsItsPairsGrant is the other order a Legion
+// pod may name its session in: it trades a token under the name before it enrols under it. One
+// service login enrols the pods of podAccount and pairedPodAccount, which BROKER_SERVICES binds to
+// its service, BROKER_SESSION_ACCOUNT_PAIRS pairs and the exchange lists. podAccount's pod enrols
+// the name and asks for a secret a person owns, which that person approves on the broker's own
+// page. pairedPodAccount's pod then trades under the name, which takes the name for its account,
+// and enrols under it: it is enrolled, it reads the same value from the same grant, and the broker
+// holds one grant and one request for the name, on the moved pod's enrollment, so the grant
+// followed the name across the pair rather than the person being asked again.
+func TestAPairedAccountsPodThatExchangedFirstEnrolsAndReadsItsPairsGrant(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	// The cluster's issuer serves the approval page's provider too, as session_carry_test.go's
+	// does, which is what lets a person sign in and press Approve against this broker.
+	brokertest.SignIn(cluster, cluster.PublishKey(t, "signin-key"))
+	paired := startPairedRegistrar(t, databaseURL, cluster, github, clusterKey, "BROKER_SIGNIN_ISSUER="+cluster.URL())
+	rig := carryRig{t: t, ctx: context.Background(), addr: paired.broker.Addr, base: paired.pods.base, db: paired.db, signIn: cluster}
+	const oldPod, movedPod = "pod-uid-old", "pod-uid-moved"
+
+	t.Log("--- the old account's pod enrols the name under the service's one login and is granted a person's secret")
+	_, grant := rig.pairedGrant(paired.pods, paired.launcher, oldPod)
+
+	t.Log("--- the moved account's pod trades under the name, which takes it")
+	live := newLiveBroker(paired.broker.Addr, proofKey(t))
+	live.registered(t, mintPodToken(t, cluster, clusterKey, pairedPodAccount, enrolmentAudience, movedPod), pairedSession,
+		accountToken(t, cluster, clusterKey, registrarAccount))
+	status, body := live.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, pairedPodAccount, exchangeAudience, movedPod), pairedSession))
+	if status != http.StatusOK || body["access_token"] == nil {
+		t.Fatalf("the moved account's pod trading under %s = %d %v, want 200 with an access token: a paired account takes the name its pair holds", pairedSession, status, body)
+	}
+	movedPrincipal := exchange.AccountPrincipal(pairedPodAccount)
+	if holder, _ := sessionHolder(t, rig.db, pairedSession); holder != movedPrincipal {
+		t.Fatalf("after the trade the name %s is held by %q, want the moved account %q", pairedSession, holder, movedPrincipal)
+	}
+
+	t.Log("--- the moved account's pod enrols the name and reads the grant the old account's pod was approved")
+	moved := paired.pods.enroll(paired.launcher, movedPod, pairedPodAccount, pairedSession)
+	rig.requireValue(moved, grant, personSecret, personSecretValue,
+		"an enrolment under a name its account's trade took from the paired account takes what that account's enrollment of the name holds")
+	if held := rig.held(pairedSession); held.Requests != 1 || held.Grants != 1 || held.Grant != grant || held.GrantEnrollment != moved.enrollmentID {
+		t.Fatalf("after the move the broker holds %+v for session %s, want one request and the one grant %s, on the moved pod's enrollment %s: the moved pod takes the grant rather than %s being asked again",
+			held, pairedSession, grant, moved.enrollmentID, fleetPerson)
+	}
+}
+
+// TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds is the fixed name against
+// BROKER_SESSION_ACCOUNT_PAIRS on the real binary, in the window before the provider's first
+// exchange, when nothing has reserved the names the configuration fixes yet: the read entry's
+// session, readerSession, can still be held by another account as an ordinary claim, which is
+// what podAccount's pod does here by enrolling under it. pairedPodAccount, paired with podAccount,
+// enrols under the same name and is refused 403 SESSION_HELD, the name staying podAccount's, since
+// a name the configuration fixes goes to its entry and to no pair. What refuses it is the
+// broker's own read of the names its exchange entries fix (oauthstore.Store.Reserved, which
+// oauth.New sets from the exchange's reservations): the row itself is an ordinary claim, so
+// without that read the pair would take it.
+func TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	paired := startPairedRegistrar(t, databaseURL, cluster, github, clusterKey)
+
+	t.Log("--- before any exchange, the old account's pod enrols under the name the read entry fixes")
+	paired.pods.enroll(paired.launcher, "pod-uid-old", podAccount, readerSession)
+	held := exchange.AccountPrincipal(podAccount)
+	if holder, fixed := sessionHolder(t, paired.db, readerSession); holder != held || fixed {
+		t.Fatalf("after the old account's enrolment the name %s is held by %q (the configuration's hold: %t), want %q, an ordinary claim", readerSession, holder, fixed, held)
+	}
+
+	t.Log("--- the paired account's pod is refused it")
+	if _, status, answer := paired.pods.enrolPod(paired.launcher, "pod-uid-moved", pairedPodAccount, readerSession); status != http.StatusForbidden || decodeError(t, answer).Code != "SESSION_HELD" {
+		t.Fatalf("the paired account's pod enrolling %s, a name the read entry fixes = %d %s, want 403 SESSION_HELD: no pair takes a name the configuration fixes", readerSession, status, bytes.TrimSpace(answer))
+	}
+	if holder, fixed := sessionHolder(t, paired.db, readerSession); holder != held || fixed {
+		t.Fatalf("after the paired account's refusal the name %s is held by %q (the configuration's hold: %t), want %q still, an ordinary claim", readerSession, holder, fixed, held)
+	}
+	if takes := recordsWith(paired.broker.Log(), enrollmentTookName, nil); len(takes) != 0 {
+		t.Fatalf("the broker logged %v, want no take: its refusal took nothing", takes)
+	}
+}
+
+// TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads is the live proof of the read
+// entry, on the real binary and a fresh schema: a pod of the account BROKER_EXCHANGE_READ_ACCOUNTS
+// lists presents its projected token with a DPoP proof of its own key and no client credential,
+// naming no session and no scope, and is answered a token the listed API account reads back as
+// exactly the read entry's: the scope read, the project scope none, the entry's service and the
+// session it fixes, no person and no project, and this test's own key. Nothing was registered for
+// the pod, since the entry fixes the session. The same request naming the scope read is refused
+// invalid_scope, so the scope is the entry's to grant and never the request's.
+func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	form := exchangeForm(mintPodToken(t, cluster, clusterKey, readerAccount, exchangeAudience, readerPodUID), "")
+	var token string
+
+	t.Run("a read entry's pod token mints a token with no session and no scope named", func(t *testing.T) {
+		status, body := live.exchange(t, form)
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of %s's pod token = %d %v, want 200 with a DPoP-bound access token: the read entry fixes the session, so the pod names none and is registered for nothing", readerAccount, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the read entry's token and nothing more", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		status, body := live.introspect(t, token, apiToken)
+		if status != http.StatusOK {
+			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
+		}
+		// Read back through the one declaration both ends of the route share, so the answer is
+		// compared whole: a person, a project or a second scope would each be a field the
+		// literal does not carry.
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var answer oauthwire.Introspection
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+		}
+		want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: readerSession, Service: readerService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: a read entry's token holds the scope read and the project scope none, names its service and the session it fixes, and names no person and no project", answer, want)
+		}
+		if answer.ExpiresAt <= time.Now().Unix() {
+			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+		}
+	})
+
+	t.Run("the same request naming the scope read mints nothing", func(t *testing.T) {
+		status, body := live.exchange(t, with(form, "scope", oauthwire.ScopeRead))
+		if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
+			t.Fatalf("an exchange naming the scope %s = %d %v, want 400 invalid_scope and no access token: the exchange client is registered for %s alone, and the read entry grants read without being asked", oauthwire.ScopeRead, status, body, oauthwire.Scope)
+		}
+	})
+}
+
 // TestTheBinaryExchangesAMachinesGoogleIdentityToken is the live proof of the machine grant: the
 // real binary on a fresh schema, with an issuer of this test's own standing in for Google, a
 // machine presenting nothing but its Google identity token and a key of its own is answered a
@@ -467,16 +781,20 @@ func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
 	poolLive := newLiveBroker(broker.Addr, poolKey)
 
 	t.Run("the real binary boots with the machine entries its Google settings make", func(t *testing.T) {
-		boot := broker.Await(t, "token exchange")
+		broker.AwaitRecord(t, "token exchange", nil)
+		boot := broker.Log()
 		t.Logf("the broker's own boot lines:\n%s", boot)
 		requireHealthy(t, broker.Addr)
-		for _, want := range []string{
-			"token exchange state=on kubernetes=true github=true accounts=2 workflows=0 machines=2",
-			"google machine identity issuer=" + google.URL() + " audience=" + machineAudience +
-				" services=" + pinnedFleetService + "," + poolFleetService + " fleets=2",
+		for _, want := range []struct {
+			message string
+			fields  map[string]any
+		}{
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1, "workflows": 0, "machines": 2}},
+			{"google machine identity", map[string]any{"issuer": google.URL(), "audience": machineAudience,
+				"services": pinnedFleetService + "," + poolFleetService, "fleets": 2}},
 		} {
-			if !strings.Contains(boot, want) {
-				t.Fatalf("the boot log carries no %q; the binary must report the Google issuer it trusts and the machine entries its settings make:\n%s", want, boot)
+			if len(recordsWith(boot, want.message, want.fields)) == 0 {
+				t.Fatalf("the boot log has no %q line carrying %v; the binary must report the Google issuer it trusts and the machine entries its settings make:\n%s", want.message, want.fields, boot)
 			}
 		}
 	})
@@ -519,8 +837,8 @@ func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
 		}{
 			{"session", body["session"], "example-machine-1", "the session the machine asked to write under"},
 			{"person", body["person"], fleetPerson, "the person BROKER_VM_EXCHANGE_ACCOUNTS gives that fleet"},
-			{"project", body["project"], fleetProject, "the project that entry gives it"},
-			{"project_scope", body["project_scope"], oauthwire.ProjectScopeNamed, "that the project is the one named project it may write"},
+			{"projects", fmt.Sprint(body["projects"]), "[" + fleetProject + "]", "the one project that entry gives it"},
+			{"project_scope", body["project_scope"], oauthwire.ProjectScopeNamed, "that the projects are the one its entry names"},
 			{"service", body["service"], nil, "no service, since this token names a person"},
 			{"client_id", body["client_id"], oauthwire.ExchangeClientID, "the client the exchange issued it to"},
 			{"jkt", body["jkt"], jkt, "the thumbprint of this test's own key"},
@@ -557,8 +875,8 @@ func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
 			{"session", body["session"], "example-pool-1", "the session the machine asked to write under"},
 			{"service", body["service"], poolFleetService, "the service BROKER_VM_SERVICES gives that fleet"},
 			{"person", body["person"], nil, "no person, since this fleet's entry names none"},
-			{"project", body["project"], nil, "no project, since a token naming no person names none"},
-			{"project_scope", body["project_scope"], oauthwire.ProjectScopePerson, "that the token is held to no one project"},
+			{"projects", body["projects"], nil, "no project, since a token naming no person names none"},
+			{"project_scope", body["project_scope"], oauthwire.ProjectScopePerson, "that no entry maps the token to a project"},
 		} {
 			if field.got != field.want {
 				t.Errorf("introspection answered %s %v, want %v: the answer must name %s", field.name, field.got, field.want, field.proves)
@@ -794,12 +1112,194 @@ func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
 	}
 }
 
+// The Dispatch the c-token-projects tests stand in for: PRIV is private, owned by carol and
+// listing bob; PUB is public. bob is a restricted member, carol and erin full ones, and alice is a
+// person Dispatch holds no row for, whom PRIV does not list.
+const (
+	privateProject = "PRIV"
+	publicProject  = "PUB"
+	listedNowhere  = "alice@example.com"
+	restricted     = "bob@example.com"
+	privateOwner   = "carol@example.com"
+	fullMember     = "erin@example.com"
+)
+
+// projectAccessStandIn serves Dispatch's two project-access routes over those rows.
+func projectAccessStandIn(t *testing.T) *projectaccesstest.Server {
+	t.Helper()
+	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		privateProject: {Visibility: "private", Owner: privateOwner, Listed: []string{restricted}},
+		publicProject:  {Visibility: "public", Owner: privateOwner},
+	}, map[string]string{restricted: projectaccess.MemberRestricted, privateOwner: projectaccess.MemberFull, fullMember: projectaccess.MemberFull})
+}
+
+// projectAccessEnv is exchangeEnv with the broker's project-access check pointed at server: its
+// URL, and a file holding the one bearer it takes, as a projected token is mounted.
+func projectAccessEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, server *projectaccesstest.Server) []string {
+	t.Helper()
+	tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
+	if err := os.WriteFile(tokenFile, []byte(server.Token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+		"BROKER_PROJECT_ACCESS_URL="+server.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+tokenFile)
+}
+
+// devBoxSession logs who's machine host in through the real binary under a key of its own, and
+// answers that machine's broker client and its login's access token.
+func devBoxSession(t *testing.T, addr, apiToken, who, host string) (*liveBroker, string) {
+	t.Helper()
+	key := proofKey(t)
+	live := newLiveBroker(addr, key)
+	access, _ := live.machineLoginAs(t, key, apiToken, who, host)
+	return live, access
+}
+
+// machineTrade is a dev box session's trade of its machine login's access token: the session it
+// writes under and, when projects is not empty, the projects it names.
+func machineTrade(accessToken, session, projects string) url.Values {
+	form := exchangeForm(accessToken, session)
+	form.Set("subject_token_type", oauthwire.SubjectTokenTypeAccessToken)
+	if projects != "" {
+		form.Set(oauthwire.FormProjects, projects)
+	}
+	return form
+}
+
+// projectsOf is an introspection answer's projects, nil when it names none.
+func projectsOf(t *testing.T, answer map[string]any) []string {
+	t.Helper()
+	raw, present := answer["projects"]
+	if !present {
+		return nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("the answer's projects are %#v, want a list", raw)
+	}
+	projects := make([]string, 0, len(list))
+	for _, item := range list {
+		key, ok := item.(string)
+		if !ok {
+			t.Fatalf("the answer's projects hold %#v, want strings", item)
+		}
+		projects = append(projects, key)
+	}
+	return projects
+}
+
+// TestATradeNamesOnlyProjectsItsPersonSees is c-token-projects against the real broker binary and
+// a Dispatch stand-in answering both project-access routes: a trade naming a project its person
+// may see is answered a token whose introspection lists exactly that project; a trade naming one
+// its person may not see is refused; a restricted member's trade naming none is refused; and a
+// full member's trade naming none, and the same trade while Dispatch cannot be reached, are
+// answered with no project, as today.
+func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	dispatch := projectAccessStandIn(t)
+	broker := startBroker(t, brokerOptions{Env: projectAccessEnv(t, databaseURL, cluster, github, dispatch)})
+	broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+	trade := func(t *testing.T, who, host, session, projects string) (*liveBroker, int, map[string]any) {
+		t.Helper()
+		live, access := devBoxSession(t, broker.Addr, apiToken, who, host)
+		status, body := live.exchange(t, machineTrade(access, session, projects))
+		return live, status, body
+	}
+	introspected := func(t *testing.T, live *liveBroker, body map[string]any, who string) map[string]any {
+		t.Helper()
+		token, _ := body["access_token"].(string)
+		if token == "" {
+			t.Fatalf("%s's trade was answered %v, want an access token", who, body)
+		}
+		status, answer := live.introspect(t, token, apiToken)
+		if status != http.StatusOK || answer["active"] != true || answer["project_scope"] != oauthwire.ProjectScopePerson || answer["person"] != who {
+			t.Fatalf("introspection of %s's token = %d %v, want a live token acting as %s", who, status, answer, who)
+		}
+		return answer
+	}
+
+	t.Run("a trade naming a project its person may see is answered a token listing exactly that project", func(t *testing.T) {
+		live, _, body := trade(t, privateOwner, "example-host-carol-1", "carol-box-1", privateProject)
+		if got := projectsOf(t, introspected(t, live, body, privateOwner)); !slices.Equal(got, []string{privateProject}) {
+			t.Fatalf("%s's token names the projects %v, want exactly [%s]", privateOwner, got, privateProject)
+		}
+	})
+	t.Run("a trade naming a project its person may not see is refused", func(t *testing.T) {
+		live, status, body := trade(t, listedNowhere, "example-host-alice-1", "alice-box-1", privateProject)
+		if token, _ := body["access_token"].(string); token != "" {
+			_, answer := live.introspect(t, token, apiToken)
+			t.Fatalf("the broker answered %s's trade naming %s with a token naming %v; a trade naming a project its person may not see must be refused", listedNowhere, privateProject, projectsOf(t, answer))
+		}
+		description, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || !strings.Contains(description, "cannot see: "+privateProject) {
+			t.Fatalf("%s's trade naming %s = %d %v %q, want 400 invalid_request naming %s", listedNowhere, privateProject, status, body["error"], description, privateProject)
+		}
+	})
+	t.Run("a restricted member's trade naming none is refused", func(t *testing.T) {
+		_, status, body := trade(t, restricted, "example-host-bob-1", "bob-box-1", "")
+		description, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil || !strings.Contains(description, restricted+" is a restricted member") {
+			t.Fatalf("%s's trade naming no project = %d %v %q, want 400 invalid_request saying %s is a restricted member", restricted, status, body["error"], description, restricted)
+		}
+	})
+	t.Run("a full member's trade naming none is answered with no project, as today", func(t *testing.T) {
+		live, _, body := trade(t, privateOwner, "example-host-carol-2", "carol-box-2", "")
+		if got := projectsOf(t, introspected(t, live, body, privateOwner)); got != nil {
+			t.Fatalf("%s's token naming no project names %v, want none", privateOwner, got)
+		}
+	})
+	t.Run("the same trade while Dispatch cannot be reached is answered with no project, as today", func(t *testing.T) {
+		live, access := devBoxSession(t, broker.Addr, apiToken, fullMember, "example-host-erin-1")
+		dispatch.SetDown(true)
+		t.Cleanup(func() { dispatch.SetDown(false) })
+		before := dispatch.Calls()
+		_, body := live.exchange(t, machineTrade(access, "erin-box-1", ""))
+		if dispatch.Calls() == before {
+			t.Fatalf("the trade asked the stand-in nothing while it was down, so this case proves nothing about an outage")
+		}
+		if got := projectsOf(t, introspected(t, live, body, fullMember)); got != nil {
+			t.Fatalf("%s's token minted while Dispatch was down names %v, want none", fullMember, got)
+		}
+	})
+}
+
+// TestTheProjectsClaimSurvivesTheStore: the list a trade asks for comes back from the token's own
+// row, through the broker's Postgres-backed store and its introspection route, as that list. The
+// stored claim is a string because the session's extra claims return from the row as JSON, where a
+// list would read back as no projects at all.
+func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: projectAccessEnv(t, databaseURL, cluster, github, projectAccessStandIn(t))})
+	broker.Await(t, "project access check")
+	const session = "carol-store-1"
+	live, access := devBoxSession(t, broker.Addr, apiToken, privateOwner, "example-host-carol-store")
+	status, body := live.exchange(t, machineTrade(access, session, publicProject+" "+privateProject))
+	token, _ := body["access_token"].(string)
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("the trade for the session %s = %d %v, want an access token", session, status, body)
+	}
+	status, answer := live.introspect(t, token, apiToken)
+	if got := projectsOf(t, answer); status != http.StatusOK || answer["active"] != true || !slices.Equal(got, []string{privateProject, publicProject}) {
+		t.Fatalf("the token of the session %s introspects through the broker's store with projects %v (%d %v), want [%s %s]: the claim must come back from its row as the list the trade asked for",
+			session, got, status, answer, privateProject, publicProject)
+	}
+}
+
 // exchangeEnv is what one broker run of this test needs beyond productionEnv: the fresh schema it
 // migrates and serves from, the cluster issuer with the audience a pod enrols with and the one it
 // exchanges with, the GitHub issuer, the two listed accounts with their projects and persons, the
-// two listed callers — dispatch, which reads a token back and ends one, and listener, which only
-// reads one back — the registrar that logs in as the deployment's daemon
-// and registers its pods' session names, and how long an access token it mints lasts.
+// read entry with its service and the session it fixes, the two listed callers — dispatch, which
+// reads a token back and ends one, and listener, which only reads one back — the registrar that
+// logs in as the deployment's daemon and registers its pods' session names, listed for the pods
+// of both listed accounts (BROKER_POD_REGISTRARS), and how long an access token it mints lasts.
 func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, accessSeconds int, extraSecrets ...string) []string {
 	t.Helper()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
@@ -824,11 +1324,69 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 		"BROKER_EXCHANGE_K8S_AUDIENCE=" + exchangeAudience,
 		"BROKER_EXCHANGE_ACCOUNTS=" + podAccount + "=" + project + "=" + person + " " + listedAccount + "=OTHER=mallory@example.com",
+		"BROKER_EXCHANGE_READ_ACCOUNTS=" + readerAccount + "=" + readerService + "=" + readerSession,
 		"BROKER_EXCHANGE_GITHUB_ISSUER=" + github.URL(),
 		"BROKER_EXCHANGE_GITHUB_AUDIENCE=" + workflowAudience,
 		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount,
-		"BROKER_SERVICE_LOGINS=legion-daemon=" + registrarAccount,
+		"BROKER_SERVICE_LOGINS=" + registrarService + "=" + registrarAccount,
+		"BROKER_POD_REGISTRARS=" + registrarAccount + "=" + podAccount + " " + registrarAccount + "=" + listedAccount,
 		"BROKER_ACCESS_TOKEN_SECONDS=" + strconv.Itoa(accessSeconds),
+	}
+}
+
+// TestAPodsEntryNamingAPrivateProjectIsHeldToItsPerson is the credential the production path
+// makes for a private project: a pod's account listed in BROKER_EXCHANGE_ACCOUNTS with the
+// project PRIV and the person it acts for. Against a Dispatch stand-in that says the entry's
+// person sees PRIV, the pod's trade is answered a token whose introspection names exactly [PRIV]
+// under the named scope; against one that says they do not, the same trade is refused naming the
+// project and the person.
+func TestAPodsEntryNamingAPrivateProjectIsHeldToItsPerson(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		listed []string
+		minted bool
+	}{
+		{name: "the entry's person sees PRIV", listed: []string{person}, minted: true},
+		{name: "the entry's person does not see PRIV", listed: nil, minted: false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			databaseURL := storetest.URL(t)
+			cluster, github := oidctest.New(t), oidctest.New(t)
+			clusterKey := cluster.PublishKey(t, "cluster-key")
+			github.PublishKey(t, "github-key")
+			dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+				privateProject: {Visibility: "private", Owner: privateOwner, Listed: c.listed},
+			}, map[string]string{person: projectaccess.MemberFull})
+			env := append(projectAccessEnv(t, databaseURL, cluster, github, dispatch),
+				"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+privateProject+"="+person)
+			broker := startBroker(t, brokerOptions{Env: env})
+			broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+			live := newLiveBroker(broker.Addr, proofKey(t))
+			apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+			live.registered(t, mintPodToken(t, cluster, clusterKey, podAccount, enrolmentAudience, firstPodUID), heldSession,
+				accountToken(t, cluster, clusterKey, registrarAccount))
+
+			status, body := live.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, podAccount, exchangeAudience, firstPodUID), heldSession))
+			if !c.minted {
+				description, _ := body["error_description"].(string)
+				t.Logf("the refusal: %d %v %s", status, body["error"], description)
+				if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil ||
+					!strings.Contains(description, "its entry names the project "+privateProject+", which its person "+person+" cannot see") {
+					t.Fatalf("the pod's trade = %d %v %q, want 400 invalid_request naming %s and %s", status, body["error"], description, privateProject, person)
+				}
+				return
+			}
+			token, _ := body["access_token"].(string)
+			if status != http.StatusOK || token == "" {
+				t.Fatalf("the pod's trade = %d %v, want an access token", status, body)
+			}
+			status, answer := live.introspect(t, token, apiToken)
+			t.Logf("introspection of the pod's token: %d %v", status, answer)
+			if got := projectsOf(t, answer); status != http.StatusOK || answer["active"] != true || answer["project_scope"] != oauthwire.ProjectScopeNamed ||
+				answer["person"] != person || !slices.Equal(got, []string{privateProject}) {
+				t.Fatalf("introspection = %d %v, want a live named token acting for %s naming exactly [%s]", status, answer, person, privateProject)
+			}
+		})
 	}
 }
 

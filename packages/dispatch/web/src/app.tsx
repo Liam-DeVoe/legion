@@ -1,5 +1,15 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  type ReactNode,
+  type RefObject,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
@@ -7,6 +17,9 @@ import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
+import { useLiveViews } from "./features/agent-view/live-views";
+import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
+import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
@@ -14,18 +27,34 @@ import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
+import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
+import { useIssuePageChoice } from "./features/issue-page/choice";
+import { IconRail } from "./features/issue-page/IconRail";
+import {
+  type MarginDrawer,
+  type MarginDrawerPage,
+  MarginSlotProvider,
+} from "./features/issue-page/margin-slot";
+import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
+import {
+  type ShellNavigation,
+  ShellNavigationContext,
+} from "./features/issue-page/shell-navigation";
+import { ShortcutHelpOpener } from "./features/issue-page/shortcut-help-opener";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
+import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   buildInboxPath,
   buildProjectPath,
+  liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -33,7 +62,8 @@ import {
   routeIsInbox,
   routeProjectOf,
 } from "./features/refs/routes";
-import { type PaletteMode, SearchPalette } from "./features/search/SearchPalette";
+import { useRecordRecents } from "./features/search/recents";
+import { SearchPalette } from "./features/search/SearchPalette";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
@@ -52,13 +82,14 @@ import {
 } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
+  MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
 } from "./features/shell/useDialog";
 import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
-import { useUserPreference } from "./features/shell/userPreference";
+import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
@@ -79,6 +110,7 @@ import {
   card,
   linkHoverText,
   linkText,
+  pagePaperBg,
   primaryButtonBg,
   primaryButtonHoverBg,
   railAccentHoverText,
@@ -102,7 +134,7 @@ import {
 } from "./theme/classes";
 
 const IssuePage = lazy(() =>
-  import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }))
+  import("./features/issue-page/IssuePage").then((module) => ({ default: module.IssuePage }))
 );
 
 const ProjectPage = lazy(() =>
@@ -110,6 +142,14 @@ const ProjectPage = lazy(() =>
 );
 const DocumentPage = lazy(() =>
   import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }))
+);
+const PrioritiesPage = lazy(() =>
+  import("./features/priorities/PrioritiesPage").then((module) => ({
+    default: module.PrioritiesPage,
+  }))
+);
+const PriorityPage = lazy(() =>
+  import("./features/priorities/PriorityPage").then((module) => ({ default: module.PriorityPage }))
 );
 
 const AgentsPage = lazy(() =>
@@ -122,12 +162,6 @@ const MachinesPage = lazy(() =>
 
 const MachinePage = lazy(() =>
   import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
-);
-
-const AgentConversationPage = lazy(() =>
-  import("./features/agent-view/AgentConversationPage").then((module) => ({
-    default: module.AgentConversationPage,
-  }))
 );
 
 const AgentArtifactPage = lazy(() =>
@@ -184,14 +218,48 @@ function IssuePageFallback(): ReactNode {
           />
         </h1>
       </header>
-      <div className={`mb-4 flex gap-2 border-b ${borderDefault}`} role="tablist">
-        {["Spec", "Conversation", "Children", "Artifacts", "Activity"].map((label) => (
+      {/* `overflow-hidden`: the ten labels are wider than a narrow window and this row neither
+          wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
+          never scrolls the page sideways. */}
+      <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">
+        {ISSUE_TAB_LABELS.map((label) => (
           <span
             className={`animate-pulse rounded px-3 py-2 text-sm ${textTransparent} ${skeletonBg}`}
             key={label}
           >
             {label}
           </span>
+        ))}
+      </div>
+      <div className="space-y-3">
+        {[0, 1, 2, 3].map((row) => (
+          <div className={`h-4 w-full animate-pulse rounded ${skeletonBg}`} key={row} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the new issue page's frame holds while the page's code loads (R10):
+ * the header's two lines, the view row's five controls and the first rows, as boxes with no word
+ * in them, so no name of a control flashes on screen and none of today's nine tab names does.
+ * It takes the inset the page's own column takes, since the frame gives `<main>` no padding.
+ * `min-w-0` and `overflow-hidden`: the row of boxes neither wraps nor scrolls, so a chunk's load
+ * never makes the page wider than a phone's window. Every other reader keeps
+ * `IssuePageFallback`.
+ */
+function IssueFrameFallback(): ReactNode {
+  return (
+    <div aria-busy="true" className="px-3.5 pt-2 md:px-7">
+      <div className={`h-4 w-16 animate-pulse rounded ${skeletonBg}`} />
+      <div className={`mt-2 h-7 w-2/3 animate-pulse rounded ${skeletonBg}`} />
+      <div
+        className={`mt-4 mb-4 flex min-w-0 gap-2 overflow-hidden border-b pb-2 ${borderDefault}`}
+        role="toolbar"
+      >
+        {[0, 1, 2, 3, 4].map((box) => (
+          <span className={`h-5 w-16 shrink-0 animate-pulse rounded ${skeletonBg}`} key={box} />
         ))}
       </div>
       <div className="space-y-3">
@@ -404,13 +472,50 @@ function NavigationContents({
   );
 }
 
+/**
+ * The providers the shell mounts around everything it draws: the margin's own, and the four the
+ * new issue page's frame reads (R12, R14). `drawer` is Details, which only
+ * the frame passes: with it undefined the margin is the column it has always been, and no page
+ * fills its slot. `navigation` is what the page's header draws its `☰` from, and `openHelp` what
+ * its Keys control opens. A page publishes the names it read for its references to everything
+ * under the shell, the margin beside the router among it (`ReferenceNamesProvider`).
+ */
+function ShellProviders({
+  children,
+  drawer,
+  navigation,
+  openHelp,
+}: {
+  children: ReactNode;
+  drawer: MarginDrawer | undefined;
+  navigation: ShellNavigation | undefined;
+  openHelp: () => void;
+}): ReactNode {
+  return (
+    <MarginProvider>
+      <ReferenceNamesProvider>
+        <MarginSlotProvider drawer={drawer} drawsSlot={drawer !== undefined}>
+          <ShellNavigationContext.Provider value={navigation}>
+            <ShortcutHelpOpener.Provider value={openHelp}>{children}</ShortcutHelpOpener.Provider>
+          </ShellNavigationContext.Provider>
+        </MarginSlotProvider>
+      </ReferenceNamesProvider>
+    </MarginProvider>
+  );
+}
+
 function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
-  // Which palette is open, and `null` for none: `$mod+k` and the rail's Search control list this
-  // page's actions and the hits, `/` searches only, and `g p` lists projects.
-  const [paletteMode, setPaletteMode] = useState<PaletteMode | null>(null);
+  // Whether the bar is open. `$mod+k`, `/`, `g p` and the rail's Search control open the one
+  // bar: this page's actions, the person's recent items, the projects a query names and the
+  // hits, with a chip saying what it will act on.
+  const [barOpen, setBarOpen] = useState(false);
+  // What the person opened, for the bar to list back while its box is empty. It is recorded in
+  // the shell rather than on each page, so every way into an item - a link, the bar itself, a
+  // reload - records it.
+  useRecordRecents();
   const [sidebarHidden, setSidebarHidden] = useUserPreference(
     "shell.sidebar",
     (stored) => stored === "hidden",
@@ -432,6 +537,41 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     String
   );
   const location = useLocation();
+  // The new issue page's frame (R1, R14), computed here once: an issue's
+  // address, for a reader who chose the new page. In it an icon rail of 56 px stands where the
+  // sidebar stands, from Tailwind's `md` up, and below that the page's header draws the control
+  // that opens the navigation (`ShellNavigationContext`); the margin is Details, a drawer over
+  // the page. The rail is drawn by the query that is `md` itself, in `rem`, because the room the
+  // page makes for it is `md:pl-14`: a pixel query draws the rail over the page wherever the two
+  // disagree, which is every width from 768 to 959 px at a 20 px default font. Every other page,
+  // and every other reader's issue page, keeps the shell below exactly as it was.
+  const [issuePageChoice] = useIssuePageChoice();
+  const issueFrame =
+    issuePageChoice === "outline" &&
+    parseIssuePath(location.pathname, location.search) !== undefined;
+  const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
+  const iconRailShown = issueFrame && railFits;
+  // Whether Details is open, held for the issue it was opened on: every load opens it closed, and
+  // so does every move to another issue. Leaving the issue forgets it in the same render, so
+  // coming back to it - by a link or by Back - finds it closed, as a load does.
+  const detailsIssue = parseIssuePath(location.pathname)?.key;
+  const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
+  if (detailsFor !== undefined && detailsFor !== detailsIssue) setDetailsFor(undefined);
+  // What the new page's root hands Details: its words and its address rule
+  // (`features/issue-page/drawer-page.ts`), so that this file imports neither.
+  const [drawerPage, setDrawerPage] = useState<MarginDrawerPage | undefined>(undefined);
+  const detailsDrawer = useMemo<MarginDrawer | undefined>(
+    () =>
+      issueFrame
+        ? {
+            open: detailsFor !== undefined && detailsFor === detailsIssue,
+            page: drawerPage,
+            setOpen: (open: boolean) => setDetailsFor(open ? detailsIssue : undefined),
+            setPage: setDrawerPage,
+          }
+        : undefined,
+    [detailsFor, detailsIssue, drawerPage, issueFrame]
+  );
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of
@@ -460,6 +600,46 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
   const fillsViewport =
     routeFillsViewport(location.pathname) || (routeIsInbox(location.pathname) && readingPaneShown);
+  // The session whose live view the address names, or `null` on every other page. The shell
+  // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
+  // is the one thing about the live view the router still decides.
+  const frontLiveView = liveViewSessionOf(location.pathname) ?? null;
+  // The person's pins, which the shell owns rather than the rail: the registry keeps a sleeping
+  // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
+  // on the page while the sidebar is collapsed or its sheet is closed.
+  const liveViews = useLiveViews();
+  const pinnedAgents = usePinnedAgents();
+  useEffect(() => {
+    liveViews.setPinned(pinnedAgents);
+  }, [liveViews, pinnedAgents]);
+  // The pins were this browser's until INFRA-812 made them the person's. At the first load
+  // after the change each id the old key holds is written as a pin, so this runs once per
+  // browser and Dispatch ends up holding the union of what each of the person's browsers had
+  // kept.
+  //
+  // One write at a time, in the order the key kept them, because Dispatch stamps each pin as it
+  // arrives and `pinned_at` is the order the rail draws; and the key is removed only once every
+  // one of them has landed, since a write Dispatch refuses is the reader's to retry or discard
+  // and a key removed before that would be the person's pins gone. A refusal stops the run and
+  // leaves the key whole, so the next load writes the lot again, in the same order. The key the
+  // run began under is held here rather than read back from storage, because the key outlives
+  // the first write now: an effect that runs again - React runs it twice under StrictMode -
+  // would otherwise write every id a second time.
+  const writePin = useAgentPinWrite();
+  const migrated = useRef<string | null>(null);
+  useEffect(() => {
+    const key = legacyPinnedAgentsKey(user.login);
+    if (migrated.current === key) return;
+    const kept = window.localStorage.getItem(key);
+    if (kept === null) return;
+    migrated.current = key;
+    void (async () => {
+      for (const sessionId of legacyPinnedIds(kept)) {
+        if (!(await writePin(sessionId, true))) return;
+      }
+      window.localStorage.removeItem(key);
+    })();
+  }, [user.login, writePin]);
   const connection = useLiveSocketPill();
   // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
   // waiting on the reader plus the threads they have not read.
@@ -478,34 +658,50 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
+  // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
+  // open over the page at every width, as the Menu control opens it below `xl` on every page.
   const drawer = useDialog<HTMLElement>({
     initialFocusRef: closeButtonRef,
     onClose: () => setNavigationOpen(false),
-    open: navigationOpen && isCompactViewport,
+    open: navigationOpen && (isCompactViewport || issueFrame),
   });
+  // What the page's header draws its `☰` from below `md`, where the frame draws neither the
+  // shell's bar nor the rail; undefined wherever the shell draws a control of its own.
+  const shellNavigation = useMemo<ShellNavigation | undefined>(
+    () =>
+      issueFrame && !railFits
+        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen }
+        : undefined,
+    [issueFrame, navigationOpen, railFits]
+  );
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
+  // What a page's own Keys control does (`features/issue-page/shortcut-help-opener.tsx`): what
+  // `?` does.
+  const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
   useKeymap("global", [
     {
-      // Opens only: while the palette is open the `dialog` scope is the only one consulted, and
-      // the palette's own `$mod+k` binding closes it.
+      // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
+      // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
+      // the key reaches the bar from inside a document's editor too.
       id: "search",
       inEditable: true,
       keys: "$mod+k",
       label: "Search and actions",
-      run: () => setPaletteMode("all"),
+      run: () => setBarOpen(true),
     },
     {
-      // No row: chosen from `$mod+k`'s palette it would only reopen that palette with its actions
-      // taken away.
+      // The same bar. No row: chosen from the bar it would only reopen the bar. Not
+      // `inEditable`, so a slash typed into a document stays a slash, and the Agents page
+      // shadows it with its own filter box.
       id: "search-only",
       keys: "/",
-      label: "Search only",
+      label: "Search",
       palette: false,
-      run: () => setPaletteMode("search"),
+      run: () => setBarOpen(true),
     },
     {
       id: "help",
@@ -529,10 +725,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       when: () => routeProject !== undefined,
     },
     {
+      // The same bar again, where a reader after a project types its name: its projects are
+      // rows of the one list. No row, for `/`'s reason.
       id: "go-project",
       keys: "g p",
       label: "Go to project…",
-      run: () => setPaletteMode("projects"),
+      palette: false,
+      run: () => setBarOpen(true),
     },
     {
       id: "inbox-drawer",
@@ -548,17 +747,24 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       keys: "Shift+S",
       label: "Toggle sidebar",
       run: () => setSidebarHidden(!sidebarHidden),
-      // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert.
-      when: () => !isCompactViewport,
+      // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert;
+      // so it is in the new issue page's frame, whose navigation is its icon rail.
+      when: () => !isCompactViewport && !issueFrame,
     },
     {
-      id: "toggle-margin",
+      // In the new issue page's frame the margin is Details, which this key opens and closes at
+      // every width. Its id follows the gate, so that crossing it registers the binding again
+      // and the list of keys reads the label of the shell it is in.
+      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
       keys: "Shift+M",
-      label: "Toggle margin",
-      run: () => setMarginHidden(!marginHidden),
+      label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
+      run: () =>
+        detailsDrawer === undefined
+          ? setMarginHidden(!marginHidden)
+          : detailsDrawer.setOpen(!detailsDrawer.open),
       // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => !isCompactViewport && hasMargin,
+      when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
     },
   ]);
   const login = user.login;
@@ -620,12 +826,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const navigation = (
     <NavigationContents
       closeButtonRef={closeButtonRef}
-      compact={isCompactViewport}
+      compact={isCompactViewport || issueFrame}
       onClose={() => setNavigationOpen(false)}
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
       onOpenInboxDrawer={() => setInboxDrawerOpen(true)}
-      onSearch={() => setPaletteMode("all")}
+      onSearch={() => setBarOpen(true)}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
         // first while any is unsent, naming each once - this tab's, and every other tab's, which
@@ -668,7 +874,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   }`;
 
   return (
-    <MarginProvider>
+    <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
       <div
         className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
         data-testid="app-shell"
@@ -711,7 +917,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </p>
           ) : null}
         </div>
-        {isCompactViewport ? (
+        {isCompactViewport && !issueFrame ? (
           <header
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
           >
@@ -758,7 +964,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </button>
           </header>
         ) : null}
-        {isCompactViewport && navigationOpen ? (
+        {(isCompactViewport || issueFrame) && navigationOpen ? (
           <>
             <div
               aria-hidden="true"
@@ -776,7 +982,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </aside>
           </>
         ) : null}
-        {isCompactViewport ? null : sidebarHidden ? (
+        {iconRailShown ? (
+          <IconRail
+            inboxCount={inboxCount}
+            navigationOpen={navigationOpen}
+            onOpenNavigation={() => setNavigationOpen(true)}
+            project={routeProject}
+            user={user}
+          />
+        ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (
           <aside
             aria-label="Collapsed sidebar"
             className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
@@ -808,16 +1022,25 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
           </aside>
         )}
+        {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
+            Contents pane and its column each keep the inset the prototype gives them, the pane
+            against the rail, which `md:pl-14` makes room for. Its references open no card on
+            hover (R6). */}
         <main
-          className={`min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`}
-          data-shell-layout={fullWidth ? "full-width" : "standard"}
+          className={
+            issueFrame
+              ? `min-h-dvh min-w-0 flex-1 outline-none md:pl-14 ${pagePaperBg}`
+              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
+          }
+          data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
+          {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}
           tabIndex={-1}
         >
           <ErrorBoundary region="this page" resetKey={location.pathname}>
-            <Suspense fallback={<IssuePageFallback />}>
+            <Suspense fallback={issueFrame ? <IssueFrameFallback /> : <IssuePageFallback />}>
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
@@ -831,11 +1054,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<AgentsPage />} path="/agents" />
                 <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
                 <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
-                <Route element={<AgentConversationPage />} path={AGENT_LIVE_PATH} />
+                <Route element={<LiveViewRoute />} path={AGENT_LIVE_PATH} />
                 <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
+                <Route element={<PrioritiesPage />} path="/priorities" />
+                <Route element={<PriorityPage />} path="/priorities/:id" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
@@ -850,6 +1075,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               </Routes>
             </Suspense>
           </ErrorBoundary>
+          {/* The live views the person has open, inside `<main>` so each takes the layout and
+              the iOS keyboard fit the live route already has, and beside the routes rather than
+              under them: a view outlives the address that opened it, so neither leaving the
+              live route, nor another page's throw, nor a lazy page suspending may unmount it.
+              The live route's own element renders nothing. */}
+          <MountedLiveViews front={frontLiveView} />
         </main>
         <ErrorBoundary region="the margin" resetKey={location.pathname}>
           <MarginColumn
@@ -859,13 +1090,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             width={marginWidth}
           />
         </ErrorBoundary>
-        <SearchPalette mode={paletteMode} onClose={() => setPaletteMode(null)} />
+        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
         <RefPreviewHost />
       </div>
-    </MarginProvider>
+    </ShellProviders>
   );
 }
 

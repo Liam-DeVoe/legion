@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/controller"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -55,7 +56,8 @@ type controllerKeeper struct {
 	// project is the project token the claim is filed under.
 	project string
 	// ctx bounds each decision the keeper hands a machine: supervision's lifetime, as a machine's
-	// own work is bounded.
+	// own work is bounded. It carries no hold mark: the keeper is reached from its own loop (keep)
+	// and from the ready route (ready), so each call that reaches the pool takes a fresh one.
 	ctx context.Context
 	log *slog.Logger
 	now func() time.Time
@@ -65,6 +67,11 @@ type controllerKeeper struct {
 	// and backoff the wait that set it.
 	retryAt time.Time
 	backoff time.Duration
+	// heldLogged is the line keep last wrote for a retry the hold refused, and heldReason that
+	// refusal, for the episode the refused retry holds the claim in (keep, held): the line is
+	// written once per episode and cause, and the reason rides each later retry's Warn. Both are
+	// cleared at one point, leaveHeld, at each way out of the episode.
+	heldLogged, heldReason string
 }
 
 func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst time.Duration, log *slog.Logger) *controllerKeeper {
@@ -91,10 +98,13 @@ func (k *controllerKeeper) run(ctx context.Context, every time.Duration) {
 
 // keep is one look at the controller's claim, and the one request its state calls for.
 func (k *controllerKeeper) keep() error {
+	// Each look is a fresh call on k.ctx, beside the ready route, so it takes a hold mark of its
+	// own, which its create and its request share as they run one after another.
+	ctx := store.ForConcurrentWorker(k.ctx)
 	token := k.token()
 	m, ok := k.supervisor.Machine(token)
 	if !ok {
-		created, _, err := k.supervisor.Create(k.ctx, supervise.Claim{
+		created, _, err := k.supervisor.Create(ctx, supervise.Claim{
 			Token: token, Project: k.project, Role: claim.RoleController, State: supervise.StateQueued,
 		}, "")
 		if err != nil {
@@ -104,7 +114,12 @@ func (k *controllerKeeper) keep() error {
 		m = created
 	}
 	var request supervise.Event
-	switch state := m.Claim().State; state {
+	state := m.Claim().State
+	if state != supervise.StateFailed && state != supervise.StateRetired {
+		// The claim left the state a refused retry holds it in, whatever it moved to.
+		k.leaveHeld()
+	}
+	switch state {
 	case supervise.StateQueued:
 		// No request of this keeper marks itself exempt from the wake pacing, this spawn
 		// included: the machine exempts the controller's claim by identity, which covers the
@@ -131,7 +146,11 @@ func (k *controllerKeeper) keep() error {
 		}
 		k.backoff = min(2*k.backoff, controllerRetryMax)
 		k.retryAt = now.Add(k.backoff)
-		k.log.Warn("controller: retrying the daemon's controller", "claim", token, "state", state, "nextRetryAt", k.retryAt)
+		retrying := []any{"claim", token, "state", state, "nextRetryAt", k.retryAt}
+		if k.heldReason != "" {
+			retrying = append(retrying, "reason", k.heldReason)
+		}
+		k.log.Warn("controller: retrying the daemon's controller", retrying...)
 		request = supervise.RequestRetry{Claim: token}
 	case supervise.StateReady, supervise.StateWorking, supervise.StateIdle:
 		k.retryAt, k.backoff = time.Time{}, 0
@@ -141,11 +160,51 @@ func (k *controllerKeeper) keep() error {
 		// machine and boot's reconciliation own those.
 		return nil
 	}
-	if err := m.Handle(k.ctx, request); err != nil {
+	err := m.Handle(ctx, request)
+	// A retry in a new session the hold refuses is no fault of the keeper's, and its own backoff
+	// asks again, so it returns nothing its loop logs at Error; the keeper says why once per
+	// episode, at the level the cause asks for. A role held under the recorded session by another
+	// claim's live process waits for an operator's suspend of that claim, which the reason names,
+	// with the bound: Warn (supervise.ErrForgetWaitsForRole). A lookup the listener refuses the
+	// same way every time is a fault no suspend fixes: Error, with the listener's status
+	// (notify.RoleLookupRefused). Each later retry's Warn carries the reason. Any other answer, an
+	// admitted request among them, ends the episode.
+	var refusedLookup *notify.RoleLookupRefused
+	switch {
+	case err != nil && errors.Is(err, supervise.ErrForgetWaitsForRole):
+		// The wait covers both of forgetWait's causes, a role held under the recorded session and
+		// a lookup the listener did not answer; the reason says which (review round 16 of #4220,
+		// #63).
+		k.held(slog.LevelWarn, "controller: the retry of the daemon's controller waits for the Envoy listener to free its role, or to answer who holds it", token, err)
+		return nil
+	case err != nil && errors.As(err, &refusedLookup):
+		k.held(slog.LevelError, "controller: the retry of the daemon's controller is refused: the Envoy listener refuses the lookup of its role's holder", token, err,
+			"status", refusedLookup.Status)
+		return nil
+	}
+	k.leaveHeld()
+	if err != nil {
 		return fmt.Errorf("%T for the controller's claim: %w", request, err)
 	}
 	return nil
 }
+
+// held records a retry the hold refused (keep): its reason, for each later retry's Warn, and one
+// line at level, written once per episode and cause.
+func (k *controllerKeeper) held(level slog.Level, msg string, token claim.Token, err error, args ...any) {
+	k.heldReason = err.Error()
+	if k.heldLogged == msg {
+		return
+	}
+	k.heldLogged = msg
+	k.log.Log(k.ctx, level, msg, append([]any{"claim", token, "reason", err}, args...)...)
+}
+
+// leaveHeld ends a held episode (keep, held): the one reset of what a refused retry recorded,
+// called at each way out of it — a request admitted, a refusal of another cause, and the claim in
+// any state but failed or retired, running or not — so the next refused retry is written again,
+// and no later retry's Warn names a reason that is no longer the claim's.
+func (k *controllerKeeper) leaveHeld() { k.heldLogged, k.heldReason = "", "" }
 
 // ready hands the controller the start message once its agent says it is ready, at every launch, so
 // each one runs the skill's start procedure before any wake. A start message still pending from an
@@ -156,7 +215,9 @@ func (k *controllerKeeper) ready(c supervise.Claim) {
 	if !ok {
 		return
 	}
-	err := m.Handle(k.ctx, supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage})
+	// The ready route calls this on its own goroutine, beside the keeper's loop, so the decision
+	// takes a fresh hold mark at the call.
+	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage})
 	switch {
 	case err == nil:
 	case errors.Is(err, supervise.ErrDeliveryPending):

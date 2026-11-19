@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { runJq } from "./run-jq";
 import { scriptFunctions } from "./script-functions";
 import { defaults, type Reservation } from "./stage4b-reservations";
@@ -17,8 +17,7 @@ const root = join(import.meta.dir, "..", "..", "..");
 const lib = join(root, "scripts", "e2e", "lib");
 const fn = scriptFunctions(join(root, "scripts", "e2e", "stage4b-sandbox-tree.sh"));
 const shapeProblems = fn("shape_problems");
-const dir = mkdtempSync(join(tmpdir(), "stage4b-pods-test."));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+const dir = temporaryDirectory("stage4b-pods-test");
 let runs = 0;
 const golden = JSON.parse(
   readFileSync(
@@ -374,7 +373,7 @@ describe("the pod shape's gh credential rule", () => {
     const init = departed.spec.initContainers.find((c: Container) => c.name === "workspace-init");
     init.command[init.command.indexOf("--credential-helper") + 1] = "!gh auth git-credential";
     expect(ghProblems(departed)).toEqual([
-      'gh-tester projects [{"key":"github-hosts-acme","path":"acme/hosts.yml"},{"key":"github-config-acme","path":"acme/config.yml"},{"key":"github-hosts-sjawhar","path":"sjawhar/hosts.yml"}], not <owner>/hosts.yml and <owner>/config.yml for each owner',
+      'gh-tester projects [{"key":"github-hosts-acme","path":"acme/hosts.yml"},{"key":"github-config-acme","path":"acme/config.yml"},{"key":"github-hosts-sjawhar","path":"sjawhar/hosts.yml"},{"key":"github-config-sjawhar","path":"sjawhar/config.yml"}], not <owner>/hosts.yml and <owner>/config.yml for each owner beside renames.txt',
       "gh-merger projects Secret other, not the role Secret legion-legion-legion-208-merger-boot its launcher token comes from",
       "shareProcessNamespace is set",
       "the --credential-helper of workspace-init is !gh auth git-credential, not !legion git-credential",

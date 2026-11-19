@@ -1,61 +1,28 @@
-import { expect, type Locator, type Page, type TestInfo, test } from "@playwright/test";
-
-import { createAsk, createIssue, createProject, getAsk, setAgentStreamResponder } from "./api";
-import { COMPACT_VIEWPORT_WIDTH } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { getAsk, getIssue, patchIssue, setAgentStreamResponder } from "./api";
+import { attachShot, drawer, seedAsk } from "./inbox-drawer";
+import {
+  detailRead,
+  expectReadWhileHeld,
+  holdIssuePatches,
+  inboxRead,
+  lastEventSeq,
+  logReads,
+  openInboxDrawer,
+  pagePicker,
+  readAnsweredSince,
+  savesEnded,
+  storedValues,
+  watchShown,
+} from "./pick-writes";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * The Inbox as a drawer over any page (LEGION-547): the same list and actions as the Inbox page,
- * mounted once in the shell so the page beneath it - a live conversation with a half-typed
- * message, an issue - keeps its state while an ask is answered and the drawer is closed.
+ * The Inbox as a drawer over any page (LEGION-547), in the row whose claim reaches the server:
+ * a live conversation with a half-typed message under a drawer in which an ask is answered, the
+ * answer read back from the server and the draft still there afterwards. Where the drawer opens
+ * from, what it covers and the key that toggles it are in `inbox-drawer.stub.e2e.ts`.
  */
-
-const session = {
-  actor: { id: "e2e-inbox-drawer", kind: "session" as const },
-  as: "agent" as const,
-};
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-async function seedAsk(question: string): Promise<{ askId: string; issueKey: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Drawer issue" });
-  const ask = await createAsk(
-    issue.key,
-    { options: [{ label: "Yes" }, { label: "No" }], question },
-    session
-  );
-  return { askId: ask.id, issueKey: issue.key };
-}
-
-function drawer(page: Page) {
-  return page.getByRole("dialog", { name: "Inbox" });
-}
-
-/**
- * The button that opens the drawer. The shell draws it at one of two widths and both carry one
- * name on this surface: the navigation rail's Peek beside its Inbox entry from
- * `COMPACT_VIEWPORT_WIDTH` up, and below that the compact top bar's own Peek beside the bar's
- * Inbox count (`web/src/app.tsx`, `features/sidebar/Sidebar.tsx`). The rail is the only
- * `Navigation` landmark, so above the fold the name is read inside it; the top bar is no
- * landmark at all, so the phone reads it in the header.
- */
-function peekTrigger(page: Page): Locator {
-  const name = "Peek at the inbox without leaving this page";
-  if ((page.viewportSize()?.width ?? 0) >= COMPACT_VIEWPORT_WIDTH) {
-    return page.getByRole("navigation", { name: "Navigation" }).getByRole("button", { name });
-  }
-  return page.locator("header").first().getByRole("button", { name });
-}
-
-async function attachShot(page: Page, testInfo: TestInfo, name: string) {
-  const path = testInfo.outputPath(`${name}-${testInfo.project.name}.png`);
-  await page.screenshot({ path });
-  await testInfo.attach(`${name} (${testInfo.project.name})`, { contentType: "image/png", path });
-}
 
 test("a half-typed message in a live conversation survives opening the drawer, answering an ask in it and closing it", async ({
   browser,
@@ -96,97 +63,140 @@ test("a half-typed message in a live conversation survives opening the drawer, a
   }
 });
 
-test("over an issue page the drawer opens from the header, keeps its page, and Escape returns focus to the button", async ({
+// The rows of dispatch://INFRA-299 where the Inbox drawer opens over an issue page: the drawer's
+// card rows carry a priority picker of their own (`InboxDrawer`, `pane={false}`), so the issue's
+// priority has a second picker beside the page's own, and the drawer lists the reader's own rows,
+// so an assignee picked on the page decides whether the issue's row is listed there. The drawer
+// opens through the control the issue page draws for it (`openInboxDrawer`), and is modal: the
+// page under it is not pressed while it is open. Each save is held by Playwright's route control
+// at least `PICK_HOLD_MS` (`holdIssuePatches`), what the server received is read from the
+// issue's own events (`storedValues`), and the value stored from a fresh read once every save
+// has ended.
+
+/** A project, and an issue of it at P3 that `assignee` holds, with a question open on it that
+ *  nobody has handed on (`seedAsk`), so it has a row in the Inbox of whoever holds the issue. */
+async function issueWithQuestion(assignee: string): Promise<{ askId: string; key: string }> {
+  const { askId, issueKey } = await seedAsk("Ship it behind a flag?");
+  await patchIssue(issueKey, { assignee, priority: 3 });
+  return { askId, key: issueKey };
+}
+
+// SLOW(>=2s): two saves each held three seconds, with the drawer opened over the issue page.
+test("picker keeps the newest pick: a pick in the Inbox drawer's row after two in the issue page's own picker is the one the server stores last", async ({
   browser,
-}, testInfo) => {
-  const { askId, issueKey } = await seedAsk("Which label for the drawer?");
+}) => {
+  const { key } = await issueWithQuestion("alice");
+  const seq = await lastEventSeq(key);
   const context = await asUser(browser, "alice");
-  const page = await context.newPage();
   try {
-    await page.goto(`/issues/${issueKey}`);
-    await expect(
-      page.getByTestId("issue-header").getByRole("heading", { level: 1, name: "Drawer issue" })
-    ).toBeVisible();
-    // One name at both widths, so the trigger is read by width rather than by a second name
-    // (`peekTrigger`): this row runs above the compact width, where the rail carries it.
-    const trigger = peekTrigger(page);
-    await trigger.click();
-    await expect(drawer(page).getByTestId(`ask-${askId}`)).toBeVisible();
-    await expect(page).toHaveURL(new RegExp(`/issues/${issueKey}$`));
-    await attachShot(page, testInfo, "inbox-drawer-over-issue");
+    const page = await context.newPage();
+    const held = await holdIssuePatches(page, key);
+    const headerPicker = pagePicker(page, `Priority of ${key}`);
+    await page.goto(`/issues/${key}`);
+    await expect(headerPicker).toHaveValue("3");
 
-    await page.keyboard.press("Escape");
-    await expect(drawer(page)).toHaveCount(0);
-    await expect(trigger).toBeFocused();
-    await expect(
-      page.getByTestId("issue-header").getByRole("heading", { level: 1, name: "Drawer issue" })
-    ).toBeVisible();
+    await headerPicker.selectOption("1");
+    await expect.poll(() => held.sent.length).toBe(1);
+    // P1 is out, held: P2 waits its turn in the store's line, and P0, made in the other picker
+    // of the same field, takes it out.
+    await headerPicker.selectOption("2");
+    await expect(headerPicker).toHaveValue("2");
+    await openInboxDrawer(page);
+    const rowPicker = drawer(page).getByRole("combobox", { name: `Priority of ${key}` });
+    await expect(rowPicker).toHaveValue("2");
+    await rowPicker.selectOption("0");
+    await expect(rowPicker).toHaveValue("0");
+    expect(
+      held.sent.map((patch) => patch.body),
+      "P1 is still the only save out"
+    ).toEqual([{ priority: 1 }]);
+    held.release();
+    await savesEnded(page, held);
 
-    // A click outside the panel closes it too.
-    await trigger.click();
-    await expect(drawer(page)).toBeVisible();
-    await page.mouse.click(10, 10);
-    await expect(drawer(page)).toHaveCount(0);
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
+    ).toEqual([1, 0]);
+    expect(await getIssue(key)).toMatchObject({ priority: 0 });
+    await expect(headerPicker).toHaveValue("0");
   } finally {
     await context.close();
   }
 });
 
-// The drawer's phone half: below the compact width the top bar carries the same Peek, and the
-// panel it opens takes the whole screen rather than the side panel the row above opens. What
-// the drawer does once open is that row's, at any width.
-test("on a phone the inbox drawer opens from the compact top bar and covers the screen @phone", async ({
+// The assignee, picked on the issue page: the signed-in reader, alice, picked from another person,
+// bob, on an issue whose ask nobody handed on, so the issue's row enters her Inbox drawer at the
+// pick and the person it waits on follows the assignee (`useIssueAssignee`). The row stays in the
+// drawer from its first paint until every save ends - an answer that took it out would be the
+// older value - while a rename of the issue, made with the drawer open and the save held, has the
+// issue and the Inbox read again.
+// SLOW(>=2s): a save held three seconds while the issue and the Inbox are read again.
+test("picker keeps a pick on screen: the assignee on the issue page and on its Inbox row, over reads that answer while its save is out", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the full-screen drawer is the phone layout");
-  const { askId, issueKey } = await seedAsk("Which label for the drawer?");
+}) => {
+  const { askId, key } = await issueWithQuestion("bob");
+  const renamed = "Picked under a held save, renamed while it is out";
+  const inDrawer = '[role="dialog"][aria-label="Inbox"]';
+  // Nobody handed the ask on: it waits on bob, the issue's assignee.
+  expect((await getAsk(askId)).ask).toMatchObject({ asked_of: null, waiting_on_person: "bob" });
   const context = await asUser(browser, "alice");
-  const page = await context.newPage();
   try {
-    await page.goto(`/issues/${issueKey}`);
-    await peekTrigger(page).click();
-    await expect(drawer(page).getByTestId(`ask-${askId}`)).toBeVisible();
-    const box = await drawer(page).boundingBox();
-    const viewport = page.viewportSize();
-    expect(box?.x).toBe(0);
-    expect(box?.width).toBe(viewport?.width);
-    await attachShot(page, testInfo, "inbox-drawer-over-issue-phone");
-  } finally {
-    await context.close();
-  }
-});
+    const page = await context.newPage();
+    const shownOnPage = await watchShown(page, `Assignee of ${key}`, "main");
+    // The drawer lists the reader's own rows: the issue's row is listed, and draws its priority
+    // picker, while the issue's question waits on her - while she is its assignee. Its card names
+    // the person it waits on in its hand-on picker, which shows the assignee picked.
+    const listedInDrawer = await watchShown(page, `Priority of ${key}`, inDrawer);
+    const waitingInDrawer = await watchShown(page, "Hand this question to", inDrawer);
+    const held = await holdIssuePatches(page, key);
+    const detailReads = logReads(page, detailRead(key));
+    const inboxReads = logReads(page, inboxRead);
+    const picker = pagePicker(page, `Assignee of ${key}`);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("bob");
 
-test("`i` toggles the drawer, is listed in ?, and is not offered on the Inbox page itself", async ({
-  browser,
-}, testInfo) => {
-  await seedAsk("Is the shortcut listed?");
-  const context = await asUser(browser, "alice");
-  const page = await context.newPage();
-  try {
-    await page.goto("/agents");
-    await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
-    await page.locator("body").focus();
-    await page.keyboard.press("i");
-    await expect(drawer(page)).toBeVisible();
-    await attachShot(page, testInfo, "inbox-drawer-over-agents-list");
-    await page.getByRole("button", { name: "Close" }).click();
-    await expect(drawer(page)).toHaveCount(0);
+    // Its people are read once the reader reaches for the control.
+    await picker.focus();
+    await picker.selectOption("alice");
+    await expect.poll(() => shownOnPage.values.at(-1)).toBe("alice");
+    const fromPick = shownOnPage.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    await openInboxDrawer(page);
+    await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
+    // A rename of the issue, straight to the server, with the issue's row painted in the drawer
+    // and the save held: its live event has the page read the issue and its Inbox rows again, and
+    // each answer, carrying bob, lands while the save is held.
+    const renamedAt = Date.now();
+    await patchIssue(key, { title: renamed });
+    await expect
+      .poll(() => [detailReads, inboxReads].every((reads) => readAnsweredSince(reads, renamedAt)))
+      .toBe(true);
+    await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
 
-    await page.keyboard.press("?");
-    const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
-    const row = help.getByRole("listitem").filter({ hasText: "Open the inbox" });
-    await expect(row.locator("kbd")).toHaveText(["i"]);
-    await expect(row).toHaveAttribute("data-enabled", "true");
-    await page.keyboard.press("Escape");
+    expectReadWhileHeld(detailReads, held, renamedAt);
+    expectReadWhileHeld(inboxReads, held, renamedAt);
 
-    await page.goto("/");
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(1);
-    await page.locator("body").focus();
-    await page.keyboard.press("i");
-    await expect(drawer(page)).toHaveCount(0);
-    await expect(
-      page.getByRole("button", { name: "Peek at the inbox without leaving this page" })
-    ).toHaveCount(0);
+    expect(
+      shownOnPage.values.slice(fromPick),
+      "every assignee the page showed from the pick on"
+    ).toEqual(["alice"]);
+    // From the first paint of the issue's row in the drawer on, the row is listed - `(none)` is
+    // the row gone - and waits on alice alone, never on bob.
+    const fromListed = listedInDrawer.values.findIndex((value) => value !== "(none)");
+    expect(
+      listedInDrawer.values.slice(fromListed),
+      `the drawer's row of the issue, from its first paint: ${JSON.stringify(listedInDrawer.values)}`
+    ).toEqual(["3"]);
+    const fromDrawn = waitingInDrawer.values.findIndex((value) => value !== "(none)");
+    expect(
+      waitingInDrawer.values.slice(fromDrawn),
+      `the person the drawer's row waits on, from its first paint: ${JSON.stringify(waitingInDrawer.values)}`
+    ).toEqual(["alice"]);
+    expect(await getIssue(key)).toMatchObject({ assignee: "alice", title: renamed });
+    await expect(picker).toHaveValue("alice");
+    await expect(drawer(page).getByRole("combobox", { name: `Priority of ${key}` })).toBeVisible();
   } finally {
     await context.close();
   }

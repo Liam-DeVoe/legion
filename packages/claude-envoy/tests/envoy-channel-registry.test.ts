@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test"
-import { rm } from "node:fs/promises"
+import {
+  canonicalTopic,
+  legacyDispatchIssueSubject,
+  uncapturedTopicRefusal,
+} from "@legion/contracts"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
@@ -8,58 +12,76 @@ import {
   FakeNats,
   noInterest,
   recordingClient,
-  scratchState,
   sessionOptions,
   settled,
+  useScratchState,
   waitFor,
 } from "./channel-session-harness"
 import { isolatePaneEnvironment } from "./pane-environment"
 
 isolatePaneEnvironment()
 
+/**
+ * A person's removal of this session's subscriptions, as its own consumer's relay delivers it:
+ * every frame, a live removal included, reaches the session that way now.
+ */
+function relayRemoval(nats: FakeNats, event: string, topics: readonly string[], seq = 1): void {
+  nats.emitRelay("ses_claude", {
+    subject: directSubject,
+    seq,
+    reply: `_INBOX.${event}`,
+    raw: JSON.stringify({
+      event_id: event,
+      source: "dispatch",
+      topic: directSubject,
+      issued_at: 1,
+      payload_summary: "DSP-3 subscription removed",
+      payload: JSON.stringify({
+        issue_key: "DSP-3",
+        type: "subscription.removed",
+        actor: { kind: "user", id: "alice" },
+        payload: { session_id: "ses_claude", by: { kind: "user", id: "alice" }, topics },
+      }),
+    }),
+  })
+}
+
+const scratchState = useScratchState()
+
 test("drops local topics named by a human Dispatch subscription removal", async () => {
-  const nats = new FakeNats()
-  const stateDirectory = await scratchState()
+  const calls: string[] = []
+  const nats = new FakeNats(calls)
+  const stateDirectory = scratchState()
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
       connection: nats,
+      client: recordingClient(calls),
     }),
   )
   const topic = "notifications.dispatch.issue.DSP-3.>"
 
   try {
     await session.follow([topic])
-    nats.emit(
-      directSubject,
-      JSON.stringify({
-        event_id: "remove-1",
-        source: "dispatch",
-        payload: JSON.stringify({
-          issue_key: "DSP-3",
-          type: "subscription.removed",
-          actor: { kind: "user", id: "alice" },
-          payload: {
-            session_id: "ses_claude",
-            by: { kind: "user", id: "alice" },
-            topics: [topic],
-          },
-        }),
-      }),
+    relayRemoval(nats, "remove-1", [topic])
+    await waitFor(
+      async () => !session.topics().includes(topic),
+      "the removed topic to leave the session",
     )
-    await settled()
 
-    expect(nats.unsubscribed).toEqual([
-      "notifications.dispatch.issue.DSP-3",
-      "notifications.dispatch.issue.DSP-3.>",
+    // Both the base and the wildcard leave the session, and the removal's own registry write
+    // names the topic it named; the heartbeat's reconciliation takes the rest of the entry back
+    // in line with what the session follows.
+    expect(session.topics()).toEqual([directSubject])
+    expect(calls.filter((call) => call.startsWith("unsubscribe"))).toEqual([
+      "unsubscribe ses_claude notifications.dispatch.issue.DSP-3.>",
     ])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a resumed server rebuilds the interests its session id already registered and follow reports them as not fresh", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const subscribes: Array<readonly string[]> = []
   const issueTopic = "notifications.dispatch.issue.DSP-3.>"
@@ -87,22 +109,17 @@ test("a resumed server rebuilds the interests its session id already registered 
 
   try {
     expect(subscribes).toEqual([[directSubject, "notifications.dispatch.issue.DSP-3", issueTopic]])
-    // The relay subject (consumer delivery) is subscribed, never registered as a topic.
-    expect([...nats.subscriptions.keys()]).toEqual([
-      "notifications.envoy.deliver.ses_claude",
-      directSubject,
-      "notifications.dispatch.issue.DSP-3",
-      issueTopic,
-    ])
+    // The relay subject (consumer delivery) is the whole subscription set: a registered topic is
+    // what the session's consumer is filtered on, never a subscription of its own.
+    expect([...nats.subscriptions.keys()]).toEqual(["notifications.envoy.deliver.ses_claude"])
     expect(await session.follow([issueTopic])).toEqual([])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a registration in flight when a topic is unsubscribed cannot write it back into the entry", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   // The listener merges registered topics into the entry and only an unsubscribe removes one.
   const entry = new Set<string>()
   let held: PromiseWithResolvers<void> | undefined
@@ -144,12 +161,11 @@ test("a registration in flight when a topic is unsubscribed cannot write it back
     expect([...entry].sort()).toEqual([directSubject, kept])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a registration in flight when Dispatch removes a subscription cannot write the topic back", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const entry = new Set<string>()
   let held: PromiseWithResolvers<void> | undefined
@@ -186,36 +202,19 @@ test("a registration in flight when Dispatch removes a subscription cannot write
     held = undefined
     // Dispatch removes the topic from the entry itself, then tells the session.
     entry.delete(removed)
-    nats.emit(
-      directSubject,
-      JSON.stringify({
-        event_id: "remove-2",
-        source: "dispatch",
-        payload: JSON.stringify({
-          issue_key: "DSP-3",
-          type: "subscription.removed",
-          actor: { kind: "user", id: "alice" },
-          payload: {
-            session_id: "ses_claude",
-            by: { kind: "user", id: "alice" },
-            topics: [removed],
-          },
-        }),
-      }),
-    )
-    await settled()
+    relayRemoval(nats, "remove-2", [removed])
+    await waitFor(async () => !session.topics().includes(removed), "the removal to be taken")
     release.resolve()
     await following
     await waitFor(async () => !entry.has(removed), `${removed} to stay out of the entry`)
     expect([...entry].sort()).toEqual([directSubject, kept])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a registry removal that fails is reconciled by the next heartbeat, without stripping a topic re-followed since", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const entry = new Set<string>([directSubject])
   let failNextUnsubscribe = false
@@ -250,23 +249,7 @@ test("a registry removal that fails is reconciled by the next heartbeat, without
   try {
     await session.follow([staysRemoved, reFollowed])
     failNextUnsubscribe = true
-    nats.emit(
-      directSubject,
-      JSON.stringify({
-        event_id: "remove-reconcile",
-        source: "dispatch",
-        payload: JSON.stringify({
-          issue_key: "DSP-3",
-          type: "subscription.removed",
-          actor: { kind: "user", id: "alice" },
-          payload: {
-            session_id: "ses_claude",
-            by: { kind: "user", id: "alice" },
-            topics: [staysRemoved, reFollowed],
-          },
-        }),
-      }),
-    )
+    relayRemoval(nats, "remove-reconcile", [staysRemoved, reFollowed])
     await waitFor(async () => !failNextUnsubscribe, "the removal's own registry write to fail once")
     // Both are already out of local state; re-follow one before any heartbeat
     // reconciles. A stale retry replaying the failure-time topic list would strip
@@ -279,12 +262,11 @@ test("a registry removal that fails is reconciled by the next heartbeat, without
     expect([...entry].sort()).toEqual([directSubject, reFollowed])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a persistent reconciliation failure retries once after a delay of its own, then waits for the next heartbeat, rather than hot-looping", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   let getInterestAttempts = 0
   const client = recordingClient([], {
@@ -336,12 +318,11 @@ test("a persistent reconciliation failure retries once after a delay of its own,
     expect(scheduled).toHaveLength(1)
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a registration that times out is retried once inside forty seconds, and a success returns the cadence to the heartbeat", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const claudePid = 993
   let registryDown = false
@@ -421,12 +402,11 @@ test("a registration that times out is retried once inside forty seconds, and a 
     expect(scheduled[1]?.delayMs).toBeLessThanOrEqual(40_000)
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a registry read that fails at startup does not let the heartbeat delete the registered interests", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const alreadyRegistered = "notifications.dispatch.issue.DSP-5"
   const entry = new Set<string>([directSubject, alreadyRegistered])
@@ -465,12 +445,11 @@ test("a registry read that fails at startup does not let the heartbeat delete th
     expect(session.topics()).toContain(alreadyRegistered)
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a listener error that is not a 404 is not an absence, so the heartbeat still adopts", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const alreadyRegistered = "notifications.dispatch.issue.DSP-7"
   const entry = new Set<string>([directSubject, alreadyRegistered])
@@ -523,12 +502,11 @@ test("a listener error that is not a 404 is not an absence, so the heartbeat sti
     expect([...entry].sort()).toEqual([directSubject, alreadyRegistered])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a shutdown landing before the heartbeat's registry read leaves the registry entry alone", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const alreadyRegistered = "notifications.dispatch.issue.DSP-1"
   const entry = new Set<string>([directSubject, alreadyRegistered])
@@ -578,12 +556,11 @@ test("a shutdown landing before the heartbeat's registry read leaves the registr
   } finally {
     release.resolve()
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a shutdown landing inside the heartbeat's registry read leaves the registry entry alone", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const nats = new FakeNats()
   const alreadyRegistered = "notifications.dispatch.issue.DSP-2"
   const entry = new Set<string>([directSubject, alreadyRegistered])
@@ -644,12 +621,11 @@ test("a shutdown landing inside the heartbeat's registry read leaves the registr
   } finally {
     release.resolve()
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a Dispatch subscription removal that names no topics removes nothing", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const nats = new FakeNats(calls)
   const session = await startChannelSession(
@@ -663,25 +639,71 @@ test("a Dispatch subscription removal that names no topics removes nothing", asy
   try {
     await session.follow([topic])
     calls.length = 0
-    nats.emit(
-      directSubject,
-      JSON.stringify({
-        event_id: "remove-empty",
-        source: "dispatch",
-        payload: JSON.stringify({
-          issue_key: "DSP-3",
-          type: "subscription.removed",
-          actor: { kind: "user", id: "alice" },
-          payload: { session_id: "ses_claude", by: { kind: "user", id: "alice" }, topics: [] },
-        }),
-      }),
+    relayRemoval(nats, "remove-empty", [])
+    await waitFor(
+      async () => nats.repliesOn("_INBOX.remove-empty").includes("done"),
+      "the removal frame's done",
     )
-    await settled()
     expect(calls.filter((call) => call.includes("unsubscribe"))).toEqual([])
     expect(session.topics()).toEqual([directSubject, topic])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
+  }
+})
+
+// A topic the stream captures nothing of is left out of every registration
+// (`registrationTopics`), since the listener stores none: it drops such a topic from the row and
+// names it in a warning (INFRA-771). It is followed all the same when it came back from the
+// interest row a resume reads, and `follow`, which is the tool's call and nothing else, refuses
+// one its caller named itself, in the listener's own words.
+test("never registers a topic no stream subject captures, however it was followed", async () => {
+  const calls: string[] = []
+  const nats = new FakeNats(calls)
+  const stateDirectory = scratchState()
+  const subscribes: Array<readonly string[]> = []
+  const client = recordingClient(calls, {
+    getInterest: async () => ({
+      ...noInterest(),
+      // The row an earlier build left: it expanded `notifications.team.>` to the bare base
+      // beside it, which this build's stream captures nothing of.
+      topics: [directSubject, "notifications.team", "notifications.team.deploys"],
+    }),
+    subscribe: async (input) => {
+      subscribes.push(input.topics)
+      return noInterest()
+    },
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+      connection: nats,
+      client,
+    }),
+  )
+
+  try {
+    // The bare base came back with the row and is followed; no registration carried it.
+    expect(session.topics()).toEqual([
+      directSubject,
+      "notifications.team",
+      "notifications.team.deploys",
+    ])
+    expect(subscribes).toEqual([[directSubject, "notifications.team.deploys"]])
+
+    // The caller named the uncaptured topic itself, so the call is refused by name, in the one
+    // sentence the listener's own warning is generated from, and follows nothing of that call.
+    await expect(
+      session.follow(["notifications.lxspec.probe", "notifications.team.>"]),
+    ).rejects.toThrow(uncapturedTopicRefusal("notifications.lxspec.probe", "ses_claude"))
+    expect(session.topics()).not.toContain("notifications.lxspec.probe")
+
+    expect(await session.follow(["notifications.team.>"])).toEqual(["notifications.team.>"])
+    expect(subscribes.at(-1)).toEqual([
+      directSubject,
+      "notifications.team.deploys",
+      "notifications.team.>",
+    ])
+  } finally {
+    await session.shutdown()
   }
 })
 
@@ -689,7 +711,7 @@ test("a Dispatch subscription removal that names no topics removes nothing", asy
 // deregistration is what ends the session for its peers: a registry write this listener has
 // stalled on must delay it, never swallow it (dispatch://INFRA-392).
 test("the shutdown deregistration waits for a stalled registration, then goes out anyway", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const wedged = Promise.withResolvers<void>()
   let registrations = 0
@@ -718,7 +740,6 @@ test("the shutdown deregistration waits for a stalled registration, then goes ou
     expect(calls).toContain("unregister ses_claude")
   } finally {
     wedged.resolve()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
@@ -726,7 +747,7 @@ test("the shutdown deregistration waits for a stalled registration, then goes ou
 // a row left ten seconds before the DELETE was sent, and the process group is killed five
 // seconds after SIGTERM, so the record survived for the gone horizon (dispatch://INFRA-392).
 test("the shutdown deregistration spends a quarter second settling, not the whole of both waits", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const calls: string[] = []
   const wedged = Promise.withResolvers<void>()
   let registrations = 0
@@ -760,6 +781,62 @@ test("the shutdown deregistration spends a quarter second settling, not the whol
     expect(elapsed).toBeLessThan(2_000)
   } finally {
     wedged.resolve()
-    await rm(stateDirectory, { recursive: true, force: true })
+  }
+})
+
+// The listener's record keeps each topic as its caller wrote it, the old form of an issue's name
+// included (packages/envoy/internal/store/legacy_topics.go), and the heartbeat's reconciliation
+// (`syncRegisteredInterests`) unsubscribes every topic of the record the session does not follow
+// by that exact name. So a session that follows an issue in the old form reads its record back as
+// its own and unsubscribes nothing. The second row is the control the first leans on: a record
+// rewritten to the new form reads to this very comparison as a lost registration, unsubscribed on
+// one heartbeat and written back by the next, so a store that rewrote it would show here.
+test("a followed topic the record keeps in its old form is never unsubscribed, where a rewritten one would be", async () => {
+  const followed = legacyDispatchIssueSubject("INFRA-12", ">")
+  const rewritten = canonicalTopic(followed).canonical
+  expect(rewritten).toBe("notifications.dispatch.issue.INFRA.INFRA-12.>")
+  for (const { name, store, unsubscribed } of [
+    { name: "as the caller wrote it", store: (topic: string) => topic, unsubscribed: false },
+    {
+      name: "rewritten to the new form",
+      store: (topic: string) => canonicalTopic(topic).canonical,
+      unsubscribed: true,
+    },
+  ]) {
+    const stateDirectory = scratchState()
+    const entry = new Set<string>()
+    const unsubscribes: string[] = []
+    let reads = 0
+    const client = recordingClient([], {
+      subscribe: async (input) => {
+        for (const topic of input.topics) entry.add(store(topic))
+        return noInterest()
+      },
+      unsubscribe: async (input) => {
+        unsubscribes.push(...input.topics)
+        for (const topic of input.topics) entry.delete(topic)
+      },
+      getInterest: async (sessionID) => {
+        reads++
+        return { ...noInterest(), session_id: sessionID, topics: [...entry] }
+      },
+    })
+    const session = await startChannelSession(
+      sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+        connection: new FakeNats(),
+        client,
+        heartbeatMs: 20,
+      }),
+    )
+    try {
+      await session.follow([followed])
+      const followedAt = reads
+      await waitFor(async () => reads >= followedAt + 3, `three heartbeats with the record ${name}`)
+      expect(unsubscribes.includes(rewritten), name).toBe(unsubscribed)
+      if (!unsubscribed) expect(unsubscribes, name).toEqual([])
+      expect(session.topics(), name).toContain(followed)
+    } finally {
+      await session.shutdown()
+    }
   }
 })

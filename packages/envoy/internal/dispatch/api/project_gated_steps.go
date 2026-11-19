@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's gated steps are the design-gate steps the Legion deployment that serves it gates,
@@ -39,11 +40,19 @@ type projectGatedSteps struct {
 // the deployment keeps one gate record per step, so a second naming is either a mistake or an
 // order it cannot keep, and the database's check admits it (it holds the shape, not the route's
 // input rules).
+
+// projectGatedStepsInput is the body PUT /api/v1/projects/{key}/gated-steps takes. Steps is
+// required: a body without it is refused (400 INVALID_PROJECT, putProjectGatedSteps below)
+// rather than read as the empty list, so a malformed publish cannot clear a gate. It is a
+// pointer so that an absent list and an explicit `[]` are told apart, and the enum is the three
+// steps model.GatedStepsKnown names, which the handler refuses anything outside.
+type projectGatedStepsInput struct {
+	Steps *[]string    `json:"steps" required:"true" enum:"decisions,criteria,spec"`
+	Actor *model.Actor `json:"actor"`
+}
+
 func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Steps *[]string    `json:"steps"`
-		Actor *model.Actor `json:"actor"`
-	}
+	var input projectGatedStepsInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -89,6 +98,18 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The project's owner lock before its row's update, as every projects writer takes them
+	// (createIssue, putProjectDefaultAssignee, lockEventOwner). Taking the row first and the lock
+	// at the append below waited, holding the row, on an issue create that holds the lock in its
+	// read phase and waits for the row to number the issue: the daemon publishes this list at
+	// every boot, beside the creates of the project's sessions, and Postgres broke that cycle by
+	// failing one of the two (`deadlock detected`, 500). The lock assigns no transaction id; the
+	// update is the first statement that writes, and one that finds the list unchanged writes
+	// nothing.
+	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(project.Key)); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.QueryRow(r.Context(), `
 		update projects set gated_steps = $2
 		where key = $1 and gated_steps is distinct from $2
@@ -112,6 +133,6 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: project.GatedSteps})
 }

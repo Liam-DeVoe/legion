@@ -3,8 +3,8 @@
 // a round trip per key in it, per deregistration. At the fleet's role count that ran out the
 // route's own budget (sendRequestBudget, 3.5 s), so DELETE /v1/interests/<session_id> answered the
 // bus-unavailable 503 writeStoreError gives store work that did not answer, naming the read of
-// some other session's claim. The sweep now reads the roles the session holds from the role claim
-// view, which makes no bucket call.
+// some other session's claim. The release now takes the roles the session holds from its interest
+// record and from the role claim view, which makes no bucket call.
 //
 // internal/store's role_claim_sweep_test.go proves that on the store's own surface. These two
 // cases prove it where the 503 was measured: the route. They drive both real callers of
@@ -14,10 +14,14 @@
 // 5,000 claims held by other sessions, through the listener's own mux.
 //
 // Each case's session holds two of its own claims, one per way a deregistration can find a claim:
-// the role its interest record names, which POST /v1/roles/set leaves there and the pass over the
-// record releases (releaseRoleClaims), and a role the record does not name, which only the claim
-// view can name (releaseAllRoleClaims) - the path this change rewrote. A case written with the
-// record's role alone would pass with no view sweep at all.
+// the role its interest record names, which POST /v1/roles/set leaves there and the deregistration
+// finds among the record's role topics, and a role the record does not name, which only the claim
+// view can name - the path this change rewrote. Both are released by one release of the two
+// sources' roles together (releaseAllRoleClaims). A case written with the record's role alone
+// would pass with no view sweep at all. Both claims name the process holding them
+// (holdingProcess), and the unsubscribe states that process: a release frees only the claims of
+// the process it states, and a claim that names no process is freed by nothing but the DELETE's
+// force.
 //
 // A third case drives the DELETE over a role bucket of about 20,000 claims with the role claim
 // view held where it cannot be served, which is the state a listener warming up, or one whose
@@ -31,6 +35,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,12 +57,20 @@ const (
 	// must not pay for, and it is the order of magnitude the issue was filed at.
 	sweepRouteOtherClaims = 5000
 	// sweepRouteDegradedOtherClaims is sweepRouteOtherClaims for the case that holds the role
-	// claim view where it cannot be served. It is 20,000 because that is the count the per-key
-	// read was measured at: over a bucket of that size every deregistration ran the fallback's
-	// read per key, and DELETE /v1/interests/<session_id> answered 503 after 3.5 s, the route's
-	// own budget. A smaller bucket would answer inside that budget with the read per key still
-	// in place, so it would not stand against the measurement this case is here to beat.
-	sweepRouteDegradedOtherClaims = 20000
+	// claim view where it cannot be served. What that case proves is the counts -- one scan, one
+	// Get, one Delete per claim the session holds -- so this number is chosen to leave the scan
+	// far inside the route's own budget rather than to sit against it.
+	//
+	// It was 20,000, picked because that was the bucket size at which the old read per key
+	// answered 503 at the budget. That made the case a stopwatch: its one scan carries every
+	// claim's payload, which over 20,002 claims measured 3.50 s to 3.54 s against the route's
+	// 3.5 s in a loaded two-CPU pod, so the case failed 20 of 20 there, on main's head as much as
+	// on any branch, while CI's faster runner passed it. The size proves nothing the counts do
+	// not: a read per key sends a Get for every claim the scan delivered, which this case counts.
+	// At 2,000 the scan measures about 0.4 s of that 3.5 s, and a read per key would cost 2,001
+	// Gets and, at sweepRouteCallDelay each, over twenty seconds, so it fails on the count and on
+	// the route's own refusal alike.
+	sweepRouteDegradedOtherClaims = 2000
 	// sweepRouteClaimsHeld is how many claims each case's own session holds: the role its
 	// interest record names and the role only the claim view names.
 	sweepRouteClaimsHeld = 2
@@ -136,11 +149,12 @@ func delayRoleBucketCalls(t *testing.T, registry *store.Registry) *sweepRouteRol
 	return handle
 }
 
-// putSweepRouteRoleClaim stores role's claim naming holder, as a claim POST /v1/roles/set wrote
-// reads from the bucket. It returns its error rather than failing the test, because the pool below
-// calls it from goroutines of its own.
-func putSweepRouteRoleClaim(kv natsgo.KeyValue, role, holder string) error {
-	value, err := json.Marshal(store.RoleClaim{HolderSessionID: holder, ClaimedAt: time.Now().UnixMilli()})
+// putSweepRouteRoleClaim stores role's claim naming holder, and instance as the process holding it
+// (none where instance is empty), as a claim POST /v1/roles/set wrote reads from the bucket. It
+// returns its error rather than failing the test, because the pool below calls it from goroutines
+// of its own.
+func putSweepRouteRoleClaim(kv natsgo.KeyValue, role, holder, instance string) error {
+	value, err := json.Marshal(store.RoleClaim{HolderSessionID: holder, ClaimedAt: time.Now().UnixMilli(), ClientInstanceID: instance})
 	if err != nil {
 		return err
 	}
@@ -167,7 +181,7 @@ func seedOtherSessionsRoleClaims(t *testing.T, kv natsgo.KeyValue, count int) {
 		go func() {
 			defer pool.Done()
 			for role := range pending {
-				if err := putSweepRouteRoleClaim(kv, role, "ses_holder_of_"+role); err != nil {
+				if err := putSweepRouteRoleClaim(kv, role, "ses_holder_of_"+role, ""); err != nil {
 					failed.Do(func() { firstFailure = err })
 				}
 			}
@@ -229,15 +243,15 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 		},
 		{
 			// The other caller of Remove with no topics, which smoke-clear-rebind.sh drives: an
-			// unsubscribe whose request names no topic clears the session's interests and its role
-			// claims exactly as the DELETE does, and answers the topics it removed - none.
+			// unsubscribe whose request names no topic clears the session's interests and the role
+			// claims of the process it states, and answers the topics it removed - none.
 			name:         "POST /v1/interests/unsubscribe with an empty topic list",
 			sessionID:    "ses_sweep_route_unsubscribe",
 			onRecordRole: "sweep-route-unsubscribe-on-record",
 			viewOnlyRole: "sweep-route-unsubscribe-view-only",
 			method:       http.MethodPost,
 			path:         "/v1/interests/unsubscribe",
-			body:         `{"session_id":"ses_sweep_route_unsubscribe"}`,
+			body:         `{"session_id":"ses_sweep_route_unsubscribe","client_instance_id":"` + holdingProcess + `"}`,
 			wantStatus:   http.StatusOK,
 			wantBody:     `{"removed":[]}`,
 		},
@@ -259,11 +273,16 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 
 	roleKV := registryRoleKV(t, registry)
 	for _, testCase := range cases {
-		claimRoles(t, registry, testCase.sessionID, testCase.onRecordRole)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		claim := store.RoleClaimRequest{SessionID: testCase.sessionID, MachineID: "test-machine", ClientInstanceID: holdingProcess, Role: testCase.onRecordRole}
+		if _, err := registry.SetRoleWithPrevious(ctx, claim); err != nil {
+			t.Fatalf("claim %s for %s: %v", testCase.onRecordRole, testCase.sessionID, err)
+		}
+		cancel()
 		// The view-only claim is written straight to the bucket, so the session's interest record
 		// never names this role and the pass over that record cannot release it: the claim view is
 		// the only place the deregistration can learn the session holds it.
-		if err := putSweepRouteRoleClaim(roleKV, testCase.viewOnlyRole, testCase.sessionID); err != nil {
+		if err := putSweepRouteRoleClaim(roleKV, testCase.viewOnlyRole, testCase.sessionID, holdingProcess); err != nil {
 			t.Fatalf("seed %s's claim on %s: %v", testCase.sessionID, testCase.viewOnlyRole, err)
 		}
 	}
@@ -353,17 +372,25 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 	}
 }
 
-// Acceptance criterion A3. A deregistration whose role claim view cannot be served answers inside
-// the route's own budget over a role bucket of about 20,000 claims, and releases the two claims
-// its session holds.
+// Acceptance criterion A3. A deregistration whose role claim view cannot be served costs one scan
+// of the role bucket and not a read of each of its claims, and releases the two claims its
+// session holds, through the real route and under the real budget that route carries.
 //
 // This is the degraded path, the one the issue's measurement was taken on. While that view cannot
 // be served - a listener warming up, or a copy past its stale bound - every deregistration takes
-// store.Registry.releaseAllRoleClaimsByScan, and over a bucket of this size the read that
-// fallback made per key answered DELETE /v1/interests/<session_id> 503 after 3.5 s, the route's
-// own budget. The fallback now reads every claim's value and revision from the one scan it
-// already makes, so past that scan it sends nothing but the deletes it owes, and the same
-// request answers its 204 inside the same budget.
+// store.Registry.releaseAllRoleClaimsByScan, and the read that fallback once made per key
+// answered DELETE /v1/interests/<session_id> 503 at the route's own budget. The fallback now
+// reads every claim's value and revision from the one scan it already makes, so past that scan it
+// sends nothing but the deletes it owes, and the same request answers 204.
+//
+// What this case reads that by is the counts, not a clock of its own. The route carries
+// sendRequestBudget and refuses what overruns it, so a fallback that went back to a read per key
+// fails the 204 below; and the Gets counted below name it outright whether or not the clock ever
+// noticed. The case once asserted the elapsed time as well, over a bucket of 20,000 claims sized
+// so that the old per-key read would just miss the budget, and that made its verdict a property
+// of the machine: 20 of 20 executions failed in a loaded two-CPU pod, at main's head as much as
+// on a branch, landing between 3.50 s and 3.54 s against 3.5 s, while CI's faster runner passed
+// it (sweepRouteDegradedOtherClaims).
 //
 // What holds the view unready is refuseRoleClaimView: it stops the watcher that feeds the view and
 // puts in its place one that was never started, which has completed no read of its bucket and so
@@ -375,23 +402,19 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 // fallback is taken for that refusal alone, over a view that had seen the whole bucket rather
 // than one still filling.
 //
-// The call counts are the sharp evidence beside the clock, as they are above: one Get and one
-// Delete on the role the session's interest record names, which the pass over that record
-// releases before the sweep (releaseRoleClaims); one Delete and no Get on the role the record
-// does not name, which only a read of the bucket can find and whose claim and revision the scan
-// carries; and no call of either kind on the 20,000 claims other sessions hold, which is also
-// what says those claims are still theirs. Two deletes in all is the whole of what this
-// deregistration sent the bucket past its scan. A read per key put back sends a Get of its own
-// for every claim the scan delivered, each delayed by sweepRouteCallDelay, so it is measured
-// here as that 503 at the deadline, naming some other session's claim, rather than by a count
-// alone.
+// The call counts: one Get and one Delete on the role the session's interest record names, which
+// the deregistration releases from that record before it falls back to the scan
+// (releaseAllRoleClaims); one Delete and no Get on the role the record does not name, which only a
+// read of the bucket can find and whose claim and revision the scan carries; and no call of either
+// kind on the claims other sessions hold, which is also what says those claims are still theirs.
+// Two deletes in all is the whole of what this deregistration sent the bucket past its scan. A
+// read per key put back sends a Get of its own for every claim the scan delivered, which this case
+// counts and refuses.
 //
-// The fixture is seeded once for the whole function, as the one above is: seeding 20,000 claims
-// measured about 1.2 s in this pod, and the acceptance check runs this with -count=20, which
-// seeds them twenty times over, about 24 s of the run. The seeding runs through the registry's
-// own role bucket handle before the counting one is installed, so no fixture write is counted as
-// the request's.
-func TestADeregistrationOnARoleClaimViewThatCannotBeServedAnswersInsideTheRouteBudgetOverTwentyThousandClaims(t *testing.T) {
+// The fixture is seeded once for the whole function, as the one above is. The seeding runs
+// through the registry's own role bucket handle before the counting one is installed, so no
+// fixture write is counted as the request's.
+func TestADeregistrationOnARoleClaimViewThatCannotBeServedCostsOneScanAndNotAReadPerClaim(t *testing.T) {
 	const (
 		sessionID    = "ses_sweep_route_degraded"
 		topic        = "notifications.team.sweep-route-degraded"
@@ -409,7 +432,7 @@ func TestADeregistrationOnARoleClaimViewThatCannotBeServedAnswersInsideTheRouteB
 	// The second claim is written straight to the bucket, so the session's interest record never
 	// names this role and the pass over that record cannot release it: the scan is the only place
 	// this deregistration can learn the session holds it.
-	if err := putSweepRouteRoleClaim(roleKV, scanOnlyRole, sessionID); err != nil {
+	if err := putSweepRouteRoleClaim(roleKV, scanOnlyRole, sessionID, ""); err != nil {
 		t.Fatalf("seed %s's claim on %s: %v", sessionID, scanOnlyRole, err)
 	}
 	seedingStarted := time.Now()
@@ -454,13 +477,17 @@ func TestADeregistrationOnARoleClaimViewThatCannotBeServedAnswersInsideTheRouteB
 	// The counts are read before anything else this case does touches the bucket, so they are the
 	// request's own calls and no later read's.
 	gets, deletes := handle.totals()
-	t.Logf("DELETE /v1/interests/%s on a role claim view that cannot be served answered %d in %s after %d Gets and %d Deletes on a role bucket of %d claims; body %q",
-		sessionID, recorder.Code, elapsed, gets, deletes, wantClaims, strings.TrimSpace(recorder.Body.String()))
+	t.Logf("DELETE /v1/interests/%s on a role claim view that cannot be served answered %d in %s, %s of the route's own %s budget, after %d Gets and %d Deletes on a role bucket of %d claims; body %q",
+		sessionID, recorder.Code, elapsed.Round(time.Millisecond),
+		(sendRequestBudget - elapsed).Round(time.Millisecond), sendRequestBudget,
+		gets, deletes, wantClaims, strings.TrimSpace(recorder.Body.String()))
 
-	if elapsed >= sendRequestBudget {
-		t.Fatalf("DELETE /v1/interests/%s answered %d after %s, outside the route's own budget of %s: the fallback must cost one scan of the bucket, not a read of each of its %d claims",
-			sessionID, recorder.Code, elapsed, sendRequestBudget, wantClaims)
-	}
+	// The route carries its own 3.5 s and this case does not second-guess it with a stopwatch of
+	// its own: a fallback that read the bucket per key would spend sweepRouteCallDelay on each of
+	// the claims the scan delivered, so the route would refuse it and the 204 below would fail,
+	// and the Gets counted below would name it outright whatever the clock had done. Asserting
+	// the elapsed time here instead is what made this case fail 20 of 20 in a loaded two-CPU pod
+	// while CI passed it (sweepRouteDegradedOtherClaims).
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("DELETE /v1/interests/%s: status %d, body %s; want 204", sessionID, recorder.Code, recorder.Body.String())
 	}

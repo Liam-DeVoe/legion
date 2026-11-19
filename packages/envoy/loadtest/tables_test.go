@@ -79,31 +79,45 @@ func TestTablesRenderTheSamplersAndTheirFailedReads(t *testing.T) {
 			LockType: "advisory", Target: "commit_order_lock", Mode: "ExclusiveLock", WaitersP50: 12, WaitersMax: 40, ShareWithWaiter: 0.96,
 			TopPairs: []waitPair{{WaiterQuery: "select a | b", BlockerQuery: "", Count: 800}},
 		}}},
+		XIDHolds: &xactSummary{IntervalMs: 10, Samples: 17000, SamplesPerS: 94.4, XIDHolders: 640, CommittedEvents: 700,
+			XIDHoldMs: stat{N: 640, P50: 180, P99: 1900, Max: 2400}, XactMs: stat{N: 640, P50: 400, P99: 2600, Max: 3100},
+			IdleInXactWithXIDMs: stat{N: 640, P50: 120, P99: 1500, Max: 2000}, IdleInXactNoXIDMs: stat{N: 640, P50: 0, P99: 300, Max: 450},
+			LongestXIDHolders: []xidHolder{{HoldMs: 2400, XactMs: 3100, Query: "update a | b"}, {HoldMs: 2100, XactMs: 2500, Query: ""}}},
 	}
-	// Samplers that failed: the lock probe never connected, the ungranted-lock sampler's reads all
-	// failed, the transaction-id probe has no rate.
+	// Samplers that failed: the lock probe and the transaction-id hold sampler never connected, the
+	// ungranted-lock sampler's reads all failed, the transaction-id probe has no rate.
 	failed := summary{
 		Config:          summaryConfig{Step: "failed"},
 		Resources:       &resourcesSummary{},
 		CommitOrderLock: lockSummary{Errors: 1},
+		XIDHolds:        &xactSummary{IntervalMs: 10, Errors: 1},
 		UngrantedLocks:  ungrantedSummary{Errors: 160},
 	}
-	md := renderTables([]stepData{{name: "failed", sum: failed}, {name: "new", sum: cur}})
+	// The transaction-id hold sampler turned off (-xact-interval 0).
+	off := summary{Config: summaryConfig{Step: "off"}, XIDHolds: &xactSummary{}}
+	md := renderTables([]stepData{{name: "failed", sum: failed}, {name: "new", sum: cur}, {name: "off", sum: off}})
 
 	for _, c := range []struct{ title, failed, cur string }{
 		{"Delivery from sending, and live socket frames", "| failed | - | - | - | 0 | 0 |", "| new | 120 / 900 | 40 / 300 | 5 / 60 | 1,200 | 2 |"},
 		{"Commit-order lock", "| failed (1 failed read) | - | - | - | - | - |", "| new | - | - | - | - | - |"},
 		{"Ungranted locks", "| failed (160 failed reads) | - | - | - |", `| new | 97% | advisory commit_order_lock ExclusiveLock 96%, 12 / 40 | select a \| b → (none) (800) |`},
 		{"Transaction ids", "| failed | - |", "| new | 412.3 |"},
+		{"Transaction-id holds", "| failed (1 failed read) | - | - | - | - | - | - | - |",
+			`| new | 10 (94) | 640 / 700 | 180 / 1,900 / 2,400 | 400 / 2,600 / 3,100 | 120 / 1,500 / 2,000 | 0 / 300 / 450 | 2,400 update a \| b; 2,100 (none) |`},
+		{"Transaction-id holds", "| off | off | - | - | - | - | - | - |", "| off | off | - | - | - | - | - | - |"},
 	} {
 		text := section(md, c.title)
 		if !strings.Contains(text, c.failed+"\n") || !strings.Contains(text, c.cur+"\n") {
 			t.Errorf("section %q lacks %q or %q:\n%s", c.title, c.failed, c.cur, text)
 		}
 	}
-	for _, c := range []struct{ title, key string }{{"Commit-order lock", "commit_order_lock.errors"}, {"Ungranted locks", "ungranted_locks.errors"}} {
-		if note := noteLine(section(md, c.title), "(<n> failed reads)"); !strings.Contains(note, "`"+c.key+"`") {
-			t.Errorf("section %q has no note of the failed-reads mark that names summary.json `%s`:\n%s", c.title, c.key, md)
+	for _, c := range []struct{ title, view, key string }{
+		{"Commit-order lock", "pg_locks", "commit_order_lock.errors"},
+		{"Ungranted locks", "pg_locks", "ungranted_locks.errors"},
+		{"Transaction-id holds", "pg_stat_activity", "xid_holds.errors"},
+	} {
+		if note := noteLine(section(md, c.title), "(<n> failed reads)"); !strings.Contains(note, "read of "+c.view) || !strings.Contains(note, "`"+c.key+"`") {
+			t.Errorf("section %q has no note of the failed-reads mark that names the read of %s and summary.json `%s`:\n%s", c.title, c.view, c.key, md)
 		}
 	}
 	if strings.Contains(md, "| new (") {
@@ -181,14 +195,14 @@ func TestTablesResourcesShowFailedSamplerReadsAsMissing(t *testing.T) {
 	checkRowWidths(t, md)
 }
 
-// TestTablesDoNotShowUnreadCommitsAsZero: a step whose loadtest.event_commits could not be read
-// (events.commits_error: a foreign run's database without the commit trigger, or an unreachable
-// -pg) knows nothing about its commits, receipts or delivery: Committed is 0 because nothing was
-// read, not because nothing committed. Its tables must not present that 0 as a measurement: the
-// committed rate, the issue-topic receipts and each kind's committed count are not 0; each table
-// with cells that depend on the commit rows marks the row, shows "-" in those cells and names
-// events.commits_error in a note; the other cells keep their values; and neither a step whose
-// commit rows were read nor a table that no commit row feeds carries the mark.
+// TestTablesDoNotShowUnreadCommitsAsZero: a step whose public.loadtest_event_commits could not be
+// read (events.commits_error: a foreign run's database without the commit trigger, or an
+// unreachable -pg) knows nothing about its commits, receipts or delivery: Committed is 0 because
+// nothing was read, not because nothing committed. Its tables must not present that 0 as a
+// measurement: the committed rate, the issue-topic receipts and each kind's committed count are
+// not 0; each table with cells that depend on the commit rows marks the row, shows "-" in those
+// cells and names events.commits_error in a note; the other cells keep their values; and neither
+// a step whose commit rows were read nor a table that no commit row feeds carries the mark.
 func TestTablesDoNotShowUnreadCommitsAsZero(t *testing.T) {
 	perOp := 0.0123
 	read := stepData{name: "read", sum: summary{
@@ -208,7 +222,7 @@ func TestTablesDoNotShowUnreadCommitsAsZero(t *testing.T) {
 				kindComment:  {Offered: 1, WriteMs: stat{N: 1, P50: 118, P99: 118}},
 				kindAnchored: {Offered: 8, WriteMs: stat{N: 8, P50: 670, P99: 720}},
 			},
-			CommitsError: `read loadtest.event_commits (is commit-trigger.sql installed?): ERROR: relation "loadtest.event_commits" does not exist (SQLSTATE 42P01)`,
+			CommitsError: `read public.loadtest_event_commits (is commit-trigger.sql installed?): ERROR: relation "public.loadtest_event_commits" does not exist (SQLSTATE 42P01)`,
 		},
 		Resources: &resourcesSummary{},
 		Live:      liveSummary{Frames: 40, FrameMsFromCreatedAt: stat{N: 40, P50: 30, P99: 80}},
@@ -297,6 +311,47 @@ func TestTablesMarkAFailedTransactionIDRead(t *testing.T) {
 		t.Errorf("no note of the failed-reads mark names summary.json `resources.xid_read_error`:\n%s", text)
 	}
 	checkRowWidths(t, md)
+}
+
+func TestTablesRenderTheRestartScenario(t *testing.T) {
+	dispatchCPU, pgCPU := 41.5, 30.25
+	cur := summary{
+		Config: summaryConfig{Step: "restart"},
+		LiveReconnects: &reconnectSummary{Stale: 1, Groups: map[string]reconnectGroup{
+			"all": {Reconnects: 3, Complete: 1, AfterRestart: 2, ReplayBytesTotal: 20 << 20, Refetches: 2, RefetchRequests: 12, RefetchFailures: 1,
+				RefetchBytes: 300 << 10, RefetchMs: stat{N: 12, P50: 40, P99: 90}, ReplayBytes: stat{N: 3, P50: 2048, Max: 20 << 20}},
+			reconnectStale: {Reconnects: 1, ReplayBytesTotal: 20 << 20, ReplayFrames: stat{N: 1, P50: 12600, Max: 12600}, Refetches: 1},
+		}},
+		Restart: &restartSummary{AtS: 30, DurationS: 4.25, OldPID: 10, NewPID: 20, DispatchCPUS: &dispatchCPU,
+			DispatchCPUSPer5s: []float64{0.5, 6, 4.25}, PostgresCPUS: &pgCPU},
+		CommentMentions: &mentionSummary{Frac: 0.2, PerComment: 3,
+			Window:       mentionSplit{With: mentionGroup{Offered: 10, OK2xx: 9, WriteMs: stat{N: 9, P50: 700, P99: 1500}}, Without: mentionGroup{Offered: 40, OK2xx: 40, WriteMs: stat{N: 40, P50: 60, P99: 200}}},
+			AfterRestart: &mentionSplit{With: mentionGroup{Offered: 2, OK2xx: 1, WriteMs: stat{N: 1, P50: 900, P99: 900}}},
+		},
+	}
+	md := renderTables([]stepData{{name: "old", sum: summary{Config: summaryConfig{Step: "old"}}}, {name: "restart", sum: cur}})
+
+	for _, c := range []struct {
+		title, old string
+		cur        []string
+	}{
+		{"Live reconnects", "| old | - | - | - | - | - | - | - | - | - | - | - | - | - | - |", []string{
+			"| restart | all | 3 (1) | 2 | 0 | - | - | - | 2 / 20,480 | 20,480 | - | 2 | 12 (1) | 300 | 40 / 90 |",
+			"| restart | stale | 1 (0) | 0 | 0 | - | - | 12,600 / 12,600 | - | 20,480 | - | 1 | 0 (0) | 0 | - |",
+		}},
+		{"Restart", "| old | - | - | - | - | - | - | - | - |", []string{"| restart | 30 | 4.2 | 10 → 20 | 41.50 | 0.50 6.00 4.25 | 30.25 | - | - |"}},
+		{"Comment mentions", "| old | - | - | - | - | - |", []string{"| restart | 20% / 3 | 700 / 1,500 (9 / 10) | 60 / 200 (40 / 40) | 900 / 900 (1 / 2) | - |"}},
+	} {
+		text := section(md, c.title)
+		if !strings.Contains(text, c.old+"\n") {
+			t.Errorf("section %q lacks %q:\n%s", c.title, c.old, text)
+		}
+		for _, want := range c.cur {
+			if !strings.Contains(text, want+"\n") {
+				t.Errorf("section %q lacks %q:\n%s", c.title, want, text)
+			}
+		}
+	}
 }
 
 func TestTablesRenderEditorsAndRoomsPerStep(t *testing.T) {
@@ -415,6 +470,40 @@ func TestTablesReadTheOlderLiveTransport(t *testing.T) {
 	}
 	if note := noteLine(text, "transport:"); !strings.Contains(note, "`live.transport`") {
 		t.Errorf("no note of the transport column names summary.json `live.transport`:\n%s", text)
+	}
+	checkRowWidths(t, md)
+}
+
+// TestTablesShowEachPopulationOfATwoPopulationStep: a step that drove both populations
+// (summary.json `populations`) gets a row per population, so the report shows production's own
+// writes and reads beside the loop's at every factor; a step that drove one adds no such table.
+func TestTablesShowEachPopulationOfATwoPopulationStep(t *testing.T) {
+	one := stepData{name: "step-0x", sum: summary{Config: summaryConfig{Step: "step-0x"}}}
+	if md := renderTables([]stepData{one}); strings.Contains(md, "Each population") {
+		t.Fatalf("a step that drove one population got a populations table:\n%s", md)
+	}
+	two := stepData{name: "step-6x", sum: summary{
+		Config: summaryConfig{Step: "step-6x", EventsPerS: 25, RequestsPerS: 291},
+		Events: eventsSummary{Offered: 250, OfferedPerS: 25},
+		Populations: []populationSummary{
+			{Name: populationBaseline, Seed: "/work/seed.json", EventMix: eventMix{Name: defaultEventMix},
+				RouteMix: defaultRouteMixName, EventsPerS: 4, RequestsPerS: 60,
+				Events:   eventsSummary{OfferedPerS: 4, CommittedPerS: 4, IssueTopicReceipts: 120, ExpectedIssueTopicReceipts: 120},
+				Requests: requestsSummary{Sent: 600, SentPerS: 60, OK2xx: 600}},
+			{Name: populationLoop, Seed: "/work/loopseed.seed.json", EventMix: eventMix{Name: loopEventMix},
+				RouteMix: "routes-spec-loop-2026-11-03.txt", EventsPerS: 21, RequestsPerS: 231,
+				Events:   eventsSummary{OfferedPerS: 21, CommittedPerS: 20, IssueTopicReceipts: 600, ExpectedIssueTopicReceipts: 630},
+				Requests: requestsSummary{Sent: 2310, SentPerS: 231, OK2xx: 2300}},
+		},
+	}}
+	md := renderTables([]stepData{two})
+	text := section(md, "Each population of a two-population step")
+	for _, want := range []string{"| step-6x | baseline | /work/seed.json | " + defaultEventMix + " | 4.00 / 4.00 / 4.00 |",
+		"| step-6x | loop | /work/loopseed.seed.json | " + loopEventMix + " | 21.00 / 21.00 / 20.00 |",
+		"| 60.0 / 60.0 | 100.0% |", "| 231.0 / 231.0 | 99.6% |"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the populations table lacks %q:\n%s", want, text)
+		}
 	}
 	checkRowWidths(t, md)
 }

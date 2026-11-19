@@ -70,7 +70,7 @@ type Answerer interface {
 // createGoingRequestInput is one question as a caller asks it: the words, and the project they
 // are asked of. An empty project asks of every project, as search reads its own filter.
 type createGoingRequestInput struct {
-	Words   string `json:"words"`
+	Words   string `json:"words" required:"true"`
 	Project string `json:"project"`
 }
 
@@ -221,7 +221,11 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 // search past what the caller asked of.
 func (s *server) goingSearch(project string) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
-		found, err := s.runSearch(ctx, q, project, searchDefaultLimit, 0)
+		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
+		// reading each hit for display would be work no reader of this answer ever sees, which is
+		// what these parameters leaving trees unset says.
+		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0}
+		found, err := s.runSearch(ctx, parameters)
 		if err != nil {
 			return nil, err
 		}

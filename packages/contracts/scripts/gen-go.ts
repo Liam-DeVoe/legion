@@ -7,7 +7,12 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
+  DISPATCH_READ_ONLY_TOKEN,
   DISPATCH_SIGN_IN_REQUIRED,
+  DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
+  DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
+  DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
+  DOCUMENT_NEWER_CONTENT_CLOSE_REASON,
   DOCUMENT_SCHEMA_CLOSE_CODE,
   DOCUMENT_SCHEMA_CLOSE_REASON,
   ID_AMBIGUOUS,
@@ -29,11 +34,16 @@ import {
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
   LIVE_SOCKET_MIN_AGE_MS,
   MAX_BROADCAST_RECIPIENTS,
+  MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
+  REFERENCE_TARGETS_MAX,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
+  SEARCH_OPERATOR_EXCLUDE,
+  SEARCH_OPERATOR_OR,
+  SEARCH_OPERATOR_PHRASE,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -42,11 +52,20 @@ import {
   DISPATCH_ITEM_BLOCKS,
   HANDOFF_PHASE_PATTERN,
   HANDOFF_PHASE_RULE_WORDS,
+  PLAN_INPUT_CODE,
+  PLAN_OTHER_ISSUE_CODE,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   SEARCH_KIND_DEPTH,
   SEARCH_QUERY_HINT,
   SEARCH_QUERY_MAX,
+  STEP_AGENT_TEXT_PATTERN,
+  STEP_AGENT_TEXT_RULE_WORDS,
+  STEP_INPUT_CODE,
+  STEP_KINDS,
+  STEP_OTHER_ISSUE_CODE,
+  STEP_RESULTS,
+  STEP_WRITER_CODE,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
@@ -78,17 +97,43 @@ import {
   GOING_SEARCH_TOOL,
   GOING_WORDS_MAX,
 } from "../src/going";
-import { SUBJECT_MAX_BYTES, SUBJECT_SEGMENT_REPLACED } from "../src/subject";
+import {
+  controllerToken,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+} from "../src/legion-roles";
+import {
+  agentSubject,
+  DISPATCH_ISSUE_TOPIC_PREFIX,
+  dispatchIssueSubject,
+  legacyAgentSubject,
+  legacyDispatchIssueSubject,
+  legionControllerNoticeSubject,
+  legionWakeSubject,
+  NO_PROJECT,
+  roleSubject,
+  SUBJECT_MAX_BYTES,
+  SUBJECT_SEGMENT_REPLACED,
+  uncapturedTopicRefusal,
+} from "../src/subject";
+import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
 
+// The slice of JSON Schema that schemas/envelope.schema.json uses. A property with no `type` is
+// one whose values are not of a single JSON type, such as a mixed literal set; it names the Go
+// type holding it through `x-go-type`, which is hand-written beside the generated file and
+// validates itself.
 type Prop = {
-  type: ScalarKind | "array" | "object";
-  enum?: string[];
+  type?: ScalarKind | "array" | "object";
+  enum?: (string | boolean)[];
   minLength?: number;
   properties?: Record<string, Prop>;
   required?: string[];
   items?: Prop;
+  additionalProperties?: Prop | false;
+  "x-go-type"?: string;
 };
 
 type Schema = {
@@ -106,6 +151,108 @@ const map = {
   integer: "int64",
   boolean: "bool",
 } satisfies Record<ScalarKind, string>;
+
+// splitAtSentinels is the text a builder puts around the values it interpolates: what comes
+// before the first value, between each pair of them, and after the last, read by building it with
+// one sentinel per value. A builder that stopped interpolating one of them, interpolated one
+// twice, or interpolated them in another order throws here rather than generating Go that reads
+// nothing like it.
+function splitAtSentinels(built: string, ...sentinels: string[]): string[] {
+  const parts: string[] = [];
+  let rest = built;
+  for (const sentinel of sentinels) {
+    const at = rest.indexOf(sentinel);
+    if (built.split(sentinel).length !== 2 || at < 0) {
+      throw new Error(`cannot split ${JSON.stringify(built)} at the sentinel ${sentinel}`);
+    }
+    parts.push(rest.slice(0, at));
+    rest = rest.slice(at + sentinel.length);
+  }
+  parts.push(rest);
+  return parts;
+}
+
+// goConcat is the Go expression a builder's text becomes: its literal parts, read by
+// splitAtSentinels, with each Go value between them. A part the builder left empty is left out
+// rather than written as "".
+function goConcat(parts: string[], values: string[]): string {
+  const terms = parts.flatMap((part, index) => {
+    const value = values[index];
+    return [
+      ...(part === "" ? [] : [JSON.stringify(part)]),
+      ...(value === undefined ? [] : [value]),
+    ];
+  });
+  return terms.join(" + ");
+}
+
+// A Legion project token is lowercase alphanumeric (PROJECT_TOKEN in src/legion-roles.ts), which
+// this sentinel is, so both builders below accept it.
+const projectSentinel = "zzprojectzz";
+const [legionNoticeTopicPrefix, controllerNoticeSuffix] = splitAtSentinels(
+  legionControllerNoticeSubject(projectSentinel),
+  projectSentinel
+);
+const controllerRoleToken = goConcat(
+  splitAtSentinels(controllerToken(projectSentinel), projectSentinel),
+  ["project"]
+);
+// The refusal interpolates a topic and a session id, reading neither, so any text that appears
+// nowhere else in the sentence stands in for them.
+const topicSentinel = "zztopiczz";
+const sessionSentinel = "zzsessionzz";
+const uncapturedTopicRefusalText = goConcat(
+  splitAtSentinels(
+    uncapturedTopicRefusal(topicSentinel, sessionSentinel),
+    topicSentinel,
+    sessionSentinel
+  ),
+  ["topic", "sessionID"]
+);
+
+// Each builder of a project's message names is read at sentinels for its values, so the Go twin
+// writes the very text the builder writes: a project token, an issue key and a type, a session
+// and a role each stand in for one value. Any text that appears nowhere else in the name will do.
+const issueSentinel = "zzissuezz";
+const typeSentinel = "zztypezz";
+const roleSentinel = "zzrolezz";
+const dispatchIssueSubjectText = goConcat(
+  splitAtSentinels(
+    dispatchIssueSubject(projectSentinel, issueSentinel, typeSentinel),
+    projectSentinel,
+    issueSentinel,
+    typeSentinel
+  ),
+  ["project", "issueKey", "typ"]
+);
+const agentSubjectText = goConcat(
+  splitAtSentinels(
+    agentSubject(projectSentinel, sessionSentinel),
+    projectSentinel,
+    sessionSentinel
+  ),
+  ["project", "session"]
+);
+const legacyAgentSubjectText = goConcat(
+  splitAtSentinels(legacyAgentSubject(sessionSentinel), sessionSentinel),
+  ["session"]
+);
+const legacyDispatchIssueSubjectText = goConcat(
+  splitAtSentinels(
+    legacyDispatchIssueSubject(issueSentinel, typeSentinel),
+    issueSentinel,
+    typeSentinel
+  ),
+  ["issueKey", "typ"]
+);
+const roleSubjectText = goConcat(
+  splitAtSentinels(roleSubject(projectSentinel, roleSentinel), projectSentinel, roleSentinel),
+  ["project", "role"]
+);
+const legionWakeSubjectText = goConcat(
+  splitAtSentinels(legionWakeSubject(projectSentinel), projectSentinel),
+  ["token"]
+);
 
 const keep = `func ValidateWire(raw []byte) error {
 	var fields map[string]json.RawMessage
@@ -146,11 +293,46 @@ func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string)
 const AgentTopicPrefix = "notifications.agent."
 const RoleTopicPrefix = "notifications.role."
 
+// DispatchIssueTopicPrefix begins every issue's event, in either form. Generated from
+// DISPATCH_ISSUE_TOPIC_PREFIX in packages/contracts.
+const DispatchIssueTopicPrefix = ${JSON.stringify(DISPATCH_ISSUE_TOPIC_PREFIX)}
+
+// NoProject is the project token of a message name that belongs to no project: an agent message
+// or a role lane outside every project. No project key (ProjectKeyPattern) can be it. Generated
+// from NO_PROJECT in packages/contracts.
+const NoProject = ${JSON.stringify(NO_PROJECT)}
+
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
 
+// LegionNoticeTopicPrefix opens every Legion daemon notice subject, ControllerNoticeSuffix ends
+// the one subject of that family naming a project's controller rather than an issue, so project
+// <p>'s notice lane is LegionNoticeTopicPrefix + <p> + ControllerNoticeSuffix, and
+// ControllerRoleToken is the Legion role token whose holder that lane is for. Generated from
+// legionControllerNoticeSubject and controllerToken in packages/contracts: a rename there that Go
+// did not follow would leave the listener refusing the holder's registration of its own lane
+// (bus.ReachesPrivateStreamSubject would read a role token no claim names) and the controller
+// would receive no notice, with nothing else failing.
+const LegionNoticeTopicPrefix = ${JSON.stringify(legionNoticeTopicPrefix)}
+const ControllerNoticeSuffix = ${JSON.stringify(controllerNoticeSuffix)}
+
+func ControllerRoleToken(project string) string {
+	return ${controllerRoleToken}
+}
+
+// UncapturedTopicRefusal is what a caller that named topic, a notification topic no stream
+// subject captures and no role lane (bus.ReachesNoSession), is told: nothing would ever be
+// delivered to sessionID on it. POST /v1/interests/subscribe leaves such a topic out of the
+// registration and names it in this warning (splitUncapturedTopics in cmd/listener), and either
+// plugin's explicit subscribe refuses such a topic in the same words. Generated from
+// uncapturedTopicRefusal in packages/contracts, which both plugins build their refusal from, so
+// the listener and the hosts cannot word it apart.
+func UncapturedTopicRefusal(topic, sessionID string) string {
+	return ${uncapturedTopicRefusalText}
+}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
-// notification stream and by every host that subscribes over core NATS. Generated from
+// notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
 // this window bounds, so the stream, the hosts and the dashboard read one number.
 const DeliveryDuplicateWindow = ${DELIVERY_DUPLICATE_WINDOW_MS} * time.Millisecond
@@ -178,6 +360,11 @@ const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
+// from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
+// batches are one number.
+const ReferenceTargetsMax = ${REFERENCE_TARGETS_MAX}
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the \`dispatch search\`
@@ -209,6 +396,17 @@ const SearchKindDepth = ${SEARCH_KIND_DEPTH}
 // Generated from SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE in packages/contracts so the string
 // Dispatch writes and the string search-answer.ts compares against cannot drift apart.
 const SearchDegradedEmbedderUnavailable = ${JSON.stringify(SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE)}
+
+// SearchOperatorPhrase, SearchOperatorOr and SearchOperatorExclude are the operator forms
+// GET /api/v1/search reads in a person's words and names in its answer's query.operators: a
+// quoted phrase, the OR between two words, and a -word it leaves out. Generated from
+// SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_OR and SEARCH_OPERATOR_EXCLUDE in packages/contracts so
+// the strings Dispatch answers and the strings a client reads them by cannot drift apart.
+const (
+	SearchOperatorPhrase  = ${JSON.stringify(SEARCH_OPERATOR_PHRASE)}
+	SearchOperatorOr      = ${JSON.stringify(SEARCH_OPERATOR_OR)}
+	SearchOperatorExclude = ${JSON.stringify(SEARCH_OPERATOR_EXCLUDE)}
+)
 
 // The names of the frames one answer's stream carries: text as the answer arrives, item for each
 // thing the answer cites, cut when the answer reached its word cap, changed when the server did
@@ -282,6 +480,12 @@ const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
 
+// MaxIssueAdvances bounds the \`advances\` input of an issue write before deduplication: the most
+// priorities one issue states it advances, its own relations alone. Generated from
+// MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
+// one number.
+const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
@@ -316,6 +520,17 @@ const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = ${DISPATCH_HANDOFF_BODY_MAX}
 
+// PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
+// from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,
+// counted as Unicode code points, the rating's reason holds. Generated from
+// LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST and LEGION_PLAN_REASON_MAX in
+// packages/contracts, so Dispatch's record of the retro and the Legion daemon's completion route,
+// which both hold a rating to CheckPlanRating (the daemon through github.com/sjawhar/envoy/steprecord),
+// and the plugins' tools hold one scale.
+const PlanRatingLeast = ${LEGION_PLAN_RATING_LEAST}
+const PlanRatingMost = ${LEGION_PLAN_RATING_MOST}
+const PlanReasonMax = ${LEGION_PLAN_REASON_MAX}
+
 // HandoffPhaseRule says the handoff-phase pattern's rule in words; every refusal of a phase that is
 // not a handoff phase gives it. Generated from HANDOFF_PHASE_RULE_WORDS in packages/contracts so
 // the server and the tool word it once.
@@ -326,6 +541,43 @@ const HandoffPhaseRule = ${JSON.stringify(HANDOFF_PHASE_RULE_WORDS)}
 // packages/contracts, which the dispatch command checks a phase against, so the two accept the
 // same phases.
 const HandoffPhasePattern = ${JSON.stringify(HANDOFF_PHASE_PATTERN.source)}
+
+// The kinds of a run a step record names: a step a plan names, at its place from 1, and the retro
+// and the merge, which no plan names, at the place 0. The results of a run that ended. The codes of
+// the step write's refusals that no retry changes. Generated from STEP_KINDS, STEP_RESULTS and the
+// STEP_*_CODE constants in packages/contracts: Dispatch's store and route use them, and the Legion
+// daemon reads them through github.com/sjawhar/envoy/steprecord, so no word is written twice.
+const (
+	StepKindStep       = ${JSON.stringify(STEP_KINDS[0])}
+	StepKindRetro      = ${JSON.stringify(STEP_KINDS[1])}
+	StepKindMerge      = ${JSON.stringify(STEP_KINDS[2])}
+	StepResultPassed   = ${JSON.stringify(STEP_RESULTS[0])}
+	StepResultFailed   = ${JSON.stringify(STEP_RESULTS[1])}
+	StepResultStopped  = ${JSON.stringify(STEP_RESULTS[2])}
+	StepInputCode      = ${JSON.stringify(STEP_INPUT_CODE)}
+	StepWriterCode     = ${JSON.stringify(STEP_WRITER_CODE)}
+	StepOtherIssueCode = ${JSON.stringify(STEP_OTHER_ISSUE_CODE)}
+)
+
+// The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
+// whose plan is the plan of another issue (a writer that is not the daemon's session is refused
+// StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
+// Dispatch's plan route answers them, and the Legion daemon reads them through
+// github.com/sjawhar/envoy/steprecord.
+const (
+	PlanInputCode      = ${JSON.stringify(PLAN_INPUT_CODE)}
+	PlanOtherIssueCode = ${JSON.stringify(PLAN_OTHER_ISSUE_CODE)}
+)
+
+// StepAgentTextPattern is the form of the agent, the session and the model a step record names:
+// printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
+// packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through
+// github.com/sjawhar/envoy/steprecord, leaves such text out of the records it writes.
+const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
+
+// StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
+// Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
+const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -339,12 +591,30 @@ const ProjectNameMax = ${PROJECT_NAME_MAX}
 const DocumentSchemaCloseCode = ${DOCUMENT_SCHEMA_CLOSE_CODE}
 const DocumentSchemaCloseReason = ${JSON.stringify(DOCUMENT_SCHEMA_CLOSE_REASON)}
 
+// DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
+// whose room holds an element this build cannot read, before any sync. The Hocuspocus provider
+// reconnects on the code. Generated from DOCUMENT_NEWER_CONTENT_CLOSE_CODE and
+// DOCUMENT_NEWER_CONTENT_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentNewerContentCloseCode = ${DOCUMENT_NEWER_CONTENT_CLOSE_CODE}
+const DocumentNewerContentCloseReason = ${JSON.stringify(DOCUMENT_NEWER_CONTENT_CLOSE_REASON)}
+
+// DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
+// document socket whose page the live server processes no longer admit, once the message in flight
+// on it is out, and an open document socket whose upgrade's Identity-Aware Proxy assertion has
+// expired. The Hocuspocus provider reconnects on the code, and the reconnect is admitted again.
+// Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON
+// in packages/contracts so the server's close and the dashboard's reading of it cannot drift
+// apart.
+const DocumentAdmissionRevokedCloseCode = ${DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE}
+const DocumentAdmissionRevokedCloseReason = ${JSON.stringify(DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON)}
+
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
-// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
-// the most subscriptions one live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE,
-// LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in
-// packages/contracts so the server's close and limit and the dashboard's reading of them cannot
-// drift apart.
+// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), or once its upgrade's
+// Identity-Aware Proxy assertion expires, and LiveSocketMaxSubscriptions the most subscriptions one
+// live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE, LIVE_SOCKET_MIN_AGE_MS,
+// LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in packages/contracts so the server's
+// close and limit and the dashboard's reading of them cannot drift apart.
 const LiveSocketMaxAgeClose = ${LIVE_SOCKET_MAX_AGE_CLOSE}
 const LiveSocketMinAge = ${LIVE_SOCKET_MIN_AGE_MS} * time.Millisecond
 const LiveSocketMaxAge = ${LIVE_SOCKET_MAX_AGE_MS} * time.Millisecond
@@ -428,12 +698,47 @@ const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 
+// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
+// that holds only the scope read, to a route the read list does not name: the route ran nothing,
+// and the request wrote only the row of its spent DPoP proof. Generated from
+// DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
+// reading of it cannot drift apart.
+const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-func AgentSubject(session string) string {
-	return AgentTopicPrefix + session
+// DispatchIssueSubject names an issue's event under its project and then its key
+// (notifications.dispatch.issue.INFRA.INFRA-12.comment.created), AgentSubject one session's
+// message under its project, RoleSubject a role's lane under the project it works for, each with
+// NoProject for none, and LegionWakeSubject the wake lane of the Legion deployment whose project
+// token is token. LegacyAgentSubject is a session's agent subject in the old form, with no
+// project, which every reader takes too until the old form is refused (subject_project.go).
+// Generated from dispatchIssueSubject, agentSubject, roleSubject, legionWakeSubject and
+// legacyAgentSubject in packages/contracts, so the two languages write one name.
+func DispatchIssueSubject(project, issueKey, typ string) string {
+	return ${dispatchIssueSubjectText}
+}
+
+func AgentSubject(project, session string) string {
+	return ${agentSubjectText}
+}
+
+func LegacyAgentSubject(session string) string {
+	return ${legacyAgentSubjectText}
+}
+
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return ${legacyDispatchIssueSubjectText}
+}
+
+func RoleSubject(project, role string) string {
+	return ${roleSubjectText}
+}
+
+func LegionWakeSubject(token string) string {
+	return ${legionWakeSubjectText}
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one
@@ -542,8 +847,26 @@ function name(key: string) {
   return key.split("_").map(title).join("");
 }
 
+// mapValues is the value shape of a map property - an object whose keys are the data, declared
+// with `additionalProperties` and no properties of its own - and undefined for every other
+// property, an object with named properties among them, which is rendered as a struct of its own
+// (renderEnvelopeObject).
+function mapValues(prop: Prop): Prop | undefined {
+  if (prop.type !== "object" || prop.properties) return undefined;
+  return prop.additionalProperties === false ? undefined : prop.additionalProperties;
+}
+
 function envelopeKind(prop: Prop, req: Set<string>, key: string) {
+  // A property whose Go type is hand-written beside the generated file holds it whole: the type
+  // decides what the field reads off the wire and writes back, and validates itself.
+  const goType = prop["x-go-type"];
+  if (goType) return goType;
   if (prop.type === "object") {
+    const values = mapValues(prop);
+    if (values) {
+      if (values.type !== "string") throw new Error(`unsupported map values for ${key}`);
+      return "map[string]string";
+    }
     if (!prop.properties) throw new Error(`missing object properties for ${key}`);
     return `*Envelope${name(key)}`;
   }
@@ -553,6 +876,7 @@ function envelopeKind(prop: Prop, req: Set<string>, key: string) {
     }
     return "[]string";
   }
+  if (!prop.type) throw new Error(`${key} has no type and no x-go-type`);
   const base = map[prop.type];
   if (req.has(key) || prop.type === "string") return base;
   return `*${base}`;
@@ -576,11 +900,26 @@ function check(access: string, path: string, prop: Prop, depth = 1) {
   throw new Error(`unsupported required envelope type for ${path}`);
 }
 
-function enums(key: string, prop: Prop, optional: boolean) {
+// What Validate() says about one property's value: the type's own Validate() when the property
+// names a hand-written Go type, else a switch over the words its enum holds.
+function valueChecks(key: string, prop: Prop, optional: boolean) {
+  if (prop["x-go-type"]) {
+    return `\tif err := e.${name(key)}.Validate(); err != nil {\n\t\treturn err\n\t}`;
+  }
   if (!prop.enum?.length) return "";
   const n = name(key);
   const indent = optional ? "\t\t" : "\t";
-  const list = prop.enum.map((item) => `"${item}"`).join(", ");
+  // The switch below reads a Go string, and the optional case leans on `""` being its zero
+  // value, so a set holding anything else needs a Go type of its own to read and validate it
+  // (`x-go-type`, answered above). Refuse such a set rather than emit Go that does not compile.
+  const list = prop.enum
+    .map((item) => {
+      if (typeof item !== "string") {
+        throw new Error(`${key}'s enum holds ${JSON.stringify(item)} and names no x-go-type`);
+      }
+      return `"${item}"`;
+    })
+    .join(", ");
   const body = [
     `${indent}switch e.${n} {`,
     `${indent}case ${list}:`,
@@ -653,20 +992,19 @@ function renderEnvelope(schema: Schema) {
       ];
     })
     .join("\n");
-  const enumChecks = keys
-    .map((key) => enums(key, schema.properties[key], !req.has(key)))
+  const propertyChecks = keys
+    .map((key) => valueChecks(key, schema.properties[key], !req.has(key)))
     .filter(Boolean)
     .join("\n");
-  const nestedChecks = keys
-    .filter((key) => schema.properties[key].type === "object")
+  const objects = envelopeObjects(schema);
+  const nestedChecks = objects
     .map((key) => objectChecks(key, schema.properties[key]))
     .filter(Boolean)
     .join("\n");
-  const validate = [checks, optionalStringChecks, enumChecks, nestedChecks, "\treturn nil"]
+  const validate = [checks, optionalStringChecks, propertyChecks, nestedChecks, "\treturn nil"]
     .filter(Boolean)
     .join("\n");
-  const nested = keys
-    .filter((key) => schema.properties[key].type === "object")
+  const nested = objects
     .map((key) => renderEnvelopeObject(key, schema.properties[key]))
     .join("\n\n");
   return `type Envelope struct {
@@ -680,8 +1018,41 @@ ${validate}
 }`;
 }
 
+// The envelope's object properties that are structs of their own (renderEnvelopeObject). A map
+// property is the Go map envelopeKind names it, so it has neither a struct of its own nor
+// required keys to check.
+function envelopeObjects(schema: Schema) {
+  return Object.keys(schema.properties).filter(
+    (key) => schema.properties[key].type === "object" && !mapValues(schema.properties[key])
+  );
+}
+
+// The envelope's Go mirror is the Envoy listener's wire package's, packages/envoy/listenerwire,
+// which the listener and its clients import and which imports the standard library alone.
+function renderListenerwireEnvelope(envelope: Schema) {
+  return `// Code generated by scripts/gen-go.ts from schemas/envelope.schema.json. DO NOT EDIT.
+
+package listenerwire
+
+import (
+	"fmt"
+	"strings"
+)
+
+${renderEnvelope(envelope)}
+`;
+}
+
+// internal/contracts names each envelope type listenerwire declares, so the code of the envoy
+// module reads the one type as contracts.Envelope.
 function renderContracts(envelope: Schema) {
-  return `package contracts
+  const aliases = ["Envelope", ...envelopeObjects(envelope).map((key) => `Envelope${name(key)}`)]
+    .map((type) => `type ${type} = listenerwire.${type}`)
+    .join("\n");
+  return `// Code generated by packages/contracts/scripts/gen-go.ts from
+// packages/contracts/schemas/envelope.schema.json. DO NOT EDIT.
+
+package contracts
 
 import (
 	"crypto/sha256"
@@ -691,18 +1062,23 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-${renderEnvelope(envelope)}
+// The envelope and the types of its object properties are listenerwire's
+// (listenerwire/envelope_generated.go), named here as well.
+${aliases}
 
 ${keep}
 `;
 }
 
 // The slice of JSON Schema that schemas/block-schema.schema.json uses, which the block schema
-// renderers below read. `x-ordered` marks an object whose keys carry their declaration order,
-// `x-go-type` names the Go type holding such an object, and `x-go-constants` names the Go
-// constant of each value of a string enum.
+// renderers below read. `x-ordered` marks an object whose keys carry their declaration order and
+// `x-go-type` names the Go type holding such an object; an object without `x-ordered` is a plain
+// map, keyed by its property names. `x-go-constants` names the Go constant of each value of a
+// string enum.
 type BlockProp = {
   description?: string;
   type?: "object" | "array" | "string" | "integer" | "boolean";
@@ -768,10 +1144,11 @@ function blockGoType(prop: BlockProp): string {
       if (!prop.items) throw new Error("a block schema array has no items");
       return `[]${blockGoType(prop.items)}`;
     case "object": {
+      const values = prop.additionalProperties;
+      if (!values) throw new Error("a block schema object property needs additionalProperties");
+      if (!prop["x-ordered"]) return `map[string]${blockGoType(values)}`;
       const goType = prop["x-go-type"];
-      if (!prop["x-ordered"] || !goType) {
-        throw new Error("a block schema object property needs x-ordered and x-go-type");
-      }
+      if (!goType) throw new Error("an ordered block schema object property needs x-go-type");
       return goType;
     }
     default:
@@ -794,11 +1171,9 @@ function blockTypeScriptType(prop: BlockProp): string {
       return `readonly ${blockTypeScriptType(prop.items)}[]`;
     case "object": {
       const values = prop.additionalProperties;
-      if (!prop["x-ordered"] || !values) {
-        throw new Error("a block schema object property needs x-ordered and additionalProperties");
-      }
-      // A JavaScript object keeps the insertion order of its string keys, so the object the
-      // server sends carries the declaration order the Go decoder keeps.
+      if (!values) throw new Error("a block schema object property needs additionalProperties");
+      // A JavaScript object keeps the insertion order of its string keys, so an ordered object
+      // the server sends carries the declaration order the Go decoder keeps.
       return `Readonly<Record<string, ${blockTypeScriptType(values)}>>`;
     }
     default:
@@ -928,8 +1303,18 @@ const outputs = [
     language: "go",
   },
   {
+    path: resolve(import.meta.dir, "../../envoy/listenerwire/envelope_generated.go"),
+    rendered: renderListenerwireEnvelope(envelope),
+    language: "go",
+  },
+  {
     path: resolve(import.meta.dir, "../../envoy/internal/dispatch/pmdoc/schema_generated.go"),
     rendered: renderBlockSchemaGo(blockSchema),
+    language: "go",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_tools_generated.go"),
+    rendered: renderDispatchTools(),
     language: "go",
   },
   {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -113,8 +115,9 @@ func deliveredSeries(status string) string {
 // listener's cache has not seen it, exactly as the send route does
 // (TestSendReadsTheSessionStoreWhileTheCacheIsCold, send_route_acceptance_test.go): the cache
 // follows the bucket through a watcher and so trails it, and a delivery that takes the cache's miss
-// for an answer loses the message - it is counted skipped and ACKed away, with nothing left to
-// redeliver. This drives the listener's own delivery handler with a session another listener
+// for an answer holds the message it could have resolved and gives it up (unplaceableAgentDelivery),
+// though the session's own consumer was holding it all along. This drives the listener's own
+// delivery handler with a session another listener
 // registered a moment ago, through a listener whose cache was warm before that write and has
 // followed nothing since, which is the same miss a cache still refilling after a reconnect has.
 //
@@ -134,12 +137,13 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 		t.Fatalf("warm the delivering listener's session cache: %v", err)
 	}
 	harness.sessions.StopWatch()
-	registrar, err := session.OpenSessionRegistry(harness.client.Conn, session.WithSessionReplicas(1))
+	registrar, err := session.OpenSessionRegistry(t.Context(), harness.client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registering listener's session registry: %v", err)
 	}
 	if err := registrar.Put(target, session.SessionEntry{
 		SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + target, Title: "cold target",
+		Delivery: session.DeliveryConsumer, Epoch: "e",
 	}); err != nil {
 		t.Fatalf("register %s through the other listener: %v", target, err)
 	}
@@ -150,15 +154,16 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 		t.Fatalf("the delivering listener's cache answers %v for %s, want %v", err, target, natsgo.ErrKeyNotFound)
 	}
 
-	item := listenerTestEnvelope(contracts.AgentSubject(target), "cold-cache-agent-delivery")
+	item := listenerTestEnvelope(contracts.LegacyAgentSubject(target), "cold-cache-agent-delivery")
 	harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 
-	// The record only the bucket holds says the session takes its messages off its own
-	// subscription, which is a delivered outcome counted skipped. A delivery that took the
-	// cache's miss for an answer would have found no record at all and given the message up.
-	records := deliveryRecords(t, harness.logs.String(), "listener agent session takes the message off its own subscription")
-	if len(records) != 1 || records[0].SessionID != target {
-		t.Fatalf("%d lines say the session read the message off its own subscription, want one naming %s:\n%s", len(records), target, harness.logs.String())
+	// The record only the bucket holds puts the session on consumer delivery, so the message is
+	// its own consumer's to relay: an outcome counted skipped and recorded nowhere
+	// (session.SessionEntry.ConsumerRelaysStored). A delivery that took the cache's miss for an
+	// answer would have found no record at all and held the message for its retry window, and
+	// one that read a record it could reach the session through no way would have failed it.
+	if failures := deliveryRecords(t, harness.logs.String(), "listener agent delivery failed"); len(failures) != 0 {
+		t.Fatalf("%d lines fail the delivery, want none - the bucket's record puts %s on consumer delivery:\n%s", len(failures), target, harness.logs.String())
 	}
 	body := metricsBody(t, harness)
 	if got := counterValue(t, body, deliveredSeries("skipped")); got != 1 {
@@ -229,7 +234,7 @@ func startUnplaceableDelivery(t *testing.T, harness listenerDeliveryHarness, cfg
 // for a run that must put something in front of the listener's own handler.
 func startDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler natsgo.MsgHandler, target string, soak time.Duration) unplaceableDeliveryRun {
 	t.Helper()
-	return startEnvelopeDeliveryThrough(t, harness, handler, target, listenerTestEnvelope(contracts.AgentSubject(target), "unplaceable-"+target), soak)
+	return startEnvelopeDeliveryThrough(t, harness, handler, target, listenerTestEnvelope(contracts.LegacyAgentSubject(target), "unplaceable-"+target), soak)
 }
 
 // startEnvelopeDeliveryThrough is startDeliveryThrough with the envelope given whole, for a run
@@ -427,14 +432,11 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 
 // Two shapes of record are given up under the one cause, and the counter and the operator's line
 // must both name it: a session with no record at all may be one whose registration never landed
-// or one that ended, and a record that names no way the session receives a message is one that
-// registered through a plugin that asks for neither way. Neither is a skip, and neither is
-// logged "listener agent session not found anywhere", which is indistinguishable from the
-// self-subscribed session that really did receive the message over its own subscription.
-//
-// The boundary is asserted here too, against the same handler: a self-subscribed session is a
-// delivered outcome - it reads the message off its own subscription - and must never be counted
-// unplaceable.
+// or one that ended, and a record that names no way the session receives a message is one an
+// earlier build left on the core receive path, or one a plugin that asks for neither way wrote.
+// Neither is a skip: both were once counted delivery_status="skipped" and logged "listener agent
+// session not found anywhere", which said nothing about which of them it was. Nothing here is a
+// skip at all: only a message a session's own consumer holds is skipped.
 //
 // Every cause runs at a real window over a real durable, because the separation is claimed of the
 // whole path and not of its last attempt: at a zero window every delivery is given up on its first
@@ -444,7 +446,6 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 	const (
 		noRecord       = "ses_cause_no_record"
 		noWayToReceive = "ses_cause_no_way_to_receive"
-		selfSubscribed = "ses_cause_self_subscribed"
 	)
 	harness := newListenerDeliveryHarness(t)
 	// No interest is registered for any of these sessions, so each takes the direct path through
@@ -454,9 +455,6 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 	if err := harness.sessions.Put(noWayToReceive, session.SessionEntry{MachineID: "test-machine"}); err != nil {
 		t.Fatalf("register the session that records no way of receiving: %v", err)
 	}
-	if err := harness.sessions.Put(selfSubscribed, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
-		t.Fatalf("register the self-subscribed session: %v", err)
-	}
 
 	before := metricsBody(t, harness)
 	if got := counterValue(t, before, deliveredSeries("skipped")); got != -1 {
@@ -464,11 +462,11 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 	}
 
 	// The harness builds its handler at a zero window, so this test builds its own from the
-	// harness's configuration. The three runs share the harness, and so the one metrics registry
+	// harness's configuration. The runs share the harness, and so the one metrics registry
 	// and the one log an operator would read.
 	cfg := harness.config
 	cfg.unplaceableRetryWindow = oneDeferralWindow
-	for _, target := range []string{noRecord, noWayToReceive, selfSubscribed} {
+	for _, target := range []string{noRecord, noWayToReceive} {
 		startUnplaceableDelivery(t, harness, cfg, target, 0)
 	}
 
@@ -534,19 +532,169 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 	if got := counterValue(t, final, deliveredSeries("unplaceable_no_record")); got != int64(len(want)) {
 		t.Fatalf("%s = %d, want %d - every shape of a record that delivers nothing is counted under the one label:\n%s", deliveredSeries("unplaceable_no_record"), got, len(want), final)
 	}
-	// The boundary: a self-subscribed session is a delivered outcome - it reads the message off
-	// its own subscription - and nothing is given up for it. The durable acknowledges its
-	// message before decoding it (durableNeedsDelivery), counting the skip with no per-message
-	// line.
-	if got := counterValue(t, final, deliveredSeries("skipped")); got != 1 {
-		t.Fatalf("%s = %d for a self-subscribed session, want 1 - its message arrives over its own subscription, and nothing else here is a skip:\n%s", deliveredSeries("skipped"), got, final)
-	}
-	if got := len(deliveryRecords(t, logs, "listener agent session takes the message off its own subscription")); got != 0 {
-		t.Fatalf("%d lines say the self-subscribed session read its message, want none: the durable acknowledges that message before it decodes it:\n%s", got, logs)
+	// Neither cause is a skip: a session's message is skipped only when its own consumer holds it
+	// (session.SessionEntry.ConsumerRelaysStored), and no session here has one.
+	if got := counterValue(t, final, deliveredSeries("skipped")); got != -1 {
+		t.Fatalf("%s = %d, want no series at all - an undeliverable message is given up, never skipped:\n%s", deliveredSeries("skipped"), got, final)
 	}
 	if strings.Contains(logs, "listener agent session not found anywhere") {
 		t.Fatalf("a delivery still logs the line that lost these messages, instead of deferring or giving up:\n%s", logs)
 	}
+}
+
+// agentWakesFor counts the agent wake reports for sessionID that reach subscription, a core
+// subscription to bus.LegionWakeTopic: it waits up to first for a report, and after each one for
+// quiet more, so a second report of one message is counted too.
+func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID string, first, quiet time.Duration) int {
+	t.Helper()
+	count := 0
+	wait := first
+	for {
+		message, err := subscription.NextMsg(wait)
+		if errors.Is(err, natsgo.ErrTimeout) {
+			return count
+		}
+		if err != nil {
+			t.Fatalf("read %s: %v", bus.LegionWakeTopic, err)
+		}
+		if wakeNamed(wakeReportIn(t, message), wakeKindAgent, sessionID) {
+			count++
+			wait = quiet
+		}
+	}
+}
+
+// A released Legion role's session loses its record when the daemon stops it, while its interest
+// row, which names the listener it registered through, stays until the reaper's pass minutes
+// later. A copy on its agent subject - a person's answer Dispatch routes to it, say - must then
+// take the path a session with no interest takes: held for the retry window, then given up with
+// the agent wake that brings the pod back. Before, the interest path failed the copy as
+// delivery_failed, NAKed it for a redelivery that failed the same way, and reported no wake, so
+// the pod stayed released and the message never reached it.
+//
+// The negative control is the second subtest: the same interest row over a record that names no
+// way of receiving is still NAKed as delivery_failed with no wake, so the rig takes the interest
+// path and the first subtest's give-up is the missing record's doing.
+func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestNamesThisListener(t *testing.T) {
+	// start registers target's interest row naming the harness's own listener and, when entry is
+	// not nil, its record, then drives one envelope on target's agent subject through a handler
+	// that reports wakes, at a window of one deferral. It returns the run and a subscription to
+	// the wake reports, made before anything is delivered.
+	start := func(t *testing.T, target string, entry *session.SessionEntry) (unplaceableDeliveryRun, *natsgo.Subscription) {
+		t.Helper()
+		harness := newListenerDeliveryHarness(t)
+		interest := store.Interest{SessionID: target, MachineID: harness.config.machineID}
+		if _, err := harness.registry.Upsert(interest, []string{contracts.LegacyAgentSubject(target)}); err != nil {
+			t.Fatalf("register %s's interest naming this listener: %v", target, err)
+		}
+		if entry != nil {
+			if err := harness.sessions.Put(target, *entry); err != nil {
+				t.Fatalf("register %s's record: %v", target, err)
+			}
+		}
+		wakes, err := harness.client.Conn.SubscribeSync(bus.LegionWakeTopic)
+		if err != nil {
+			t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
+		}
+		t.Cleanup(func() { _ = wakes.Unsubscribe() })
+		if err := harness.client.Conn.Flush(); err != nil {
+			t.Fatalf("flush the wake subscription: %v", err)
+		}
+		lifetime, stop := context.WithCancel(context.Background())
+		t.Cleanup(stop)
+		cfg := harness.config
+		cfg.unplaceableRetryWindow = oneDeferralWindow
+		cfg.wakes = newWakeReporter(lifetime, harness.client)
+		return startUnplaceableDelivery(t, harness, cfg, target, 0), wakes
+	}
+
+	t.Run("a session with no record is held, then given up with the wake", func(t *testing.T) {
+		const target = "ses_interest_no_record"
+		run, wakes := start(t, target, nil)
+		harness := run.harness
+
+		waitFor(t, 15*time.Second, "the first delivery to be deferred or failed", func() bool {
+			logs := harness.logs.String()
+			return len(recordsFor(deliveryRecords(t, logs, "listener agent delivery deferred"), target))+
+				len(recordsFor(deliveryRecords(t, logs, "listener agent delivery failed"), target)) > 0
+		})
+		if failures := recordsFor(deliveryRecords(t, harness.logs.String(), "listener agent delivery failed"), target); len(failures) != 0 {
+			t.Fatalf("the delivery to %s was NAKed as delivery_failed (%s) and %d agent wakes were reported for it, want it held and then given up with one wake - a session with no record is unplaceable whatever its interest row names:\n%s",
+				target, failures[0].Error, agentWakesFor(t, wakes, target, time.Second, time.Second), harness.logs.String())
+		}
+		deferrals := recordsFor(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred"), target)
+		if deferrals[0].Reason != "no_session_record" || deferrals[0].Attempt != 1 {
+			t.Fatalf("the deferral names reason %q at attempt %d, want no_session_record at the first delivery:\n%s", deferrals[0].Reason, deferrals[0].Attempt, harness.logs.String())
+		}
+
+		waitFor(t, 20*time.Second, "the redelivered message to be given up", func() bool {
+			return len(recordsFor(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up"), target)) > 0
+		})
+		logs := harness.logs.String()
+		if failures := deliveryRecords(t, logs, "listener agent delivery failed"); len(failures) != 0 {
+			t.Fatalf("%d lines fail the delivery as delivery_failed, want none:\n%s", len(failures), logs)
+		}
+		if got := len(deliveryRecords(t, logs, "listener agent delivery deferred")); got != 1 {
+			t.Fatalf("%d deferral lines, want exactly the one the window buys:\n%s", got, logs)
+		}
+		giveUps := deliveryRecords(t, logs, "listener agent delivery given up")
+		if len(giveUps) != 1 || giveUps[0].Reason != "no_session_record" || giveUps[0].DeliveryStatus != "unplaceable_no_record" {
+			t.Fatalf("want exactly one give-up line naming no_session_record and unplaceable_no_record, got %d:\n%s", len(giveUps), logs)
+		}
+		body := metricsBody(t, harness)
+		if got := counterValue(t, body, deliveredSeries("failed")); got != -1 {
+			t.Fatalf("%s = %d, want no series at all - the message was given up, never failed:\n%s", deliveredSeries("failed"), got, body)
+		}
+		if got := counterValue(t, body, deliveredSeries("unplaceable_no_record")); got != 1 {
+			t.Fatalf("%s = %d, want 1:\n%s", deliveredSeries("unplaceable_no_record"), got, body)
+		}
+		if got := counterValue(t, body, nakedCounter); got != 1 {
+			t.Fatalf("%s = %d, want 1 - the deferral's NAK and no other:\n%s", nakedCounter, got, body)
+		}
+		// The give-up's no_holder notice is the one exception of the message: a delivery_failed
+		// one would have been published first, at the failed delivery.
+		assertDeliveryException(t, run.exceptions, run.item, "no_holder")
+		if message, err := run.exceptions.NextMsg(500 * time.Millisecond); err == nil {
+			t.Fatalf("a second delivery exception went out for one message: %s", string(message.Data))
+		}
+		if got := agentWakesFor(t, wakes, target, 10*time.Second, time.Second); got != 1 {
+			t.Fatalf("%d agent wake reports for %s, want exactly one, beside the give-up:\n%s", got, target, logs)
+		}
+	})
+
+	t.Run("a record that names no way of receiving is still NAKed, with no wake", func(t *testing.T) {
+		const target = "ses_interest_no_way_to_receive"
+		run, wakes := start(t, target, &session.SessionEntry{MachineID: "test-machine"})
+		harness := run.harness
+
+		waitFor(t, 15*time.Second, "the delivery to be disposed of", func() bool {
+			logs := harness.logs.String()
+			return len(deliveryRecords(t, logs, "listener agent delivery failed"))+
+				len(deliveryRecords(t, logs, "listener agent delivery deferred"))+
+				len(deliveryRecords(t, logs, "listener agent delivery given up")) > 0
+		})
+		logs := harness.logs.String()
+		failures := deliveryRecords(t, logs, "listener agent delivery failed")
+		if len(failures) != 1 || !strings.Contains(failures[0].Error, session.ErrNoSessionRecord.Error()) {
+			t.Fatalf("want exactly one line failing the delivery on %q, got %d - a record that names no way of receiving is the interest path's failure:\n%s", session.ErrNoSessionRecord, len(failures), logs)
+		}
+		if got := len(deliveryRecords(t, logs, "listener agent delivery deferred")) + len(deliveryRecords(t, logs, "listener agent delivery given up")); got != 0 {
+			t.Fatalf("%d deferral or give-up lines, want none - the interest path NAKs this record:\n%s", got, logs)
+		}
+		assertDeliveryException(t, run.exceptions, run.item, "delivery_failed")
+		// The failed line is written before the handler's NAK is counted, so the count is waited
+		// for rather than read once.
+		waitFor(t, 5*time.Second, "the failed delivery's NAK to be counted", func() bool {
+			return counterValue(t, metricsBody(t, harness), nakedCounter) >= 1
+		})
+		body := metricsBody(t, harness)
+		if got := counterValue(t, body, nakedCounter); got != 1 {
+			t.Fatalf("%s = %d, want 1 - the failed delivery is NAKed for redelivery:\n%s", nakedCounter, got, body)
+		}
+		if got := agentWakesFor(t, wakes, target, 2*time.Second, time.Second); got != 0 {
+			t.Fatalf("%d agent wake reports for %s, want none - a failed delivery reports no wake:\n%s", got, target, logs)
+		}
+	})
 }
 
 // preloadDeferrals takes n slots of set for messages no test stream will ever number: sequences
@@ -689,11 +837,12 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 
 // A redelivery this listener never deferred gives no slot back. Only a message this listener
 // deferred holds a slot, so only that message's next delivery may return one: a redelivery that
-// another branch's NAK produced - the interest path's ShouldNAK - or an expired AckWait is no
-// sign a slot was ever taken for it. Those redeliveries come in step with deferrals, too: a local
-// session whose server is down produces interest-path NAKs and direct-path deferrals at once. A
-// release on every redelivery gives back slots it never took, until the budget reads empty while
-// the listener is holding its whole cap, and the cap bounds nothing.
+// another branch's NAK produced - the interest path's NAK of a failed resolution - or an expired
+// AckWait is no sign a slot was ever taken for it. Those redeliveries come in step with
+// deferrals, too: a local session whose server is down produces interest-path NAKs and
+// direct-path deferrals at once. A release on every redelivery gives back slots it never took,
+// until the budget reads empty while the listener is holding its whole cap, and the cap bounds
+// nothing.
 //
 // The NAK here is the run's own, put in front of the listener's handler in place of those
 // branches: it takes the message's first delivery and asks for it again at once, so the handler's
@@ -880,7 +1029,7 @@ func recordsFor(records []deliveryRecord, sessionID string) []deliveryRecord {
 func TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal(t *testing.T) {
 	const target = "ses_notice_too_large"
 	harness := newListenerDeliveryHarness(t)
-	item := listenerTestEnvelope(contracts.AgentSubject(target), "unplaceable-"+target)
+	item := listenerTestEnvelope(contracts.LegacyAgentSubject(target), "unplaceable-"+target)
 	// The payload fills the envelope to 256 bytes under the server's max payload, so the envelope
 	// itself is published and delivered, and the notice - the same payload plus the notice's own
 	// fields and a second level of JSON quoting - is past it.
@@ -954,8 +1103,8 @@ func TestOneExceptionIsStoredForAMessageToAnAbsentSessionWhicheverListenersRaise
 	}
 	publisher := connectPublisher(t, uri)
 
-	withMsgID := newEnvelope("agent", contracts.AgentSubject("ses_absent_"+id.New()), "a message with a Nats-Msg-Id")
-	withoutMsgID := newEnvelope("agent", contracts.AgentSubject("ses_absent_"+id.New()), "a message without one")
+	withMsgID := newEnvelope("agent", contracts.LegacyAgentSubject("ses_absent_"+id.New()), "a message with a Nats-Msg-Id")
+	withoutMsgID := newEnvelope("agent", contracts.LegacyAgentSubject("ses_absent_"+id.New()), "a message without one")
 	msgID := "one-exception-" + id.New()
 	wantMsgIDs := map[string]string{}
 	var lastSeq uint64

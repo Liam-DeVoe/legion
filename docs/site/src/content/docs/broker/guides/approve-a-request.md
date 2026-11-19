@@ -8,19 +8,40 @@ sidebar:
 When an agent asks for a secret a person must approve, that person decides it on the secrets
 broker's own page, signed in to the broker. Only the approver the request names can decide it: the
 secret's owner, for a person's secret, or anyone who signs in to the broker, for a shared secret. A
-shared secret's request waits in every person's Inbox at once, and the first person to decide it
-decides it for everyone: it then leaves every Inbox.
+shared secret's request waits in the Inbox of the person responsible for the agent that asked: the
+person whose session it is (their own `agent-secrets login`, or the machine login they approved),
+the person a fleet machine's `BROKER_VM_EXCHANGE_ACCOUNTS` entry names, or the assignee of the
+Dispatch issue a Legion worker pod works on. Where none of these names a person, it waits in every
+person's Inbox, so no request waits where nobody sees it. Anyone signed in may still decide it from
+its page whether or not their Inbox lists it, and the first person to decide it decides it for
+everyone: it then leaves every Inbox.
 [Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) explains which
 requests need whom.
 
+Some requests never reach you. Where the deployment configures a model judge, a request for keys
+whose airlock rules entry gives the judge seconds, none of them an administrator's, is the judge's
+to decide: it grants or refuses it, each key against the guidance you gave in the rules file, and
+while it decides the request is on no list. A request the judge cannot decide comes to you once,
+as an ordinary card. If you open such a request's page while the judge holds it, the page is
+read-only and says the judge is deciding it. A judged grant's **State** line reads
+`approved by the model judge judge:<model id> at <time>`, with no person beside it.
+The grant is still yours to end: it records you as its
+approver, or anyone for a shared secret, so it is on your Settings page, where the row reads
+**Approved by** `judge:<model id>`, and `agent-secrets grant revoke` ends it
+([revoke a session or a grant](/legion/broker/guides/revoke-a-session/)). Ending it ends that grant
+alone and withholds nothing, so the session may ask again, and the judge may approve that request
+as it approved this one.
+[Concepts](/legion/broker/concepts/#the-model-judge) says what the judge checks before it asks a
+model anything.
+
 ## Find it
 
-Pending requests you decide appear at the top of your Dispatch **Inbox**, under **Credential
+Pending requests you are asked to decide appear at the top of your Dispatch **Inbox**, under **Credential
 requests**, one row per request: **Secret request** with the secrets' names, or **Machine login**
 with a machine's host name ([log a machine in](/legion/broker/guides/log-a-machine-in/) covers
-those). The section is absent when nothing waits on you, and hidden entirely when the deployment
-has no broker connected. The agent's own output names the same page: `waiting for <you> to approve
-it on the secrets broker: <url>`.
+those). The section is absent when nothing is listed for you, and hidden entirely when the
+deployment has no broker connected. The agent's own output names the same page: `waiting for <you>
+to approve it on the secrets broker: <url>`.
 
 A **Secret request** row is a link to the request's page on the broker,
 `<broker>/approve/<record>`. Click it. When you signed in to the broker within the last day (a
@@ -29,6 +50,13 @@ broker sends you to sign in with your Workspace account, which asks nothing when
 signed in to it, and brings you back to the same request.
 A **Secret request** row that is not a link, with nothing to open, comes from a broker older than
 that page; ask whoever runs that broker to upgrade it.
+
+A row marked **Expired** is a request or a machine login whose deadline passed before anybody
+decided it. Nobody can approve or deny it now, so it is not a link and it is not counted in
+**Needs you**; the line under it says when its deadline passed. It stays until you click
+**Dismiss**, which takes it out of the Inbox for good, and out of everyone's Inbox for a shared
+request. The agent asks again with a new request if it still needs the secret, and that request is
+a row of its own.
 
 ## Check it
 
@@ -41,7 +69,8 @@ along:
   `pod` enrollment also shows its worker slot when it has one.
 - **Session the request names (its own unsigned claim, not verified)**: shown only when the request
   names a session other than its enrollment's. The enrollment above is the one the broker checked.
-- **Reason**: the `--reason` the agent gave, shown as plain text.
+- **Reason**: the `--reason` the agent gave, shown as plain text. Every request you see here has
+  one: a request with no reason is denied before anyone is asked to approve it.
 - **Lasts once approved**: how long the grant would last from the moment you approve: the `--ttl`
   the agent asked for; when it named none, **15 minutes** if any secret is human tier and
   **12 hours** otherwise, or **until the session ends** for a secret tagged
@@ -72,7 +101,8 @@ The page then shows, under **What happened**, what became of each request it dec
 | `granted (approved by <you> at <time>)` | The grant is made; the agent's command collects it. |
 | `denied by <you> at <time>` | You denied it; the agent's command exits 77. |
 | `recorded as denied because the requesting session ended` | You approved it, but the session that asked had ended, so nothing was granted. |
-| `already decided: …` | Someone, or another tab, decided it first, or the agent's session ended and withdrew it (`cancelled`). |
+| `already decided: …` | Someone else, another tab of your own, or the model judge decided it first. The rest of the line says who and when: `already decided: granted (approved by judge:<model id> at <time>)` for the judge. |
+| `cancelled at <time>: the requesting session withdrew it or ended` | Nobody decided it: the session that asked ended first. |
 | `expired before anyone decided it` | It waited past its expiry. The agent asks again if it still needs the secret. |
 | `not yours to decide; only <approver> may` | The request names someone else. |
 | `still pending; it was not decided` | The broker refused your approval though the request names you: the secret's tags now name someone else to approve it ([what an owner change does](/legion/broker/concepts/#approvals)), the session's operator withheld one of its secrets, which only that secret's owner may then approve, and no one while the broker does not serve that secret to that session (it is out of the policy, or a service's), or the secret's `max-grant` became shorter than the lifetime the request asked for, which no one may then approve. You can still deny it. |
@@ -92,11 +122,14 @@ the request. `agent-secrets-devrelay` stands in for Dispatch only for a machine 
 (`machine-approve`, with its code): the broker refuses every route a service calls to decide a
 secret request.
 
-The list Dispatch reads names each request's page as `approve_url`:
+The list Dispatch reads names each request's page as `approve_url`, and each row's `state`,
+`pending` or `expired`, with its deadline as `expires_at`. `curl -H @-` reads the header from
+standard input, so the token is in no command line another process can read:
 
 ```sh
-curl -s -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" \
-  "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER" | jq '.pending[] | {record_id, kind, approve_url}'
+printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" |
+  curl -s -H @- "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER&state=pending&state=expired" |
+  jq '.pending[] | {record_id, kind, state, expires_at, approve_url}'
 ```
 
 The [HTTP API reference](/legion/broker/reference/api/) documents the page's routes and that list.

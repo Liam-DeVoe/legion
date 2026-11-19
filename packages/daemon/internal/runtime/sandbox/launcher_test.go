@@ -1,9 +1,12 @@
 package sandbox
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -20,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -35,7 +39,7 @@ func TestTheLauncherResolverAcceptsOnlyTheBoundRoleOfTheCurrentPod(t *testing.T)
 	}
 	accept := g.r.LauncherResolver()
 	valid := shimwire.LauncherHello{Token: token(claim.RoleTester), Sandbox: name, Role: string(claim.RoleTester), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1"}
-	if handler, reason := accept(valid); handler == nil {
+	if handler, _, reason := accept(valid); handler == nil {
 		t.Fatalf("the tester's own launcher was refused: %s", reason)
 	}
 	for label, edit := range map[string]func(*shimwire.LauncherHello){
@@ -48,10 +52,69 @@ func TestTheLauncherResolverAcceptsOnlyTheBoundRoleOfTheCurrentPod(t *testing.T)
 		t.Run(label, func(t *testing.T) {
 			hello := valid
 			edit(&hello)
-			if handler, reason := accept(hello); handler != nil || reason == "" {
+			if handler, _, reason := accept(hello); handler != nil || reason == "" {
 				t.Fatalf("accepted %+v (reason %q)", hello, reason)
 			}
 		})
+	}
+}
+
+// An accepted issue-pod launcher is handed what its cache trimmer runs by, the deployment's own
+// settings (Options.VolumeTrim), and a deployment that configured none hands none: the absence its
+// launcher reads as "run no trimmer" (INFRA-2009).
+func TestAnAcceptedIssueLaunchersResolverHandsItTheDeploymentsTrimmerSettings(t *testing.T) {
+	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
+		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a deployment that runs none":      nil,
+	} {
+		t.Run(label, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.VolumeTrim = configured }))
+			loc := g.spawn(workerSpec(t))
+			name := loc.Sandbox.Name
+			hello := shimwire.LauncherHello{
+				Token:   string(g.secret(roleSecretName(name, claim.RoleTester)).Data[LauncherTokenFile]),
+				Sandbox: name, Role: string(claim.RoleTester), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1",
+			}
+			handler, ack, reason := g.r.LauncherResolver()(hello)
+			if handler == nil {
+				t.Fatalf("the tester's own launcher was refused: %s", reason)
+			}
+			trim := ack.VolumeTrim
+			switch {
+			case configured == nil && trim != nil:
+				t.Fatalf("the launcher was handed %+v, want none: this deployment configured none", *trim)
+			case configured != nil && trim == nil:
+				t.Fatal("the launcher was handed no settings, want the deployment's own")
+			case configured != nil && *trim != *configured:
+				t.Fatalf("the launcher was handed %+v, want %+v", *trim, *configured)
+			}
+		})
+	}
+}
+
+// One acknowledgement carries what the pod's memory guard and its cache trimmer each run by, side
+// by side (launcherHelloAck): a deployment that configures both hands an issue pod's launcher
+// both, neither in place of the other, and the controller's launcher neither.
+func TestAnAcceptedLaunchersAcknowledgementCarriesTheGuardsAndTheTrimmersSettingsTogether(t *testing.T) {
+	guard := shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
+	trim := shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}
+	g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard, o.VolumeTrim = &guard, &trim }))
+	controller := g.spawn(controllerSpec(t))
+	issue := g.spawn(workerSpec(t))
+	accept := g.r.LauncherResolver()
+	handler, ack, reason := accept(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester))
+	if handler == nil {
+		t.Fatalf("the issue pod's tester launcher was refused: %s", reason)
+	}
+	if ack.MemoryGuard == nil || *ack.MemoryGuard != guard || ack.VolumeTrim == nil || *ack.VolumeTrim != trim {
+		t.Fatalf("the issue pod's launcher was answered memory guard %+v and trimmer %+v, want %+v and %+v", ack.MemoryGuard, ack.VolumeTrim, guard, trim)
+	}
+	handler, ack, reason = accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
+	if handler == nil {
+		t.Fatalf("the controller's launcher was refused: %s", reason)
+	}
+	if ack != (shimwire.LauncherHelloAck{}) {
+		t.Fatalf("the controller's launcher was answered memory guard %+v and trimmer %+v, want neither", ack.MemoryGuard, ack.VolumeTrim)
 	}
 }
 
@@ -95,23 +158,42 @@ func TestABindingWriteRefusedAsAConflictIsRetriedOnceOverAFreshRead(t *testing.T
 		t.Errorf("the retry wrote over the gh files written between read and write: %q", after.Data[GitHubHostsKey("sjawhar")])
 	}
 	hello := shimwire.LauncherHello{Token: string(after.Data[LauncherTokenFile]), Sandbox: loc.Sandbox.Name, Role: string(claim.RoleTester), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1"}
-	if handler, reason := g.r.LauncherResolver()(hello); handler == nil {
+	if handler, _, reason := g.r.LauncherResolver()(hello); handler == nil {
 		t.Errorf("the bound pod's launcher was refused: %s", reason)
 	}
 }
 
 // A binding write that conflicts again on its retry fails the launch with the conflict, as any other
-// write failure does: the bind is retried once, not until it lands.
+// write failure does: the bind is retried once, not until it lands. What ends this launch is the
+// row's own observable — the conflict reactor serving the second conflict, after which the bind
+// has no retry left and fails — and the context below is cancelled on it rather than on a wall
+// clock: the bind lies past a suspend, the wait for the previous pod, provision, the secret write,
+// the Running patch and the wait for the new pod, which a loaded machine spends more than the
+// second failedLaunch gives its own callers (relaunch_test.go).
 func TestABindingWriteConflictedTwiceFailsTheLaunch(t *testing.T) {
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	secret := roleSecretName(SandboxName(spec.Claim), claim.RoleTester)
+	launching, cutShort := context.WithCancel(g.ctx)
+	defer cutShort()
+	// The callback counts for itself rather than reading the helper's own counter: that one is
+	// 2 inside this call only because conflictSecretUpdates adds before it calls back, and a
+	// row whose cancel turns on another function's order of two statements hangs to the test
+	// binary's deadline the day that order changes. The helper's count is still what the
+	// assertion below reads.
+	var conflicts atomic.Int32
 	served := conflictSecretUpdates(g, secret, 2, func(s *corev1.Secret) {
 		s.Data[GitHubHostsKey("sjawhar")] = []byte(ghconfig.Hosts("ghs_refreshed_lease"))
+		if conflicts.Add(1) == 2 {
+			// The second conflict is the last the bind may make, so nothing this row waits on is
+			// outstanding once it is served: the launch fails on the conflict the reactor is
+			// returning, and this cancel ends a launch that goes on waiting for anything else.
+			cutShort()
+		}
 	})
 	g.launcher(spec.Claim)
 
-	err := failedLaunch(t, g, spec)
+	err := failedLaunchOn(t, g, launching, spec)
 
 	if err == nil || !strings.Contains(err.Error(), "bind its role launchers to the new pod") || !apierrors.IsConflict(err) {
 		t.Fatalf("Spawn = %v, want the launch failed on the binding's conflict", err)
@@ -151,7 +233,7 @@ func TestALauncherHelloIsAcceptedWhenTheConfiguredProjectCarriesCharactersAClaim
 		PodUID:     loc.Sandbox.PodUID,
 		LauncherID: "l-1",
 	}
-	if handler, reason := g.r.LauncherResolver()(hello); handler == nil {
+	if handler, _, reason := g.r.LauncherResolver()(hello); handler == nil {
 		t.Fatalf("the architect's own launcher, of a project whose label carries characters its claim token drops, was refused: %s", reason)
 	}
 }
@@ -230,6 +312,8 @@ func TestEveryRolesPrivateVolumesMountInItsContainerAlone(t *testing.T) {
 			want = append(want, corev1.KeyToPath{Key: GitHubHostsKey(owner), Path: owner + "/" + ghconfig.HostsFile},
 				corev1.KeyToPath{Key: GitHubConfigKey(owner), Path: owner + "/" + ghconfig.ConfigFile})
 		}
+		// The bundle's pairs file in the root, which every launch holding a directory projects.
+		want = append(want, corev1.KeyToPath{Key: GitHubPairsKey, Path: ghconfig.PairsFile})
 		if gh == nil || gh.SecretName != roleSecretName(l.name, role) || !slices.Equal(gh.Items, want) || gh.DefaultMode == nil || *gh.DefaultMode != 0o440 {
 			t.Errorf("%s's gh volume projects %+v, want %s's %+v, read-only", role, gh, roleSecretName(l.name, role), want)
 		}
@@ -259,7 +343,7 @@ func TestRejectedLauncherHellosDoNotSpendKubernetesRequests(t *testing.T) {
 	g.kube.ClearActions()
 	for range 20 {
 		for _, name := range []string{loc.Sandbox.Name, "unknown-sandbox"} {
-			if handler, reason := accept(shimwire.LauncherHello{
+			if handler, _, reason := accept(shimwire.LauncherHello{
 				Token: "wrong-token", Sandbox: name, Role: "tester", PodUID: loc.Sandbox.PodUID, LauncherID: "attacker",
 			}); handler != nil || reason == "" {
 				t.Fatal("unauthenticated launcher was accepted")
@@ -273,11 +357,11 @@ func TestRejectedLauncherHellosDoNotSpendKubernetesRequests(t *testing.T) {
 	}
 }
 
-// A Claude Code launch's start command carries one file beside its credentials: the MCP document
-// its agent command reads, naming the image's bun and the claude-envoy server it runs, with the
-// plugin's data under the role's own Claude Code directory. It travels in Files and not in the
-// spec's secrets, which would point a `<NAME>_FILE` variable at it and be refused for its name
-// besides. An Oh My Pi launch carries no such file.
+// A Claude Code launch's start command carries one file beside its credentials and the system
+// prompt file every launch carries: the MCP document its agent command reads, naming the image's
+// bun and the claude-envoy server it runs, with the plugin's data under the role's own Claude Code
+// directory. It travels in Files and not in the spec's secrets, which would point a `<NAME>_FILE`
+// variable at it and be refused for its name besides. An Oh My Pi launch carries no such file.
 func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -318,5 +402,52 @@ func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
 	omp := launcherCommand(launchOf(t, r, workerSpec(t)), r)
 	if _, carried := omp.Files[claudeMCPFile]; carried {
 		t.Errorf("an Oh My Pi launch carries %s: %v", claudeMCPFile, slices.Sorted(maps.Keys(omp.Files)))
+	}
+}
+
+// The one bound a system prompt still meets in a pod is the start frame that carries it to the
+// role's launcher, which reads no line longer than shimwire.MaxFrameBytes and to which the
+// daemon's writer sends none. prepare measures that frame as the writer writes it and refuses
+// exactly the prompts whose frame the writer would refuse, as a runtime.PromptTooLarge naming the
+// role, the prompt's size and the frame's, before anything of the pod is touched: a prompt whose
+// frame is MaxFrameBytes to the byte launches, and one byte more is refused.
+func TestAPromptWhoseStartFrameNoLauncherReadsIsRefused(t *testing.T) {
+	r, err := configure(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := workerSpec(t)
+	small, err := r.prepare(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := shimwire.FrameLen(launcherCommand(small, r))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A byte of addressing JSON leaves unescaped is one byte of the prompt and one of the frame.
+	spec.Prompt.Addressing += strings.Repeat("x", shimwire.MaxFrameBytes-frame)
+	fits, err := r.prepare(spec)
+	if err != nil {
+		t.Fatalf("prepare of a launch whose start frame is %d bytes: %v, want it launched", shimwire.MaxFrameBytes, err)
+	}
+	var line bytes.Buffer
+	if err := shimwire.NewWriter(&line).WriteFrame(launcherCommand(fits, r)); err != nil || line.Len() != shimwire.MaxFrameBytes {
+		t.Fatalf("the writer sends that start frame as %d bytes, %v; want the %d prepare measured", line.Len(), err, shimwire.MaxFrameBytes)
+	}
+	over := fits
+	over.prompt += "x"
+	if err := shimwire.NewWriter(io.Discard).WriteFrame(launcherCommand(over, r)); !errors.Is(err, shimwire.ErrLineTooLong) {
+		t.Fatalf("the writer sends a start frame one byte past the bound: %v, want %v", err, shimwire.ErrLineTooLong)
+	}
+
+	spec.Prompt.Addressing += "x"
+	_, err = r.prepare(spec)
+	var refused *runtime.PromptTooLarge
+	if !errors.As(err, &refused) {
+		t.Fatalf("prepare of a launch whose start frame is one byte past the bound: %v, want a PromptTooLarge", err)
+	}
+	if want := (runtime.PromptTooLarge{Role: spec.Role, Bytes: len(over.prompt), Frame: shimwire.MaxFrameBytes + 1}); *refused != want {
+		t.Errorf("prepare refused the launch as %+v, want %+v", *refused, want)
 	}
 }

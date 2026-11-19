@@ -1,13 +1,14 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
-import type { Ask, AskRead, Comment, IssueAskRow } from "../../api/types";
+import type { Ask, AskRead, Comment, CreateCommentInput, IssueAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { AskThread, type AskThreadQuery } from "./AskThread";
+import { AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -18,6 +19,10 @@ beforeAll(async () => {
 const specQuestionAsk: IssueAskRow = {
   anchor: null,
   answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   author: { id: "planner", kind: "session" },
   block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
   block_id: "q2",
@@ -38,7 +43,12 @@ const specQuestionAsk: IssueAskRow = {
 const answeredAsk: Ask = {
   anchor: null,
   answer: { at: "2026-09-09T01:00:00Z", selected: [], text: "Done.", user: "alice" },
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   author: { id: "session-1", kind: "session" },
+  block_id: null,
   created_at: "2026-09-09T00:00:00Z",
   edited_at: null,
   id: "ask-1",
@@ -83,11 +93,21 @@ const read: AskRead = {
   route_status_reason: null,
 };
 
+/** The ask `#q2` names in the reply, read by the reference the reply draws to title it. */
+const designAsk: Ask = {
+  ...answeredAsk,
+  answer: null,
+  id: "ask-design",
+  question: "Which way round?",
+  state: "open",
+};
+
 test("an Inbox reply's `#q2` names the question of the document its comment is anchored to", async () => {
   // The reply is anchored to `design.md`, which is no primary document of the issue: the server
   // scopes the comment's text to that document (`refs.ScopeOf`), so `#q2` is that document's
   // question. A map built from the issue's ask list would have chosen the spec's `q2` instead.
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([specQuestionAsk]);
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({ ...read, ask: designAsk, replies: [] });
   const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
     document: "artifact-design",
     questions: [
@@ -117,7 +137,56 @@ test("an Inbox reply's `#q2` names the question of the document its comment is a
     expect(listIssueAsks).not.toHaveBeenCalled();
   } finally {
     view.unmount();
+    getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
     listIssueAsks.mockRestore();
+  }
+});
+
+// A settled question's conversation goes on: however an ask was resolved, its thread keeps the
+// reply composer an answered ask's has, and what it sends is a reply on that ask.
+test("a resolved ask's thread takes a reply on that ask, whichever way it was resolved", async () => {
+  const user = userEvent.setup();
+  for (const kind of ["resolved", "retracted", "declined", "withdrawn"]) {
+    const resolved: Ask = {
+      ...answeredAsk,
+      answer: null,
+      resolution: {
+        actor: { id: "session-1", kind: "session" },
+        at: "2026-09-09T03:00:00Z",
+        kind,
+        reason: "Settled elsewhere.",
+      },
+      state: "resolved",
+    };
+    const sent: [string, CreateCommentInput][] = [];
+    const createReply: CreateReply = async (issueKey, input) => {
+      sent.push([issueKey, input]);
+      return { ...reply, body: input.body ?? "", id: `reply-${kind}` };
+    };
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const thread = { data: { ...read, ask: resolved, replies: [] } } as unknown as AskThreadQuery;
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <AskThread ask={resolved} createReply={createReply} order="oldest" thread={thread} />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+
+    try {
+      await user.click(view.getByRole("textbox", { name: "Reply" }));
+      await user.paste(`Still worth a look (${kind}).`);
+      await user.click(view.getByRole("button", { name: "Reply" }));
+      await waitFor(() =>
+        expect(sent).toEqual([
+          ["CORE-1", { ask_id: "ask-1", body: `Still worth a look (${kind}).` }],
+        ])
+      );
+    } finally {
+      view.unmount();
+    }
   }
 });

@@ -11,6 +11,7 @@ import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
 import {
@@ -28,11 +29,13 @@ export type IssueRoute =
   | ({ key: string; kind: "spec" } & BlockTarget)
   | { key: string; kind: "verification" }
   | { key: string; kind: "plan" }
+  | { key: string; kind: "steps" }
   | { key: string; kind: "conversation" }
   | { key: string; kind: "activity" }
   | { key: string; kind: "decisions" }
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
+  | { key: string; kind: "collaborators" }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
   | ({ key: string; kind: "ask"; id: string } & BlockTarget)
   | ({ key: string; kind: "comment"; id: string } & BlockTarget)
@@ -138,23 +141,33 @@ export type IssueTab =
   | "spec"
   | "verification"
   | "plan"
+  | "steps"
   | "conversation"
   | "children"
   | "artifacts"
   | "activity"
-  | "decisions";
+  | "decisions"
+  | "collaborators";
 
 /** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
 export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
 
 /** The issue tabs whose whole route is the tab itself: no block, no slug, no id. Each one is
  *  parsed from the segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>`
- *  and is the tab of its own name, so the chains below hold the five in one arm rather than one
- *  apiece and a sixth tab is this list. The spec, the conversation and the decisions stay out of
- *  it: a spec route carries a block, the conversation is written `log` in a reference and
+ *  and is the tab of its own name, so the chains below hold the seven in one arm rather than one
+ *  apiece and an eighth tab is this list. The spec, the conversation and the decisions stay out
+ *  of it: a spec route carries a block, the conversation is written `log` in a reference and
  *  `conversation` in a path, and the Decisions tab is a view of the issue's `decisions.md`, which
  *  a reference names as that document. */
-const PLAIN_ISSUE_TABS = ["verification", "plan", "activity", "children", "artifacts"] as const;
+const PLAIN_ISSUE_TABS = [
+  "verification",
+  "plan",
+  "steps",
+  "activity",
+  "children",
+  "artifacts",
+  "collaborators",
+] as const;
 
 type PlainIssueTab = (typeof PLAIN_ISSUE_TABS)[number];
 
@@ -531,10 +544,13 @@ export function parseMachinePath(pathname: string): string | undefined {
 }
 
 /** The project a route is about: a project path's own key, or an issue path's key without its
- *  number (an issue key is `<PROJECT>-<n>`, `issueKeyPattern` above); `undefined` elsewhere. */
+ *  number (`issueProject`, the one key-to-project rule); `undefined` elsewhere. */
 export function routeProjectOf(pathname: string): string | undefined {
   const issueKey = parseIssuePath(pathname)?.key;
-  return parseProjectPath(pathname)?.project ?? issueKey?.slice(0, issueKey.lastIndexOf("-"));
+  return (
+    parseProjectPath(pathname)?.project ??
+    (issueKey === undefined ? undefined : issueProject(issueKey))
+  );
 }
 
 /** The reference a `dispatch://` URL or a same-origin dashboard path names as text cites it, as
@@ -841,7 +857,7 @@ export function itemRoute(
  *  the shape every in-app thread link already uses. A typed ask block is named by its block
  *  fragment, which is how a decision block is focused, rather than by the ask's id. */
 export function documentItemPath(
-  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "slug">,
+  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
   item: { blockID?: string; id: string; kind: "ask" | "comment" }
 ): string {
   const path = buildReferencePath(documentRoute(artifact));
@@ -1144,4 +1160,11 @@ export const AGENT_LIVE_PATH = "/agents/:sessionId/live";
  */
 export function routeFillsViewport(pathname: string): boolean {
   return matchPath(AGENT_LIVE_PATH, pathname) !== null;
+}
+
+/** The session whose live view `pathname` names, and `undefined` on every other address. The
+ *  address is read here, beside the pattern, because a surface outside this module holds no
+ *  live route of its own: its link into a live view is `AgentName`'s (`biome.json`). */
+export function liveViewSessionOf(pathname: string): string | undefined {
+  return matchPath(AGENT_LIVE_PATH, pathname)?.params.sessionId;
 }

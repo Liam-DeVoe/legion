@@ -6,7 +6,6 @@ import {
   type ReactNode,
   useEffect,
   useId,
-  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -20,11 +19,12 @@ import {
   issuePatchRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
-import { userStateQuery } from "../../api/queries";
+import { projectsQuery, userStateQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   badgePrimary,
@@ -42,7 +42,6 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
-  scrollFadeTrailing,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
@@ -58,6 +57,7 @@ import {
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
+import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
@@ -65,9 +65,11 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
 import { GitHubLink } from "./GitHubLink";
+import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
@@ -135,43 +137,8 @@ export function IssueHeader({
       parentInputRef.current?.focus();
     }
   }, [parentEditing]);
-  // Whether the details rail has anywhere left to scroll, which is what its trailing fade says.
-  // The rail element is state rather than a ref so this runs once per rail, not once per render:
-  // three things change the answer and none of them is a render of this component - the reader
-  // scrolling the rail, the rail's box changing with the viewport, and its content arriving (the
-  // labels, the subscriber count, a GitHub title). One listener and two observers cover them,
-  // and the mutation observer re-observes children a render added.
-  const [rail, setRail] = useState<HTMLDivElement | null>(null);
-  const [railScrollable, setRailScrollable] = useState(false);
-  useLayoutEffect(() => {
-    if (rail === null) {
-      return;
-    }
-    // A fractional layout leaves scrollLeft a hair short of the end; one pixel of slack keeps a
-    // rail scrolled to its end from wearing the fade.
-    const measure = () =>
-      setRailScrollable(rail.scrollWidth - rail.clientWidth - rail.scrollLeft > 1);
-    const sizes = new ResizeObserver(measure);
-    const observeAll = () => {
-      sizes.observe(rail);
-      for (const child of rail.children) {
-        sizes.observe(child);
-      }
-    };
-    observeAll();
-    const contents = new MutationObserver(() => {
-      observeAll();
-      measure();
-    });
-    contents.observe(rail, { characterData: true, childList: true, subtree: true });
-    rail.addEventListener("scroll", measure, { passive: true });
-    measure();
-    return () => {
-      rail.removeEventListener("scroll", measure);
-      sizes.disconnect();
-      contents.disconnect();
-    };
-  }, [rail]);
+  // The details rail's trailing fade, worn while the rail has anywhere left to scroll.
+  const railFade = useScrollFadeTrailing();
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
@@ -267,7 +234,7 @@ export function IssueHeader({
   const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
   const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
-  const openAsks = issue.open_asks.filter((ask) => ask.state === "open");
+  const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -280,6 +247,22 @@ export function IssueHeader({
         ? `Waiting on you (${waitingForHuman.length})`
         : `Waiting on agents (${waitingOnAgents})`;
   const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
+  // The one shared read of the projects, under the key the shell's sidebar and the search
+  // palette already hold, so the daemon's `project.updated` publish refreshes these steps with
+  // no reload and the header makes no second, per-issue read. While that read is pending or
+  // failed there is no row, so the steps are empty and the header draws its one chip below
+  // rather than claiming a gate it has not read. Only a root issue has steps at all
+  // (`gatedStepEntries`), so a child issue does not ask for the list: a disabled query still
+  // reads whatever the shared cache holds, and a child draws the single chip either way.
+  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
+  const entries = gatedStepEntries(projectRow, issue);
+  // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
+  // entries rather than the gate's words: a gate that names no step for the primary document
+  // leaves that document's own state and its two controls to the chip.
+  const stepHoldsPrimaryDocument = entries.some(
+    (entry) => entry.document?.id === issue.primary_artifact_id
+  );
   const showApprovalActions =
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
@@ -504,7 +487,6 @@ export function IssueHeader({
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
-            priority={issue.priority}
             write={priorityWrite}
           />
           <AssigneeControl
@@ -515,13 +497,21 @@ export function IssueHeader({
           {/* Progress is state about how far the work has got, like the status and the claim,
               so it sits in this wrapping row with them; the metadata rail below clips. */}
           <ProgressChips bar progress={issue.progress} />
-          {documentArtifact === undefined ? null : (
+          {/* A root issue of a gated project reads its gate step by step, after the chip's
+              place; the chip itself stays beside those steps whenever no step drawn reviews the
+              primary document, since otherwise an open request on that document could not be
+              answered on this page at all. Every other issue - and any issue whose project is
+              still unread - keeps that chip for the primary document alone, unchanged. */}
+          {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : (
             <ApprovalChip
               artifact={documentArtifact}
               layout="contents"
               showActions={showApprovalActions}
               variant="header"
             />
+          )}
+          {entries.length === 0 ? null : (
+            <ApprovalSteps entries={entries} primaryArtifactId={issue.primary_artifact_id} />
           )}
           {/* Whether the route reaches anyone is state about who is working this, like the
               claim, and it sits in this wrapping row for the same reason: the metadata rail
@@ -589,9 +579,9 @@ export function IssueHeader({
             fade says the cut is a scroll, and it is off at the end of the scroll, where a fade
             would hide the last item instead. */}
         <div
-          className={`flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin] md:[&_button]:min-h-7 md:[&_button]:py-0 ${railScrollable ? scrollFadeTrailing : ""}`}
+          className={`flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin] md:[&_button]:min-h-7 md:[&_button]:py-0 ${railFade.fade}`}
           data-testid="issue-metadata-rail"
-          ref={setRail}
+          ref={railFade.ref}
         >
           {whoseTurn === null ? null : (
             <span
@@ -601,6 +591,7 @@ export function IssueHeader({
               {whoseTurn}
             </span>
           )}
+          <IssuePriorityLine disabled={isClosed} issue={issue} />
           {issue.created_by == null ? null : (
             <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
               <span className="font-medium">Opened by:</span>
@@ -616,7 +607,7 @@ export function IssueHeader({
             <span className="font-medium">Labels:</span>
             <IssueLabels
               disabled={isClosed}
-              labels={issue.labels}
+              labels={issue.labels ?? []}
               onSave={(labels) => labelsMutation.mutateAsync(labels)}
               project={issue.project}
               saving={labelsMutation.isPending}
@@ -668,7 +659,10 @@ export function IssueHeader({
                 </Link>
               )}
               <button
-                aria-label={issue.parent === null ? "Set parent issue" : "Edit parent issue"}
+                // The name starts with the word on the button - "None" or "Edit" - because a
+                // name that does not contain the visible text leaves the control out of reach
+                // of a voice user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
+                aria-label={issue.parent === null ? "None, set parent issue" : "Edit parent issue"}
                 className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
                 disabled={isClosed}
                 onClick={() => setParentEditing(true)}
@@ -680,8 +674,8 @@ export function IssueHeader({
           )}
           {/* The repository is where the work goes, like the parent, so it sits in this rail,
               which scrolls rather than wrapping: a repository name can be long, and the state
-              row above must keep every control on one row at a phone width. An issue whose
-              project maps no repository has no item here. */}
+              row above must keep every control on one row at a phone width. Every issue has an
+              item here, since every issue takes a repository whatever its project maps. */}
           <RepoControl
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
@@ -690,7 +684,7 @@ export function IssueHeader({
             resolvedRepo={issue.resolved_repo}
           />
           <IssueComponentsLine issue={issue} />
-          {issue.external_links.map((link) => (
+          {(issue.external_links ?? []).map((link) => (
             <div className="flex shrink-0 items-center" key={link.url}>
               <GitHubLink link={link} />
             </div>

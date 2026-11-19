@@ -1,13 +1,3 @@
-import {
-  type WebSocket as BrowserWebSocket,
-  expect,
-  type Page,
-  type Request,
-  test,
-  type WebSocketRoute,
-} from "@playwright/test";
-
-import type { LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   createComment,
@@ -19,8 +9,9 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
-import { resetDatabase } from "./seed";
+import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
 import { navigateInApp } from "./sends";
+import { expect, type Page, type Request, test, type WebSocketRoute } from "./test";
 import { asUser } from "./users";
 
 const agent: FakeSession = {
@@ -33,56 +24,16 @@ const agent: FakeSession = {
 };
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
 
-function isLiveSocket(socket: BrowserWebSocket): boolean {
-  return new URL(socket.url()).pathname === "/ws/live";
-}
-
-/** Lets the routed socket use Dispatch's own messages and preserves its close code. */
-function connect(route: WebSocketRoute): void {
-  const server = route.connectToServer();
-  server.onClose((code, reason) =>
-    route.close({
-      ...(code === undefined ? {} : { code }),
-      ...(reason === undefined ? {} : { reason }),
-    })
-  );
-}
-
-/** What a page's live sockets did: those open now, every one it opened, every frame it sent, and
- *  the type of every frame it received, in order. */
-interface LiveSockets {
-  readonly open: Set<BrowserWebSocket>;
-  readonly opened: BrowserWebSocket[];
-  readonly sent: LiveClientFrame[];
-  readonly received: LiveServerFrame["type"][];
-}
-
-function watchLiveSockets(page: Page): LiveSockets {
-  const sockets: LiveSockets = { open: new Set(), opened: [], received: [], sent: [] };
-  page.on("websocket", (socket) => {
-    if (!isLiveSocket(socket)) return;
-    sockets.open.add(socket);
-    sockets.opened.push(socket);
-    socket.on("close", () => sockets.open.delete(socket));
-    // The page sends only the contract's client frames and Dispatch only its server frames, each
-    // one JSON object.
-    socket.on("framesent", ({ payload }) => {
-      sockets.sent.push(JSON.parse(String(payload)) as LiveClientFrame);
-    });
-    socket.on("framereceived", ({ payload }) => {
-      sockets.received.push((JSON.parse(String(payload)) as LiveServerFrame).type);
-    });
-  });
-  return sockets;
-}
-
 /** Waits until the page holds one open live socket and its event feed has started on it. */
 async function untilFeedStarts(sockets: LiveSockets): Promise<void> {
   await expect.poll(() => sockets.open.size).toBe(1);
   await expect.poll(() => sockets.received.includes("events_start")).toBe(true);
 }
 
-function replay(sessionID: string, extra: readonly object[] = []): object {
+function replay(
+  sessionID: string,
+  extra: readonly Record<string, unknown>[] = []
+): Record<string, unknown> {
   return {
     frames: [
       ...Array.from({ length: 40 }, (_, index) => ({
@@ -191,15 +142,14 @@ function trackDocumentLoads(page: Page): string[] {
   return loaded;
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): one socket for every live view is read over three live views, so the row loads and
 // draws all three in the one tab - the project's board, the session's live thread and the
 // delivery timeline - and each is a page's worth of rendering the claim cannot do without.
 // @webkit @firefox: the one-socket invariant, which must hold in every engine people read in.
-test("a tab holds one live socket for every live view @webkit @firefox", async ({ browser }) => {
+// @pr: The live socket: one socket per tab, read over three live views at once.
+test("a tab holds one live socket for every live view @webkit @firefox @pr", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Board issue" });
   await seedDeliveryFixture();
@@ -293,6 +243,9 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
     for (const pageSockets of sockets) await untilFeedStarts(pageSockets);
     await Promise.all(pending.map(waitForReads));
 
+    // The idle itself: five seconds of real time with every page's socket open. A request a page
+    // holds open ages on the wall clock whatever that page's timers believe, so no clock jump
+    // can stand in for this window - it is the measurement this row is.
     await board.waitForTimeout(IDLE_MS);
     for (const page of pages) await page.clock.fastForward(SILENCE_CHECK_MS);
     // Whatever the checks started - the sign-in check that jump also fires among them - is a read
@@ -418,7 +371,10 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
 
 // SLOW(>=2s): a cold load in WebKit and in Firefox with the page's first live socket held open
 // through it, which each engine then has to replay the missed change on.
-test("a change committed while the page loads is shown without a reload", async ({ browser }) => {
+// @pr: The live socket: a change committed while the page loads has to be replayed, with no reload.
+test("a change committed while the page loads is shown without a reload @pr", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Before the page load" });
 
@@ -500,7 +456,8 @@ test("a first live socket opening without a change makes no API request", async 
   }
 });
 
-test("an agent live view survives a rotation in place", async ({ browser }) => {
+// @pr: The live socket: a rotation the server makes the page spend must leave the agent's live view where it was.
+test("an agent live view survives a rotation in place @pr", async ({ browser }) => {
   await setLiveSessions([agent]);
   await publishAgentStreamFrame(agent.session_id, replay(agent.session_id), "replay");
 

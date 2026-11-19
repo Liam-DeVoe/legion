@@ -247,8 +247,7 @@ describe("runRulesCheck: which asks a call opens", () => {
         });
       const read = /^\/api\/v1\/artifacts\/doc-brief\/(text|blocks)$/.exec(url.pathname);
       if (read === null) return body({ code: "NOT_FOUND", error: "not found" }, 404);
-      if (read[1] === "text") return body({ markdown: BRIEF, version: 1, token: "sha256:d" });
-      return body([
+      const blocks = [
         {
           id: "window",
           type: "ask",
@@ -257,15 +256,22 @@ describe("runRulesCheck: which asks a call opens", () => {
           token: "sha256:0",
           references: { comments: 0, asks: 0 },
         },
-      ]);
+      ];
+      // The text route carries the blocks whose ranges index its markdown when the caller asks
+      // for them, as Dispatch does.
+      if (read[1] === "text")
+        return body({
+          markdown: BRIEF,
+          version: 1,
+          token: "sha256:d",
+          ...(url.searchParams.get("blocks") === "true" ? { blocks } : {}),
+        });
+      return body(blocks);
     }) as typeof fetch;
     return (_directory: string, signal: AbortSignal) => ({
-      client: new DispatchClient(
-        "https://dispatch.example",
-        bearerCredential("token"),
-        fetchImpl,
-        signal
-      ),
+      client: new DispatchClient("https://dispatch.example", bearerCredential("token"), fetchImpl, {
+        signal,
+      }),
       serverUrls: ["https://dispatch.example"],
     });
   };
@@ -441,6 +447,48 @@ describe("runRulesCheck: which asks a call opens", () => {
     expect(walks).toBe(0);
     expect(check).toMatchObject({ outcome: "unjudged", asksPartial: true, latencyMs: 7 });
     expect(check?.textMissing).toBe(false);
+  });
+  // A read inside an armed gate hands its Dispatch client the gate's time left as the client's own
+  // deadline, so a broker credential waits that time less the request's reserve and a live token
+  // still goes out in it; before, the client knew only the gate's signal and took no reserve from
+  // it (the review of dc8dc9ea7a, F6).
+  test("a read inside an armed gate hands its Dispatch client the gate's time left", async () => {
+    let clock = 1_000;
+    const handed: (number | undefined)[] = [];
+    await runRulesCheck(
+      {
+        now: () => clock,
+        env: {},
+        dispatchClient: (_directory, _signal, deadlineMs) => {
+          handed.push(deadlineMs);
+          return undefined;
+        },
+        walk: async () => ({
+          answer: { kind: "answer" as const, text: RULES_NONE },
+          called: {},
+          elapsedMs: 0,
+        }),
+      },
+      {
+        toolName: "dispatch_artifact",
+        tool: "dispatch artifact",
+        input: {
+          issue: "X-1",
+          name: "brief.md",
+          content: `${BRIEF}\n:::ask{#new}\nShould I change the cache path? Recommendation: keep it as it is.\n:::\n`,
+        },
+        directory: async () => {
+          // 4 s of the gate's 30 s pass before the read asks for its client.
+          clock += 4_000;
+          return "/work";
+        },
+        system: "rules",
+        context: () => ({ primarySystemPrompt: "", transcript: "" }),
+        signal: new AbortController().signal,
+        deadlineAt: 31_000,
+      }
+    );
+    expect(handed).toEqual([26_000]);
   });
   test("a re-upload whose stored version holds every opener opens no new ask, and the check answers nothing", async () => {
     // The other fact behind an empty judged list: the read answered, and every ask is already held.

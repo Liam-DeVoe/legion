@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
-import type { CredentialDecisionResponse } from "../../api/types";
+import type { DecisionResponse, StateResponse } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
@@ -56,13 +56,16 @@ function MachineLoginDecision({
  * The machine-login page: `agent-secrets machine login` prints an 8-character code on the
  * machine, and the operator types it here. A service, such as the Legion daemon, logs in with its
  * own Kubernetes token and prints no code; a service's login an older broker opened can still be
- * looked up here, and only denied. Ruling 13 of the shared broker contract:
+ * looked up here, and only denied. Decision 13 of the shared broker contract:
  * only this code-lookup route selects a
  * `launcher_credential` record, and deciding it sends the same code again, so this is the one
- * place a machine record gets Approve/Deny buttons. A looked-up login already decided shows its
- * decision, and so does one decided here, in their place, so a second click never reaches the
- * broker's already-decided refusal. Below it, the machine logins the viewer may revoke that can
- * still reach a secret: their own machines' and every service's.
+ * place a machine record gets Approve/Deny buttons, and only while the broker reads it as
+ * pending. A looked-up login already decided shows its decision, and so does one decided here, in
+ * their place, so a second click never reaches the broker's already-decided refusal. A login whose
+ * deadline passed before anybody decided it reads as expired, before the broker's sweep ends it
+ * and after, and the broker refuses every decision of it: it shows that in one line, with no
+ * buttons. Below it, the machine logins the viewer may revoke that can still reach a secret:
+ * their own machines' and every service's.
  */
 export function MachineLoginPage(): ReactNode {
   const [code, setCode] = useState("");
@@ -82,7 +85,7 @@ export function MachineLoginPage(): ReactNode {
   const lookedUpCode = lookup.variables ?? "";
 
   // Each is typed by its answer, which its callbacks read.
-  const approve = useKeyedWrite<CredentialDecisionResponse>({
+  const approve = useKeyedWrite<DecisionResponse>({
     write: (_variables, bounds) =>
       api.approveCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -95,7 +98,7 @@ export function MachineLoginPage(): ReactNode {
       if (decided === null) lookup.mutate(lookedUpCode);
     },
   });
-  const deny = useKeyedWrite<CredentialDecisionResponse>({
+  const deny = useKeyedWrite<StateResponse>({
     write: (_variables, bounds) =>
       api.denyCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
@@ -117,7 +120,16 @@ export function MachineLoginPage(): ReactNode {
       lookup.mutate(code);
     });
   };
-  const madeHere = approve.data ?? deny.data ?? undefined;
+  // What a decision made on this page left: an approval names the launcher credential it minted,
+  // and a denial names none, which is the broker's own split between the two answers.
+  const approved = approve.data ?? undefined;
+  const denied = deny.data ?? undefined;
+  const madeHere =
+    approved !== undefined
+      ? { credential_id: approved.credential_id, state: approved.state }
+      : denied === undefined
+        ? undefined
+        : { credential_id: null, state: denied.state };
   // The looked-up record and its decision as the page now knows them: a decision made here leaves
   // the record decided, with the credential an approval minted.
   const view =
@@ -126,10 +138,7 @@ export function MachineLoginPage(): ReactNode {
       : madeHere === undefined
         ? { decided: record.decided, record }
         : {
-            decided: {
-              credential_id: madeHere.state === "approved" ? madeHere.credential_id : null,
-              event: madeHere.state,
-            },
+            decided: { credential_id: madeHere.credential_id, event: madeHere.state },
             record: { ...record, state: madeHere.state },
           };
 
@@ -171,20 +180,24 @@ export function MachineLoginPage(): ReactNode {
       {view === undefined ? null : (
         <div className="space-y-4">
           <CredentialRecordFacts record={view.record} />
-          {view.decided === null ? (
+          {view.record.state === "expired" ? (
+            <p className={`text-sm font-medium ${textPrimaryOnCanvas}`}>
+              This login expired before anyone decided it.
+            </p>
+          ) : view.decided !== null ? (
+            <MachineLoginDecision
+              credentialId={view.decided.credential_id}
+              event={view.decided.event}
+              host={view.record.identifiers?.[0] ?? ""}
+              service={view.record.service}
+            />
+          ) : view.record.state === "pending" ? (
             <CredentialDecisionButtons
               approve={view.record.service === null ? approve : undefined}
               deny={deny}
               submitGuard={submitGuard}
             />
-          ) : (
-            <MachineLoginDecision
-              credentialId={view.decided.credential_id}
-              event={view.decided.event}
-              host={view.record.identifiers[0] ?? ""}
-              service={view.record.service}
-            />
-          )}
+          ) : null}
         </div>
       )}
       <MachineLoginsSection />

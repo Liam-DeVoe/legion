@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Artifact, Comment } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -15,6 +16,8 @@ const specArtifact: Artifact = {
   kind: "doc",
   name: "Spec",
   primary: true,
+  ref_key: "CORE-1/spec",
+  session_id: null,
   slug: "spec",
   versions: [],
 };
@@ -75,6 +78,8 @@ test("an issue margin offers Comments and Pinned, Comments first", () => {
           savingCommentEditId: undefined,
           hoveredItemId: undefined,
           hoveredMarkId: undefined,
+          landedCard: undefined,
+          routeMarkedItemId: undefined,
           selectedItemId: undefined,
           showResolved: false,
         },
@@ -96,15 +101,15 @@ test("an issue margin offers Comments and Pinned, Comments first", () => {
 
   try {
     expect(screen.getByRole("button", { name: "Open review panel (3 open asks)" })).not.toBeNull();
-    expect(screen.getByRole("tab", { name: "Comments" }).getAttribute("aria-selected")).toBe(
-      "true"
-    );
+    expect(screen.getByRole("tab", { name: "Comments" })).toHaveAttribute("aria-selected", "true");
     expect(
       within(view.container)
         .getAllByRole("tab")
         .map((tab) => tab.textContent)
     ).toEqual(["Comments", "Pinned"]);
-    expect(within(view.container).queryByRole("tab", { name: "Artifacts" })).toBeNull();
+    expect(
+      within(view.container).queryByRole("tab", { name: "Artifacts" })
+    ).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -182,6 +187,8 @@ test("a document owner shows the Comments tab and comment composer only", () => 
             savingCommentEditId: undefined,
             hoveredItemId: undefined,
             hoveredMarkId: undefined,
+            landedCard: undefined,
+            routeMarkedItemId: undefined,
             selectedItemId: undefined,
             showResolved: false,
           },
@@ -211,7 +218,8 @@ test("a document owner shows the Comments tab and comment composer only", () => 
   }
 });
 
-test("MarginSheet shows the selected phone thread in a full-height view with a Back button", () => {
+test("MarginSheet shows the selected phone thread in a full-height view with a Back button", async () => {
+  const user = userEvent.setup();
   const root: Comment = {
     anchor: {
       artifact_id: specArtifact.id,
@@ -316,6 +324,8 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
               savingCommentEditId: undefined,
               hoveredItemId: undefined,
               hoveredMarkId: undefined,
+              landedCard: undefined,
+              routeMarkedItemId: undefined,
               selectedItemId: root.id,
               showResolved: false,
             },
@@ -349,7 +359,7 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
     const thread = screen.getByRole("dialog", { name: "Thread" });
     expect(thread.className).toContain("inset-0");
     expect(within(thread).getByTestId(`margin-comment-${root.id}`)).not.toBeNull();
-    fireEvent.keyDown(thread, { key: "Escape" });
+    await user.keyboard("{Escape}");
     expect(closed).toBe(true);
     expect(sheetClosed).toBe(false);
   } finally {
@@ -358,7 +368,8 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
   }
 });
 
-test("the standalone document phone sheet shows each suggestion's diff and Accept/Reject without opening the thread", () => {
+test("the standalone document phone sheet shows each suggestion's diff and Accept/Reject without opening the thread", async () => {
+  const user = userEvent.setup();
   const suggestion = (id: string, replaceWith: string): Comment => ({
     anchor: {
       artifact_id: specArtifact.id,
@@ -477,6 +488,8 @@ test("the standalone document phone sheet shows each suggestion's diff and Accep
               savingCommentEditId: undefined,
               hoveredItemId: undefined,
               hoveredMarkId: undefined,
+              landedCard: undefined,
+              routeMarkedItemId: undefined,
               selectedItemId: undefined,
               showResolved: false,
             },
@@ -496,12 +509,12 @@ test("the standalone document phone sheet shows each suggestion's diff and Accep
   );
 
   try {
-    expect(screen.queryByRole("dialog", { name: "Thread" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
     const firstCard = screen.getByTestId(`margin-comment-${first.id}`);
     const secondCard = screen.getByTestId(`margin-comment-${second.id}`);
     expect(firstCard.querySelector("ins")?.textContent).toBe("red");
     expect(secondCard.querySelector("ins")?.textContent).toBe("auburn");
-    fireEvent.click(within(secondCard).getByRole("button", { name: "Accept suggestion" }));
+    await user.click(within(secondCard).getByRole("button", { name: "Accept suggestion" }));
     expect(actions).toEqual([[second.id, "accept"]]);
     expect(selections).toEqual([]);
     expect(within(firstCard).getByRole("button", { name: "Reject suggestion" })).not.toBeNull();

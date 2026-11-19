@@ -1,384 +1,61 @@
-# The merge gate: review, acceptance, retro, READY, the merge, and the production check
+# The merge gate: review and the production check
 
-Part of `skill://legion-worker`. Read it when you are the reviewer submitting a review or an
-approval, the tester on a look of its closed issue's production check, or the merger
-building READY. Every path it cites is in cybermonklabs/legion.
-
-The order, in full: the tester's evidence green → the reviewer's approval of the head → the
-architect's acceptance, in `accepting` → retro → the merger's READY → the merge, which closes the
-issue → the production check after the close, which the project's `production_check` setting
-gives to a role or takes away. Every handoff is a record on the
-Dispatch issue, never a commit, so the head that merges carries none. Retro commits nothing
-(*Retro*, below), so the approved head is the head that merges. READY still lets a commit that
-changes only `docs/solutions/` stand, and a change whose every path is under `.legion/`, where
-handoffs lived before they moved to the Dispatch issue and which nothing writes or reads now, so
-nobody reviews a path there, whatever GitHub's compare says the change did to it.
-A conflict-forced merge goes back to the reviewer for a
-confirmation or a new round, as the fingerprint decides (*The reviewer*, below, and
-`skill://legion-worker/references/conflicts-and-rewrites.md`), unless READY refused it, and any
-other change to the head voids it.
+Read it when you review or approve, or work a look of a closed issue's production check. Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives what it does not. The merger's steps are all in its role prompt.
 
 ## The reviewer
 
-- The reviewer reads CI on GitHub and verifies the `Threads` facts and the issue's results there
-  and with `dispatch results --issue <issue>` — never from a handoff — then, when the diff
-  touches runtime code, runs
-  `task(agent="thermonuclear-deep-review")` and
-  `task(agent="thermonuclear-code-quality")` once at that head — the head the round reviews —
-  waits for each one's result with `wait`, since each runs as a job of its own, and records the
-  verdict from what those results say. A result that carries no report, or that names another
-  place for it, is a failed run, not a verdict: run that agent again, or read its transcript, and
-  record nothing from it until you have the findings text in front of you. Reading the agent's
-  diff yourself and recording that in its place is the same as answering the rubric from a bare
-  verdict — it is your own reading standing in for a review that did not happen, not the review
-  of your own that the round always asks for. When you can do neither — the agent will not run
-  again and its transcript holds no findings — that half of the round has no review: tell the
-  architect, do not approve, and wait with a `WAITING` line naming what you wait on until it
-  answers. The CI it reads is the head's own checks: no handoff is a
-  commit, so every push to the branch is work whose head gets GitHub's workflow runs of its own.
-  With `<o>/<r>`, `<n>`, `<base>` and `<headRefOid>` from
-  `gh pr view <n> --json baseRefName,headRefOid`, two reads. The required set is the
-  base branch's rulesets' required checks and its branch protection's, when it has any. Both
-  branch endpoints take the base as a URL path, each segment escaped and each `/` kept (a raw `#`
-  or `%` reads another branch), built in the same command from the name GitHub returns, never
-  pasted or carried over from an earlier command:
+1. Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.
+2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result: each runs as a job of its own. Each agent reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff, or the whole change. The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, are the daemon's; your role prompt says how to read them.
+3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript. Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict. When you can do neither, that half of the round has no review: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on until it answers.
 
-  ```bash
-  base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \
-    base_path=$(jq -rn --arg b "$base" '$b | split("/") | map(@uri) | join("/")') && \
-    echo rulesets: && gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' && \
-    echo protection: && gh api "repos/<o>/<r>/branches/$base_path" --jq '.protection.required_status_checks.checks[].context'
-  ```
+### What the base requires
 
-  A read GitHub refuses stops the command there, and is reported to the architect, never guessed.
-  The head's check-runs
-  (`gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --paginate --jq '.check_runs[] | [.name, .status, .conclusion] | @tsv'`):
-  every required name present, `completed` and `success` (GitHub counts `neutral` and `skipped`
-  as passing for a required check). A required check
-  `queued` or `in_progress`: wait. One `completed` as `cancelled`, or absent: on a `pull_request`
-  run, re-run that run's
-  failed and cancelled jobs, once, then wait — never the whole run, which runs again every job that
-  succeeded too. A merge-group run is never re-run: the implementer finishes its round instead,
-  and the pull request is tested again when it is queued again.
-  Find the run and job at the head: the head's runs
-  (`gh api 'repos/<o>/<r>/actions/runs?head_sha=<headRefOid>&per_page=100' --jq '.workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv'`),
-  then each candidate run's jobs
-  (`gh api repos/<o>/<r>/actions/runs/<run-id>/jobs --jq '.jobs[] | [.id, .name, .status, .conclusion] | @tsv'`).
-  A cancelled job of a pull-request run: `gh run rerun <run-id> --failed`, which GitHub applies to
-  the run's failed and
-  cancelled jobs and the jobs that depend on them, and to nothing that succeeded. Never
-  `--job <job-id>` alone: under a routing workflow, re-running only the final job reads the
-  cancelled results again and stays red. GitHub refuses a re-run while an attempt of that run is
-  still in progress: wait for it. When no
-  run at the head holds the job, or nothing will run it (a check only a commit status reports, a
-  workflow another repository defines), tell the architect and do not approve.
-  Approval is refused while any `before_merge` check of the issue's own Verification document has no passing result that is current at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it.
-  An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
-  A result is current at that head while the head is the head of an open pull request, or the final head of a merged one, attributed to the check's own issue. A child's pull request never makes a root check's result current, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, and that result is current at the child's head. A root's own checks are proven at the root's own head, or on the default branch for an `after_merge` check, in the root's last round.
-  On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
-  reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
-  Submit **one review per round** —
-  `REQUEST_CHANGES` when any correctness finding stands, otherwise `APPROVE` of the head you
-  reviewed — always named by SHA — carrying every inline comment in that single
-  call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
-  with `commit_id`, `event` (`REQUEST_CHANGES` or `APPROVE`), `body` (with the
-  Legion footer), and a `comments[]` array of `{path, line, side, body}`, one entry per
-  finding — never one `pr review` call per finding (each submission fires a `pr-review` wake).
-  A `COMMENT` decides nothing. After a
-  forward merge, compute the fingerprint (*The unchanged-diff check* in
-  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the
-  `commit_id` of your last submitted review and at the new head. Equal and that review was
-  `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
-  and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass. Equal and
-  that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
-  nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
-  one review. A return whose task's `Reason:` names a READY refusal is never a confirmation, even
-  after a forward merge, and a no-fix `REQUEST_CHANGES` that answered one is never continued: the round
-  after it reviews the refused change in full from the last `APPROVE` (*Retro's commits do not
-  void the reviewer's approval* below).
-- Answer every thread you opened, and every thread a bot opened that is none of Legion's role
-  Apps, as `skill://legion-worker/references/review-threads.md` says; the same reference says
-  when every thread is settled enough to approve, and resolving one never gates your approval.
-- **Fix a prose-only finding yourself** — wording, a count, a tense, a citation — in your own
-  commit on the pull request, and list it in your review. Send the work back only for a finding
-  that touches code or behaviour. Push the fix **before** you submit the round's review, and
-  review the head that push made. A push above the head you approved leaves the approval
-  standing for nothing, since any push may change code: the round goes stuck and your architect
-  is told (`ApprovalStands` in `packages/daemon/internal/classify/decisions.go`,
-  `stuckApprovedOtherCode` in `packages/daemon/internal/workflow/review.go`, and the cases "the
-  approval, then a push" and "a push, then the approval of the head before it" in
-  `packages/daemon/internal/workflow/review_test.go`). GitHub runs the branch's workflows on that
-  push, as on every push. Wait for that head's required checks to be
-  green, and approve only then. The daemon sends nothing back for a red at a head the review App
-  pushed (`PlannedRed` in `classify/decisions.go`), so your own read is the only one. A red you
-  approve over reaches nobody: the tree runs on to the merge, where GitHub holds the pull request
-  under the base branch's required checks until someone reads them. A red there is a
-  `REQUEST_CHANGES` when the code is at fault, and your own commit to fix when your prose broke
-  it. The architect reads your prose commits at its acceptance (*The architect's acceptance*,
-  below), and that read is no new round. A round after a READY refusal is the one exception. Its
-  approval needs the tester's results to be current at the head, or at an ancestor with only paths
-  under `.legion/` changed since. So there you fix no prose yourself, and you name each prose
-  finding in a `REQUEST_CHANGES`.
+Read the base's required checks with the base name escaped in the same command (a raw `#` or `%` reads another branch):
 
-A reviewer's phase ends with its completion, not with its review. Every round records a handoff
-and takes this order: read CI as above; write the handoff and record it with
-`dispatch handoff-write`; submit the review of the head, by its SHA; then complete. A red at the
-code is a `REQUEST_CHANGES` naming the check, never an approval. A request for changes does not
-wait, since it stands whatever CI says and the issue leaves reviewing with it. The approval waits
-on nothing either: it ends the round whatever CI says at the head it names, since the round reads
-no CI verdict, and a red the daemon reads later — at that head or any above it — is the code's red
-and resumes the implementer from wherever the issue is (reviewing, retro or merging) without the
-reviewer. A head your own push changed is the exception. The daemon marks it a planned red and
-sends nothing back for it, so wait for its checks yourself (*Fix a prose-only finding yourself*,
-above). The daemon moves the issue once both are in — the decision GitHub reports and your
-completion, in either order — so a review posted without a completion leaves the issue in
-reviewing until you finish.
+```bash
+base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \
+  base_path=$(jq -rn --arg b "$base" '$b | split("/") | map(@uri) | join("/")') && \
+  echo rulesets: && gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' && \
+  echo protection: && gh api "repos/<o>/<r>/branches/$base_path" --jq '.protection.required_status_checks.checks[].context' && \
+  echo code_scanning: && gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[] | select(.type=="code_scanning") | .parameters'
+```
 
-## The architect's acceptance
+A `code_scanning` rule requires an analysis that no status-check list names. A read GitHub refuses leaves the required set unknown: report it to the architect, do not approve, and wait with a `WAITING` line naming the read.
 
-- Between the reviewer's approval and retro the issue sits in `accepting` (Dispatch status
-  `needs_review`), where no worker is started: the tree's architect reads the evidence (the
-  tester's handoff, `dispatch results --issue <issue>` at the approved head and the reviewer's
-  approval of the head by SHA; the daemon refuses the sign-off while an issue beneath it is still
-  in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`, so a parent is accepted after its children, on
-  the head of its last round, `skill://legion-architect`, section 4) and accepts with the
-  `legion` tool's `sign_off`, which moves the issue to retro, or sends it back to `implementing`
-  or `testing` with `request_backward_move` and a reason, which reaches the started worker's task
-  as its `Reason:` line and counts a review round. The acceptance comment names each check with
-  its result. An issue with no Verification document, or with no `before_merge` check, reaches
-  the architect as a gap the tester and the reviewer named and neither refused, so the
-  architect's acceptance is the only gate on it: the acceptance comment names that gap and
-  decides there, accepting the issue or sending it back with the checks the architect writes,
-  which closes the root's `criteria` step where the deployment gates that step, since that step
-  records the root's Verification document and each new version of a step's document closes it;
-  a child's Verification document is gated by nothing. The architect also
-  reads the reviewer's own prose commits here, with the rest of the evidence, and that read is no
-  new round. It does not
-  accept while the issue holds a finding ask no controller has taken (`findings.md`, "When no
-  controller takes it"). The issue's approval is gated by the `before_merge` checks of its own
-  Verification document at its own head, so a child's result against a root's check proves
-  nothing for the root: the root's checks are proven at the root's own head, in its last round.
-  The acceptance asks for no `after_merge` result: that one is recorded
-  after the close, where the project opens a check (*The production check after the close*,
-  below).
-  CI red at the head in `accepting` returns the issue to `implementing` as it does in review. A
-  head the review App pushed is the exception: the daemon marks it a planned red and acts on it
-  nowhere, and GitHub holds the merge under the base branch's own rules.
+### The head's checks
 
-## Retro
+- Read the check runs and, every page, the commit statuses: `gh api --paginate 'repos/<o>/<r>/commits/<headRefOid>/status?per_page=100' --jq '.statuses[] | [.context, .state] | @tsv'`. Read the status list, never that endpoint's top-level `state`, which reads `pending` for a head with no status.
+- The newest run of a name (latest `started_at`) decides, and the newest status of a context. `--paginate` runs `--jq` once per page, so choose over the merged list.
+- A check run `queued`, `requested`, `waiting`, `pending` or `in_progress`, or a status `pending`, is running: wait, unapproved. A run waiting on an environment's approval, another App's check run, or a status left `pending` has no bound; when it stands longer than its CI usually takes, tell the architect and wait.
+- A check the base does not require holds no approval. A red one whose log shows the change breaks something is a finding; any other is named in the review body.
+- The daemon's `checkRuns` count in the issue's `mergeWait` is only the runs a settlement applied: read GitHub before you act.
 
-- **Retro commits nothing.** It reads the evidence, writes what the work taught as a
-  `dispatch comment` on the issue for the skill librarian, brings the PR body up to date and
-  completes (`skill://legion-retro` gives the steps), so the approved head is the head READY
-  names. Anything above the approved
-  head voids the approval, except a change whose every path is under `.legion/` and a commit
-  that changes only `docs/solutions/`, which READY still lets through: READY is refused
-  `READY_UNREVIEWED_CHANGE`, naming the paths, and the merger tells the architect, who has it send
-  the head back to review instead of completing, the move's reason naming the refusal's code and
-  what it found. `READY_UNREVIEWED_CHANGE` has more causes than a path outside retro's own; every
-  one of them sends the head back to review and none is an error to retry, and the complete list,
-  with each remedy, is the merger's own role prompt part.
-  A conflict merge pushed above the approved head with no review round after it
-  brings the base's paths above that head, so READY refuses it the same way; one sent back through
-  `implementing` by the conflict procedure gets its confirmation before READY runs. A READY
-  refusal's return reaches the reviewer as a new round, never a fingerprint confirmation. Retro
-  removes nothing.
-- **Retro brings the PR body's path-derived content up to date before it completes.** Whatever the
-  repository's instructions derive from the pull request's changed paths (a checklist named for
-  each class of path, read by a required check), retro recomputes for the whole diff at its head
-  and writes into the live body before it completes (`skill://legion-retro`), since the merger
-  reports a stale body rather than rewriting it. A body edit changes no commit, so the approval
-  stands.
+### A required item with no run at the head
 
-## The merger
+Never approve a head while a required item has no run. Sort it, in this order. Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on.
 
-- The merger resolves no review thread: the reviewer's approval already judged them, and READY
-  requires no thread state beyond it. It quotes what sits above the approved head with
-  `cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" git fetch && jj -R
-  "$LEGION_WORKSPACE" diff --from <approved-sha> --to <tip-sha> --summary` in READY; the daemon,
-  not the merger, holds those commits to retro's: READY reads GitHub's compare of the round's
-  approved head with READY's head and refuses any other path (`READY_UNREVIEWED_CHANGE`), and a
-  round with no recorded approval (`READY_NOT_APPROVED`).
-  *The READY packet* is
-  `READY #<n> at <current sha> (approved at <approved sha>) for <KEY> (<pr url>)`
-  (the shape `packages/daemon/internal/prompts/roles/merger.md` defines), then the PR body's
-  `Outcome:` line and its `Not proven / risk:` value — every bullet under that label joined with
-  `; ` on the one READY line, or `none` — quoted from the `## For the reviewer` block at that same
-  head (or one line saying the body carries no brief — the packet still goes out), then the
-  `--summary` output and the PR body's gate facts. The READY packet names each `before_merge`
-  check with its latest result, as `dispatch results --issue <issue>` prints it; a check with no
-  current passing result is reported to the architect instead of completing.
-- READY is `handoff_complete` with `ready: true` and the packet as its `summary`; the merger runs
-  no pre-flight of its own, and its completion reports the commit the workspace stands on. READY's
-  checks run in the daemon, which reads the pull request's head on GitHub and refuses, before
-  recording anything, on each ground the merger's role prompt names in its `Go daemon workflow`
-  part, by its code and with its remedy. That part is the one complete list of READY's refusals. A
-  refusal records nothing; the merger reports it to the architect unless it says to complete
-  again, and never pushes a commit to make CI run. On success the daemon posts the packet as a
-  `dispatch message` on the issue, publishes it to the project's merge queue role when one is set,
-  and says on the issue when that role has no live holder; the answer's `note` says when READY was
-  published on a pull request a person already merged, whose head can no longer change, or carries
-  the by-hand note of a pull request a person merges.
-- **The daemon submits the merge the moment READY is accepted, unless the answer says a person
-  merges it.** It queues a `ready_merge` outbox row for the head READY named, and the row, as the
-  implement App, reads GitHub and then the record: while the issue still awaits that READY head, a
-  base with a merge queue gets the pull request enqueued once GitHub reports it mergeable now
-  (`CLEAN`, `UNSTABLE` or `HAS_HOOKS`); otherwise a pull request GitHub reports mergeable now is
-  squash-merged, and one in a repository that allows auto-merge is armed. Every request carries
-  READY's head as GitHub's expected head, so GitHub refuses it once the head has moved. On a
-  merge-queue base the row never arms auto-merge: while a required check still runs, or anything
-  else keeps GitHub from reporting the pull request mergeable, it waits, reading GitHub again on
-  the outbox's backoff, and enters the queue once GitHub does. In a repository that allows neither a
-  merge queue nor auto-merge, the row waits the same way until GitHub reports the pull request
-  mergeable — a required check finishing, a required review a person gives — and then merges it. An
-  arm or a queue entry is not the end: the row keeps reading GitHub until GitHub reports the pull
-  request merged at READY's head. Once it has seen the arm or entry, it never submits that head
-  again after someone else removes it: the merge queue taking the pull request out because the merge
-  failed (GitHub's reason `failed_checks`, or an unexplained reason with a check that failed, timed
-  out, failed to start, needed action or went stale on the commit the queue built for its
-  `merge_group` CI) sends the issue back to `implementing`, the implementer's task naming each
-  failing check and its run, as a red head does; any other removal (a person dequeues it,
-  cancelling its runs, or turns auto-merge off, GitHub turns it off, the queue finds a conflict)
-  ends the row and is told to the architect once
-  (`merge-removed`). Two removals are submitted again: the implement App's own disarm sent before
-  READY that GitHub applied late (auto-merge `manually_disabled`, or a `manual` dequeue, by that
-  App), and auto-merge a close turned off, which the reopen at READY's head undid. GitHub's
-  rules decide each answer: the daemon bypasses
-  none, and a person may merge it first. A refusal a retry would meet again (squash merges disabled,
-  a permission the App lacks) ends the row and is told to the architect once (`merge-refused`), with
-  GitHub's message. While the record still awaits READY's head, GitHub showing the pull request
-  closed or at another head is a webhook not yet applied, so the row waits for the two to agree.
-  Only once GitHub's last change to the pull request is more than 10 minutes old, however long the
-  row waited before, does the row end and tell the architect once (`merge-stalled`). A merge the
-  daemon submitted that GitHub has not completed within an hour of READY's acceptance tells the
-  issue's architect once (`merge-waiting`) and goes on waiting: nothing is withdrawn, the merge
-  stands, the issue stays in `awaiting_merge`, and the architect reads the pull request for what
-  GitHub waits on — a required check that never ran or failed, a review only a person can give, a
-  queue that has not landed it — and asks a person for what no worker can do. A reopen at
-  READY's head reuses the row, starts it over as though nothing had been armed, and takes it from a
-  run that read the record before the reopen. Any other failure retries.
-  No role runs `gh pr merge`. When the answer's `note` begins `MANUAL_MERGE_REQUIRED:` (the pull
-  request touches a path the project's `merge.by_hand` names), READY stands but the daemon submits
-  nothing: the merger tells the architect the note and the head, and a person merges under the
-  repository's rules. While an earlier auto-merge disarm for that pull request remains unfinished,
-  a by-hand READY refuses `READY_DISARM_PENDING`; retry it once the disarm finishes, so a stale
-  ordinary arm cannot merge the person-only head. Ordinary READY does not wait for the disarm. The
-  daemon tells that READY with the note at its head and the packet's `Merge:` line replaced, so the
-  issue and the merge queue role are never asked to arm it. A READY the design gate refused is
-  submitted by the daemon once every gated step of the root's design gate is open, when the
-  approval that opens the last closed one moves the issue to `awaiting_merge`; the refusal named
-  one step and the version to approve, and no second READY is asked for however many steps held
-  it. A push that moves the head past a READY the gate holds voids it before then:
-  the architect is told `READY_HEAD_MOVED` and has the merger build a new READY at the new head.
-  The packet's second line records the step,
-  `Merge: the daemon submits pull request #<n> at <head> once READY is accepted`.
-- **The daemon disarms a merge no READY covers.** Auto-merge stays enabled across pushes, and the
-  expected head is checked only when it is enabled, so the daemon itself disables the pull
-  request's auto-merge and takes it out of a merge queue, as the implement App, on any push or
-  reopen but one landing on an awaiting READY's head, when READY is withdrawn (a push or reopen
-  moved the head past it, its CI turned red, or it conflicts with its base, each of which sends the
-  issue back to `implementing`), when a child is set back to `todo`, and when the issue leaves the
-  workflow. A by-hand READY covers no arm, so whoever arms it is undone. A `ready_merge` row whose
-  READY the record has left, or whose pull request the record holds closed, submits nothing; a pull
-  request reopened at an awaiting READY's head gets that head's merge submitted again. No role runs
-  a disarm.
+1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first. `DIRTY` takes a forward merge, which is the implementer's: the daemon asks for it and tells you the new head when it lands. `UNKNOWN`: read again each minute for up to five minutes, then report it to the architect as a refused read.
+2. A fork head whose runs stand `action_required` waits on a maintainer. Never close and reopen it.
+3. A check only a commit status reports, or a workflow another repository defines: nothing here starts it. Never close and reopen it.
+4. A required workflow whose `paths` or `paths-ignore` filter, as the base holds it, skips every file of the change: a reopen sends the same event, so the head or the workflow must change.
+5. The remedy's case: a `BLOCKED` head, not from a fork (`--json isCrossRepository`), with no run `action_required`, where a workflow under `.github/workflows/` (as the merge commit holds it) has a job reporting the item whose `on:` runs it for `pull_request` with no `types` that leave out `reopened`, no `branches` filter that excludes the base and no path filter that skips the whole change, and neither list holds a run of it. A job reports its `name:` or its key, with ` (<matrix values>)` for a matrix job and `<calling job> / <job>` for a reusable workflow's; for `code_scanning`, the analysis jobs report under their own names and the `CodeQL` run is the code-scanning App's. Tell the architect why, close the pull request, wait a minute, and reopen it at the same head (a quicker reopen can have its run cancelled by the close's own run). Approve only once the item's run concluded green. One close and reopen covers every item of the head: name the others to the architect in the same message. A head with any item in case 2 or 3 takes no remedy, and an item still with no run after the reopen's runs concluded is never reopened again.
+6. Anything else: tell the architect, do not approve, and wait.
+
+### The issue's checks
+
+- Approval is gated by the issue's own `before_merge` checks, as your role prompt says; a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says. A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and request no changes for it.
+
+### A merge of the base is reviewed for what it changed
+
+After a forward merge of the base, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since the head your last submitted review read, its Legion footer's `head`. This lists your session's reviews, oldest first, so the last line is your last review; no line, or `no head` on it, means you read the branch's whole diff:
+
+```bash
+gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
+```
 
 ## The production check after the close
 
-- **The merge closes the issue; the production check is the work of the role the project names,
-  after the close.** `projects.<KEY>.production_check` in the project's `legion.yaml` takes `off`
-  or `tester`, and a project that names no key gets `tester`, so by default the tester works the
-  check; the loader refuses every other value, naming the key and the value it read. Where the
-  setting names the tester, the merge makes the daemon write `done` and, in the tester's session,
-  still live, hand it the check task. Where it is `off` nothing is opened at all — no record, no
-  bound and no look — and the merged close is like any other done: every claim of the issue is
-  retired and its pod released with the disk it ran on. A merged root still lingers its tree with
-  every claim suspended, as before. On a root whose tree still runs the close, and so the check
-  task, comes later: the merge is recorded, the root waits in `awaiting_merge` until the last other
-  issue of its tree is done or parked, and the check opens with that close. Its first line is
-  `Production check of <KEY>: <title>.`, and it names the repository, the pull request, the merge
-  commit, the look's number, what woke the look (`the merge`, for the first) and whether it is the
-  last. A resumed session tells the check task
-  from its last phase task by that first line.
-- **The check's record holds the role that works it, written when the check opened.** Changing the
-  setting moves no check already open: a check keeps the role it opened with, and a check open
-  before this release carries the implementer. Only that role may report on it, so a report from
-  any other role is refused (`CHECK_ROLE_MISMATCH`). The check carries no phase and no handoff: a
-  look ends with `handoff_complete` carrying a `verdict` and a `summary`, no commit, and the daemon
-  refuses a report on an issue with no open check (`CHECK_NOT_OPEN`), on a look already ended
-  (`CHECK_LOOK_NOT_OPEN`), or with no verdict of `pass`, `pending` or `fail`
-  (`CHECK_VERDICT_REQUIRED`).
-  One refusal is about the turn rather than the report: a completion sent from a turn that is not
-  a look's own task is refused `CHECK_LOOK_NOT_SERVED` and records nothing, so report again in the
-  turn of the look's task.
-- **Each look does three things.** Do what the deployment instructions say to reach the deploy:
-  when they name an agent or role for it, `envoy_publish` the merge commit to that role's topic
-  with `expects_reply: none`, and await no reply. Read whether production carries the merge. Then
-  report one of three outcomes:
-  - `pass`, once you drove the changed path in production through the user's own access path and
-    recorded the result: `dispatch result` against the issue's `after_merge` check, at the merge
-    commit, its `observed` ending `woken by <event>`, with the printed line in the PR body's
-    `Checks` block and one pull-request comment carrying the Legion footer. A closed issue takes a
-    result for an `after_merge` or `default_branch` check and refuses every other write. A staging
-    pass is not this, since a
-    staging gate does not run every resource production does.
-  - `pending`, when production does not carry the merge yet (a shared profile still holding the
-    previous release, a daemon still running the previous commit, a deploy nobody has run): the
-    summary names what is missing and what you will look for next, `wake_at` names your next look
-    (below), nothing is recorded, and the check's line in the body stays at
-    `- Check <block id> (after_merge): not yet run`.
-  - `fail`, for a defect: record the failing result with `dispatch result --verdict fail`, file no
-    issue, and take the path
-    `skill://legion-worker/references/findings.md` gives it. A defect with a clear fix goes to the
-    controller topic, with its evidence comment on the controller's report issue. A defect that
-    needs a decision is a `dispatch ask` on the report issue, and you publish its reference to the
-    controller topic. Either names this issue, the pull request, the merge commit, what you drove
-    and what failed. Name the message or the ask (`dispatch://<REPORT KEY>/ask/<id>`) in the
-    result's `observed` and in the summary.
-- **Numbers the daemon holds are read with the `legion` tool.** Where the verdict rests on what a
-  deployment's idle release has done, `read_release_records` answers a window of the daemon's own
-  records of its releases, resumes and holds: its one argument `since` is the RFC 3339 instant
-  the window starts at, and the tool's own description says what the answer carries. It reads
-  them with this session's own claim, so there is no credential to fetch and none on disk.
-- **You name your own next look, and nothing else wakes the check.** A `pending` on any look but
-  the check's last carries `wake_at`, an RFC 3339 time: when you want to look again. Name a time
-  you have a reason for — when the deploy you asked for should have run, when the next release
-  lands — and say in the summary what you are waiting for, since that summary is what the next
-  look's task tells you woke it. A `pending` with no `wake_at` on a look that is not the last is
-  refused (`CHECK_WAKE_REQUIRED`): nothing is recorded, the look stays open, and the same report
-  with a time is taken. A `wake_at` that no look follows is refused (`CHECK_WAKE_UNEXPECTED`): on
-  a `pass`, on a `fail`, and on a `pending` on the last look, each of which ends the check. A time
-  less than 60 seconds ahead becomes 60 seconds ahead, and a time at or after the check's own
-  bound starts no look of its own, since the look at that bound already stands. No deploy run, no
-  Dispatch `issue.deployed`, no Dispatch build and no daemon boot wakes a check: the daemon reads
-  no deployment's production workflows at all, and your `wake_at` is the only thing that starts
-  the look after this one.
-- **Nothing waits in the session for a deploy.** A `pending` ends the look: the daemon stops the
-  checking role's process, keeps its session and releases the issue's pod, whose Sandbox goes with
-  its disk, and at the time you named a new pod comes back and your session resumes with the next
-  look's task. So end the turn with the report: never poll for the deploy, never wait on a reply,
-  and never ask anyone for approval to deploy. Open a `dispatch ask` to a person only when the
-  instructions name nobody for that deploy; it starts with the production gap and why it matters,
-  then names the required install or restart step, its risk, and outcome-named options, and the
-  look still ends `pending`.
-- **The bounds.** A look is bounded at 2 hours, and a look nobody reported — its 2 hours, an
-  operator's hold, or a claim that failed to start — starts the next look two hours later; on the
-  last look it closes the check as not run. The whole check is bounded by the project's
-  `production_check_hours` (336, 14 days, by default) from the close, and the look that bound
-  starts is the last, told so in its task
-  (`the bound: production did not carry the merge within <N days>`). A `pass` or `fail` there
-  closes the check as any look's would; a `pending` there carries no `wake_at` and closes the
-  check as not run, and before reporting it you write on the pull request, in the check's line and
-  a comment, that the check did not run because production did not carry the merge within the
-  bound.
-- **The record lives on the pull request and in the result.** Dispatch refuses a message, a
-  comment or an ask on a closed issue (`ISSUE_CLOSED`) and takes only a result for an
-  `after_merge` or `default_branch` check, so the deployment instructions' "on the pull request
-  and the issue" is the pull request and that result. A defect reaches Dispatch by the two paths above:
-  a clear defect as the message to the controller, which gives it to the tree that owns that code,
-  and any other as the ask on the
-  controller's report issue. The architect accepted the issue before the merge and is asked
-  nothing after it. `pass` or
-  `fail` closes the check: your claim is retired and the issue's Sandbox goes with its pod and
-  disk, for a root as for a child. Neither ending retires or suspends anything of an issue back in
-  the workflow (a root reopened inside its linger): its claim and pod are the new run's.
+- `projects.<KEY>.production_check` in `legion.yaml` is `tester` (the default) or `off`. Under `off` the close opens no check at all. A check keeps the role it opened with, and only that role may report on it (`CHECK_ROLE_MISMATCH`).
+- Reach the deploy as the deployment instructions say. When they name an agent or a role for it, `envoy_publish` the merge commit to that topic with `expects_reply: false`, and await no reply. Open a `dispatch ask` only where the instructions name nobody; the look still ends `pending`.
+- A staging pass is no production pass: staging does not run every resource production does.
+- Report each look's verdict as your role prompt says. A `fail` follows `skill://legion-worker/references/findings.md`: file no issue.

@@ -168,24 +168,22 @@ func TestMessageReferencingAnotherMessageCreatesAToKindMessageRef(t *testing.T) 
 }
 
 func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T) {
-	live := true
+	// starting is a listener behind its starting gate past the take-over window: it answers every
+	// send 503, a failure Dispatch does not queue, so the attempt fails and a person retries it.
+	starting := false
 	sent := []map[string]any{}
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
-			if !live {
-				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write([]byte(`{"error":"no live session s1"}`))
-				return
-			}
 			_, _ = w.Write([]byte(`{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
-			if !live {
-				_, _ = w.Write([]byte(`[]`))
-				return
-			}
 			_, _ = w.Write([]byte(`[{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}]`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			if starting {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"service starting"}`))
+				return
+			}
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Fatalf("decode listener send: %v", err)
@@ -277,16 +275,16 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 		t.Fatalf("bearer target without actor = %d %s", anonymous.Code, anonymous.Body.String())
 	}
 
-	live = false
+	starting = true
 	failed := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Retry me", "target": "session:s1", "delivery": "btw",
 	}, "alice")
 	if len(failed.Deliveries) != 1 || failed.Deliveries[0].State != "failed" ||
-		failed.Deliveries[0].Error == nil || *failed.Deliveries[0].Error != "no live session s1" {
+		failed.Deliveries[0].Error == nil || !strings.HasPrefix(*failed.Deliveries[0].Error, listenerUnreachablePrefix) {
 		t.Fatalf("failed delivery = %#v", failed.Deliveries)
 	}
 
-	live = true
+	starting = false
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+failed.ID+"/deliveries",
 		map[string]any{"delivery": "steer"}, "alice")
 	if retry.Code != http.StatusCreated {
@@ -499,15 +497,17 @@ func TestTargetedMessageRecordsCapabilityAndListenerFailures(t *testing.T) {
 		t.Fatalf("missing capability sent %d listener requests", sendCalls)
 	}
 
+	// A send the listener refuses records the listener's own reason. A 404 "no live session" is
+	// not one: Dispatch queues that message itself (message_queue_publish_test.go).
 	capabilities = []string{"aside", "btw"}
-	sendStatus = http.StatusNotFound
-	sendError = "no live session s1"
+	sendStatus = http.StatusBadRequest
+	sendError = "message is required"
 	listenerFailure := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Can you receive now?", "target": "session:s1", "delivery": "btw",
 	}, "alice")
 	if got := listenerFailure.Deliveries; len(got) != 1 || got[0].State != "failed" ||
-		got[0].Error == nil || *got[0].Error != "no live session s1" {
-		t.Fatalf("listener 404 delivery = %#v", got)
+		got[0].Error == nil || *got[0].Error != "message is required" {
+		t.Fatalf("listener 400 delivery = %#v", got)
 	}
 }
 
@@ -684,6 +684,8 @@ func TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries(t *testing.T) {
 		t.Fatalf("repeated reply appended an event: before=%s after=%s", before.Body.String(), after.Body.String())
 	}
 
+	// A closed issue still takes a delivery retry and the agent's reply to it.
+	roleLive = true
 	closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
 		map[string]string{"status": "done"}, "alice")
 	if closed.Code != http.StatusOK {
@@ -691,14 +693,18 @@ func TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries(t *testing.T) {
 	}
 	closedRetry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/deliveries",
 		map[string]any{"delivery": "steer"}, "alice")
-	if closedRetry.Code != http.StatusConflict || !strings.Contains(closedRetry.Body.String(), `"code":"ISSUE_CLOSED"`) {
+	if closedRetry.Code != http.StatusCreated {
 		t.Fatalf("delivery to closed issue: status=%d body=%s", closedRetry.Code, closedRetry.Body.String())
+	}
+	closedAttempt := decodeBody[model.MessageDelivery](t, closedRetry)
+	if closedAttempt.Attempt != 3 || closedAttempt.State != "sent" || closedAttempt.SessionID != "s1" {
+		t.Fatalf("delivery to closed issue = %#v, want attempt 3 sent to s1", closedAttempt)
 	}
 
 	closedReply := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
-		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 2, "body": "Too late.",
+		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": closedAttempt.Attempt, "body": "Answered after the close.",
 	})
-	if closedReply.Code != http.StatusConflict || !strings.Contains(closedReply.Body.String(), `"code":"ISSUE_CLOSED"`) {
+	if closedReply.Code != http.StatusCreated {
 		t.Fatalf("reply to closed issue: status=%d body=%s", closedReply.Code, closedReply.Body.String())
 	}
 }
@@ -730,7 +736,7 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 				_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"error":"no live session s1"}`))
+			_, _ = w.Write([]byte(`{"error":"service starting"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"not found"}`))
@@ -770,7 +776,9 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 		t.Fatalf("issue-less message event sequence = %d, want 0", sequence)
 	}
 
-	sendStatus = http.StatusNotFound
+	// A listener behind its starting gate past the take-over window: a failure Dispatch does not
+	// queue, so the attempt fails and the person retries it.
+	sendStatus = http.StatusServiceUnavailable
 	failed := postAgentMessage(t, handler, "s1", map[string]any{
 		"body": "Second question", "delivery": "btw",
 	}, "alice")
@@ -779,7 +787,8 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 	}
 	failedMessage := decodeBody[model.Message](t, failed)
 	if len(failedMessage.Deliveries) != 1 || failedMessage.Deliveries[0].State != "failed" ||
-		failedMessage.Deliveries[0].Error == nil || *failedMessage.Deliveries[0].Error != "no live session s1" {
+		failedMessage.Deliveries[0].Error == nil ||
+		!strings.HasPrefix(*failedMessage.Deliveries[0].Error, listenerUnreachablePrefix) {
 		t.Fatalf("failed issue-less delivery = %#v", failedMessage.Deliveries)
 	}
 
@@ -953,7 +962,9 @@ func TestReplyOnFailedAttemptRecordsTheAnswer(t *testing.T) {
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	// A deployment with no publisher, so a session the listener holds no record of fails the
+	// attempt rather than being queued by Dispatch (message_queue_publish.go).
+	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, noAgentPublisher: true})
 	issue := createInteractionIssue(t, handler, "TEST", "Failed then answered", "before")
 
 	// The listener listed no session, so Dispatch recorded the attempt as failed - yet the
@@ -2013,7 +2024,7 @@ func TestASupersededAttemptIsNotSettledAgainByItsOriginalSender(t *testing.T) {
 				attemptSessionID: "s1", title: "planner",
 			},
 		},
-		nil, false, "",
+		sendOutcome{},
 	); err != nil {
 		t.Fatalf("the returning sender's settle: %v", err)
 	}
@@ -2446,7 +2457,7 @@ func TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testi
 				attemptSessionID: "s1", title: "planner",
 			},
 		},
-		&envelope, false, "",
+		sendOutcome{envelopeID: &envelope},
 	)
 	if err != nil {
 		t.Fatalf("the stalled sender's settle: %v", err)

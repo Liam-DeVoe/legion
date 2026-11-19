@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -207,6 +206,11 @@ func TestIssueDecisionsReadsEachDecisionOfTheDocument(t *testing.T) {
 	if got := specVersionCount(t, fixture.database, fixture.issue.PrimaryArtifactID); got != specVersions {
 		t.Fatalf("the spec has %d versions, want %d: writing decisions.md writes the spec none", got, specVersions)
 	}
+	// The view answers each decision's text with the reading Go made of it, so the panel that
+	// lays a decision out block by block takes those blocks from this tree rather than splitting
+	// the markdown in the browser.
+	requireDisplayTree(t, fixture.handler, "/api/v1/issues/"+fixture.issue.Key+"/decisions",
+		"decisions.0.text", "decisions.0.text_tree")
 }
 
 // A link added to an existing decision is not out of date; a version that changes the decision's
@@ -545,7 +549,7 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 		}
 	}
 	if linked == 0 {
-		t.Fatalf("the backfill left no link to judge: %s", mustJSON(t, view))
+		t.Fatalf("the backfill left no link to judge: %s", asJSON(t, view))
 	}
 }
 
@@ -569,6 +573,12 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	if fmt.Sprint(questions) != "[Which store? Which name?]" {
 		t.Fatalf("open_questions = %v, want the spec's two asks oldest first", questions)
 	}
+	// Each question is the ask row the ask list answers, and that row declares a question tree,
+	// so this view answers one too: a caller that asked for the trees is given the same row by
+	// both routes, and a client that reads either draws what the server read rather than its own
+	// reading of the markdown.
+	requireDisplayTree(t, handler, "/api/v1/issues/"+issue.Key+"/decisions",
+		"open_questions.0.question", "open_questions.0.question_tree")
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
@@ -590,12 +600,4 @@ func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want i
 	}
 	t.Fatalf("open_questions = %v, want %d of them", questions, want)
 	return view, questions
-}
-func mustJSON(t *testing.T, value any) string {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	return string(encoded)
 }

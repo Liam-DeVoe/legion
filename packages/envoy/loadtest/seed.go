@@ -19,8 +19,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// commitTriggerSQL installs loadtest.event_commits and its trigger on events; loadgen seed-finish
-// runs it once the seed's outbox has drained (finish), and loadgen trigger-sql prints it.
+// commitTriggerSQL installs public.loadtest_event_commits and its trigger on events; loadgen
+// seed-finish runs it once the seed's outbox has drained (finish), and loadgen trigger-sql
+// prints it.
 //
 //go:embed commit-trigger.sql
 var commitTriggerSQL string
@@ -86,7 +87,9 @@ func runSeed(args []string) error {
 	out := fs.String("out", "", "seed.json path (default $LOADTEST_ROOT/seed.json)")
 	comments := fs.Int("comments", 8, "comments per issue, every second one anchored")
 	workers := fs.Int("workers", 8, "concurrent writers")
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
@@ -118,10 +121,13 @@ func runSeed(args []string) error {
 // seed creates the projects, issues and comments, then routes issue i (in key order) to session
 // i. Content is deterministic: each issue's generator is seeded by its project and number, never
 // the clock, so which worker writes it does not change it.
+//
+// The projects are created as seedPerson, who each of them then names as its default assignee;
+// everything else is written as a session, as it has always been.
 func seed(ctx context.Context, a *api, comments, workers int) (seedFile, error) {
 	var sf seedFile
 	for _, p := range seedProjects {
-		res := a.callRetry(ctx, "POST", "/api/v1/projects", who{}, map[string]any{"key": p.key, "name": "Load " + p.key, "actor": sessionActor("ses-seed")})
+		res := a.callRetry(ctx, "POST", "/api/v1/projects", who{person: seedPerson}, map[string]any{"key": p.key, "name": "Load " + p.key})
 		if !res.ok() && res.status != 409 {
 			return sf, fmt.Errorf("create project %s: %d %s %v", p.key, res.status, trunc(res.body), res.err)
 		}

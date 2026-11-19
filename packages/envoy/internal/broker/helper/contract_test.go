@@ -4,7 +4,6 @@
 package helper
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -17,34 +16,20 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// syncBuffer is bytes.Buffer plus a mutex: slog's own handler serializes its Write calls, but a
+// syncBuffer is a buffer plus a mutex: slog's own handler serializes its Write calls, but a
 // test reading the buffer's text back out (String) is a second, unsynchronized accessor racing
 // those writes from the Server's own background goroutines (enrollLoop, renewLoop) — a real race
 // -race catches, not a flaky artifact to suppress.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+type syncBuffer = logtest.Buffer
 
 // contractRig is a real Server + Broker (this package's own production types) pointed at a real
 // broker (brokertest.Rig) over a real unix socket — the lesson test's own rig, distinct from
@@ -84,7 +69,7 @@ func startContractHelper(t *testing.T, broker *brokertest.Rig, machineFile strin
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	cr.srv = &Server{
 		Registry: NewRegistry(sessionsPath),
-		Broker:   &Broker{URL: broker.URL, OperatorFile: broker.OperatorFile, MachineFile: machineFile, HTTP: client, Log: log},
+		Broker:   &Broker{URL: brokeraddr.New(broker.URL), OperatorFile: broker.OperatorFile, MachineFile: machineFile, HTTP: client, Log: log},
 		Hostname: "contract-test-host",
 		PeerOf:   PeerOf,
 		Log:      log,
@@ -367,7 +352,7 @@ func TestContractARefusedLauncherCredentialIsAnErrorAndTheHelperKeepsServing(t *
 		time.Sleep(20 * time.Millisecond)
 	}
 	log := cr.logBuf.String()
-	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
+	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
 	why := `why="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch)"`
 	if !strings.Contains(log, refused) || !strings.Contains(log, why) {
 		t.Fatalf("log:\n%s\nwant %s, and the session's error naming %s", log, refused, why)
@@ -432,7 +417,7 @@ func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *te
 		t.Fatalf("revoke the machine login = %d: %s", status, body)
 	}
 
-	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
+	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
 	deadline := time.Now().Add(15 * time.Second)
 	for !strings.Contains(cr.logBuf.String(), refused) {
 		if time.Now().After(deadline) {

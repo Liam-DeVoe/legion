@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,11 +36,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
@@ -60,14 +61,15 @@ const (
 	githubSubjects      = "notifications.github.>"
 )
 
-// redeliveredRepositories serves acme/widgets at main, as the daemon's mapping would.
+// redeliveredRepositories records an issue on acme/widgets at main, as the daemon would once
+// GitHub answers for it; a repository nothing has read GitHub for is answered as unread.
 type redeliveredRepositories struct{}
 
 func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
 	if resolved == redeliveredRepo {
 		return workflow.Resolution{Repo: redeliveredRepo, DefaultBranch: "main", GitHubRepo: redeliveredRepo}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + redeliveredProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 // GitHub sends a pull request opened on an issue's branch while the stream does not capture
@@ -78,6 +80,14 @@ func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Reso
 // listener stores it, and the daemon's consumer applies it with the workflow's handler: the pull
 // request is recorded on its issue, once, under the delivery's fact id. The listener and the
 // sweep are the real binaries; GitHub is a fake that keeps the App webhook's delivery log.
+//
+// The test's own listener also reports on notifications.legion.wake: a listener_ready report as
+// it starts and every five minutes after (packages/envoy/cmd/listener/main.go:1739-1744). Every
+// daemon is meant to apply those reports, as the signal that lets it release idle pods
+// (internal/workflow/wake.go:110-120), so the daemon here applies each one stored after its wake
+// durable opened, under source envoy, at a time this test does not control. The test therefore
+// admits envoy rows in processed_events and holds its GitHub rows to exactly the redelivered
+// delivery (redeliveredGitHubEvents).
 func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	ctx := context.Background()
 	binaries := builtEnvoyBinaries(t)
@@ -165,7 +175,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 		"NATS_URLS=" + natsURL,
 		"DISPATCH_APP_CLIENT_ID=" + redeliveredClientID,
 		"DISPATCH_APP_PEM_B64=" + base64.StdEncoding.EncodeToString([]byte(pemText)),
-		"DISPATCH_GITHUB_API_BASE=" + github.server.URL,
+		"DISPATCH_GITHUB_API_BASE=" + github.url,
 	}
 	output, err := sweep.CombinedOutput()
 	if err != nil {
@@ -185,10 +195,10 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 
 	factID := "github." + redeliveredGUID
 	testwait.Eventually(t, "the daemon to apply "+factID, func() bool {
-		return slices.Contains(processedGitHubEvents(t, pool), factID)
+		return slices.Contains(redeliveredGitHubEvents(t, pool), factID)
 	})
-	if got := processedGitHubEvents(t, pool); !slices.Equal(got, []string{factID}) {
-		t.Errorf("processed events %v, want exactly %s", got, factID)
+	if got := redeliveredGitHubEvents(t, pool); !slices.Equal(got, []string{factID}) {
+		t.Errorf("processed GitHub events %v, want exactly %s", got, factID)
 	}
 	if n := storedOn(t, stream, subject); n != 1 {
 		t.Errorf("the stream holds %d messages on %s, want the redelivered one", n, subject)
@@ -213,8 +223,37 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	if logged := logs.String(); logged != "" {
 		t.Errorf("the consumer and the handlers logged, want nothing at warn or above:\n%s", logged)
 	}
-	t.Logf("6. the daemon applied %s once: processed_events holds %v, and %s#%d is recorded open on %s at %s",
-		factID, processedGitHubEvents(t, pool), redeliveredRepo, redeliveredNumber, pr.Issue, pr.HeadSHA)
+	t.Logf("6. the daemon applied %s once: processed_events holds %v from GitHub, and %s#%d is recorded open on %s at %s",
+		factID, redeliveredGitHubEvents(t, pool), redeliveredRepo, redeliveredNumber, pr.Issue, pr.HeadSHA)
+}
+
+// redeliveredGitHubEvents is the id of every event processed_events holds from GitHub, sorted in
+// Go's byte order as processedGitHubEvents sorts them. A row from source envoy is a report of the
+// test's own listener, which the daemon is meant to apply (the test's comment), and is left out;
+// a row from any other source fails the test.
+func redeliveredGitHubEvents(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select source || ':' || event_id from processed_events`)
+	if err != nil {
+		t.Fatalf("read the processed events: %v", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the processed events: %v", err)
+	}
+	var github []string
+	for _, id := range ids {
+		source, eventID, _ := strings.Cut(id, ":")
+		switch source {
+		case "github":
+			github = append(github, eventID)
+		case "envoy":
+		default:
+			t.Fatalf("processed event %s is from %s, want only GitHub's and the listener's (envoy)", eventID, source)
+		}
+	}
+	slices.Sort(github)
+	return github
 }
 
 const redeliveredHead = "4c1e9a7b2d5f8e0a3c6b9d2f5e8a1c4b7d0e3f6a"
@@ -306,22 +345,7 @@ type listenerProcess struct {
 }
 
 // processOutput keeps everything a process writes to its stdout and stderr.
-type processOutput struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (o *processOutput) Write(p []byte) (int, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.buf.Write(p)
-}
-
-func (o *processOutput) String() string {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.buf.String()
-}
+type processOutput = testlog.Buffer
 
 // line is the listener's first output line holding text, or "" when none does.
 func (l *listenerProcess) line(t *testing.T, text string) string {
@@ -469,7 +493,7 @@ type hookDelivery struct {
 // a redelivery re-posts the recorded attempt's body under the same GUID.
 type fakeGitHub struct {
 	t         *testing.T
-	server    *httptest.Server
+	url       string
 	publicKey *rsa.PublicKey
 	clientID  string
 	webhook   string
@@ -489,8 +513,7 @@ func newFakeGitHub(t *testing.T, publicKey *rsa.PublicKey, clientID, webhook str
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /app/hook/deliveries", g.list)
 	mux.HandleFunc("POST /app/hook/deliveries/{id}/attempts", g.attempt)
-	g.server = httptest.NewServer(mux)
-	t.Cleanup(g.server.Close)
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return g
 }
 
@@ -551,7 +574,6 @@ func (g *fakeGitHub) list(w http.ResponseWriter, r *http.Request) {
 	rows := slices.Clone(g.log)
 	g.mu.Unlock()
 	slices.Reverse(rows)
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(rows); err != nil {
 		g.t.Errorf("encode the delivery log: %v", err)
 	}

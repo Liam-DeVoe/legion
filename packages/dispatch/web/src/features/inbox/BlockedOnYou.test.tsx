@@ -4,22 +4,39 @@ import { MemoryRouter } from "react-router-dom";
 
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
 import { BlockedOnYou } from "./BlockedOnYou";
+import { withWaitingOnPerson } from "./inbox-fixture";
 
 function request(record_id: string, requested_at: string): CredentialPendingRow {
-  return { identifiers: ["DEMO_API_KEY"], kind: "agent_secret", record_id, requested_at };
+  return {
+    identifiers: ["DEMO_API_KEY"],
+    kind: "agent_secret",
+    record_id,
+    requested_at,
+    session: { enrollment: null, request: null },
+  };
 }
 
+/** One open ask. The person it waits on is resolved as the server resolves it
+ *  (`coalesce(a.asked_of, i.assignee, p.default_assignee)`, through `withWaitingOnPerson`), so
+ *  an override that moves the issue's assignee, or hands the ask to somebody, moves that person
+ *  with it. */
 function ask(id: string, overrides: Partial<InboxRow> = {}): InboxRow {
-  return {
+  const row: InboxRow = {
     anchor: null,
     answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-11T00:00:00Z",
     edited_at: null,
     id,
     issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     kind: "question",
+    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
@@ -42,6 +59,7 @@ function ask(id: string, overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
+  return withWaitingOnPerson(row);
 }
 
 // The broker's `requested_at` reaches the SPA verbatim, and the count this rule gives also drives
@@ -67,6 +85,39 @@ test("a request whose time cannot be read still counts, and the banner's age com
       </MemoryRouter>
     );
     expect(screen.getByRole("link").textContent).toBe("Blocked on you: 1 item");
+  } finally {
+    view.unmount();
+  }
+});
+
+// INFRA-3921: an expired credential request stays listed until somebody dismisses it, but nobody
+// can decide it any more, so nothing waits on the reader there: it is neither counted nor the
+// oldest, even when it was asked long before everything else.
+test("an expired credential request is neither counted nor the oldest", () => {
+  const pending = {
+    ...request("record-1", new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()),
+    state: "pending" as const,
+  };
+  const expired = {
+    ...request("record-2", new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()),
+    expires_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    state: "expired" as const,
+  };
+
+  const view = render(
+    <MemoryRouter>
+      <BlockedOnYou asks={[]} credentialRequests={[pending, expired]} viewer="alice" />
+    </MemoryRouter>
+  );
+  try {
+    expect(screen.getByRole("link").textContent).toBe("Blocked on you: 1 item, oldest 3h");
+
+    view.rerender(
+      <MemoryRouter>
+        <BlockedOnYou asks={[]} credentialRequests={[expired]} viewer="alice" />
+      </MemoryRouter>
+    );
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }

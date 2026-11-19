@@ -90,7 +90,7 @@ type State struct {
 	Name   Name
 	Status string
 	// Detail is the row's evidence: what the probe checked, what the live sessions reported, the
-	// ruling, or the deployment's measurement — whatever the status.
+	// cited issue, or the deployment's measurement — whatever the status.
 	Detail string
 	// Decision is the operator's reason on a decided row, "" otherwise.
 	Decision string
@@ -106,7 +106,7 @@ func (s State) String() string {
 	return fmt.Sprintf("probe-image: capability %s: %s (%s)", s.Name, s.Status, s.Detail)
 }
 
-// OpenLine is the sentence an open row is logged with (Log) and `legion start --check-config`
+// OpenLine is the sentence an open row is logged with (Log) and `legion config check`
 // prints: the gap and, on a deployment row, the line that records a decision. A live row has no
 // such line: a session's failing check is a fact to fix, not a gap an operator decides.
 func (s State) OpenLine() string {
@@ -119,7 +119,7 @@ func (s State) OpenLine() string {
 // Report renders every row of Table, in its order. An image row is present once the image passed
 // the probe, else unchecked; a live row is open when a live session's check of it failed, present
 // when none failed and one proved it, and unchecked when no session has reported; a withheld row
-// carries its ruling (as CheckImage renders it); a deployment row is present when the deployment
+// carries its citation (as CheckImage renders it); a deployment row is present when the deployment
 // satisfies it, decided when legion.yaml records a decision on it, and open otherwise, with the
 // line that records one.
 func (d Deployment) Report() []State {
@@ -139,7 +139,7 @@ func (d Deployment) Open() []Name {
 }
 
 // OpenFromConfiguration is the open rows whose Source is SourceConfiguration, in Table order: the
-// configuration's own gaps, whatever row they fall on, which `legion start --check-config` prints.
+// configuration's own gaps, whatever row they fall on, which `legion config check` prints.
 // Boot's measurements are not its to say — a configured broker's login, model fallback, which the
 // probe or the plugin gate reads, and pool capacity, which the probe's run measures.
 func (d Deployment) OpenFromConfiguration() []State {
@@ -190,7 +190,7 @@ func (d Deployment) image(row Capability) State {
 // it failed: each failing session, in Sessions order, as its label and the fact its check found,
 // the first three then how many more. Present when none failed and at least one proved it: how
 // many did, and the latest measurement — the greatest MeasuredAt, the first in Sessions order on
-// a tie — with its fact. Unchecked when no live session has reported: the ruling whose check
+// a tie — with its fact. Unchecked when no live session has reported: the citation whose check
 // proves the row, and the summary.
 func (d Deployment) live(row Capability) State {
 	state := State{Name: row.Name}
@@ -227,7 +227,7 @@ func (d Deployment) live(row Capability) State {
 		state.Detail = fmt.Sprintf("proved by %d live session(s); latest %s measured %s: %s",
 			proved, session.label(), session.Report.MeasuredAt.Format(time.RFC3339), measured.Detail)
 	default:
-		state.Status, state.Detail = StatusUnchecked, "no session has reported yet ("+row.Ruling+"): "+row.Summary
+		state.Status, state.Detail = StatusUnchecked, "no session has reported yet ("+row.Citation+"): "+row.Summary
 	}
 	return state
 }
@@ -252,8 +252,8 @@ func (s Session) label() string {
 	return fmt.Sprintf("%s (%s, %s)", s.Report.Locator.Label(), s.Role, s.Issue)
 }
 
-// withheldDetail is a withheld row's detail as CheckImage renders it: the ruling, the summary.
-func withheldDetail(row Capability) string { return row.Ruling + ": " + row.Summary }
+// withheldDetail is a withheld row's detail as CheckImage renders it: the citation, the summary.
+func withheldDetail(row Capability) string { return row.Citation + ": " + row.Summary }
 
 // deployment is one deployment row: its measurement, and the status that follows. A decision on a
 // row the deployment satisfies is moot — the measurement stands, and the row reads present.
@@ -325,7 +325,7 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 		case d.ProbeCapacityWaits == 0:
 			return true, SourceBoot, "the image probe pod scheduled at its first attempt"
 		default:
-			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 250m / 1Gi reservation",
+			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 500m / 1Gi reservation",
 				d.ProbeCapacityWaits, d.ProbeCapacityReason)
 		}
 	}
@@ -345,8 +345,8 @@ const (
 )
 
 // BurstableLine names the Burstable pods and says every other pod is Guaranteed; "" when no pod
-// requests less than its limit. The resource-limits row's detail carries it, and `legion start
-// --check-config` prints it after Config OK.
+// requests less than its limit. The resource-limits row's detail carries it, and `legion config
+// check` prints it after Config OK.
 func (d Deployment) BurstableLine() string {
 	if len(d.BurstablePods) == 0 {
 		return ""

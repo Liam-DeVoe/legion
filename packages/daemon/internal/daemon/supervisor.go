@@ -42,6 +42,9 @@ type supervisor struct {
 	// durableState is the one callback every machine of this supervisor reports its durable
 	// transitions to (supervise.Machine.OnDurableState): ready, working and failed.
 	durableState func(supervise.Claim, supervise.ClaimState)
+	// beforeDecision is overrides.beforeDecision, run on a claim's feed before its machine decides
+	// each event (add); nil runs nothing. It is set before the first machine is added.
+	beforeDecision func(claim.Token, supervise.Event)
 
 	mu       sync.RWMutex
 	machines map[claim.Token]*member
@@ -77,6 +80,64 @@ func (s *supervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
 		return nil, false
 	}
 	return m.machine, true
+}
+
+// claimInTurn names a claim of issue other than except whose agent is in a turn now, or is about
+// to be, for the adoption a phase task makes of the working copy an issue's roles share
+// (supervise's Deps.IssueInTurn). A claim counts when its published state is StateWorking, a turn
+// in flight, and when its machine has a send in flight (supervise.ClaimView.SendInFlight): the
+// prompt that starts that turn is on its way and the adoption it goes behind may be rewriting the
+// shared working copy at this moment, which is the very thing this answer guards. Without it two
+// phase tasks to two roles of one issue each read the other as idle and adopt together
+// (dispatch://INFRA-314), and a turn's end wakes a held claim whose own next send has already
+// started.
+//
+// It reads each machine's published claim rather than any record of turns kept beside them, and
+// it iterates the lock-free snapshot of the machines (supervised) rather than taking s.mu:
+// publishing takes a machine's own lock, OnDurableState takes s.mu and then every machine's, and a
+// reader here holding s.mu while a machine decides would be those two locks taken in both orders.
+// View never waits on the decision a machine is making either, so answering this can never be
+// held up by another claim's launch or stop.
+func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token, bool) {
+	if issue == "" {
+		return "", false
+	}
+	for _, machine := range s.supervised() {
+		view := machine.View()
+		if view.Token == except || view.Issue != issue {
+			continue
+		}
+		if view.State == supervise.StateWorking || view.SendInFlight {
+			return view.Token, true
+		}
+	}
+	return "", false
+}
+
+// wakeIssue tells the issue's other claims that token's turn has ended, once token's own machine
+// has recorded that end: a claim holding a task it would not adopt the shared working copy for
+// can send it now (supervise's IssueTurnEnded). It is posted after the machine's decision rather
+// than beside it, because a claim woken before that decision published its end would read the
+// turn as still running and hold the task until the next sweep. The end is the agent's own
+// agent_end, or its answer to the sweep's question that it is in no prompt, which ends a turn a
+// busy answer recorded or a restored claim's turn an earlier daemon saw start (supervise's
+// askTurnOver): the feed (add) posts this for every decision that recorded an end, which the
+// machine counts (supervise.Machine.TurnsEnded).
+func (s *supervisor) wakeIssue(token claim.Token) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.stopped {
+		return
+	}
+	ended, ok := s.machines[token]
+	if !ok || ended.issue == "" {
+		return
+	}
+	for other, m := range s.machines {
+		if other != token && m.issue == ended.issue {
+			m.inbox.put(supervise.IssueTurnEnded{Claim: other})
+		}
+	}
 }
 
 // OnDurableState applies one durable-state callback to every current and future machine.
@@ -131,6 +192,13 @@ func (s *supervisor) Claims(ctx context.Context) ([]supervise.Claim, error) {
 		return nil, err
 	}
 	return ofProject(claims, s.project), nil
+}
+
+// Step is one claim's step record as the store holds it, for the operator routes that answer one
+// claim (api.Supervisor): no machine carries it, since the daemon writes every step through a
+// narrow call of its own (supervise's putStep).
+func (s *supervisor) Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error) {
+	return s.store.ClaimStep(ctx, token)
 }
 
 // restore builds the machine of every claim the store held at boot, and reports the claims whose
@@ -188,15 +256,39 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 	all := append(slices.Clip(s.supervised()), m)
 	s.all.Store(&all)
 	s.feeding.Add(1)
+	// One claim's events are handled one at a time on this goroutine, beside every other
+	// machine's, and each decision writes the claim through the store, so the machine works under
+	// a hold mark of its own (store.ForConcurrentWorker): on the supervisor's one context the
+	// first machine inside a transaction would have the pool refuse every other machine its first
+	// connection.
+	working := store.ForConcurrentWorker(s.ctx)
 	go func() {
 		defer s.feeding.Done()
 		for {
-			ev, ok := queue.take()
+			item, ok := queue.take()
 			if !ok {
 				return
 			}
-			if err := m.Handle(s.ctx, ev); err != nil {
+			if item.drained != nil {
+				// Every event posted before the mark is handled: its asker may go on.
+				close(item.drained)
+				continue
+			}
+			ev := item.ev
+			if s.beforeDecision != nil {
+				s.beforeDecision(token, ev)
+			}
+			ended := m.TurnsEnded()
+			if err := m.Handle(working, ev); err != nil {
 				s.decisionFailed(token, fmt.Sprintf("%T", ev), err, "supervise: an event failed")
+			}
+			// The turn is over and this machine has recorded that, so a claim of the same issue
+			// holding a task it would not adopt their shared working copy for may send it now. The
+			// agent's own end of a turn wakes the issue whatever the machine made of it, as it
+			// always has; an end the sweep's question found (askTurnOver) arrives on an
+			// observation or a hello, and is told by the count the decision moved.
+			if _, end := ev.(supervise.StreamTurnEnd); end || m.TurnsEnded() != ended {
+				s.wakeIssue(token)
 			}
 		}
 	}()
@@ -246,6 +338,75 @@ func (s *supervisor) post(token claim.Token, ev supervise.Event) {
 	m.inbox.put(ev)
 }
 
+// drained puts the stream's mark (stream.Drained) in token's inbox behind every event posted to it
+// before, and the machine's feeder closes done once it has handled them (add). A claim the daemon
+// does not supervise, or supervision that is stopping, has nothing left to handle: done is closed
+// at once.
+func (s *supervisor) drained(token claim.Token, done chan<- struct{}) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m, ok := s.machines[token]
+	if s.stopped || !ok {
+		close(done)
+		return
+	}
+	m.inbox.mark(done)
+}
+
+// pump hands each worker-stream event to its claim's machine, in the order the stream queued
+// them, until the stream ends: a mark an agent's request queued (stream.Drained) goes behind the
+// events posted before it (supervisor.drained), and every other event is the machine's own
+// (superviseEvent).
+func (s *supervision) pump() {
+	for ev := range s.stream.Events() {
+		if mark, ok := ev.(stream.Drained); ok {
+			s.supervisor.drained(mark.Claim, mark.Done)
+			continue
+		}
+		mapped, err := superviseEvent(ev)
+		if err != nil {
+			s.log.Error("worker stream: an event no machine can take", "error", err)
+			continue
+		}
+		s.supervisor.post(claimOf(mapped), mapped)
+	}
+}
+
+// streamDrainBound bounds how long an agent's request waits for its claim's machine
+// (supervision.awaitStream).
+const streamDrainBound = 5 * time.Second
+
+// awaitStream is awaitStreamWithin at streamDrainBound: what an agent's own request — a
+// completion, a sign-off, a move back — waits for before its fact applies (api.Options.AwaitStream).
+func (s *supervision) awaitStream(ctx context.Context, token claim.Token) {
+	s.awaitStreamWithin(ctx, token, streamDrainBound)
+}
+
+// awaitStreamWithin waits until token's machine has handled every worker-stream event the stream
+// had queued when it was called (stream.Listener.Drain), or until bound or ctx ends first. The
+// agent's frames and its HTTP request reach the daemon apart, and the request is applied at once
+// while its frames wait behind the claim's machine, so a completion would end its step reading
+// the model of an answer older than the one the stream already read (workflow's endStep,
+// supervise's LastAnswer). A frame the stream has not queued yet is not waited for. A wait that
+// runs out its bound says so in one line naming the claim and how long it waited, and the request
+// goes on.
+func (s *supervision) awaitStreamWithin(ctx context.Context, token claim.Token, bound time.Duration) {
+	started := time.Now()
+	done := s.stream.Drain(token)
+	if s.plan.streamWaitBegan != nil {
+		s.plan.streamWaitBegan(token)
+	}
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-timer.C:
+		s.log.Warn("supervise: an agent's request waited out its bound for the claim's machine to handle what the stream read before it, and goes on",
+			"claim", token, "waited", time.Since(started).Round(time.Millisecond))
+	}
+}
+
 // count is how many claims the daemon supervises. It waits on no lock a decision holds.
 func (s *supervisor) count() int {
 	return len(s.supervised())
@@ -257,6 +418,20 @@ func (s *supervisor) supervised() []*supervise.Machine {
 		return *held
 	}
 	return nil
+}
+
+// supervisedMachine is the claim's machine read without mu, from the lock-free list of machines
+// (supervised), for a reader inside a fact's transaction: Create holds mu across the store's
+// AdmitClaim, which waits on the fact lock (intake.SerializeFacts), so a reader holding that lock
+// and waiting on mu would wait on a Create that waits on it, which nothing in PostgreSQL can see
+// or break. A machine's published view names its claim without its lock either (View).
+func (s *supervisor) supervisedMachine(token claim.Token) (*supervise.Machine, bool) {
+	for _, machine := range s.supervised() {
+		if machine.View().Token == token {
+			return machine, true
+		}
+	}
+	return nil, false
 }
 
 // halt feeds no machine another event, and waits for nothing.
@@ -313,7 +488,9 @@ func (s *supervisor) wait() {
 // shim to redial (stream.HelloResolver).
 func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration) stream.HelloResolver {
 	resolve := func(bootToken string) (api.BootToken, bool, error) {
-		ctx, cancel := context.WithTimeout(s.ctx, timeout)
+		// Every hello is resolved on its own connection's goroutine, beside every other, so each
+		// read takes a hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(s.ctx), timeout)
 		defer cancel()
 		return tokens.Resolve(ctx, bootToken)
 	}
@@ -352,12 +529,22 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 		return supervise.StreamTurnStart{Claim: ev.Claim, DeliveryID: ev.DeliveryID}, nil
 	case stream.TurnEnd:
 		return supervise.StreamTurnEnd{Claim: ev.Claim}, nil
+	case stream.ToolStep:
+		return supervise.StreamToolStep{Claim: ev.Claim, Tool: ev.Tool, CallID: ev.CallID,
+			ArgsBytes: ev.ArgsBytes, ArgsHash: ev.ArgsHash, End: ev.End, ConnSequence: ev.ConnSequence}, nil
 	case stream.PromptResult:
 		return supervise.StreamPromptResult{Claim: ev.Claim, DeliveryID: ev.DeliveryID,
-			AgentInvoked: ev.AgentInvoked, Error: ev.Error}, nil
+			AgentInvoked: ev.AgentInvoked, Error: ev.Error, Retryable: ev.Retryable,
+			HTTPStatus: ev.HTTPStatus, Provider: ev.Provider, Model: ev.Model}, nil
 	case stream.LateRefusal:
 		return supervise.StreamLateRefusal{Claim: ev.Claim, DeliveryID: ev.DeliveryID, Error: ev.Error, Replayed: ev.Replayed,
 			ConnSequence: ev.ConnSequence}, nil
+	case stream.Answered:
+		model := ev.Model
+		if ev.Provider != "" {
+			model = ev.Provider + "/" + ev.Model
+		}
+		return supervise.StreamAnswered{Claim: ev.Claim, Model: model, Generation: ev.Generation}, nil
 	case stream.Closed:
 		return supervise.StreamClosed{Claim: ev.Claim}, nil
 	}
@@ -373,9 +560,13 @@ func claimOf(ev supervise.Event) claim.Token {
 		return ev.Claim
 	case supervise.StreamTurnEnd:
 		return ev.Claim
+	case supervise.StreamToolStep:
+		return ev.Claim
 	case supervise.StreamPromptResult:
 		return ev.Claim
 	case supervise.StreamLateRefusal:
+		return ev.Claim
+	case supervise.StreamAnswered:
 		return ev.Claim
 	case supervise.StreamClosed:
 		return ev.Claim
@@ -409,52 +600,79 @@ func knownClaims(claims []supervise.Claim) []runtime.Known {
 
 // inbox is one machine's queue of events: unbounded, so neither pump ever waits on a machine that
 // is deciding — the worker stream's own queue is unbounded for the same reason — and in order,
-// so a claim sees its events as its sources reported them.
+// so a claim sees its events as its sources reported them. It also holds the stream's marks
+// (drained), in the same order.
 type inbox struct {
 	mu     sync.Mutex
-	events []supervise.Event
+	items  []inboxItem
 	closed bool
 	wake   chan struct{}
+}
+
+// inboxItem is an event for the machine, or a mark whose drained channel the machine's feeder
+// closes once it has handled every event before it.
+type inboxItem struct {
+	ev      supervise.Event
+	drained chan<- struct{}
 }
 
 func newInbox() *inbox { return &inbox{wake: make(chan struct{}, 1)} }
 
 func (b *inbox) put(ev supervise.Event) {
 	b.mu.Lock()
-	b.events = append(b.events, ev)
+	b.items = append(b.items, inboxItem{ev: ev})
 	b.mu.Unlock()
+	b.signal()
+}
+
+// mark puts done behind every event put before it. Its one caller (supervisor.drained) holds the
+// supervisor's read lock and has seen supervision not stopped, and only halt closes an inbox, under
+// the write lock after it sets stopped, so the inbox is open here; close closes a mark it holds.
+func (b *inbox) mark(done chan<- struct{}) {
+	b.mu.Lock()
+	b.items = append(b.items, inboxItem{drained: done})
+	b.mu.Unlock()
+	b.signal()
+}
+
+func (b *inbox) signal() {
 	select {
 	case b.wake <- struct{}{}:
 	default:
 	}
 }
 
-// take is the next event, waiting for one; false once the inbox is closed, whatever it still
+// take is the next item, waiting for one; false once the inbox is closed, whatever it still
 // holds.
-func (b *inbox) take() (supervise.Event, bool) {
+func (b *inbox) take() (inboxItem, bool) {
 	for {
 		b.mu.Lock()
 		if b.closed {
 			b.mu.Unlock()
-			return nil, false
+			return inboxItem{}, false
 		}
-		if len(b.events) > 0 {
-			ev := b.events[0]
-			b.events = b.events[1:]
+		if len(b.items) > 0 {
+			item := b.items[0]
+			b.items = b.items[1:]
 			b.mu.Unlock()
-			return ev, true
+			return item, true
 		}
 		b.mu.Unlock()
 		<-b.wake
 	}
 }
 
+// close ends the inbox. A mark it still holds is closed, since no event before it will be
+// handled now and its asker waits for nothing more.
 func (b *inbox) close() {
 	b.mu.Lock()
 	b.closed = true
-	b.mu.Unlock()
-	select {
-	case b.wake <- struct{}{}:
-	default:
+	for _, item := range b.items {
+		if item.drained != nil {
+			close(item.drained)
+		}
 	}
+	b.items = nil
+	b.mu.Unlock()
+	b.signal()
 }

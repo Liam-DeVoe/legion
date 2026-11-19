@@ -1,9 +1,11 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { ApiError, api } from "../../api/client";
 import type { CredentialPendingRow } from "../../api/types";
 import { runningAgent } from "./agent-fixture";
 import { CredentialRequestsSection } from "./CredentialRequestsSection";
@@ -11,18 +13,46 @@ import type { CredentialRequests } from "./pending";
 
 afterEach(cleanup);
 
+/** Whether this deployment serves the machine-code page, which every pending row reads
+ *  (`useMachineCodePage`, GET /api/v1/credentials/capabilities): it serves none unless the test
+ *  under way says it does. */
+let capabilities: Mock<typeof api.getCredentialCapabilities>;
+
+beforeEach(() => {
+  capabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    machine_code_page: false,
+  });
+});
+afterEach(() => capabilities.mockRestore());
+
 function pendingSecretRow(overrides: Partial<CredentialPendingRow> = {}): CredentialPendingRow {
   return {
     identifiers: ["ANTHROPIC_API_KEY"],
     kind: "agent_secret",
     record_id: "req-1",
     requested_at: "2026-09-27T00:00:00Z",
+    session: { enrollment: null, request: null },
     ...overrides,
   };
 }
 
-function renderSection(credentials: CredentialRequests) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** An expired secret request: its deadline passed two hours ago, before anybody decided it. It
+ *  carries the broker's page, which an expired row must not link to. */
+function expiredSecretRow(overrides: Partial<CredentialPendingRow> = {}): CredentialPendingRow {
+  return pendingSecretRow({
+    approve_url: "https://secrets.example.com/approve/req-9",
+    expires_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    identifiers: ["DEEL_API_KEY"],
+    record_id: "req-9",
+    state: "expired",
+    ...overrides,
+  });
+}
+
+function renderSection(
+  credentials: CredentialRequests,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -41,34 +71,29 @@ test("renders every pending credential request, linking a secret row to its brok
     kind: "launcher_credential",
     record_id: "req-2",
     requested_at: "2026-09-27T01:00:00Z",
+    session: { enrollment: null, request: null },
   };
-  const capabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
-    machine_code_page: true,
+  capabilities.mockResolvedValue({ machine_code_page: true });
+  renderSection({
+    requests: [
+      pendingSecretRow({ approve_url: "https://secrets.example.com/approve/req-1" }),
+      machineRow,
+    ],
+    status: "listed",
   });
-  try {
-    renderSection({
-      requests: [
-        pendingSecretRow({ approve_url: "https://secrets.example.com/approve/req-1" }),
-        machineRow,
-      ],
-      status: "listed",
-    });
 
-    expect(screen.getByText("Secret request")).toBeDefined();
-    expect(screen.getByText("Machine login")).toBeDefined();
-    expect(screen.getByText("ANTHROPIC_API_KEY")).toBeDefined();
-    expect(screen.getByText("worker-7.example.com")).toBeDefined();
-    const secret = screen.getByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s });
-    expect(secret.getAttribute("href")).toBe("https://secrets.example.com/approve/req-1");
-    expect(secret.getAttribute("target")).toBeNull();
-    const machine = await screen.findByRole("link", {
-      name: /Machine login.*worker-7\.example\.com/s,
-    });
-    expect(machine.getAttribute("href")).toBe("/credentials/machine");
-    expect(screen.getAllByText("No session named.")).toHaveLength(2);
-  } finally {
-    capabilities.mockRestore();
-  }
+  expect(screen.getByText("Secret request")).toBeDefined();
+  expect(screen.getByText("Machine login")).toBeDefined();
+  expect(screen.getByText("ANTHROPIC_API_KEY")).toBeDefined();
+  expect(screen.getByText("worker-7.example.com")).toBeDefined();
+  const secret = screen.getByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s });
+  expect(secret).toHaveAttribute("href", "https://secrets.example.com/approve/req-1");
+  expect(secret.getAttribute("target")).toBeNull();
+  const machine = await screen.findByRole("link", {
+    name: /Machine login.*worker-7\.example\.com/s,
+  });
+  expect(machine).toHaveAttribute("href", "/credentials/machine");
+  expect(screen.getAllByText("No session named.")).toHaveLength(2);
 });
 
 // A broker older than its own approval page names none, and an approve_url that is not an
@@ -78,8 +103,134 @@ test("a secret row with no usable approve_url renders its summary with no link",
   for (const approve_url of [undefined, "javascript:alert(1)", "/approve/req-1"]) {
     const view = renderSection({ requests: [pendingSecretRow({ approve_url })], status: "listed" });
     expect(screen.getByText("ANTHROPIC_API_KEY")).toBeDefined();
-    expect(screen.queryByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s })).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s })
+    ).not.toBeInTheDocument();
     view.unmount();
+  }
+});
+
+// A row an older broker sends carries no `state`, and a newer broker's pending row says
+// `pending`: either is a pending request, a link to where it is decided, with no mark and nothing
+// to dismiss.
+test("a row with no state, or a pending one, links to its broker page with no mark and no Dismiss", () => {
+  for (const state of [undefined, "pending"] as const) {
+    const view = renderSection({
+      requests: [
+        pendingSecretRow({ approve_url: "https://secrets.example.com/approve/req-1", state }),
+      ],
+      status: "listed",
+    });
+    expect(
+      screen.getByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s })
+    ).toHaveAttribute("href", "https://secrets.example.com/approve/req-1");
+    expect(screen.queryByText("Expired")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Its deadline passed/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Dismiss/ })).not.toBeInTheDocument();
+    view.unmount();
+  }
+});
+
+// INFRA-3921: a request whose deadline passed before anybody decided it stays listed until
+// somebody dismisses it, and every decision of it is refused. So neither kind links to where a
+// pending one is decided - not the broker's page, not the machine-code page, which this
+// deployment serves, as the pending machine row's link shows - and each is marked, says when its
+// deadline passed and offers Dismiss, under a name that says which row it dismisses.
+test("an expired row of either kind is marked, says when its deadline passed, links nowhere and offers Dismiss", async () => {
+  const deadline = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const machineRow = (
+    identifier: string,
+    overrides: Partial<CredentialPendingRow> = {}
+  ): CredentialPendingRow => ({
+    identifiers: [identifier],
+    kind: "launcher_credential",
+    record_id: `machine-${identifier}`,
+    requested_at: "2026-09-27T01:00:00Z",
+    session: { enrollment: null, request: null },
+    ...overrides,
+  });
+  capabilities.mockResolvedValue({ machine_code_page: true });
+  renderSection({
+    requests: [
+      machineRow("worker-8.example.com"),
+      expiredSecretRow({ expires_at: deadline }),
+      machineRow("worker-7.example.com", { expires_at: deadline, state: "expired" }),
+    ],
+    status: "listed",
+  });
+
+  const pendingMachine = await screen.findByRole("link", {
+    name: /Machine login.*worker-8\.example\.com/s,
+  });
+  expect(pendingMachine).toHaveAttribute("href", "/credentials/machine");
+  expect(within(pendingMachine.closest("li") as HTMLElement).queryByRole("button")).toBeNull();
+  expect(document.querySelector('a[href="https://secrets.example.com/approve/req-9"]')).toBeNull();
+
+  for (const [identifier, name] of [
+    ["DEEL_API_KEY", "Dismiss expired secret request DEEL_API_KEY"],
+    ["worker-7.example.com", "Dismiss expired machine login worker-7.example.com"],
+  ] as const) {
+    const row = screen.getByText(identifier).closest("li") as HTMLElement;
+    expect(within(row).getByText("Expired")).toBeDefined();
+    expect(within(row).queryByRole("link")).toBeNull();
+    expect(within(row).getByRole("button", { name })).toHaveTextContent("Dismiss");
+    const time = row.querySelector(`time[datetime="${deadline}"]`);
+    expect(time).not.toBeNull();
+    expect(within(row).getByText(/^Its deadline passed/).textContent).toBe(
+      `Its deadline passed ${time?.textContent}`
+    );
+    expect(within(row).getByText("No session named.")).toBeDefined();
+  }
+});
+
+// A broker that names no deadline for an expired row still marks it expired: the line then says
+// only that the deadline passed.
+test("an expired row with no deadline says only that its deadline passed", () => {
+  renderSection({ requests: [expiredSecretRow({ expires_at: undefined })], status: "listed" });
+  const line = screen.getByText(/^Its deadline passed/);
+  expect(line.textContent).toBe("Its deadline passed");
+  expect(line.querySelector("time")).toBeNull();
+});
+
+test("Dismiss on an expired row sends that record's dismissal and reads the list again", async () => {
+  const user = userEvent.setup();
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockResolvedValue(undefined);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = spyOn(client, "invalidateQueries");
+  try {
+    renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
+    await user.click(
+      screen.getByRole("button", { name: "Dismiss expired secret request DEEL_API_KEY" })
+    );
+    await waitFor(() => expect(dismiss.mock.calls).toEqual([["req-9", keyedAttempt]]));
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["credential-pending"] })
+    );
+  } finally {
+    dismiss.mockRestore();
+  }
+});
+
+// The broker's refusal is shown under the row it names, and the list is read again, since the
+// refusal says the list the page holds is not what the broker holds.
+test("a refused dismissal shows the broker's message and reads the list again", async () => {
+  const user = userEvent.setup();
+  const refusal = "only an approver of this request may dismiss it";
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockRejectedValue(
+    new ApiError(403, { code: "NOT_APPROVER", error: refusal })
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = spyOn(client, "invalidateQueries");
+  try {
+    renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
+    await user.click(
+      screen.getByRole("button", { name: "Dismiss expired secret request DEEL_API_KEY" })
+    );
+    const row = screen.getByText("DEEL_API_KEY").closest("li") as HTMLElement;
+    expect(await within(row).findByText(refusal)).toBeDefined();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["credential-pending"] });
+  } finally {
+    dismiss.mockRestore();
   }
 });
 
@@ -108,7 +259,7 @@ test("a row's session reads as a running session's title, linked to its live con
       status: "listed",
     });
     const link = await screen.findByRole("link", { name: "Reviewing LEGION-587" });
-    expect(link.getAttribute("href")).toBe("/agents/sess-1/live");
+    expect(link).toHaveAttribute("href", "/agents/sess-1/live");
     await waitFor(() =>
       expect(link.closest("[data-agent-name]")?.getAttribute("data-agent-state")).toBe("running")
     );
@@ -135,7 +286,7 @@ test("encodes a running session's id before building its live link", async () =>
       status: "listed",
     });
     const link = await screen.findByRole("link", { name: "Reviewing LEGION-587" });
-    expect(link.getAttribute("href")).toBe("/agents/..%2F..%2Fsettings/live");
+    expect(link).toHaveAttribute("href", "/agents/..%2F..%2Fsettings/live");
   } finally {
     agents.mockRestore();
   }
@@ -153,7 +304,7 @@ test("a row's session naming an id the agents list doesn't carry reads as not ru
     });
     expect(await screen.findByRole("img", { name: "Not running" })).toBeDefined();
     const name = screen.getByRole("link", { name: "session:sess-gon…" });
-    expect(name.getAttribute("href")).toBe("/agents/sess-gone/live");
+    expect(name).toHaveAttribute("href", "/agents/sess-gone/live");
     const agent = name.closest("[data-agent-name]");
     expect(agent?.getAttribute("data-agent-state")).toBe("not-running");
     expect(agent?.parentElement?.textContent).toBe("session:sess-gon… · sess-gone isn't running.");
@@ -178,8 +329,8 @@ test("a row's session reads as unknown while the agents list cannot be read", as
       screen.getByRole("link", { name: "session:sess-gon…" }).closest("[data-agent-name]")
         ?.parentElement?.textContent
     ).toBe("session:sess-gon… · couldn't check whether sess-gone is running.");
-    expect(screen.queryByRole("img", { name: "Not running" })).toBeNull();
-    expect(screen.queryByText(/isn't running/)).toBeNull();
+    expect(screen.queryByRole("img", { name: "Not running" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/isn't running/)).not.toBeInTheDocument();
   } finally {
     agents.mockRestore();
   }
@@ -195,13 +346,13 @@ test("a row's request-only session id is shown with no preamble", async () => {
       status: "listed",
     });
     const link = await screen.findByRole("link", { name: "Reviewing LEGION-587" });
-    expect(link.getAttribute("href")).toBe("/agents/sess-1/live");
+    expect(link).toHaveAttribute("href", "/agents/sess-1/live");
     expect(
       link
         .closest("[data-agent-name]")
         ?.parentElement?.textContent?.startsWith("Reviewing LEGION-587")
     ).toBe(true);
-    expect(screen.queryByText(/says it came from/)).toBeNull();
+    expect(screen.queryByText(/says it came from/)).not.toBeInTheDocument();
   } finally {
     agents.mockRestore();
   }

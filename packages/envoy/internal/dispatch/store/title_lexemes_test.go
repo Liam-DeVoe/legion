@@ -33,6 +33,7 @@ func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
 	}
 	searchBefore := issueSearchVectors(t, ctx, store)
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("apply 0088-0089: %v", err)
 	}
@@ -101,21 +102,26 @@ func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
 }
 
 // 0089 holds no issue's row while it waits for a write that holds one. Its update locks every
-// issue's row in the order the rows lie on disk, and a reparent locks the issue and its new parent
-// in key order (lockIssueRows, api/issue_parent.go:71), which is text order: reparenting
+// issue's row in the order the rows lie on disk, and a reparent of the release 0089 shipped in
+// locked the issue and its new parent rows in key order, which is text order: reparenting
 // CORE-9 under CORE-10 locks CORE-10, the later row on disk, first. A reparent that held CORE-10
 // while the update, already holding CORE-9, waited for it, and then asked for CORE-9, closed a
 // cycle, and Postgres's deadlock check killed one side with 40P01: the boot, or the reparent with
 // a 500. 0089 takes issues EXCLUSIVE before it writes, so it waits for the reparent's table lock
-// holding nothing, the reparent's second row lock is granted, it commits, and 0089 then runs.
+// holding nothing, the reparent's second row lock is granted, it commits, and 0089 then runs. (A
+// reparent now takes owner advisory locks instead, and its rows only with its update; the row
+// locks below stand for that release's.)
 func TestMigrate0089WaitsForAReparentWithoutDeadlockingIt(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, 88)
+	// The issues name a person as their assignee, and that person has signed in, so the
+	// backfill the migrate below ends at (20261111210103) reads CORE's default from them.
 	if _, err := store.Pool.Exec(ctx, `
+		insert into people (email) values ('alice@d.example');
 		insert into projects (key, name) values ('CORE', 'Core');
-		insert into issues (key, project_key, number, title, created_by, rank)
-		select 'CORE-' || n, 'CORE', n, 'Calibration window ' || n, '{"kind":"user","id":"alice"}', lpad(n::text, 3, '0')
+		insert into issues (key, project_key, number, title, created_by, rank, assignee)
+		select 'CORE-' || n, 'CORE', n, 'Calibration window ' || n, '{"kind":"user","id":"alice"}', lpad(n::text, 3, '0'), 'alice@d.example'
 		  from generate_series(1, 10) as n;`); err != nil {
 		t.Fatalf("seed issues: %v", err)
 	}

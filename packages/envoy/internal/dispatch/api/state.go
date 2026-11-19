@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 type userIssueState struct {
@@ -20,6 +22,10 @@ type userIssueState struct {
 	Dismissed   []string `json:"dismissed"`
 	Seq         int64    `json:"seq"`
 }
+
+// userState is the body GET /api/v1/me/state answers: the caller's state for each issue it
+// holds one for, by issue key.
+type userState map[string]userIssueState
 
 func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
@@ -35,7 +41,7 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	state := map[string]userIssueState{}
+	state := userState{}
 	for rows.Next() {
 		var key string
 		var value userIssueState
@@ -57,19 +63,35 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, state)
 }
 
+// userIssueStateInput is the body of PUT /api/v1/me/issues/{key}/state.
+type userIssueStateInput struct {
+	Pinned      *bool     `json:"pinned"`
+	LastReadSeq *int      `json:"last_read_seq"`
+	Dismissed   *[]string `json:"dismissed"`
+	Seq         *int64    `json:"seq"`
+	// Actor names no writer of this row: the state is the calling person's, keyed on the
+	// login actingPerson resolves, and the row has no column for a session. The session it
+	// names is the acting agent's, which goes on the act of the event this write appends
+	// (actSessionFromBody); a client that has always sent one is not refused for an unknown
+	// key either (decodeJSON).
+	Actor *model.Actor `json:"actor"`
+}
+
+// userStateStaleError is the 409 STATE_STALE body PUT /api/v1/me/issues/{key}/state answers a
+// write whose seq is not newer than the stored row's.
+type userStateStaleError struct {
+	Code  string         `json:"code"`
+	Error string         `json:"error"`
+	State userIssueState `json:"state"`
+}
+
+// PUT /api/v1/me/issues/{key}/state writes the caller's own state for one issue: the pin, the
+// read mark and the asks they dismissed, each field the body names, against the seq the body
+// may give as its precondition. It runs in the two phases every write route runs in: a read
+// phase holding no transaction id, which takes the project's owner lock and reads the row under
+// it, and a write phase of the row's upsert and the event's append, back to back.
 func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Pinned      *bool     `json:"pinned"`
-		LastReadSeq *int      `json:"last_read_seq"`
-		Dismissed   *[]string `json:"dismissed"`
-		Seq         *int64    `json:"seq"`
-		// Actor names no writer of this row: the state is the calling person's, keyed on the
-		// login actingPerson resolves, and the row has no column for a session. The session it
-		// names is the acting agent's, which goes on the act of the event this write appends
-		// (actSessionFromBody); a client that has always sent one is not refused for an unknown
-		// key either (decodeJSON).
-		Actor *model.Actor `json:"actor"`
-	}
+	var input userIssueStateInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -92,31 +114,53 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if _, err := tx.Exec(r.Context(), `
-		insert into user_issue_state (login, issue_key) values ($1, $2)
-		on conflict (login, issue_key) do nothing
-	`, actor.ID, key); err != nil {
+	// The read phase holds no transaction id (INFRA-636). The issue's project is read first and
+	// plainly: it names the owner whose lock the event's append would otherwise be the first to
+	// take (projectOwner, events' lockEventOwner), and a route that waited for that lock holding
+	// an id - which the row's `select ... for update` assigned before anything was judged - holds
+	// back every reader's snapshot for as long as it waits. A key no issue row holds is the error
+	// the insert's foreign key raised when that insert came first, and is answered as it was.
+	var project string
+	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			s.writeHandlerError(w, fmt.Errorf("user state names %s, which no issue row holds", key))
+			return
+		}
 		s.writeHandlerError(w, err)
 		return
 	}
-	value := userIssueState{}
+	// The owner's lock: advisory, so it assigns no transaction id (store.LockOwner), and the one
+	// every writer of this project's events takes. It serialises two writes of one row, which the
+	// row's `for update` serialised before: this route is the only writer of user_issue_state,
+	// and two writes of one row take this same lock, since a row names one issue and an issue
+	// names one project.
+	//
+	// The row as it stands under that lock, read in the statement after it
+	// (store.LockOwnerAndRead), so it holds whatever the lock's previous holder committed. No row
+	// is the row this write creates, read as the column defaults it is inserted with (migrations
+	// 0001 and 0042): unpinned, nothing read, nothing dismissed, seq 0.
+	value := userIssueState{Dismissed: []string{}}
 	var encodedDismissed []byte
-	if err := tx.QueryRow(r.Context(), `
+	err = store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(project), `
 		select pinned, last_read_seq, dismissed, seq
-		from user_issue_state where login = $1 and issue_key = $2 for update
-	`, actor.ID, key).Scan(&value.Pinned, &value.LastReadSeq, &encodedDismissed, &value.Seq); err != nil {
+		from user_issue_state where login = $1 and issue_key = $2
+	`, []any{actor.ID, key}, &value.Pinned, &value.LastReadSeq, &encodedDismissed, &value.Seq)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		s.writeHandlerError(w, err)
 		return
-	}
-	if err := json.Unmarshal(encodedDismissed, &value.Dismissed); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	default:
+		if err := json.Unmarshal(encodedDismissed, &value.Dismissed); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if input.Seq != nil && *input.Seq <= value.Seq {
-		WriteJSON(w, http.StatusConflict, map[string]any{
-			"code":  "STATE_STALE",
-			"error": "user state was updated by another write",
-			"state": value,
+		WriteJSON(w, http.StatusConflict, userStateStaleError{
+			Code:  "STATE_STALE",
+			Error: "user state was updated by another write",
+			State: value,
 		})
 		return
 	}
@@ -138,19 +182,6 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if _, err := tx.Exec(r.Context(), `
-		update user_issue_state
-		set pinned = $3, last_read_seq = $4, dismissed = $5, seq = $6
-		where login = $1 and issue_key = $2
-	`, actor.ID, key, value.Pinned, value.LastReadSeq, encodedDismissed, value.Seq); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	var project string
-	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	// changed names which of pinned, last_read_seq and dismissed this write moved from the row it
 	// read (seq, the write's own precondition, is not one), so another tab refreshes its pinned
 	// list for a pin and not for a read mark. Nothing it moved leaves it [].
@@ -164,6 +195,19 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	if !slices.Equal(previous.Dismissed, value.Dismissed) {
 		changed = append(changed, "dismissed")
 	}
+	// The write phase: the row and the event, back to back, and the COMMIT behind them. One
+	// upsert does what the insert of the defaults and the update over them did, each of which
+	// stood on its own side of the whole read phase.
+	if _, err := tx.Exec(r.Context(), `
+		insert into user_issue_state (login, issue_key, pinned, last_read_seq, dismissed, seq)
+		values ($1, $2, $3, $4, $5, $6)
+		on conflict (login, issue_key) do update set
+			pinned = excluded.pinned, last_read_seq = excluded.last_read_seq,
+			dismissed = excluded.dismissed, seq = excluded.seq
+	`, actor.ID, key, value.Pinned, value.LastReadSeq, encodedDismissed, value.Seq); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(
 		"user_state.updated", actor, map[string]any{"login": actor.ID, "state": value, "changed": changed},
 	))
@@ -175,7 +219,7 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, value)
 }
 
@@ -183,54 +227,71 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 // exchange whose newest message is at or before cleared_before (the viewer's Clear); read_through
 // is how far the viewer has read; unread_replies counts the session's replies to messages this
 // viewer sent that are newer than both and that the viewer has not read by id (read_replies),
-// which is how the dashboard says an agent answered.
+// which is how the dashboard says an agent answered; pinned_at is when the viewer pinned the
+// session, which is what puts it in the sidebar's Agents list and the order it is drawn in.
 type userAgentState struct {
 	ClearedBefore *string `json:"cleared_before,omitempty"`
 	ReadThrough   *string `json:"read_through,omitempty"`
 	UnreadReplies int     `json:"unread_replies"`
+	PinnedAt      *string `json:"pinned_at,omitempty"`
 }
+
+// userAgentStates is the body GET /api/v1/me/agents/state answers: the caller's state for each
+// agent conversation it holds one for, by session id.
+type userAgentStates map[string]userAgentState
 
 // agentStateCutoffSkew is how far ahead of the server clock a Clear or a read mark may land. The
 // client stamps the cutoff with its own clock, and a browser a few seconds fast must not be
 // refused.
 const agentStateCutoffSkew = time.Minute
 
-// userAgentStatesQuery reads a viewer's per-session state from the shared unreadDirectRepliesCTE
-// alone: `direct_marks` is every session with a Clear (user_agent_state) or a read mark
-// (user_agent_read), and `unread_direct_replies` counted per session is every session holding a
-// reply the viewer has not read. Parameters are the fragment's own (unreadDirectRepliesArgs).
+// userAgentStatesQuery reads a viewer's per-session state from three sources, so a session named
+// by any one of them is in the answer: the shared unreadDirectRepliesCTE gives `direct_marks`,
+// every session with a Clear (user_agent_state) or a read mark (user_agent_read), and
+// `unread_direct_replies` counted per session, every session holding a reply the viewer has not
+// read; `pinned` is every session the viewer pinned. A pinned session with neither a mark nor an
+// unread reply is named by `pinned` alone, which is why the join is three ways and not two.
+// Parameters are the fragment's own (unreadDirectRepliesArgs): the pin
+// is keyed on the canonical login, $1, as the read mark is.
 const userAgentStatesQuery = `
 	with recursive` + unreadDirectRepliesCTE + `,
 	unread as (
 		select session_id, count(*)::int as unread from unread_direct_replies group by session_id
+	),
+	pinned as (
+		select session_id, pinned_at from user_agent_pin
+		where login = $1 and ($3::text is null or session_id = $3::text)
 	)
-	select coalesce(direct_marks.session_id, unread.session_id),
+	select coalesce(direct_marks.session_id, unread.session_id, pinned.session_id),
 	       direct_marks.cleared_before, direct_marks.read_through,
-	       coalesce(unread.unread, 0)
-	from direct_marks full join unread on unread.session_id = direct_marks.session_id
+	       coalesce(unread.unread, 0), pinned.pinned_at
+	from direct_marks
+	full join unread on unread.session_id = direct_marks.session_id
+	full join pinned on pinned.session_id = coalesce(direct_marks.session_id, unread.session_id)
 	order by 1
 `
 
 // loadUserAgentStates runs userAgentStatesQuery for login, narrowed to sessionID when it is
-// not nil. The read mark and the viewer's own direct messages are matched on the canonical
-// login, so one person is one viewer however their identity source spells them; the Clear
-// (user_agent_state, migration 0033) is keyed on the raw actor id.
-func (s *server) loadUserAgentStates(ctx context.Context, login string, sessionID *string) (map[string]userAgentState, error) {
+// not nil. The read mark, the pin and the viewer's own direct messages are matched on the
+// canonical login, so one person is one viewer however their identity source spells them; the
+// Clear (user_agent_state, migration 0033) is keyed on the raw actor id.
+func (s *server) loadUserAgentStates(ctx context.Context, login string, sessionID *string) (userAgentStates, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, userAgentStatesQuery, unreadDirectRepliesArgs(login, sessionID)...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	states := map[string]userAgentState{}
+	states := userAgentStates{}
 	for rows.Next() {
 		var session string
-		var clearedBefore, readThrough *time.Time
+		var clearedBefore, readThrough, pinnedAt *time.Time
 		var state userAgentState
-		if err := rows.Scan(&session, &clearedBefore, &readThrough, &state.UnreadReplies); err != nil {
+		if err := rows.Scan(&session, &clearedBefore, &readThrough, &state.UnreadReplies, &pinnedAt); err != nil {
 			return nil, err
 		}
 		state.ClearedBefore = timestampPtr(clearedBefore)
 		state.ReadThrough = timestampPtr(readThrough)
+		state.PinnedAt = timestampPtr(pinnedAt)
 		states[session] = state
 	}
 	return states, rows.Err()
@@ -265,6 +326,14 @@ func parseAgentStateCutoff(name string, value *string) (*time.Time, error) {
 	return &parsed, nil
 }
 
+// userAgentStateInput is the body of PUT /api/v1/me/agents/{session_id}/state.
+type userAgentStateInput struct {
+	ClearedBefore *string  `json:"cleared_before"`
+	ReadThrough   *string  `json:"read_through"`
+	ReadReplies   []string `json:"read_replies"`
+	Pinned        *bool    `json:"pinned"`
+}
+
 // userAgentStateEvent announces that the viewer's state on one session moved. It is owned by the
 // session, like its messages, so the outbox publishes it nowhere and it reaches only the viewer's
 // other tabs and devices, which refresh their badge from it rather than waiting for a focus or
@@ -280,27 +349,25 @@ func userAgentStateEvent(actor model.Actor, sessionID string) model.Event {
 
 // putUserAgentState records a Clear (cleared_before, which replaces the previous one), a read
 // mark (read_through, which only ever moves forward, so a tab that read less a moment ago cannot
-// make a reply unread again), and/or replies read one by one (read_replies, the session's own
+// make a reply unread again), replies read one by one (read_replies, the session's own
 // messages by id, which a view that shows only some of a session's replies writes so it marks
-// nothing it did not show), announces the write to the viewer's other tabs unless it was only
-// replies already read by id or passed by the read mark (one the Clear hides is neither), and
-// answers with the session's whole state.
+// nothing it did not show), and/or the pin that puts the session in the sidebar's Agents list
+// (pinned), announces the write to the viewer's other tabs unless it was only replies already
+// read by id or passed by the read mark (one the Clear hides is neither), and answers with the
+// session's whole state.
 func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	var input struct {
-		ClearedBefore *string  `json:"cleared_before"`
-		ReadThrough   *string  `json:"read_through"`
-		ReadReplies   []string `json:"read_replies"`
-	}
+	var input userAgentStateInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if input.ClearedBefore == nil && input.ReadThrough == nil && len(input.ReadReplies) == 0 {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "cleared_before, read_through or read_replies is required")
+	if input.ClearedBefore == nil && input.ReadThrough == nil && len(input.ReadReplies) == 0 && input.Pinned == nil {
+		writeError(w, "INVALID_STATE", http.StatusBadRequest,
+			"cleared_before, read_through, read_replies or pinned is required")
 		return
 	}
 	clearedBefore, err := parseAgentStateCutoff("cleared_before", input.ClearedBefore)
@@ -343,9 +410,9 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// A Clear or a read mark is announced whenever it is given; replies read by id only when one
-	// of them gets a row (below).
-	announce := clearedBefore != nil || readThrough != nil
+	// A Clear, a read mark or a pin is announced whenever it is given; replies read by id only
+	// when one of them gets a row (below).
+	announce := clearedBefore != nil || readThrough != nil || input.Pinned != nil
 	// A cutoff up to agentStateCutoffSkew ahead of the server clock is accepted, so a browser a few
 	// seconds fast is not refused, but it is stored as no later than now: a reply that lands in
 	// the gap is still after the viewer's Clear and read mark, so it shows and it counts.
@@ -369,6 +436,27 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			on conflict (login, session_id) do update set
 				read_through = greatest(user_agent_read.read_through, excluded.read_through)
 		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if input.Pinned != nil {
+		// The pin is keyed on the canonical login, like the read mark and unlike the Clear: it is
+		// a table of this change's own (user_agent_pin), so it follows 0048's and 0051's
+		// convention and no row of it predates them. It is stamped with the server's clock and
+		// not the browser's, because nothing hides behind it: it is the order the sidebar draws
+		// the person's pinned agents in, oldest first. Unpinning deletes the row, so the table
+		// holds what is pinned now; either way the Clear is left exactly as it was, since
+		// pinning a conversation is not reading it.
+		pin := `delete from user_agent_pin where login = $1 and session_id = $2`
+		if *input.Pinned {
+			pin = `
+				insert into user_agent_pin (login, session_id, pinned_at)
+				values ($1, $2, now())
+				on conflict (login, session_id) do update set pinned_at = excluded.pinned_at
+			`
+		}
+		if _, err := tx.Exec(r.Context(), pin, model.CanonicalLogin(actor.ID), sessionID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -457,7 +545,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		s.publish(event)
+		s.publish(r.Context(), event)
 	}
 	states, err := s.loadUserAgentStates(r.Context(), actor.ID, &sessionID)
 	if err != nil {

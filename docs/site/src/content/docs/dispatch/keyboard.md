@@ -81,13 +81,14 @@ reference, so `y` does nothing on one either.
 | --- | --- |
 | `v` | Toggle List / Board (on the Issues tab) |
 
-On the List:
+On the List table, `j` and `k` follow the current sorted, filtered page, skip collapsed groups, and scroll virtual rows into view:
 
 | Keys | Action |
 | --- | --- |
 | `j` / `k` | Next / previous issue |
 | `o` | Open issue |
 | `Enter` | Open the focused issue (from the row) |
+| `x` | Select or deselect the focused issue |
 
 ## Board
 
@@ -130,10 +131,13 @@ On the List:
 | `t s` | Spec tab |
 | `t k` | Verification tab |
 | `t p` | Plan tab |
+| `t e` | Steps tab |
 | `t c` | Conversation tab |
 | `t h` | Children tab |
 | `t a` | Artifacts tab |
 | `t v` | Activity tab |
+| `t d` | Decisions tab |
+| `t o` | Collaborators tab |
 | `Escape` | Back out of the focused status or priority |
 
 `0` – `3` and `Shift+P` do nothing while focus is in an ask's card or on a checkbox or option,

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // Create creates branch on repo, whose REST API github calls, at the current commit of base, a
@@ -22,13 +23,28 @@ import (
 // success: GitHub answers its create with 422 "Reference already exists". Every other answer, to
 // the read of base or to the create, is an error naming the repository, the ref and GitHub's
 // answer (a *githubrest.Answer, its status and body).
+//
+// The ref name passes this repository's own private-name rules before anything is sent
+// (leakguard.Rules): a name they match, and a rule pass that could not be made to run, are each
+// an error, and the base is not even read. The check lives here rather than in the daemon that
+// calls Create so that the package's contract holds for every caller: a create of this package
+// publishes no ref name of a class the rules refuse.
+//
+// The rule pass alone runs, and no shared public leak check: a ref name is a branch name of the
+// daemon's own making, which can carry one of this repository's four private classes — the
+// embedded rule file holds all four — and not a secret, customer text or private code, which is
+// what the shared check reads for. The write itself is one POST of a ref and a sha.
 func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string) error {
+	ref := "refs/heads/" + branch
+	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.RefRecord(ref)); err != nil {
+		return fmt.Errorf("create a branch of %s: %w", repo, err)
+	}
 	var read struct {
 		Object struct {
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := github.Get(ctx, "/git/ref/heads/"+refPath(base), &read); err != nil {
+	if err := github.Get(ctx, "/git/ref/heads/"+RefPath(base), &read); err != nil {
 		return fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, err)
 	}
 	head := read.Object.SHA
@@ -36,7 +52,6 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 		return fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", base, repo)
 	}
 
-	ref := "refs/heads/" + branch
 	err := github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
 	var answer *githubrest.Answer
 	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer.Body) {
@@ -45,11 +60,13 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	return fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, err)
 }
 
-// refPath is branch as the path of its ref under /git/ref/heads/: every character a URL path
+// RefPath is branch as a path under any route of GitHub's REST API that takes a branch name with
+// its slashes kept - /git/ref/heads/, /rules/branches/, /branches/: every character a URL path
 // would read as its own syntax (`#`, `?`, `%`, and the rest url.PathEscape escapes) escaped, and
-// each `/` kept, since it separates the ref's own components, so GitHub reads the one ref branch
-// names.
-func refPath(branch string) string {
+// each `/` kept, since GitHub reads a branch name's slashes as part of the name on each of those
+// routes, so GitHub reads the one branch named. A `%2F` written in the name stays itself: its `%`
+// is escaped with the rest, so no slash comes of it.
+func RefPath(branch string) string {
 	return strings.ReplaceAll(url.PathEscape(branch), "%2F", "/")
 }
 
@@ -71,7 +88,9 @@ type Repository struct {
 
 // Read is repo as GitHub names it (`full_name` and `default_branch` of `GET /repos/{owner}/{repo}`),
 // read through github, the repository's REST API. An answer naming no default branch, or a
-// full_name that is not owner/name, is refused by name, as is every answer other than 2xx.
+// full_name that is not owner/name, is refused by name, as is every answer other than 2xx, whose
+// refusal wraps GitHub's *githubrest.Answer so a caller can tell GitHub's rate limit (RateLimited,
+// with how long GitHub asks it to wait) from GitHub's verdict on the repository.
 func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository) (Repository, error) {
 	var info struct {
 		FullName      string `json:"full_name"`

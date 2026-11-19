@@ -4,6 +4,14 @@ import { sha256Hex } from "./sha256";
 export const AGENT_TOPIC_PREFIX = "notifications.agent." as const;
 export const ROLE_TOPIC_PREFIX = "notifications.role." as const;
 
+/**
+ * The project token of a message name that belongs to no project: an agent message or a role
+ * lane outside every project, such as a lead role's. A project key matches `PROJECT_KEY_PATTERN`
+ * (`^[A-Z][A-Z0-9]{1,9}$`), which `_` never does, so no project can be named this. The readers of
+ * a name in both its forms are in `subject-project.ts`.
+ */
+export const NO_PROJECT = "_" as const;
+
 export const LEGION_NOTICE_TOPIC_PREFIX = "notifications.legion." as const;
 
 export type LegionNoticeSubject<
@@ -20,20 +28,52 @@ export function legionControllerNoticeSubject<Project extends string>(
   return `${LEGION_NOTICE_TOPIC_PREFIX}${project}.controller`;
 }
 
+export type LegionWakeSubject<Token extends string = string> =
+  `${typeof LEGION_NOTICE_TOPIC_PREFIX}${Token}.wake`;
+
+/** The wake lane of the Legion deployment whose project token is `token`
+ * (`legionProjectToken`), beside its controller lane: the role and agent messages the listener
+ * reports for a released issue pod of that deployment. Until the listener moves its wakes here,
+ * every wake goes to the one `notifications.legion.wake` (`bus.LegionWakeTopic`). */
+export function legionWakeSubject<Token extends string>(token: Token): LegionWakeSubject<Token> {
+  return `${LEGION_NOTICE_TOPIC_PREFIX}${token}.wake`;
+}
+
 export const DISPATCH_TOPIC_PREFIX = "notifications.dispatch." as const;
 export const DISPATCH_ISSUE_TOPIC_PREFIX = `${DISPATCH_TOPIC_PREFIX}issue.` as const;
 export const DISPATCH_DOCUMENT_TOPIC_PREFIX = `${DISPATCH_TOPIC_PREFIX}document.` as const;
 
+/** An issue's event, named under the issue's project and then its key:
+ * `notifications.dispatch.issue.INFRA.INFRA-12.comment.created`. The project comes first so a
+ * grant or a reader can name every message of one project with one pattern. */
 export type DispatchIssueSubject<
+  Project extends string = string,
+  IssueKey extends string = string,
+  Type extends string = string,
+> = `${typeof DISPATCH_ISSUE_TOPIC_PREFIX}${Project}.${IssueKey}.${Type}`;
+
+export function dispatchIssueSubject<
+  Project extends string,
+  IssueKey extends string,
+  Type extends string,
+>(project: Project, issueKey: IssueKey, type: Type): DispatchIssueSubject<Project, IssueKey, Type>;
+export function dispatchIssueSubject(project: string, issueKey: string, type: string) {
+  return `${DISPATCH_ISSUE_TOPIC_PREFIX}${project}.${issueKey}.${type}`;
+}
+
+/** An issue's event in the old form, with no project: `notifications.dispatch.issue.INFRA-12.…`.
+ * Every reader takes both forms until the old one is refused; a caller still on this one is
+ * counted where it registers (`canonicalTopic` in `subject-project.ts`). */
+export type LegacyDispatchIssueSubject<
   IssueKey extends string = string,
   Type extends string = string,
 > = `${typeof DISPATCH_ISSUE_TOPIC_PREFIX}${IssueKey}.${Type}`;
 
-export function dispatchIssueSubject<IssueKey extends string, Type extends string>(
+export function legacyDispatchIssueSubject<IssueKey extends string, Type extends string>(
   issueKey: IssueKey,
   type: Type
-): DispatchIssueSubject<IssueKey, Type>;
-export function dispatchIssueSubject(issueKey: string, type: string) {
+): LegacyDispatchIssueSubject<IssueKey, Type>;
+export function legacyDispatchIssueSubject(issueKey: string, type: string) {
   return `${DISPATCH_ISSUE_TOPIC_PREFIX}${issueKey}.${type}`;
 }
 
@@ -52,12 +92,46 @@ export function dispatchDocumentSubject(project: string, slug: string, type: str
   return `${DISPATCH_DOCUMENT_TOPIC_PREFIX}${project}.${slug}.${type}`;
 }
 
-export type AgentSubject<Session extends string = string> =
+/** One session's messages, named under the project they belong to, `NO_PROJECT` for none:
+ * `notifications.agent.INFRA.<session>`. */
+export type AgentSubject<
+  Project extends string = string,
+  Session extends string = string,
+> = `${typeof AGENT_TOPIC_PREFIX}${Project}.${Session}`;
+
+export function agentSubject<Project extends string, Session extends string>(
+  project: Project,
+  session: Session
+): AgentSubject<Project, Session>;
+export function agentSubject(project: string, session: string) {
+  return `${AGENT_TOPIC_PREFIX}${project}.${session}`;
+}
+
+/** One session's messages in the old form, with no project: `notifications.agent.<session>`. */
+export type LegacyAgentSubject<Session extends string = string> =
   `${typeof AGENT_TOPIC_PREFIX}${Session}`;
 
-export function agentSubject<Session extends string>(session: Session): AgentSubject<Session>;
-export function agentSubject(session: string) {
+export function legacyAgentSubject<Session extends string>(
+  session: Session
+): LegacyAgentSubject<Session>;
+export function legacyAgentSubject(session: string) {
   return `${AGENT_TOPIC_PREFIX}${session}`;
+}
+
+/** A role's lane, named under the project the role works for, `NO_PROJECT` for none:
+ * `notifications.role.INFRA.legion-infra-infra-12-architect`. The old form,
+ * `notifications.role.<role>`, is `roleTopic` in `legion-roles.ts`. */
+export type RoleSubject<
+  Project extends string = string,
+  Role extends string = string,
+> = `${typeof ROLE_TOPIC_PREFIX}${Project}.${Role}`;
+
+export function roleSubject<Project extends string, Role extends string>(
+  project: Project,
+  role: Role
+): RoleSubject<Project, Role>;
+export function roleSubject(project: string, role: string) {
+  return `${ROLE_TOPIC_PREFIX}${project}.${role}`;
 }
 
 export type GithubSubject<
@@ -343,8 +417,12 @@ export function whatsappSubject(phone: string, jid: string, kind: string) {
 
 export type Subject =
   | LegionNoticeSubject
+  | LegionWakeSubject
   | AgentSubject
+  | LegacyAgentSubject
+  | RoleSubject
   | DispatchIssueSubject
+  | LegacyDispatchIssueSubject
   | DispatchDocumentSubject
   | GithubSubject
   | GithubResourceSubject
@@ -355,3 +433,20 @@ export type Subject =
   | SlackThreadSubject
   | GhostWisprSubject
   | WhatsappSubject;
+
+/**
+ * What a caller that named `topic` is told when nothing would ever be delivered to `sessionID` on
+ * it: a `notifications.` topic no stream subject captures and no role lane
+ * (`bus.ReachesNoSession` in packages/envoy/internal/bus, `streamDeliversNothing` in
+ * `@legion/envoy-client`). The listener leaves such a topic out of a registration and names it in
+ * this warning (`splitUncapturedTopics` in packages/envoy/cmd/listener/api.go, which names it with
+ * `contracts.UncapturedTopicRefusal` `scripts/gen-go.ts` emits from this builder), and each
+ * plugin's explicit subscribe refuses such a topic in the same words (`envoy_subscribe` in
+ * pi-envoy, `follow` in claude-envoy, both through `refuseUncapturedTopics` in
+ * `@legion/envoy-client`). So a caller reads one sentence wherever it is told: a registration
+ * carries topics nobody typed — a stored row, a restored transcript — and is answered with a
+ * warning, where a tool call is a caller asking for this one topic by name.
+ */
+export function uncapturedTopicRefusal(topic: string, sessionID: string): string {
+  return `${topic} was not registered: no stream subject captures it, so nothing would be delivered to ${sessionID} on it; follow a notifications.team.<name> topic instead`;
+}

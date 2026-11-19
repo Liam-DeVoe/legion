@@ -23,6 +23,15 @@ func describeReplyBlock(block *model.ReplyBlock) string {
 	return fmt.Sprintf("%+v", *block)
 }
 
+// replyBlockOf is the stored block a shaped reply names, for a check written against the row the
+// shape stands in front of.
+func replyBlockOf(read *replyBlockRead) *model.ReplyBlock {
+	if read == nil {
+		return nil
+	}
+	return &read.ReplyBlock
+}
+
 // requireReplyBlock fails unless got is want (nil: the reply names no block).
 func requireReplyBlock(t *testing.T, step string, got, want *model.ReplyBlock) {
 	t.Helper()
@@ -67,19 +76,20 @@ func eventReplyBlock(t *testing.T, handler http.Handler, issueKey, eventType, id
 	return nil, ""
 }
 
-// commentThread is GET /api/v1/comments/{id}'s answer.
-type commentThread struct {
+// commentThreadRead is GET /api/v1/comments/{id}'s answer. It is not commentThread, the thread a
+// comment's logins are filed under (thread_logins.go).
+type commentThreadRead struct {
 	Comment model.Comment   `json:"comment"`
 	Replies []model.Comment `json:"replies"`
 }
 
-func readCommentThread(t *testing.T, handler http.Handler, id string) commentThread {
+func readCommentThread(t *testing.T, handler http.Handler, id string) commentThreadRead {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/comments/"+id, nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("read comment %s: status=%d body=%s", id, response.Code, response.Body.String())
 	}
-	return decodeBody[commentThread](t, response)
+	return decodeBody[commentThreadRead](t, response)
 }
 
 // sendFrame is the message event a listener send carries, with the fields a reply block moves.
@@ -315,13 +325,13 @@ func TestAMessageReplyNamesTheBlockItAnswers(t *testing.T) {
 	rootEvent, _ := eventReplyBlock(t, handler, issue.Key, "message.created", root.ID)
 	requireReplyBlock(t, "the root's message.created payload", rootEvent, nil)
 	thread := decodeBody[messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+root.ID, nil, "alice"))
-	requireReplyBlock(t, "the thread's root", thread.Message.ReplyBlock, nil)
+	requireReplyBlock(t, "the thread's root", replyBlockOf(thread.Message.ReplyBlock), nil)
 	if len(thread.Replies) != 1 {
 		t.Fatalf("the thread's replies = %#v, want the reply", thread.Replies)
 	}
-	requireReplyBlock(t, "the thread's reply", thread.Replies[0].ReplyBlock, two)
+	requireReplyBlock(t, "the thread's reply", replyBlockOf(thread.Replies[0].ReplyBlock), two)
 	byID := decodeBody[messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+reply.ID, nil, "alice"))
-	requireReplyBlock(t, "the reply read by its own id", byID.Message.ReplyBlock, two)
+	requireReplyBlock(t, "the reply read by its own id", replyBlockOf(byID.Message.ReplyBlock), two)
 
 	post := func(input map[string]any) *httptest.ResponseRecorder {
 		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", input, "alice")
@@ -413,8 +423,8 @@ func TestAMessageReplyNamesTheBlockItAnswers(t *testing.T) {
 	if conversation == nil || len(conversation.Replies) != 2 {
 		t.Fatalf("the agent's conversations = %#v, want the direct thread with two replies", conversations)
 	}
-	requireReplyBlock(t, "the conversation's session reply", conversation.Replies[0].ReplyBlock, sessionAnswer.ReplyBlock)
-	requireReplyBlock(t, "the conversation's person reply", conversation.Replies[1].ReplyBlock, more)
+	requireReplyBlock(t, "the conversation's session reply", replyBlockOf(conversation.Replies[0].ReplyBlock), sessionAnswer.ReplyBlock)
+	requireReplyBlock(t, "the conversation's person reply", replyBlockOf(conversation.Replies[1].ReplyBlock), more)
 
 	// A message whose stored body is not the one its blocks were indexed from is indexed first.
 	owed := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\nBeta."}, "alice")
@@ -470,7 +480,7 @@ func TestRepliesWrittenBeforeThisChangeStillShow(t *testing.T) {
 	}
 
 	commentRead := dispatchRequest(t, handler, http.MethodGet, "/api/v1/comments/"+x.ID, nil, "alice")
-	thread := decodeBody[commentThread](t, commentRead)
+	thread := decodeBody[commentThreadRead](t, commentRead)
 	if len(thread.Replies) != 1 || thread.Replies[0].ID != reply || !strings.Contains(commentRead.Body.String(), `"reply_block":null`) {
 		t.Fatalf("GET the comment = %s, want the older reply naming no block", commentRead.Body.String())
 	}

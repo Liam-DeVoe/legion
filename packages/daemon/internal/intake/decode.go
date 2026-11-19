@@ -2,6 +2,7 @@ package intake
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/subjectforms"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -27,7 +30,17 @@ type decodedMessage struct {
 	// Unread names each optional field the decoder could not read and took as absent. The consumer
 	// logs it; the message is not poison.
 	Unread []string
+	// LegacyName is set for an issue event named in the old form, its key alone
+	// (subjectforms.IssueEventKey), of any project: the consumer counts and logs those while the
+	// old form is still published (consumeMessage).
+	LegacyName bool
 }
+
+// errIssueNameInNeitherForm is an issue event's name that carries its issue's key in neither form
+// (subjectforms.IssueEventKey). It is poison, never another project's event acknowledged with no
+// fact: a daemon that took a name it could not read for another project's would stop working its
+// own in silence, which is what a daemon reading only the old form would do with the new one.
+var errIssueNameInNeitherForm = errors.New("issue event named in neither form of an issue's name")
 
 type envoyEnvelope struct {
 	EventID        string `json:"event_id"`
@@ -57,17 +70,18 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	var fact Fact
 	var unread []string
 	var err error
+	var legacy bool
 	switch {
 	case subject == legionWakeSubject:
 		if envelope.Source != "envoy" {
 			return decodedMessage{}, fmt.Errorf("the listener wake subject has envelope source %q", envelope.Source)
 		}
 		fact, err = decodeListenerWake(envelope.EventID, envelope.Payload)
-	case strings.HasPrefix(subject, "notifications.dispatch.issue."):
+	case strings.HasPrefix(subject, subjectforms.IssueTopicPrefix):
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, err = decodeDispatchFact(subject, project, envelope.Payload)
+		fact, unread, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
 	case strings.HasPrefix(subject, dispatchProjectPrefix):
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
@@ -84,7 +98,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	if err != nil {
 		return decodedMessage{}, err
 	}
-	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread}, nil
+	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy}, nil
 }
 
 func (e envoyEnvelope) valid() error {
@@ -204,18 +218,26 @@ func (e dispatchEvent) mark() record.EventMark {
 	return record.EventMark{Seq: e.Seq, At: e.CreatedAt.UTC()}
 }
 
-// decodeDispatchFact decodes one Dispatch issue event of project. The stream carries every
-// project's events; one whose subject key is not a project issue key is another daemon's, and is
+// decodeDispatchFact decodes one Dispatch issue event of project from its name in either form
+// (subjectforms.IssueEventKey), reporting whether the name was the old one. A name that carries
+// its key in neither form is poison (errIssueNameInNeitherForm).
+func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool, error) {
+	key, legacy, ok := subjectforms.IssueEventKey(subject)
+	if !ok {
+		return nil, nil, false, fmt.Errorf("%w: %s", errIssueNameInNeitherForm, subject)
+	}
+	fact, unread, err := decodeDispatchIssueEvent(key, project, payload)
+	return fact, unread, legacy, err
+}
+
+// decodeDispatchIssueEvent decodes one Dispatch event of issue key, for project. The stream carries
+// every project's events; one whose key is not a project issue key is another daemon's, and is
 // skipped before its payload is read, so it is never poison here. A field the mirror only records
 // (an issue's claim, an ask's kind) that cannot be read is taken as unknown and named in unread,
 // rather than making the event poison: an event the workflow acts on is never lost to a field it
 // does not act on.
-func decodeDispatchFact(subject, project, payload string) (Fact, []string, error) {
-	subjectKey, ok := dispatchSubjectKey(subject)
-	if !ok {
-		return nil, nil, fmt.Errorf("Dispatch durable subject has no issue key: %s", subject)
-	}
-	if keyProject, _, _ := strings.Cut(subjectKey, "-"); keyProject != project || !claim.IsIssueKey(subjectKey) {
+func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, error) {
+	if keyProject, _, _ := strings.Cut(key, "-"); keyProject != project || !claim.IsIssueKey(key) {
 		return nil, nil, nil
 	}
 	var event dispatchEvent
@@ -225,8 +247,8 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, error
 	if event.ID <= 0 || event.Seq <= 0 || event.Notify == nil || !claim.IsIssueKey(event.IssueKey) || event.Type == "" || !isJSONObject(event.Payload) {
 		return nil, nil, fmt.Errorf("Dispatch durable message payload is not a valid Dispatch event")
 	}
-	if subjectKey != event.IssueKey {
-		return nil, nil, fmt.Errorf("Dispatch durable subject key %s disagrees with event issue_key %s", subjectKey, event.IssueKey)
+	if key != event.IssueKey {
+		return nil, nil, fmt.Errorf("Dispatch durable subject key %s disagrees with event issue_key %s", key, event.IssueKey)
 	}
 	var unread []string
 	fact, err := decodeDispatchEvent(event, &unread)
@@ -242,7 +264,7 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, error
 // becomes the fact its live delivery would have been. It returns the fields it took as unknown,
 // as the live decoder logs them.
 func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, error) {
-	return decodeDispatchFact("notifications.dispatch.issue."+key, project, string(event))
+	return decodeDispatchIssueEvent(key, project, string(event))
 }
 
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
@@ -372,8 +394,16 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		if ask.Restored {
 			return DispatchAskRestored{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), Mark: event.mark()}, nil
 		}
-		return DispatchAskClosed{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), State: strings.TrimPrefix(event.Type, "ask."),
-			Actor: dispatch.Actor(event.Actor), Mark: event.mark()}, nil
+		closed := DispatchAskClosed{Key: event.IssueKey, Ask: ask.ID, Kind: ask.kind, Artifact: ask.artifact(), State: strings.TrimPrefix(event.Type, "ask."),
+			Actor: dispatch.Actor(event.Actor), Mark: event.mark()}
+		// A person's decline is the one resolution the daemon acts on: it resumes the root's
+		// architect with Dispatch's own words and the person's note (workflow's resumeTask), so
+		// both travel as data from Dispatch rather than as a copy of four sentences here. Any
+		// other resolution kind, and a close whose payload carries none, is the close alone.
+		if ask.Resolution != nil && ask.Resolution.Kind == ResolutionDeclined {
+			closed.Decline = &record.AskDecline{Note: ask.Resolution.Reason, Words: ask.Resolution.DispatchWords}
+		}
+		return closed, nil
 	case "ask.handed_back":
 		// An approval request its asker returned to the person (Dispatch's handBackApprovalAsk):
 		// whatever the thread held, it now waits on the human, as a session's human-turn reply does.
@@ -461,13 +491,6 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 	}
 }
 
-func dispatchSubjectKey(subject string) (string, bool) {
-	const prefix = "notifications.dispatch.issue."
-	remaining := strings.TrimPrefix(subject, prefix)
-	key, _, _ := strings.Cut(remaining, ".")
-	return key, key != ""
-}
-
 // issueEventClaim reads an issue event's claim, `<kind>:<id>`, "" for null, and whether the event
 // showed it at all: an absent field, or a claim naming no actor, is unknown, the latter named in
 // unread.
@@ -497,8 +520,10 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself
 // (Dispatch's model.AskEventPayload and AskEditEventPayload): its id, its kind, the author of an
-// opening, settlement's restored mark, and an approval request's document with the version it now
-// names and the version its agent last handed to the person.
+// opening, settlement's restored mark, an approval request's document with the version it now
+// names and the version its agent last handed to the person, and a close's resolution
+// (Dispatch's model.AskResolution), which says why a resolved ask needs no human answer and
+// carries the person's note and Dispatch's own words apart.
 type askPayload struct {
 	ID     string `json:"id"`
 	Kind   string `json:"kind"`
@@ -512,6 +537,11 @@ type askPayload struct {
 		Version          *int   `json:"version"`
 		RequestedVersion *int   `json:"requested_version"`
 	} `json:"approval"`
+	Resolution *struct {
+		Kind          string `json:"kind"`
+		Reason        string `json:"reason"`
+		DispatchWords string `json:"dispatch_words"`
+	} `json:"resolution"`
 	kind string
 }
 
@@ -629,7 +659,7 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	case "push":
 		fact, err = decodePush(repository, raw)
 	case "checks":
-		fact, err = decodeChecks(subject, repository, raw)
+		return decodeChecks(subject, repository, raw)
 	}
 	// Comments, and every other kind, route to the current role but do not change the durable
 	// workflow record.
@@ -654,6 +684,9 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 	}
 	repo := repository.String()
 	sha, _ := rawString(raw, "head_sha")
+	// The listener normalizes GitHub's base.ref to base_ref; one that predates the field carries
+	// none, and the base is then left as the record has it, for the next read to fill.
+	base, _ := rawString(raw, "base_ref")
 	body, _ := rawString(raw, "body")
 	updatedAt, _ := rawTimestamp(raw, "updated_at")
 	switch action {
@@ -663,21 +696,30 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 			return nil, nil
 		}
 		url, _ := rawString(raw, "url")
-		return PullRequestOpened{Repo: repo, Number: number, Branch: branch, HeadSHA: sha, Body: body, URL: url, UpdatedAt: updatedAt, Reopened: action == "reopened"}, nil
+		return PullRequestOpened{Repo: repo, Number: number, Branch: branch, HeadSHA: sha, Base: base, Body: body, URL: url, UpdatedAt: updatedAt,
+			Reopened: action == "reopened"}, nil
 	case "synchronize":
 		if sha == "" {
 			return nil, nil
 		}
 		before, _ := rawString(raw, "before")
 		sender, _ := rawString(raw, "sender")
-		return PullRequestSynchronized{Repo: repo, Number: number, Branch: branch, Before: before, Sender: sender, HeadSHA: sha, Body: body, UpdatedAt: updatedAt}, nil
+		return PullRequestSynchronized{Repo: repo, Number: number, Branch: branch, Before: before, Sender: sender, HeadSHA: sha, Base: base, Body: body,
+			UpdatedAt: updatedAt}, nil
 	case "closed":
 		merged, _ := rawString(raw, "merged")
 		if merged == "true" {
 			mergeSHA, _ := rawString(raw, "merge_commit_sha")
-			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA}, nil
+			return PullRequestMerged{Repo: repo, Number: number, MergeSHA: mergeSHA, HeadSHA: sha}, nil
 		}
 		return PullRequestClosed{Repo: repo, Number: number, HeadSHA: sha, UpdatedAt: updatedAt}, nil
+	case "dequeued":
+		// A removal from the merge queue is told at the head it left the queue at. One the
+		// listener sends with no head names none, so it is no fact, as a synchronize with none is no fact.
+		if sha == "" {
+			return nil, nil
+		}
+		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, nil
 	default:
 		return nil, nil
 	}
@@ -716,19 +758,43 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 		CommitID: commitID, HeadSHA: headSHA, Author: author, Body: body, BodyTruncated: bodyTruncated == "true"}, unread, nil
 }
 
-// decodePush decodes a push to an issue's branch (claim.BranchIssue). A push to any other branch is
-// no fact, so it is acknowledged without a transaction: the workflow applies a push only to the pull
-// request it records on the push's branch, and it records one only on an issue's branch. A mapped
-// repository that other automation pushes to many times a minute would otherwise cost the daemon one
-// transaction under the fact lock (ApplyFact) for every push, all of them changing nothing.
+// decodePush decodes a push to a branch: to an issue's branch (claim.BranchIssue) it is the Push
+// the workflow applies to the pull request it records there, and to any other branch it is a
+// BasePush, the only notice the daemon gets that a pull request's base moved. GitHub recomputes
+// whether each head on a base still merges into it when the base moves and sends no event for the
+// pull request itself, so a head the record holds as clean goes behind or dirty unheard.
+//
+// A base push costs the daemon one transaction under the fact lock (ApplyFact), which a mapped
+// repository that other automation pushes to many times a minute pays per push; the cost is paid
+// because the alternative is a mergeability the record cannot know is stale. The handler's first
+// read is one indexed lookup of the open pull requests recorded on that base
+// (record.Store.OpenPullRequestsOnBase), and it ends the transaction at once when there are none,
+// which is every push to a branch Legion has no pull request on.
+//
+// A push to anything but a branch - a tag - is no fact, and neither is one that names no branch or
+// no commit it left.
+//
+// A push to an issue's branch whose after is record.NoCommit is no fact either. It is GitHub
+// deleting the branch, which a repository that deletes a merged pull request's branch
+// (delete_branch_on_merge) does right after every merge. The deletion names no head, so it is no
+// Push. Workflow's push refuses a deletion from any other source too, and says why. A push to a
+// base with that after is still a BasePush: the commit it records (record.PullRequest.BaseMoved) is
+// only a mark that the merge state on record may be stale. It is compared for equality and cleared
+// by the next read, and nothing reads it as a commit.
 func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	ref, _ := rawString(raw, "ref")
 	branch, isHead := strings.CutPrefix(ref, "refs/heads/")
-	if _, isIssueBranch := claim.BranchIssue(branch); !isHead || !isIssueBranch {
+	if !isHead || branch == "" {
 		return nil, nil
 	}
 	after, ok := rawString(raw, "after")
 	if !ok || after == "" {
+		return nil, nil
+	}
+	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
+		return BasePush{Repo: repository.String(), Branch: branch, After: after}, nil
+	}
+	if after == record.NoCommit {
 		return nil, nil
 	}
 	pusher, _ := rawString(raw, "pusher")
@@ -737,36 +803,49 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 	return Push{Repo: repository.String(), Branch: branch, Before: before, After: after, Pusher: pusher, Sender: sender}, nil
 }
 
-func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
+// decodeChecks decodes a checks settlement of the pull request its subject names. A settlement
+// that lacks any field the daemon orders or judges it by - its head, check runs, generation,
+// snapshot, failed or cancelled - is no fact. Its commit statuses are read last and cost the rest
+// nothing (rawStatuses): a list that cannot be read is named in the unread list the consumer logs,
+// and the fact is marked so (PullRequestChecks.StatusesUnread), rather than the settlement's
+// check runs being lost with it.
+func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, []string, error) {
 	number, ok := rawNumber(raw, "number")
 	if !ok || subject != githubRepositoryPrefix(repository)+".pr."+strconv.Itoa(number)+".checks" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	headSHA, ok := rawString(raw, "sha")
 	if !ok || headSHA == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	runs, ok := rawCheckRuns(raw["check_runs"])
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	generation, ok := rawInt64(raw, "generation")
 	if !ok || generation < 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	snapshot, ok := rawString(raw, "snapshot")
 	if !ok || snapshot == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	failed, ok := rawStatusGroup(raw, "failed")
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	cancelled, ok := rawStatusGroup(raw, "cancelled")
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return PullRequestChecks{Repo: repository.String(), Number: number, HeadSHA: headSHA, CheckRuns: runs, Generation: generation, Snapshot: snapshot, Failing: failed, Cancelled: cancelled}, nil
+	checks := PullRequestChecks{Repo: repository.String(), Number: number, HeadSHA: headSHA, CheckRuns: runs, Generation: generation, Snapshot: snapshot, Failing: failed, Cancelled: cancelled}
+	statuses, defect := rawStatuses(raw["statuses"])
+	if defect != "" {
+		checks.StatusesUnread = true
+		return checks, []string{"statuses " + defect + ": the pull request keeps the statuses it holds for " + headSHA}, nil
+	}
+	checks.Statuses = statuses
+	return checks, nil, nil
 }
 
 func githubIdentity(raw map[string]json.RawMessage) (int, string, bool) {

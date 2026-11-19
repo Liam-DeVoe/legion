@@ -14,11 +14,11 @@ import (
 // against itself, true for every row, and every row of every caller would answer the greatest
 // renamed_to in the table. The mappings here are a renamed pair and two mappings that were never
 // renamed, sorting either side of the pair, so a capture is caught whichever row the reader
-// reaches first (cireconcile's Reconciler.mapped is the caller that splices a bare column).
+// reaches first (cireconcile's Reconciler.covered is the caller that splices a bare column).
 func TestTheCanonicalNameRuleOverATableOfItsOwnColumnAnswersEachRowsOwnName(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('REPO', 'Repository project')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('REPO', 'Repository project', 'alice')`); err != nil {
 		t.Fatalf("create the project: %v", err)
 	}
 	for _, mapping := range []struct{ repo, renamedTo string }{

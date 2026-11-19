@@ -20,7 +20,7 @@ The coordinator: a Go daemon and the `legion` CLI. The daemon works the Dispatch
 it for you, and an agent that finds a problem outside its issue asks you before anything is filed.
 Each admitted issue gets an architect, which writes the spec, splits the work and asks you what
 only you can answer. Once you approve the spec, the daemon runs the phase workers in turn: planner,
-implementer, tester, reviewer and merger. Each agent is an [Oh My Pi](https://github.com/sjawhar/oh-my-pi) session, in a tmux
+implementer, tester, reviewer and merger. Each agent is an [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, in a tmux
 pane on one host or in an [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
 pod on Kubernetes, and each phase records a handoff on the issue in Dispatch for the next role,
 and a restarted agent, to read. The daemon writes the issue's status back to Dispatch as it moves
@@ -125,7 +125,7 @@ bun run docs:dev
 | `skills/` | The skills Legion's agents load: the architect, the controller, the phase workers, Dispatch, Envoy and the review rubrics. |
 | `deploy/kubernetes/` | Example files for running Legion on Kubernetes: `legion.yaml`, the controller's file, and a model route. |
 | `docs/site/` | The documentation site, in Astro Starlight. |
-| `STRATEGY.md` | What Legion and Dispatch are for, their key metrics, tracks, principles, and the boundaries that need the owner's decision. |
+| `STRATEGY.md` | What Legion and Dispatch are for, their key metrics, tracks, commitments, and the boundaries that need the owner's decision. The design principles are the `## Design principles` section of `AGENTS.md`. |
 | `docs/` | Beside the site: the Kubernetes runtime's reference (`kubernetes.md`), plans and learnings. |
 | `scripts/` | The live end-to-end proofs (`scripts/e2e/`) and repository tooling. |
 | `patches/` | Patches Bun applies at install: three editor dependencies, and nats.js (`packages/envoy-client/README.md` says why). |

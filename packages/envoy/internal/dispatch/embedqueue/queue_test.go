@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -97,7 +98,7 @@ func seedIssue(t *testing.T, database *store.Store, projectKey, issueKey, title 
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ($1, 'Test') on conflict (key) do nothing
+		insert into projects (key, name, default_assignee) values ($1, 'Test', 'alice') on conflict (key) do nothing
 	`, projectKey); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -727,7 +728,7 @@ func seedManyIssues(t *testing.T, database *store.Store, projectKey string, coun
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ($1, 'Test') on conflict (key) do nothing
+		insert into projects (key, name, default_assignee) values ($1, 'Test', 'alice') on conflict (key) do nothing
 	`, projectKey); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -1403,12 +1404,8 @@ func (e *syncEmbedder) canaryCalls() int {
 // eventually polls done until it reports true, failing once within passes.
 func eventually(t *testing.T, within time.Duration, what string, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not within %v", what, within)
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !testwait.Holds(within, 50*time.Millisecond, done) {
+		t.Fatalf("%s: not within %v", what, within)
 	}
 }
 
@@ -1447,9 +1444,9 @@ func runHub(t *testing.T, hub *pglisten.Hub) {
 	})
 }
 
-// insertCommentWithWindow writes a comment on issueKey and the one window its indexer writes
-// for it in the same transaction (refs.IndexItem), which is what enqueues it now that the
-// comment's own write-time trigger is gone.
+// insertCommentWithWindow writes a comment on issueKey and the one window the block-index
+// tick's window arm writes for it (refs.WriteItemWindows), which is what enqueues it now that
+// the comment's own write-time trigger is gone.
 func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 	t.Helper()
 	var comment string

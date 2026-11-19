@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -66,11 +67,12 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 }
 
 // mapCIReconcileRepository maps the stand-in's repository to a project of its own, as Settings →
-// Repositories does: the pass reads GitHub for the repositories repo_projects names and no other.
+// Repositories does: the pass reads GitHub for the repositories repo_projects names and the ones
+// an issue names as its own, and its callers record no issue.
 func mapCIReconcileRepository(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(t.Context(), `
-		insert into projects (key, name) values ('CIR', 'CI reconcile') on conflict (key) do nothing
+		insert into projects (key, name, default_assignee) values ('CIR', 'CI reconcile', 'alice') on conflict (key) do nothing
 	`); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
@@ -89,7 +91,7 @@ func makeCIStateBucket(t *testing.T, natsURL string) {
 	t.Helper()
 	conn := testnats.Connect(t, natsURL)
 	t.Cleanup(conn.Close)
-	if _, err := cistore.Open(conn, logging.New("ci-reconcile-test"), cistore.WithTTL(time.Hour)); err != nil {
+	if _, err := cistore.Open(t.Context(), conn, logging.New("ci-reconcile-test"), cistore.WithTTL(time.Hour)); err != nil {
 		t.Fatalf("make the CI state bucket: %v", err)
 	}
 }
@@ -170,7 +172,5 @@ func startCIReconcileGitHub(t *testing.T) *httptest.Server {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	return server
+	return githubtest.Serve(t, githubtest.Spec{Handle: mux.ServeHTTP})
 }

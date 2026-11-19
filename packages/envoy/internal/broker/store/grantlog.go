@@ -126,6 +126,16 @@ type GrantLogQuery struct {
 // out.
 var ErrGrantLogLimit = errors.New("store: the grant log is read a page at a time: Limit must be positive")
 
+// MaxGrantLogPage is the largest page the grant log is read in: the route holds every larger
+// limit at it (api's grantLogLimit is this constant), and ReadGrantLog sizes its slice for it
+// before it has read a row. The limit itself stays the caller's — it is what the SQL's `limit $4`
+// holds the read to, so what a query answers is what it always answered — and only the
+// allocation is capped, because Limit arrives unchecked and a caller asking for a billion rows
+// of a period holding five would otherwise have the store reserve a billion GrantLogEvents. So
+// every page a caller can really ask for is allocated once and grows no further; a limit above
+// this one reads its rows through append, which is the cheaper of the two mistakes.
+const MaxGrantLogPage = 1000
+
 // readGrantLog is the one SQL read behind the grant log. It is ordered by id and filtered on at
 // because the audit table's only index besides its primary key is audit_request (request_id):
 // there is no index on at, and this change may not add one. Ordered by id with `id > after`
@@ -183,8 +193,8 @@ func ReadGrantLog(ctx context.Context, pool *pgxpool.Pool, q GrantLogQuery) ([]G
 		return nil, err
 	}
 	defer rows.Close()
-	// The page is as big as the limit allows, so a full page is read into one allocation.
-	events := make([]GrantLogEvent, 0, q.Limit)
+	// A page the SQL's limit allows is read into one allocation, up to the cap above.
+	events := make([]GrantLogEvent, 0, min(q.Limit, MaxGrantLogPage))
 	for rows.Next() {
 		var ev GrantLogEvent
 		var secrets, raw []byte
@@ -208,10 +218,10 @@ func ReadGrantLog(ctx context.Context, pool *pgxpool.Pool, q GrantLogQuery) ([]G
 }
 
 // GrantLogMessage opens the one line the broker logs, at INFO, for each request decision and each
-// grant end (LogGrantEvent). The deployment's log pipeline collects it and keeps it, so that the
-// decisions of a period can be read without the database, and so it does not change — as
-// policy.RefusedMessage and requests.MintFailedMessage do not, for the alarms that filter on
-// them.
+// grant end (LogGrantEvent). A deployment's log pipeline can collect it and keep it, so that the
+// decisions of a period can be read without the database, and so its text changes only with the
+// operate guide that documents it, as policy.RefusedMessage's and requests.MintFailedMessage's
+// do: a reader of the broker's log filters on each.
 const GrantLogMessage = "broker: grant log"
 
 // LogGrantEvent writes ev as the broker's one grant-log line: the event's own fields, each as its
@@ -221,8 +231,10 @@ const GrantLogMessage = "broker: grant log"
 // constructions against each other.
 //
 // The line holds no secret value and no token: a GrantLogEvent holds none, because every field it
-// carries is a name, a login, an id, a state or a decision, and Raw is an audit row's detail,
-// which the broker writes with no value in it.
+// carries is a name, a login, an id, a state or a decision, and Raw is the detail of a decision,
+// a judge's verdict or a grant's end, which the broker writes with no value in it. A grant.used
+// row, which writes no such line, is the one row whose detail holds a session's own words, its
+// command and its call's reason, which ReadGrantLog answers as stored.
 //
 // A line is lost if the process dies between the transaction's commit and this call. That is the
 // right way round: the audit row is the record the review reads, and the line is the copy the log

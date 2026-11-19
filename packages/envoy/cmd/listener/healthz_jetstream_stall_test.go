@@ -159,12 +159,12 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 			t.Cleanup(client.Close)
 			const consumer = "listener-healthz-jetstream-stall"
 			bindBoundDurable(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
-			registry, err := store.Open(client.Conn, store.WithReplicas(1))
+			registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 			if err != nil {
 				t.Fatalf("open the interest registry: %v", err)
 			}
 			t.Cleanup(registry.StopWatch)
-			sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+			sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 			if err != nil {
 				t.Fatalf("open the session registry: %v", err)
 			}
@@ -177,12 +177,12 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 			if err := sessions.WaitForCacheReady(ready); err != nil {
 				t.Fatalf("wait for the session cache: %v", err)
 			}
-			var deps atomic.Pointer[listenerDeps]
-			deps.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
+			var state atomic.Pointer[listenerDeps]
+			state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
 			get := func() (int, map[string]any, time.Duration) {
 				recorder := httptest.NewRecorder()
 				started := time.Now()
-				healthzHandler(&deps).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+				healthzHandler(&state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 				elapsed := time.Since(started)
 				var body map[string]any
 				_ = json.Unmarshal(recorder.Body.Bytes(), &body)

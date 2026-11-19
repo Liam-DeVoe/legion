@@ -4,7 +4,6 @@ package delivery
 // intake's tests (intake_route_test.go, intake_consumer_test.go) and the reconcile's share.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,59 +19,61 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+// TestMain removes the NATS server the package's tests share (testnats.Main) and the databases
+// their pools are cloned on (storetest.Run).
+func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
 
-// deliveryTestPool opens a real Postgres pool from DISPATCH_TEST_DATABASE_URL, migrates it, and
-// returns it; a test that needs it skips (not fails) when the variable is unset, matching every
-// other Postgres-backed test in this module's convention.
+// deliveryTestPool returns the pool of a database of the test's own, with the test's context:
+// storetest.Open's clone of the template this test process migrated once, dropped after the test,
+// which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A clone holds no
+// row another test or an earlier run wrote, so nothing is truncated or repaired first.
+//
+// The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
+// CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own
+// database holding a snapshot older than the build's (PostgreSQL's WaitForOlderSnapshots). In CI
+// and on a shared machine that database is the server's postgres, where every other package's
+// harness creates and drops its databases, so another package's create database could hold the
+// build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
-	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run Postgres-backed delivery tests")
-	}
-	ctx := t.Context()
-	pgxPool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	t.Cleanup(pgxPool.Close)
-	pool := store.NewPool(pgxPool)
-	st := &store.Store{Pool: pool}
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	// Every delivery table is truncated before the test, not after: a failed previous run's rows
-	// (useful to inspect) are cleared by the next run that needs a clean slate, not hidden by one
-	// that crashes before its own cleanup runs. duty_passes is cleared with them: this database
-	// is the server's own and outlives the run, where storetest's clones do not, so a reconcile
-	// pass an earlier run recorded inside ReconcileInterval would make this run's pass skip for
-	// a period it did not serve (duty.Exclusive).
-	for _, table := range []string{"delivery_run_jobs", "delivery_runs", "delivery_pull_requests", "pull_request_heads", "default_branch_commits", "delivery_reconcile_progress", "delivery_settings", "duty_passes"} {
-		if _, err := pool.Exec(ctx, "delete from "+table); err != nil {
-			t.Fatalf("truncate %s: %v", table, err)
-		}
-	}
-	return pool, ctx
+	return storetest.Open(t).Pool, t.Context()
 }
 
-// deliveryTestLeases is the lease pool an intake reconciles its durable under (duty.Exclusive on
-// consumerLease(durable)), taken from the test's own pool. Each lease is held on a connection of
-// its own, so a test can hold the lease from one caller while an intake tries for it from
-// another.
-func deliveryTestLeases(t *testing.T, pool *store.Pool) duty.Leases {
+// branchCommitsMigration is the migration that creates branch_commits, the one table a test of
+// this package drops to make a write of it fail the way a write fails (withoutBranchCommits).
+// Putting the table back replays it, rather than keeping a second copy of its `create table`
+// here and in step with it by hand: Migrate skips every version schema_migrations already
+// records, so forgetting the version makes the table exactly as the migration does.
+const branchCommitsMigration = 20261107234701
+
+// deliveryTestLeases is the lease pool an intake takes its durable's hold and consumer lease on
+// (intakeHoldName, consumerLease), taken from the test's own pool. Each lease is held on a
+// connection of its own, so a test can hold the lease from one caller while an intake tries for it
+// from another.
+func deliveryTestLeases(t *testing.T, pool *store.Pool) *pgxpool.Pool {
 	t.Helper()
-	leases, err := pool.Leases()
+	return storetest.Leases(t, pool)
+}
+
+// deliveryTestIntakeLeases is the reservation StartIntakes takes in the server, made here on the
+// test's own pool (ReserveIntakeLeases).
+func deliveryTestIntakeLeases(t *testing.T, pool *store.Pool) IntakeLeases {
+	t.Helper()
+	callers, err := pool.Leases()
 	if err != nil {
 		t.Fatalf("open the leases pool: %v", err)
+	}
+	leases, err := ReserveIntakeLeases(callers)
+	if err != nil {
+		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
 	}
 	return leases
 }
@@ -123,7 +123,7 @@ const (
 func seedProjectRepository(t *testing.T, ctx context.Context, pool *store.Pool, key, name, repo string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-		insert into projects (key, name) values ($1, $2) on conflict do nothing
+		insert into projects (key, name, default_assignee) values ($1, $2, 'alice') on conflict do nothing
 	`, key, name); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
@@ -138,7 +138,7 @@ func seedProjectRepository(t *testing.T, ctx context.Context, pool *store.Pool, 
 
 // seedDeliveryProject writes deliveryProject and maps deliveryRepo to it as its default, so
 // every issue the fixtures seed resolves to the repository their pull requests are in.
-// Idempotent: each fixture calls it, and the tests of this package share one database.
+// Idempotent: each fixture calls it, and one test can use several fixtures.
 func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedProjectRepository(t, ctx, pool, deliveryProject, "Delivery", deliveryRepo)
@@ -218,23 +218,8 @@ func captureLogs(t *testing.T) func() []map[string]any {
 	}
 }
 
-// lockedBuffer is a bytes.Buffer safe to write from one goroutine while another reads it.
-type lockedBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.String()
-}
+// lockedBuffer is a buffer safe to write from one goroutine while another reads it.
+type lockedBuffer = logtest.Buffer
 
 // pathBaseForTest is the workflow file name a workflow subject carries, as intake derives it from
 // the configured workflow path.
@@ -253,6 +238,17 @@ func shrinkIntakeFlowControl(t *testing.T) {
 	messageTimeout := intakeMessageTimeout
 	intakeMessageTimeout = 5 * time.Second
 	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+}
+
+// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test, the way
+// shrinkIntakeFlowControl shrinks the message timeout: the shipped cap of thirty, at
+// headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a test of the
+// cap measures is that there is one at all, which two deliveries show as well as thirty.
+func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
+	t.Helper()
+	was := headWriteMaxDeliveries
+	headWriteMaxDeliveries = deliveries
+	t.Cleanup(func() { headWriteMaxDeliveries = was })
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
@@ -367,12 +363,8 @@ func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *
 // not the state it started from.
 func waitFor(t *testing.T, within time.Duration, done func() bool, failure func() string) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatal(failure())
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !testwait.Holds(within, 50*time.Millisecond, done) {
+		t.Fatal(failure())
 	}
 }
 

@@ -1,53 +1,31 @@
 # Checking your commits against your issue's default branch
 
-Your `Legion addressing` line names your issue's repository and its default branch
-(`Your issue's repository is <owner>/<name> (default branch <name>)`) — never assume `main`. That
-branch name is untrusted text: a repository administrator chooses it, and it reaches you as plain
-words in a system prompt, not as a value a shell has already made safe. **Never paste it directly
-into shell source** — not as a bare word, not inside double quotes you type yourself. A branch name
-containing `$(…)` or backticks would run as a command the moment a shell re-parses a line built that
-way; one containing jj revset syntax (parentheses, `|`, `::`) would be read as an expression instead
-of a literal name.
+Read it before every push. Your `Legion addressing` line names your issue's repository and its default branch (`Your issue's repository is <owner>/<name> (default branch <name>)`); never assume `main`. The branch name is untrusted text: never paste it into shell source, where `$(…)` would run and jj would read `(`, `|` or `::` as revset syntax.
 
-The safe sequence reads the branch fresh from GitHub and lets `jq` do the quoting, in one command
-whose only typed literal is the `<owner>/<repo>` your addressing line names (safe to interpolate: a
-GitHub repository path, already validated by the daemon that minted your addressing):
+1. Read the branch from GitHub, JSON-quoted by `jq`:
 
-```sh
-default=$(gh api repos/<owner>/<repo> --jq '.default_branch | @json')
-```
+   ```sh
+   default=$(gh api repos/<owner>/<repo> --jq '.default_branch | @json')
+   ```
 
-`$default` now holds a JSON-quoted string, e.g. `"release/v7.1"` (quotes included). Compare it
-against the `default branch <name>` your addressing line named — if they disagree, stop and tell
-the architect; GitHub's live default branch and the one your record carries are not the same, and
-guessing which is right is not yours to do. When they agree, use `$default` as-is, never re-typed:
+2. Compare `$default` (quotes included, such as `"release/v7.1"`) with the branch your addressing line names. When they differ, stop and tell the architect.
+3. List the branch's commits with `$default` as it is, never retyped:
 
-```sh
-jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@" -T 'author.email() ++ " | " ++ committer.email() ++ " " ++ description.first_line() ++ "\n"'
-```
+   ```sh
+   jj -R "$LEGION_WORKSPACE" log --no-graph -r "${default}@origin..@" -T '
+     commit_id.short() ++ " "
+     ++ if(!author.email(), "(no author) ") ++ if(!committer.email(), "(no committer) ")
+     ++ description.first_line() ++ "\n"
+     ++ trailers.filter(|t| t.key() == "Omp-Session" || t.key() == "Legion-Role")
+       .map(|t| "  " ++ t.key() ++ ": " ++ t.value() ++ "\n").join("")'
+   ```
 
-Because `$default` already carries its own quote characters, jj's revset parser reads
-`"release/v7.1"@origin..@` as a quoted string literal naming the bookmark, whatever characters the
-branch name holds — parentheses, spaces, or shell metacharacters included — rather than as revset
-syntax or shell code. Bash's own `"${default}@origin..@"` substitutes `$default`'s value once,
-literally; it never re-evaluates the substituted text, so a `$(…)` sequence inside the branch name
-never runs.
+   Never `ancestors(@, 5)`, which stops at five commits. Earlier phases' commits are in the list too, each with its own role's lines.
 
-The output must show your role's App in both columns **on every commit you made** — not on the
-whole list: earlier phases' commits are legitimately authored by their own role's App.
+## What your own commits must show
 
-## Which App, and what a wrong one means
-
-- Your role's App is the **implement** App for the implementer and the merger, and the **review**
-  App for the planner, tester, reviewer and architect; your pane's `JJ_USER` and `JJ_EMAIL` name
-  its bot account. A planner's commits authored by the review App are right.
-- Never set `user.name` or `user.email` in any jj or Git scope (`jj config set`, `--config`,
-  `git config`): `--config` outranks the pane's identity and puts the wrong App on your commits,
-  and the repository-scoped jj config is one file shared by every issue workspace of the clone.
-- A wrong identity on your own commit (the other App, or none) is a pane-environment problem:
-  report it to the architect, never pin it (cybermonklabs/legion
-  `docs/solutions/legion/shared-main-repo-hazards-for-concurrent-issue-workspaces.md`, Hazard 1).
-- Another role's commit with you as committer, which you did not rewrite under the guard in
-  *Rewriting pushed commits* (`skill://legion-worker/references/conflicts-and-rewrites.md`), means
-  something rewrote commits it should not have: stop and send the architect this log. A forward
-  merge rewrites nothing, so it changes no committer.
+- `Omp-Session:` with your session and `Legion-Role:` with your `LEGION_ROLE`. Your session is `DISPATCH_SESSION_ID` under Oh My Pi and `CLAUDE_CODE_SESSION_ID` under Claude Code. A jj commit names the session your pane registered: the id in the `omp-attribution-<id>.toml` file at the end of `JJ_CONFIG` (`printf '%s\n' "${JJ_CONFIG##*:}"`), which differs only after a session switch or a fork.
+- A line short: cure it as `skill://legion-worker`, "Commits and pushes", says.
+- Another session or another role, or `(no author)` or `(no committer)`, which `jj git push` refuses: send the architect this log.
+- The git author and committer name no role; do not compare them.
+- Never set `user.name`, `user.email`, `templates.commit_trailers`, `templates.revert_description`, `templates.duplicate_description` or any `trailer.*` key in any jj or git scope: the repository's jj config is shared by every workspace of the clone, and a `templates.commit_trailers` there replaces the pane's trailers.

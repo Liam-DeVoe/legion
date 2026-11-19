@@ -41,16 +41,21 @@ const MCPServer = "legion"
 // Argv is the agent command a Legion phase worker's Claude Code runs under: `legion claude-bridge`
 // around `claude -p` in stream-json both ways, re-emitting each user message it takes from stdin
 // (`--replay-user-messages`, which is how the bridge answers an Envoy delivery once Claude Code
-// has taken it), with every permission granted (a headless worker has no one to ask), only the MCP
-// server mcpConfig names (an operator's own servers never load), the claude-envoy plugin and the
-// generated Legion plugin for their skills, agents and the `dispatch` command, and the session —
-// `--session-id` for a fresh one, `--resume` to continue the one ResumeSession read.
+// has taken it), with its thinking summarized rather than withheld
+// (`--thinking-display summarized`, so a worker's thinking reaches the pane and the Agents page
+// as text; the default, `updates`, writes a thinking block with no text in it), with every
+// permission granted (a headless worker has no one to ask), only the MCP server mcpConfig names
+// (an operator's own servers never load), the claude-envoy plugin and the generated Legion
+// plugin for their skills, agents and the `dispatch` command, the session — `--session-id`
+// for a fresh one, `--resume` to continue the one ResumeSession read — and the system prompt,
+// `--append-system-prompt-file` naming the file promptFile the runtime wrote it to.
 //
-// It ends there: `--append-system-prompt` and its value are the caller's, since the runtimes pass
-// the prompt differently. A pane's shell reads the prompt files itself
-// (omplaunch.SystemPromptArgument), where a pod, which cannot see the daemon's disk, carries the
-// text inlined as one argv word.
-func Argv(paths Paths, mcpConfig, session string, resume bool) []string {
+// The prompt rides a file, under either runtime, for the reason an Oh My Pi launch's does
+// (runtime.SystemPromptFile). Claude Code sends the whole file as its appended system prompt and
+// refuses to start on one that is missing ("Append
+// system prompt file not found"), measured on 2.1.310, the worker image's pin
+// (docker/claude-code), and on 2.1.311, `.claude-code-pin`'s.
+func Argv(paths Paths, mcpConfig, session string, resume bool, promptFile string) []string {
 	flag := "--session-id"
 	if resume {
 		flag = "--resume"
@@ -59,11 +64,13 @@ func Argv(paths Paths, mcpConfig, session string, resume bool) []string {
 		paths.Legion, "claude-bridge", "--", paths.Claude,
 		"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--replay-user-messages",
+		"--thinking-display", "summarized",
 		"--permission-mode", "bypassPermissions",
 		"--strict-mcp-config", "--mcp-config", mcpConfig,
 		"--plugin-dir", paths.PluginDir,
 		"--plugin-dir", filepath.Join(paths.PluginDir, "legion"),
 		flag, session,
+		"--append-system-prompt-file", promptFile,
 	}
 }
 

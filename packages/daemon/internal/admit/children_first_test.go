@@ -81,7 +81,7 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) []record
 	var blocked []record.BlockedIssue
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		if blocked, err = admission.blocked(context.Background(), tx); err != nil {
+		if _, blocked, _, err = admission.tickRows(context.Background(), tx); err != nil {
 			t.Fatalf("read what is blocked: %v", err)
 		}
 	})
@@ -89,12 +89,13 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) []record
 }
 
 // A5. A root whose gate opens with two Dispatch children in backlog does its own work after
-// theirs: it starts no phase while either is open, it holds no slot while it waits, its
-// architect is told once, admission.blocked names it with both children, and it starts planning
-// at the next free slot once both have left the workflow. The children are released in the
-// architect's design-approved turn, after the gate opened, which is exactly the window the
-// tree's own members cannot answer for — neither child is a member of the tree until it is
-// released.
+// theirs: it starts no phase while either is open, it gives back the row it took at its
+// admission for as long as the wait lasts (INFRA-3036), its architect is told once,
+// admission.blocked names it with both children, and it takes a row again and starts planning
+// once both have left the workflow. The children are
+// released in the architect's design-approved turn, after the gate opened, which is exactly
+// the window the tree's own members cannot answer for — neither child is a member of the tree
+// until it is released.
 func TestARootWaitsForTheChildrenItFiledBeforeItsGateOpened(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
@@ -107,6 +108,9 @@ func TestARootWaitsForTheChildrenItFiledBeforeItsGateOpened(t *testing.T) {
 	if root.Phase != phase.Admitted {
 		t.Fatalf("the root at its gate's opening = %s, want it still at admitted while its children are open", root.Phase)
 	}
+	// An issue the daemon started and that waits on another issue holds none of the cap's
+	// slots: the root gave its row back when the wait began, and stands in the line for one
+	// again (record.LineWaitingOnIssue).
 	assertSlots(t, pool, nil)
 	told := childrenFirstNotices(t, pool, cfRoot)
 	if len(told) != 1 {
@@ -165,6 +169,8 @@ func TestAParentBelowTheRootWaitsForItsOwnChild(t *testing.T) {
 	if got := issue(t, pool, cfFirst); got.Phase != phase.Admitted {
 		t.Fatalf("the released child with an open child of its own = %#v, want it held at admitted", got)
 	}
+	// The root gave its own row back when its wait on the child began (INFRA-3036), and the
+	// child it released holds none either, its first phase having still to start.
 	assertSlots(t, pool, nil)
 	told := childrenFirstNotices(t, pool, cfFirst)
 	if len(told) != 1 || !strings.Contains(told[0].Reason, grandchild+" (backlog)") {
@@ -244,8 +250,8 @@ func TestAChildBlockedByItsOwnParentIsNamedAsACycle(t *testing.T) {
 	}
 }
 
-// A5. A root with no Dispatch children at all takes the next free slot at its gate's opening and
-// starts planning, which is the control for every wait above.
+// A5. A root with no Dispatch children at all starts planning at its gate's opening, on the slot
+// it holds, which is the control for every wait above.
 func TestARootWithNoChildrenStartsPlanningAtItsGatesOpening(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
@@ -344,21 +350,24 @@ func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 
 // A5. The waiting line itself never offers a slot to a parent whose children are open, whatever
 // else is in the line: the rule is read where the line is read, from the pass's own judgement,
-// and never from a stored flag.
+// and never from a stored flag. The parent stands in that line meanwhile, waiting for the row
+// it gave back when its wait began (INFRA-3036, record.LineWaitingOnIssue), which is the same
+// answer in slots: neither candidate holds one.
 func TestTheWaitingLineLeavesOutAParentWhoseChildrenAreOpen(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
 	seedMirrorChild(t, pool, cfFirst, "backlog", cfRoot)
 	// A root of its own that an unfinished Dispatch issue holds stays in the line and is passed
 	// over at promotion, so the line here is never empty for want of candidates: what it must
-	// not hold is the parent.
+	// not be offered a slot is the parent.
 	seedWaiting(t, pool, "LEGION-900", "Z")
 	seedMirror(t, pool, "LEGION-900", "todo", "LEGION-BLOCKER")
 	seedMirror(t, pool, "LEGION-BLOCKER", "in_progress")
 
 	openGate(t, pool, admission, "gate-approved")
 
-	assertWaiting(t, pool, []string{"LEGION-900"})
+	assertWaiting(t, pool, []string{cfRoot, "LEGION-900"})
+	assertSlots(t, pool, nil)
 	inTx(t, pool, func(tx pgx.Tx) {
 		issues, err := record.NewStore().LiveIssues(context.Background(), tx, testProject)
 		if err != nil {

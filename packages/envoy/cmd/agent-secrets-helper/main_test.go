@@ -24,8 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
@@ -113,6 +115,35 @@ func TestConfigDerivesDefaultsAndServeRequiresURL(t *testing.T) {
 	}
 }
 
+// TestHelperConfigWithNoMachineSettingAsksNoMetadataServer: the helper's machine identity is the
+// one AGENT_SECRETS_MACHINE_IDENTITY names and nothing else. `agent-secrets` finds a machine's
+// identity with no setting (brokerclient.DetectMachineIdentity), but the helper does not: with no
+// setting it proves no identity, and a metadata server standing by is never asked.
+func TestHelperConfigWithNoMachineSettingAsksNoMetadataServer(t *testing.T) {
+	var requests atomic.Int64
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Metadata-Flavor", "Google")
+		_, _ = w.Write([]byte("machine@example.iam.gserviceaccount.com"))
+	}))
+	defer metadata.Close()
+	host := strings.TrimPrefix(metadata.URL, "http://")
+	t.Setenv("GCE_METADATA_HOST", host)
+	cfg, err := loadConfig(env(map[string]string{
+		"HOME": t.TempDir(), "XDG_RUNTIME_DIR": t.TempDir(), "AGENT_SECRETS_URL": "https://secrets.internal.example",
+		"GCE_METADATA_HOST": host,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Identity != nil {
+		t.Fatalf("the helper's config proves %s with no AGENT_SECRETS_MACHINE_IDENTITY; want none", cfg.Identity.Describe())
+	}
+	if n := requests.Load(); n != 0 {
+		t.Fatalf("the metadata server saw %d requests; the helper's config asks it nothing", n)
+	}
+}
+
 // TestServeRefusesAMachineFileThatDoesNotParse: a machine file that is there but is not a machine
 // login stops serve before it listens, naming the file, rather than serving with no login.
 func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {
@@ -121,9 +152,9 @@ func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {
 	if err := os.WriteFile(machineFile, []byte("not a login"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{URL: "https://s", Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
-	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), machineFile) {
-		t.Fatalf("serve on an unreadable machine file: %v; want an error naming %s", err, machineFile)
+	cfg := config{URL: brokeraddr.New("https://s"), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
+	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), "AGENT_SECRETS_MACHINE_FILE") || strings.Contains(err.Error(), machineFile) {
+		t.Fatalf("serve on an unreadable machine file: %v; want an error naming AGENT_SECRETS_MACHINE_FILE, not %s", err, machineFile)
 	}
 	if _, err := os.Stat(cfg.Socket); err == nil {
 		t.Fatal("serve listened despite the unreadable machine file")
@@ -135,7 +166,7 @@ func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {
 // OperatorFile does not stop it from listening and answering `sessions` either.
 func TestServeStartsWithoutCredentialAndAnswersSessions(t *testing.T) {
 	dir := shortTempDir(t)
-	cfg := config{URL: "https://s", Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: dir + "/machine.json", StatePath: dir + "/s.json"}
+	cfg := config{URL: brokeraddr.New("https://s"), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: dir + "/machine.json", StatePath: dir + "/s.json"}
 	done := make(chan error, 1)
 	go func() { done <- serve(cfg) }()
 	t.Cleanup(func() {
@@ -221,10 +252,7 @@ func registerChild(t *testing.T, sock string) {
 // unit's journal then says only that it ended, so the helper's last line names the signal, how
 // many sessions it had and that it held a launcher credential.
 func TestServeNamesTheSignalItStopsOn(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "agent-secrets-helper")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	binary := cmdtest.Build(t, "agent-secrets-helper")
 	for _, tc := range []struct {
 		sig  syscall.Signal
 		name string
@@ -314,10 +342,7 @@ func TestServeNamesTheSignalItStopsOn(t *testing.T) {
 // TestServeLogsTheBrokerWithoutACredential: a user name and password AGENT_SECRETS_URL carries
 // never reach the helper's journal; its listening line names the broker with both masked.
 func TestServeLogsTheBrokerWithoutACredential(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "agent-secrets-helper")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	binary := cmdtest.Build(t, "agent-secrets-helper")
 	dir := shortTempDir(t)
 	stderr, err := os.Create(filepath.Join(dir, "stderr"))
 	if err != nil {
@@ -362,10 +387,7 @@ func TestServeLogsTheBrokerWithoutACredential(t *testing.T) {
 // redact.URL will not print, it names the URL as redact.NotPrinted and the failure's class
 // alone; for a clean one, it reads as net/http wrote it.
 func TestALoginTheBrokerNeverAnswersNamesNoCredential(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "agent-secrets-helper")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	binary := cmdtest.Build(t, "agent-secrets-helper")
 	for _, row := range []struct{ base, want string }{
 		{"http://127.0.0.1:1", `"http://127.0.0.1:1/v1/oauth/device_authorization": dial tcp 127.0.0.1:1: connect: connection refused`},
 		{"http://tokuser9f3:hunter2pw@127.0.0.1:1", `"` + redact.NotPrinted + `": connection refused`},
@@ -496,7 +518,7 @@ func TestASecondServeNeverSpendsTheRefreshToken(t *testing.T) {
 	if err := kept.Save(machineFile); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{URL: srv.URL, Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
+	cfg := config{URL: brokeraddr.New(srv.URL), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
 	first, err := claimSocket(cfg.Socket)
 	if err != nil {
 		t.Fatal(err)
@@ -512,7 +534,8 @@ func TestASecondServeNeverSpendsTheRefreshToken(t *testing.T) {
 
 // TestASecondServeOnTheSameMachineFileNeverSpendsItsRefreshToken: while one helper holds the
 // machine file's claim, a serve on another socket but the same machine file exits with an error
-// naming the file and never reaches the broker, so it never spends the login's refresh token.
+// naming the file by its setting and never reaches the broker, so it never spends the login's
+// refresh token.
 func TestASecondServeOnTheSameMachineFileNeverSpendsItsRefreshToken(t *testing.T) {
 	dir := t.TempDir()
 	var calls atomic.Int64
@@ -535,9 +558,9 @@ func TestASecondServeOnTheSameMachineFileNeverSpendsItsRefreshToken(t *testing.T
 		t.Fatal(err)
 	}
 	defer first.Close()
-	cfg := config{URL: srv.URL, Socket: dir + "/other.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
-	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), machineFile) {
-		t.Fatalf("a serve on a claimed machine file: %v; want an error naming %s", err, machineFile)
+	cfg := config{URL: brokeraddr.New(srv.URL), Socket: dir + "/other.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
+	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), "AGENT_SECRETS_MACHINE_FILE") || strings.Contains(err.Error(), machineFile) {
+		t.Fatalf("a serve on a claimed machine file: %v; want an error naming AGENT_SECRETS_MACHINE_FILE, not %s", err, machineFile)
 	}
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("the second serve made %d broker calls; want none", n)
@@ -613,7 +636,8 @@ func TestAnIdentityHelperKeepsItsKeyAcrossARestart(t *testing.T) {
 
 // TestAnIdentityHelperRefusesAKeyOthersCanRead: the key this machine's launcher credential is
 // bound to is the whole of its authority over its sessions, so a file others may read stops the
-// start naming the file and the fix, as the machine login's own file does.
+// start naming the file (where it lives under HOME, never its path) and the fix, as the machine
+// login's own file does.
 func TestAnIdentityHelperRefusesAKeyOthersCanRead(t *testing.T) {
 	home := t.TempDir()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -625,7 +649,7 @@ func TestAnIdentityHelperRefusesAKeyOthersCanRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := identityClient(cfg, log)
-	if err == nil || !strings.Contains(err.Error(), cfg.IdentityKeyFile) || !strings.Contains(err.Error(), "chmod 600") {
-		t.Fatalf("a world-readable identity key: %v; want a refusal naming %s and the fix", err, cfg.IdentityKeyFile)
+	if err == nil || !strings.Contains(err.Error(), helper.IdentityKeyNamed) || strings.Contains(err.Error(), cfg.IdentityKeyFile) || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("a world-readable identity key: %v; want a refusal naming %s, not %s, and the fix", err, helper.IdentityKeyNamed, cfg.IdentityKeyFile)
 	}
 }

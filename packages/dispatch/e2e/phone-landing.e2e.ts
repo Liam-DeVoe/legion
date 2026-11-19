@@ -1,15 +1,6 @@
-import {
-  type BrowserContext,
-  expect,
-  type Locator,
-  type Page,
-  type Route,
-  test,
-} from "@playwright/test";
-
 import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";
 import { boxesApart } from "./layout";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, type Locator, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
 
 // The iPhone 13 viewport INFRA-95 measured the landing fault at. At the `phone` layout
@@ -61,6 +52,8 @@ async function openPhonePage(context: BrowserContext): Promise<Page> {
  *  the page put the card is where it is measured. */
 async function settle(card: Locator, label: string): Promise<void> {
   await expect(card, `${label}: the newest card`).toBeVisible({ timeout: 20_000 });
+  // The page function waits in the page until the box holds still or its deadline passes, so
+  // the answer is that wait's own verdict.
   const never = await card.evaluate(
     (element) =>
       new Promise<string | null>((resolve) => {
@@ -91,8 +84,12 @@ async function landing(
   page: Page,
   card: Locator
 ): Promise<{ apart: boolean; inView: boolean; where: string }> {
+  // Every caller settled the card first, visible and still, so its box is there.
   const box = await card.boundingBox();
-  const composer = await page.getByRole("form", { name: "Comment composer" }).boundingBox();
+  const docked = page.getByRole("form", { name: "Comment composer" });
+  await expect(docked).toBeVisible();
+  // The wait above drew the docked composer, and a drawn element has a box, so it is there.
+  const composer = await docked.boundingBox();
   const view = await page.evaluate(() => ({
     height: window.innerHeight,
     scrollY: window.scrollY,
@@ -116,10 +113,6 @@ async function expectNewestInView(page: Page, card: Locator, label: string): Pro
   expect(inView, `${label}: the newest card is not wholly in the viewport: ${where}`).toBe(true);
   expect(apart, `${label}: the newest card shares a point with the composer: ${where}`).toBe(true);
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The three reads the Conversation's list is built from. */
 const READS = ["asks", "comments", "messages"] as const;
@@ -195,7 +188,8 @@ async function openWithReadLast(
 // SLOW(>=2s): three opens, each a fresh page because only a page with no history entry is a
 // first open (`history.length` 1 above), each holding the 300 ms margin the partial-data state
 // has no in-page signal for, plus the top-of-page control the fixture needs to stay honest.
-test("on a phone, the Conversation opens with its newest message in view whichever read answers last @phone", async ({
+// @pr: The phone Conversation's first paint: it opens on the newest message whichever of its reads answers last.
+test("on a phone, the Conversation opens with its newest message in view whichever read answers last @phone @pr", async ({
   browser,
 }) => {
   const { issue, newest } = await seedConversation("Landing on the newest message");

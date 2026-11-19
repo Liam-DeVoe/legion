@@ -1,22 +1,25 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { operatorNatsSeed } from "./operator-nats-seed";
 
-const dir = mkdtempSync(join(tmpdir(), "operator-nats-seed-test."));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+const dir = temporaryDirectory("operator-nats-seed-test");
 
 const production = "nats://envoy-nats.internal.example:4222";
 const file = join(dir, "envoy.json");
-mkdirSync(join(dir, "cwd"));
 const cwd = join(dir, "cwd");
-writeFileSync(
-  file,
-  JSON.stringify({ envoy: { enabled: true, natsUrls: [production], natsSeed: "SUFILESEED" } })
-);
 const off = join(dir, "off.json");
-writeFileSync(off, JSON.stringify({ envoy: { enabled: false } }));
+const token = join(dir, "token");
+beforeAll(() => {
+  mkdirSync(cwd);
+  writeFileSync(
+    file,
+    JSON.stringify({ envoy: { enabled: true, natsUrls: [production], natsSeed: "SUFILESEED" } })
+  );
+  writeFileSync(off, JSON.stringify({ envoy: { enabled: false } }));
+  writeFileSync(token, "projected.service.account.token\n");
+});
 
 describe("operatorNatsSeed", () => {
   test("the file's seed goes to the servers written beside it", () => {
@@ -49,6 +52,21 @@ describe("operatorNatsSeed", () => {
   test("no seed anywhere is no credential", () => {
     const env = { ENVOY_CONFIG_FILE: join(dir, "absent.json") };
     expect(operatorNatsSeed(production, "x", env, cwd)).toBeUndefined();
+  });
+
+  test("a session's broker token is refused, naming the seed to set", () => {
+    // The auth service grants a session's token that session's own channels, and these scripts
+    // read other subjects and the hub's streams.
+    const env = {
+      ENVOY_CONFIG_FILE: join(dir, "absent.json"),
+      NATS_AUTH: "broker",
+      AGENT_SECRETS_URL: "http://broker.test",
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: token,
+    };
+    expect(() => operatorNatsSeed(production, "SMOKE_UPSTREAM_NATS", env, cwd)).toThrow(
+      "the NATS seed for SMOKE_UPSTREAM_NATS (resolved as ENVOY_NATS_URL): NATS_AUTH (or envoy.natsAuth) names a session's broker token, which a hub grants only that session's own channels; set NATS_NKEY_SEED_FILE for SMOKE_UPSTREAM_NATS"
+    );
   });
 
   test("a file that turns Envoy off is refused, saying so", () => {

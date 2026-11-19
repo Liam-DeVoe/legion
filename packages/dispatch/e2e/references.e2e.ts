@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import {
@@ -17,15 +15,11 @@ import {
 import { documentEditor } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
-import { signIn } from "./users";
+import { settledState } from "./settled";
+import { expect, test } from "./test";
 
-test.beforeEach(async ({ context }) => {
-  await resetDatabase();
-  await signIn(context, "alice");
-});
-
-test("an issue and its ask show a cross-project message and structural backlinks", async ({
+// @pr: The backlink surface's own row: a cross-project message and the structural backlinks an issue and its ask carry.
+test("an issue and its ask show a cross-project message and structural backlinks @pr", async ({
   page,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -239,12 +233,12 @@ test("an answered decision keeps its backlink control and still moves with a lat
   );
   const live = { timeout: 30_000 };
   const decision = await expect
-    .poll(async () => (await getIssue(target.key)).open_asks.at(0)?.id, {
+    .poll(async () => ((await getIssue(target.key)).open_asks ?? []).at(0)?.id, {
       ...live,
       intervals: [50, 50, 100, 200, 500],
     })
     .not.toBeUndefined()
-    .then(async () => (await getIssue(target.key)).open_asks[0]);
+    .then(async () => ((await getIssue(target.key)).open_asks ?? [])[0]);
 
   const source = await createIssue({ project: "OPS", title: "Citing source" });
   await createMessage(source.key, {
@@ -262,10 +256,17 @@ test("an answered decision keeps its backlink control and still moves with a lat
   await expect(card.getByRole("button", { name: /^Referenced by \(1\)$/ })).toBeVisible(live);
 
   const note = card.getByRole("button", { name: "Add a note or answer in your own words" });
-  if ((await note.count()) > 0) {
+  const answer = card.getByLabel("Your answer");
+  // A compact card folds its answer box behind that disclosure, so the row opens it only where
+  // the card drew it folded. The box is read first, since the disclosure stays once it is open.
+  const answerBox = await settledState("the decision's answer box", [
+    ["shown", answer],
+    ["folded", note],
+  ]);
+  if (answerBox === "folded") {
     await note.click();
   }
-  await card.getByLabel("Your answer").fill("Ship it.");
+  await answer.fill("Ship it.");
   await card.getByRole("button", { exact: true, name: "Answer" }).click();
   await expect(card).toContainText("Ship it.", live);
   // The answer response is the one ask shape that carries no count: the control the reader was

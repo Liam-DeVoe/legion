@@ -9,7 +9,7 @@
 # the controls' pods) use the admin context. It is the production-EKS driver LEGION-206
 # Requirement 12 asks for.
 #
-# Four roots run under admission_cap 4, a cap of issues at work rather than of trees
+# Four roots run under admission_cap 4, a cap of the issues the daemon has started rather than of trees
 # (dispatch://INFRA-980). Tree 1 runs the whole workflow with real agents to `done`, through one
 # changes-requested review round whose thread the reviewer opens, lingers, and closes; while its
 # planner holds, the driver files two children under it, each in an issue pod and on a volume of
@@ -36,14 +36,14 @@
 # whose children entered the tree after its root was accepted): no merge closes a root while a child
 # of its tree is still in the workflow any more, and no issue enters a tree beneath an ancestor
 # already accepted, so a root that merges with work of its tree still running is a state no tree
-# started on this release reaches at all. A root in `awaiting_merge` waiting for the rest of its
-# tree keeps its cover in the daemon's live proof, which seeds the shape a migration leaves
-# (scripts/e2e/merged-root-waits.sh). The one close that would still make it here — a person's own,
+# started on this release reaches at all. A root in `merging` waiting for the rest of its tree
+# keeps its cover in the daemon's own tests of that close (internal/workflow/merged_chain_close_test.go
+# and merged_child_close_test.go), which seed the shape a migration leaves. The one close that would still make it here — a person's own,
 # in the Dispatch dashboard — is not one this driver can make, since every write it sends
 # production Dispatch names a session as its author (lib/workflow.sh), the daemon sets a live
 # root's status back when the session writing it holds no claim in the tree, and the operator's
-# `legion status` writes only todo, backlog or icebox, none of them the done a hand-over needs.
-# A finished root's hand-over of a child keeps its cover in the daemon's own tests
+# `legion issue status` writes only todo, backlog or icebox, none of them the done a hand-over
+# needs. A finished root's hand-over of a child keeps its cover in the daemon's own tests
 # (packages/daemon/internal/admit/finished_root_test.go).
 # Between the operator's controller and tree 4, the daemon runs under `controller: daemon` and back
 # (daemon-controller-liveness). Each checkpoint prints `== <name>`, what it observed with the source
@@ -80,13 +80,29 @@
 #   session's Dispatch configuration resolves (DISPATCH_TOKEN_FILE, DISPATCH_TOKEN, or envoy.json's
 #   dispatch.token). Dispatch answers it as an agent session actor, which its HTTP routes and the
 #   document websocket require.
+# - LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE (required, no default) is the email of a person who has
+#   signed in to production Dispatch: the default assignee the run's project names when
+#   prerequisites creates it (ensure_project, lib/workflow.sh). Every project names the person its
+#   unowned work lands on, and that bearer acts for nobody, so Dispatch refuses its create naming
+#   none (400 INVALID_PROJECT) or naming somebody who never signed in (400 ASSIGNEE_NOT_ALLOWED),
+#   for a project that already exists too. The repository carries no person's email, and every
+#   refusal names the variable, never its value: the check before the call, and Dispatch's own
+#   answer, which names the email as the operator spelled it and which scrub (below) prints with
+#   the variable's name in its place.
 # - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
 #   listener's API token. The repository carries neither credential.
-# - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET, LEGION_E2E_REVIEW_APP_ID and
-#   LEGION_E2E_REVIEW_APP_SECRET name another deployment's two role Apps: each App's numeric id
-#   and the secrets broker github-app secret the `agent-secrets` client releases its installation
-#   tokens from (lib/github-apps.sh). Each defaults to this deployment's own, so a run here sets
-#   none. prerequisites proves each App from its token against GitHub (GraphQL's viewer, then
+# - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name
+#   another deployment's two role Apps: each App's numeric id, and the name of the secrets broker
+#   github-app secret the `agent-secrets` client releases the implement App's installation tokens
+#   from (lib/github-apps.sh). Each defaults to this deployment's own, so a run here sets none.
+# - LEGION_E2E_REVIEW_APP_KEY_COMMAND (required, no default) is shell text that prints the review
+#   App's PEM private key on stdout. prerequisites runs it once, here on the driver, in the
+#   operator's own environment — so it may read their HOME and their own gcloud or kubectl
+#   configuration — into $work/app-key/review/key.pem, 0600 in a directory of mode 0700, which
+#   cleanup removes on every exit. The daemon never runs it: that App's private_key_command is a
+#   `cat` of that file, and the daemon mints and renews that App's tokens from the key it reads
+#   there. The repository carries neither the key nor the command, and the run prints neither.
+#   prerequisites proves both Apps from their tokens against GitHub (GraphQL's viewer, then
 #   GET /apps/<slug>) before the run's first write anywhere; the daemon's github_apps is the block
 #   proved.
 # - LEGION_E2E_PROJECT (default LEGSMOKE, a Dispatch project key: [A-Z][A-Z0-9]{1,9}, exactly
@@ -109,7 +125,8 @@
 #   the deployment repository's infrastructure, not this one. LEGION_E2E_PROJECT need not already
 #   exist as a Dispatch project: prerequisites creates it before the lock when it is missing
 #   (ensure_project, lib/workflow.sh), a proof-human write like every other, over the agents'
-#   bearer and naming the proof human's session as its actor.
+#   bearer, naming the proof human's session as its actor and LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE
+#   as its default assignee.
 # - LEGION_E2E_POD_FILE, in a development run stopped at `deployment-pod-block` only, names a JSON
 #   file holding a deployment's own worker pod block (`runtime.kubernetes.pod`: service_account,
 #   env, volumes, volume_mounts), which the run's legion.yaml carries in place of the operator
@@ -164,6 +181,7 @@ runtime_kubeconfig=${LEGION_E2E_RUNTIME_KUBECONFIG:-$HOME/.kube/legion-daemon-pr
 runtime_context=${LEGION_E2E_RUNTIME_CONTEXT:-}
 image=${LEGION_E2E_IMAGE:-}
 dispatch_token_file=${LEGION_E2E_DISPATCH_TOKEN_FILE:-}
+dispatch_default_assignee=${LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE:-}
 envoy_token_secret_id=${LEGION_E2E_ENVOY_TOKEN_SECRET_ID:-}
 until=${STAGE4B_UNTIL:-}
 skip_controller=${STAGE4B_SKIP_CONTROLLER:-}
@@ -185,7 +203,7 @@ repo=sjawhar/legion-smoke
 dispatch_base=${LEGION_E2E_DISPATCH_URL:-}
 # The proof human writes with the agents' bearer, so it names a session of its own: one that holds
 # no claim, whose status write on a live root the daemon therefore sets back, as it does any outside
-# session's. The run takes a tree out with `legion status` (take_out), the daemon's own write.
+# session's. The run takes a tree out with `legion issue status` (take_out), the daemon's own write.
 dispatch_actor=legion-e2e4b-proof-human-$$
 envoy_url=${LEGION_E2E_ENVOY_URL:-}
 nats_url=${LEGION_E2E_NATS_URL:-}
@@ -233,22 +251,33 @@ session_dsn_key=SESSION_DSN
 # under it.
 pod_sessions_dir=/home/legion/.omp/profiles/legion/agent/sessions
 stream=ENVOY_NOTIFICATIONS
-# The issues the run's daemon runs at once. Since dispatch://INFRA-980 a slot is one issue with
-# work, a root or a child, so tree 1's children count against this cap as its root does. Four is
-# the run's own peak: tree 1's root and its two children beside tree 2's root
-# (issue-independence), which is where the cap stands full and tree 3, set todo there, waits for
-# it. Trees 3 and 4 each take a slot the issues before them leave.
+# The issues the run's daemon runs at once. Since dispatch://INFRA-980 a slot is one issue the
+# daemon has started, a root or a child, so tree 1's children count against this cap as its root
+# does, and an issue holds one as "Admission and the `legion` label" in
+# docs/site/src/content/docs/legion/concepts.md says: since
+# dispatch://INFRA-2560 an issue in accepting, retro or merging holds none. Four is
+# the run's own peak under that rule, reached once, at issue-independence: tree 1's root and its
+# two children beside tree 2's root, which is where the cap stands full and tree 3, set todo
+# there, waits for it. The later gathering is three and not four: at children-first-acceptance
+# tree 1's root stands in accepting and holds no slot, so tree 3 and children 3 and 4 are the
+# whole of it — tree 2 has left the workflow by then (issue-cap-moves) and child 2 is parked again
+# (child-reentered). Trees 3 and 4 each take a slot the issues before them leave: tree 3 the one
+# child 1's close and child 2's park free, tree 4 the one tree 3's own backlog frees at
+# controller-walk.
 admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
-# each in an issue pod of its own under tree 1's architect and each holding a slot of its own.
-# Children 3 and 4, filed at children-first-acceptance, run while the root stands in accepting,
-# holding no slot of its own, and are parked there, so they raise no peak either.
+# each in an issue pod of its own with an architect of its own, which its first phase start starts,
+# and each holding a slot of its own. Children 3 and 4, filed at children-first-acceptance, run
+# while the root stands in accepting holding no slot at all, and are parked there; with tree 2 gone
+# and child 2 parked they raise no peak either.
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
-# at work runs in one pod of its own, and a root that holds no slot while its tree works keeps
-# its own pod (tree 1 in accepting at children-first-acceptance, beside tree 3 and those two
-# children). The run launches no controller pod: its controller starts from the operator shell
-# (controller). preflight refuses, BLOCKED, a pool with room for fewer.
+# the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
+# root in a phase past its review holds none and keeps its pod. Four pods stand at each
+# gathering: the four slot holders of issue-independence, and, at children-first-acceptance, tree
+# 1 with its pod and no slot beside tree 3 and children 3 and 4, which is four pods against three
+# slots. The run launches no controller pod: its controller starts from
+# the operator shell (controller). preflight refuses, BLOCKED, a pool with room for fewer.
 run_pods_at_once=$admission_cap
 # The run's reservations: the cpu and memory every container of an issue pod carries as both its
 # request and its limit, and the ephemeral storage it carries as a limit over a smaller request
@@ -260,7 +289,7 @@ run_pods_at_once=$admission_cap
 # defaults — while staying within the defaults' 3 CPU and 19 GiB. The controller's default is data
 # for the checks alone: the file names the controller only while controller_cpu is set
 # (daemon-controller-liveness, under `controller: daemon`), and the image probe pod carries its own
-# fixed 250m / 1Gi (internal/daemon/kubernetes.go probeReservation), never the controller's — so
+# fixed 500m / 1Gi (internal/daemon/kubernetes.go probeReservation), never the controller's — so
 # that checkpoint's restart with the controller at 100000 CPU still places its probe pod.
 declare -A default_issue=([cpu]=3 [memory]=19Gi [ephemeral_storage]=80Gi [ephemeral_storage_request]=6Gi)
 declare -A default_controller=([cpu]=1 [memory]=4Gi [ephemeral_storage]=10Gi [ephemeral_storage_request]=1Gi)
@@ -715,16 +744,6 @@ pod_commands() {
 # could not be read is neither running nor stopped: the read fails, as the caller's wait expects.
 pod_runs() { local out; out=$(pod_commands "$1" "$2") || return 1; grep -qF -- "$3" <<<"$out"; }
 pod_file() { pod_exec "$1" "$2" test -s "$3"; }
-# ci_red_task_taken ISSUE: the daemon's own record that the implementer the CI red started took
-# its task — its claim is working on a delivery of the implementing phase whose turn the daemon
-# has seen start (confirmedAt). It is the start acting, read from the state rather than from the
-# agent's session, and the one fact ci-red-no-takeover times the tester's reads against: a start
-# that waited for the outgoing worker's turn, as the deleted takeover did, would not reach it
-# while the tester's own turn runs.
-ci_red_task_taken() {
-  claim_view "$1" implementer |
-    jq -e '.state == "working" and .pending != null and .pending.phase == "implementing" and (.pending.confirmedAt // "") != ""' >/dev/null
-}
 # aborted_turns_jq selects every aborted turn of a session read as one raw string: an assistant
 # message Oh My Pi ended on an abort, which is what an interrupt of a running turn leaves behind
 # (`stopReason: "aborted"`, with `errorMessage` "Interrupted by user"). no_aborted_turn SESSION
@@ -809,8 +828,8 @@ claims_on_handed_addresses() {
 # bearer, and waits for Dispatch to show it and for the tree's pods to be gone.
 take_out() {
   local issue=$1 out
-  out=$("$work/legion" status "$issue" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" 2>&1) ||
-    fail "legion status $issue backlog from the operator shell: $out"
+  out=$("$work/legion" issue status "$issue" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" 2>&1) ||
+    fail "legion issue status $issue backlog from the operator shell: $out"
   until_true 120 "Dispatch to show $issue in backlog" dispatch_status_is "$issue" backlog
   until_true 600 "$issue's pods to be gone" sh -c \
     "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/tree=$issue' -o name) && [ -z \"\$out\" ]"
@@ -920,44 +939,49 @@ gh_wrapper_env="LEGION_GH_PATH=/usr/local/bin/gh LEGION_GH_OWNERS_DIR=$gh_owners
 pod_viewer() {
   pod_exec "$1" "$2" sh -c "$gh_wrapper_env GH_CONFIG_DIR=${3:-$gh_config_dir} GH_TOKEN= GITHUB_TOKEN= GH_HOST= gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login"
 }
-# assert_gh_files POD CONTAINER WHO LAYOUT fails the check unless CONTAINER's gh bundle in POD holds
-# the repository owner's directory with both gh files, beside nothing but other owners' directories
-# and the kubelet's entries. The bundle is a whole-volume Secret projection (the mount the
-# hour-boundary refresh needs: the kubelet rewrites it in place when the Secret changes, where a
-# subPath mount never sees an update), so beside the owners' directories its root always lists the
-# kubelet's atomic-writer entries, `..data` and a `..<timestamp>` directory. The owner's directory is
-# required, and so is `..data`, which a subPath mount (which never refreshes) would not have; any
-# other `..`-prefixed entry is the kubelet's, and any other entry must be a lowercased GitHub login;
-# anything else at the root is a stranger, named.
+# assert_gh_files POD CONTAINER WHO fails the check unless CONTAINER's gh bundle in POD holds the
+# repository owner's directory with both gh files and nothing else, beside nothing but other
+# owners' directories, the bundle's one pairs file and the kubelet's entries. The bundle is a
+# whole-volume Secret projection (the
+# mount the hour-boundary refresh needs: the kubelet rewrites it in place when the Secret changes,
+# where a subPath mount never sees an update), so beside the owners' directories its root always
+# lists the kubelet's atomic-writer entries, `..data` and a `..<timestamp>` directory. The owner's
+# directory is required, and so is `..data`, which a subPath mount (which never refreshes) would not
+# have; any other `..`-prefixed entry is the kubelet's, and any other entry must be a lowercased
+# GitHub login (ghconfig.IsOwner): a letter or digit, then up to 38 letters, digits, hyphens and
+# underscores, since a managed user's login ends in `_<shortcode>` (`mona-cat_octo`) and its
+# directory is a bundle's like any other. Anything else at the root is a stranger, named: a name
+# with a dot or a slash, one opening with a hyphen or an underscore, or one past 39 characters.
 #
-# LAYOUT says which layout this container holds inside that owner's directory, since the two differ:
-# `repos` for a role of an issue pod, whose directory holds its two gh files and, since INFRA-513
-# narrowed every token, a directory per other repository the project serves under that owner (the
-# bundle's `<owner>/<repo>` entries), each holding those two files alone; `owner-only` for the
-# controller, whose directory holds the two files and nothing else, because `appauth.bundleDirs`
-# makes a `<owner>/<repo>` directory only under the owner whose installation holds the role's own
-# repository and a controller is built with the zero repository, so it reads every repository of
-# every owner through the owner's own directory. The listing an exec can reach is `ls -A`, which
-# lists such a directory as an entry of the owner's like any file, so every entry that is neither gh
-# file is listed in turn: under `owner-only` it is a stranger whatever it is, named; under `repos` it
-# is a repository's directory when its name is one GitHub could have (lowercased, as ghconfig writes
-# it) and its listing holds a gh file, and then the gh file it lacks is a failure naming the listing;
-# anything else — a name no repository has, or a listing with neither gh file, which for a stray file
-# is the path `ls -A` prints back — is a stranger, named.
+# The root's one file is required too, by its name alone: `renames.txt`, the configured renames
+# the bundle carries (ghconfig.PairsFile), which `legion gh` and `legion git-credential` route a
+# request for a moved repository by, and which every bundle this daemon writes holds, empty where
+# the project has no rename that resolves (INFRA-2543). A pod projecting no such file was created
+# by a daemon before it existed, and its wrappers route by owner alone. Only that one name is
+# allowed beside the owners' directories: any other lower-case file at the root is still a
+# stranger, since nothing else of the bundle is a file.
+#
+# One rule judges the owner's own directory, for a role of an issue pod and for the daemon-launched
+# controller alike: it holds `config.yml` and `hosts.yml` and nothing else, because a bundle holds
+# one directory per owner account the App is installed on and no directory for a repository
+# (INFRA-2543 R2). The listing an exec can reach is `ls -A`, which lists a directory among the
+# owner's entries like any file, so every entry that is neither gh file — a `<owner>/<repo>`
+# directory a daemon before that change wrote, or a stray file — fails the check, named beside the
+# whole listing.
 # WHO names the container in the failure. Call it outside a command substitution: fail must end the
 # run.
 assert_gh_files() {
-  local root owned want strangers entry listed layout=$4
-  case $layout in
-    repos | owner-only) ;;
-    *) fail "assert_gh_files for $3 was given layout '$layout', want repos or owner-only" ;;
-  esac
+  local root owned want strangers entry
+  # The bundle's pairs file, ghconfig.PairsFile, whose name is this check's own constant.
+  local pairs_file=renames.txt
   root=$(pod_exec "$1" "$2" sh -c "ls -A $gh_owners_dir") || fail "could not list $3's $gh_owners_dir"
   grep -qxF -- "${gh_config_dir##*/}" <<<"$root" || fail "$3's $gh_owners_dir lacks ${gh_config_dir##*/}; it holds: $(tr '\n' ' ' <<<"$root")"
   grep -qxF -- ..data <<<"$root" ||
     fail "$3's $gh_owners_dir holds no ..data: it is not the whole-volume projection the kubelet refreshes in place; it holds: $(tr '\n' ' ' <<<"$root")"
-  strangers=$(grep -v '^\.\.' <<<"$root" | grep -vxE '[a-z0-9][a-z0-9-]*' || true)
-  [ -z "$strangers" ] || fail "$3's $gh_owners_dir holds an entry that is neither an owner's directory nor the kubelet's: $(tr '\n' ' ' <<<"$strangers")"
+  grep -qxF -- "$pairs_file" <<<"$root" ||
+    fail "$3's $gh_owners_dir holds no $pairs_file: the bundle's configured renames, which legion gh and legion git-credential route a moved repository by; it holds: $(tr '\n' ' ' <<<"$root")"
+  strangers=$(grep -v '^\.\.' <<<"$root" | grep -vxF -- "$pairs_file" | grep -vxE '[a-z0-9][a-z0-9_-]{0,38}' || true)
+  [ -z "$strangers" ] || fail "$3's $gh_owners_dir holds an entry that is neither an owner's directory, the bundle's $pairs_file, nor the kubelet's: $(tr '\n' ' ' <<<"$strangers")"
   owned=$(pod_exec "$1" "$2" sh -c "ls -A $gh_config_dir") || fail "could not list $3's $gh_config_dir"
   for want in config.yml hosts.yml; do
     grep -qxF -- "$want" <<<"$owned" || fail "$3's $gh_config_dir lacks $want; it holds: $(tr '\n' ' ' <<<"$owned")"
@@ -966,19 +990,7 @@ assert_gh_files() {
     case $entry in
       "" | config.yml | hosts.yml) continue ;;
     esac
-    [ "$layout" = repos ] ||
-      fail "$3's $gh_config_dir holds $entry beside its two gh files, but a controller's directory holds no repository directory: it holds: $(tr '\n' ' ' <<<"$owned")"
-    case $entry in
-      . | .. | *[!a-z0-9._-]*) listed= ;;
-      # The exec reads /dev/null, never the listing this loop reads line by line.
-      *) listed=$(pod_exec "$1" "$2" sh -c "ls -A $gh_config_dir/$entry" </dev/null) || listed= ;;
-    esac
-    grep -qxF -e config.yml -e hosts.yml <<<"$listed" ||
-      fail "$3's $gh_config_dir holds an entry that is neither a gh file nor a repository's directory: $entry"
-    for want in config.yml hosts.yml; do
-      grep -qxF -- "$want" <<<"$listed" ||
-        fail "$3's $gh_config_dir/$entry lacks $want; it holds: $(tr '\n' ' ' <<<"$listed")"
-    done
+    fail "$3's $gh_config_dir holds $entry beside its two gh files, which are all an owner's directory holds: a bundle holds one directory per owner account the App is installed on and no directory for a repository; it holds: $(tr '\n' ' ' <<<"$owned")"
   done <<<"$owned"
 }
 # operator_gh DIR args… runs the real gh (real_gh, mise's) with the same three variables pod_viewer
@@ -1374,11 +1386,38 @@ read_bearers() {
   [ -s "$work/dispatch-token" ] || fail "LEGION_E2E_DISPATCH_TOKEN_FILE names $dispatch_token_file, which holds no bearer"
   [ -s "$work/envoy-token" ] || fail "Secrets Manager returned an empty bearer for LEGION_E2E_ENVOY_TOKEN_SECRET_ID"
 }
-# scrub replaces each production service's host with the variable that names it: the run prints
-# none of them, and a tool's error (a refused connection, an unresolved name) may carry one. A host
-# is matched in any case, since address-moved-env-same-pod hands the Envoy host upper-cased.
+# scrub replaces each production service's host with the variable that names it, and the run's
+# default assignee with LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE: the run prints none of them, and a
+# tool's error (a refused connection, an unresolved name) may carry a host, and Dispatch's refusal
+# of the project create (ensure_project, lib/workflow.sh) the email. Each is matched in any case,
+# since address-moved-env-same-pod hands the Envoy host upper-cased. The email is replaced first,
+# so a host inside it cannot split it, and in three spellings, longest first: as Dispatch's
+# refusal writes it, the email Go-quoted (`%q`, `\` and `"` escaped with a backslash) and then
+# JSON-encoded (Go's encoding/json escaping `\` and `"` again, and `&`, `<` and `>` as `\u0026`,
+# `\u003c` and `\u003e`); as JSON-encoded alone; and as the operator wrote it. Each spelling has
+# every character sed's regular expression or the `#` delimiter reads as special escaped, since an
+# email may hold `.`, `#` and others; prerequisites refuses one holding whitespace, so it is one
+# line.
 scrub() {
   local args=() i names=(LEGION_E2E_DISPATCH_URL LEGION_E2E_ENVOY_URL LEGION_E2E_NATS_URL LEGION_E2E_MODEL_GATEWAY_URL) h
+  local person=${dispatch_default_assignee:-} spellings=() text spelling c bs=\\
+  if [ -n "$person" ]; then
+    # The Go-quoted email, then each of the two as JSON writes it inside a string.
+    text=${person//"$bs"/"$bs$bs"}
+    text=${text//'"'/'\"'}
+    for spelling in "$text" "$person"; do
+      spelling=${spelling//"$bs"/"$bs$bs"}
+      spelling=${spelling//'"'/'\"'}
+      spelling=${spelling//'&'/'\u0026'}
+      spelling=${spelling//'<'/'\u003c'}
+      spellings+=("${spelling//'>'/'\u003e'}")
+    done
+    for spelling in "${spellings[@]}" "$person"; do
+      spelling=${spelling//"$bs"/"$bs$bs"}
+      for c in '[' '.' '*' '^' '$' '#'; do spelling=${spelling//"$c"/"\\$c"}; done
+      args+=(-e "s#$spelling#<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>#gI")
+    done
+  fi
   for i in "${!service_hosts[@]}"; do
     h=${service_hosts[$i]%%:*}
     [ -n "$h" ] && args+=(-e "s#${h//./\\.}#<${names[$i]}>#gI")
@@ -1410,7 +1449,7 @@ nats_urls:
   - $nats_url
 dispatch_url: $dispatch_base
 dispatch_token_file: $work/dispatch-token
-# The project names no `production_check`, so the role a merge's check is handed to is the default,
+# The project names no production_check, so the role a merge's check is handed to is the default,
 # the tester: Stage 3's rig writes the word out and proves the setting is read, this one the default.
 projects:
   $project: {}
@@ -1433,6 +1472,10 @@ linger_hours: 0.5
 # fixture tells each look to ask for its next one an hour on, past this bound, so no look of the
 # agent's own comes between the first and the bound's last.
 production_check_hours: 0.25
+# The stalled-tree notice out of the run's reach (596 hours, the loader's maximum): daily-report
+# proves that the daemon's tick is the quiet day's only wake, and at the six-hour default a tree
+# of the run quiet through that window would add a tree-stalled wake to it.
+stalled_tree_notice_hours: 596
 controller_wake_interval_seconds: 60
 instructions: $work/instructions.md
 $(<"$work/github-apps.yaml")
@@ -2128,18 +2171,23 @@ shape_problems() {
       ([$s.initContainers[]? | select(.name == "workspace-init") | .volumeMounts[]? | select(.name == "feed" and .readOnly != true)] | if length > 0 then "workspace-init mounts the feed writable" else empty end),
       # Each role holds its GitHub App tokens in a gh volume of its own (LEGION-631): gh-<role>
       # projects the two gh keys of each owner in that role Secret as <owner>/hosts.yml and
-      # <owner>/config.yml, read-only under the role directory of the roles directory, which only
+      # <owner>/config.yml, and the one renames key of the bundle as renames.txt in the root, which
+      # both wrappers route a moved repository by (INFRA-2543), read-only under
+      # the role directory of the roles directory, which only
       # that role namespace binds back at LEGION_GH_OWNERS_DIR; no init container mounts one; the
       # clone helper is legion git-credential; and no process namespace is shared with another pod.
+      # An <owner> is a lowercased login, as the directory of a bundle is (ghconfig.IsOwner), and
+      # the `_<shortcode>` a managed user ends in is part of one, so a key of any other shape is
+      # one this check counts against the projection.
       ($roles[] | . as $role | ([$s.volumes[] | select(.name == "gh-\($role)")] | first) as $v
         | ([$s.volumes[] | select(.name == "launcher-\($role)")] | first | .secret.secretName) as $own
         | if $v == null then "no gh-\($role) volume" else
             (if $v.secret.secretName != $own then "gh-\($role) projects Secret \($v.secret.secretName), not the role Secret \($own) its launcher token comes from" else empty end),
             (($v.secret.items // []) as $items
-              | ([$items[] | .key | capture("^github-hosts-(?<o>[a-z0-9][a-z0-9-]*)$") | .o] | sort) as $owners
-              | if ($owners | length) == 0 or ($items | length) != 2 * ($owners | length)
-                  or ($items | map({(.key): .path}) | add) != ($owners | map({("github-hosts-" + .): (. + "/hosts.yml"), ("github-config-" + .): (. + "/config.yml")}) | add)
-                then "gh-\($role) projects \($items | tostring), not <owner>/hosts.yml and <owner>/config.yml for each owner" else empty end),
+              | ([$items[] | .key | capture("^github-hosts-(?<o>[a-z0-9][a-z0-9_-]{0,38})$") | .o] | sort) as $owners
+              | if ($owners | length) == 0 or ($items | length) != 2 * ($owners | length) + 1
+                  or ($items | map({(.key): .path}) | add) != (($owners | map({("github-hosts-" + .): (. + "/hosts.yml"), ("github-config-" + .): (. + "/config.yml")}) | add) + {"github-renames": "renames.txt"})
+                then "gh-\($role) projects \($items | tostring), not <owner>/hosts.yml and <owner>/config.yml for each owner beside renames.txt" else empty end),
             (if $v.secret.defaultMode != 288 then "gh-\($role) has defaultMode \($v.secret.defaultMode), not 0440" else empty end)
           end),
       ([$c.volumeMounts[]? | select(.name | startswith("gh-"))] as $gh
@@ -2582,7 +2630,7 @@ full_agent_message() {
   printf '(8) task: one subagent named FullAgentGh whose only instruction is to run that same gh api graphql command in bash and reply with the login it printed.'
 }
 # full_agent_merger_message NONCE is the merger's shorter instruction: it is live for the driver's
-# READY (done) and must not merge yet, so it writes, edits and reads a file and prints its App login.
+# merge (done) and must not merge yet, so it writes, edits and reads a file and prints its App login.
 full_agent_merger_message() {
   printf 'Stage 4b proof full-agent-tools operation for the merger: do not merge and call no legion operation yet. (1) write /tmp/full-agent-tools-merger.html containing <title>full-agent-tools %s</title>, edit it so the title reads edited %s, and read it back; ' "$1" "$1"
   printf "(2) bash: gh api graphql -f query='{ viewer { login } }' --jq .data.viewer.login; "
@@ -2840,6 +2888,10 @@ cleanup() {
   # one the checks set. Inside this EXIT trap BASH_COMMAND is still the command the trap interrupted,
   # so the warning names the line alone.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
+  # First, whatever the rest of the teardown does: the review App's private key, which
+  # prerequisites resolved the operator's key command into for the daemon to read. $work goes
+  # below, but only once the teardown that can hang or be killed has run.
+  rm -rf "$work/app-key" || true
   stop_tree "$shape_pid"
   # The review pair exists only once tree-moved has named the reviewer's session; a run cut before
   # that has nothing to record.
@@ -2876,6 +2928,12 @@ cleanup() {
   remove_run_container "$pg_container"
   remove_run_container "$session_db_container"
   rm -rf "$work"
+  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # of the directory the removals above were to take (lib/github-apps.sh, app_key_left), printing
+  # the CHECK line this script writes its teardown checks in. Left behind, it is a failed teardown
+  # check like the ones above, which the verdict names and the exit status below carries.
+  app_key_left --check-line "$work/app-key" ||
+    teardown_failed+="${teardown_failed:+, }app-key"
   # The notes are for a checkpoint that failed itself: none once ok is set, after a blocked
   # checkpoint, or after a signal (129, 130, 143, as trapped below). Otherwise a failed teardown
   # check (a pod's session not copied, a namespace left dirty, a write outside the run's own
@@ -3218,11 +3276,11 @@ pod_account=$pod_service_account
 [ -z "$pod_file" ] || pod_account=$(block_account)
 # The branch-built daemon links no release plugin pair (only a release workflow build does), so a
 # daemon started from this checkout boots in the degraded mode (a Warn and `plugins: none` from
-# `--check-config`) unless the run's legion.yaml names runtime.kubernetes.plugins itself. Stage 4b
-# relaunches no stale role onto that pair — every claim in this run registers at the branch
+# `legion config check`) unless the run's legion.yaml names runtime.kubernetes.plugins itself. Stage
+# 4b relaunches no stale role onto that pair — every claim in this run registers at the branch
 # daemon's own contract, so the boot pass and the registration path post nothing (restart-mid-tree
 # below asserts exactly that negative) — so naming the pair here never exercises the kept-pod
-# install; it only keeps `legion start --check-config` and the boot log off the degraded-mode
+# install; it only keeps `legion config check` and the boot log off the degraded-mode
 # lines for a run that otherwise has nothing to name, and it must name a source the pod can
 # actually read: the image carries the two plugins already unpacked under /opt/legion, not as
 # tarballs, and their manifests name the monorepo's workspace packages, which `bun add` refuses to
@@ -3250,11 +3308,18 @@ case $dispatch_token_mode in
 esac
 [ -n "$(tr -d '[:space:]' <"$dispatch_token_file")" ] ||
   fail "LEGION_E2E_DISPATCH_TOKEN_FILE names $dispatch_token_file, which holds no bearer"
+# The person the run's project names as its default assignee, an email Dispatch holds to somebody
+# who has signed in: refused here, unset or not shaped as an email, before ensure_project's create,
+# which Dispatch would otherwise refuse after the run had begun. The value is never printed.
+[[ $dispatch_default_assignee =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] ||
+  fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset or not an email: it names the person, by the email they signed in to production Dispatch with, whom the run's project names as its default assignee"
 [[ $envoy_token_secret_id =~ ^[A-Za-z0-9/_+=.@:-]+$ ]] ||
   fail "LEGION_E2E_ENVOY_TOKEN_SECRET_ID is unset or not a Secrets Manager secret id or ARN"
 # Legion's two role Apps proved against GitHub before the run's first write anywhere
-# (lib/github-apps.sh); legion.yaml's github_apps is the block proved.
-write_github_apps implement review
+# (lib/github-apps.sh); legion.yaml's github_apps is the block proved. The review App's key
+# command runs once, here, in this shell's own environment, into $work/app-key, which the daemon
+# reads the key from and cleanup removes.
+write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 # The gateway's health endpoint is at its origin.
 gateway_origin=$(sed -E 's#^(https://[^/]+).*#\1#' <<<"$gateway")
@@ -3278,7 +3343,7 @@ refuse_leftovers legion-e2e4b
 ports_free "$port_daemon" "$port_worker_stream" "$port_session_db"
 imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
   fail "instance metadata is unreachable; the daemon binds the devbox's private address, read from it"
-host=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4) || fail "instance metadata has no local-ipv4"
+host=$(printf 'X-aws-ec2-metadata-token: %s' "$imds" | curl -sf -m 5 -H @- http://169.254.169.254/latest/meta-data/local-ipv4) || fail "instance metadata has no local-ipv4"
 unset imds
 leftover=$(op get sandboxes,pods,pvc,configmaps -l "legion.dev/project=$run_label" -o name 2>&1) || fail "the operator context cannot list namespace $namespace: $leftover"
 [ -z "$leftover" ] || fail "namespace $namespace already holds objects labelled legion.dev/project=$run_label, which another run left or owns: $(tr '\n' ' ' <<<"$leftover")"
@@ -3463,8 +3528,9 @@ cat >"$work/instructions.md" <<'EOF'
 # Stage 4b proof instructions
 
 This is a throwaway workflow proof on the disposable __LEGION_E2E_PROJECT__ project. A tree's root architect
-starts its tree from the daemon's `catch-up` notice as its role says: it writes the spec in the
-issue's own primary document and registers the gate, then waits. Apart from that, do not act until
+starts its tree from the task its start carries and the daemon's `catch-up` notice, as its role
+says: it writes the spec in the issue's own primary document and registers the gate, then waits.
+Apart from that, do not act until
 a targeted human Dispatch message gives the next exact proof operation. A phase worker's first
 message is the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`): it names your
 phase and is not that message. Read what your role says to read, then reply WAITING and wait for
@@ -3475,11 +3541,12 @@ implementer's launches while its task is outstanding, an end that lands after th
 over charges nothing, and the end takes up to a minute to land on a loaded host, so that turn must
 last long enough to be ended inside. A production check's task (its first line `Production check of
 <key>: …`, handed to the tester once the merge closed its issue) is no phase's task line and
-waits for no targeted message: a closed issue takes no Dispatch write, so none can reach it. Run no
+waits for no targeted message, since the proof sends none to it. Run no
 `sleep 300` on it; act on the task as it is written. This proof has no production and no deploy
 role: no production carries the merge, so the look leaves `Production: pending deploy of <merge
-commit>` on the pull request's body (on the last look, writes on the pull request that the check
-did not run because production did not carry the merge within the bound) and reports verdict
+commit>` on the pull request's body (on the last look, whose pending is for production not
+carrying the merge alone, as here, writes on the pull request that the check did not run because
+production did not carry the merge within the bound) and reports verdict
 pending with the legion tool's handoff_complete, committing nothing. A pending report on a look
 that is not the last also carries wake_at, an RFC 3339 time: when you want your next look. Nothing
 else wakes a check — no deploy, no Dispatch notice, nothing the daemon does of its own — so the
@@ -3498,11 +3565,15 @@ this run in the line, a child of a running tree as readily as the root the drive
 ## A tree's children in this proof
 
 The driver files child issues under a root itself, in `todo`, and later closes one as `done` and
-parks the others in `backlog`, the last of them while its root waits in `awaiting_merge` for the
-rest of its tree; each child's planner holds for the driver like every other role. A
-`child-closed` or `child-status` notice of this run needs no action from the root architect: start,
-re-run, park or close nothing for it, write nothing about it, and keep waiting for the next
-targeted message.
+parks the others in `backlog`, the last of them while its root waits in `merging` for the
+rest of its tree; each child's planner holds for the driver like every other role. The daemon
+starts a child's own architect with the child's first phase. That architect does not start its
+child from its `catch-up` notice. It reads the catch-up, which names its child and every issue
+under it. Then it replies WAITING and waits for the targeted message. It files no child, writes
+no spec and sends no message until then. A
+`child-closed` or `child-status` notice of this run needs no action from the root architect:
+start, re-run, park or close nothing for it, write nothing about it, and keep waiting for the
+next targeted message.
 EOF
 sed -i "s/__LEGION_E2E_PROJECT__/$project/g" "$work/instructions.md"
 # The daily report is the one controller action that waits for no targeted message (daily-report).
@@ -3519,7 +3590,7 @@ while that turn still runs does not count, and once in this run. Its issue is ti
 that title and park it in icebox, as the skill says for the default report issue.
 EOF
 write_legion_config
-out=$("$work/legion" start --check-config --config "$work/legion.yaml" 2>&1) || fail "legion start --check-config refused the proof's config: $out"
+out=$("$work/legion" config check --config "$work/legion.yaml" 2>&1) || fail "legion config check refused the proof's config: $out"
 note "$out"
 implement_app=$(role_app implementer)
 review_app=$(role_app reviewer)
@@ -3537,7 +3608,7 @@ note "image probe: $(jq -c '{image, model, sandbox}' <<<"$probe")"
 # codegraph included (a pod's agent loads the profile's plugins, as repository-tools holds). The
 # live rows render from the live sessions' reports (LEGION-663):
 # packages/daemon/internal/capabilities/deployment.go renders each unchecked, its detail "no session
-# has reported yet (<ruling>): <summary>", until a session reports, and boot starts its own empty
+# has reported yet (<citation>): <summary>", until a session reports, and boot starts its own empty
 # Postgres, so no session has reported here; the first report comes with the first admitted root's
 # architect (deployment-pod-block, or admitted-issue-cap), and full-agent reads the rows it renders.
 # The open rows are secrets, and pool-capacity when the pool scaled for the probe: the proof's
@@ -3632,7 +3703,7 @@ else
 fi
 
 begin admitted-issue-cap
-# The cap counts the issues at work (dispatch://INFRA-980), so two roots fill none of a cap of 4
+# The cap counts the issues the daemon has started (dispatch://INFRA-980), so two roots fill none of a cap of 4
 # and both are admitted at once, in rank order. Tree 3 is filed here, with the ranks of the run's
 # roots settled in one place, and set todo at issue-independence, where tree 1's two children
 # fill the cap and it is held in the line — the state this checkpoint used to read here, when a
@@ -3685,10 +3756,11 @@ gate_open() {
 # "Approve <name> (version N)?", a human answered at least one of the spec's decision blocks, and no
 # approval request it made on the spec named a version holding one open or came before a human
 # answered one raised before the human's turn on that request. While the root waits on the human (a
-# question, or a closed gate it registered) it is in awaiting_person without a slot while its
+# question, or a closed gate it registered) it is in awaiting_person, keeping the admission slot it
+# took at its admission, while its
 # architect stays live; the approval answers it, and nothing of its tree advances until the root
 # resumes, each issue of it that then has work waiting for a slot of its own.
-# Tree 1 is the run's one issue at work then under admission_cap 4, so a slot stands free for it.
+# The resume takes no slot of its own, so it comes on the pass that reads the approval.
 drive_gated_spec() {
   local issue=$1 artifact approved asks events version verdict request early blocks requested_versions waits
   local -a requested=()
@@ -3696,9 +3768,9 @@ drive_gated_spec() {
   wait_for_architect "$issue"
   until_true 300 "the $issue architect to be given its catch-up notice" notice_delivered "$issue" architect "$(notice_needle catch-up "$issue")"
   until_true 43200 "a human to approve the $issue spec in Dispatch, opening its design gate" gate_open "$issue" "$artifact"
-  await_root_slot "$issue" "the $issue"
-  waits=$(jq -R -s --arg issue "$issue" '[split("\n")[] | fromjson? | select(.msg == "workflow: root waits on a person and returns its admission slot" and .issue == $issue)] | length' "$daemon_log")
-  note "$issue: it waited on the human without a slot $waits times before the approval, and holds a slot again"
+  await_root_resume "$issue" "the $issue"
+  waits=$(jq -R -s --arg issue "$issue" '[split("\n")[] | fromjson? | select(.msg == "workflow: root waits on a person and keeps its admission slot" and .issue == $issue)] | length' "$daemon_log")
+  note "$issue: it waited on the human $waits times before the approval, holding its admission slot throughout, and has resumed"
   approved=$(daemon_state | jq -er --arg issue "$issue" '.issues[$issue].designGate.approvedVersion')
   asks=$(dispatch_get "issues/$issue/asks")
   events=$(dispatch_events "$issue")
@@ -3788,8 +3860,8 @@ grep -qF "launcher dials tcp://$bind:$port_worker_stream, not advertise_host at 
 note "negative control: a recorded pod whose launcher is told --connect tcp://$bind:$port_worker_stream departs from the pod shape: $control"
 # The daemon's loader on the proof's own file: advertise_host dropped, then a loopback bind beside it.
 sed '/^advertise_host: /d' "$work/legion.yaml" >"$work/legion-no-advertise-host.yaml"
-if out=$("$work/legion" start --check-config --config "$work/legion-no-advertise-host.yaml" 2>&1); then
-  fail "legion start --check-config passed bind $bind with no advertise_host: $out"
+if out=$("$work/legion" config check --config "$work/legion-no-advertise-host.yaml" 2>&1); then
+  fail "legion config check passed bind $bind with no advertise_host: $out"
 fi
 case $out in
   *"bind $bind is not an address a pod can reach"*) ;;
@@ -3797,8 +3869,8 @@ case $out in
 esac
 note "bind $bind, no advertise_host: $out"
 sed 's/^bind: .*/bind: 127.0.0.1/' "$work/legion.yaml" >"$work/legion-loopback-bind.yaml"
-if out=$("$work/legion" start --check-config --config "$work/legion-loopback-bind.yaml" 2>&1); then
-  fail "legion start --check-config passed bind 127.0.0.1 beside advertise_host: $out"
+if out=$("$work/legion" config check --config "$work/legion-loopback-bind.yaml" 2>&1); then
+  fail "legion config check passed bind 127.0.0.1 beside advertise_host: $out"
 fi
 case $out in
   *"bind 127.0.0.1 is loopback, where no pod reaches the worker stream"*) ;;
@@ -3820,7 +3892,7 @@ begin issue-independence
 # scheduler's: with no affinity they bin-pack where the pool has room, so two or more nodes are
 # asserted only when preflight read the NodePool's instance bounds as holding no two of the run's
 # pods (two_pods_fit); otherwise the placement is recorded and the count noted. Tree 2's planner
-# holds for the driver as before. The four issues at work — tree 1's root, its two children and
+# holds for the driver as before. The four issues the daemon has started — tree 1's root, its two children and
 # tree 2's root — are the whole of admission_cap 4, which is where the run reads the line: tree 3,
 # set todo here, waits in it until one of them leaves (child-release). The memory hog stays: it is
 # the pod watch's negative control, the one OOMKilled container pod-watch-verdict must have seen.
@@ -3837,18 +3909,18 @@ for child in "$child1" "$child2"; do
   on_issue "$child" until_true 900 "planner worker on $child, a child of $tree1, to register from an issue pod of its own" issue_worker_live "$child" planner
   assert_claim_endpoints "$child" planner
   record_resident "$child" planner || fail "$child's planner has no session and pod to keep: $(claim_view "$child" planner)"
-  # The tree an issue runs under is recorded on its claims (legion claims list, OperatorClaim.tree),
-  # not on the state view's issue entry, which carries no tree.
+  # The tree an issue runs under is recorded on its claims (legion claims list, OperatorClaim.tree);
+  # this step reads it there.
   child_tree=$(claims_cli list --json | jq -r --arg issue "$child" '[.claims[] | select(.issue == $issue and .role == "planner") | .tree] | first // ""') ||
     fail "legion claims list could not be read for $child's planner"
   [ "$child_tree" = "$tree1" ] ||
     fail "the daemon records $child's planner claim under tree '${child_tree:-none}', not $tree1: $(claims_cli list --json | jq -c --arg issue "$child" '[.claims[] | select(.issue == $issue) | {role, tree, state}]')"
 done
 set_status "$tree3" todo
-until_true 300 "the cap full of the four issues at work, with tree 3 waiting in the line" sh -c \
+until_true 300 "the cap full of the four issues the daemon has started, with tree 3 waiting in the line" sh -c \
   "'$work/legion' state --json --config '$work/legion.yaml' | jq -e --arg a '$tree1' --arg b '$tree2' --arg c '$tree3' --arg one '$child1' --arg two '$child2' '.admission.cap == 4 and (.admission.active | sort) == ([\$a,\$b,\$one,\$two] | sort) and .admission.waiting == [\$c]'"
 state_file cap-full
-note "active $(jq -c .admission.active "$evidence/cap-full.json"), waiting $(jq -c .admission.waiting "$evidence/cap-full.json"): a slot is one issue with work, so tree 1's root, $child1, $child2 and tree 2's root hold the whole cap and tree 3 ($tree3) waits"
+note "active $(jq -c .admission.active "$evidence/cap-full.json"), waiting $(jq -c .admission.waiting "$evidence/cap-full.json"): a slot is one issue the daemon has started, so tree 1's root, $child1, $child2 and tree 2's root hold the whole cap and tree 3 ($tree3) waits"
 root_pod=$(claim_sandbox "$tree1" architect) || fail "tree 1's architect has no Sandbox locator"
 child1_pod=$(claim_sandbox "$child1" planner) || fail "$child1's planner has no Sandbox locator"
 child2_pod=$(claim_sandbox "$child2" planner) || fail "$child2's planner has no Sandbox locator"
@@ -3929,8 +4001,8 @@ pass
 
 begin child-release
 # Acceptance 3, both paths, while the parent keeps running. Child 1 set done by the proof human: the
-# daemon retires every claim of the child with its session dropped (issue_close) and its durable
-# close effect foreground-deletes the child's Sandbox (SuspendIssue,
+# daemon retires every claim of the child, its own architect's included, each keeping its session
+# (issue_close), and its durable close effect foreground-deletes the child's Sandbox (SuspendIssue,
 # internal/runtime/sandbox/issue_suspend.go), logging the release; its pod goes with that Sandbox
 # and its disk goes with the pod, since an issue's disk is its pod's own ephemeral volume
 # (INFRA-80); the root's Sandbox stays Running, its own pod's disk Bound and its pod the same.
@@ -3967,8 +4039,8 @@ deleted=$(deleted_lines "$child1" | grep -c . || true)
 lost_now=$(grep -c 'volume was lost' "$daemon_log" || true)
 [ "$lost_now" = "$lost_before" ] || fail "the daemon reported a lost volume across $child1's release: $(grep 'volume was lost' "$daemon_log" | tail -3 | cut -c1-300 | tr '\n' ' ')"
 retired=$(claims_cli list --json | jq -c --arg issue "$child1" '[.claims[] | select(.issue == $issue) | {role, state, session: (.session // ""), sessionFile: (.sessionFile // "")}]')
-jq -e 'length > 0 and all(.[]; .state == "retired" and .session == "" and .sessionFile == "")' <<<"$retired" >/dev/null ||
-  fail "$child1's claims after its done are $retired, want every one retired with no session"
+jq -e 'length > 0 and all(.[]; .state == "retired" and .session != "" and .sessionFile != "")' <<<"$retired" >/dev/null ||
+  fail "$child1's claims after its done are $retired, want every one retired with its session kept"
 note "at $at $child1 is done: its Sandbox and pod are gone (kubectl get sandboxes,pods -l legion.dev/issue=$child1: nothing), and the disk $child1_pod-issue its pod owned is gone with it; the daemon logged \"$deleted_msg\" for it once and no lost volume; its claims: $retired"
 note "the root $tree1 kept Sandbox $root_pod Running, its pod's own disk ${found%% *} Bound and pod uid $root_uid"
 set_status "$child2" backlog
@@ -4353,8 +4425,8 @@ begin issue-cap-moves
 # The proof human's session holds no claim in tree 2, so its backlog on tree 2's live root is set
 # back: Dispatch shows the daemon's own status again, written as legion-daemon:$project, tree 2's
 # architect is told who wrote backlog, and tree 2 keeps its slot. Tree 2 then leaves the line
-# through `legion status`, the daemon's own write, and the slot its root held is freed with it.
-# Nothing waits for that slot here: the line's one waiting root took a slot at child-release, so
+# through `legion issue status`, the daemon's own write, and the slot its root held is freed with
+# it. Nothing waits for that slot here: the line's one waiting root took a slot at child-release, so
 # what this checkpoint reads of the cap is the slot kept and then given up.
 set_status "$tree2" backlog
 until_true 300 "the daemon to set $tree2 back from backlog" status_set_back "$tree2" backlog
@@ -4378,7 +4450,7 @@ take_out "$tree2"
 on_tree "$tree2" until_true 300 "the slot tree 2 held to be freed by its backlog" sh -c \
   "'$work/legion' state --json --config '$work/legion.yaml' | jq -e --arg b '$tree2' '(.admission.active | index(\$b)) == null and (.admission.trees | index(\$b)) == null'"
 state_file cap-moves-admission
-note "legion status moved tree 2 to backlog, its pods gone and the slot it held freed: active $(jq -c .admission.active "$evidence/cap-moves-admission.json"), trees $(jq -c .admission.trees "$evidence/cap-moves-admission.json")"
+note "legion issue status moved tree 2 to backlog, its pods gone and the slot it held freed: active $(jq -c .admission.active "$evidence/cap-moves-admission.json"), trees $(jq -c .admission.trees "$evidence/cap-moves-admission.json")"
 pass
 
 begin tree-moved
@@ -4387,8 +4459,8 @@ begin tree-moved
 # no holder. The row waits, and the architect stays suspended, `suspendedBy: operator`, at the same
 # generation while it does; the operator's resume then relaunches it and the held notice arrives.
 # Each operator request that changed the claim logs one `api: operator request` line naming its
-# route and the claim. No rule acts on a tree architect, so this cannot show the rule passing over
-# an operator's suspension: child-reentered's control shows that, on a phase owner.
+# route and the claim. No phase start resumes a root's architect, so this cannot show the rule
+# passing over an operator's suspension: child-reentered's control shows that, on a phase owner.
 held_architect=$(claim_token "$tree1" architect)
 held_needle=$(notice_needle phase-finished "$tree1")
 held_before=$(notice_deliveries "$tree1" architect "$held_needle")
@@ -4473,7 +4545,7 @@ for role in implementer reviewer; do
   want=$(role_app "$role")
   viewer=$(pod_viewer "$gh_pod" "$role") || fail "gh in the $role's namespaces of $gh_pod answered no viewer"
   [ "$viewer" = "$want" ] || fail "gh in the $role's namespaces of $gh_pod acts as $viewer, want $want"
-  assert_gh_files "$gh_pod" "$role" "the $role's namespaces" repos
+  assert_gh_files "$gh_pod" "$role" "the $role's namespaces"
 done
 impl_hash=$(gh_hosts_hash "$gh_pod" implementer) || fail "could not hash the implementer's hosts.yml"
 rev_hash=$(gh_hosts_hash "$gh_pod" reviewer) || fail "could not hash the reviewer's hosts.yml"
@@ -4573,19 +4645,24 @@ grep -q GH_TOKEN "$evidence/github-credential-negative.txt" || fail "gh with GH_
 note "in $gh_pod the implementer's gh ($gh_bin, GH_CONFIG_DIR=$gh_config_dir) is $implement_app and the reviewer's $review_app from different hosts.yml files, each role's namespaces seeing its own gh-<role> copy and an empty roles directory, no grant file or App login is in the environment; the implementer's subagent answered $implement_app with no legion command, and its own bash ran jj undo --help; GitHub records the implementer's head $pr_head as $implement_app's, with check runs; no commit of pull request #$pr_number changes only .legion/; the planner's handoff is its Dispatch record under its claim session, and the daemon recorded the head as the implementer's completion"
 pass
 
-begin ci-red-no-takeover
-# CI settling red while the tester is in its turn takes the phase back without the tester's
-# completion (workflow's TriggerChecksRed) and takes nothing else: the implementer's start acts at
-# once and waits for nobody, and the tester keeps its turn, its background job, its process and
-# its session: the daemon takes no turn over, waits for no outgoing turn, and its RPC carries no
-# abort frame. The tester starts a job that writes a witness file once a ten-minute sleep ends and
-# waits for it; the proof human commits .fail-me to the pull request's branch, and the smoke
-# repository's fail-on-demand check fails on that head. The daemon moves tree 1 back to
-# implementing and hands the implementer its task while that sleep is still in the tester's
-# process list and the witness file is absent; nothing aborted the tester's turn; the tester is
-# told its phase ended by one message on its own role topic, which is also what ends the `wait` it
-# is in; and its job runs on, so the witness file appears after all. The control: the same chain
-# with a twenty-second sleep, run before the red, which writes its file.
+begin conflict-no-takeover
+# A head that starts conflicting with its base while the tester is in its turn keeps tree 1 in
+# testing and takes nothing over (dispatch://INFRA-4374). The daemon reads such a head twice, a
+# minute apart, and acts on a confirmed conflict only when the issue's next step needs a head that
+# merges: legion-smoke's main requires `gate`, which passed on the head before the base moved, so
+# the conflict is recorded and nothing is sent — no task and no merge-forward ask to the
+# implementer, no hold to the tester, and nothing that ends the tester's turn. The tester starts a
+# job that writes a witness file once a ten-minute sleep ends and waits for it; the proof human
+# commits a different version of the one file the pull request changes to the base branch, so
+# GitHub reports the head CONFLICTING and runs no check on it at all. The daemon logs the
+# confirmed conflict as needing no merge yet, and at least two minutes after the commit tree 1 is
+# still in testing, the implementer holds no task and its session no merge-forward ask, the
+# tester's session holds no hold and no aborted turn, and the tester's sleep is still in its
+# process list with the witness file absent. Then the proof human, and not the daemon, tells the
+# implementer to merge the base forward and push, with no handoff and no completion, since the
+# issue stays in testing: the pull request's head moves off the conflicting head, the witness job
+# runs on and writes its file, and the tester is still in its first pod and session. The control:
+# the same chain with a twenty-second sleep, run before the conflict, which writes its file.
 #
 # The witness is a background job because that is what a long bash call is: with
 # `bash.autoBackground.enabled` the pinned binary's own default (nothing of Legion's turns it
@@ -4593,7 +4670,7 @@ begin ci-red-no-takeover
 # `--mode rpc` and hands the agent a job to `wait` on. A background job outlives the turn that
 # started it, so the witness file is the proof that the role's work was left alone.
 tester_pod=$(claim_sandbox "$tree1" tester) || fail "tree 1's tester has no Sandbox"
-witness=/tmp/stage4b-ci-red-witness control=/tmp/stage4b-ci-red-control
+witness=/tmp/stage4b-conflict-witness control=/tmp/stage4b-conflict-control
 send_agent "$tree1" tester "Stage 4b proof control operation: run exactly this as one bash tool call, with the tool's timeout at least 1800 seconds, and change nothing else: /usr/bin/sleep 20 && date -u +%FT%TZ > $control && echo CONTROL-WRITTEN. Then reply WAITING and wait for the next targeted message."
 on_tree "$tree1" until_true 300 "the tester's control command to write $control" pod_file "$tester_pod" tester "$control"
 on_tree "$tree1" until_true 300 "tree 1's tester to go idle after the control" resident_idle "$tree1" tester
@@ -4601,63 +4678,102 @@ note "the control: the tester's /usr/bin/sleep 20 chain wrote $control in pod $t
 send_agent "$tree1" tester "Stage 4b proof witness operation: run exactly this as one bash tool call, with the tool's timeout at least 1800 seconds, and change nothing else: /usr/bin/sleep 600 && date -u +%FT%TZ > $witness && echo WITNESS-WRITTEN. Oh My Pi will background the call once it outruns its own threshold; wait for that job with the wait tool until it is done, and reply WITNESS-WRITTEN then."
 on_tree "$tree1" until_true 300 "the tester's witness job to run in its pod" pod_runs "$tester_pod" tester "/usr/bin/sleep 600"
 issue_worker_state "$tree1" tester working || fail "the tester runs its witness job while its claim is $(claim_view "$tree1" tester | jq -c .state), not working"
-fail_me=$(jq -cn --arg branch "legion/$tree1" --arg content "$(printf 'Stage 4b CI red\n' | base64 -w0)" \
-  '{message: "Stage 4b proof: fail-on-demand", content: $content, branch: $branch}' |
-  timeout 60 gh api --method PUT "repos/$repo/contents/.fail-me" --input - --jq .commit.sha) ||
-  fail "the proof human could not commit .fail-me to legion/$tree1"
-note "the proof human committed .fail-me to legion/$tree1 as $fail_me while the tester's witness job ran"
-on_tree "$tree1" wait_for_phase "$tree1" implementing 900
-# The start acting is read where production reads it: the daemon's own record that the implementer
-# took the red's task — its claim working on a delivery of the implementing phase it has confirmed
-# — and the task in its session. The tester's process list and its witness file are read in the
-# same breath, so what they say is what held while the start acted.
-on_tree "$tree1" until_true 900 "the implementer to be in a turn of the task the red handed it" ci_red_task_taken "$tree1"
-on_tree "$tree1" until_true 300 "the implementer's CI-red task to reach its session" session_contains "$tree1" implementer "Reason: CI is red at"
-witness_commands=$(pod_commands "$tester_pod" tester) || fail "the tester's container's process list could not be read while the implementer took its task"
+pr_base=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .base.ref) || fail "read pull request #$pr_number's base"
+conflict_path=$(timeout 60 gh api "repos/$repo/pulls/$pr_number/files" --jq '.[0].filename') ||
+  fail "read the file pull request #$pr_number changes"
+base_blob=$(timeout 60 gh api "repos/$repo/contents/$conflict_path?ref=$pr_base" --jq .sha) ||
+  fail "read $conflict_path on $pr_base"
+conflict_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) ||
+  fail "read pull request #$pr_number's head"
+[ -n "$conflict_head" ] || fail "GitHub named no head for pull request #$pr_number"
+conflict_sha=$(jq -cn --arg path "$conflict_path" --arg branch "$pr_base" --arg sha "$base_blob" \
+  --arg content "$(printf 'Stage 4b conflict, no takeover\n' | base64 -w0)" \
+  '{message: "Stage 4b proof: conflict with the issue branch", content: $content, branch: $branch, sha: $sha}' |
+  timeout 60 gh api --method PUT "repos/$repo/contents/$conflict_path" --input - --jq .commit.sha) ||
+  fail "the proof human could not commit the conflicting $conflict_path to $pr_base"
+conflict_at=$(date +%s)
+note "the proof human committed a conflicting $conflict_path to $pr_base as $conflict_sha while the tester's witness job ran, pull request #$pr_number at $conflict_head"
+# The conflict is recorded: the daemon's second read confirms it and finds that it needs no merge
+# yet, since `gate`, the check the base requires, passed on the head (workflow's mergeability,
+# classify.ConflictNeedsMerge). Without that line every check below would hold of a daemon that
+# never read the conflict at all.
+conflict_needs_no_merge() {
+  log_lines "workflow: a confirmed conflict needs no merge yet" | jq -s -e --arg issue "$tree1" --arg head "$conflict_head" 'any(.[]; .issue == $issue and .head == $head)' >/dev/null
+}
+on_tree "$tree1" until_true 600 "the daemon to confirm $tree1's conflict and find it needs no merge yet" conflict_needs_no_merge
+note "the daemon logged $(log_lines "workflow: a confirmed conflict needs no merge yet" | jq -c -s --arg issue "$tree1" --arg head "$conflict_head" 'map(select(.issue == $issue and .head == $head)) | first | {time, head, phase, required, green}')"
+# At least two minutes after the commit, with the outbox given time to send whatever the confirmed
+# conflict asked for, nothing was sent and nothing moved. The ask's words and the hold's are the
+# daemon's own (record.MergeForwardMessage's Message), and no prompt or skill a role reads holds
+# either needle, so a session that took either message holds its needle and no other does.
+left=$((conflict_at + 120 - $(date +%s)))
+[ "$left" -le 0 ] || sleep "$left"
+issue_phase "$tree1" testing >/dev/null ||
+  fail "$tree1 left testing on a conflict whose required check passed: it is in $(daemon_state | jq -r --arg issue "$tree1" '.issues[$issue].phase')"
+asked=$(log_lines "workflow: merge forward asked" | jq -c --arg issue "$tree1" 'select(.issue == $issue)')
+[ -z "$asked" ] || fail "the daemon asked a merge forward of $tree1, whose required check passed: $(head -n 1 <<<"$asked")"
+pending_phase=$(claim_pending_phase "$tree1" implementer)
+[ -z "$pending_phase" ] || fail "tree 1's implementer holds a $pending_phase task after the conflict, want none: the conflict needed no merge"
+implementer_session=$evidence/conflict-implementer-session.jsonl
+claim_session_text "$tree1" implementer >"$implementer_session" || fail "tree 1's implementer has no readable session"
+! grep -qF -- "a second read of GitHub confirmed it" "$implementer_session" ||
+  fail "tree 1's implementer was asked to merge the base forward, which a conflict whose required check passed asks of nobody ($implementer_session)"
+witness_commands=$(pod_commands "$tester_pod" tester) || fail "the tester's container's process list could not be read after the conflict"
 grep -qF -- "/usr/bin/sleep 600" <<<"$witness_commands" ||
-  fail "the tester's witness job is gone from its pod's process list while the implementer takes its task: the red stopped work it must leave alone"
+  fail "the tester's witness job is gone from its pod's process list after the conflict: the conflict stopped work it must leave alone"
 ! pod_file "$tester_pod" tester "$witness" ||
-  fail "the tester's witness file $witness was written before the implementer took its task, so its absence proves nothing of the red"
-note "the implementer is in a turn of the red's task ($(claim_view "$tree1" implementer | jq -c '{state, pending: {phase: .pending.phase, confirmedAt: .pending.confirmedAt}}')) while the tester's /usr/bin/sleep 600 still runs in $tester_pod and $witness is absent"
-# The tester's turn was not taken over: no turn of its session was aborted, its claim is still the
-# one it registered with in its first pod, and nothing suspended it.
-tester_session=$evidence/ci-red-tester-session.jsonl
+  fail "the tester's witness file $witness was written before the checks after the conflict, so its absence proves nothing of the conflict"
+# The tester's turn was not taken over: no hold reached its session, no turn of it was aborted, its
+# claim is still the one it registered with in its first pod, and nothing suspended it.
+tester_session=$evidence/conflict-tester-session.jsonl
 claim_session_text "$tree1" tester >"$tester_session" || fail "tree 1's tester has no readable session"
+! grep -qF -- "Stop writing the workspace now." "$tester_session" ||
+  fail "tree 1's tester was told to hold for a merge forward, which a conflict whose required check passed asks of nobody ($tester_session)"
 no_aborted_turn "$tester_session" ||
   fail "tree 1's tester holds an aborted turn: $(session_jq "$tester_session" -c "$aborted_turns_jq") ($tester_session)"
-resident_kept "$tree1" tester || fail "tree 1's tester lost its first process or session across the red: $(resident_lost "$tree1" tester)"
-note "the tester's session holds no aborted turn and its claim is the one it registered with ($tester_session)"
-# The role the red left with no phase is told so on its own Envoy role topic, which is also what
-# ends the `wait` it is in (record.PhaseEnded, the outbox's role-message lane).
-on_tree "$tree1" until_true 600 "the phase-ended message to reach tree 1's tester" \
-  session_contains "$tree1" tester "CI went red, so your testing phase has ended"
-note "the tester was told on its own role topic: $(claim_session_text "$tree1" tester | grep -o 'CI went red, so your testing phase has ended[^"]*' | head -n 1)"
+resident_kept "$tree1" tester || fail "tree 1's tester lost its first process or session across the conflict: $(resident_lost "$tree1" tester)"
+note "$(($(date +%s) - conflict_at)) s after the commit: $tree1 is still in testing; the implementer holds no task and its session no merge-forward ask ($implementer_session); the tester's /usr/bin/sleep 600 still runs in $tester_pod with $witness absent, its session holds no hold and no aborted turn, and its claim is the one it registered with ($tester_session)"
 # The negative control mutates the evidence alone: the same reader over a copy of the tester's
 # session with one aborted assistant turn appended must refuse it, so the pass above is the
 # session's own and not a reader that never looks.
-cp "$tester_session" "$evidence/ci-red-tester-session-aborted.jsonl"
+cp "$tester_session" "$evidence/conflict-tester-session-aborted.jsonl"
 jq -cn '{type: "message", timestamp: "2026-01-01T00:00:00.000Z", message: {role: "assistant", stopReason: "aborted", errorMessage: "Interrupted by user", content: []}}' \
-  >>"$evidence/ci-red-tester-session-aborted.jsonl"
-expect_failure ci-red-aborted-turn no_aborted_turn "$evidence/ci-red-tester-session-aborted.jsonl"
-# The job the red left alone finishes, so the file its chain writes appears: the whole of what the
-# tester was doing survived the phase it lost.
+  >>"$evidence/conflict-tester-session-aborted.jsonl"
+expect_failure conflict-aborted-turn no_aborted_turn "$evidence/conflict-tester-session-aborted.jsonl"
+# The proof human, and not the daemon, has the implementer merge the base forward. The issue stays
+# in testing, so the merge carries no handoff and no completion: the tester tests the head it
+# leaves at tree-reviewed.
+send_agent "$tree1" implementer "Stage 4b proof merge-forward operation: the head of pull request #$pr_number conflicts with $pr_base, because the proof human committed a different $conflict_path there. Merge $pr_base forward into legion/$tree1 as your skill's forward-merge procedure says (\`jj new legion/$tree1 <destination>\`, never a rebase), resolve the conflict in $conflict_path keeping your own change, and push the issue branch (\`jj bookmark set legion/$tree1 -r @- && jj git push --bookmark legion/$tree1\`). $tree1 stays in testing, so write no handoff and make no completion for this merge. Do not merge the pull request."
+# head_moved: pull request #$pr_number stands at a head other than the one that conflicted, kept
+# as merged_head. A read that fails is no answer, never a moved head.
+head_moved() {
+  local head
+  head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) || return 1
+  if [ -z "$head" ] || [ "$head" = "$conflict_head" ]; then
+    return 1
+  fi
+  merged_head=$head
+}
+on_tree "$tree1" until_true 1800 "pull request #$pr_number's head to move off the conflicting head $conflict_head" head_moved
+note "the implementer pushed its merge of $pr_base forward: pull request #$pr_number stands at $merged_head"
+# The job the conflict left alone finishes, so the file its chain writes appears: the whole of what
+# the tester was doing survived the conflict.
 on_tree "$tree1" until_true 900 "the tester's witness job to write $witness" pod_file "$tester_pod" tester "$witness"
-note "the tester's witness job ran on and wrote $witness: the red took the phase, not the turn, the job, the process or the session"
-send_agent "$tree1" implementer "Stage 4b proof CI-red operation: CI on pull request #$pr_number is red because the proof committed the file .fail-me to legion/$tree1, which the smoke repository's fail-on-demand check fails on. Fetch the branch, start a new change on top of legion/$tree1@origin, delete .fail-me and change nothing else, commit it and push the issue branch (\`jj bookmark set legion/$tree1 -r @- && jj git push --bookmark legion/$tree1\`), record the required implementation handoff, then call the legion tool's handoff_complete. Do not merge."
-on_tree "$tree1" wait_for_phase "$tree1" testing 1800
-on_tree "$tree1" until_true 300 "tree 1's tester to be handed testing again in its first pod and session" resident_kept "$tree1" tester
-note "the implementer removed .fail-me and $tree1 is back in testing; the tester is in its first pod and session, the one it held through the red"
+note "the tester's witness job ran on and wrote $witness: the conflict took nothing of the tester's turn, its job, its process or its session"
+issue_phase "$tree1" testing >/dev/null || fail "$tree1 left testing across the merge forward, which completes nothing"
+on_tree "$tree1" until_true 300 "tree 1's tester to still be in its first pod and session" resident_kept "$tree1" tester
+note "$tree1 is still in testing at the head the merge left; the tester is in its first pod and session, the one it held through the conflict"
 pass
 
 begin tree-reviewed
 send_agent "$tree1" tester "Stage 4b proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
-# The daemon's checks-red move back (ci-red-no-takeover, Testing → Implementing) counted the
-# implementer a round, as every move back does since #1850 (workflow/engine.go movesBack →
-# recordRound), so tree 1 stands at round 1 here and at round 2 once the review below requests
-# changes; `round_line 1` and `round_correction_pushed 1` below label the proof's correction, not
-# the daemon's round.
-assert_handoff_record "$tree1" tester testing 1
+# No move back has counted the implementer a round yet: the conflict of conflict-no-takeover moved
+# nothing (dispatch://INFRA-4374), and a move back is what counts one, as every move back does
+# since #1850 (workflow/engine.go movesBack → recordRound). So tree 1 stands at round 0 here and at
+# round 1 once the review below requests changes; `round_line 1` and `round_correction_pushed 1`
+# below label that round.
+assert_handoff_record "$tree1" tester testing 0
 on_tree "$tree1" wait_for_worker "$tree1" reviewer
 record_resident "$tree1" reviewer || fail "tree 1's reviewer has no session and pod to keep: $(claim_view "$tree1" reviewer)"
 # A round no review decides (LEGION-326): the reviewer comments instead of deciding, and completes.
@@ -4709,8 +4825,8 @@ notice_line "$tree1" reviewer "notifications.role.$(claim_token "$tree1" archite
 on_tree "$tree1" until_true 1800 "$review_app's round 1 decision on pull request #$pr_number" reviewer_decision 1
 [ "$(<"$work/review-decision")" = changes ] || fail "the reviewer approved pull request #$pr_number in round 1, which the proof asked to request changes"
 on_tree "$tree1" wait_for_phase "$tree1" implementing 1200
-assert_handoff_record "$tree1" reviewer reviewing 2
-assert_review_of_head "$tree1" 2 CHANGES_REQUESTED
+assert_handoff_record "$tree1" reviewer reviewing 1
+assert_review_of_head "$tree1" 1 CHANGES_REQUESTED
 thread_id=$(reviewer_thread 2>"$work/reviewer-thread.err") ||
   fail "the reviewer's round 1 review did not leave one thread of its own: $(cat "$work/reviewer-thread.err")"
 note "the reviewer's round 1 review opened one thread, $thread_id"
@@ -4719,15 +4835,15 @@ on_tree "$tree1" send_agent "$tree1" implementer "Stage 4b proof correction roun
 # The task line delivered for the new round opens a sleep 300 turn before the implementer reads the operation, so the budget carries that turn.
 on_tree "$tree1" wait_for_phase "$tree1" testing 1500
 on_tree "$tree1" until_true 120 "round 1's correction on pull request #$pr_number" round_correction_pushed 1
-assert_round_handoff "$tree1" 2
-assert_handoff_record "$tree1" implementer implementing 2
+assert_round_handoff "$tree1" 1
+assert_handoff_record "$tree1" implementer implementing 1
 review_thread "$thread_id" >"$evidence/review-thread-after-correction.json" ||
   fail "read the reviewer's thread $thread_id after the correction round"
 note "after the correction round the reviewer's thread reads isResolved $(jq -r .isResolved "$evidence/review-thread-after-correction.json"), newest comment by $(jq -r '[.comments[] | select(.state == "SUBMITTED")] | last | .author' "$evidence/review-thread-after-correction.json")"
 on_tree "$tree1" wait_for_worker "$tree1" tester
 on_tree "$tree1" send_agent "$tree1" tester "Stage 4b proof retest round 1: verify the correction on pull request #$pr_number, write the tester handoff with verdict pass, and complete the phase."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
-assert_handoff_record "$tree1" tester testing 2
+assert_handoff_record "$tree1" tester testing 1
 on_tree "$tree1" wait_for_worker "$tree1" reviewer
 # A bot's thread for the re-review (acceptance 4d): the proof human, a GitHub App and so a bot
 # account that is none of Legion's role Apps, opens one now, after the implementer's correction
@@ -4758,8 +4874,9 @@ note "the reviewer approved pull request #$pr_number at its head; its thread the
 # the tree's architect, told by the reviewer's phase-finished notice, accepts with sign_off or sends
 # the issue back. The wait is for accepting itself, read within a poll of the reviewer's completion;
 # the architect acts on no notice under the proof's instructions, so the issue stands there until
-# children-first-acceptance's prompt. A root in accepting is at work no longer, so it holds no
-# admission slot there either.
+# children-first-acceptance's prompt. A root in accepting holds no admission slot: its work is
+# past its review, so the daemon takes the row back there, while its tree stays live and its
+# architect keeps its pod.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
 until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$tree1" architect \
@@ -4773,10 +4890,10 @@ pending_phase=$(claim_pending_phase "$tree1" implementer)
 jq -e --arg issue "$tree1" '[.pendingStatusWrites[]? | select(.issue == $issue)] | length == 0' "$evidence/accepting.json" >/dev/null ||
   fail "a status write is pending for $tree1 at accepting, which writes none: $(jq -c --arg issue "$tree1" '[.pendingStatusWrites[]? | select(.issue == $issue)]' "$evidence/accepting.json")"
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and (.admission.trees | index($issue)) != null' "$evidence/accepting.json" >/dev/null ||
-  fail "$tree1 holds an admission slot at accepting, or its tree is not live: $(jq -c '{active: .admission.active, trees: .admission.trees}' "$evidence/accepting.json")"
+  fail "$tree1 still holds an admission slot at accepting, or its tree is not live: $(jq -c '{active: .admission.active, trees: .admission.trees}' "$evidence/accepting.json")"
 dispatch_status_is "$tree1" needs_review >/dev/null ||
   fail "Dispatch shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at accepting, want needs_review, which the move to accepting leaves alone"
-note "the reviewer's approval moved $tree1 to accepting (no worker started, no slot held, the board still needs_review, the architect holding the reviewer's phase-finished notice)"
+note "the reviewer's approval moved $tree1 to accepting (no worker started, the slot given back, the board still needs_review, the architect holding the reviewer's phase-finished notice)"
 pass
 
 begin children-first-acceptance
@@ -4791,8 +4908,10 @@ begin children-first-acceptance
 #
 # They are filed here, and nowhere earlier or later, for three reasons. They live through no
 # checkpoint that judges every live claim of tree 1 (the restart and both address moves all come
-# later). The root in accepting holds no slot of its own, so the two children beside tree 3 keep
-# the run within admission_cap 4 and within the pods preflight sized the pool for. And an issue
+# later). The root in accepting holds no slot of its own, so tree 3 and these two children are
+# three of admission_cap 4 — tree 2 left the workflow at issue-cap-moves and child 2 is parked
+# again — and the root's pod beside their three is the four pods preflight sized the pool
+# for. And an issue
 # may not enter a tree whose root is already accepted: from retro onwards the daemon holds such a
 # child at admitted and starts nothing for it (CHILD_UNDER_ACCEPTED_PARENT, record.Accepted),
 # so accepting is the last moment of tree 1's run at which a child of it still runs.
@@ -4981,7 +5100,7 @@ begin full-agent-tools
 # refused) and 5 (plain gh as the role's App, in subagents too). The five instructions are sent
 # first and waited for after, so the roles run at once; the browser is asserted in every role, since
 # the criterion is every role, not one per pod.
-# The merger does less, and is left waiting for the READY instruction done sends.
+# The merger does less, and is left waiting for the merge instruction done sends.
 issue_phase "$tree1" merging >/dev/null || fail "$tree1 left merging before the full-agent-tools operation: $(daemon_state | jq -c --arg i "$tree1" '.issues[$i].phase')"
 on_tree "$tree1" wait_for_worker "$tree1" merger
 mkdir -p "$evidence/full-agent-tools"
@@ -5588,7 +5707,7 @@ begin controller
 # `legion controller start` on the devbox registers with the Sandbox daemon, and tree 3 supplies the
 # held phase whose notice reaches it. Tree 3 then stays held through full-agent-negative, the one
 # live tree without a pull request while a controller runs, and controller-walk takes it out with
-# `legion status … backlog` from the operator shell, which Dispatch shows.
+# `legion issue status … backlog` from the operator shell, which Dispatch shows.
 if [ -n "$skip_controller" ]; then
 take_out "$tree3"
 skipped "STAGE4B_SKIP_CONTROLLER: a development run; tree 3 was only taken out"
@@ -5618,9 +5737,12 @@ omp_invocation: mise x $pin -- omp
 state_dir: $work/controller-state
 EOF
 # LEGION_GH_PATH is the real gh the controller's `legion gh` runs, mise's: the devbox's gh on PATH
-# is a wrapper that replaces GH_CONFIG_DIR in an agent session.
+# is a wrapper that replaces GH_CONFIG_DIR in an agent session. The pane is the operator's shell
+# less the running session's own Oh My Pi and Envoy variables (omp_session_unsets, lib/omp-home.sh):
+# `legion controller start` hands Oh My Pi its caller's environment, so an operator session's
+# PI_CONFIG_FILES would lay that session's own settings overlays over the run's profile.
 tmux -L "legion-e2e4b-$$" new-session -d -s controller -x 200 -y 50 \
-  "cd '$work' && HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/controller.stderr'; sleep 3600"
+  "cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/controller.stderr'; sleep 3600"
 until_true 300 "controllerLocator in the state" sh -c "'$work/legion' state --json --config '$work/legion.yaml' | jq -e '.controllerLocator.sessionId != null' >/dev/null"
 controller_session=$(daemon_state | jq -r .controllerLocator.sessionId)
 note "controllerLocator $(daemon_state | jq -c .controllerLocator)"
@@ -5888,32 +6010,37 @@ note "tree 3's planner, relaunched as process $(jq -r .locator.incarnation <<<"$
 pass
 
 begin controller-walk
-# `legion status … backlog` from the operator shell takes tree 3 out, Dispatch shows it, and the
-# controller is woken about the slot it frees (LEGION-392).
+# `legion issue status … backlog` from the operator shell takes tree 3 out, Dispatch shows it, and
+# the controller is woken about the slot it frees (LEGION-392).
 before_status=$(dispatch_get "issues/$tree3" | jq -r .status)
-out=$("$work/legion" status "$tree3" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" 2>&1) || fail "legion status $tree3 backlog from the operator shell: $out"
+out=$("$work/legion" issue status "$tree3" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" 2>&1) || fail "legion issue status $tree3 backlog from the operator shell: $out"
 until_true 120 "Dispatch to show $tree3 in backlog" dispatch_status_is "$tree3" backlog
-note "legion status $tree3 backlog from the operator shell, with the operator bearer: Dispatch moved $tree3 from $before_status to $(dispatch_get "issues/$tree3" | jq -r .status)"
+note "legion issue status $tree3 backlog from the operator shell, with the operator bearer: Dispatch moved $tree3 from $before_status to $(dispatch_get "issues/$tree3" | jq -r .status)"
 until_true 600 "$tree3's pods to be gone" sh -c \
   "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/tree=$tree3' -o name) && [ -z \"\$out\" ]"
 # The controller's slot wakes reach it, and it takes nothing for them (LEGION-392).
 # (1) The controller was launched with the daemon's own design gate steps, none here (the run's
 # `gates.design` is `off`, the empty list): the Oh My Pi running in the controller's directory
-# carries the line in its --append-system-prompt.
+# carries the line in its system prompt, the file its --append-system-prompt names.
 steps_line='Design gate steps: none.'
 controller_launched_with_steps() {
-  local proc
+  local proc file
   for proc in /proc/[0-9]*; do
     [ "$(readlink "$proc/cwd" 2>/dev/null)" = "$work/controller-state/controller" ] || continue
-    tr '\0' '\n' <"$proc/cmdline" 2>/dev/null | grep -qF "$steps_line" && return 0
+    file=$(tr '\0' '\n' <"$proc/cmdline" 2>/dev/null | awk 'p{print;exit} $0=="--append-system-prompt"{p=1}')
+    [ -n "$file" ] && grep -qF "$steps_line" "$file" && return 0
   done
   return 1
 }
 controller_launched_with_steps || fail "no process in $work/controller-state/controller was launched with '$steps_line'"
 note "the controller's Oh My Pi was launched with '$steps_line'"
-# (2) With tree 3 out, a slot stands free (tree 1, in merging, holds the only one taken), so an unlabelled leaf set to
-# todo wakes the controller with `todo on <KEY>`.
-free=$(daemon_state | jq -r '.admission.cap - (.admission.active | length) - (.admission.waiting | length)')
+# (2) With tree 3 out, a slot stands free — tree 1 stands in merging, past its review, and holds
+# none — so an unlabelled leaf set to
+# todo wakes the controller with `todo on <KEY>`. One issue can stand in both lists — an issue
+# holding a row waits in the line while its work comes back to it — so the waiting issues
+# subtracted here are the ones `admission.active` does not name: subtracting such an issue twice
+# would read a state that does have a free slot as one that has none.
+free=$(daemon_state | jq -r '.admission.cap - (.admission.active | length) - ((.admission.waiting - .admission.active) | length)')
 [ "$free" -gt 0 ] || fail "no admission slot stands free after $tree3 left ($(daemon_state | jq -c .admission)), so no slot wake can be sent"
 unhanded=$(dispatch_human POST issues "$(jq -cn --arg project "$project" --arg title "Stage 4b proof issue nobody hands to Legion ($work)" '{project:$project,title:$title,force:true}')" | jq -er .key) ||
   fail "create the unlabelled issue nobody hands to Legion in $project"
@@ -5949,7 +6076,7 @@ begin daily-report
 # The controller's daily report runs by rule, not on a human's word, so the proof's instructions
 # exempt it from their wait for a targeted message and fit its day to this run: a report issue of
 # this run's own (so the skill's "no report message from today" guard starts fresh), posted on the
-# first turn a tick starts. With every slot taken, the tick is the quiet day's only wake.
+# first turn a tick starts. Nothing of the run moves in this window, so the tick is the quiet day's only wake.
 if [ -n "$skip_controller" ]; then
   skipped "STAGE4B_SKIP_CONTROLLER: no controller ran"
 else
@@ -6103,9 +6230,9 @@ if [ -n "$skip_controller" ]; then
 else
 # The controller the daemon launched: its gh, from its owner's directory of the pod's gh bundle,
 # answers tree 1's pull request's state and the review App's viewer, the bundle holds that directory
-# with both gh files and nothing else, since a controller is built with no repository of its own and
-# so holds no `<owner>/<repo>` directory (appauth.bundleDirs), beside the other owners' directories
-# and the kubelet's own entries alone (assert_gh_files), and the real gh with
+# with both gh files and nothing else, since a bundle holds one directory per owner account the App
+# is installed on and no directory for a repository (INFRA-2543 R2), beside the other owners'
+# directories and the kubelet's own entries alone (assert_gh_files), and the real gh with
 # GH_CONFIG_DIR=/nonexistent answers neither.
 [ -n "$pr_number" ] || fail "the controller's GitHub credential check needs tree 1's pull request, but pr_number is empty"
 container=$(jq -r .locator.sandbox.container <<<"$claim")
@@ -6116,7 +6243,7 @@ case "$state" in
 esac
 viewer=$(pod_viewer "$pod" "$container") || fail "the daemon-launched controller's gh in $pod/$container answered no viewer"
 [ "$viewer" = "$(role_app controller)" ] || fail "the daemon-launched controller's gh answered viewer $viewer, want the review App's $(role_app controller)"
-assert_gh_files "$pod" "$container" "the daemon-launched controller's container $pod/$container" owner-only
+assert_gh_files "$pod" "$container" "the daemon-launched controller's container $pod/$container"
 if out=$(pod_exec "$pod" "$container" sh -c "GH_CONFIG_DIR=/nonexistent GH_TOKEN= GITHUB_TOKEN= GH_HOST= /usr/local/bin/gh pr view $pr_number -R $repo --json state -q .state" 2>&1); then
   fail "gh with GH_CONFIG_DIR=/nonexistent in $pod/$container unexpectedly answered pull request state: $(scrub <<<"$out")"
 fi
@@ -6202,8 +6329,18 @@ until [ -n "$planner_killed" ]; do
   if hold_end_charged "$(claim_token "$tree4" planner)"; then planner_killed=$ended_incarnation; fi
 done
 note "killed $tree4's planner mid-turn (process $planner_killed in pod $ended_pod_uid)"
-interrupted_needle="Your previous turn on this task was interrupted when your process died."
-planner_resent() { session_contains "$tree4" planner "$interrupted_needle"; }
+# The task goes again behind the sentence the claim's record of the kill composes
+# (packages/daemon/internal/supervise/relaunch.go, relaunchSentence): its first statement says the
+# turn was interrupted, and the next names the death as its cause. Both are read, each as a fixed
+# string of the planner's session, because neither alone says the kill was what it told.
+interrupted_needle="Your previous turn on this task was interrupted."
+death_needle="ended because the process died: "
+# One read of the session serves both needles, since each poll reads the whole session text.
+planner_resent() {
+  local text
+  text=$(claim_session_text "$tree4" planner) || return 1
+  grep -Fq -- "$interrupted_needle" <<<"$text" && grep -Fq -- "$death_needle" <<<"$text"
+}
 on_tree "$tree4" until_true 600 "$tree4's planner to be sent its task again, told its turn was interrupted" planner_resent
 send_agent "$tree4" planner "Stage 4b proof planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 on_tree "$tree4" wait_for_phase "$tree4" implementing "$plan_seconds"
@@ -6259,77 +6396,98 @@ on_tree "$tree1" wait_for_worker "$tree1" merger
 # at children-first-acceptance, before the sign-off the daemon held for them, and no issue has
 # entered the tree since, which beneath an accepted root the daemon refuses — so the merge's own
 # close runs (closeMerged, internal/workflow/pullrequest.go): the status done, the slots its
-# issues held already freed, the tree lingered
-# (linger_hours 0.5) with every member's claims suspended, and the production check opened on the
+# issues held already freed, the tree lingered (linger_hours 0.5) with every member's claims
+# suspended except child 1's, which its done retired, and the production check opened on the
 # merge commit, whose first look the daemon hands the tester — the role a project that names no
 # `production_check` gets — in the still-live pod: its claim alone comes back, resumed on its kept
 # session, while the other five stay suspended, and the root's Sandbox stays Running for the look
-# (the look's start supersedes the linger's suspension of the issue). The wait a root in
-# awaiting_merge keeps for the rest of its tree is no state a tree started on this release
-# reaches, so it is proven where the shape can be seeded, on the daemon's own live proof
-# (scripts/e2e/merged-root-waits.sh).
-# The daemon submits the READY head's merge itself the moment it accepts READY, so what must be in
-# place at the merge is in place before the merger's READY. The smoke main is held from here until
+# (the look's start supersedes the linger's suspension of the issue).
+# The merger merges the pull request itself, at the head it read, so what must be in place at the
+# merge is in place before the merger is released. The smoke main is held from here until
 # the cleanup below has emptied it (hold_smoke_main), on an open descriptor: start no background
 # child before release_smoke_main, or it inherits the descriptor and holds the smoke main past this
 # run's window; `9>&- 7>&-` does not close it: its number is allocated at runtime, not fixed.
 hold_smoke_main
-send_agent "$tree1" merger "Stage 4b proof READY operation: verify pull request #$pr_number is ready to merge and call the legion tool's handoff_complete with ready true."
-on_tree "$tree1" wait_for_phase "$tree1" awaiting_merge 900
-# READY is posted with every review thread on the pull request resolved: the implementer resolved
-# the reviewer's thread in its correction round and the bot's once the reviewer named it as
-# accepted (review-thread). The merger resolves nothing and the daemon's READY reads no thread
-# state, so this is the end state the roles left, read here as the merger found it.
-ready_packet() {
-  dispatch_events "$tree1" | jq -er --arg ready "READY #$pr_number at " \
-    '[.[] | select(.type == "message.created" and (.payload.body | startswith($ready))) | .payload.body] | last | select(. != null)'
-}
-on_tree "$tree1" until_true 300 "the daemon's READY packet for pull request #$pr_number on $tree1" ready_packet
-ready_packet >"$evidence/ready-packet.txt"
-ready_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) || fail "read pull request #$pr_number's head"
-ready_sha=$(sed -n '1s/^READY #[0-9]* at \([0-9a-f]\{7,40\}\) .*/\1/p' "$evidence/ready-packet.txt")
-[ -n "$ready_sha" ] && [ "${ready_head#"$ready_sha"}" != "$ready_head" ] ||
-  fail "the READY packet's first line names '${ready_sha:-no sha}', not pull request #$pr_number's head $ready_head: $(head -1 "$evidence/ready-packet.txt")"
-review_threads >"$evidence/review-threads-at-ready.json" || fail "read pull request #$pr_number's review threads at READY"
+# Every review thread on the pull request is resolved before the merger acts: the implementer
+# resolved the reviewer's thread in its correction round and the bot's once the reviewer named it
+# as accepted (review-thread). The merger resolves nothing and reads no thread state, so this is
+# the end state the roles left, read here as the merger finds it.
+merge_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) || fail "read pull request #$pr_number's head"
+review_threads >"$evidence/review-threads-at-merge.json" || fail "read pull request #$pr_number's review threads before the merge"
 for id in "$thread_id" "$bot_thread_id"; do
-  threads_all_resolved "$evidence/review-threads-at-ready.json" "$id" ||
-    fail "READY was posted at $ready_head with review threads unresolved: $(jq -c '[.[] | select(.isResolved | not) | {id, newest: ([.comments[] | select(.state == "SUBMITTED")] | last | .author)}]' "$evidence/review-threads-at-ready.json"), or without the thread $id"
+  threads_all_resolved "$evidence/review-threads-at-merge.json" "$id" ||
+    fail "the merger reached $merge_head with review threads unresolved: $(jq -c '[.[] | select(.isResolved | not) | {id, newest: ([.comments[] | select(.state == "SUBMITTED")] | last | .author)}]' "$evidence/review-threads-at-merge.json"), or without the thread $id"
 done
 # Control: the same record with the reviewer's thread unresolved fails.
 jq --arg id "$thread_id" 'map(if .id == $id then .isResolved = false else . end)' \
-  "$evidence/review-threads-at-ready.json" >"$evidence/review-threads-unresolved-negative.json"
-expect_failure unresolved-thread-at-ready threads_all_resolved "$evidence/review-threads-unresolved-negative.json" "$thread_id"
-note "READY #$pr_number was posted at $ready_head with $(jq length "$evidence/review-threads-at-ready.json") review threads, 0 unresolved, the reviewer's $thread_id and the bot's $bot_thread_id among them"
-# The daemon submits the READY head's merge itself; await_ready_merge reads the pull request until
-# it merges and never merges it by hand.
-await_ready_merge "$repo" "$pr_number" --delete-branch
+  "$evidence/review-threads-at-merge.json" >"$evidence/review-threads-unresolved-negative.json"
+expect_failure unresolved-thread-at-merge threads_all_resolved "$evidence/review-threads-unresolved-negative.json" "$thread_id"
+note "pull request #$pr_number stands at $merge_head with $(jq length "$evidence/review-threads-at-merge.json") review threads, 0 unresolved, the reviewer's $thread_id and the bot's $bot_thread_id among them"
+# The merger merges it; await_merger_merge reads the pull request until it merges and never merges
+# it by hand.
+send_agent "$tree1" merger "Stage 4b proof merge operation: merge pull request #$pr_number exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary."
+await_merger_merge "$repo" "$pr_number" --delete-branch
 # The whole run pushed no commit only to hand off (A2): every commit the merged pull request holds,
 # the run's every push on legion/$tree1, changes something outside .legion/ (or nothing, an empty
 # commit), since each role's handoff was its Dispatch record (assert_handoff_record above).
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
 note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' | grep -c .) commits, none changing only .legion/"
-# The merge closes the root on the merge itself: nothing of tree 1 is in the workflow, so
-# closeMerged waits for nobody. The wait INFRA-229 added is entered only with an issue of the
-# tree still in it, and the architect's pr-merged notice is that wait's own
-# (closeMergedTelling), so neither the wait's log line nor the notice may appear here.
+# The merge is recorded and the root waits for the rest of its tree (INFRA-229).
+merge_recorded() {
+  daemon_state | jq -e --arg issue "$tree1" '.issues[$issue] | .phase == "merging" and .pullRequest.state == "merged"' >/dev/null
+}
+on_tree "$tree1" until_true 600 "the daemon to record pull request #$pr_number merged on $tree1, which stays in merging" merge_recorded
+waiting_for=$(log_lines "workflow: a merged root's close waits for the rest of its tree" |
+  jq -r -s --arg issue "$tree1" '[.[] | select(.issue == $issue)] | last | .waitingFor // empty')
+[ "$waiting_for" = "$child3, $child4" ] ||
+  fail "the daemon logged $tree1's merged close waiting for '${waiting_for:-nothing}', want \"$child3, $child4\""
+until_true 300 "the pr-merged notice on $tree1's architect" notice_delivered "$tree1" architect "$(notice_needle pr-merged "$tree1")"
+merged_notice=$(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")")
+for want in "#$pr_number" "$child3" "$child4"; do
+  grep -qF -- "$want" <<<"$merged_notice" ||
+    fail "the pr-merged notice on $tree1's architect does not name $want: $(cut -c1-300 <<<"$merged_notice")"
+done
+state_file merged-waiting
+jq -e --arg issue "$tree1" '(.admission.active | index($issue)) != null and .issues[$issue].check == null' "$evidence/merged-waiting.json" >/dev/null ||
+  fail "the merge freed $tree1's slot or opened its production check while its tree still ran: $(jq -c --arg issue "$tree1" '{active: .admission.active, check: .issues[$issue].check}' "$evidence/merged-waiting.json")"
+dispatch_status_is "$tree1" retro >/dev/null ||
+  fail "the board shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at its merge, want the retro it stands in: the done is the close's"
+lingered=$(log_lines "workflow: tree lingers" | jq -c --arg tree "$tree1" 'select(.tree == $tree)' | grep -c . || true)
+[ "$lingered" = 0 ] ||
+  fail "the daemon lingered tree $tree1 at its merge ($lingered times) while $child3 and $child4 were still in the workflow"
+merge_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
+case $merge_claims in *suspended*) fail "the merge suspended a claim of $tree1 while its tree still ran: $merge_claims" ;; esac
+note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the daemon recorded the merge and left $tree1 in merging (claims $merge_claims, its slot kept, Dispatch retro, no linger, no production check), telling its architect once that the close waits for $waiting_for"
+# The children leave one at a time, and only the last park closes the root. A parked child leaves
+# the workflow (phase done) with its claims suspended, and the park deletes its Sandbox with the six
+# role Secrets it owned once its pod is gone, the disk going with that pod: the path child-release
+# took for child 2, read the same way (child_parked).
+for child in "$child3" "$child4"; do
+  if [ "$child" = "$child3" ]; then child_pod=$child3_pod; else child_pod=$child4_pod; fi
+  set_status "$child" backlog
+  until_true 600 "$child to leave the workflow" issue_phase "$child" "done"
+  until_true "$phase_seconds" "$child's park to suspend its planner" issue_worker_state "$child" planner suspended
+  until_true 600 "$child's Sandbox, pod and disk to be gone after its backlog" child_parked "$child" "$child_pod"
+  note "the proof human parked $child (backlog): it left the workflow, its planner is suspended, and it has no Sandbox, no pod and no disk (its pod $child_pod took the disk $child_pod-issue with it)"
+  [ "$child" = "$child4" ] || issue_phase "$tree1" merging >/dev/null ||
+    fail "$tree1 left merging on $child3's park, with $child4 still in the workflow"
+done
+# The last park closes the root, as the merge of a finished tree's root does.
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
-phase_change_logged "$tree1" awaiting_merge "done" pull_request_merged ||
-  fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from awaiting_merge to done on pull_request_merged"
-waited=$(log_lines "workflow: a merged root's close waits for the rest of its tree" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
-[ "$waited" = 0 ] ||
-  fail "the daemon logged $tree1's merged close waiting for the rest of its tree $waited times, though $child3 and $child4 left the workflow at children-first-acceptance: $(log_lines "workflow: a merged root's close waits for the rest of its tree" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | tail -1)"
-told=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
-[ "$told" = 0 ] ||
-  fail "$tree1's architect was told $told pr-merged notices, which only a close that waits for the rest of its tree sends: $(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")" | tail -1 | cut -c1-300)"
+phase_change_logged "$tree1" merging "done" pull_request_merged ||
+  fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
+closed_last=$(log_lines "workflow: a merged root closes once its last child left the workflow" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
+[ "$closed_last" = 1 ] ||
+  fail "the daemon logged \"a merged root closes once its last child left the workflow\" for $tree1 $closed_last times, want once, at $child4's park"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
-# No issue of tree 1 holds an admission slot once it closes: the root gave its own up at
-# accepting, its children theirs at their parks, and the close frees whatever is left.
+# No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached
+# accepting, past its review, its children's at their parks, and the close frees whatever is left.
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
   "$evidence/merged-closed.json" >/dev/null ||
   fail "an issue of tree $tree1 holds an admission slot at its close: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/merged-closed.json")"
-note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the merge closed $tree1 at once, with nothing of its tree left in the workflow — phase changed awaiting_merge → done on pull_request_merged, the board reads done, no issue of the tree holds a slot, no close waited and no pr-merged notice was sent"
+note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit: the merge closed $tree1 at once, with nothing of its tree left in the workflow — phase changed merging → done on pull_request_merged, the board reads done, no issue of the tree holds a slot, no close waited and no pr-merged notice was sent"
 check_opened_on "$tree1" "$merge_when_clean_commit" ||
   fail "$tree1's production check reads $(daemon_state | jq -c --arg issue "$tree1" '.issues[$issue].check'), want it open on merge commit $merge_when_clean_commit at its first look, woken by the merge"
 state_file check-opened
@@ -6342,8 +6500,7 @@ first_look_handed() { claim_states_are "$tree1" tester "ready working idle" susp
 until_true 300 "the close to leave the tester live at its first look, the five other claims of $tree1 suspended" first_look_handed
 first_look_claims=$(issue_claim_states "$tree1" | paste -sd ',' -)
 # The first look. The task the daemon handed the tester is the whole instruction: the proof
-# sends it nothing, since the issue is closed and a closed issue takes no Dispatch write (409
-# ISSUE_CLOSED), and the fixture's instructions say a check task waits for no targeted message. The
+# sends it nothing, and the fixture's instructions say a check task waits for no targeted message. The
 # smoke repository is neither the deploy repository nor a Legion production, so the look's verdict is
 # pending: the check stays open with its first look reported, and the daemon suspends the
 # tester's claim, session kept, and deletes the issue's Sandbox, which takes the pod and the
@@ -6421,7 +6578,7 @@ begin production-check-bound
 # look, woken by the bound. The wait runs from here, after done: what remains of the 15 minutes,
 # and a bound deferred by a look still open when it came due (by the look's own two-hour bound)
 # fails here by name rather than hanging. The last look's pending closes the check as not_run: the
-# tester's claim is retired, its session dropped (issue_close), the state omits the check, and the
+# tester's claim is retired, its session kept (issue_close), the state omits the check, and the
 # root's Sandbox is deleted again with the pod it ran in and the disk that pod owned, leaving the
 # close at linger expiry nothing of it to take. It runs before node-release, which needs tree 1's
 # pods gone for good, and the tree's close at its linger expiry (close) waits for no open check
@@ -6430,9 +6587,10 @@ until_true 900 "the bound to start the last look of $tree1's production check" l
 state_file check-look-2
 # The pod comes back for the look: 1 to 3 minutes in acceptance runs, placed on the pool like any.
 # A tester that reported the last look before this read has had its pod taken again. The
-# daemon's task names the last look and its rule (write on the pull request that the check did not
-# run within the bound, report pending), and the proof sends the closed issue nothing: the close of
-# the check is the observation.
+# daemon's task names the last look and its rule (its pending is for production not carrying the
+# merge alone, as here: write on the pull request that the check did not run within the bound,
+# report pending), and the proof sends the closed issue nothing: the close of the check is the
+# observation.
 last_look_pod_back() { root_running || check_closed "$tree1"; }
 on_tree "$tree1" until_true 900 "the bound's look to make the root's Sandbox $root_pod again, Running, and bring its pod back" last_look_pod_back
 until_true 600 "the last look's pending report to close $tree1's production check" check_closed "$tree1"

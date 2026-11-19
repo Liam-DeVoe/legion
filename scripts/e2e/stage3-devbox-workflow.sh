@@ -28,14 +28,23 @@
 # sjawhar-agent App), never a Legion App, so run the script from the operator's own Oh My Pi
 # session, not a Legion pane, with no personal GH_TOKEN in its environment: `prerequisites` refuses
 # to start otherwise (require_proof_human, lib/workflow.sh).
-# Legion's two role Apps are this deployment's own by default, and four inputs for another
-# deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id, and
-# LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_SECRET, the secrets broker github-app
-# secrets that release their installation tokens (lib/github-apps.sh). `prerequisites` proves each
-# App from its token before the run writes anything, whichever pair it took. The tokens are
-# released through each App's token_command to the daemon, and once to lib/app-logins.ts to prove
-# each App and read its bot login from GitHub (read_app_logins, lib/workflow.sh); they never enter
-# this shell, a pane, an argv, or this transcript.
+# Legion's two role Apps are this deployment's own by default, and three inputs name another
+# deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id,
+# and LEGION_E2E_IMPLEMENT_APP_SECRET, the name of the secrets broker github-app secret that
+# releases the implement App's installation tokens (lib/github-apps.sh). Those three default. The
+# fourth, LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that prints the review App's PEM private
+# key on stdout, is no input for another deployment's Apps: every run needs it, this deployment's
+# own included, it has no default, and a run that sets none is refused.
+# `prerequisites` runs that command once, here on the driver, in the operator's own environment —
+# so it may read their HOME and their own gcloud or kubectl configuration — and writes what it
+# prints to $work/app-key/review/key.pem, 0600 in a directory of mode 0700, which cleanup removes
+# on every exit. The daemon never runs it: the review App's private_key_command is a `cat` of that
+# file, and the daemon mints and renews that App's tokens from the key it reads there. The
+# implement App's tokens are released through its token_command, which runs agent-secrets.
+# `prerequisites` proves each App from its token before the run writes anything, whichever Apps it
+# took: either is proved once to lib/app-logins.ts, which reads its bot login from GitHub
+# (read_app_logins, lib/workflow.sh). No token and no key enters this shell, a pane, an argv, or
+# this transcript.
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -173,6 +182,10 @@ cleanup() {
   # resolved path, must never survive this script on any exit, so it is never conditioned on how
   # the rest of cleanup goes.
   rm -rf "$work/model-gateway-key" || true
+  # The review App's private key, which prerequisites resolved the operator's key command into for
+  # the daemon to read, goes with it and for the same reason: $work itself is kept when a run
+  # fails, and a private key must not be what it keeps.
+  rm -rf "$work/app-key" || true
   if [ -z "${ok:-}" ] && [ -z "$audited" ] && [ -n "$prod_baseline" ]; then
     printf 'production audit after failure:\n' >&2
     production_audit >&2 || audit_failed=1
@@ -220,6 +233,9 @@ cleanup() {
   [ -n "${ok:-}" ] || [ "$check" != smoke-main-clean ] || [ -n "$audit_failed" ] ||
     [ -s "$evidence/pane-endpoint-violation.txt" ] || [[ $status =~ ^(129|130|143)$ ]] ||
     printf 'stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean): every checkpoint before it passed, the workflow under test through its daemon merge, the close it made and the production check'"'"'s first look included; only the cleanup of %s main failed, and the checkpoints after it did not run\n' "$repo" >&2
+  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
+  app_key_left "$work/app-key" || exit 1
   return 0
 }
 trap cleanup EXIT
@@ -355,11 +371,11 @@ stop_dispatch() {
 issue_worker_pane() {
   daemon_state | jq -er --arg issue "$1" --arg role "$2" '.issues[$issue].workers[$role].claim.locator.tmux.pane'
 }
-# A slot is one issue with work, not one tree (dispatch://INFRA-980), so a child takes a slot of
-# its own once its first phase starts. This child cannot start yet: its tree's design gate has
-# never opened, so it stands at admitted, holds no slot and is in no line, while the cap's two
-# slots stay with the two roots whose architects write their specs. admission.trees names its
-# tree, never the child, and the state's own `tree` field puts the child in that tree; the
+# A slot is one issue the daemon has started, not one tree (dispatch://INFRA-980), so a child
+# takes a slot of its own once the daemon starts its first phase. This child cannot start yet: its
+# tree's design gate has never opened, so it stands at admitted, holds no slot and is in no line,
+# while the cap's two slots stay with the two roots the daemon has started. admission.trees names
+# its tree, never the child, and the state's own `tree` field puts the child in that tree; the
 # daemon's record is read too, as the durable source of the same fact.
 child_waits_in_its_tree_without_a_slot() {
   local child=$1 root_issue_key=$2 tree
@@ -395,6 +411,21 @@ claim_session_text() {
   local f
   f=$(claim_session_file "$1" "$2") || return 1
   cat -- "$f"
+}
+# pane_bundle_listing ISSUE prints, one a line, what the implementer's own `ls` of its gh bundle's
+# root listed: the words after CRED-OWNERS= in the newest result of its bash tool that holds that
+# line. Only a tool result is read: the instruction holds the command unexpanded, so its own text
+# never starts a line with the marker, and the model's reply could say anything. It fails while
+# the session holds no such result.
+pane_bundle_listing() {
+  local text listed
+  text=$(claim_session_text "$1" implementer) || return 1
+  listed=$(jq -R -r 'fromjson? | objects
+    | select(.type == "message" and .message.role == "toolResult" and .message.toolName == "bash")
+    | .message.content[]? | select(.type == "text") | (.text // "") | split("\n")[]
+    | select(startswith("CRED-OWNERS="))' <<<"$text" | tail -n 1) || return 1
+  [ -n "$listed" ] || return 1
+  tr -s ' ' '\n' <<<"${listed#CRED-OWNERS=}" | sed '/^$/d'
 }
 workspace_jj() {
   local issue=$1
@@ -503,11 +534,12 @@ rig_sessions_json() {
   jq -R -s -c 'split("\n") | map(fromjson? | select(.msg == "api: claim registered") | .session) | unique' \
     "$evidence/logs/daemon.log"
 }
-# production_audit replays production Dispatch events since the baseline and fails on any event a
-# rig session authored, any event naming this rig's project key, and any rig session on the
-# production Envoy listener. The baseline event itself is the positive control that the replay ran.
+# production_audit fails on any rig session on the production Envoy listener and, through
+# production_dispatch_audit, on any production Dispatch event a rig session authored or that names
+# the rig's project key, on a production project naming that key, or on an audit that cannot vouch
+# for production.
 production_audit() {
-  local sessions bearer events envoy found=0
+  local sessions envoy found=0
   audited=1
   sessions=$(rig_sessions_json)
   printf '%s\n' "$sessions" >"$evidence/rig-sessions.json"
@@ -525,32 +557,7 @@ production_audit() {
     printf 'no user-level Dispatch configuration exists, so no production Dispatch fallback was possible\n'
     return "$found"
   fi
-  bearer=$work/production-dispatch-bearer
-  (umask 077 && printf '%s\n' "$prod_token" >"$bearer")
-  # A refusal of the feed is printed on stderr; the replay's close, resubscribe and duplicate lines
-  # carry no event and are not counted, so an event a redial repeats counts once. The probe takes
-  # its cursor from Dispatch's own events_start, so a --since the server clamps to its head leaves
-  # the events after that head counted, not written off as duplicates.
-  bun "$root/scripts/e2e/lib/dispatch-live-events.ts" \
-    --url "$prod_dispatch_url" --bearer-file "$bearer" --since "$((prod_baseline - 1))" --timeout 25 \
-    >"$work/production-events.jsonl" || true
-  rm -f "$bearer"
-  events=$(jq -s -c --argjson ids "$sessions" --arg project "$project" --argjson baseline "$prod_baseline" '
-    [.[] | .event | select(. != null)] |
-    {control: any(.[]; .id == $baseline), count: length,
-     rig: [.[] | select((.actor.id as $a | $ids | index($a)) or (tostring | contains($project)))
-       | {id, issue_key, type, actor: .actor.id, created_at}]}' "$work/production-events.jsonl")
-  printf '%s\n' "$events" >"$evidence/production-dispatch-audit.json"
-  if ! jq -e '.control' >/dev/null <<<"$events"; then
-    printf 'production Dispatch replay did not return its baseline event %s\n' "$prod_baseline"
-    return 1
-  fi
-  if ! jq -e '.rig == []' >/dev/null <<<"$events"; then
-    printf 'production Dispatch has rig-authored events: %s\n' "$(jq -c .rig <<<"$events")"
-    found=1
-  fi
-  printf 'production audit: %s events replayed since %s, rig events %s, rig Envoy sessions %s\n' \
-    "$(jq -r .count <<<"$events")" "$prod_baseline" "$(jq -c .rig <<<"$events")" "$envoy"
+  production_dispatch_audit "$sessions" "$envoy" || found=1
   return "$found"
 }
 
@@ -574,12 +581,6 @@ assert_held_snapshot() {
     .issues[$issue].phase == "held" and .issues[$issue].workers.implementer.claim.state == "failed"
   ' "$file" >/dev/null
 }
-assert_ready_gate_closed() {
-  local file=$1
-  jq -e --arg issue "$root_issue" '
-    .issues[$issue].phase == "merging" and .issues[$issue].designGate.currentVersion > .issues[$issue].designGate.approvedVersion
-  ' "$file" >/dev/null
-}
 # await_tree_suspended ISSUE WHAT waits for ISSUE's tree architect to be suspended once its tree
 # lingers. The daemon holds that suspension for the architect's turn and names it no deadline
 # (packages/daemon/internal/supervise/suspend.go, holdSuspension), so the wait's bound is the
@@ -599,51 +600,17 @@ report_architect_suspension() {
     jq -c --arg issue "$suspension_issue" '[.claims[] | select(.issue == $issue and .role == "architect")
       | {state, suspensionHeld: (.suspensionHeld // false), suspendedBy: (.suspendedBy // null), pending: (.pending.id // null)}]')"
 }
-# The design gate in the daemon's state: closed while the spec's current version is past the one a
-# human approved, open while the approved version is the current one; design_gate_version ISSUE
-# prints the spec version the gate currently names.
-design_gate_closed() {
-  daemon_state | jq -e --arg issue "$1" '.issues[$issue].designGate.currentVersion > .issues[$issue].designGate.approvedVersion' >/dev/null
-}
-design_gate_open() {
-  daemon_state | jq -e --arg issue "$1" '.issues[$issue].designGate.approvedVersion == .issues[$issue].designGate.currentVersion' >/dev/null
-}
-design_gate_version() { daemon_state | jq -er --arg issue "$1" '.issues[$issue].designGate.currentVersion'; }
-# spec_event ISSUE TYPE VERSION: the issue's Dispatch event log carries the TYPE event
-# (artifact.version or artifact.approved) naming the spec ($artifact_id) at VERSION; spec_event_in
-# TYPE VERSION reads a saved log on stdin. The spec is not the issue's only document (the planner's
-# plan is another), so the event is matched by artifact as well as by version: the number an
-# artifact.approved payload carries bare and an artifact.version payload as its version record's.
-spec_event() { dispatch_events "$1" | spec_event_in "$2" "$3"; }
-spec_event_in() {
-  jq -e --arg type "$1" --argjson version "$2" --arg artifact "$artifact_id" '
-    any(.[]; .type == $type and .payload.artifact_id == $artifact
-      and (.payload.version | if type == "object" then .number else . end) == $version)
-  ' >/dev/null
-}
-# The decision block the proof inserts into the spec as an architect would (skills/dispatch/
-# SKILL.md, "Asks and ask blocks"), and its question, by which the ask settlement indexes
-# from it is found.
-carry_question='Stage 3 proof question: keep or drop the smoke paragraph?'
-carry_block=$(printf ':::ask{urgency="high" multiple="false"}\n%s\n\n- Keep: the paragraph stays.\n- Drop: the paragraph goes.\n:::\n' "$carry_question")
-# spec_block_ask ISSUE prints the id of the open ask Dispatch's settlement indexed from the proof's
-# decision block (the ask with that block's question and a block_id), and fails while there is none.
-spec_block_ask() {
-  dispatch_get "issues/$1/asks?state=open" |
-    jq -er --arg question "$carry_question" 'first(.[] | select(.block_id != null and .question == $question)) | .id'
-}
-# approval_requests_in counts the approval requests ever opened on an issue in the event log it
-# reads on stdin: the ask.opened events whose ask is an approval, not a question.
-approval_requests_in() { jq '[.[] | select(.type == "ask.opened" and .payload.kind == "approval")] | length'; }
 
 begin prerequisites
 refuse_leftovers legion-e2e3
 for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own unless the App inputs name another's, proved
+# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
+# implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh); legion.yaml's
-# github_apps is the block proved.
+# github_apps is the block proved. The key command runs once, here, in this shell's own
+# environment, into $work/app-key, which the daemon reads the key from and cleanup removes.
 require_app_inputs implement review
-write_github_apps implement review
+write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 # STAGE3_FROM is a development aid for iterating on the later scenarios against a fresh rig; a run
 # with it set is never the proof and never prints PASS. `held` skips the first issue's workflow:
@@ -761,7 +728,9 @@ port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')
 [ -n "$port_pg" ] || fail "docker assigned Postgres no host port"
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d dispatch
 docker exec "$pg_container" createdb -U legion legion
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" "$nats_image" -js >/dev/null
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
@@ -788,17 +757,18 @@ manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-l
 cat >"$work/instructions.md" <<'EOF'
 # Stage 3 proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document,
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document,
 requests the spec's approval when the design gate policy arms the gate, and registers the gate,
 then waits. Apart from that, do not act until a human Dispatch message targeted at your own session
 gives the next exact proof operation; it arrives in your session as a message to you. A message you
 only find by reading the issue (its events, a search) was sent to another session, even on your
 issue, and any other notice is not an instruction: neither is yours to act on. One task waits for
 no message: a production check's (its first line `Production check of <key>: …`, handed to the
-tester once the merge closed its issue), since a closed issue takes no Dispatch write, so none
-can reach it. Act on that task as it is written: this proof has no production and no deploy role,
-so the look leaves `Production: pending deploy of <merge commit>` on the pull request's body (on the
+tester once the merge closed its issue), since the proof sends none to it. Act on that task as
+it is written: this proof has no production and no deploy role, so the look leaves
+`Production: pending deploy of <merge commit>` on the pull request's body (on the
 last look, writes on the pull request that the check did not run because production did not carry
 the merge within the bound) and reports verdict pending with the legion tool's handoff_complete,
 committing nothing. A pending report on a look that is not the last also carries wake_at, an
@@ -847,28 +817,32 @@ pass
 
 begin panes-pinned-to-the-rig-before-any-agent-turn
 # The two admitted architects are the only panes before any phase worker: each takes its first turn
-# from the daemon's catch-up notice, not from the proof. Every later pane is checked when it
-# registers and again before each instruction. An architect whose root already waits on a person
-# (it registered its closed gate and stays live) was checked by the pane watcher at its launch.
+# from the task its start carries and the daemon's catch-up notice, not from the proof. Every later
+# pane is checked when it registers and again before each instruction. An architect whose root
+# already waits on a person (it registered its closed gate and stays live) was checked by the pane
+# watcher at its launch.
 wait_for_architect "$root_issue"
 wait_for_architect "$held_issue"
 note "$(wc -l <"$evidence/pane-endpoints-checked.txt") pane checks: DISPATCH_URL=http://127.0.0.1:$port_dispatch, DISPATCH_TOKEN_FILE=$state/secrets/dispatch-token, ENVOY_URL=http://127.0.0.1:$port_listener, ENVOY_NATS_URL=nats://127.0.0.1:$port_nats"
 pass
 
 # The first issue end to end: the gate, every phase, three review rounds, the architect's acceptance,
-# the READY gate, the daemon's merge, which closes the issue, and the tester's production check
-# after the close, through the look its own report asked for and the bound's last look.
+# the merger's own merge, which closes the issue, and the tester's production check after the
+# close, through the look its own report asked for and the bound's last look.
 primary_issue() {
   begin primary-architect-posts-and-registers-spec
-  # Every root's architect registers a closed gate on its own and gives its slot back, so the slot
-  # the root left at registration went to a waiting root (no-change, restart), and the approved root
-  # takes one back only once one of those registers its own gate in turn: the bound is twice
-  # architect_registers_gate's 900 s for that registration. admission_cap stays 2: admission order
-  # and the child that stands in its tree with no slot of its own are proved against it, and every root of the run gives its slot
-  # back at its registration, so the slot always comes back within that bound.
+  # Every root's architect registers a closed gate on its own and its root then waits on the
+  # person, keeping the admission slot it took at its admission: a root in awaiting_person keeps
+  # its slot (docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label").
+  # So the human's approval resumes this root on the next pass whatever the cap says, and the 1800 s
+  # bound below is slack: nothing has to give a row back first. admission_cap stays 2, which is the
+  # peak this lane needs under that rule: the two roots the daemon starts here hold both rows while
+  # their work stands short of its review, each of the two waiting roots is admitted as one of them
+  # gives its row back — the first root when it enters accepting, the no-change root at its
+  # close — and no scene of the run needs a third root at work beside them.
   drive_gate "$root_issue" "Stage 3 proof gate operation" 1800
   artifact_id=$gate_artifact
-  note "architect registered $artifact_id version $gate_version and $root_issue waited on the person without a slot; the human's approval answered it, the root took a slot back, and the daemon moved it to planning"
+  note "architect registered $artifact_id version $gate_version and $root_issue waited on the person holding its admission slot; the human's approval answered it, the root resumed with no further slot, and the daemon moved it to planning"
   pass
 
   begin primary-planner-handoff
@@ -1042,93 +1016,24 @@ primary_issue() {
   note "the implementer's retro completion advanced $root_issue to merging"
   pass
 
-  begin ready-gated-on-new-spec-version
-  # A named primary-artifact upload creates version two and emits artifact.version. The gate must
-  # close on it, and this first closing is the gate-state negative control for the approval carry
-  # below: a human's whole-document upload is nobody's answer to a decision block, so Dispatch
-  # carries no approval to it (no artifact.approved names its version, no review is pinned to it)
-  # and only the human's own review reopens the gate. No READY is held yet, so that reopening
-  # releases nothing: a merging stint has one refusal-and-release cycle (a held READY is accepted at
-  # the first reopening, the daemon's advancePendingReady), and this proof spends it on the carry.
-  dispatch_human POST "issues/$root_issue/artifacts" \
-    "$(jq -cn --arg name spec.md --arg content "# Stage 3 smoke\n\nThe human revised this proof specification before READY.\n" '{name:$name,content:$content,summary:"Stage 3 gate re-close"}')" >/dev/null
-  until_true 120 "the human's new primary spec version to close the gate" design_gate_closed "$root_issue"
-  uploaded_version=$(design_gate_version "$root_issue")
-  until_true 60 "the artifact.version event naming spec version $uploaded_version on $root_issue" spec_event "$root_issue" artifact.version "$uploaded_version"
-  dispatch_events "$root_issue" >"$evidence/ready-gate-upload-events.json"
-  if spec_event_in artifact.approved "$uploaded_version" <"$evidence/ready-gate-upload-events.json"; then
-    fail "an artifact.approved event names spec version $uploaded_version, the human's whole-document upload, which answers no decision block"
-  fi
-  dispatch_get "artifacts/$artifact_id/reviews" >"$evidence/ready-gate-upload-reviews.json"
-  if jq -e --argjson version "$uploaded_version" 'any(.[]; .version == $version)' "$evidence/ready-gate-upload-reviews.json" >/dev/null; then
-    fail "a review is pinned to spec version $uploaded_version before anyone reviewed it"
-  fi
-  dispatch_human POST "artifacts/$artifact_id/reviews" '{"state":"approved"}' >/dev/null
-  until_true 120 "the human's review of spec version $uploaded_version to reopen the gate" design_gate_open "$root_issue"
-  note "the gate closed on spec version $uploaded_version, a whole-document upload, with no approval carried to it, and the human's own review reopened it"
-  # The decision block an architect would write, inserted at the end of the spec in a stand-in
-  # session's name through the edits route (dispatch_agent): its version closes the gate again, and
-  # that version is the one the merger's READY meets.
-  dispatch_agent POST "artifacts/$artifact_id/edits" \
-    "$(jq -cn --arg markdown "$carry_block" '{ops: [{op: "insert", after: "end", markdown: $markdown}]}')" >/dev/null
-  until_true 120 "the decision block's spec version to close the gate" design_gate_closed "$root_issue"
-  state_file ready-refused
-  send_agent "$root_issue" merger "Stage 3 proof READY operation: call the legion tool's handoff_complete with summary 'stage 3 ready gate proof' and ready true now. Record its exact refusal and then wait; do not retry it."
-  until_true 180 "merger to observe the READY 409 refusal naming the new version" session_contains "$root_issue" merger "READY refused: approve design version"
-  assert_ready_gate_closed "$evidence/ready-refused.json" || fail "the versioned design gate did not close before READY"
-  jq '.issues["'"$root_issue"'"].designGate.currentVersion = .issues["'"$root_issue"'"].designGate.approvedVersion' \
-    "$evidence/ready-refused.json" >"$evidence/ready-open-negative.json"
-  expect_failure ready-gate-not-reclosed assert_ready_gate_closed "$evidence/ready-open-negative.json"
-  assert_ready_gate_closed "$evidence/ready-refused.json" || fail "the READY gate did not restore after its negative control"
-  new_version=$(design_gate_version "$root_issue")
-  # The carry: the proof human answers the block, and nothing else changed since the version he
-  # approved, so Dispatch records his approval of the version the answer settles into itself. No
-  # review goes through the reviews route from here to awaiting_merge; the daemon's gate reopens on
-  # the carried artifact.approved, which releases the held READY.
-  until_true 60 "settlement to index the decision block as an open ask on $root_issue" spec_block_ask "$root_issue"
-  block_ask=$(spec_block_ask "$root_issue")
-  approval_requests_before=$(dispatch_events "$root_issue" | approval_requests_in)
-  dispatch_human POST "asks/$block_ask/answer" '{"selected":["Keep"],"expected_edited_at":null}' >/dev/null
-  wait_for_phase "$root_issue" awaiting_merge
-  carried_version=$((new_version + 1))
-  daemon_state | jq -e --arg issue "$root_issue" --argjson version "$carried_version" \
-    '.issues[$issue].designGate.approvedVersion == $version and .issues[$issue].designGate.currentVersion == $version' >/dev/null ||
-    fail "the daemon's gate is $(daemon_state | jq -c --arg issue "$root_issue" '.issues[$issue].designGate'), want spec version $carried_version, the answer's, approved and current"
-  # The newest review is the carry: pinned to the answer's version, in the proof human's own name,
-  # answering no approval request, with the carry's reason.
-  dispatch_get "artifacts/$artifact_id/reviews" >"$evidence/ready-gate-carry-reviews.json"
-  carried_review=$(jq -c '.[0]' "$evidence/ready-gate-carry-reviews.json")
-  jq -e --argjson version "$carried_version" --arg user "$proof_human_user" \
-    '.version == $version and .state == "approved" and .actor.kind == "user" and .actor.id == $user and .ask_id == null and ((.reason // "") | length > 0)' \
-    <<<"$carried_review" >/dev/null ||
-    fail "the newest review of $artifact_id is $carried_review, want the proof human's (user $proof_human_user) carried approval of version $carried_version with a reason and no ask"
-  dispatch_events "$root_issue" >"$evidence/ready-gate-carry-events.json"
-  approval_requests_after=$(approval_requests_in <"$evidence/ready-gate-carry-events.json")
-  [ "$approval_requests_after" = "$approval_requests_before" ] ||
-    fail "the carry opened an approval request on $root_issue: $approval_requests_before opened before the answer, $approval_requests_after after"
-  spec_event_in artifact.approved "$carried_version" <"$evidence/ready-gate-carry-events.json" ||
-    fail "no artifact.approved event names spec version $carried_version, the carried approval"
-  note "READY refused at unapproved spec version $new_version, the stand-in architect's decision block; the human's answer carried his approval of version $uploaded_version forward to version $carried_version (review by user $proof_human_user, reason $(jq -r .reason <<<"$carried_review")), no approval request was opened, and the carried approval advanced awaiting_merge without another READY"
-  pass
-
-  begin daemon-merge
-  # The daemon submits the merge of the READY head itself once it accepts READY, as the implement
-  # App. sjawhar/legion-smoke allows no auto-merge, so the daemon merges it once GitHub reports it
-  # mergeable under the `gate` ruleset; await_ready_merge only reads the pull request and never
-  # merges it by hand, so a merge here is the daemon's. The smoke main is held from here until
-  # smoke-main-clean has emptied it (hold_smoke_main), on an open descriptor: start no background
-  # child before release_smoke_main, or it inherits the descriptor and holds the smoke main past
-  # this run's window.
+  begin merger-merge
+  # The merger merges the pull request itself, as the implement App, at the head it read:
+  # `gh pr merge --squash --match-head-commit` with the subject and the empty body it passes, since
+  # sjawhar/legion-smoke's base carries no merge queue. await_merger_merge only reads the pull
+  # request and never merges it by hand, so a merge here is the agent's. The smoke main is held
+  # from here until smoke-main-clean has emptied it (hold_smoke_main), on an open descriptor: start
+  # no background child before release_smoke_main, or it inherits the descriptor and holds the
+  # smoke main past this run's window.
   hold_smoke_main
-  await_ready_merge "$repo" "$pr_number" --delete-branch
-  # The merge closes the issue: awaiting_merge and a merged pull request write done, the daemon's
-  # one status write after retro. A root's close frees its slot and lingers the tree, every member's
+  await_merger_merge "$repo" "$pr_number" --delete-branch
+  # The merge closes the issue: the daemon's read of the merged pull request writes done, its one
+  # status write after retro. A root's close frees any slot its tree's issues still hold and lingers the tree, every member's
   # claims suspended, and opens the production check on the merge commit, whose first look the
   # daemon hands the tester — the role this project's `production_check` names — in its live pane:
   # its claim alone comes back, resumed on its kept session, while the other five stay suspended.
   wait_for_phase "$root_issue" "done" 300
-  phase_change_logged "$root_issue" awaiting_merge "done" pull_request_merged ||
-    fail "the daemon log has no \"workflow: phase changed\" line moving $root_issue from awaiting_merge to done on pull_request_merged"
+  phase_change_logged "$root_issue" merging "done" pull_request_merged ||
+    fail "the daemon log has no \"workflow: phase changed\" line moving $root_issue from merging to done on pull_request_merged"
   until_true 60 "the daemon's done status on the Dispatch board" dispatch_status_is "$root_issue" "done"
   check_opened_on "$root_issue" "$merge_when_clean_commit" ||
     fail "$root_issue's production check reads $(daemon_state | jq -c --arg issue "$root_issue" '.issues[$issue].check'), want it open on merge commit $merge_when_clean_commit at its first look, woken by the merge"
@@ -1140,8 +1045,7 @@ primary_issue() {
   until_true 300 "the close to leave the tester live at its first look, the five other claims of $root_issue suspended" first_look_handed
   first_look_claims=$(issue_claim_states "$root_issue" | paste -sd ',' -)
   # The first look. The task the daemon handed the tester is the whole instruction: the proof
-  # sends it nothing, since the issue is closed and a closed issue takes no Dispatch write (409
-  # ISSUE_CLOSED), and the fixture's instructions say a check task waits for no message. The smoke
+  # sends it nothing, and the fixture's instructions say a check task waits for no message. The smoke
   # repository is neither the deploy repository nor a Legion production, so the look's verdict is
   # pending: the check stays open with its first look reported, and the daemon suspends the
   # tester's claim, session kept, until the wake that report named. Its report is the observation,
@@ -1155,7 +1059,7 @@ primary_issue() {
   # nothing of its own, so without it only the bound would look again.
   check_wake_named "$root_issue" 1 ||
     fail "the daemon log records no wake named at the first look of $root_issue's production check: $(jq -R -c 'fromjson? | select(.msg | startswith("workflow: production check"))' "$evidence/logs/daemon.log" | tail -3 | tr '\n' ' ')"
-  note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit, which closed $root_issue (phase changed awaiting_merge → done on pull_request_merged; the board done) and opened its production check on that commit; the close suspended the architect, planner, implementer, reviewer and merger and handed the tester the first look in its live pane (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$root_issue" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named the wake its next look comes from and suspended its claim, session kept"
+  note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit, which closed $root_issue (phase changed merging → done on pull_request_merged; the board done) and opened its production check on that commit; the close suspended the architect, planner, implementer, reviewer and merger and handed the tester the first look in its live pane (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$root_issue" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named the wake its next look comes from and suspended its claim, session kept"
   pass
 
   begin smoke-main-clean
@@ -1187,7 +1091,7 @@ primary_issue() {
   # here, after the first look's report and the smoke main's cleanup: what remains of the 30
   # minutes, and a bound deferred by a look still open when it came due (by the look's own
   # two-hour bound) fails here by name rather than hanging. The last look's pending closes the
-  # check as not_run: the tester's claim is retired, its session dropped (issue_close), and the
+  # check as not_run: the tester's claim is retired, its session kept (issue_close), and the
   # state omits the check.
   until_true 1800 "the bound to start the last look of $root_issue's production check" last_look_started "$root_issue"
   state_file check-look-2
@@ -1211,8 +1115,8 @@ held_worker() {
   # never becomes ready spends the claim's launch budget (three) and a ready agent resets it, so the
   # first kill takes the ready implementer and every later kill takes the relaunch as soon as the pane
   # watcher has checked it, until the claim fails and the issue is held. Its architect registered its
-  # closed gate early in the run, so the root has waited on a person since, without a slot; the first
-  # root's close freed one, which it takes back once the human approves.
+  # closed gate early in the run, so the root has waited on a person since, holding the slot it took
+  # at its admission; the human's approval resumes it there, taking no further slot.
   drive_gate "$held_issue" "Stage 3 held-worker proof"
   send_agent "$held_issue" planner "Stage 3 held-worker proof: write a minimal plan handoff and complete planning."
   wait_for_phase "$held_issue" implementing
@@ -1270,14 +1174,16 @@ else
 fi
 
 # no_change_close: a root whose human decides at the design gate that no change is needed. The
-# no-change root took the slot the first or held root gave back at its registration early in the
-# run, its architect registered its own closed gate, and it has waited on a person since, without a
-# slot while its architect stays live. The human requests changes saying no change is needed: that
-# answers the wait, and the root takes a slot back at admitted (the held root holds the other one),
+# no-change root took the row the first root gave up at its acceptance, before that root's merge
+# and close; its
+# architect registered its own closed gate, and it has waited on a person since, keeping that row
+# while its architect stays live. The human requests changes saying no change is needed: that
+# answers the wait, and the root resumes at admitted on the next pass, taking no further slot (the
+# held root holds the other one),
 # its architect receives a task naming the changes request. close_root is refused while a root is
-# not at admitted holding its slot, so the proof waits for both before it tells the architect to end
+# not at admitted, so the proof waits for the phase before it tells the architect to end
 # the tree itself. The daemon posts the architect's reason on the issue before it writes done, and
-# the freed slot goes to the next answered or waiting root with no human status write. Each step of
+# the slot the close frees goes to the fourth root with no human status write. Each step of
 # the tree's close is one journal line.
 no_change_close() {
   begin architect-closes-a-no-change-root
@@ -1287,9 +1193,9 @@ no_change_close() {
   artifact=$(daemon_state | jq -er --arg issue "$nochange_issue" '.issues[$issue].designGate.artifactId')
   reason="No change is needed: $repo already has what this issue asks for. Close this issue without a change."
   dispatch_human POST "artifacts/$artifact/reviews" "$(jq -cn --arg reason "$reason" '{state: "changes_requested", reason: $reason}')" >/dev/null
-  await_answered_slot "$nochange_issue" "Stage 3 no-change proof"
+  await_answered_resume "$nochange_issue" "Stage 3 no-change proof"
   wait_for_phase "$nochange_issue" admitted 60
-  until_true 300 "the live no-change architect to receive its task once its root holds its slot" issue_worker_live "$nochange_issue" architect
+  until_true 300 "the live no-change architect to receive its task once its root has resumed" issue_worker_live "$nochange_issue" architect
   send_agent "$nochange_issue" architect "Stage 3 no-change proof: the human reviewing your spec requested changes: \"$reason\" End your tree as your role says, and change nothing else."
   until_true 600 "the no-change root to be done in Dispatch" dispatch_status_is "$nochange_issue" "done"
   dispatch_events "$nochange_issue" >"$evidence/nochange-events.json"
@@ -1304,10 +1210,10 @@ no_change_close() {
   token=$(claim_token "$nochange_issue" architect)
   await_tree_suspended "$nochange_issue" "the no-change tree's architect to be suspended"
   # daemon.log carries the daemon's stderr too, so each line is parsed on its own, as every other
-  # reader of it does: one line that is not JSON must not end the run. The root gives its slot back
-  # twice: once when it waits on the person at its gate, once at its close.
+  # reader of it does: one line that is not JSON must not end the run. The root is admitted once
+  # and its row goes once, at the close: it keeps the row through its wait on the person.
   jq -R -c --arg issue "$nochange_issue" --arg token "$token" 'fromjson? | select(
-      (.msg == "workflow: root waits on a person and returns its admission slot" and .issue == $issue)
+      (.msg == "workflow: root waits on a person and keeps its admission slot" and .issue == $issue)
       or (.msg == "workflow: design gate changes requested" and .issue == $issue)
       or (.msg == "workflow: issue left the workflow" and .issue == $issue)
       or (.msg == "workflow: tree lingers" and .tree == $issue)
@@ -1315,13 +1221,13 @@ no_change_close() {
       or (.msg == "admission: slot taken" and .issue == $issue)
       or (.msg == "supervise: suspended" and .claim == $token))
     | {msg, issue, tree, status, reason, slots, cap}' "$evidence/logs/daemon.log" >"$evidence/nochange-journal.txt"
-  for line in "root waits on a person and returns its admission slot" "design gate changes requested" "issue left the workflow" "tree lingers" "admission: slot released" "supervise: suspended"; do
+  for line in "root waits on a person and keeps its admission slot" "design gate changes requested" "issue left the workflow" "tree lingers" "admission: slot released" "supervise: suspended"; do
     grep -qF "$line\"" "$evidence/nochange-journal.txt" || fail "the journal has no \"$line\" line for $nochange_issue; see $evidence/nochange-journal.txt"
   done
-  [ "$(grep -cF '"admission: slot released"' "$evidence/nochange-journal.txt")" -ge 2 ] ||
-    fail "the journal of $nochange_issue lacks a slot release at the wait and another at the close; see $evidence/nochange-journal.txt"
-  [ "$(grep -cF '"admission: slot taken"' "$evidence/nochange-journal.txt")" -ge 2 ] ||
-    fail "the journal of $nochange_issue lacks its first admission and its return after the person's answer; see $evidence/nochange-journal.txt"
+  [ "$(grep -cF '"admission: slot released"' "$evidence/nochange-journal.txt")" -eq 1 ] ||
+    fail "the journal of $nochange_issue has $(grep -cF '"admission: slot released"' "$evidence/nochange-journal.txt") slot releases, want the one at its close; see $evidence/nochange-journal.txt"
+  [ "$(grep -cF '"admission: slot taken"' "$evidence/nochange-journal.txt")" -eq 1 ] ||
+    fail "the journal of $nochange_issue has $(grep -cF '"admission: slot taken"' "$evidence/nochange-journal.txt") slot takes, want the one at its admission; see $evidence/nochange-journal.txt"
   grep -F '"workflow: issue left the workflow"' "$evidence/nochange-journal.txt" | grep -qF '"status":"done"' ||
     fail "the close line of $nochange_issue does not name done"
   grep -F '"supervise: suspended"' "$evidence/nochange-journal.txt" | grep -qF "\"reason\":\"the tree of $nochange_issue lingers\"" ||
@@ -1334,10 +1240,11 @@ no_change_close() {
 # write, all on the fourth root.
 restart_scenarios() {
   begin restart-mid-implementer
-  # The fourth root took a slot another root gave back early in the run, its architect registered
-  # its closed gate, and it has waited on a person since, without a slot. The no-change root's close
-  # freed a slot, so once the human approves, it takes that slot back with no human status write;
-  # this validates the answered root's return before exercising the mid-phase restart.
+  # The fourth root waited in the line until the no-change root's close freed a row: with the cap
+  # at 2, the first root's acceptance let the no-change root in and that close lets this one in. Its
+  # architect then registers its closed gate and the root waits on a person, keeping that row, so
+  # the human's approval resumes it with no human status write and no further slot; this validates
+  # the answered root's resume before exercising the mid-phase restart.
   drive_gate "$restart_issue" "Stage 3 restart proof"
   send_agent "$restart_issue" planner "Stage 3 restart proof: write the minimal planner handoff and complete planning."
   wait_for_phase "$restart_issue" implementing
@@ -1379,16 +1286,27 @@ restart_scenarios() {
   until_true 240 "the real Go pane bash tool to resolve the launcher directory's gh wrapper" session_contains "$restart_issue" implementer "CRED-GH=$state/bin/gh"
   until_true 240 "the implementer pane to name the real gh its wrapper runs" session_contains "$restart_issue" implementer "CRED-REAL=$realbin/gh"
   until_true 240 "the implementer pane to name its claim's gh directory" session_contains "$restart_issue" implementer "CRED-DIR=$state/secrets/"
-  until_true 240 "the implementer pane to list the bundle's one owner" session_contains "$restart_issue" implementer "CRED-OWNERS=$owner "
+  until_true 240 "the implementer pane to list its gh bundle's root" pane_bundle_listing "$restart_issue"
   until_true 240 "the implementer pane to carry an empty GH_TOKEN" session_contains "$restart_issue" implementer "CRED-TOKEN=."
   implement_app=$(role_app implementer)
   until_true 240 "the implementer pane to authenticate as its App, $implement_app" session_contains "$restart_issue" implementer "CRED-VIEWER=$implement_app"
   until_true 240 "the implementer pane to read the pull request" session_contains "$restart_issue" implementer "CRED-PR=https://github.com/$repo/pull/$pr_number"
   # The directory the agent printed is the one its OMP process was launched with: its repository's
   # owner's directory of the bundle named for its claim, which holds the two gh files the daemon
-  # writes for the pane and, since INFRA-513 narrowed every token, a directory per other repository
-  # the project serves under that owner, each holding those two files alone; nothing else is in
-  # either.
+  # writes for the pane and nothing else, since a bundle holds one directory per owner account the
+  # App is installed on and no directory for a repository (INFRA-2543 R2). The root holds that
+  # directory, one more for each other account the App is installed on, and the bundle's one file,
+  # `renames.txt`, the configured renames both wrappers route a moved repository by, which every
+  # bundle this daemon writes carries, empty where the project has no rename that resolves.
+  # GitHub decides which accounts those are and this run does not: stage 3 defaults to this
+  # deployment's Apps, which are installed on several, so another owner's directory is no failure.
+  # The root is read twice, as the pane's own `ls` listed it and as this host holds it, and each
+  # reading must hold $owner and nothing that is neither a lowercased GitHub login, which is what
+  # a bundle's directory is named (ghconfig.IsOwner), nor that one file. A login is ghconfig's
+  # rule: a letter or digit, then up to 38 letters, digits, hyphens and underscores, since a
+  # managed user's login ends in `_<shortcode>` (`mona-cat_octo`) and its directory is a bundle's
+  # like any other; a name with a dot or a slash, one opening with a hyphen or an underscore, or
+  # one past 39 characters is still a stranger.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"
   cred_omp=$(omp_descendant "$cred_pane_pid") || fail "the implementer pane on $restart_issue has no OMP process"
   cred_root=$(pane_value "$cred_omp" LEGION_GH_OWNERS_DIR)
@@ -1397,23 +1315,30 @@ restart_scenarios() {
   [ "$cred_dir" = "$cred_root/$owner" ] || fail "the implementer's OMP carries GH_CONFIG_DIR=$cred_dir, want $owner's directory of $cred_root"
   [ "$(pane_value "$cred_omp" LEGION_GH_PATH)" = "$realbin/gh" ] || fail "the implementer's OMP carries LEGION_GH_PATH=$(pane_value "$cred_omp" LEGION_GH_PATH), want $realbin/gh"
   session_contains "$restart_issue" implementer "CRED-DIR=$cred_dir" || fail "the implementer's bash printed another GH_CONFIG_DIR than its OMP carries ($cred_dir)"
+  cred_listed=$(pane_bundle_listing "$restart_issue") || fail "the implementer's session holds no bash result that lists its gh bundle's root"
+  grep -qxF -- "$owner" <<<"$cred_listed" || fail "the implementer pane's ls of its gh bundle's root lacks $owner; it listed: $(tr '\n' ' ' <<<"$cred_listed")"
+  cred_strangers=$(grep -vxF -- renames.txt <<<"$cred_listed" | grep -vxE -- '[a-z0-9][a-z0-9_-]{0,38}' || true)
+  [ -z "$cred_strangers" ] ||
+    fail "the implementer pane's ls of its gh bundle's root lists an entry that is neither an owner's directory nor the bundle's renames.txt: $(tr '\n' ' ' <<<"$cred_strangers")"
   for dir in "$cred_root" "$cred_dir"; do
     [ "$(stat -c %a "$dir")" = 700 ] || fail "$dir is mode $(stat -c %a "$dir"), want 700"
   done
-  [ "$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = "$owner " ] || fail "$cred_root holds $(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | tr '\n' ' '), want $owner's directory alone"
+  cred_root_entries=$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+  [ -d "$cred_root/$owner" ] || fail "$cred_root holds no directory for $owner; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  [ -f "$cred_root/renames.txt" ] || fail "$cred_root holds no renames.txt, which every bundle this daemon writes carries; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  while IFS= read -r entry; do
+    case $entry in
+      "" | renames.txt) continue ;;
+    esac
+    [[ $entry =~ ^[a-z0-9][a-z0-9_-]{0,38}$ ]] && [ -d "$cred_root/$entry" ] ||
+      fail "$cred_root holds $entry, which is neither an owner's directory nor the bundle's renames.txt; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  done <<<"$cred_root_entries"
   cred_owned=$(find "$cred_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
   for want in config.yml hosts.yml; do
     grep -qxF -- "$want" <<<"$cred_owned" || fail "$cred_dir lacks $want; it holds: $(tr '\n' ' ' <<<"$cred_owned")"
   done
-  while read -r cred_entry; do
-    case $cred_entry in
-      "" | config.yml | hosts.yml) continue ;;
-      . | .. | *[!a-z0-9._-]*) fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone" ;;
-    esac
-    [ -d "$cred_dir/$cred_entry" ] || fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone"
-    cred_held=$(find "$cred_dir/$cred_entry" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')
-    [ "$cred_held" = "config.yml hosts.yml " ] || fail "$cred_dir/$cred_entry holds $cred_held, want config.yml and hosts.yml alone"
-  done <<<"$cred_owned"
+  [ "$(tr '\n' ' ' <<<"$cred_owned")" = "config.yml hosts.yml " ] ||
+    fail "$cred_dir holds an entry beside its two gh files, and a bundle holds one directory per owner account the App is installed on and no directory for a repository; it holds: $(tr '\n' ' ' <<<"$cred_owned")"
   [ "$(stat -c %a "$cred_dir/hosts.yml")" = 600 ] || fail "$cred_dir/hosts.yml is mode $(stat -c %a "$cred_dir/hosts.yml"), want 600"
   jq -R -s -e '[split("\n")[] | fromjson? | select(.msg == "tmux runtime: github credential written" and .role == "implementer")] | length > 0' <"$evidence/logs/daemon.log" >/dev/null ||
     fail "the daemon log has no 'github credential written' line for an implementer pane"
@@ -1470,7 +1395,7 @@ status_actors() {
   note "every lifecycle transition on $root_issue ($(jq -r '[.[] | select(.type | IN("issue.updated", "issue.closed")) | .payload.status] | join(" ")' "$evidence/root-events.json")) records actor legion-daemon:$project; one agent-attributed write was rejected"
   pass
 }
-# Every workflow notice is for the architect that owns its issue, on that architect's role topic:
+# Every workflow notice is for an architect, on that architect's role topic:
 # the run's pr-blocked, the reviewer's phase-finished at its approval (the architect's acceptance
 # cue) and worker-died reach their architects (checked where each is written), and no phase-worker
 # session of the run receives any notice.

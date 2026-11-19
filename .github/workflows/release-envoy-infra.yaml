@@ -13,13 +13,16 @@ on:
     # Every input the plugin's and the command's builds read: packages/envoy (their module, and
     # through its go.work the Envoy module whose packages they compile in), the notices script that
     # writes their archives' notices, the list of the targets they build, the Pulumi CLI install the
-    # smoke test runs, and this workflow. Which of them cut a version, the version step decides from
-    # what the two compile.
+    # smoke test runs, with the tool manifest that names both sources of that CLI's row and the
+    # fetch helper the install reads them through, and this workflow. Which of them cut a version,
+    # the version step decides from what the two compile.
     paths:
       - "packages/envoy/**"
       - "scripts/go-third-party-notices.sh"
       - ".github/envoy-infra-targets.json"
       - ".github/actions/install-pulumi/**"
+      - ".github/ci-tools.yaml"
+      - ".github/scripts/ci-tools.sh"
       - ".github/workflows/release-envoy-infra.yaml"
   workflow_dispatch:
 
@@ -79,8 +82,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: go-envoy-infra-${{ runner.os }}-
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          restore-keys: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-
       - name: Determine next version
         id: version
         run: |
@@ -301,7 +304,7 @@ jobs:
             archives+=("pulumi-resource-envoy-infra-v$VERSION-$os-$arch.tar.gz")
             archives+=("envoy-infra-$os-$arch.tar.gz")
           done
-          tag=$(.github/scripts/release-push.sh handed envoy-infra-v "$VERSION" assets "${archives[@]}")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed envoy-infra-v "$VERSION" assets "${archives[@]}")
           (cd assets && sha256sum -- "${archives[@]}" > SHA256SUMS)
           {
             echo "tag=$tag"
@@ -320,8 +323,8 @@ jobs:
           TAG: ${{ steps.assets.outputs.tag }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
-          .github/scripts/release-push.sh tag "$VERSION" "$TAG"
-          .github/scripts/release-push.sh push-tag "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
       # Build provenance for both kinds of archive the check above lists: the plugin's, which Pulumi
       # installs, and the command's, which writes seeds under its operator's credentials. The release
       # below uploads them exactly, with SHA256SUMS. A consumer verifies an archive against this
@@ -345,4 +348,4 @@ jobs:
           while IFS= read -r file; do
             [ -z "$file" ] || assets+=("$file")
           done <<< "$FILES"
-          .github/scripts/release-push.sh release "$TAG" "envoy-infra v$VERSION" "${assets[@]}"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "envoy-infra v$VERSION" "${assets[@]}"

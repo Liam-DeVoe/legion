@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { dispatchIssueSubject, type Envelope } from "@legion/contracts";
+import { type Envelope, legacyDispatchIssueSubject } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
 import {
@@ -13,6 +14,9 @@ import {
 
 const reader = "01a01111-2222-7333-4444-555555555555";
 const actor = { kind: "session", id: "session-1" };
+
+/** The Dispatch bearer a delivery reply is posted under. */
+const REPLY_TOKEN = fixtureSecret("dsp");
 
 const targetedDispatchPayload = readFileSync(
   new URL("../../../contracts/fixtures/dispatch-targeted-delivery.json", import.meta.url),
@@ -50,7 +54,7 @@ function dispatchEvent(
       event_id: "dispatch-1",
       source: "dispatch",
       source_event_id: "1",
-      topic: dispatchIssueSubject("DSP-1", ">"),
+      topic: legacyDispatchIssueSubject("DSP-1", ">"),
       payload_summary: "Dispatch update",
       payload: JSON.stringify({
         id: 1,
@@ -404,7 +408,7 @@ describe("renderInbound dispatch events", () => {
       if (rejected === undefined) throw new Error("missing recoverable rejected delivery");
 
       await postDeliveryReply(
-        { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential("reply-token") },
+        { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential(REPLY_TOKEN) },
         reader,
         rejected,
         { error: "Invalid Dispatch targeted delivery frame" }
@@ -454,7 +458,7 @@ describe("renderInbound dispatch events", () => {
           await postDeliveryReply(
             {
               url: `http://127.0.0.1:${server.port}`,
-              credential: bearerCredential("reply-token"),
+              credential: bearerCredential(REPLY_TOKEN),
             },
             reader,
             rendered.delivery,
@@ -506,7 +510,7 @@ describe("renderInbound dispatch events", () => {
         await postDeliveryReply(
           {
             url: `http://127.0.0.1:${server.port}`,
-            credential: bearerCredential("reply-token"),
+            credential: bearerCredential(REPLY_TOKEN),
           },
           reader,
           delivery,
@@ -559,7 +563,7 @@ describe("renderInbound dispatch events", () => {
     };
     const config = {
       url: `http://127.0.0.1:${server.port}`,
-      credential: bearerCredential("reply-token"),
+      credential: bearerCredential(REPLY_TOKEN),
     };
 
     try {
@@ -645,6 +649,30 @@ describe("renderInbound dispatch events", () => {
     expect(other.envoy.dispatch.payload.target).toBe(
       "session:01a01111-2222-7333-4444-555555555555"
     );
+  });
+
+  // A session's inbox has two forms while every reader takes both (dispatch://INFRA-3862): the
+  // session alone, and the session under a project (`_` for none). A message on either form is
+  // this session's own, so its card names it the recipient; another session's inbox is not, in
+  // either form.
+  test("names the session the recipient of a message on its inbox in either form", () => {
+    const otherSession = "01a02222-3333-7444-8555-666666666666";
+    for (const topic of [
+      `notifications.agent.${reader}`,
+      `notifications.agent._.${reader}`,
+      `notifications.agent.PRIV.${reader}`,
+    ]) {
+      const raw = JSON.stringify(envelope({ source: "agent", topic, payload: "hello" }));
+      const intended = decode(renderInbound(raw, reader, topic).content) as {
+        envoy: { to?: string };
+      };
+      const other = decode(renderInbound(raw, otherSession, topic).content) as {
+        envoy: { to?: string };
+      };
+
+      expect(intended.envoy.to, topic).toBe(`you (${reader})`);
+      expect(other.envoy.to, topic).toBeUndefined();
+    }
   });
 
   test("keeps rendering a targeted Dispatch message when its payload grows", () => {
@@ -736,6 +764,53 @@ describe("renderInbound dispatch events", () => {
       question: apiQuestion,
       resolved: "retracted: A newer question supersedes this one.",
     });
+  });
+
+  // `kind` is an open string now, so a kind this build has never seen parses rather than costing
+  // the reader the card, and the words Dispatch wrote stand beside the person's own note on
+  // every reader of the frame: this one, and a build older than this change, which declares no
+  // `dispatch_words` of its own and prints the payload as it came.
+  test("a resolution kind this build does not know still reads the words Dispatch wrote", () => {
+    const note = "Whoever builds it decides.";
+    const dispatchWords =
+      "The person chose not to answer this question. Decide the next step without an answer. " +
+      "Do not ask this question again unless the facts change. Write in your work what you assumed.";
+    const declined = {
+      ...openAsk,
+      state: "resolved",
+      resolution: {
+        actor: { kind: "user", id: "alice@example.com" },
+        at: "2026-09-10T00:01:00Z",
+        kind: "declined",
+        reason: note,
+        dispatch_words: dispatchWords,
+      },
+    };
+    const card = (payload: object) =>
+      (
+        decode(renderInbound(dispatchEvent("ask.resolved", payload), reader).content) as {
+          envoy: { dispatch: Record<string, unknown> };
+        }
+      ).envoy.dispatch;
+
+    // The reader that cannot parse the frame: `AskEventPayloadSchema` declares `edited_by` as
+    // `z.never().optional()`, so a payload carrying that key is refused whatever its resolution.
+    // Its card carries the raw payload, which is how a build older than this change reads both
+    // parts of a decline.
+    expect(card({ ...declined, edited_by: actor })).toMatchObject({
+      payload: { resolution: { kind: "declined", reason: note, dispatch_words: dispatchWords } },
+    });
+
+    expect(card(declined).resolved).toBe(`declined: ${note} · Dispatch's words: ${dispatchWords}`);
+
+    // A kind no build has ever seen reads as it came, and a resolution the person wrote no
+    // reason for leaves no separator behind.
+    expect(
+      card({
+        ...declined,
+        resolution: { ...declined.resolution, kind: "handed_to_the_council", reason: "" },
+      }).resolved
+    ).toBe(`handed_to_the_council · Dispatch's words: ${dispatchWords}`);
   });
 
   test("renders ask.edited with its current question and edit history", () => {
@@ -999,6 +1074,49 @@ describe("renderInbound dispatch events", () => {
     });
   });
 
+  // The hint a card drops under `expects_reply: false` is a Dispatch frame's own reply command
+  // as much as an agent's `envoy_send`, and the mention below is the one Dispatch frame its
+  // producer gives that value: a comment joining no ask thread and answering no comment
+  // (`commentExpectsReply`, packages/envoy/internal/dispatch/api/comment_delivery.go). Every
+  // other case for the suppression is an agent envelope, so a fix that dropped `replyWith`
+  // alone and let the command through would pass them all; this pair is what fails it.
+  describe("the reply command on a mention whose sender states the reply it wants", () => {
+    const mention = { ...targetedComment, ask_id: null, reply_to: null };
+    const card = (expects_reply: unknown) =>
+      decode(
+        renderInbound(
+          JSON.stringify({
+            ...envelope({
+              event_id: "dispatch-mention",
+              source: "dispatch",
+              payload: targetedCommentFrame(mention),
+            }),
+            expects_reply,
+          }),
+          reader
+        ).content
+      ) as { envoy: Record<string, unknown> & { dispatch: { payload: Record<string, unknown> } } };
+
+    test("prints no reply command when the mention wants no reply, and still names the comment", () => {
+      const decoded = card(false);
+
+      expect(decoded.envoy.reply_with).toBeUndefined();
+      // The reader is not stranded: the line that says nothing is wanted is on the card, and so
+      // is the id of the comment a reader who answers anyway addresses.
+      expect(decoded.envoy.expects_reply).toBe(false);
+      expect(decoded.envoy.dispatch.payload.id).toBe(targetedCommentID);
+    });
+
+    test("keeps the reply command when the same mention invites a reply", () => {
+      const decoded = card("optional");
+
+      expect(decoded.envoy.expects_reply).toBe("optional");
+      expect(decoded.envoy.reply_with).toEqual({
+        command: `dispatch comment --issue CORE-1 --body ... --reply-to ${targetedCommentID}`,
+      });
+    });
+  });
+
   test("gives document-owned ask comments a project document reply hint and ask ref", () => {
     const raw = JSON.stringify(
       envelope({
@@ -1101,6 +1219,238 @@ describe("renderInbound dispatch events", () => {
       reply: "Please update this.",
       state: "open",
       waiting_on: "agent",
+    });
+  });
+
+  // Whose ask a reply in an ask's thread is on, as the session reading it decides from the
+  // sessions the payload names as the ask's own (`ask_sessions`). ask-reply-recipients.test.ts
+  // renders the copies a real outbox published; these are the cases those copies do not hold.
+  describe("a reply in an ask's thread, by the session that reads it", () => {
+    const asker = "01a02222-3333-7444-8555-666666666666";
+    const askReply = {
+      id: targetedCommentID,
+      issue_key: "CORE-1",
+      artifact_id: null,
+      author: { kind: "user", id: "alice" },
+      body: "Which pool size do you need?",
+      anchor: null,
+      reply_to: null,
+      ask_id: "ask-1",
+      ask_question: apiQuestion,
+      ask_state: "open",
+      ask_waiting_on: "agent",
+      ask_sessions: [asker],
+      turn: "agent",
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-12T00:00:00Z",
+      mentions: [],
+      deliveries: [],
+      artifact_name: "",
+    };
+    const replyToAsk = {
+      command: "dispatch comment --issue CORE-1 --body ... --reply-to-ask ask-1",
+    };
+    type Card = { envoy: Record<string, unknown> & { dispatch: Record<string, unknown> } };
+    const card = (raw: string, session: string) =>
+      decode(renderInbound(raw, session).content) as Card;
+    /** The reply's event as the outbox publishes it on a session's own topic, correlated to the
+     *  ask; `event` overrides the event's own fields. */
+    const copy = (payload: Record<string, unknown>, event: Record<string, unknown> = {}) =>
+      JSON.stringify(
+        envelope({
+          event_id: "dispatch-ask-reply",
+          source: "dispatch",
+          source_event_id: "8",
+          topic: "notifications.agent.session-reader",
+          payload_summary: "CORE-1 comment created",
+          in_reply_to: "ask-1",
+          payload: JSON.stringify({
+            id: 8,
+            issue_key: "CORE-1",
+            seq: 8,
+            type: "comment.created",
+            actor: { kind: "user", id: "alice" },
+            notify: true,
+            created_at: "2026-09-12T00:00:00Z",
+            ...event,
+            payload,
+          }),
+        })
+      );
+    /** The same reply as the delivery a mention of the reader sent: a targeted frame. */
+    const mention = (payload: Record<string, unknown>) =>
+      JSON.stringify(
+        envelope({
+          event_id: "dispatch-ask-mention",
+          source: "dispatch",
+          payload: targetedCommentFrame(payload),
+        })
+      );
+
+    test("a mention of a session that does not own the ask says so and keeps the mention's reply command, with no turn", () => {
+      const decoded = card(mention(askReply), reader);
+
+      expect(decoded.envoy.dispatch.relation).toBe("mentioned you");
+      expect(decoded.envoy.reply_with).toEqual(replyToAsk);
+      expect(decoded.envoy.dispatch.waiting_on).toBeUndefined();
+      expect(decoded.envoy.dispatch.state).toBe("open");
+    });
+
+    test("a mention of a session that owns the ask is a reply on its own ask, with its turn", () => {
+      const decoded = card(mention(askReply), asker);
+
+      expect(decoded.envoy.dispatch.relation).toBe("replied on your ask");
+      expect(decoded.envoy.reply_with).toEqual(replyToAsk);
+      expect(decoded.envoy.dispatch.waiting_on).toBe("agent");
+    });
+
+    test("a reply on a project document's ask that reached another session is a comment on a document, with no reply command", () => {
+      const document = "a4cf7999-cab2-4326-939d-cb1e76733cc3";
+      const decoded = card(
+        copy(
+          {
+            ...askReply,
+            issue_key: null,
+            artifact_id: document,
+            project_key: "CORE",
+            artifact_slug: "design-notes",
+          },
+          { issue_key: null, artifact_id: document, project: "CORE" }
+        ),
+        reader
+      );
+
+      expect(decoded.envoy.dispatch.relation).toBe("commented on a document");
+      expect(decoded.envoy.reply_with).toBeUndefined();
+      expect(decoded.envoy.dispatch.waiting_on).toBeUndefined();
+      // Which ask the reply is on, and what it says, stay on the card.
+      expect(decoded.envoy.re).toBe("dispatch://CORE/artifact/design-notes/ask/ask-1");
+      expect(decoded.envoy.dispatch.question).toBe(apiQuestion);
+      expect(decoded.envoy.dispatch.reply).toBe("Which pool size do you need?");
+      expect(decoded.envoy.dispatch.state).toBe("open");
+    });
+
+    // The outbox's stand-in for an event the bus refused keeps ask_sessions whole, whatever its
+    // size, so the session reading it decides from it as it does from the whole event, and a host
+    // that reads the body whole and renders again changes nothing of that.
+    test("a stand-in that carries ask_sessions is the owner's own ask and no other session's, before and after its body is read whole", () => {
+      const { body: _body, ...kept } = askReply;
+      const raw = copy({ ...kept, payload_omitted: true });
+
+      for (const wholeBody of [undefined, askReply.body]) {
+        const owner = decode(renderInbound(raw, asker, undefined, wholeBody).content) as Card;
+        expect(owner.envoy.dispatch.relation).toBe("replied on your ask");
+        expect(owner.envoy.reply_with).toEqual(replyToAsk);
+        expect(owner.envoy.dispatch.waiting_on).toBe("agent");
+
+        const other = decode(renderInbound(raw, reader, undefined, wholeBody).content) as Card;
+        expect(other.envoy.dispatch.relation).toBe("commented on an issue");
+        expect(other.envoy.reply_with).toBeUndefined();
+        expect(other.envoy.dispatch.waiting_on).toBeUndefined();
+      }
+    });
+
+    // A reply on a project document's ask names that document only in project_key and
+    // artifact_slug, since the owner's own topic names none, and the command that answers the ask
+    // posts into it. The stand-in keeps both whole however long the document's slug, so the
+    // owner's card still carries that command.
+    test("a stand-in of a reply on a project document's ask gives its owner, on its own topic, the command that answers the ask, whatever the slug's length", () => {
+      const document = "a4cf7999-cab2-4326-939d-cb1e76733cc3";
+      const slug = Array.from({ length: 11 }, () => "design-notes-for-the-queue").join("-");
+      expect(JSON.stringify(slug).length).toBeGreaterThan(256);
+      const { body: _body, ...kept } = askReply;
+      const raw = copy(
+        {
+          ...kept,
+          issue_key: null,
+          artifact_id: document,
+          project_key: "CORE",
+          artifact_slug: slug,
+          payload_omitted: true,
+        },
+        { issue_key: null, artifact_id: document, project: "CORE" }
+      );
+
+      const decoded = card(raw, asker);
+
+      expect(decoded.envoy.dispatch.relation).toBe("replied on your ask");
+      expect(decoded.envoy.reply_with).toEqual({
+        command: `dispatch comment --project CORE --artifact ${slug} --body ... --reply-to-ask ask-1`,
+      });
+      expect(decoded.envoy.dispatch.waiting_on).toBe("agent");
+    });
+
+    // A stand-in with no list is one a Dispatch older than ask_sessions sent: the card is the one
+    // this renderer gave a stand-in before it read the field, byte for byte.
+    test("a stand-in that carries no ask_sessions shows the card it showed before, with no relation", () => {
+      const { body: _body, ask_sessions: _sessions, ...older } = askReply;
+
+      expect(renderInbound(copy({ ...older, payload_omitted: true }), reader).content).toBe(
+        [
+          "envoy:",
+          "  from: dispatch",
+          '  at: "1970-01-01T00:00:00Z"',
+          "  id: dispatch-ask-reply",
+          '  re: "dispatch://CORE-1/ask/ask-1"',
+          "  reply_with:",
+          "    command: dispatch comment --issue CORE-1 --body ... --reply-to-ask ask-1",
+          "  dispatch:",
+          "    owner: CORE-1",
+          "    type: comment.created",
+          "    actor:",
+          "      kind: user",
+          "      id: alice",
+          "    question: The service needs a public API. Which approach should we use?",
+          '    reply: ""',
+          "    state: open",
+          "    waiting_on: agent",
+          `  body_note: "this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${targetedCommentID}"`,
+        ].join("\n")
+      );
+    });
+
+    // A Dispatch older than `ask_sessions` wrote this reply, or a resend replayed one stored
+    // before it: the card is the one this renderer gave before it read the field, byte for byte.
+    test("a reply that carries no ask_sessions shows the card it showed before, with no relation", () => {
+      const { ask_sessions: _sessions, ...older } = askReply;
+
+      expect(renderInbound(copy(older), reader).content).toBe(
+        [
+          "envoy:",
+          "  from: dispatch",
+          '  at: "1970-01-01T00:00:00Z"',
+          "  id: dispatch-ask-reply",
+          '  re: "dispatch://CORE-1/ask/ask-1"',
+          "  reply_with:",
+          "    command: dispatch comment --issue CORE-1 --body ... --reply-to-ask ask-1",
+          "  dispatch:",
+          "    owner: CORE-1",
+          "    type: comment.created",
+          "    actor:",
+          "      kind: user",
+          "      id: alice",
+          "    question: The service needs a public API. Which approach should we use?",
+          "    reply: Which pool size do you need?",
+          "    state: open",
+          "    waiting_on: agent",
+        ].join("\n")
+      );
+    });
+
+    test("the ask's own sessions the payload names are no foreign session to note", () => {
+      const follower = "01a03333-4444-7555-8666-777777777777";
+      const owned = { ...askReply, ask_sessions: [asker, follower] };
+
+      expect(card(copy(owned), reader).envoy.note).toBeUndefined();
+      // Another session the body names is still noted.
+      const foreign = "01a04444-5555-7666-8777-888888888888";
+      expect(card(copy({ ...owned, body: `Ask ${foreign} first.` }), reader).envoy.note).toBe(
+        `body names session ${foreign}; the sender is unknown`
+      );
     });
   });
 
@@ -1319,7 +1669,7 @@ describe("renderInbound dispatch events", () => {
         envelope({
           source: "dispatch",
           payload: JSON.stringify({
-            secret: "now visible as data, not prose",
+            secret: "now visible as data, not prose", // fixture-secret: a field of an unrecognized Dispatch payload, rendered as data; not a credential, never held
             unexpected: { nested: true },
           }),
         })
@@ -1329,7 +1679,7 @@ describe("renderInbound dispatch events", () => {
     const decoded = decode(rendered.content) as { envoy: { dispatch: unknown } };
 
     expect(decoded.envoy.dispatch).toEqual({
-      secret: "now visible as data, not prose",
+      secret: "now visible as data, not prose", // fixture-secret: the same payload field, read back; never held
       unexpected: { nested: true },
     });
   });
@@ -1411,7 +1761,7 @@ describe("renderInbound dispatch events", () => {
         quiet: false,
       }),
       reader,
-      dispatchIssueSubject("DSP-1", "comment.created")
+      legacyDispatchIssueSubject("DSP-1", "comment.created")
     );
 
     expect(rendered.skip).toBe(false);
@@ -1430,7 +1780,7 @@ describe("renderInbound dispatch events", () => {
           quiet: true,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.delivery")
+        legacyDispatchIssueSubject("DSP-1", "comment.delivery")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1442,7 +1792,7 @@ describe("renderInbound dispatch events", () => {
           { notify: false, quiet: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "artifact.version")
+        legacyDispatchIssueSubject("DSP-1", "artifact.version")
       )
     ).toMatchObject({ skip: true, content: "" });
   });
@@ -1456,7 +1806,7 @@ describe("renderInbound dispatch events", () => {
           notify: false,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1468,7 +1818,7 @@ describe("renderInbound dispatch events", () => {
           { notify: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       ).skip
     ).toBe(false);
   });
@@ -1566,6 +1916,102 @@ describe("renderInbound non-dispatch envelopes", () => {
         "  summary: First paragraph.",
       ].join("\n")
     );
+  });
+
+  // A card prints one vocabulary. The envelope carries the JSON literal `false` for "no reply
+  // wanted", while a replayed frame and a session on an older plugin build still carry the
+  // string "none" for the same thing. Both read as the one line, and neither leaves the field
+  // unread and listed as unrecognised.
+  test("renders either spelling of no reply as one expects_reply: false line", () => {
+    const card = (expects_reply: unknown): string =>
+      renderInbound(
+        JSON.stringify({ ...envelope({ event_id: "agent-no-reply" }), expects_reply }),
+        reader
+      ).content;
+
+    expect(card(false)).toBe(
+      [
+        "envoy:",
+        "  from: agent",
+        '  at: "1970-01-01T00:00:00Z"',
+        "  id: agent-no-reply",
+        "  expects_reply: false",
+        "  summary: message",
+      ].join("\n")
+    );
+    expect(card("none")).toBe(card(false));
+  });
+
+  // A card that says nothing is wanted must not carry a ready-made way to send something: a
+  // filled-in `envoy_send` under `expects_reply: false` invites the reader to do what the line
+  // above it says the sender does not want, and a sender holding a role was handed a filled-in
+  // `envoy_publish` as well. The suppression is tied to that one value: `optional` and
+  // `required` keep both hints.
+  describe("hints on a card whose sender states the reply it wants", () => {
+    const sender = "01a0cccc-dddd-7eee-ffff-0123456789ab";
+    const card = (expects_reply: unknown): string =>
+      renderInbound(
+        JSON.stringify({
+          event_id: "agent-no-reply-role",
+          source: "agent",
+          source_session: sender,
+          source_event_id: "agent.no-reply-role",
+          topic: `notifications.agent.${reader}`,
+          dedupe_key: "agent-no-reply-role",
+          issued_at: Date.parse("2026-09-07T04:41:12Z"),
+          payload_summary: "Status only.",
+          trace_id: "trace-agent-no-reply-role",
+          sender: { session_id: sender, title: "Reviewer", roles: ["legion-reviewer"] },
+          expects_reply,
+        }),
+        reader
+      ).content;
+
+    const head = [
+      "envoy:",
+      `  to: you (${reader})`,
+      `  from: ${sender} (Reviewer)`,
+      '  at: "2026-09-07T04:41:12Z"',
+      "  id: agent-no-reply-role",
+    ];
+    const hints = [
+      "  reply_with:",
+      "    tool: envoy_send",
+      "    args:",
+      `      session_id: ${sender}`,
+      "      in_reply_to: agent-no-reply-role",
+      "      message: ...",
+      "  reply_role:",
+      "    tool: envoy_publish",
+      "    args:",
+      "      topic: notifications.role.legion-reviewer",
+      "      message: ...",
+    ];
+    const summary = "  summary: Status only.";
+    const noHints = [...head, "  expects_reply: false", summary].join("\n");
+
+    test("prints neither hint when the sender wants no reply", () => {
+      expect(card(false)).toBe(noHints);
+    });
+
+    test("keeps both hints when a reply is optional", () => {
+      expect(card("optional")).toBe(
+        [...head, "  expects_reply: optional", ...hints, summary].join("\n")
+      );
+    });
+
+    test("keeps both hints when a reply is required", () => {
+      expect(card("required")).toBe(
+        [...head, "  expects_reply: required", ...hints, summary].join("\n")
+      );
+    });
+
+    // The retired spelling reads as `false`, so the normalisation and the suppression must
+    // agree: a frame an older build left on the stream prints that one line and drops the
+    // hints with it.
+    test("prints neither hint for the retired spelling of no reply", () => {
+      expect(card("none")).toBe(noHints);
+    });
   });
 
   test("renders when a message forwarded from a role's kept lane was kept", () => {

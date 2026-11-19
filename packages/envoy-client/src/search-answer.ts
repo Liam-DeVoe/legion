@@ -7,9 +7,13 @@ import {
   type SearchAsk,
   type SearchResponse,
   type SearchResult,
+  type SearchResultsPage,
+  type SearchResultsPageAbsentAs,
   snippetText,
 } from "@legion/contracts";
 import { actorText } from "./actor-text";
+import { dispatchWordsText } from "./ask-answer";
+import { linkFor } from "./dispatch-commands/links";
 import { dispatchDocumentRef } from "./dispatch-owner";
 
 /** The "showing a-b of N" phrasing a paged tool result builds from its offset, row count, and total. */
@@ -17,11 +21,11 @@ export function pageSummaryText(offset: number, count: number, total: number): s
   return `showing ${offset + 1}-${offset + count} of ${total}`;
 }
 
-function searchHitLine(result: SearchResult, baseUrl: string): string {
-  const href = new URL(result.href, baseUrl).toString();
+function searchHitLine(result: SearchResult, linkBase: string | undefined): string {
+  const href = linkFor(result.href, linkBase);
   const { owner } = result;
   if (owner.kind === "document") {
-    const reference = dispatchDocumentRef(owner.project, owner.slug);
+    const reference = dispatchDocumentRef(owner.project ?? "", owner.slug ?? "");
     return `${reference} [document] ${owner.name} - ${result.kind}: ${snippetText(result.snippet)} -> ${href}`;
   }
   const artifactName = result.artifact ? ` ${result.artifact.name}` : "";
@@ -37,7 +41,8 @@ function indentedText(text: string): string {
 
 /** An answer's two lines under its hit: who gave it, when and the options chosen, then its text. */
 function answerLines(lead: string, answer: AskAnswer): string[] {
-  const selected = answer.selected.length === 0 ? "none" : answer.selected.join(", ");
+  const chosen = answer.selected ?? [];
+  const selected = chosen.length === 0 ? "none" : chosen.join(", ");
   const text = answer.text === null || answer.text === "" ? "none" : indentedText(answer.text);
   return [
     `  ${lead} by ${actorActText(answer.user, answer.act)} at ${answer.at} · options chosen: ${selected}`,
@@ -45,9 +50,19 @@ function answerLines(lead: string, answer: AskAnswer): string[] {
   ];
 }
 
-/** Who closed an ask, when and why; the reason is free text and can hold line breaks. */
+/** Who closed an ask, when and why: the person's own reason where the record holds one, and
+ *  where it holds them (a decline), the words Dispatch wrote for the asking agent, under the
+ *  label (`dispatchWordsText`) that keeps nobody reading them as the person's. Both are free
+ *  text and can hold line breaks. A decline the person wrote no note with holds no reason, and
+ *  leaves no separator behind. */
 function resolutionText(resolution: AskResolution): string {
-  return `${resolution.kind} by ${actorText(resolution.actor)} at ${resolution.at}: ${indentedText(resolution.reason)}`;
+  const closed = `${resolution.kind} by ${actorText(resolution.actor)} at ${resolution.at}`;
+  const parts = [
+    resolution.reason === "" ? closed : `${closed}: ${indentedText(resolution.reason)}`,
+  ];
+  const words = dispatchWordsText(resolution.dispatch_words, indentedText);
+  if (words !== undefined) parts.push(words);
+  return parts.join(" · ");
 }
 
 /** Where an ask hit stands, as the lines under its hit; `undefined` is a Dispatch that predates
@@ -56,26 +71,49 @@ export function askStateLines(ask: SearchAsk | undefined): string[] {
   if (ask === undefined) {
     return ["  Answer state not reported by this Dispatch; open the link to read the ask."];
   }
+  const resolution = ask.resolution;
+  const closed =
+    resolution === undefined
+      ? "closed, and this Dispatch did not say by whom"
+      : resolutionText(resolution);
   switch (ask.state) {
     case "open":
       return ["  Open: no answer yet."];
     case "answered":
-      return answerLines("Answered", ask.answer);
+      return ask.answer === undefined
+        ? ["  Answered; this Dispatch did not carry the answer. Open the link to read it."]
+        : answerLines("Answered", ask.answer);
     case "resolved":
       return ask.answer === undefined
-        ? [`  Closed with no answer: ${resolutionText(ask.resolution)}`]
-        : [
-            `  Closed after an answer: ${resolutionText(ask.resolution)}`,
-            ...answerLines("Last answer", ask.answer),
-          ];
+        ? [`  Closed with no answer: ${closed}`]
+        : [`  Closed after an answer: ${closed}`, ...answerLines("Last answer", ask.answer)];
+    default: {
+      // A Dispatch newer than this client can answer with a state this union does not hold. The
+      // state goes on the line as it came, so one unknown word costs its own line rather than
+      // the whole search answer; `never` keeps the switch exhaustive, so a state added to the
+      // union stops the type checker here.
+      const unreportedState: never = ask.state;
+      return [
+        `  Answer state "${String(unreportedState)}" is newer than this client; open the link to read the ask.`,
+      ];
+    }
   }
 }
 
 /** One hit as text: its line, then, for an ask, where the ask stands. */
-function searchResultLine(result: SearchResult, baseUrl: string): string {
-  const line = searchHitLine(result, baseUrl);
+function searchResultLine(result: SearchResult, linkBase: string | undefined): string {
+  const line = searchHitLine(result, linkBase);
   return result.kind === "ask" ? [line, ...askStateLines(result.ask)].join("\n") : line;
 }
+
+/** What this client reads from `GET /api/v1/search`: the route table's answer, which always
+ *  carries the four paging fields, the reading of the words and the filters the search applied,
+ *  or a Dispatch older than search paging, which carries none of them — paging, `query` and
+ *  `filters` all arrived after it, so the legacy arm omits all three. */
+export type SearchAnswerRead =
+  | SearchResponse
+  | (Omit<SearchResponse, keyof SearchResultsPage | "query" | "filters"> &
+      SearchResultsPageAbsentAs<undefined>);
 
 /**
  * The `dispatch_search` tool's text and details for one answer: refuses a later page from a
@@ -85,14 +123,14 @@ function searchResultLine(result: SearchResult, baseUrl: string): string {
  * legacy-Dispatch refusal message; `search.offset` is the server's own answer.
  */
 export function searchAnswer(
-  search: SearchResponse,
+  search: SearchAnswerRead,
   query: string,
   offset: number | undefined,
-  configUrl: string
+  linkBase: string | undefined
 ): { readonly text: string; readonly details: Record<string, unknown> } {
-  const results = search.results;
+  const results = search.results ?? [];
   const count = results.length;
-  const lines = results.map((result) => searchResultLine(result, configUrl));
+  const lines = results.map((result) => searchResultLine(result, linkBase));
   const noun = count === 1 ? "result" : "results";
   const noResults = `No results for "${query}".`;
   // Meaning search is off for this request (no Bedrock credentials, a timed-out or failing query

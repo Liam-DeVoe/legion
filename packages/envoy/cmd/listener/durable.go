@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/session"
 )
 
 // Canonical policy for the listener's durable consumer. DeliverSubject is
@@ -57,9 +56,18 @@ func applyListenerConsumerPolicy(config *nats.ConsumerConfig, subjects []string)
 // it is asked: no retry can succeed, so the listener's startup exits at once.
 var errListenerDurableRefused = errors.New("listener durable refused")
 
-// durableRefusedLine is the line a start logs when it refuses its durable, at the check after the
-// NATS connect and at the bind. The deployed durable-refusal metric filter matches it exactly
-// (defined in the deployment repository's listener infrastructure), so both sites use this constant.
+// durableRefused reports whether err ends a start's durable at once, as no retry can get past it:
+// the listener's own refusal of the durable (errListenerDurableRefused), or the server's refusal of
+// a request of the durable's read, create or update under the connection's grant
+// (bus.ErrPublishDenied), which the server gives again however often the request is sent.
+func durableRefused(err error) bool {
+	return errors.Is(err, errListenerDurableRefused) || errors.Is(err, bus.ErrPublishDenied)
+}
+
+// durableRefusedLine is the line a start logs when its durable is refused (durableRefused), at the
+// check after the NATS connect and at the bind, with the refusal as its error. The deployed
+// durable-refusal metric filter matches it exactly (defined in the deployment repository's listener
+// infrastructure), so both sites use this constant.
 const durableRefusedLine = "subscribe refused, shutting down"
 
 // listenerDurableRefusal refuses an existing durable carrying a setting the listener's consumer
@@ -185,9 +193,11 @@ type durableBind struct {
 
 // bindListenerDurable binds consumer through startListenerSubscription every interval until it
 // binds, the bus's auto-resubscribe after a reconnect binds it, the durable is refused
-// (errListenerDurableRefused, returned as is), deadline passes (errListenerDurableBindExhausted,
-// wrapping the last refusal), or ctx ends (ctx.Err()). It logs the first refusal and then one every
-// durableBindLogEvery, and the bind itself.
+// (errListenerDurableRefused, returned as is), the connection's grant refuses a request of the
+// bind (bus.ErrPublishDenied, returned as is: the grant refuses it again however often it is
+// sent, so waiting out deadline would only delay the start's end), deadline passes
+// (errListenerDurableBindExhausted, wrapping the last failure), or ctx ends (ctx.Err()). It logs
+// the first failure and then one every durableBindLogEvery, and the bind itself.
 func bindListenerDurable(ctx context.Context, client *bus.Client, consumer string, handler nats.MsgHandler, logger *logging.Logger, interval, deadline time.Duration) (durableBind, error) {
 	start := time.Now()
 	var bind durableBind
@@ -211,7 +221,7 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 		if err == nil {
 			return bound(false)
 		}
-		if errors.Is(err, errListenerDurableRefused) {
+		if durableRefused(err) {
 			return bind, err
 		}
 		if bind.waited >= deadline {
@@ -232,9 +242,10 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 			return bind, err
 		}
 		// A reconnect during the wait re-subscribes the subscription the failed attempt registered
-		// (bus.Client.onReconnect), which binds it once the durable is free. Another attempt would
-		// replace that handle with a bind racing the server's release of it, which can be refused
-		// with "consumer is already bound to a subscription".
+		// (bus.Client.afterReconnect, off nats.go's callback goroutine and never under a hook run's
+		// context), which binds it once the durable is free. Another attempt would replace that
+		// handle with a bind racing the server's release of it, which can be refused with "consumer
+		// is already bound to a subscription".
 		if client.SubOK() {
 			bind.waited = time.Since(start)
 			return bound(true)
@@ -315,10 +326,11 @@ const (
 
 // awaitDurableBound waits until the server itself reports consumer delivering to client's own
 // subscription, so a rebuild reports success only once the binding exists rather than once the
-// subscribe call returned. It returns ctx.Err() when ctx ends first and an error wrapping
-// errDurableUnbound, naming how long it waited, once deadline passes. Each read runs under ctx and
-// ends no later than deadline, so neither a cancellation nor the deadline waits on a read the
-// server has not answered.
+// subscribe call returned. It returns ctx.Err() when ctx ends first, an error wrapping
+// errDurableUnbound, naming how long it waited, once deadline passes, and a read the connection's
+// grant refuses (bus.ErrPublishDenied) at once, since no later read gets past it. Each read runs
+// under ctx and ends no later than deadline, so neither a cancellation nor the deadline waits on
+// a read the server has not answered.
 func awaitDurableBound(ctx context.Context, client *bus.Client, consumer string, interval, deadline time.Duration) error {
 	start := time.Now()
 	for {
@@ -332,6 +344,9 @@ func awaitDurableBound(ctx context.Context, client *bus.Client, consumer string,
 		readCtx, cancel := context.WithTimeout(ctx, deadline-waited)
 		info, err := client.JS().ConsumerInfo(bus.Stream, consumer, nats.Context(readCtx))
 		cancel()
+		if errors.Is(err, bus.ErrPublishDenied) {
+			return fmt.Errorf("read durable %s: %w", consumer, err)
+		}
 		if err == nil && !durableUnbound(info, client) {
 			return nil
 		}
@@ -372,21 +387,25 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 
 // durableNeedsDelivery reports whether the stored message on subject, stored at stream sequence
 // storedSeq, may need this listener's durable path, read from the subject alone, and when it does
-// not, how many sessions of this machine take it another way (takesStoredMessagesItself). A role
-// lane's subject always needs it. A session's agent subject does unless the session takes it
-// another way or is another listener's (agentSubjectNeedsDelivery). Any other subject does when it
-// matches a topic of an interest of this machine (the registry's subject index) whose session does
-// not take it another way; with none, the fan-out would deliver it to nobody and report nothing.
+// not, how many sessions of this machine hold it in a consumer of their own
+// (session.SessionEntry.ConsumerHoldsStored; a message stored below a consumer's start is in no
+// consumer, and the durable path does not deliver it; which message it NAKs, defers or skips, and
+// what it logs, is decided by agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go).
+// A role lane's subject always needs it. A session's agent subject does unless the session's
+// consumer holds it or the session is another listener's (agentSubjectNeedsDelivery). Any other
+// subject does when it matches a topic of an interest of this machine (the registry's subject
+// index) whose session's consumer does not hold it; with none, the fan-out would deliver it to
+// nobody and report nothing.
 func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, storedSeq uint64) (needed bool, skipped int) {
 	if strings.HasPrefix(subject, contracts.RoleTopicPrefix) {
 		return true, 0
 	}
-	if sessionID, ok := strings.CutPrefix(subject, contracts.AgentTopicPrefix); ok {
-		return agentSubjectNeedsDelivery(cfg, sessionID, storedSeq)
+	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
+		return agentSubjectNeedsDelivery(cfg, agentSubjectSession(subject), storedSeq)
 	}
 	for _, interest := range cfg.registry.Match(cfg.machineID, subject) {
 		entry, err := cfg.sessions.Get(interest.SessionID)
-		if err != nil || !takesStoredMessagesItself(entry, storedSeq) {
+		if err != nil || !entry.ConsumerHoldsStored(storedSeq) {
 			return true, 0
 		}
 		skipped++
@@ -394,25 +413,28 @@ func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, sto
 	return false, skipped
 }
 
-// takesStoredMessagesItself reports whether the session of entry takes the stored message of
-// stream sequence storedSeq without the durable path: on consumer delivery its consumer holds
-// every message its start covers (session.SessionEntry.ConsumerHoldsStored), and with no serving
-// port a self-subscribed session's own subscription took it. A message stored below the consumer's
-// start is in no consumer, so the durable path still delivers it.
-func takesStoredMessagesItself(entry session.SessionEntry, storedSeq uint64) bool {
-	return entry.ConsumerHoldsStored(storedSeq) || (entry.SelfSubscribed && entry.Port == 0)
-}
-
 // agentSubjectNeedsDelivery is durableNeedsDelivery for sessionID's agent subject: not needed when
-// the session's live entry takes it another way (takesStoredMessagesItself, one skipped delivery),
-// nor when its cached interest names another listener, which delivers it
-// (session.HandleAgentMessage's OwnedElsewhere). Everything else is decoded and delivered: a
-// session of this machine whose entry records neither way of taking it, or whose entry read did
-// not answer, and a session nobody has, for which the path raises its no_holder exception.
+// the session's live entry holds it in its own consumer (one skipped delivery), nor when its
+// cached interest names another listener, which delivers it (session.HandleAgentMessage's
+// OwnedElsewhere). Everything else is decoded and delivered: a session of this machine whose
+// entry records no consumer of its own holding it - an entry the previous build wrote for a
+// session on the core path, or one whose read did not answer - for which the path raises its
+// unreachable exception, and a session nobody has, for which it raises no_holder.
 func agentSubjectNeedsDelivery(cfg listenerDeliveryHandlerConfig, sessionID string, storedSeq uint64) (needed bool, skipped int) {
-	if entry, err := cfg.sessions.Get(sessionID); err == nil && takesStoredMessagesItself(entry, storedSeq) {
+	if entry, err := cfg.sessions.Get(sessionID); err == nil && entry.ConsumerHoldsStored(storedSeq) {
 		return false, 1
 	}
 	interest, cached := cfg.registry.CachedInterest(sessionID)
 	return !cached || interest.MachineID == "" || interest.MachineID == cfg.machineID, 0
+}
+
+// agentSubjectSession is the session an agent subject names, in either form: the session alone
+// (notifications.agent.<session>) or under a project (notifications.agent.<PROJECT or _>.<session>),
+// read through the new form's old twin (contracts.LegacyTwin). A reader that cut the prefix off the
+// new form would look up a session named <PROJECT>.<session>, which none is.
+func agentSubjectSession(subject string) string {
+	if twin, ok := contracts.LegacyTwin(subject); ok {
+		subject = twin
+	}
+	return strings.TrimPrefix(subject, contracts.AgentTopicPrefix)
 }

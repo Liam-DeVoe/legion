@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMarkQuoteWritesMarkAndReturnsCoveredText(t *testing.T) {
@@ -1192,14 +1193,7 @@ func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, 
 
 func waitFor(t *testing.T, timeout time.Duration, description string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", description)
+	testwait.WithinPolling(t, timeout, 5*time.Millisecond, description, condition)
 }
 
 // askTree parses markdown and gives its ask blocks the ids named, in document order, repeats
@@ -1659,11 +1653,12 @@ func refreshLiveAnchors(t *testing.T, service *Service, artifactID string) ([]an
 	if err := service.refreshAnchors(joined, tx, artifactID, tree, model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("refresh anchors: %v", err)
 	}
-	refreshed := slices.Clone(ledger.events)
+	// The refresh's events are appended in the transaction's write phase, at Commit (INFRA-636),
+	// so they are read off the ledger once that phase has run.
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit refresh: %v", err)
 	}
-	return rows, refreshed
+	return rows, slices.Clone(ledger.events)
 }
 
 // refreshedAnchor is the row id and the anchor an anchor refresh event announces.

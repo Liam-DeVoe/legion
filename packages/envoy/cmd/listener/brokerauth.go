@@ -142,7 +142,8 @@ func newBrokerTokens(config listenerBrokerConfig) *brokerTokens {
 // refusal to serve this credential any other way: a listener configured to take broker tokens on
 // a bus with no JetStream fails here, naming EnvBrokerURL, rather than falling back to a store in
 // its own memory, which would let one replica accept a proof another replica had already spent.
-func (b *brokerTokens) open(conn *nats.Conn, replicas int) error {
+// ctx is the start's (bus.EnsureKeyValue).
+func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) error {
 	if b == nil {
 		return nil
 	}
@@ -150,7 +151,7 @@ func (b *brokerTokens) open(conn *nats.Conn, replicas int) error {
 	if err != nil {
 		return fmt.Errorf("%s needs JetStream for the spent-proof bucket %s: %w", EnvBrokerURL, bus.DPoPProofBucket, err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.DPoPProofBucket,
 		TTL:      spentProofRetention,
 		Storage:  nats.FileStorage,
@@ -308,9 +309,9 @@ func brokerCaller(r *http.Request) (brokertoken.Caller, bool) {
 // where it decides it, one line naming both sessions and the path and never the token, as
 // apiAuth's own refusals do.
 //
-// It is called by each of the eight routes that act as a session, after that route has read the
-// session it names, rather than being a wrapper around them: the routes name the session in six
-// different shapes (two message bodies' source_session, subscribe's, unsubscribe's and replay's
+// It is called by each of the seven routes that act as a session, after that route has read the
+// session it names, rather than being a wrapper around them: the routes name the session in five
+// different shapes (two message bodies' source_session, subscribe's and unsubscribe's
 // session_id, the role claim's, and the path of the two DELETEs), and a wrapper would have to
 // decode each body a second time to find it. The read routes that name another session by design
 // — a registry entry, a session's interests, the session list — call nothing here: narrowing

@@ -466,7 +466,7 @@ func TestReferencesToABlockListOnlyLinksNamingIt(t *testing.T) {
 	toBlock := graphEdges(t, handler, url.Values{"to": {blockRef}})
 	issueKey := issue.Key
 	changedAt := latestVersion(t, database, issue.PrimaryArtifactID).CreatedAt
-	alice := []model.Actor{{Kind: "user", ID: "alice"}}
+	alice := []model.Actor{{Kind: "user", ID: "alice", Proven: true}}
 	wantNode := model.GraphNode{
 		Kind: "block", ID: nodeID, BlockID: "ship_it", IssueKey: &issueKey, Project: "CORE", Ref: blockRef,
 		Document: specRef, ChangedVersion: 1, Text: shipIt("Ship it."),
@@ -781,7 +781,10 @@ func TestAPinnedReferenceShowsItsVersionsText(t *testing.T) {
 		t.Fatalf("unpinned node = %#v, want version %d's whole text and no pin", unpinned.Node, version.Number)
 	}
 	pinned := graphEdges(t, handler, url.Values{"to": {paragraphRef + "@v1"}})
-	if want := (model.BlockPin{Version: 1, Ref: paragraphRef + "@v1", Text: original, State: "changed"}); pinned.Node.Pin == nil || *pinned.Node.Pin != want {
+	// A pin carries the display tree of its text for a caller that asked for one, which this
+	// read did not; the tree makes the struct uncomparable, so the pin is compared deeply.
+	if want := (model.BlockPin{Version: 1, Ref: paragraphRef + "@v1", Text: original, State: "changed"}); pinned.Node.Pin == nil ||
+		!reflect.DeepEqual(*pinned.Node.Pin, want) {
 		t.Fatalf("pin = %#v, want %#v", pinned.Node.Pin, want)
 	}
 	if pinned.Node.ChangedVersion != version.Number || pinned.Node.Text != changed {
@@ -815,7 +818,8 @@ func TestAPinnedReferenceWhoseTextReturnedIsUnchanged(t *testing.T) {
 	} {
 		want.Ref = paragraphRef + "@v" + strconv.Itoa(version)
 		node := graphEdges(t, handler, url.Values{"to": {want.Ref}}).Node
-		if node.Pin == nil || *node.Pin != want || node.ChangedVersion != back.Number || node.Text != "P says one thing." {
+		if node.Pin == nil || !reflect.DeepEqual(*node.Pin, want) ||
+			node.ChangedVersion != back.Number || node.Text != "P says one thing." {
 			t.Fatalf("node pinned to version %d = %#v (pin %#v), want pin %#v and changed in version %d", version, node, node.Pin, want, back.Number)
 		}
 	}
@@ -839,7 +843,7 @@ func TestAPinnedReferenceToADeletedBlockSaysItWasRemoved(t *testing.T) {
 		t.Fatalf("pinned read of the deleted block: status=%d body=%s, want 200 with no edges", response.Code, response.Body.String())
 	}
 	issueKey := issue.Key
-	alice := []model.Actor{{Kind: "user", ID: "alice"}}
+	alice := []model.Actor{{Kind: "user", ID: "alice", Proven: true}}
 	madeAt, removedAt := versionOf(t, database, issue.PrimaryArtifactID, 1).CreatedAt, versionOf(t, database, issue.PrimaryArtifactID, deleted.Number).CreatedAt
 	// Version 1 made the block, the deletion is its last change, and version 2, the latest indexed
 	// before it, is the last that held it.

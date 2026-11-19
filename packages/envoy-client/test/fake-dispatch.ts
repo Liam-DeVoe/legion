@@ -32,19 +32,6 @@ import {
 /** The path the live socket is opened on, the one route `startFakeDispatch` upgrades. */
 const LIVE_PATH = "/ws/live";
 
-let bunResponse: Promise<typeof Response> | undefined;
-
-/**
- * Bun's own `Response`, which is not `globalThis.Response` everywhere: packages/dispatch's test
- * preload (bunfig.toml:2) registers happy-dom's globals, and `Bun.serve` does not take happy-dom's
- * `Response` as an answer. Bun's own fetch still answers with Bun's, so one data URL names the
- * constructor. Read once, on the first answer this module builds.
- */
-function nativeResponse(): Promise<typeof Response> {
-  bunResponse ??= Bun.fetch("data:,").then((answer) => answer.constructor as typeof Response);
-  return bunResponse;
-}
-
 /** One request a fake Dispatch was given. */
 export interface FakeDispatchCall {
   /** The URL asked for. */
@@ -116,11 +103,10 @@ function callOf(input: FetchInput, init?: RequestInit): FakeDispatchCall {
 /** `call`'s answer: the catch-all, else the route table, else Dispatch's own no-route 404. */
 async function answerFor(options: FakeDispatchOptions, call: FakeDispatchCall): Promise<Response> {
   if (options.handler !== undefined) return await options.handler(call);
-  const native = await nativeResponse();
   const body = options.routes?.[call.url.pathname];
   return body === undefined
-    ? native.json({ code: "NOT_FOUND", error: call.url.pathname }, { status: 404 })
-    : native.json(body);
+    ? Response.json({ code: "NOT_FOUND", error: call.url.pathname }, { status: 404 })
+    : Response.json(body);
 }
 
 /**
@@ -153,8 +139,6 @@ export interface FakeDispatchServerOptions<Frame> extends FakeDispatchOptions {
    * reconnect's.
    */
   readonly live?: (socket: ServerWebSocket<undefined>, frame: Frame, nth: number) => void;
-  /** Runs after every recorded frame, whatever `live` did: what wakes a test waiting on one. */
-  readonly onFrame?: () => void;
 }
 
 /** A fake Dispatch listening on a loopback port, and what its client asked of it. */
@@ -205,7 +189,8 @@ export function startFakeDispatch<Frame = unknown>(
   };
 
   const server = Bun.serve({
-    // Not async: `server.upgrade` must run before this handler awaits anything.
+    // Not async, by choice: the handler upgrades at once. Bun 1.4.4 upgrades a request after an
+    // `await` in `fetch` as well, so nothing here depends on the handler being synchronous.
     fetch(request, srv) {
       const url = new URL(request.url);
       if (url.pathname !== LIVE_PATH) return read(request, url);
@@ -213,12 +198,13 @@ export function startFakeDispatch<Frame = unknown>(
       upgrades.push(authorization);
       cookies.push(request.headers.get("cookie"));
       if (options.token !== undefined && authorization !== `Bearer ${options.token}`) {
-        return nativeResponse().then((native) =>
-          native.json({ code: "UNAUTHORIZED", error: "invalid bearer token" }, { status: 401 })
+        return Response.json(
+          { code: "UNAUTHORIZED", error: "invalid bearer token" },
+          { status: 401 }
         );
       }
       if (srv.upgrade(request)) return undefined;
-      return nativeResponse().then((native) => new native("upgrade failed", { status: 400 }));
+      return new Response("upgrade failed", { status: 400 });
     },
     hostname: "127.0.0.1",
     port: 0,
@@ -235,7 +221,6 @@ export function startFakeDispatch<Frame = unknown>(
         const nth = (counts.get(type) ?? 0) + 1;
         counts.set(type, nth);
         options.live?.(socket, frame, nth);
-        options.onFrame?.();
       },
     },
   });
@@ -285,15 +270,17 @@ export function recordNotFound(name: string): DispatchServiceError {
 }
 
 /** What the client throws when a write of its own ended with no definitive answer while Dispatch
- *  may still be running it: its keyed retry window ran out, or the call's deadline did. */
-function unsettled(): DispatchWriteUnsettledError {
+ *  may still be running it: its keyed retry window ran out, or the call's deadline did. `key` is
+ *  the write's `Idempotency-Key`. */
+function unsettled(key: string): DispatchWriteUnsettledError {
   return new DispatchWriteUnsettledError(
     new DispatchServiceError(
       IDEMPOTENCY_KEY_IN_FLIGHT,
       409,
       "an earlier request with this key is still running"
     ),
-    5
+    5,
+    key
   );
 }
 
@@ -438,7 +425,7 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
       mine.committed = answerLost;
       finish();
     });
-    throw unsettled();
+    throw unsettled(key ?? "unkeyed");
   };
 
   const client: FakeRecordClient = {
@@ -450,7 +437,8 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
       return { id: held.id };
     },
     projectArtifact: async (project, input, key) => {
-      const content = "content" in input ? input.content : "";
+      // A create with no content makes an empty document, which this fake stores as empty text.
+      const content = input.content ?? "";
       uploads.push({ project, name: input.name, content, actor: input.actor, key });
       if (answers.projectArtifact) return await answers.projectArtifact(project, input, key);
       const hold = holdCreates > 0;
@@ -468,7 +456,7 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
       );
     },
     docEdit: async (doc, input, key) => {
-      for (const op of input.ops)
+      for (const op of input.ops ?? [])
         edits.push({
           id: doc,
           op: op.op,
@@ -483,8 +471,8 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
         if (held === undefined) {
           throw new DispatchServiceError("ARTIFACT_NOT_FOUND", 404, `no document ${doc}`);
         }
-        for (const op of input.ops) held.markdown += `\n${op.markdown ?? ""}\n`;
-        return { applied: input.ops.length };
+        for (const op of input.ops ?? []) held.markdown += `\n${op.markdown ?? ""}\n`;
+        return { applied: (input.ops ?? []).length };
       });
     },
   };
@@ -509,14 +497,19 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
 }
 
 /**
- * The newest handoff record of an issue's phase, as pi-shared's `LatestHandoff` reads it.
- * Declared here structurally for the reason `FakeRecordClient` is: pi-shared depends on this
- * package.
+ * The newest handoff record of an issue's phase, as pi-shared's `LatestHandoffRecord` is: its id,
+ * its version and `body`, the record's exact text, which names the head the phase's work was done
+ * against. Declared here structurally for the reason `FakeRecordClient` is: pi-shared depends on
+ * this package.
  */
-export type FakeLatestHandoff = (
-  issue: string,
-  word: string
-) => Promise<{ readonly id: string; readonly version: number }>;
+export interface FakeHandoffRecord {
+  readonly id: string;
+  readonly version: number;
+  readonly body: string;
+}
+
+/** The newest handoff record of an issue's phase, as pi-shared's `LatestHandoff` reads it. */
+export type FakeLatestHandoff = (issue: string, word: string) => Promise<FakeHandoffRecord>;
 
 /** A Dispatch answering one thing for every phase's newest record, and every read it was asked. */
 export interface FakeHandoffDispatch {
@@ -527,9 +520,7 @@ export interface FakeHandoffDispatch {
 }
 
 /** A Dispatch answering `answer` for every phase's newest record, recording each read. */
-export function fakeLatestHandoff(
-  answer: () => Promise<{ readonly id: string; readonly version: number }>
-): FakeHandoffDispatch {
+export function fakeLatestHandoff(answer: () => Promise<FakeHandoffRecord>): FakeHandoffDispatch {
   const reads: string[] = [];
   return {
     latestHandoff: async (issue, word) => {

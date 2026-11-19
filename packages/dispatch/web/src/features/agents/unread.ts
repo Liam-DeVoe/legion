@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   Message,
   MessageRead,
@@ -36,7 +37,7 @@ function newestSessionReply(
 ): string | undefined {
   let newest: string | undefined;
   for (const read of exchanges) {
-    for (const reply of read.replies) {
+    for (const reply of read.replies ?? []) {
       // A session id and a person's email are disjoint namespaces, so the id test implies the kind.
       // The server's rule tests the kind and this one tests the id; a reader restoring the
       // symmetry by dropping the other side's clause would break it.
@@ -80,13 +81,15 @@ export function useUnreadAtOpen(
 }
 
 /** Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
- *  every badge and row reads it at once. */
+ *  every badge and row reads it at once, over any read of that query still out: such a read was
+ *  asked before the PUT answered, and would put back the count the answer cleared
+ *  (`replaceQueryData`). */
 export function storeAgentState(
   queryClient: QueryClient,
   sessionId: string,
   next: UserAgentState
 ): void {
-  queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+  replaceQueryData<UserAgentStates>(queryClient, userAgentStateQuery().queryKey, (current) => ({
     ...current,
     [sessionId]: next,
   }));
@@ -123,7 +126,7 @@ const readThrough = (newest: string): UserAgentStateInput => ({ read_through: ne
 
 const joinedIds = (ids: readonly string[]): string => ids.join(" ");
 
-const readReplies = (ids: readonly string[]): UserAgentStateInput => ({ read_replies: ids });
+const readReplies = (ids: readonly string[]): UserAgentStateInput => ({ read_replies: [...ids] });
 
 /**
  * Records that the viewer has read a session's conversation, through the newest reply the

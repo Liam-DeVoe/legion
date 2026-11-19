@@ -46,11 +46,12 @@ const (
 
 // unreadableRoleBucketRegistry is smallRoleBucketRegistry's sibling for the cases about what a
 // degraded sweep writes about the claims it could not read: a registry whose role claim view
-// cannot be served over a bucket holding nothing but the claims session holds and its interest
-// record, for the case to fill with the records it cannot read. It seeds no other session's
-// readable claim, because what these cases count is the claims the sweep left behind and a
-// readable stranger's claim is in neither count. It returns the registry and the role bucket's
-// own handle, taken before any counting handle is installed over it, as its sibling does.
+// cannot be served over a bucket holding nothing but the claims session holds, each naming the
+// process releasedByItsProcess states, and its interest record, for the case to fill with the
+// records it cannot read. It seeds no other session's readable claim, because what these cases
+// count is the claims the sweep left behind and a readable stranger's claim is in neither count.
+// It returns the registry and the role bucket's own handle, taken before any counting handle is
+// installed over it, as its sibling does.
 func unreadableRoleBucketRegistry(t *testing.T, session string, held []string) (*Registry, natsgo.KeyValue) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
@@ -58,7 +59,7 @@ func unreadableRoleBucketRegistry(t *testing.T, session string, held []string) (
 	reg, rawInterests := coldRegistry(t, conn)
 	rawRoles := reg.roles().Legacy()
 	for _, role := range held {
-		putRoleClaim(t, rawRoles, role, session)
+		putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, time.Now())
 	}
 	// The record's only topic is not a role's, so the pass over it releases nothing and the
 	// claims below are the fallback's alone to release.
@@ -149,7 +150,7 @@ func TestTheDeregistrationsFallbackSummarizesTheClaimsItCannotReadInOneLinePerCl
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := reg.Remove(ctx, session, nil); err != nil {
+		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s) over a bucket whose every other claim is a record this build cannot decode: %v, want both of its own claims released and no error", session, err)
 		}
 		if wrote := logLines(logs, undecodableLine); wrote != 1 {
@@ -204,7 +205,7 @@ func TestTheDeregistrationsFallbackSummarizesTheClaimsItCannotReadInOneLinePerCl
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := reg.Remove(ctx, session, nil); err != nil {
+		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s) over a bucket holding claims of both classes it cannot read: %v, want both of its own claims released and no error", session, err)
 		}
 

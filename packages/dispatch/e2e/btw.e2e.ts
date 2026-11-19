@@ -1,8 +1,7 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, listComments } from "./api";
-import { resetDatabase } from "./seed";
+import { selectMention } from "./mention";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {
@@ -28,20 +27,8 @@ async function post(page: Page): Promise<Record<string, unknown>> {
   return (await response).request().postDataJSON() as Record<string, unknown>;
 }
 
-async function selectMention(page: Page, text: string, option = "planner"): Promise<void> {
-  const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-  await field.fill(text);
-  await page
-    .getByRole("listbox", { name: "Mention suggestions" })
-    .getByRole("option", { name: option })
-    .click();
-}
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("/btw with a surviving mention strips its token and sends one comment-level mode", async ({
+// @pr: The /btw delivery mode's own row: the token is stripped and one comment-level delivery goes out.
+test("/btw with a surviving mention strips its token and sends one comment-level mode @pr", async ({
   browser,
 }) => {
   await setLiveSessions([planner]);
@@ -52,7 +39,7 @@ test("/btw with a surviving mention strips its token and sends one comment-level
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    await selectMention(page, "/btw @");
+    await selectMention(page, "/btw @", "planner");
     expect(await post(page)).toEqual({
       body: "@planner",
       delivery: "btw",
@@ -139,7 +126,6 @@ test("/btw with nothing after it keeps an agent's direct composer from sending, 
     });
     await page.goto("/agents");
     const agents = page.getByRole("region", { name: "Agents" });
-    await agents.getByRole("button", { name: /^No Dispatch activity/ }).click();
     const card = agents
       .locator("article")
       .filter({ has: page.getByRole("heading", { level: 2, name: "worker" }) });
@@ -164,6 +150,10 @@ test("/btw with nothing after it keeps an agent's direct composer from sending, 
     await expect(send).toBeFocused();
     await send.click({ force: true });
     await field.press("Control+Enter");
+    // Neither the forced click nor Ctrl+Enter may send while `/btw ` strips to an empty message,
+    // and a send that never happens marks nothing to wait on: this window is the check. A POST
+    // would leave the page in the task of the gesture that made it and `page.on` above records
+    // it as it goes, so 500 ms of real time is many frames past where it would show.
     await page.waitForTimeout(500);
     expect(posts).toEqual([]);
 

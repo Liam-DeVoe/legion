@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -183,8 +184,8 @@ func TestNarrowKeepsTheNamedClaimsAndAnswersOnlyLaunchers(t *testing.T) {
 	if event := h.next(); event != (Hello{Claim: otherClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want the other claim's hello", event)
 	}
-	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, string) {
-		return &launcherServe{frames: make(chan shimwire.Frame, 4)}, ""
+	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+		return &launcherServe{frames: make(chan shimwire.Frame, 4)}, shimwire.LauncherHelloAck{}, ""
 	})
 
 	h.listener.Narrow(func(token claim.Token) bool { return token == testClaim })
@@ -504,9 +505,9 @@ func TestALauncherHelloReachesTheLauncherAcceptorAlone(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
 	var got shimwire.LauncherHello
-	h.listener.SetLauncherResolver(func(hello shimwire.LauncherHello) (LauncherHandler, string) {
+	h.listener.SetLauncherResolver(func(hello shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
 		got = hello
-		return served, ""
+		return served, shimwire.LauncherHelloAck{}, ""
 	})
 	p := dial(t, h.listener.Addr())
 	hello := shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"}
@@ -532,28 +533,146 @@ func TestALauncherHelloReachesTheLauncherAcceptorAlone(t *testing.T) {
 	}
 }
 
-// A launcher the acceptor refuses, or one that arrives before any acceptor is registered, is
-// closed with nothing sent and its reason logged.
-func TestARefusedLauncherHelloIsClosedAndLogged(t *testing.T) {
-	for name, tc := range map[string]struct {
-		register bool
-		reason   string
+// The acknowledgement the listener writes is the one the resolver returned, member for member:
+// the memory guard's settings are decided where the launcher is accepted (sandbox's
+// LauncherResolver fills them for an issue pod alone), and a listener that wrote an ack of its
+// own would hand every launcher none, which turns every pod's guard off.
+func TestMemoryGuardTheListenerWritesTheResolversAcknowledgement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ack  shimwire.LauncherHelloAck
 	}{
-		"no acceptor yet":        {false, "launcher acceptor unavailable"},
-		"refused by the runtime": {true, "launcher token is not current"},
+		{"settings", shimwire.LauncherHelloAck{MemoryGuard: &shimwire.LauncherMemoryGuard{
+			ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250,
+		}}},
+		{"none", shimwire.LauncherHelloAck{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startListener(t, harnessOptions{})
+			served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
+			h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+				return served, tc.ack, ""
+			})
+			p := dial(t, h.listener.Addr())
+			p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+			got := p.expect(shimwire.TypeLauncherHelloAck).(shimwire.LauncherHelloAck)
+			if !reflect.DeepEqual(got, tc.ack) {
+				t.Fatalf("the launcher read %+v (memory guard %+v), want the resolver's %+v (memory guard %+v)",
+					got, got.MemoryGuard, tc.ack, tc.ack.MemoryGuard)
+			}
+		})
+	}
+}
+
+// What an accepted launcher's cache trimmer runs by travels on the ack the listener writes, and is
+// read here from that line as a launcher reads it: an acceptor that hands settings has them reach
+// the launcher whole, and one that hands none writes an ack with no member at all, the one absence
+// that means "run no trimmer" (shimwire.LauncherHelloAck.VolumeTrim, INFRA-2009).
+func TestTheLauncherHelloAckCarriesWhatItsAcceptorHanded(t *testing.T) {
+	for name, handed := range map[string]*shimwire.LauncherVolumeTrim{
+		"a daemon with trimmer settings": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a daemon with none":             nil,
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := startListener(t, harnessOptions{})
-			if tc.register {
-				h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, string) { return nil, tc.reason })
-			}
+			served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
+			h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+				return served, shimwire.LauncherHelloAck{VolumeTrim: handed}, ""
+			})
 			p := dial(t, h.listener.Addr())
-			p.send(shimwire.LauncherHello{Token: "stale", Sandbox: "s", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
-			p.awaitClosed()
-			if lines := h.logs.Lines(); len(lines) != 1 || !strings.Contains(lines[0], tc.reason) {
-				t.Fatalf("log = %q, want one refusal naming %q", lines, tc.reason)
+			p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+			ack := p.expect(shimwire.TypeLauncherHelloAck).(shimwire.LauncherHelloAck)
+			switch {
+			case handed == nil && ack.VolumeTrim != nil:
+				t.Fatalf("the ack carries %+v, want no member at all", *ack.VolumeTrim)
+			case handed != nil && ack.VolumeTrim == nil:
+				t.Fatal("the ack carries no settings, want the ones its acceptor handed")
+			case handed != nil && *ack.VolumeTrim != *handed:
+				t.Fatalf("the ack carries %+v, want %+v", *ack.VolumeTrim, *handed)
 			}
 		})
+	}
+}
+
+// A launcher the acceptor refuses is closed with nothing sent and its reason logged. The hello
+// that arrives before any acceptor is installed is no longer one of these: it waits for the
+// acceptor instead of being refused by name, which is what the two tests below measure.
+func TestARefusedLauncherHelloIsClosedAndLogged(t *testing.T) {
+	const reason = "launcher token is not current"
+	h := startListener(t, harnessOptions{})
+	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+		return nil, shimwire.LauncherHelloAck{}, reason
+	})
+	p := dial(t, h.listener.Addr())
+	p.send(shimwire.LauncherHello{Token: "stale", Sandbox: "s", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+	p.awaitClosed()
+	if lines := h.logs.Lines(); len(lines) != 1 || !strings.Contains(lines[0], reason) {
+		t.Fatalf("log = %q, want one refusal naming %q", lines, reason)
+	}
+}
+
+// The boot window: the worker stream accepts from the moment it is bound, while the pod runtime
+// installs its launcher acceptor only once that runtime is built and its informer caches have
+// synced. A launcher that dials in between used to be refused by name and to dial again a second
+// later, 904 times in one incident; it now waits, and the acceptor serves its hello on the
+// connection it was already sent on — no reconnect, and the window is one log line instead of one
+// per refusal. The ack it is served with carries the settings that acceptor handed, as an ack
+// written without a wait does.
+func TestALauncherHelloBeforeTheAcceptorIsServedAfterIt(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := dial(t, h.listener.Addr())
+	p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+	// While no acceptor exists the hello is neither answered nor refused: it is parked.
+	select {
+	case frame := <-p.frames:
+		t.Fatalf("a hello sent before the acceptor was answered with %s", frame.FrameType())
+	case <-p.closed:
+		t.Fatal("a hello sent before the acceptor was refused instead of waiting for it")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
+	handed := shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}
+	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+		return served, shimwire.LauncherHelloAck{VolumeTrim: &handed}, ""
+	})
+
+	ack := p.expect(shimwire.TypeLauncherHelloAck).(shimwire.LauncherHelloAck)
+	if ack.VolumeTrim == nil || *ack.VolumeTrim != handed {
+		t.Fatalf("the ack served after the wait carries %v, want %+v", ack.VolumeTrim, handed)
+	}
+	// The same connection, and now the handler's: what the launcher sends next reaches it.
+	p.send(shimwire.LauncherState{})
+	select {
+	case frame := <-served.frames:
+		if _, ok := frame.(shimwire.LauncherState); !ok {
+			t.Fatalf("the launcher handler read %#v, want the state the waiting launcher sent", frame)
+		}
+	case <-time.After(wait):
+		t.Fatal("the served launcher's frames never reached its handler")
+	}
+	lines := h.logs.Lines()
+	if len(lines) != 1 || !strings.Contains(lines[0], "the launcher acceptor is installed") || !strings.Contains(lines[0], "hellos=1") {
+		t.Fatalf("logs = %q, want one line reporting the window the one hello waited in", lines)
+	}
+}
+
+// The wait is bounded, because an acceptor that never arrives must not hold a launcher silent:
+// past the bound the hello gets the refusal it always got, named, logged once, with nothing
+// written to the connection, and the launcher dials again.
+func TestALauncherHelloIsRefusedOnceTheWaitRunsOut(t *testing.T) {
+	const launcherWait = 50 * time.Millisecond
+	h := startListener(t, harnessOptions{launcherWait: launcherWait})
+	p := dial(t, h.listener.Addr())
+	sent := time.Now()
+	p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+	p.awaitClosed()
+	if waited := time.Since(sent); waited < launcherWait {
+		t.Fatalf("the hello was refused after %s, want the whole %s wait first", waited, launcherWait)
+	}
+	want := []string{"worker-stream: rejected hello (launcher acceptor unavailable)"}
+	if got := h.logs.Lines(); !slices.Equal(got, want) {
+		t.Fatalf("logs = %q, want %q", got, want)
 	}
 }
 
@@ -564,5 +683,41 @@ func TestAHello2WithAMalformedIdentityIsRefused(t *testing.T) {
 	p.awaitClosed()
 	if lines := h.logs.Lines(); len(lines) != 1 || !strings.Contains(lines[0], "rejected hello (malformed hello)") {
 		t.Fatalf("log = %q", lines)
+	}
+}
+
+// A mark a consumer asks for (Drain) comes behind every event the listener had queued when it was
+// asked for, and before every event queued after: the hello of a connection registered before the
+// call, then the mark, then the answer of a frame sent after it. What the consumer closes is what
+// the asker waits on. An ended listener queues no mark, and its answer is closed at once.
+func TestADrainMarkFollowsEveryEventQueuedBeforeIt(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := dial(t, h.listener.Addr())
+	p.hello(testToken)
+	p.expect(shimwire.TypeHelloAck)
+	done := h.listener.Drain(testClaim)
+	if got := h.next(); got != (Hello{Claim: testClaim, Generation: testGeneration}) {
+		t.Fatalf("first event = %#v, want the hello queued before the mark", got)
+	}
+	mark, ok := h.next().(Drained)
+	if !ok || mark.Claim != testClaim {
+		t.Fatalf("second event = %#v, want the mark of %s", mark, testClaim)
+	}
+	select {
+	case <-done:
+		t.Fatal("the mark's answer is closed before its consumer handled it")
+	default:
+	}
+	close(mark.Done)
+	<-done
+	p.send(shimwire.Raw{Type: "message_end", JSON: []byte(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"second-model"}}`)})
+	if got := h.next(); got != (Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration}) {
+		t.Fatalf("third event = %#v, want the answer read after the mark", got)
+	}
+	h.stop()
+	select {
+	case <-h.listener.Drain(testClaim):
+	default:
+		t.Fatal("an ended listener's mark is not answered at once")
 	}
 }

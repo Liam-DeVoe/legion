@@ -22,13 +22,15 @@ function session(sessionId: string, title: string, lastSeen = NOW - 30_000): Age
   return {
     capabilities: [],
     dir: "/w",
-    host: "sami-devbox",
+    host: "sand-devbox",
     last_activity: null,
     last_seen: lastSeen,
-    machine_id: "sami-devbox",
+    machine_id: "sand-devbox",
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    // The server always writes a session's state (model.Agent), so the document requires it.
+    state: "live",
     title,
   };
 }

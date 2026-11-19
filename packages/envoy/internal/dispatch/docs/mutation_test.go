@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -326,6 +327,64 @@ func TestClosedIssueRejectsLiveEditsAndNamedVersions(t *testing.T) {
 	waitForDocumentText(t, service, artifactID, "before\n")
 }
 
+// A closed issue still takes a comment, so its document still takes the comment's anchor under
+// WithCommentMarks - the comment mark, its margin record and the version the anchor is pinned
+// to - and nothing else under it: a suggestion's mark and a content edit are refused as they are
+// without it, and so is a comment mark made without it.
+func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
+	service, artifactID := newTestService(t)
+	seedServiceText(t, service, artifactID, "before")
+	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
+		t.Fatalf("close document issue: %v", err)
+	}
+	actor := model.Actor{Kind: "user", ID: "alice"}
+	comment := MarkSpec{Kind: MarkComment, ID: "c1", By: actor}
+	if _, err := joinedMarkQuote(service, artifactID, comment, "before", nil); !errors.Is(err, ErrIssueClosed) {
+		t.Fatalf("comment mark without WithCommentMarks on a closed issue = %v, want ErrIssueClosed", err)
+	}
+
+	var anchored Anchored
+	if err := joinedWrite(service, func(ctx context.Context) (err error) {
+		ctx = WithCommentMarks(ctx)
+		if anchored, err = service.MarkQuote(ctx, artifactID, comment, "before", nil); err != nil {
+			return err
+		}
+		record := MarkRecord{Kind: "comment", By: ActorRef(actor), CreatedAt: time.Now().UTC().Format(time.RFC3339), Text: "About this."}
+		if err := service.ProjectMark(ctx, artifactID, comment.ID, record, actor); err != nil {
+			return err
+		}
+		_, err = service.SnapshotVersion(ctx, artifactID, actor)
+		return err
+	}); err != nil {
+		t.Fatalf("comment anchor under WithCommentMarks on a closed issue: %v", err)
+	}
+	if anchored.Quote != "before" {
+		t.Fatalf("comment mark anchored = %#v, want the quote it marked", anchored)
+	}
+
+	for name, write := range map[string]func(ctx context.Context) error{
+		"a suggestion mark": func(ctx context.Context) error {
+			_, err := service.MarkQuote(ctx, artifactID, MarkSpec{Kind: MarkSuggestion, ID: "s1", By: actor}, "before", nil)
+			return err
+		},
+		"a content edit": func(ctx context.Context) error {
+			_, err := service.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: "before", With: "after"}}, actor, nil)
+			return err
+		},
+		"a text replacement": func(ctx context.Context) error {
+			_, err := service.ReplaceText(ctx, artifactID, "after", actor)
+			return err
+		},
+	} {
+		if err := joinedWrite(service, func(ctx context.Context) error {
+			return write(WithCommentMarks(ctx))
+		}); !errors.Is(err, ErrIssueClosed) {
+			t.Fatalf("%s under WithCommentMarks on a closed issue = %v, want ErrIssueClosed", name, err)
+		}
+	}
+	waitForDocumentText(t, service, artifactID, "before\n")
+}
+
 func TestNamedVersionIncludesTrackedActorsAndResetsRoom(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
@@ -378,6 +437,55 @@ func TestSnapshotVersionDoesNotAttributeUnchangedDocument(t *testing.T) {
 	version = waitForDocumentVersion(t, service.store, artifactID, 2)
 	if len(version.Authors) != 1 || version.Authors[0] != editor {
 		t.Fatalf("settled version authors = %#v, want only %v", version.Authors, editor)
+	}
+}
+
+// Another build may have written the latest version: during a release two builds serve one
+// database, and an older renderer escapes some text differently. While no update since that
+// version changed the content, a snapshot writes no version, even though this build renders the
+// document differently, as settlement writes none.
+func TestSnapshotVersionWritesNoVersionForAnotherRenderersMarkdownOfUnchangedContent(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	snapshot := func() VersionResult {
+		t.Helper()
+		tx, err := service.store.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin snapshot transaction: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		snapshotCtx, ledger := service.Join(ctx, tx)
+		defer ledger.Discard()
+		result, err := service.SnapshotVersion(snapshotCtx, artifactID, alice)
+		if err != nil {
+			t.Fatalf("snapshot the document: %v", err)
+		}
+		if err := ledger.Commit(ctx); err != nil {
+			t.Fatalf("commit the snapshot: %v", err)
+		}
+		return result
+	}
+	seedServiceText(t, service, artifactID, "snake_case here")
+	latest := snapshot()
+	if !latest.Wrote {
+		t.Fatal("the snapshot after the seed wrote no version")
+	}
+	var stored string
+	if err := service.store.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, latest.Version.Number).Scan(&stored); err != nil {
+		t.Fatalf("read the latest version: %v", err)
+	}
+	if stored != "snake_case here\n" {
+		t.Fatalf("latest version markdown = %q, want %q", stored, "snake_case here\n")
+	}
+	// An older renderer escaped every underscore.
+	if _, err := service.store.Pool.Exec(ctx, `update artifact_versions set markdown = $3 where artifact_id = $1 and number = $2`, artifactID, latest.Version.Number, `snake\_case here`+"\n"); err != nil {
+		t.Fatalf("store an older renderer's markdown: %v", err)
+	}
+
+	if again := snapshot(); again.Wrote || again.Version.Number != latest.Version.Number {
+		t.Fatalf("snapshot = version %d wrote=%t, want version %d without a write", again.Version.Number, again.Wrote, latest.Version.Number)
 	}
 }
 func TestCommittedSnapshotAndNamedVersionsClearPendingAuthors(t *testing.T) {
@@ -745,8 +853,8 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 			var answered error
 			if err := joinedWrite(service, func(ctx context.Context) error {
 				tx, _ := txFromContext(ctx)
-				// The issue route holds the issue's row before it writes any document.
-				if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+				// The issue route holds the issue's owner lock before it writes any document.
+				if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 					return fmt.Errorf("lock the issue: %w", err)
 				}
 				if answered = unchanged.write(ctx); answered != nil && !errors.Is(answered, ygws.ErrNoChanges) {

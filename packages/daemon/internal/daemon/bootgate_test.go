@@ -18,8 +18,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
@@ -310,9 +312,11 @@ yes-envoy-mismatch) printf "${legion}LEGION_ENVOY_INTERFACE=2\nLEGION_ENVOY_LOAD
 yes-legacy) printf "$legion${with_envoy}LEGION_LEGACY_PLUGIN_LOADED_FROM=file://$HOME/legacy/dist/legion.js?mtime=1\n" >&2; exit 0 ;;
 yes-envoy-elsewhere) printf "${legion}LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=file://$HOME/envoy-elsewhere/dist/envoy.js?mtime=1\n" >&2; exit 0 ;;
 yes-then-die) echo LEGION_PLUGIN_LOADED=yes >&2; echo "database is locked" >&2; exit 1 ;;
+yes-then-killed) echo LEGION_PLUGIN_LOADED=yes >&2; kill -KILL $$ ;;
 no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 silent) exit 0 ;;
 denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
+denied-then-killed) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; kill -KILL $$ ;;
 hang) exec sleep 30 ;;
 no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; exec sleep 30 ;;
 esac
@@ -504,13 +508,15 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	if f.read(t, "prefixed") == "" {
 		t.Error("the probe did not run through the launch prefix")
 	}
-	env := f.read(t, "env.1")
+	// Each variable is read whole, by name (envlisting): a listing also holds PWD and TMPDIR,
+	// whose values can contain any text, and env can print any variable first.
+	env := envlisting.Vars(f.read(t, "env.1"))
 	for name, value := range gate.env {
-		if name != "PATH" && !strings.Contains(env, name+"="+value+"\n") {
+		if got, set := env[name]; name != "PATH" && (!set || got != value) {
 			t.Errorf("the probe's environment lacks the pane's %s=%s", name, value)
 		}
 	}
-	if strings.Contains(env, "LEGION_DAEMON_ONLY_SECRET") {
+	if _, set := env["LEGION_DAEMON_ONLY_SECRET"]; set {
 		t.Error("the probe ran with a variable of the daemon's own environment")
 	}
 	if info, err := os.Stat(gate.env["XDG_DATA_HOME"]); err != nil || !info.IsDir() {
@@ -754,36 +760,42 @@ func TestTheGateRefusesAMissingEnvoyBeforeTheMissingSkills(t *testing.T) {
 	if strings.Contains(err.Error(), "dispatch") {
 		t.Errorf("err = %v, which names the skill dispatch, a remedy behind the missing plugin's", err)
 	}
-	if skills := f.read(t, "env.1"); !strings.Contains(skills, "LEGION_PROMPT_SKILLS=dispatch\n") {
+	if skills := f.read(t, "env.1"); envlisting.Vars(skills)["LEGION_PROMPT_SKILLS"] != "dispatch" {
 		t.Errorf("the load probe was not asked for the skill dispatch:\n%s", skills)
 	}
 }
 
 // A launch that fails before Oh My Pi says anything — the launch prefix refusing, a binary that is
-// not Oh My Pi — is its own refusal, with the command and what it printed.
+// not Oh My Pi — is its own refusal, with the command and what it printed. One a signal ended names
+// the signal where an exit names its status: it has none, and read as one it was `(exit -1)`.
 func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
-	f := newFakeOmp(t, "denied")
-	gate, _ := gateUnder(t, f, contractCurrent)
+	for step, ending := range map[string]string{"denied": "(exit 3)", "denied-then-killed": "(signal: killed)"} {
+		t.Run(step, func(t *testing.T) {
+			f := newFakeOmp(t, step)
+			gate, _ := gateUnder(t, f, contractCurrent)
 
-	err := gate.verify(context.Background())
+			err := gate.verify(context.Background())
 
-	if err == nil {
-		t.Fatal("the gate passed a launch that failed")
-	}
-	for _, want := range []string{"OMP launch probe failed (exit 3) for launch command", f.prefix + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not say %q: %v", want, err)
-		}
-	}
-	if n := f.attempts(t); n != 1 {
-		t.Errorf("Oh My Pi ran %d times for a definitive failure, want once", n)
+			if err == nil {
+				t.Fatal("the gate passed a launch that failed")
+			}
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", f.prefix + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal does not say %q: %v", want, err)
+				}
+			}
+			if n := f.attempts(t); n != 1 {
+				t.Errorf("Oh My Pi ran %d times for a definitive failure, want once", n)
+			}
+		})
 	}
 }
 
-// Oh My Pi dying after it loaded the plugin, or a probe the budget cut off before it answered, says
-// nothing about the plugin: the gate waits it out and asks again.
+// Oh My Pi dying after it loaded the plugin, with an exit of its own or by a signal (the kernel's
+// out-of-memory kill), or a probe the budget cut off before it answered, says nothing about the
+// plugin: the gate waits it out and asks again.
 func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
-	for _, step := range []string{"yes-then-die", "hang"} {
+	for _, step := range []string{"yes-then-die", "yes-then-killed", "hang"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step, step, "yes")
 			gate, logged := gateUnder(t, f, contractCurrent)
@@ -967,5 +979,39 @@ esac
 	}
 	if want := []string{"GEMINI_API_KEY=the-provider-key"}; !slices.Equal(got, want) {
 		t.Errorf("the probe ran with %q, want %q: the provider key, as a pane's shim exports it", got, want)
+	}
+}
+
+// The boot gate probes under the environment a pane gets, so it carries the operator's own spend
+// attributes as the operator wrote them in `runtime.tmux.pane_env` and nothing more: the probe
+// serves no issue and runs in no role, so the composition every launch goes through
+// (runtime.SpendResourceAttributes with the zero spec, gateEnvironment) writes neither
+// legion.issue nor legion.role, and the probe's minutes are billed under the deployment's own
+// attributes rather than under some launch's issue.
+func TestTheGateIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
+	// The live deployment's shape, with a placeholder person, as an operator writes it: the
+	// project, the lane, the credential the gateway bills and the person who owns the spend.
+	const operator = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"
+	block := &config.Tmux{PaneEnv: map[string]string{runtime.SpendAttributesVariable: operator}}
+	env, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, ok := env[runtime.SpendAttributesVariable]
+	if !ok || value != operator {
+		t.Errorf("the gate is told %s = %q (set %v), want the operator's own %q", runtime.SpendAttributesVariable, value, ok, operator)
+	}
+	if strings.Contains(value, runtime.SpendIssueAttribute) || strings.Contains(value, runtime.SpendRoleAttribute) {
+		t.Errorf("the gate is told %s = %q, want no %s and no %s: the probe serves no issue and runs in no role",
+			runtime.SpendAttributesVariable, value, runtime.SpendIssueAttribute, runtime.SpendRoleAttribute)
+	}
+	// An operator who sets no attributes leaves the gate told none, rather than an empty variable
+	// invented for it.
+	bare, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := bare[runtime.SpendAttributesVariable]; ok {
+		t.Errorf("a gate under no operator attributes is told %s = %q, want no such variable", runtime.SpendAttributesVariable, value)
 	}
 }

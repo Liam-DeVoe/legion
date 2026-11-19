@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -82,6 +84,9 @@ type testSupervisor struct {
 	mu       sync.Mutex
 	machines map[claim.Token]*supervise.Machine
 	prompts  map[claim.Token]string
+	// stepErr is what the step read answers instead of the store's record, for a test about a
+	// refused read (refuseStep); nil while the store answers.
+	stepErr error
 }
 
 func (s *testSupervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
@@ -140,6 +145,27 @@ func (s *testSupervisor) Claims(ctx context.Context) ([]supervise.Claim, error) 
 	return s.store.Claims(ctx)
 }
 
+// Step is the narrow read behind every operator answer about one claim, the store's own
+// (store.Store.ClaimStep), unless a test has had the store refuse it (refuseStep).
+func (s *testSupervisor) Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error) {
+	s.mu.Lock()
+	refused := s.stepErr
+	s.mu.Unlock()
+	if refused != nil {
+		return supervise.StepRecord{}, refused
+	}
+	return s.store.ClaimStep(ctx, token)
+}
+
+// refuseStep has every later read of one claim's step record fail with err, as a store that
+// refuses that narrow read does. The claims read the listing makes is a different read and is
+// left alone: a route about one claim makes this one and no other.
+func (s *testSupervisor) refuseStep(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stepErr = err
+}
+
 type harness struct {
 	t          *testing.T
 	ctx        context.Context
@@ -156,6 +182,11 @@ type harness struct {
 	// context was the agent's request's or one that outlives its connection.
 	reported           *[]capabilities.Report
 	reportedContextErr *[]error
+	// roleHolders is each claim RoleHoldersChanged was told of, in order, as the route handed it
+	// over, and roleHoldersErr what the hook answers: nil takes the call, an error is a queue the
+	// store refused.
+	roleHolders    *[]supervise.Claim
+	roleHoldersErr *error
 	// podUpdateRounds is what Options.PodUpdateRounds answers, which a test writes before it lists
 	// the claims: the sweep that fills it in production is the daemon's, which this package has
 	// none of.
@@ -163,6 +194,28 @@ type harness struct {
 	// handoffs is the Dispatch a completion route's harness reads handoff records from
 	// (newHandoffHarness), which writeHandoff fills; nil for a harness serving no completion.
 	handoffs *statusRecorder
+	// serverLog is every line the server's own logger wrote (Options.Log), as text.
+	serverLog *lockedLog
+}
+
+// lockedLog is a text log a handler writes while a test reads it.
+type lockedLog struct {
+	testlog.Buffer
+}
+
+// lines is every line of the log that holds each of parts.
+func (l *lockedLog) lines(parts ...string) []string {
+	var matched []string
+	for _, line := range strings.Split(l.String(), "\n") {
+		hit := line != ""
+		for _, part := range parts {
+			hit = hit && strings.Contains(line, part)
+		}
+		if hit {
+			matched = append(matched, line)
+		}
+	}
+	return matched
 }
 
 func newHarness(t *testing.T) *harness {
@@ -200,6 +253,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			},
 			PluginContract:     DaemonAPIVersion,
 			PluginRelaunchable: relaunchable,
+			RefreshGate:        supervise.NewRefreshGate(0),
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
 			TreeClosable: func(ctx context.Context, c supervise.Claim) (bool, error) {
 				var issue *record.Issue
@@ -219,17 +273,23 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	}
 	readied := &[]supervise.Claim{}
 	reported, reportedContextErr := &[]capabilities.Report{}, &[]error{}
+	roleHolders, roleHoldersErr := &[]supervise.Claim{}, new(error)
 	rounds := &PodUpdateRounds{}
+	serverLog := &lockedLog{}
 	h := &harness{
 		t: t, ctx: ctx, store: st, runtime: rt, conns: conns, tokens: tokens, supervisor: sup,
 		readied:            readied,
 		reported:           reported,
 		reportedContextErr: reportedContextErr,
+		roleHolders:        roleHolders,
+		roleHoldersErr:     roleHoldersErr,
 		podUpdateRounds:    rounds,
+		serverLog:          serverLog,
 	}
 	server := NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
-		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st, Log: quiet,
+		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st,
+		Log:  slog.New(slog.NewTextHandler(serverLog, nil)),
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
 		PluginRelaunchable: relaunchable,
 		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },
@@ -238,6 +298,10 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		CapabilityReported: func(ctx context.Context, _ supervise.Claim, report capabilities.Report) {
 			*reported = append(*reported, report)
 			*reportedContextErr = append(*reportedContextErr, ctx.Err())
+		},
+		RoleHoldersChanged: func(_ context.Context, c supervise.Claim) error {
+			*roleHolders = append(*roleHolders, c)
+			return *roleHoldersErr
 		},
 	})
 	h.handler = server.Handler

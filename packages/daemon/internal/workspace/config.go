@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -23,20 +24,39 @@ import (
 
 // CommandTimeout is the slow-command budget both runtimes' provisioning gives every command it
 // runs — a fetch, a jj operation, or a git configuration edit — each bounded independently. The
-// exceptions are the fetch's transfers and the checks of what the repository cache streamed, under
-// FetchTimeout (the repository cache's own first clone under CacheFetchTimeout instead), the
-// shared clone's own clone, under CloneTimeout, the issue's checkout, under CheckoutTimeout (all
-// three below), and the cache's repack (repocache.repackTimeout, through FeedGitWithin).
+// exceptions are the fetch's checks of what the repository cache streamed and its transfers from
+// GitHub, under FetchTimeout (the repository cache's own first clone under CacheFetchTimeout
+// instead), the stream from the repository cache, under the low-speed bound and no clock at all
+// (CacheStreamLowSpeedBytes), the shared clone's own clone, under CloneTimeout, the issue's
+// checkout, under CheckoutTimeout (all below), and the cache's repack (repocache.repackTimeout, through FeedGitWithin).
 const CommandTimeout = 5 * time.Minute
 
-// FetchTimeout is the bound of each stage of a fetch whose duration follows the repository's size
-// and the network's speed, once it may start (Fetch): a feed filled from the repository cache gets
-// one for the cache's stream and its verification together and another for the delta from GitHub,
-// every attempt of it included; a clone or a fetch from GitHub alone gets one. It is long enough
-// for a large repository's slow but steadily progressing transfer to finish. A request may set its
-// own (FetchRequest.Bound), which the repository cache does for its first clone alone
-// (CacheFetchTimeout).
+// FetchTimeout is the bound of each clocked stage of a fetch whose duration follows the
+// repository's size and the network's speed, once it may start (Fetch): a feed filled from the
+// repository cache gets one for the verification of what was streamed, counted from the stream's
+// end, and another for the delta from GitHub, every attempt of it included; a clone or a fetch
+// from GitHub alone gets one. It is long enough for a large repository's slow but steadily
+// progressing transfer to finish. A request may set its own (FetchRequest.Bound), which the
+// repository cache does for its first clone alone (CacheFetchTimeout). The stream from the
+// repository cache is no stage of this kind: it is held to its own speed instead
+// (CacheStreamLowSpeedBytes).
 const FetchTimeout = 30 * time.Minute
+
+// CacheStreamLowSpeedBytes and CacheStreamLowSpeedTime bound the stream a feed is filled from the
+// repository cache with, in place of a clock: the stream ends once a whole CacheStreamLowSpeedTime
+// has passed in which fewer than CacheStreamLowSpeedBytes arrived, and one that keeps receiving
+// more than that runs for as long as the repository needs (countingReader.watchStall). The rule
+// is git's own for the transfers it makes, http.lowSpeedLimit over http.lowSpeedTime, here 1 MiB
+// in 5 minutes: about 3.5 KiB/s, far under the share of a cache's sending rate a pod gets even
+// when every stream the cache allows at once is running (repocache.maxStreams), so only a
+// transfer that has stopped falls below it. A clock in its place threw away a download that was
+// still arriving, killed at 30 minutes with the feed it had written, and launched the issue again
+// into the same wait (INFRA-495): what tells a dead transfer from a long one is its speed, not
+// how long it has run.
+const (
+	CacheStreamLowSpeedBytes = 1 << 20
+	CacheStreamLowSpeedTime  = 5 * time.Minute
+)
 
 // CloneTimeout is the one bound ensureRepoClone gives its size-following steps, together, as the
 // fetch's share FetchTimeout: from GitHub, a `jj git clone` that copies and imports every object;
@@ -50,7 +70,7 @@ const CloneTimeout = 30 * time.Minute
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
 // repository's tree into a workspace that holds none — which is the issue's checkout alone today
 // (`jj sparse reset`, Provision), so the next such command takes this constant rather than a third
-// one. One write of the largest repository mapped, theorem-labs/oss-verify-proofs-internal, 282,134
+// one. One write of the largest repository mapped, example-org/oss-verify-proofs-internal, 282,134
 // files and 11.56 GiB, took 548.8 s and 554.9 s in an issue pod: this is 6.5 times that measured
 // run, and three times it at the worst rate measured over a 60-second window of it (10.0 MiB/s,
 // which writes the 11.56 GiB in 19.7 minutes).
@@ -76,8 +96,15 @@ type Command struct {
 	Clone string
 }
 
+// exitedHook, when set, is handed each command execRunner.Run ran and its process's state once it
+// ended, for a test of this package that must tell how a command ended: Result's ExitCode is -1
+// for every signaled process, so it cannot tell a SIGTERM from a SIGKILL. Nothing outside the
+// package's tests sets it.
+var exitedHook atomic.Pointer[func(Command, *os.ProcessState)]
+
 // Result is the process result. A non-zero ExitCode, or TimedOut, is a process failure; a
-// non-nil Run error means the process could not be started or observed.
+// non-nil Run error means the process could not be started or observed, or a signal other than
+// its timeout's ended it, which leaves it no exit code of its own.
 type Result struct {
 	Stdout   string
 	Stderr   string
@@ -286,20 +313,30 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// A command that reaches a remote over https can have git spawn git-remote-https, a helper
 	// holding the same stdout/stderr pipes: exec.CommandContext alone only kills the direct child
 	// when bounded expires, and that helper, now reparented, can keep the pipe open forever,
-	// leaving Wait (and so Run) never returning. procgroup.Configure's Setpgid plus Cancel signals
-	// the whole process group instead, killing the helper too; after that, Wait normally returns
-	// an ordinary *exec.ExitError for the signaled process.
+	// leaving Wait (and so Run) never returning. procgroup.Configure's Setpgid plus Cancel stops
+	// the whole process group instead, helper and all: SIGTERM to the group, a grace in which a
+	// git that handles it removes the lock files it holds, then SIGKILL to whatever of the group
+	// outlived the grace. After that, Wait normally returns an ordinary *exec.ExitError for the
+	// signaled process.
 	killed := procgroup.Configure(child)
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
 	err = child.Run()
+	if hook := exitedHook.Load(); hook != nil && child.ProcessState != nil {
+		(*hook)(command, child.ProcessState)
+	}
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
-	if runErr := procgroup.Err(err); runErr != nil {
+	// TimedOut is read before the run's own error is propagated, not after: exec reports a command
+	// whose Cancel succeeded and which then exited cleanly as the context's error (watchCtx), and
+	// procgroup.Err passes context.DeadlineExceeded through, so a git that handles its SIGTERM,
+	// removes its lock and exits 0 inside the grace would otherwise be reported as a command that
+	// could not be run rather than as the timeout it is.
+	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
+	if runErr := procgroup.Err(err); runErr != nil && !result.TimedOut {
 		return result, runErr
 	}
 	result.ExitCode = child.ProcessState.ExitCode()
-	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
 	return result, nil
 }
 
@@ -510,9 +547,16 @@ func sharedRepository(jjDir, clone string) (string, error) {
 // itself unless it is a regular file, else the path that file holds, appended to `.jj` unless it
 // is absolute. It is never cleaned: jj canonicalizes it physically, each symlink resolved before a
 // `..` after it, and filepath.Join would cancel `link/..` before anything resolved `link`, naming
-// a different directory than the one jj opens. A `.jj/repo` that is neither a directory nor a
-// regular file (a FIFO, a socket, a device) is refused before anything reads it: reading a FIFO
-// blocks, and nothing here runs under the command's deadline.
+// a different directory than the one jj opens.
+//
+// The pointer file is read through readGitdir, the bounded read of a pointer file a role can
+// write, with no link followed and no wait: a tree agent can write it, and this read runs under
+// whatever the runner's caller holds — the tmux daemon's outbox provisions with the repository's
+// store lock held, which every later provision of the repository waits on. A `.jj/repo` that is
+// neither a directory nor a regular file (a FIFO, a socket, a device), even one swapped in after
+// the stat that tells a directory from a file, is refused rather than waited on, one larger than
+// any path jj writes (4096 bytes) is refused rather than read whole into memory, and a symlink to
+// a regular file, which jj never writes there, is refused rather than followed.
 func workspaceRepository(jjDir string) (string, error) {
 	repo := filepath.Join(jjDir, "repo")
 	info, err := os.Stat(repo)
@@ -522,17 +566,14 @@ func workspaceRepository(jjDir string) (string, error) {
 	if info.IsDir() {
 		return repo, nil
 	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is neither a directory nor a regular file (mode %s)", repo, info.Mode().Type())
-	}
-	pointer, err := os.ReadFile(repo)
+	pointer, err := readGitdir(repo)
 	if err != nil {
 		return "", err
 	}
-	if target := string(pointer); filepath.IsAbs(target) {
-		return target, nil
+	if filepath.IsAbs(pointer) {
+		return pointer, nil
 	}
-	return jjDir + string(filepath.Separator) + string(pointer), nil
+	return jjDir + string(filepath.Separator) + pointer, nil
 }
 
 // describeEntry says what a path that should be a directory is instead.
@@ -711,19 +752,45 @@ func runCheckedInWithin(ctx context.Context, run Runner, ws Workspace, timeout t
 	return checkedResult(argv, result, err)
 }
 
-// checkedResult is the checked runners' shared answer: a process that could not
-// start, exited non-zero, or outlived its budget is an error naming the command. A clean exit
-// whose I/O draining outlived WaitDelay (exec.ErrWaitDelay) is not this: execRunner.Run already
-// reads that as the process's own true ExitCode, so it passes through the same as any other
-// answer.
+// checkedResult is the checked runners' shared answer: a process that could not start, that a
+// signal ended, that exited non-zero, or that outlived its budget is an error naming the command
+// (answered, commandFailure). A clean exit whose I/O draining outlived WaitDelay
+// (exec.ErrWaitDelay) is not this: execRunner.Run already reads that as the process's own true
+// ExitCode, so it passes through the same as any other answer.
 func checkedResult(argv []string, result Result, err error) (Result, error) {
-	if err != nil {
-		return Result{}, fmt.Errorf("run %s: %w", strings.Join(argv, " "), err)
+	if err := answered(argv, result, err); err != nil {
+		return Result{}, err
 	}
-	if result.ExitCode != 0 || result.TimedOut {
+	if result.ExitCode != 0 {
 		return Result{}, commandFailure(argv, result)
 	}
 	return result, nil
+}
+
+// answered is nil when a run's status is an answer to read, and otherwise the error naming the
+// command: a run that could not start or that a signal ended (runFailure), and one its budget
+// ended (commandFailure). A read whose non-zero exit can mean something calls this first, since
+// the exit such a run leaves is no answer: 0 for a run that erred, and for one its budget ended,
+// whatever its kill left (-1 when the signal ended it, or the code of a git that handled its
+// SIGTERM and exited inside the grace). Then it reads its answer.
+func answered(argv []string, result Result, err error) error {
+	if err != nil {
+		return runFailure(argv, result, err)
+	}
+	if result.TimedOut {
+		return commandFailure(argv, result)
+	}
+	return nil
+}
+
+// runFailure is a run that answered no status of its own, as an error naming the command: `run
+// <argv>: <err>`, and beneath it the stderr the command wrote when a signal ended it
+// (procgroup.Said). The runner leaves that stderr out of its own error, so a caller whose command
+// can echo a credential scrubs result.Stderr before it reaches here, as Fetch's transfers
+// (transferWithRetries), the shared clone's steps (cloneSteps.runIn) and its fetch
+// (ensureFetchConfiguration) do.
+func runFailure(argv []string, result Result, err error) error {
+	return fmt.Errorf("run %s: %w", strings.Join(argv, " "), procgroup.Said(err, result.Stderr))
 }
 
 func commandFailure(argv []string, result Result) error {
@@ -788,6 +855,7 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 		return err
 	}
 	result, runErr := runCommand(ctx, run, argv, source.env, cloneDir)
+	result.Stderr = source.scrub(result.Stderr)
 	_, err = checkedResult(argv, result, runErr)
 	return err
 }
@@ -818,11 +886,12 @@ func ConfigureRepositoryCredential(ctx context.Context, run Runner, cloneDir str
 		{"credential.useHttpPath", "true"},
 	} {
 		// `git config --get-all` exits 1 for a key the clone never set, which is as stale as an old
-		// helper; a run that failed to start is an error. Each read runs in the clone itself, the
+		// helper, once the read answered (answered). Each read runs in the clone itself, the
 		// directory --git-dir names the repository of: the daemon runs this over a clone it has
 		// just provisioned or found, so it is there.
-		result, err := runCommand(ctx, run, []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}, nil, cloneDir)
-		if err != nil {
+		argv := []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}
+		result, err := runCommand(ctx, run, argv, nil, cloneDir)
+		if err := answered(argv, result, err); err != nil {
 			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, err)
 		}
 		values := strings.Split(strings.TrimRight(result.Stdout, "\n"), "\n")
@@ -859,6 +928,57 @@ func configureRepositoryCredential(ctx context.Context, run Runner, cloneDir, cr
 	return nil
 }
 
+// configureCloneReads sets core.warnAmbiguousRefs to false in the shared clone's own
+// configuration, which every workspace of the clone reads too (a git worktree reads its clone's
+// config). With the warning on, git looks up each revision argument as a ref name, to warn when
+// a ref of the same name exists. A leak check's `git rev-list` with about 4,970 `^<sha>`
+// arguments spent 13 s of a measured 78 s on those lookups. The setting turns only the warning
+// off: git resolves every revision the same way. The feed does not take it: Fetch checks the
+// feed's configuration key by key (feedConfigKeys), so an extra key there would be refused.
+func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error {
+	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
+	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
+	return err
+}
+
+// configureCloneDefaultRepository marks origin as gh's default repository in the shared clone's
+// own configuration, `remote.origin.gh-resolved base`, the line `gh repo set-default` writes for
+// it, which every workspace of the clone reads too (each jj workspace of the clone is a git
+// worktree, and a git worktree reads its clone's config). gh 2.98.0 resolves the repository a
+// command of the groups that read the marker acts on (cli/cli pkg/cmd/root/root.go,
+// SmartBaseRepoFunc) to the first remote marked `base` (context/context.go,
+// ResolvedRemotes.BaseRepo), and, where none is and gh cannot prompt, to the first of its sorted
+// remotes, in which an `upstream` comes before origin. So with the marker, a worker who adds an
+// `upstream` remote leaves gh on origin, the issue's repository, and `legion gh` counts origin
+// alone there too (cmd/legion's markedOrigin).
+//
+// A clone whose own configuration holds any gh-resolved line gets nothing written: a marker a
+// person set stays as they set it, and so does one that moved with a renamed remote (`gh repo
+// fork --remote` renames origin to upstream, and git renames the remote's keys with it, so gh
+// stays on the repository the fork was made from). The read names the clone's own file alone
+// (--local), so a line of the global or system configuration cannot stop the write. Its exit is
+// the answer once the read answered (answered): exit 0, a gh-resolved line the clone holds, writes
+// nothing; exit 1, which git gives, printing nothing, where no key matches, writes the marker; and
+// any other answer fails the provision. The feed does not take the line, for the reason
+// configureCloneReads gives.
+func configureCloneDefaultRepository(ctx context.Context, run Runner, cloneDir string) error {
+	gitDir := cloneDir + "/.git"
+	read := []string{"git", "--git-dir=" + gitDir, "config", "--local", "--get-regexp", `^remote\..*\.gh-resolved$`}
+	markers, err := runCommand(ctx, run, read, nil, cloneDir)
+	if err := answered(read, markers, err); err != nil {
+		return err
+	}
+	switch markers.ExitCode {
+	case 0:
+		return nil
+	case 1:
+	default:
+		return commandFailure(read, markers)
+	}
+	_, err = RunChecked(ctx, run, []string{"git", "--git-dir=" + gitDir, "config", "--local", "remote.origin.gh-resolved", "base"}, nil, cloneDir)
+	return err
+}
+
 // removeRepositoryIdentity ports workspace.ts's removeRepoScopedIdentity. A per-repository
 // identity would be shared by every issue workspace, while pane identity is deliberately provided
 // through the pane's env.
@@ -878,7 +998,7 @@ func removeRepositoryIdentity(ctx context.Context, run Runner, cloneDir string) 
 		}
 		removed, err := runCommand(ctx, run, unset, nil, cloneDir)
 		if err != nil {
-			return fmt.Errorf("run %s: %w", strings.Join(unset, " "), err)
+			return runFailure(unset, removed, err)
 		}
 		if removed.ExitCode == 0 {
 			continue

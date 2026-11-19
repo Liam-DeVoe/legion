@@ -107,8 +107,8 @@ message.
 Each value you pick becomes a chip under the bar. Remove one with its ×, or all of them with
 **Clear filters**. The filters are in the address as well, so a narrowed list is a link.
 
-The banner at the top, for example `Blocked on you: 2 items, oldest 6h`, counts the asks waiting
-on you — the ones on issues assigned to you that you have not snoozed — and every credential
+The banner at the top, for example `Blocked on you: 2 items, oldest 6h`, counts the open asks
+that wait on you and that you have not snoozed, and every credential
 request waiting on you, whatever the filter below it is set to.
 
 A credential request is an agent asking you to let it use a secret, or a machine asking to start
@@ -118,32 +118,44 @@ in to the broker ([approve a request](/legion/broker/guides/approve-a-request/))
 decides no secret request. A **Machine login** links to Dispatch's machine-login page, where you
 type the code the machine shows and approve or deny it
 ([log a machine in](/legion/broker/guides/log-a-machine-in/)). They count toward the sidebar's
-**Inbox** number and the banner like an ask that waits on you. The Inbox says `Nothing needs you`
-only when your own list holds no ask and no credential request; with the filter on someone else it
-says `Nothing matches this filter`, and with the filter cleared, `Nothing needs anyone`. An open
-Inbox picks up a new request, or one that is no longer pending, within moments on its own - no
-reload needed.
+**Inbox** number and the banner like an ask that waits on you. A request whose deadline passed
+before anybody decided it stays in the list, marked **Expired** with its deadline, with no link,
+until you click **Dismiss**; nobody can decide it, so it counts toward neither number. The Inbox
+says `Nothing needs you` only when your own list holds no ask and no credential request still
+waiting on a decision; with the filter on someone else it says `Nothing matches this filter`, and
+with the filter cleared, `Nothing needs anyone`. An open Inbox picks up a new request, or one that
+is no longer pending, within moments on its own - no reload needed.
 
 The list does not move under a moving pointer. If the Inbox refreshes while your pointer travels
 across it, the rows stay put until the pointer rests, leaves the list, or you click.
 
 ### Whose asks you see
 
-Every issue has an assignee: the person who answers its asks. The **Assignee** field inside
+Every ask waits on one person: whoever it was handed to, else the assignee of its issue, else the
+project's default assignee. Every project names a default assignee, so every ask reaches
+somebody. The **Assignee** field inside
 **Filter** picks whose asks the Inbox holds. Its button reads `Assignee · you` while it is on you, and
 the list it opens offers **Unassigned** and everyone who has signed in to Dispatch. Pick as many
 people as you like; the button then names the one you picked, or how many.
 
-- The Inbox opens on your own asks every visit: the asks on the issues assigned to you. Dispatch
+- The Inbox opens on your own asks every visit: the asks waiting on you. Dispatch
   remembers nothing between visits.
-- Add **Unassigned** to see the asks nobody holds — those on issues with no assignee, and every
-  ask on a project document.
+- **Unassigned** holds the asks Dispatch names no person for, and there are none of those while
+  every project names a default assignee, so it shows an empty list.
 - Clear the filter to see every open ask.
 
-An ask whose issue nobody is assigned has an **Assign to me** button: at the head of the right
-column, and on the ask's own row where there is no second column. Choosing it makes the issue
-yours, so the ask is in your own list, and your counts, from then on. An ask on a project
-document belongs to no issue and has no such button.
+The **Assign to me** button is on an ask Dispatch names no person for, so no ask carries it while
+every project names a default assignee. Choosing it makes the issue yours, so the ask is in your
+own list, and your counts, from then on. An ask on a project document belongs to no issue and
+never has one.
+
+Every open ask carries **Asked of**, a badge naming the person it waits on and a picker that hands
+it to somebody else. The badge names a person on every ask: an ask nobody was handed shows the
+issue's assignee, and one on an issue nobody holds, or on a project document, shows the project's
+default assignee. It is on the card wherever the question is drawn: the Inbox, the issue page
+and a document's margin. Hand a question on and it leaves your list and joins theirs, wherever its
+issue goes after that; hand it back to the issue's assignee and it follows the issue again. Under
+the badge the card says who handed it on and when.
 
 The filter is part of the page's address: one `?assignee=` value per person, each a login or the
 word `unassigned`, so a link carries the list you are looking at. `?assignee=everyone` is the
@@ -171,8 +183,8 @@ While the filter names anybody but you alone, the **Waiting on you** band reads 
 person** instead, since those asks wait on whoever holds them.
 
 The banner, a project's **Blocked on you** pill and the Agents page's **Needs you** pill mean
-one thing wherever they appear: the open asks whose turn is a person's, on issues assigned to
-you, that you have not snoozed. The banner adds the credential requests waiting on you, and so
+one thing wherever they appear: the open asks whose turn is a person's, that wait on you and
+that you have not snoozed. The banner adds the credential requests waiting on you, and so
 does the sidebar's **Inbox** number, which adds your unread threads on top of both; a project's
 pill counts no credential request, because a request belongs to no project. None of them follows
 the filter, so a widened filter lists more asks than the number beside the Inbox.
@@ -311,9 +323,13 @@ first**.
 
 The root and the two newest replies always show. Older ones fold behind **Show N earlier
 replies**, and **Show fewer replies** folds them back; a reply you have not read never folds.
-After an ask is answered, write a follow-up in **Reply**; in the Conversation tab and in document
-decisions, choose **Write a reply** first. A reply you are still typing survives if its card
-remounts elsewhere, such as switching margin tabs away and back.
+After an ask is answered, resolved, retracted, declined or withdrawn, its thread still takes a
+follow-up: write it in **Reply**; in the Conversation tab and in a live document's decisions,
+choose **Write a reply** first. A closed issue's document shows a decision's record only, with no
+reply box, so a withdrawn ask, which only a closed issue has, takes its reply in the Conversation
+tab. A reply you are still typing survives if its card remounts elsewhere, such as switching
+margin tabs away and back, and if the ask is resolved while you type. If the ask opens again
+before you send it, the card shows your text where the reply box was, for you to copy.
 
 ### Approvals
 

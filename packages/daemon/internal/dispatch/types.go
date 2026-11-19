@@ -16,9 +16,25 @@ type Client interface {
 	ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, key string) (Issue, error)
 	SetStatus(ctx context.Context, key, status string) (Issue, error)
+	// SetStatusAt is SetStatus on the issue's sequence as the caller read it, so a change Dispatch
+	// recorded since that read is refused rather than overwritten: the daemon's own queued writes
+	// (the outbox's status row) go through it, while a route that writes a status on a person's or
+	// an architect's command takes SetStatus, having read nothing to be overtaken.
+	SetStatusAt(ctx context.Context, issue Issue, status string) (Issue, error)
+	// ReleaseClaim clears the issue's Dispatch claim through DELETE
+	// /api/v1/issues/{key}/claim, as the daemon's own session. Dispatch answers 409
+	// ISSUE_CLAIMED when this caller may not release the holder, and 409 CLAIM_CONTENDED when
+	// the holder changed twice while the request ran, so nothing was applied.
+	ReleaseClaim(ctx context.Context, key string) error
 	HandOver(ctx context.Context, issue Issue, status string) error
 	PostMessage(ctx context.Context, key, body string) error
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
+	// ArtifactSlugs is the slug of every document and file the issue holds.
+	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
+	// UploadArtifact writes a markdown document on the issue under name, as the next version of
+	// the document of that name when the issue holds one, and answers the slug Dispatch filed it
+	// under.
+	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
 	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
@@ -28,6 +44,24 @@ type Client interface {
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
 	// project row, in the order it gates them; an empty list is a deployment that gates none.
 	PutGatedSteps(ctx context.Context, project string, steps []string) error
+	// PutDesignGates publishes the document each of the issue's design-gate steps records onto
+	// the issue's Dispatch row, replacing whatever set it holds; an empty list is an issue whose
+	// gates record none.
+	PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error
+	// PutRoleHolders publishes the session that holds each Legion role of the issue onto the
+	// issue's Dispatch row, replacing whatever set it holds; an empty list is an issue where no
+	// session holds a role.
+	PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error
+	// PutStep writes one start or one end of a step onto Dispatch's record id of the issue's
+	// steps. Dispatch writes each field once and keeps every field the write leaves out.
+	PutStep(ctx context.Context, key, id string, write StepWrite) error
+	// PutStepRating writes the rating a retro gave the plan onto the retro's record id of the
+	// issue, with the record's identity in write, on the record's rating route. Dispatch writes
+	// each field once, so a rating sent again changes nothing.
+	PutStepRating(ctx context.Context, key, id string, write StepWrite, rating PlanRating) error
+	// PutPlan writes the plan one run of the issue carries out onto Dispatch's plan id of the
+	// issue. Dispatch writes each field once, so a plan sent again changes nothing.
+	PutPlan(ctx context.Context, key, id string, plan PlanWrite) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
@@ -40,6 +74,84 @@ type RepoProject struct {
 	Repo    string
 	Project string
 	Default bool
+}
+
+// DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
+// takes and answers it: Step is one of `decisions`, `criteria` and `spec`, and ArtifactID the
+// document that step's gate recorded. The step is a string here rather than the record's own
+// type, because this package names Dispatch's wire shapes and imports no record of the daemon's.
+type DesignGateDocument struct {
+	Step       string `json:"step"`
+	ArtifactID string `json:"artifact_id"`
+}
+
+// RoleHolder is one entry of an issue's role-holder publication, as Dispatch's route takes it: Role
+// is one of the six Legion roles and Session the session that holds it on the issue. The role is a
+// string here rather than claim.Role, because this package names Dispatch's wire shapes.
+type RoleHolder struct {
+	Role    string `json:"role"`
+	Session string `json:"session"`
+}
+
+// StepWrite is the body of a step record's write, as Dispatch's route takes it, the actor aside:
+// every identity field of the step, written whatever its value, and each field the write may not
+// know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
+// leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
+// because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
+// StepRecord, the rating aside, because this package imports no record of the daemon's.
+type StepWrite struct {
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Generation uint64     `json:"generation"`
+	Session    *string    `json:"session,omitempty"`
+	Model      *string    `json:"model,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Result     *string    `json:"result,omitempty"`
+	ReturnedTo *int       `json:"returned_to,omitempty"`
+	Report     *string    `json:"report,omitempty"`
+}
+
+// PlanRating is a retro's rating of the plan, from 1 to 5, and its reason, as the record's rating
+// route takes them beside the step write (HTTPClient.PutStepRating). It mirrors the record's own
+// PlanRating, which the outbox converts to it, because this package imports no record of the
+// daemon's; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the
+// same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
+}
+
+// PlanWrite is the body of a plan's write, as Dispatch's route takes it, the actor aside: the run
+// the plan is of, its source (default or owner), the owner's document with its version, which a
+// plan of the source default leaves out because Dispatch refuses either on one, and each task with
+// its steps in order. It mirrors the record's own PlanRecord, because this package imports no
+// record of the daemon's.
+type PlanWrite struct {
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	*PlanDocument
+	Tasks []PlanTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from, as the plan
+// route takes it: embedded in PlanWrite, its artifact_id and version are members of the body, both
+// written or neither. It mirrors the record's own PlanDocument, which publishPlanRecord converts
+// to it, because this package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
+}
+
+// PlanTask is one task of a plan's write: its id and its steps in order, each a role or
+// `role:key`.
+type PlanTask struct {
+	ID    string   `json:"id"`
+	Steps []string `json:"steps"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue
@@ -77,8 +189,8 @@ type IssueSummary struct {
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to: its own, else its
 	// nearest ancestor's, else its project's default; empty when it resolves to none.
 	ResolvedRepo string
-	// BlockedBy is the keys of the issues, in this issue's own project, that this issue waits on,
-	// in the order Dispatch lists them; none when it waits on nothing.
+	// BlockedBy is the keys of the issues that this issue waits on, in the order Dispatch lists
+	// them; none when it waits on nothing. A key may belong to another project.
 	BlockedBy []string
 	// ClaimedBy is who Dispatch shows holding the issue's claim, as Claim.Holder writes it, or
 	// empty for nobody. ClaimUnread says Dispatch showed a claim naming no actor: neither nobody
@@ -274,11 +386,66 @@ func Missing(err error) bool {
 	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound
 }
 
+// Claimed is whether err is Dispatch's refusal that the issue's claim is held by someone this
+// caller may not release (409 IssueClaimed).
+func Claimed(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == IssueClaimed
+}
+
+// Contended is whether err is Dispatch's answer that the claim changed twice while the request
+// ran, so nothing was applied and nobody's liveness was checked (409 ClaimContended).
+func Contended(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == ClaimContended
+}
+
 // ParentContended is the code Dispatch answers an issue PATCH with when a concurrent reparent
 // moved the issue's parent at every attempt to lock it, applying nothing
 // (packages/envoy/internal/dispatch/api/issue_parent.go:99, parentContended). No mechanism shares
 // a value between this module and Dispatch's, so the two spellings change together.
 const ParentContended = "PARENT_CONTENDED"
+
+// IssueClaimed and ClaimContended are Dispatch's own spellings of the two 409s a claim release
+// meets, neither of them final: ISSUE_CLAIMED is the holder still holding the claim
+// (packages/envoy/internal/dispatch/api/issue_claim.go, writeClaimError), and CLAIM_CONTENDED is
+// a holder that changed twice while the request ran, so Dispatch applied nothing
+// (answerContendedClaim). No mechanism shares a value between this module and Dispatch's, so the
+// spellings change together.
+const (
+	IssueClaimed   = "ISSUE_CLAIMED"
+	ClaimContended = "CLAIM_CONTENDED"
+)
+
+// IssueNotFound is Dispatch's own spelling of the 404 its issue routes answer for an issue it
+// does not know. It is the one refusal a design-gates publish ends on, which is why the daemon
+// names the code rather than the status: a Dispatch whose release has no design-gates route at
+// all answers its router's own 404 under the code NOT_FOUND (measured against a built server and
+// against this deployment's own Dispatch; the router writes it in
+// packages/envoy/internal/dispatch/routes/router.go), which is not this code, so that publication
+// is retried and waits for the upgrade. Narrowing the test to the status alone would end every
+// one of them. No mechanism shares a value between this module and Dispatch's, so the spellings
+// change together.
+const IssueNotFound = "ISSUE_NOT_FOUND"
+
+// NoRoute is whether err is a Dispatch process's answer that it has no route for the request: its
+// router's 404 under the code NOT_FOUND whose message starts "no route for "
+// (packages/envoy/internal/dispatch/routes/router.go, staticHandler; the TypeScript clients'
+// NO_ROUTE_MESSAGE_PREFIX). A Dispatch older than a route answers it this way, and so does the
+// older build while a release rolls out, so no handler ran and the request is taken once the
+// release that serves the route is live. A handler's own 404 NOT_FOUND, for a resource it does not
+// know, says "not found" instead, and is not this answer. No mechanism shares a value between
+// this module and Dispatch's, so the spellings change together.
+func NoRoute(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&
+		strings.HasPrefix(refusal.Message, noRouteMessagePrefix)
+}
+
+const (
+	noRouteCode          = "NOT_FOUND"
+	noRouteMessagePrefix = "no route for "
+)
 
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal
@@ -290,8 +457,8 @@ const ParentContended = "PARENT_CONTENDED"
 // an operator restores it and the same body is taken — so reading one as permanent would drop the
 // write for good. PARENT_CONTENDED is an issue PATCH that found its parent moved by a concurrent
 // reparent at every attempt to lock it, so nothing was applied and the same body is taken once the
-// reparents stop. So is an older Dispatch's refusal of a field this daemon added (newerFields): it
-// ends when Dispatch is upgraded, so the two deploy in either order.
+// reparents stop. So is the refusal of a field this daemon added (newerFields) by a Dispatch from
+// before #2461: it ends when that Dispatch is upgraded, so the two deploy in either order.
 func PermanentRefusal(err error) (*Error, bool) {
 	var refusal *Error
 	if !errors.As(err, &refusal) {
@@ -312,9 +479,12 @@ func PermanentRefusal(err error) (*Error, bool) {
 	return refusal, true
 }
 
-// newerFields are the request fields this daemon sends that a Dispatch one release older does not
-// know: a hand-over's labels_add and expected_sequence. That Dispatch's decoder refuses an unknown
-// field by name; any other malformed body stays a permanent refusal.
+// newerFields are the request fields this daemon sends that a Dispatch from before #2461 refused by
+// name: a hand-over's labels_add and expected_sequence. Since #2461 Dispatch ignores a body member
+// it does not declare (decodeJSON in its api package) and refuses no field by name, so this retry
+// serves only a Dispatch from before that change; a field whose loss would change a write ships as
+// a route of its own instead (the record's rating route, HTTPClient.PutStepRating). Any other malformed
+// body stays a permanent refusal.
 var newerFields = []string{"labels_add", "expected_sequence"}
 
 func unknownNewerField(message string) bool {

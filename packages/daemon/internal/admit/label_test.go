@@ -64,7 +64,7 @@ func TestAPersonsLabelOnAnUnrecordedRootInTriageIsQueuedByTheDaemon(t *testing.T
 	labelled := intake.DispatchIssue{Key: "LEGION-306", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "triage", Title: "Handed over by a person", Rank: "A", HandedOver: handed, LabelSetter: "user"}
 	apply(t, pool, admission, "labelled-by-a-person", labelled, engineStub{})
 	queued := []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-306", payload: record.StatusWrite{Status: "todo", ObservedStatus: "triage", PersonHandover: true}},
+		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-306", payload: record.PersonHandoverStatusWrite("todo", "triage")},
 	}
 	assertEffects(t, pool, queued)
 
@@ -163,9 +163,10 @@ func TestOnlyAnIssueCarryingTheLegionLabelIsAdmitted(t *testing.T) {
 	apply(t, pool, admission, "root-labeled", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "handed over", Rank: "A", HandedOver: true}, engineStub{})
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: fixedNow}})
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-1", payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
+		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-1", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-1", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1}},
+		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1,
+			Task: architectStart(t, pool, admission, "LEGION-1", ""), Entry: 1}},
 	})
 }
 
@@ -208,7 +209,7 @@ func TestAnUnlabeledChildOfAnAdmittedRootRunsInItsTree(t *testing.T) {
 
 // Taking the label off a waiting root drops it from the line, as moving it out of todo does, and
 // putting the label back queues it again. Taking it off a root already running changes nothing: the
-// label hands work to Legion, and a tree it is running keeps its slot until the tree leaves.
+// label hands work to Legion, and taking it off gives back no slot of a tree it is running.
 func TestTakingTheLabelOffAWaitingRootDequeuesItButStopsNoRunningTree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -278,9 +279,13 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 		// idle true: caught up whatever the target, so every summary applies now, as the listing of
 		// a daemon booted after the person's label — its consumer positioned past that event — does.
 		scoped, committed := intake.WithCommitHooks(context.Background())
+		scoped, settle := intake.OpenSettlers(scoped, admission)
 		inTx(t, pool, func(tx pgx.Tx) {
 			if err := admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true}); err != nil {
 				t.Fatalf("Reconcile: %v", err)
+			}
+			if err := settle(scoped, tx); err != nil {
+				t.Fatalf("settle the reconcile: %v", err)
 			}
 		})
 		committed()
@@ -288,7 +293,7 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 
 	boot()
 	queued := []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-310", payload: record.StatusWrite{Status: "todo", ObservedStatus: "triage", PersonHandover: true}},
+		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-310", payload: record.PersonHandoverStatusWrite("todo", "triage")},
 	}
 	assertEffects(t, pool, queued)
 	assertWaiting(t, pool, nil)

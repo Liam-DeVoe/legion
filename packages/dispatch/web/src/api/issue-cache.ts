@@ -6,7 +6,7 @@ import type { Artifact, DocumentRole, Issue, IssueDetails } from "./types";
 export function primarySpec(
   issue: Pick<IssueDetails, "artifacts" | "primary_artifact_id"> | undefined
 ): Artifact | undefined {
-  return issue?.artifacts.find((artifact) => artifact.id === issue.primary_artifact_id);
+  return issue?.artifacts?.find((artifact) => artifact.id === issue.primary_artifact_id);
 }
 
 /** The issue's document in `role` - `verification.md`, `plan.md` or `decisions.md`, which the
@@ -31,7 +31,7 @@ export function roleDocument(
   const id = ids[role];
   return id === undefined || id === ""
     ? undefined
-    : issue?.artifacts.find((artifact) => artifact.id === id);
+    : issue?.artifacts?.find((artifact) => artifact.id === id);
 }
 
 /**
@@ -52,4 +52,23 @@ export function mergeIssue(queryClient: QueryClient, next: Issue): void {
         : { route_status: null, route_holder: null, route_status_reason: null };
     return { ...current, ...next, ...reach };
   });
+}
+
+/**
+ * What every write of one issue's fields does once Dispatch has taken it: the answer merged
+ * over the cached details, or - where the write landed with no answer to give - the issue read
+ * again rather than guessed at, and the issue lists refreshed either way.
+ *
+ * One landing for them all (each write of the issue's fields in
+ * `features/issue-page/useIssueHeaderWrites.ts`, and any later write of them from the new issue
+ * page), so a field edited in Details and a field edited in the header leave the cache in the
+ * same state.
+ */
+export function landIssueWrite(queryClient: QueryClient, key: string, next: Issue | null): void {
+  if (next === null) {
+    void queryClient.invalidateQueries({ queryKey: ["issue", key] });
+  } else {
+    mergeIssue(queryClient, next);
+  }
+  void queryClient.invalidateQueries({ queryKey: ["issues"] });
 }

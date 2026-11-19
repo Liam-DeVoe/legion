@@ -127,7 +127,7 @@ func rawCreatedPayload(t *testing.T, handler http.Handler, key string) map[strin
 }
 
 func TestCreateIssueForcedPastARefusalRecordsWhatItNamed(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	fixture := newDuplicateVocabulary(t, handler, "FORCED", 1)
 
 	forced := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -143,7 +143,7 @@ func TestCreateIssueForcedPastARefusalRecordsWhatItNamed(t *testing.T) {
 }
 
 func TestCreateIssueForcedPastNothingRecordsNothing(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "FORCED")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "FORCED", "title": "Astrolabe calibration drifts after a reseat",
@@ -153,11 +153,11 @@ func TestCreateIssueForcedPastNothingRecordsNothing(t *testing.T) {
 	// A forced create the refusal would not have stopped, and an unforced create, both carry no
 	// forced key at all, which is how a reader tells them from a create whose check did not
 	// answer.
-	forced := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	forced := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "FORCED", "title": "Orchard pickers cannot log a crate",
 		"spec": duplicateSpecHarvest, "force": true,
 	}))
-	plain := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	plain := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "FORCED", "title": "Weighbridge power returns",
 		"spec": strings.Join(duplicateWords[:6], " ") + ".",
 	}))
@@ -291,7 +291,7 @@ func TestCreateIssueNudgeIsAbsentWhenTheGateDoesNotAnswer(t *testing.T) {
 }
 
 func TestCreateIssueNudgesTheClosestOpenIssueBelowTheRefusal(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	// Midway between the two bars, so the case holds for any pair with
 	// 0 < duplicateNudgeScore < duplicateRefuseScore < 1.
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", (duplicateNudgeScore+duplicateRefuseScore)/2)
@@ -313,20 +313,24 @@ func TestCreateIssueNudgesTheClosestOpenIssueBelowTheRefusal(t *testing.T) {
 	if likely.Key != fixture.candidate.Key {
 		t.Fatalf("likely duplicate = %s, want %s", likely.Key, fixture.candidate.Key)
 	}
+	// The nudge names the issue, so it carries the title a reader recognizes it by, not only its key.
+	if likely.Title != fixture.candidate.Title {
+		t.Fatalf("likely duplicate title = %q, want %q", likely.Title, fixture.candidate.Title)
+	}
 	if len(body.Advice.Suggestions.TitleMatches) != 0 {
 		t.Fatalf("an unforced create filled title_matches: %#v", body.Advice.Suggestions.TitleMatches)
 	}
 }
 
 func TestCreateIssueNudgesNobodyBelowTheNudgeBar(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	// Half the nudge bar: the candidate holds too little of the new text to be named.
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", duplicateNudgeScore/2)
 
 	response := createIssueRequest(t, handler, map[string]any{
 		"project": fixture.project, "title": fixture.title, "spec": fixture.spec,
 	})
-	requireCreatedIssue(t, response)
+	requireAnsweredCreate(t, response)
 	body := decodeBody[struct {
 		Advice struct {
 			Suggestions model.Suggestions `json:"suggestions"`
@@ -339,7 +343,7 @@ func TestCreateIssueNudgesNobodyBelowTheNudgeBar(t *testing.T) {
 }
 
 func TestCreateIssueNudgesNobodyOnACreateItRefuses(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _ := newDuplicateTestHandler(t)
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", 1)
 
 	refused := createIssueRequest(t, handler, map[string]any{

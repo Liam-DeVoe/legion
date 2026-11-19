@@ -136,12 +136,17 @@ type Options struct {
 	// overlays a pane of that role alone names in PI_CONFIG_FILES, after PiConfigFiles, so each
 	// outranks those, by role, the controller's pane included. Nil is none.
 	RoleConfigFiles map[claim.Role][]string
-	// MemoryConfigFiles is the project's `memory.config_files`: absolute paths of Oh My Pi
-	// settings overlays a pane whose tree is in the memory group (runtime.SpawnSpec.Memory) names
-	// last in PI_CONFIG_FILES, after PiConfigFiles and the role's own, so they outrank both. The
-	// daemon hands them over whatever the project's mode is, since a tree already drawn into the
-	// memory group names them under any mode; a project with no block names none. Nil is none.
-	MemoryConfigFiles []string
+	// ExperimentVariants is every arm of every experiment the project declares
+	// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
+	// within one experiment, the order it declares the arms. A pane names the overlays of the
+	// arms its own unit was drawn into (runtime.SpawnSpec.Variants) last in PI_CONFIG_FILES,
+	// after PiConfigFiles and the role's own, so they outrank both; this list is every arm any
+	// pane could be given, which is what New holds to a path PI_CONFIG_FILES can name. The daemon
+	// hands them over whatever each experiment's mode is, since a unit already drawn into an arm
+	// names its files under any mode. Every project declares the memory experiment, so the list
+	// always holds its two arms, and a project that writes no `memory` block and no experiment of
+	// its own names no file in any arm. Nil is none.
+	ExperimentVariants []runtime.Variant
 	// TakeOver is the operator's `runtime.tmux.take_over`: TakeOverKubernetes to take over the
 	// claims a daemon running the project under runtime kubernetes left in the store (foreign), ""
 	// to refuse them, as every locator of another runtime is refused without it.
@@ -189,18 +194,21 @@ type Runtime struct {
 	conns                runtime.Conns
 	paneEnv              map[string]string
 	environ              []string
-	tmuxPath             string
-	legion               string
-	now                  func() time.Time
-	log                  *slog.Logger
-	providerEnvDir       string
-	providerKeys         []string
-	operatorEnv          map[string]string
-	piConfigFiles        []string
-	roleConfigFiles      map[claim.Role][]string
-	// memoryConfigFiles are the project's memory overlays (Options.MemoryConfigFiles), named last
-	// in PI_CONFIG_FILES by a pane whose tree is in the memory group alone.
-	memoryConfigFiles []string
+	// ownEnviron is the daemon's own environment, as Options.Environ gave it and before
+	// PaneEnvironment made a pane's out of it: what a launch resolves the machine's shared public
+	// leak check in (resolveLeakCheck). environ above is the pane environment, which carries
+	// neither the operator's XDG_CONFIG_HOME nor any name off the allow list, so it is no
+	// environment to resolve that check in.
+	ownEnviron      []string
+	tmuxPath        string
+	legion          string
+	now             func() time.Time
+	log             *slog.Logger
+	providerEnvDir  string
+	providerKeys    []string
+	operatorEnv     map[string]string
+	piConfigFiles   []string
+	roleConfigFiles map[claim.Role][]string
 	// takeOver is the runtime whose locators this runtime takes over (Options.TakeOver):
 	// runtime.RuntimeSandbox under TakeOverKubernetes, "" for none.
 	takeOver string
@@ -308,7 +316,7 @@ func New(opts Options) (*Runtime, error) {
 	for _, files := range opts.RoleConfigFiles {
 		overlays = append(overlays, files...)
 	}
-	overlays = append(overlays, opts.MemoryConfigFiles...)
+	overlays = append(overlays, runtime.VariantOverlays(opts.ExperimentVariants)...)
 	for _, path := range overlays {
 		if !filepath.IsAbs(path) || strings.Contains(path, ":") {
 			return nil, fmt.Errorf("tmux runtime: Oh My Pi overlay %q is not an absolute path PI_CONFIG_FILES can name", path)
@@ -346,6 +354,7 @@ func New(opts Options) (*Runtime, error) {
 		commandTimeout:       opts.CommandTimeout,
 		conns:                opts.Conns,
 		paneEnv:              paneEnv,
+		ownEnviron:           environ,
 		tmuxPath:             tmuxPath,
 		legion:               legion,
 		now:                  opts.Now,
@@ -355,7 +364,6 @@ func New(opts Options) (*Runtime, error) {
 		operatorEnv:          opts.PaneEnv,
 		piConfigFiles:        opts.PiConfigFiles,
 		roleConfigFiles:      opts.RoleConfigFiles,
-		memoryConfigFiles:    opts.MemoryConfigFiles,
 		takeOver:             takeOver,
 		readProc:             os.ReadFile,
 		tracked:              map[string]*trackedProcess{},
@@ -376,11 +384,11 @@ func New(opts Options) (*Runtime, error) {
 	sort.Strings(r.environ)
 	r.run = r.runTmux
 	if r.takeOver != "" {
-		// One line at boot, in the log an operator reads first: while the key is set the
-		// same-agent refusal is off for the whole project — every session found nowhere starts a
-		// fresh agent (takingOverSession) — and a forgotten key leaves it off with no other trace
-		// than a per-launch warning and `take_over` in `legion state --json`.
-		r.log.Warn("tmux runtime: runtime.tmux.take_over is set, so every session found nowhere starts a fresh agent and no launch is charged for it; remove the key once the move is done (docs/deployment.md, \"Moving a project onto tmux\", step 5)",
+		// One line at boot, in the log an operator reads first: while the key is set this runtime
+		// takes over the other runtime's locators, resuming a claim whose process it cannot see
+		// without waiting for that process, and a forgotten key leaves that on with no trace other
+		// than `take_over` in `legion state --json`.
+		r.log.Warn("tmux runtime: runtime.tmux.take_over is set, so this runtime resumes the other runtime's claims without waiting out their processes; remove the key once the move is done (docs/deployment.md, \"Moving a project onto tmux\", step 5)",
 			"takeOver", opts.TakeOver, "takesOver", r.takeOver)
 	}
 	return r, nil
@@ -414,27 +422,27 @@ func (r *Runtime) ReplacePod(context.Context, runtime.Known, func(context.Contex
 	return nil
 }
 
-// RescueUnpushed checks nothing and answers nil: a pane's workspace is a directory on the daemon's
-// host, which no replacement deletes (ReplacePod does nothing here).
-func (r *Runtime) RescueUnpushed(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	return nil, nil
-}
-
 // CleanupTree holds nothing per tree: each pane is one claim's process, ended by its Release, and
 // each workspace is the outbox's to remove (workspace_remove).
 func (r *Runtime) CleanupTree(context.Context, string) error { return nil }
 
 // result is one tmux invocation's outcome. timedOut is the budget the client was killed at, zero
-// when it returned on its own.
+// when it returned on its own; signal is the words of the signal that ended the client
+// (`signal: killed`), empty when it exited. In either case exitCode is -1, which a message never
+// prints (failed, exited).
 type result struct {
 	stdout, stderr string
 	exitCode       int
 	timedOut       time.Duration
+	signal         string
 }
 
 // runTmux runs one argv against the private server under the pane environment, bounded by the
-// command timeout. A client that ran and failed is a result; one that could not run at all, or
-// whose caller's context ended, is an error. The client timed out only when the timeout killed it
+// command timeout. A client that ran and did not succeed is a result: one that exited non-zero,
+// one its timeout killed, and one some other signal ended (the kernel's out-of-memory kill), so
+// each caller reads them alike as a failed run, and a message about one names its exit, its
+// timeout or its signal (failed, exited). One that could not run at all, or whose caller's context
+// ended, is an error. The client timed out only when the timeout killed it
 // (procgroup.KilledByContext): once the client has exited on its own, pipeDrainDelay can hold Run
 // open past the timeout for a server still holding the client's pipes, and the client's exit is
 // then its answer.
@@ -457,6 +465,10 @@ func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	}
 	if killed() {
 		res.exitCode, res.timedOut = -1, r.commandTimeout
+		return res, nil
+	}
+	if end := procgroup.Ended(err); end.Signal != "" {
+		res.exitCode, res.signal = -1, end.Signal
 		return res, nil
 	}
 	if runErr := procgroup.Err(err); runErr != nil {
@@ -487,6 +499,30 @@ func failure(res result) string {
 		return ": " + detail
 	}
 	return ": tmux printed nothing on stderr"
+}
+
+// failed is the end of an error message about a tmux client that did not succeed, after the
+// command it ran: ` failed (exit 3): <stderr>`, ` was ended by signal: killed: <stderr>` for a
+// client a signal ended, or ` timed out after 10s` for a client its timeout killed. Neither of the
+// last two left the client an exit of its own.
+func failed(res result) string {
+	switch {
+	case res.timedOut > 0:
+		return fmt.Sprintf(" timed out after %s", res.timedOut)
+	case res.signal != "":
+		return fmt.Sprintf(" was ended by %s%s", res.signal, failure(res))
+	}
+	return fmt.Sprintf(" failed (exit %d)%s", res.exitCode, failure(res))
+}
+
+// exited is failed for a message that says what the client exited with: ` exited 3: <stderr>`, or,
+// for a client with no exit of its own, failed's ` was ended by signal: killed: <stderr>` or
+// ` timed out after 10s`.
+func exited(res result) string {
+	if res.timedOut > 0 || res.signal != "" {
+		return failed(res)
+	}
+	return fmt.Sprintf(" exited %d%s", res.exitCode, failure(res))
 }
 
 // incarnation is a pane's process identity: its root pid and that process's start ticks.
@@ -738,7 +774,7 @@ func (r *Runtime) stop(ctx context.Context, loc runtime.Locator) error {
 		return fmt.Errorf("stop %s: %w", loc.Claim, err)
 	}
 	if res.exitCode != 0 && !paneGoneStderr.MatchString(res.stderr) {
-		return fmt.Errorf("stop %s: kill-pane %s exited %d%s", loc.Claim, pane, res.exitCode, failure(res))
+		return fmt.Errorf("stop %s: kill-pane %s%s", loc.Claim, pane, exited(res))
 	}
 	r.untrack(loc)
 	return nil

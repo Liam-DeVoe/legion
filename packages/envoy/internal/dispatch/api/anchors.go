@@ -36,7 +36,7 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	if input.MarkID != nil && strings.TrimSpace(*input.MarkID) == "" {
 		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor mark_id must not be empty")
 	}
-	artifact, err := s.lockAnchorArtifact(ctx, tx, owner, artifactRef)
+	artifact, err := s.loadAnchorArtifact(ctx, tx, owner, artifactRef)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -64,6 +64,19 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 		if err != nil {
 			return nil, "", nil, err
 		}
+		// The quote branch joined this transaction's write to the document as it wrote its mark
+		// (MarkQuote); this one writes nothing into the document, so it joins the write here:
+		// after VerifyMark, whose wait must read the room before any fork of it is taken, and
+		// before the version below, which is the first call that takes the document's advisory
+		// lock. The join is what has every other process store its room of the document first
+		// (docs.JoinWrite), and the version must not come before it. For a comment the join made
+		// under that lock would be the margin record's own, written into this same transaction
+		// later (ProjectMark), and the flush it asked for there would be skipped; an ask writes
+		// no margin record, and the join is what keeps the version it pins from being taken over
+		// rooms the other processes were never asked to store.
+		if err := s.deps.Docs.JoinWrite(ctx, artifact.ID); err != nil {
+			return &anchor, artifact.Name, nil, err
+		}
 	}
 	anchor.Quote = anchored.Quote
 	if anchored.BlockID != "" {
@@ -81,13 +94,15 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	return &anchor, artifact.Name, nil, nil
 }
 
-func (s *server) lockAnchorArtifact(ctx context.Context, tx pgx.Tx, owner owner, artifactRef string) (model.Artifact, error) {
+// loadAnchorArtifact reads the document an anchor targets, which must be one of owner's. The caller
+// holds owner's lock; the read takes no row lock, since nothing deletes an artifact or changes its
+// key, and the only update an artifact row takes, its event sequence, moves nothing read here.
+func (s *server) loadAnchorArtifact(ctx context.Context, tx pgx.Tx, owner owner, artifactRef string) (model.Artifact, error) {
 	if owner.IssueKey != nil {
 		return scanArtifact(tx.QueryRow(ctx, `
 			select `+artifactColumns+`
 			from artifacts
 			where issue_key = $1 and (id::text = $2 or slug = $2)
-			for key share
 		`, *owner.IssueKey, artifactRef))
 	}
 	if owner.ArtifactID == nil {
@@ -97,7 +112,6 @@ func (s *server) lockAnchorArtifact(ctx context.Context, tx pgx.Tx, owner owner,
 		select `+artifactColumns+`
 		from artifacts
 		where id = $1 and issue_key is null
-		for key share
 	`, *owner.ArtifactID))
 	if err != nil {
 		return model.Artifact{}, err
@@ -135,7 +149,7 @@ func (s *server) anchorBlock(ctx context.Context, anchor *model.Anchor) (model.A
 	case code == codeDocServiceUnavailable:
 	case errors.Is(err, pmdoc.ErrTargetNotFound):
 		return model.AnchorPosition{}, nil
-	case code == codeDocSchema, code == codeDocumentUnloadable:
+	case code == codeDocSchema, code == codeDocNewerContent, code == codeDocumentUnloadable:
 	default:
 		code = codeInternal
 	}

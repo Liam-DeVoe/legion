@@ -1,11 +1,14 @@
 import {
   type LegionActivityRequest,
   LegionChildRequest,
+  LegionClaimRequest,
+  LegionCompactResponse,
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
   type LegionControllerRegistration,
   LegionEmptyResponse,
   LegionErrorResponse,
+  LegionFreshSessionResponse,
   LegionGateRegisterRequest,
   LegionGrantRequest,
   LegionGrantResponse,
@@ -24,10 +27,14 @@ import {
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
+  LegionTurnOutcomeRequest,
+  LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "@legion/contracts/legion-api";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
+import { bodyForText } from "@legion/envoy-client/excerpt";
 import type { z } from "zod";
 
 /**
@@ -60,11 +67,11 @@ export interface RegisterInput {
  * controller's ready carries none. */
 export type ReadyInput = z.input<typeof LegionReadyRequest>;
 
-/** `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update task, saying it has
- * pushed everything it wants kept and the process holding this claim may be replaced. `round` is
- * the round the update task named, which the daemon takes the answer for and no other. `head` is
- * the commit it reports as the head of `legion/<issue>@origin`, left out when the branch is not
- * there. */
+/** `claim.ReadyForUpdateRequest`: the worker's answer to its update round's message, saying it
+ * has pushed everything it wants kept and the process holding this claim may be replaced. `round`
+ * is the round the update message named, which the daemon takes the answer for and no other.
+ * `head` is the commit it reports as the head of `legion/<issue>@origin`, left out when the branch
+ * is not there. */
 export type ReadyForUpdateInput = z.input<typeof LegionReadyForUpdateRequest>;
 
 /** `claim.ExitRequest`: the agent reporting its own end, and why. */
@@ -95,6 +102,12 @@ export interface LegionDaemonClient {
   readonly ready: (input: ReadyInput, options?: { readonly signal?: AbortSignal }) => Promise<void>;
   readonly readyForUpdate: (input: ReadyForUpdateInput) => Promise<void>;
   readonly exit: (input: ExitInput) => Promise<void>;
+  /** `claim.TurnOutcomeRequest`: how one of the claim's turns ended, under the sequence the
+   * reporting plugin counted itself (`packages/pi-legion/src/turn-outcome.ts`). The answer is the
+   * trailing run of refused turns the daemon derived and whether this report failed the claim. */
+  readonly turnOutcome: (
+    input: z.input<typeof LegionTurnOutcomeRequest>
+  ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
   /** The session's report of what it is doing, after each of its turns and whenever the report's
    * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
   readonly activity: (input: ActivityInput) => Promise<void>;
@@ -117,9 +130,27 @@ export interface LegionDaemonClient {
   readonly issueStatus: (
     input: z.input<typeof LegionIssueStatusRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The controller's `fresh_session`: the claim on `role` of `issue` leaves its recorded
+   * session behind and starts again in a new one, the effect
+   * `legion claims retry --fresh-session` runs for an operator. The answer is empty wherever
+   * the claim came back and its start ran. `phaseNotRestarted` carries the workflow's refusal
+   * of the phase restart, where the claim came back owing no task, or the machine's refusal of
+   * a step that would have started the claim again, where this request stopped it. That
+   * sentence names the state the claim stands in: read it in `read_state`, and ask for a fresh
+   * session again only where the claim is suspended. */
+  readonly freshSession: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionFreshSessionResponse>>;
   readonly gateRegister: (
     input: z.input<typeof LegionGateRegisterRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The controller's `compact`: the claim on `role` of `issue` has its Oh My Pi session
+   * compacted and is then sent the task it owes again, the effect `legion claims compact` runs
+   * for an operator. The answer says whether the session was compacted and, when it was not,
+   * why; the claim came back and whatever task it owes went again either way. */
+  readonly compact: (
+    input: z.input<typeof LegionClaimRequest>
+  ) => Promise<z.output<typeof LegionCompactResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -272,9 +303,11 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * applies at most once however often it arrives may run through it: `handoff_complete` (a repeat
  * is answered HANDOFF_ALREADY_RECORDED, or, once the completion moved the issue, refused as no
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
- * nothing) and `register_gate` (its fact is keyed by the gate's issue, generation, document,
+ * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again). `call` is the whole
+ * takes as a re-registration of the same document and tells no one again) and
+ * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
+ * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
  * the dropped one may have been applied.
@@ -354,8 +387,9 @@ function parseBody<T>(
   let json: unknown;
   try {
     json = JSON.parse(body);
-  } catch (error) {
-    return { problem: `not JSON (${messageFor(error)})` };
+  } catch {
+    // The parser's message quotes the word it stopped at, which whatever answered chose.
+    return { problem: "not JSON" };
   }
   const parsed = schema.safeParse(json);
   if (parsed.success) return { value: parsed.data };
@@ -370,7 +404,7 @@ export function createLegionDaemonClient(
   baseUrl: string,
   fetchFn: typeof fetch = fetch
 ): LegionDaemonClient {
-  const endpoint = baseUrl.replace(/\/+$/, "");
+  const endpoint = withoutTrailingSlashes(baseUrl);
 
   /** The response's status and body once the daemon answered success; a refusal throws. */
   const call = async (
@@ -401,12 +435,15 @@ export function createLegionDaemonClient(
         refusal.value.error
       );
     }
+    // A body that is not the daemon's refusal was written by something in its place, which can
+    // echo the request back: it is named in one redacted line (`bodyForText`), never whole. The
+    // daemon's own calls carry no bearer, so only an `Authorization` or `Bearer` value is redacted.
     throw new LegionDaemonApiError(
       method,
       path,
       response.status,
       undefined,
-      `${JSON.stringify(text)} is not the daemon's refusal shape (${refusal.problem})`
+      bodyForText(text, "", "the daemon's refusal shape")
     );
   };
 
@@ -455,6 +492,13 @@ export function createLegionDaemonClient(
     ready: (input, options) => acknowledge("/legion/v1/claims/ready", input, options?.signal),
     readyForUpdate: (input) => acknowledge("/legion/v1/claims/ready-for-update", input),
     exit: (input) => acknowledge("/legion/v1/claims/exit", input),
+    turnOutcome: (input) =>
+      post(
+        "/legion/v1/claims/turn-outcome",
+        LegionTurnOutcomeRequest,
+        LegionTurnOutcomeResponse,
+        input
+      ),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),
     releaseRecords: (input) =>
       post(
@@ -475,6 +519,15 @@ export function createLegionDaemonClient(
       ),
     issueStatus: (input) =>
       post("/legion/v1/issues/status", LegionIssueStatusRequest, LegionEmptyResponse, input),
+    freshSession: (input) =>
+      post(
+        "/legion/v1/claims/fresh-session",
+        LegionClaimRequest,
+        LegionFreshSessionResponse,
+        input
+      ),
+    compact: (input) =>
+      post("/legion/v1/claims/compact", LegionClaimRequest, LegionCompactResponse, input),
     gateRegister: (input) =>
       post("/legion/v1/gates/register", LegionGateRegisterRequest, LegionEmptyResponse, input),
     waveRelease: (input) =>

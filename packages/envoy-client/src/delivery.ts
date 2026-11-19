@@ -5,7 +5,6 @@ import {
   AskEditedEventPayloadSchema as AskEditedPayloadSchema,
   AskFollowerEventPayloadSchema as AskFollowerPayloadSchema,
   AskEventPayloadSchema as AskPayloadSchema,
-  agentSubject,
   ChildStatusEventPayloadSchema as ChildStatusPayloadSchema,
   CommentEventPayloadSchema as CommentPayloadSchema,
   DELIVERY_DUPLICATE_WINDOW_MS,
@@ -21,20 +20,26 @@ import {
   DispatchTargetedResourceIDSchema,
   dedupeKeyNamesItsEvent,
   EnvelopeSchema,
+  EXPECTS_REPLY_VALUES,
+  type ExpectsReply,
   IssueEventPayloadSchema as IssuePayloadSchema,
+  legacyAgentSubject,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
+  type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
+  topicForms,
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
-import { askAnswerText, textHead } from "./ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DispatchClient } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
+import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 
 const KNOWN_SOURCES: Readonly<Record<string, unknown>> = EnvelopeSchema.shape.source.enum;
 const FOREIGN_SESSION_ID = /\b01a0[0-9a-f]{4}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
@@ -49,6 +54,20 @@ const InboundSenderSchema = z.object({
   title: z.string().optional(),
   roles: z.array(z.string()).optional(),
 });
+
+/**
+ * What an inbound frame may say about the reply it wants, read as the envelope's one vocabulary:
+ * the string `"none"` the field carried before the literal `false` replaced it parses as
+ * `false`. A frame the stream stored before that change and a session on an older plugin build
+ * still write that word, so the card reads it rather than discarding the field. A session reads
+ * every frame from its own consumer through `renderInbound` below, which parses with
+ * `InboundEnvelopeSchema`, so this is the one reader of the field and no reader of a parsed
+ * frame is ever shown the old spelling. `EnvelopeSchema` itself stays strict: it is what a
+ * producer of this repository is held to.
+ */
+export const InboundExpectsReplySchema = z
+  .literal([...EXPECTS_REPLY_VALUES, "none"] as const)
+  .transform((value): ExpectsReply => (value === "none" ? false : value));
 
 const InboundEnvelopeSchema = z
   .object({
@@ -69,7 +88,7 @@ const InboundEnvelopeSchema = z
     in_reply_to: z.string().optional(),
     supersedes: z.string().optional(),
     urgency: z.string().optional(),
-    expects_reply: z.string().optional(),
+    expects_reply: InboundExpectsReplySchema.optional(),
   })
   .passthrough();
 
@@ -90,6 +109,7 @@ const TolerantInboundEnvelopeSchema = z
   .passthrough();
 
 export type InboundEnvelope = z.infer<typeof InboundEnvelopeSchema>;
+
 export type DispatchDelivery = {
   readonly resource: "message" | "comment";
   readonly id: string;
@@ -119,45 +139,33 @@ function dispatchReplyPath(resource: DispatchDelivery["resource"], id: string): 
  * instead of waiting on a reply that never comes). A write through `DispatchClient`, so it
  * carries a key of its own, is asked again under it while Dispatch gives no definitive answer,
  * and throws Dispatch's refusal as a `DispatchServiceError`.
+ *
+ * `followUp` is the ask that a second answer to an attempt already settled by the first is
+ * posted rather than handed back (`?follow_up=true`). It travels as the route's query parameter,
+ * never in the body, which the route decodes strictly.
  */
 export async function postDeliveryReply(
   config: Pick<ActiveDispatchConfig, "url" | "credential">,
   sessionId: string,
   delivery: DispatchDelivery,
-  result: { readonly body?: string; readonly error?: string }
+  result: {
+    readonly body?: string;
+    readonly error?: string;
+    readonly followUp?: boolean;
+  }
 ): Promise<void> {
+  const { followUp, ...reply } = result;
   const client = new DispatchClient(config.url, config.credential);
-  await client.deliveryReply(delivery.resource, delivery.id, {
-    actor: { kind: "session", id: sessionId },
-    attempt: delivery.attempt,
-    ...delivery.replyFields,
-    ...result,
-  });
-}
-
-/**
- * Whether an inbound frame is a forwarded role lane waiting for a receipt on `reply`. The
- * listener forwards a role-lane event to the holder's direct subject as a core request with
- * the envelope's `topic` still the role topic, and reports a missing receipt as a failed
- * delivery. Every other frame on the direct subject — a Dispatch author route, a peer
- * envoy_send — is a JetStream publish whose reply inbox belongs to the server's PubAck; an
- * empty receipt there fails the publisher with `nats: invalid jetstream publish response`.
- * `reply` is absent as `""` (nats.js's getter) or `undefined` (a host that omits the field).
- */
-export function expectsLaneReceipt<
-  Frame extends {
-    readonly subject: string;
-    readonly directSubject: string;
-    readonly envelopeTopic: string | undefined;
-    readonly reply: string | undefined;
-  },
->(frame: Frame): frame is Frame & { readonly reply: string } {
-  return (
-    frame.reply !== undefined &&
-    frame.reply !== "" &&
-    frame.subject === frame.directSubject &&
-    frame.envelopeTopic !== undefined &&
-    frame.envelopeTopic !== frame.directSubject
+  await client.deliveryReply(
+    delivery.resource,
+    delivery.id,
+    {
+      actor: { kind: "session", id: sessionId },
+      attempt: delivery.attempt,
+      ...delivery.replyFields,
+      ...reply,
+    },
+    followUp === undefined ? {} : { followUp }
   );
 }
 
@@ -247,8 +255,8 @@ export type DedupeIdentity = z.infer<typeof DedupeIdentitySchema>;
 /**
  * What one claim recorded. `release` undoes exactly that, and only once. `settle` says the host is
  * done with the frame without undoing the record: it was handed over, or the host chose not to
- * show it. Until one of the two, the frame is pending (`DeliveryDedupe.pending`), and a replay
- * sweep leaves the stream's copy for later rather than show it beside the live one.
+ * show it. Until one of the two, the frame is pending (`DeliveryDedupe.pending`), and a card the
+ * ledger asks for on that same frame waits for the delivery in flight rather than stand beside it.
  */
 export interface DeliveryClaim {
   release(): void;
@@ -257,17 +265,18 @@ export interface DeliveryClaim {
 
 /**
  * A host's record of the frames it handed its agent, which drops a repeat. The whole promise it is
- * part of is stated once, on `DELIVERY_DUPLICATE_WINDOW_MS` in `@legion/contracts`; every host that
- * subscribes over core NATS (the Oh My Pi extension, the Claude Code channel) keeps one.
+ * part of is stated once, on `DELIVERY_DUPLICATE_WINDOW_MS` in `@legion/contracts`; every host the
+ * listener relays a consumer to (the Oh My Pi extension, the Claude Code channel) keeps one.
  *
  * A host claims a frame before anything it awaits, so a repeat that arrives while the first is
- * still being delivered (on an overlapping subscription, or behind a Dispatch reply in flight) is
- * already a repeat. It releases the claim when its agent was not handed the frame after all: the
- * hand-off threw, or the host answered the frame with an error instead (a BTW whose side turn
- * failed, a frame it could not read). Dispatch records that attempt failed, and a same-mode
- * re-send of it must then reach the agent. Otherwise it settles the claim once it is done with the
- * frame, shown or not: a claim left open reads as `pending` forever, and a replay sweep then never
- * moves its stream cursor past that frame.
+ * still being delivered (a frame the relay delivers again because the first delivery was never
+ * answered, or behind a Dispatch reply in flight) is already a repeat. It releases the claim when
+ * its agent was not handed the frame after all: the hand-off threw, or the host answered the frame
+ * with an error instead (a BTW whose side turn failed, a frame it could not read). Dispatch records
+ * that attempt failed, and a same-mode re-send of it must then reach the agent. Otherwise it
+ * settles the claim once it is done with the frame, shown or not: a claim left open reads as
+ * `pending` forever, and a card the ledger raises for that frame then waits on a delivery that
+ * ended.
  */
 export interface DeliveryDedupe {
   /**
@@ -279,8 +288,9 @@ export interface DeliveryDedupe {
   /**
    * Whether a claim of the frame is still being delivered: neither settled nor released. A claim
    * of its event id, or of a key that names its event, is that frame's claim, by the same identity
-   * rule `claim` drops a repeat by. A settled claim says nothing of whether the frame was shown: a
-   * host that shows it records that in the replay ledger, which a replay sweep reads first.
+   * rule `claim` drops a repeat by. A settled claim says nothing of whether the frame was shown:
+   * what was shown is in the delivery ledger (`DeliveryLedger.delivered`), which the card the
+   * ledger raises reads first.
    */
   pending(frame: DedupeIdentity): boolean;
 }
@@ -311,8 +321,9 @@ const DELIVERY_EVENT_ID_LIMIT = 10_000;
  * A key is recorded only when it names its event (`dedupeKeyNamesItsEvent` in `@legion/contracts`),
  * for `DELIVERY_DUPLICATE_WINDOW_MS`, the window the retry promise is made for. Any other key is not
  * a dedupe key, and dropping on it would lose a distinct event that shares it. A frame's event id
- * is recorded whatever its key: distinct events never share one, so it recognises the second copy
- * of a frame that arrived on two subscriptions, which a key that does not name its event cannot.
+ * is recorded whatever its key: distinct events never share one, so it recognises a frame the
+ * relay delivered again after an unanswered delivery, which a key that does not name its event
+ * cannot.
  *
  * A key is kept no longer than the window, because a repeat never refreshes it and every claim
  * first evicts the keys past the window, so the record holds at most the keys the host was handed
@@ -534,14 +545,19 @@ export function carriedItem(
   return { resource, id, issueKey: event.issue_key };
 }
 
+/** Whether an event payload is a stand-in: the bus refused the event and the outbox published it
+ *  with its long fields dropped, except the few it keeps whole (`payload_omitted`, whose doc in
+ *  `@legion/contracts` names them). */
+function payloadWasOmitted(payload: unknown): boolean {
+  return isObject(payload) && payload["payload_omitted"] === true;
+}
+
 /** Whether an event payload says the body on it is not the item's body whole: the first part of
  *  it (`CarriedBodyPayload.body_truncated` in `@legion/contracts`), or none of it, because the
  *  bus refused the event and the outbox published a stand-in with its long fields dropped
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
-  return (
-    isObject(payload) && (payload["body_truncated"] === true || payload["payload_omitted"] === true)
-  );
+  return (isObject(payload) && payload["body_truncated"] === true) || payloadWasOmitted(payload);
 }
 
 /** The Dispatch route that answers the whole item an event names. */
@@ -554,10 +570,9 @@ function wholeItemRoute(item: CarriedItem): string {
  *  carries the body whole. */
 function carriedBodyNote(event: DispatchEvent): string | undefined {
   if (!bodyWasCut(event.payload)) return undefined;
-  const what =
-    isObject(event.payload) && event.payload["payload_omitted"] === true
-      ? "this event carries no body: it was too large for the bus"
-      : "the body is its first part only";
+  const what = payloadWasOmitted(event.payload)
+    ? "this event carries no body: it was too large for the bus"
+    : "the body is its first part only";
   const item = carriedItem(event);
   return item === undefined ? what : `${what}; read it whole with ${wholeItemRoute(item)}`;
 }
@@ -574,7 +589,8 @@ export async function wholeCarriedBody(
   try {
     if (item.resource === "comment") {
       const read = await client.getComment(item.id);
-      return [read.comment, ...read.replies].find((comment) => comment.id === item.id)?.body;
+      return [read.comment, ...(read.replies ?? [])].find((comment) => comment.id === item.id)
+        ?.body;
     }
     const read =
       item.issueKey === null
@@ -584,7 +600,7 @@ export async function wholeCarriedBody(
         : await client.getMessage(item.issueKey, item.id);
     return read === undefined
       ? undefined
-      : [read.message, ...read.replies].find((message) => message.id === item.id)?.body;
+      : [read.message, ...(read.replies ?? [])].find((message) => message.id === item.id)?.body;
   } catch {
     return undefined;
   }
@@ -616,9 +632,10 @@ export function replyWith(envelope: DeliveryEnvelope): ReplyHint | undefined {
 }
 
 // Dispatch event payloads follow the wire contract: issue.* carries the Issue,
-// ask.opened/anchor_refreshed/handed_back/answered/resolved the Ask, ask.edited the edited Ask plus
-// its prior fields and editor, message.created the Message, comment.*/suggestion.* the Comment plus
-// artifact_name, artifact.created {artifact}, artifact.version {artifact_id, name, version, diff?},
+// ask.opened/anchor_refreshed/handed_back/asked_of/answered/resolved the Ask, ask.edited the
+// edited Ask plus its prior fields and editor, message.created the Message,
+// comment.*/suggestion.* the Comment plus artifact_name, artifact.created {artifact},
+// artifact.version {artifact_id, name, version, diff?},
 // artifact.human_edited {artifact_id, name, from_version, to_version, editors, diff, diff_truncated},
 // and child.status {child_key, from, to}.
 // Bus frames are untrusted, so each schema below declares exactly the fields
@@ -638,6 +655,7 @@ const DISPATCH_PAYLOAD_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   "ask.anchor_refreshed": AskPayloadSchema,
   "ask.edited": AskEditedPayloadSchema,
   "ask.handed_back": AskPayloadSchema,
+  "ask.asked_of": AskPayloadSchema,
   "ask.answered": AskPayloadSchema,
   "ask.resolved": AskPayloadSchema,
   "comment.created": CommentPayloadSchema,
@@ -709,6 +727,54 @@ function dispatchCommentReplyWith(
   };
 }
 
+/**
+ * Whether the session reading a reply in an ask's thread (a `comment.created` with an `ask_id`)
+ * owns the ask: asked it or follows it, as the payload's `ask_sessions` says. Every copy of the
+ * event carries the same bytes, whatever brought it to this session, so the reader decides. The
+ * outbox's stand-in for an event the bus refused (`payload_omitted`) keeps the list whole,
+ * whatever its size, so a stand-in decides the same way. Undefined for a comment in no ask's
+ * thread, and for a payload that carries no list: a Dispatch older than the field wrote it, its
+ * stand-ins among them, or a resend replayed an event stored before it, and the card says what it
+ * said before the field.
+ */
+function ownsRepliedAsk(
+  comment: CommentPayload | undefined,
+  sessionID: string
+): boolean | undefined {
+  if (comment?.ask_id === undefined || comment.ask_id === null) return undefined;
+  return comment.ask_sessions?.includes(sessionID);
+}
+
+/**
+ * What a reply in an ask's thread is to the session reading it, by the rule Dispatch's answers
+ * read names the same reply by (`scan` in
+ * packages/envoy/internal/dispatch/sessionanswers/sessionanswers.go), from the same facts: a
+ * reply on its own ask for a session that owns the ask, which outranks a mention; else a mention,
+ * when the frame is the delivery a mention sent this session; else what the comment is: a reply
+ * to another comment, a comment on a document (written on a project document, anchored in one,
+ * or on no issue), or a comment on an issue.
+ */
+function repliedAskRelation(
+  event: DispatchEvent,
+  comment: CommentPayload,
+  owns: boolean,
+  mentioned: boolean
+): SessionAnswerRelation {
+  if (owns) return "replied_on_your_ask";
+  if (mentioned) return "mentioned_you";
+  if (comment.reply_to !== undefined && comment.reply_to !== null) {
+    return "replied_in_a_comment_thread";
+  }
+  if (
+    (comment.artifact_id !== undefined && comment.artifact_id !== null) ||
+    comment.anchor?.artifact_id !== undefined ||
+    event.issue_key === null
+  ) {
+    return "commented_on_a_document";
+  }
+  return "commented_on_an_issue";
+}
+
 // A decision's events are a conversation between an agent and a human, and the agent has the
 // ask (it wrote it, or a reference names it), so the frame carries what moved — never the ask
 // row again. `question` is the head only: enough to recognise the ask, the full text is one
@@ -721,18 +787,26 @@ interface CompactDispatch {
   readonly askId: string | undefined;
 }
 
+// How a closed ask reads on the card: the kind, the person's own reason where the record holds
+// one, and the words Dispatch wrote for the asking agent where it holds those (a decline), under
+// the label every reader of them names them with (`dispatchWordsText`), so nobody reads
+// Dispatch's instruction as the person's note. A decline the person wrote no note with is the
+// ordinary one, so an empty reason leaves no separator behind.
 function askResolutionText(
   resolution: z.infer<typeof AskPayloadSchema>["resolution"]
 ): string | undefined {
   if (resolution === null || resolution === undefined) return undefined;
   const kind = resolution.kind ?? "resolved";
   const reason = resolution.reason ?? "";
-  return reason === "" ? kind : `${kind}: ${reason}`;
+  const closed = reason === "" ? kind : `${kind}: ${reason}`;
+  const words = dispatchWordsText(resolution.dispatch_words);
+  return words === undefined ? closed : `${closed} · ${words}`;
 }
 
 function dispatchCompact(
   event: DispatchEvent,
-  comment: CommentPayload | undefined
+  comment: CommentPayload | undefined,
+  ownsAsk: boolean | undefined
 ): CompactDispatch | undefined {
   if (event.type === "artifact.human_edited") {
     // A person's edit names its document, versions and editors in the card; its diff follows the
@@ -745,14 +819,17 @@ function dispatchCompact(
     if (comment?.ask_id === undefined || comment.ask_id === null) return undefined;
     const question = dispatchAskQuestion(comment);
     // `state` tells a clarification on an open ask from discussion after the answer;
-    // `waiting_on` says whose move it is now.
+    // `waiting_on` says whose move it is now, which is a move for the ask's own sessions alone
+    // (`ownsRepliedAsk`): a session the reply reached for another reason is shown no turn.
     return {
       askId: comment.ask_id,
       record: {
         ...(question === undefined ? {} : { question }),
         reply: comment.body ?? "",
         ...(comment.ask_state === undefined ? {} : { state: comment.ask_state }),
-        ...(comment.ask_waiting_on === undefined ? {} : { waiting_on: comment.ask_waiting_on }),
+        ...(comment.ask_waiting_on === undefined || ownsAsk === false
+          ? {}
+          : { waiting_on: comment.ask_waiting_on }),
       },
     };
   }
@@ -797,6 +874,20 @@ function dispatchCompact(
         ...(previousAnswer === null || previousAnswer === undefined
           ? {}
           : { previous_answer: askAnswerText(previousAnswer) }),
+      };
+      break;
+    }
+    case "ask.asked_of": {
+      // Whom the ask waits on from now on, and who handed it there. An empty `asked_of` is a
+      // hand-on to the assignee of the ask's own issue: the ask follows that issue again, and
+      // the payload names no login for the person, so the line says where it went instead.
+      const handedOnBy = ask.data.asked_of_by;
+      record = {
+        ...record,
+        asked_of: ask.data.asked_of ?? "the assignee of its issue",
+        ...(handedOnBy === null || handedOnBy === undefined || handedOnBy === ""
+          ? {}
+          : { handed_on_by: handedOnBy }),
       };
       break;
     }
@@ -1030,9 +1121,10 @@ export function renderInbound(
   let bodyNote: string | undefined;
   let cutItem: CarriedItem | undefined;
   let inReplyTo = envelope.in_reply_to;
-  // On an ask event the payload is the ask itself, whose author is another follower's
-  // session when this session merely replied; naming it is not a spoof to flag.
-  let askAuthor: string | undefined;
+  // The sessions the event's own payload names, which no spoof check flags: on an ask event the
+  // ask's author, another follower's session when this session merely replied; on a reply in an
+  // ask's thread the sessions that own the ask (`ask_sessions`), which every copy carries.
+  let payloadSessions: readonly string[] = [];
   // Text that follows the card's TOON block: a person's edit's diff as a fenced `diff` block.
   let trailer = "";
   const dispatchRendered = envelope.source === "dispatch" && envelope.payload !== undefined;
@@ -1106,11 +1198,13 @@ export function renderInbound(
             ? CommentPayloadSchema.safeParse(frame.event.payload)
             : undefined;
         const commentPayload = comment?.success === true ? comment.data : undefined;
-        const compact = dispatchCompact(frame.event, commentPayload);
+        const ownsAsk = ownsRepliedAsk(commentPayload, sessionID);
+        const compact = dispatchCompact(frame.event, commentPayload, ownsAsk);
+        payloadSessions = commentPayload?.ask_sessions ?? [];
         if (frame.event.type.startsWith("ask.")) {
           const asked = AskAuthorPayloadSchema.safeParse(frame.event.payload);
           if (asked.success && asked.data.author.kind === "session") {
-            askAuthor = asked.data.author.id;
+            payloadSessions = [asked.data.author.id];
           }
         }
         if (inReplyTo !== undefined) {
@@ -1163,6 +1257,20 @@ export function renderInbound(
             };
           }
         }
+        // A reply in an ask's thread says what it is to this session, in the words the session's
+        // answers list gives it, and carries the command that answers the ask only for a session
+        // asked to answer: one that owns the ask, and one a mention named. Any other session the
+        // reply reached (by the issue's route or claim, a credit on its document, a
+        // subscription) is told why it has the reply, and given no command that answers the ask
+        // as though it were its own.
+        const mentioned = delivery !== undefined;
+        const relation =
+          ownsAsk === undefined || commentPayload === undefined
+            ? undefined
+            : sessionAnswerRelationPhrase(
+                repliedAskRelation(frame.event, commentPayload, ownsAsk, mentioned)
+              );
+        if (ownsAsk === false && !mentioned) dispatchReply = undefined;
         // `owner` is the issue key, or `PROJECT / slug` for a document (the artifact id when
         // no document topic names it); nothing else in the block restates where the event is.
         // A compact ask record names its ask exactly once: through `re:` when the envelope is
@@ -1180,6 +1288,7 @@ export function renderInbound(
           owner: dispatchOwner(frame.event, topic),
           type: frame.event.type,
           actor: frame.event.actor,
+          ...(relation === undefined ? {} : { relation }),
           ...(compactRecord ?? { payload: dispatchPayloadForReader(frame.event, sessionID) }),
         };
         dispatchActor = frame.event.actor;
@@ -1234,7 +1343,7 @@ export function renderInbound(
       if (
         match[0] !== envelope.source_session &&
         match[0] !== sessionID &&
-        match[0] !== askAuthor
+        !payloadSessions.includes(match[0])
       ) {
         foreignSession = match[0];
         break;
@@ -1243,7 +1352,14 @@ export function renderInbound(
     if (foreignSession !== undefined) break;
   }
   const role = envelope.sender?.roles?.[0];
-  const reply = dispatchReply ?? replyWith(envelope);
+  // A card that says the sender wants nothing back prints no ready-made reply. The two are one
+  // statement to the reader, and a filled-in envoy_send under `expects_reply: false` is an
+  // invitation to do the thing the line just said is not wanted. `optional` and `required` keep
+  // the hint. This withholds a Dispatch frame's own reply command too: the one such frame carrying
+  // `false` is a comment mention that joins no ask thread, and its card still names the comment,
+  // so a reader who answers anyway has what it needs without being invited.
+  const wantsNoReply = envelope.expects_reply === false;
+  const reply = wantsNoReply ? undefined : (dispatchReply ?? replyWith(envelope));
   const sourceIssue =
     parseIssues.includes("source") || KNOWN_SOURCES[envelope.source] !== undefined
       ? undefined
@@ -1255,7 +1371,12 @@ export function renderInbound(
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
   const rendered = {
-    ...(envelope.topic === agentSubject(sessionID) ? { to: `you (${sessionID})` } : {}),
+    // The session's inbox in either form, the session alone or under a project, names it the
+    // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
+    ...(envelope.topic !== undefined &&
+    topicForms(envelope.topic).includes(legacyAgentSubject(sessionID))
+      ? { to: `you (${sessionID})` }
+      : {}),
     from: senderLabel(envelope),
     at: inboundTimestamp(envelope.issued_at),
     id: envelope.event_id ?? "unknown",
@@ -1268,7 +1389,7 @@ export function renderInbound(
     ...(inReplyTo === undefined ? {} : { re: inReplyTo }),
     ...(envelope.supersedes === undefined ? {} : { supersedes: envelope.supersedes }),
     ...(reply === undefined ? {} : { reply_with: reply }),
-    ...(role === undefined
+    ...(role === undefined || wantsNoReply
       ? {}
       : {
           reply_role: {

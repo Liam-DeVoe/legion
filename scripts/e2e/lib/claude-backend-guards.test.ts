@@ -1,7 +1,8 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // The Claude Code backend proof's process guards (claude-backend-tmux.sh), taken from the script by
@@ -21,30 +22,40 @@ const guards = [
   .map(fn)
   .join("\n");
 
-const dir = mkdtempSync(join(tmpdir(), "claude-backend-guards-test."));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+const dir = temporaryDirectory("claude-backend-guards-test");
+// The stand-in processes are copies of two real programs, so a host without them has nothing to
+// start and every row here is skipped.
+// The gate is given both names: it walks each one and names the missing ones in its warning.
+// `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
+const found = new Map(["bash", "sleep"].map((name) => [name, hostTool(name)] as const));
+const skip = skipWithout("bash", "sleep");
+// Only the unreadable-environment case needs an interpreter.
+const withoutPython = skipWithout("python3");
 function tool(name: string): string {
-  const found = Bun.which(name);
-  if (found === null) throw new Error(`${name} is not on PATH`);
-  return found;
+  const path = found.get(name) ?? null;
+  if (path === null) throw new Error(`${name} is not on PATH`);
+  return path;
 }
 // The run's legion is a copy of bash, so a process can carry it as its executable (/proc/<pid>/exe)
 // with `claude-bridge` as its first argument: bash runs the script of that name from its working
 // directory, which starts its second argument as its child and waits on it, as the bridge waits on
 // Claude Code.
 const work = join(dir, "work");
-mkdirSync(work);
-copyFileSync(tool("bash"), join(work, "legion"));
 // The run's claude is a copy of sleep, under a directory whose name holds a space.
 const claudeDir = join(dir, "bin with space");
-mkdirSync(claudeDir);
 const claude = join(claudeDir, "claude");
-copyFileSync(tool("sleep"), claude);
 const cwd = join(dir, "cwd");
-mkdirSync(cwd);
-for (const script of ["claude-bridge", "worker-shim"]) {
-  writeFileSync(join(cwd, script), '"$2" 600\n:\n');
-}
+beforeAll(() => {
+  if (skip) return;
+  mkdirSync(work);
+  copyFileSync(tool("bash"), join(work, "legion"));
+  mkdirSync(claudeDir);
+  copyFileSync(tool("sleep"), claude);
+  mkdirSync(cwd);
+  for (const script of ["claude-bridge", "worker-shim"]) {
+    writeFileSync(join(cwd, script), '"$2" 600\n:\n');
+  }
+});
 
 // run runs BODY after the guards, with the rig's globals set, a scratch directory of its own in
 // $scratch, and two helpers. spawn ARGS… starts ARGS in the background, its output away from the
@@ -52,7 +63,7 @@ for (const script of ["claude-bridge", "worker-shim"]) {
 // that child is running EXE (its /proc/<pid>/exe), not merely once it exists: a forked child carries
 // its parent's command line until it execs, and a guard asked about it then answers for the parent.
 // Every process either names is killed when BODY ends.
-function run(body: string) {
+function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
 ${guards}
 work=$WORK claude_bin=$CLAUDE port_dispatch=1 port_listener=2 port_nats=3 state=/rig
@@ -84,14 +95,14 @@ await_child() {
 `;
   const result = Bun.spawnSync(["bash", "-c", `${prelude}\n${body}`], {
     cwd,
-    env: { PATH: process.env.PATH ?? "", WORK: work, CLAUDE: claude, SCRATCH: dir },
+    env: { PATH: process.env.PATH ?? "", WORK: work, CLAUDE: claude, SCRATCH: dir, ...vars },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
 
 const slow = 60_000;
 
-describe("bridged", () => {
+describe.skipIf(skip)("bridged", () => {
   test(
     "accepts the run's legion claude-bridge -- <claude> every time, with a pane-sized multi-line argument",
     () => {
@@ -144,7 +155,7 @@ if bridged "$child"; then echo "other claude: accepted"; else echo "other claude
   );
 });
 
-describe("claude_pid", () => {
+describe.skipIf(skip)("claude_pid", () => {
   test(
     "finds Claude Code under the bridge when its executable's path holds a space",
     () => {
@@ -161,7 +172,7 @@ if [ "$found" = "$child" ]; then echo "found the child"; else echo "found $found
   );
 });
 
-describe("endpoint_mismatch", () => {
+describe.skipIf(skip)("endpoint_mismatch", () => {
   const rig = [
     "DISPATCH_URL=http://127.0.0.1:1",
     "DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token",
@@ -204,16 +215,27 @@ printf 'status %s: %s\\n' "$status" "$found"`;
     slow
   );
 
-  test(
+  test.skipIf(withoutPython)(
     "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
     () => {
       // A process that makes itself non-dumpable (prctl PR_SET_DUMPABLE 0) has its /proc entries
       // owned by root, so its own user can no longer read its environment. The stand-in writes its
       // ready file only once prctl succeeded and PR_GET_DUMPABLE reads 0, and keeps its stderr; the
       // run asserts it is still running, not a zombie, on both sides of the check.
-      const r = run(`
+      // It runs the interpreter python3 reports as sys.executable, resolved here with the caller's
+      // environment and passed as data, not the first python3 on PATH: under `env -i` a version
+      // manager's shim there (mise's, with no python selected) has no version and starts nothing.
+      const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
+      const python = resolved.stdout.toString().trim();
+      if (resolved.exitCode !== 0 || !isAbsolute(python)) {
+        throw new Error(
+          `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
+        );
+      }
+      const r = run(
+        `
 ready=$scratch/ready err=$scratch/stderr
-env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$(command -v python3)" -c '
+env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$PYTHON" -c '
 import ctypes, os, sys, time
 libc = ctypes.CDLL(None, use_errno=True)
 if libc.prctl(4, 0, 0, 0, 0) != 0:
@@ -239,7 +261,9 @@ echo "before: $(state "$pid")"
 if { : <"/proc/$pid/environ"; } 2>/dev/null; then echo "environ: readable"; else echo "environ: unreadable"; fi
 ${check}
 echo "after: $(state "$pid")"
-printf 'stderr: [%s]\\n' "$(cat "$err")"`);
+printf 'stderr: [%s]\\n' "$(cat "$err")"`,
+        { PYTHON: python }
+      );
       expect(r.err).toBe("");
       const lines = r.out.trim().split("\n");
       expect(lines[0]).toBe("fixture: not dumpable");

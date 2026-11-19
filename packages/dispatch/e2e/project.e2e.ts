@@ -1,37 +1,48 @@
-import { expect, type Locator, test } from "@playwright/test";
-
+import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
 import {
   createAsk,
-  createComment,
   createIssue,
   createIssueArtifact,
   createProject,
-  createProjectDocument,
   getIssue,
   patchIssue,
   putIssueState,
+  putRepoProject,
 } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
-import { resetDatabase } from "./seed";
+import { nextFrames } from "./frames";
+import { pendingWrites } from "./keyed-writes";
+import {
+  detailRead,
+  expectReadWhileHeld,
+  holdIssuePatches,
+  ISSUE_PAGE_PICKERS,
+  lastEventSeq,
+  logReads,
+  pagePicker,
+  readAnsweredSince,
+  refuseIssuePatches,
+  revealPagePicker,
+  savesEnded,
+  stopTrying,
+  storedValues,
+  watchShown,
+} from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { assertPageFits } from "./unclipped";
+import { expect, test } from "./test";
 import { asUser } from "./users";
+
+/**
+ * The project page's one walk: nine issues across eight statuses, the table over them, eight
+ * filter presses, and the Documents tab down to a document created in its editor. What the
+ * page draws over one fixed answer - its fit on a phone, its long search, its reference
+ * closure, its status groups and its rows - is in `project.stub.e2e.ts`.
+ */
 
 const session = { actor: { id: "e2e-project", kind: "session" as const }, as: "agent" as const };
 
-async function expectTouchTarget(locator: Locator): Promise<void> {
-  const box = await locator.boundingBox();
-  expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
-}
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-// SLOW(>=2s): one row for the whole project page - nine issues seeded across eight statuses,
-// the grouped board over them, eight filter presses, and the Documents tab down to a created
-// document with its editor. Each clause of the title is a press the row has to make.
-test("project page groups issues by status in board order; filters narrow issues; documents stay scoped to the project", async ({
+// SLOW(>=2s): the project's table, status and label filters, and a created project document.
+test("project table filters narrow issues; documents stay scoped to the project", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -77,23 +88,23 @@ test("project page groups issues by status in board order; filters narrow issues
     await page.goto("/projects/CORE");
     await expect(page).toHaveTitle("CORE · Core · Dispatch");
     await expect(page.getByRole("heading", { name: "Core" })).toBeVisible();
-    // The pill counts this project's questions waiting on the reader themselves: one, Bob's
-    // not among them.
+    // The pill counts this project's questions waiting on the signed-in reader.
+    await expect(
+      page
+        .locator(`[data-issue-row="${child.key}"]`)
+        .getByRole("link", { name: parent.key, exact: true })
+    ).toBeVisible();
     const blockedOnYou = page.getByRole("link", { name: "Blocked on you · 1" });
-    await expect(blockedOnYou).toHaveAttribute("href", "/");
-    // The filter strip is the first content row under the dense header; the issue list
-    // follows it. Density contract: that first row starts within 120px of the top.
-    const filterStrip = page.getByRole("button", { name: /Filters · \d+ active/ });
-    const stripBox = await filterStrip.boundingBox();
-    const issueList = page.getByRole("region", { name: "Project issues" });
-    const issueListBox = await issueList.boundingBox();
-    if (stripBox === null || issueListBox === null) {
-      throw new Error("project issue list is not visible");
-    }
-    expect(stripBox.y).toBeLessThanOrEqual(120);
-    expect(issueListBox.y).toBeLessThanOrEqual(stripBox.y + stripBox.height + 24);
+    const issueTable = page.getByRole("table", { name: "Project issues table" });
+    await expect(issueTable).toBeVisible();
+    expect((await page.getByTestId("issues-table-scroll").boundingBox())?.y).toBeLessThan(420);
+    const main = page.getByTestId("main-content");
+    await expect(blockedOnYou).toBeVisible();
+    await expect(main).toBeVisible();
+    // The waits above drew the pill and the main column, and a drawn element has a box.
     const blockerBox = await blockedOnYou.boundingBox();
-    const mainBox = await page.getByTestId("main-content").boundingBox();
+    // The main column was waited for above too, so its box is there as the pill's is.
+    const mainBox = await main.boundingBox();
     if (blockerBox === null || mainBox === null) {
       throw new Error("project header is not visible");
     }
@@ -102,60 +113,37 @@ test("project page groups issues by status in board order; filters narrow issues
       "aria-selected",
       "true"
     );
-    await expect(page.locator("details > summary")).toHaveText([
-      "Triage (1)",
-      "Icebox (1)",
-      "Backlog (1)",
-      "Todo (2)",
-      "In progress (2)",
-      "Testing (1)",
-      "Done (1)",
-    ]);
-    await expect(page.getByRole("group", { name: "Done (1)" })).not.toHaveAttribute("open", "");
-    await expect(
-      page
-        .getByRole("listitem", { name: /CORE-.*Child work/ })
-        .getByRole("link", { name: parent.key })
-    ).toHaveAttribute("href", `/issues/${parent.key}`);
-
-    // Status is a multi-select: one status narrows, a second widens (OR), each is a chip. Rows
-    // and chips read the display label; the URL keeps the key.
-    await page.getByRole("button", { name: "Filters · 0 active" }).click();
-    await pickFilterOption(page, "Status", "Testing");
-    await expect(page).toHaveURL(/\?status=testing$/);
-    await expect(page.getByText("Child work")).toBeVisible();
-    await expect(page.getByText("Triage work")).toHaveCount(0);
+    // Closed issues load when the Status filter lets Done through; the bar's own Done cell,
+    // which only exists once they are loaded, then narrows to them.
+    await pickFilterOption(page, "Status", "Done");
+    await page.getByRole("button", { name: "Done 1", exact: true }).click();
+    await expect(page.getByText("Done work", { exact: true })).toBeVisible();
+    await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Testing 1", exact: true }).click();
+    await expect(page.getByText("Child work", { exact: true })).toBeVisible();
+    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
     await pickFilterOption(page, "Status", "Triage");
-    await expect(page).toHaveURL(/\?status=testing&status=triage$/);
-    await expect(page.getByText("Triage work")).toBeVisible();
-    await expect(page.getByText("Backlog work")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Filters · 2 active" })).toBeVisible();
-    await page.getByRole("button", { name: "Remove Status: Testing filter" }).click();
-    await expect(page.getByText("Child work")).toHaveCount(0);
-    await page.getByRole("button", { name: "Remove Status: Triage filter" }).click();
-    await expect(page.getByText("Backlog work")).toBeVisible();
-
-    // Removing the last filter leaves the strip open under the user; only they close it.
-    await expect(page.getByRole("button", { name: "Filters · 0 active" })).toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-    await page.getByRole("button", { exact: true, name: "Needs you" }).click();
-    await expect(page.getByText("Needs attention")).toBeVisible();
-    await expect(page.getByText("Triage work")).toHaveCount(0);
-    await page.getByRole("button", { exact: true, name: "Needs you" }).click();
-
-    await page.getByRole("button", { exact: true, name: "Unread" }).click();
-    await expect(page.getByText("Unread work")).toBeVisible();
-    await expect(page.getByText("Needs attention")).toHaveCount(0);
-    await page.getByRole("button", { exact: true, name: "Unread" }).click();
-
+    await expect(page.getByText("Triage work", { exact: true })).toBeVisible();
+    await expect(page.getByText("Child work", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/status=testing.*status=triage/);
+    await filterPicker(page, "Status").click();
+    await page.getByRole("button", { name: "Clear status", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
     await pickFilterOption(page, "Labels", "frontend");
-    await expect(page.getByText("Needs attention")).toBeVisible();
-    await expect(page.getByText("Unread work")).toHaveCount(0);
-    await page.getByRole("searchbox", { name: "Search issues" }).fill("attention");
-    await expect(page.getByText("Needs attention")).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath("project-issues.png"), fullPage: true });
+    await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
+    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
+    await filterPicker(page, "Labels").click();
+    await page.getByRole("button", { name: "Clear labels", exact: true }).click();
+    await page.keyboard.press("Escape");
+    const search = page.getByRole("searchbox", { name: "Search issues" });
+    await search.fill("backlog");
+    await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
+    await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
+    await search.clear();
+    await page.getByRole("button", { name: "Needs you", exact: true }).click();
+    await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
+    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Documents" }).click();
     await expect(page).toHaveURL("/projects/CORE/documents");
@@ -163,9 +151,10 @@ test("project page groups issues by status in board order; filters narrow issues
     await page.getByRole("textbox", { name: "Title" }).fill("Design notes");
     await page.getByRole("button", { name: "Create" }).click();
     await expect(page).toHaveURL("/projects/CORE/documents/design-notes");
-    await expect(page.getByRole("textbox", { name: "Document editor" })).toContainText(
-      "Design notes"
-    );
+    // The document opens empty, under the title the person typed: the title is the page's
+    // heading, and the editor holds nothing until the person writes in it.
+    await expect(page.getByRole("heading", { name: "Design notes" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Document editor" })).toHaveText("");
     await navigateInApp(page, "/projects/CORE/documents");
     await expect(page.getByRole("link", { name: "Design notes", exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("project-documents.png"), fullPage: true });
@@ -175,296 +164,371 @@ test("project page groups issues by status in board order; filters narrow issues
   }
 });
 
-// The walk above is the same work in both projects; this is the one claim the phone viewport
-// can break: the project page fits its screen, and the tabs, filters and document controls a
-// finger presses are touch-sized.
-test("the project page fits a phone screen with touch-sized tabs, filters and document controls @phone", async ({
-  browser,
-}, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "iphone",
-    "the 44 px touch rule and the fit are the phone layout's"
-  );
-  await createProject({ key: "CORE", name: "Core" });
-  const todo = await createIssue({ project: "CORE", title: "Needs attention" });
-  await patchIssue(todo.key, { labels: ["frontend"], status: "todo" });
-  await createProjectDocument("CORE", { content: "# Design notes\n", name: "Design notes" });
+// The rows of dispatch://INFRA-299 on the issue page of an issue of the project: each pick of a
+// priority or a repository is the page's write store's from its press, on the issue's line
+// (`issue:<KEY>`), so the server stores the newest pick last, and while a pick is live the page
+// shows it over every answer of a read. Each save is held by Playwright's route control at least
+// `PICK_HOLD_MS` (`holdIssuePatches`), what the server received is read from the issue's own
+// events (`storedValues`), and the value stored from a fresh read once every save has ended.
 
+/** A project, and an issue of it at P3, which the server keeps while the row holds its saves:
+ *  a value that reaches the screen from the server shows as P3, never one of the row's picks. */
+async function issueAtP3(): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  await patchIssue(issue.key, { priority: 3 });
+  return issue.key;
+}
+
+// SLOW(>=2s): two saves each held three seconds, around a reload.
+test("picker keeps the newest pick: a reload before the saves end sends both picks, and the server stores the last", async ({
+  browser,
+}) => {
+  const key = await issueAtP3();
+  const seq = await lastEventSeq(key);
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.goto("/projects/CORE/documents");
-    // The page draws a loading skeleton first, and one of its placeholder rows is 472 px wide,
-    // which zooms a 390 px screen out to 473. The claim is about the page, so wait for the
-    // page's own content before measuring it.
-    await expect(page.getByRole("button", { name: "New document" })).toBeVisible();
-    await assertPageFits(page);
-    await expectTouchTarget(page.getByRole("tab", { name: "Issues" }));
-    await expectTouchTarget(page.getByRole("button", { name: "New document" }));
-    await expectTouchTarget(page.getByRole("button", { name: /Drop a file here/ }));
-    await page.getByRole("tab", { name: "Issues" }).click();
-    await page.getByRole("button", { name: "Filters · 0 active" }).click();
-    await expectTouchTarget(filterPicker(page, "Status"));
-    await expectTouchTarget(filterPicker(page, "Labels"));
-    await expectTouchTarget(page.getByRole("button", { exact: true, name: "Needs you" }));
-    await expectTouchTarget(page.getByRole("button", { name: "Unread" }));
-    await filterPicker(page, "Status").click();
-    await expectTouchTarget(page.getByRole("option", { exact: true, name: "Todo" }));
-    await page.keyboard.press("Escape");
-    await assertPageFits(page);
+    const held = await holdIssuePatches(page, key);
+    const picker = pagePicker(page, `Priority of ${key}`);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => held.sent.length).toBe(1);
+    // P1 is out, held: P2 waits its turn in the store's line, kept for a reload.
+    await picker.selectOption("2");
+    await expect(picker).toHaveValue("2");
+    await page.reload();
+    await expect(picker).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
+    ).toEqual([1, 2]);
+    expect(await getIssue(key)).toMatchObject({ priority: 2 });
+    await expect(picker).toHaveValue("2");
   } finally {
     await context.close();
   }
 });
 
-// The search filter holds up to 1,000 characters, and its chip stays inside its row: that text
-// on one line makes the page 7,535 px wide at 1280, and a phone zooms out until it is 1,560 px.
-test("a 1,000-character search filter's chip ends in an ellipsis inside its row @phone", async ({
-  browser,
-}, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Core work" });
-  const query = "x".repeat(1_000);
-  const label = `Search: ${query}`;
-
-  const alice = await asUser(browser, "alice");
-  const page = await alice.newPage();
-  if (testInfo.project.name === "chromium") {
-    await page.setViewportSize({ height: 800, width: 1280 });
-  }
-
-  try {
-    await page.goto(`/projects/CORE/issues?q=${query}`);
-    const chip = page.getByRole("button", { name: `Remove ${label} filter` });
-    await expect(chip).toBeVisible();
-    await assertPageFits(page);
-    const text = await chip.getByTitle(label).evaluate((node) => ({
-      clipped: node.scrollWidth > node.clientWidth,
-      textOverflow: getComputedStyle(node).textOverflow,
-    }));
-    expect(text).toEqual({ clipped: true, textOverflow: "ellipsis" });
-  } finally {
-    await alice.close();
-  }
-});
-
-// Clearing the box takes the active count to 0, and the strip stays open through it: the input
-// being typed in stays on screen and focused, so the next key lands in it.
-test("clearing the issue search keeps the strip open and the next keystroke in the search box", async ({
+// SLOW(>=2s): two saves each held three seconds, around four in-app navigations.
+test("picker keeps the newest pick: a pick made after leaving and coming back is stored last, and the waiting pick it replaces is never sent", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Core work" });
-
-  const alice = await asUser(browser, "alice");
-  const page = await alice.newPage();
-  try {
-    await page.goto("/projects/CORE/issues");
-    await page.getByRole("button", { name: "Filters · 0 active" }).click();
-    const search = page.getByRole("searchbox", { name: "Search issues" });
-    await search.click();
-    await page.keyboard.type("core");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?q=core$/);
-    await page.keyboard.press("ControlOrMeta+A");
-    await page.keyboard.press("Backspace");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
-    await expect(page.getByRole("button", { name: "Filters · 0 active" })).toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-    await expect(search).toBeFocused();
-    await page.keyboard.type("w");
-    await expect(search).toHaveValue("w");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?q=w$/);
-  } finally {
-    await alice.close();
-  }
-});
-
-test("an issue's Artifacts tab lists its reference closure and a document page lists its referrers", async ({
-  browser,
-}, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reference source" });
-  const related = await createIssue({ project: "CORE", title: "Referenced artifact" });
-  await createIssueArtifact(issue.key, {
-    content: "See dispatch://CORE/artifact/design-notes",
-    name: "Source doc",
-  });
-  await createIssueArtifact(related.key, { content: "diagram", name: "Diagram" });
-  await createProjectDocument("CORE", {
-    content: `See dispatch://${related.key}/artifact/diagram`,
-    name: "Design notes",
-  });
-  await createComment(issue.key, { body: "See dispatch://CORE/artifact/design-notes" }, session);
+  const key = await issueAtP3();
+  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  const seq = await lastEventSeq(key);
   const context = await asUser(browser, "alice");
-
   try {
     const page = await context.newPage();
-    await page.goto(`/issues/${issue.key}/artifacts`);
-    await page.getByText(/References \(\d+\)/).click();
-    const references = page.getByRole("region", { name: "References" });
-    await expect(references.getByRole("link", { name: "Design notes" })).toHaveAttribute(
-      "href",
-      "/projects/CORE/documents/design-notes"
-    );
-    await expect(references).toContainText("via artifact");
-    await expect(references).toContainText("depth 1");
-    await expect(references).toContainText("depth 2");
-    const tabs = page.getByRole("main").getByRole("tab");
-    await expect(tabs).toHaveCount(8);
-    for (const [index, name] of [
-      "Spec",
-      "Verification",
-      "Plan",
-      "Conversation",
-      "Children",
-      "Artifacts (2)",
-      "Activity",
-      "Decisions",
-    ].entries()) {
-      await expect(tabs.nth(index)).toHaveAccessibleName(name);
-    }
-    await expect(page.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-    await page.getByRole("link", { name: "Design notes" }).click();
-    await expect(page).toHaveURL("/projects/CORE/documents/design-notes");
-    await expect(page.getByRole("region", { name: "Referenced by" })).toContainText(
-      `Comment · ${issue.key}`
-    );
-    // A document mention deep-links to the block that carries it.
-    await expect(page.getByRole("link", { name: `Artifact · ${issue.key}` })).toHaveAttribute(
-      "href",
-      new RegExp(`^/issues/${issue.key}/artifacts/source-doc#b-`)
-    );
-    await page.screenshot({
-      path: testInfo.outputPath("project-document-references.png"),
-      fullPage: true,
-    });
+    const held = await holdIssuePatches(page, key);
+    const picker = pagePicker(page, `Priority of ${key}`);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("0");
+    await expect.poll(() => held.sent.length).toBe(1);
+    await picker.selectOption("1");
+    await expect(picker).toHaveValue("1");
+
+    // Another issue and back: the picker that made P1 is gone, and P2 is made on the one the
+    // return mounts, while P0 is still out.
+    await navigateInApp(page, `/issues/${other.key}`);
+    await expect(pagePicker(page, `Priority of ${other.key}`)).toBeVisible();
+    await navigateInApp(page, `/issues/${key}`);
+    await expect(picker).toHaveValue("1");
+    await picker.selectOption("2");
+    await expect(picker).toHaveValue("2");
+    expect(
+      held.sent.map((patch) => patch.body),
+      "P0 is still the only save out"
+    ).toEqual([{ priority: 0 }]);
+    held.release();
+    await savesEnded(page, held);
+
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
+    ).toEqual([0, 2]);
+    expect(await getIssue(key)).toMatchObject({ priority: 2 });
+    await expect(picker).toHaveValue("2");
   } finally {
     await context.close();
   }
 });
 
-// The status bands are collapsible and the header is one strip. Both regressed once while this
-// surface was being polished: a `flex` summary loses the native disclosure marker, and a title
-// allowed to grow pushed the project key hundreds of pixels from a short name.
-test("status bands stay expandable and the project key sits beside its name", async ({
+// Two picks made while one save is out are one request, the newest, and the badge shows the
+// newest pick from each pick until every save has ended - through the moment the first save ends
+// while the newest is still out.
+// SLOW(>=2s): two saves each held three seconds.
+test("picker keeps the newest pick: two picks made while a save is out send only the newest, which the badge shows until every save ends", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const open = await createIssue({ project: "CORE", title: "Still open" });
-  await patchIssue(open.key, { status: "in_progress" });
-  const shipped = await createIssue({ project: "CORE", title: "Already shipped" });
-  await patchIssue(shipped.key, { status: "done" });
-
-  const alice = await asUser(browser, "alice");
-  const page = await alice.newPage();
-  await page.setViewportSize({ height: 900, width: 1280 });
-
+  const key = await issueAtP3();
+  const seq = await lastEventSeq(key);
+  const context = await asUser(browser, "alice");
   try {
-    await page.goto("/projects/CORE/issues");
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`, "main");
+    const held = await holdIssuePatches(page, key);
+    const picker = pagePicker(page, `Priority of ${key}`);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+    await expect.poll(() => shown.values.at(-1)).toBe("3");
+    const fromFirst = shown.values.length;
 
-    // Done is collapsed, announced as expandable, and opens.
-    const done = page.locator("details").filter({ hasText: "Done (1)" }).first();
-    await expect(done).toBeVisible();
-    expect(await done.evaluate((node) => (node as HTMLDetailsElement).open)).toBe(false);
-    const summary = done.locator("summary");
-    // `display: flex` on a summary removes the marker; a list-item box is what draws it.
-    const display = await summary.evaluate((node) => getComputedStyle(node).display);
-    expect(display).toBe("list-item");
-    await expect(page.getByRole("link", { name: /Already shipped/ })).toHaveCount(0);
-    await summary.click();
-    expect(await done.evaluate((node) => (node as HTMLDetailsElement).open)).toBe(true);
-    await expect(page.getByRole("link", { name: /Already shipped/ })).toHaveCount(1);
+    // Each pick shows before the next is made, so the badge's record from the first pick on is
+    // the newest pick at each moment, and nothing else.
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    await expect.poll(() => held.sent.length).toBe(1);
+    await picker.selectOption("2");
+    await expect.poll(() => shown.values.at(-1)).toBe("2");
+    await picker.selectOption("0");
+    await expect.poll(() => shown.values.at(-1)).toBe("0");
+    held.release();
+    await savesEnded(page, held);
 
-    // The key pill sits beside the name, not across the row from it.
-    const heading = page.getByRole("heading", { level: 1, name: "Core" });
-    const pill = page.getByRole("link", { exact: true, name: "CORE" });
-    // The rendered text's own right edge, not the heading's box: a heading allowed to grow
-    // keeps its text at the left and stretches the box, so the box edge stays beside the pill
-    // while the name sits hundreds of pixels away from it.
-    const textRight = await heading.evaluate((node) => {
-      const range = node.ownerDocument.createRange();
-      range.selectNodeContents(node);
-      return range.getBoundingClientRect().right;
-    });
-    const pillBox = await pill.boundingBox();
-    if (pillBox === null) {
-      throw new Error("project header is not visible");
-    }
-    const gap = pillBox.x - textRight;
-    expect(gap).toBeGreaterThanOrEqual(0);
-    // The key beside the name is the one-strip desktop layout: below `md` the name, key and
-    // blocker pill share the first row by design, the name taking the space the other two leave.
-    expect(gap).toBeLessThanOrEqual(24);
-    // The full name is available even when the heading truncates.
-    await expect(heading).toHaveAttribute("title", "Core");
+    expect(
+      held.sent.map((patch) => patch.body),
+      "P0 went out once P1's save had ended"
+    ).toEqual([{ priority: 1 }, { priority: 0 }]);
+    expect(
+      shown.values.slice(fromFirst),
+      "every value the badge showed from the pick of P1 until every save ended"
+    ).toEqual(["1", "2", "0"]);
+
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
+    ).toEqual([1, 0]);
+    expect(await getIssue(key)).toMatchObject({ priority: 0 });
+    await expect(picker).toHaveValue("0");
   } finally {
-    await alice.close();
+    await context.close();
   }
 });
 
-// A row's key and title are one reference. Below 1280 px every link is an inline-flex box, which
-// would make the key and the title two flex columns: the key would break mid-key (`CORE-` over
-// `1`) and a long title would wrap in whatever the key and the timestamp left, about 130 px on a
-// phone.
-test("a list row keeps its key whole and gives the title the row's width @phone", async ({
+// SLOW(>=2s): a save held three seconds while the issue page reads the issue again.
+test("picker keeps a pick on screen: the priority on the issue page, over a read that answers while its save is out", async ({
   browser,
-}, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    title:
-      "Smoke rig checkpoints 5 and 7 assert the retired commit-identity and handoff-cleanup design: implementer+ses_identity, Legion-Session trailer, and the reviewer App authoring the .legion/ deletion",
-  });
-  await patchIssue(issue.key, { labels: ["smoke"], priority: 2, status: "todo" });
-
-  const alice = await asUser(browser, "alice");
-  const page = await alice.newPage();
-  if (testInfo.project.name === "chromium") {
-    await page.setViewportSize({ height: 900, width: 1280 });
-  }
-
+}) => {
+  const key = await issueAtP3();
+  const renamed = "Priority under a held save, renamed while it is out";
+  const context = await asUser(browser, "alice");
   try {
-    await page.goto("/projects/CORE/issues");
-    const row = page.getByRole("listitem", { name: new RegExp(`^${issue.key} `) });
-    await expect(row).toBeVisible();
-    const layout = await row.evaluate((node) => {
-      const link = node.querySelector("a");
-      const key = link?.querySelector(".font-semibold");
-      const title = key?.nextElementSibling;
-      const time = node.querySelector("time");
-      if (!link || !key || !title || !time) {
-        throw new Error("the row has no key, title or timestamp");
-      }
-      const rects = (element: Element) => {
-        const range = node.ownerDocument.createRange();
-        range.selectNodeContents(element);
-        return [...range.getClientRects()];
-      };
-      const titleRects = rects(title);
-      const timeBox = time.getBoundingClientRect();
-      return {
-        keyLines: new Set(rects(key).map((rect) => Math.round(rect.top))).size,
-        rowWidth: node.getBoundingClientRect().width,
-        titleOverlapsTime: titleRects.some(
-          (rect) =>
-            rect.right > timeBox.left &&
-            rect.left < timeBox.right &&
-            rect.bottom > timeBox.top &&
-            rect.top < timeBox.bottom
-        ),
-        titleWidth:
-          Math.max(...titleRects.map((rect) => rect.right)) -
-          Math.min(...titleRects.map((rect) => rect.left)),
-      };
-    });
-    expect(layout.keyLines).toBe(1);
-    expect(layout.titleOverlapsTime).toBe(false);
-    // The title wraps across the row, not in a column beside the key and the timestamp.
-    expect(layout.titleWidth).toBeGreaterThanOrEqual(layout.rowWidth * 0.8);
-    await assertPageFits(page);
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`, "main");
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, detailRead(key));
+    const picker = pagePicker(page, `Priority of ${key}`);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of the issue, straight to the server: its live event has the page read the issue
+    // again, and the answer, carrying P3, lands while the pick's save is held.
+    const renamedAt = Date.now();
+    await patchIssue(key, { title: renamed });
+    await expect(page.getByRole("heading", { name: renamed })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    expect(shown.values.slice(fromPick), "every value the page showed from the pick on").toEqual([
+      "1",
+    ]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1, title: renamed });
+    await expect(picker).toHaveValue("1");
   } finally {
-    await alice.close();
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a save held three seconds while the issue page reads the issue again.
+test("picker keeps a pick on screen: the repository on the issue page, over a read that answers while its save is out", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await putRepoProject("acme/widgets", { default: true, project: "CORE" });
+  await putRepoProject("acme/gadgets", { project: "CORE" });
+  const issue = await createIssue({ project: "CORE", title: "Repository under a held save" });
+  await patchIssue(issue.key, { repo: "acme/widgets" });
+  const renamed = "Repository under a held save, renamed while it is out";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Repository of ${issue.key}`, ISSUE_PAGE_PICKERS);
+    const held = await holdIssuePatches(page, issue.key);
+    const reads = logReads(page, detailRead(issue.key));
+    const picker = pagePicker(page, `Repository of ${issue.key}`);
+    await page.goto(`/issues/${issue.key}`);
+    // The repository is in `main` on the issue page with the sidebar, and in Details on that of
+    // dispatch://INFRA-1196, which the reader opens to reach it.
+    await revealPagePicker(page, `Repository of ${issue.key}`);
+    await expect(picker).toHaveValue("acme/widgets");
+
+    // The reader types the repository into the box and presses Enter, which writes it.
+    await picker.fill("acme/gadgets");
+    await picker.press("Enter");
+    await expect.poll(() => shown.values.at(-1)).toBe("acme/gadgets");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of the issue, straight to the server: its live event has the page read the issue
+    // again, and the answer, carrying acme/widgets, lands while the pick's save is held.
+    const renamedAt = Date.now();
+    await patchIssue(issue.key, { title: renamed });
+    await expect(page.getByRole("heading", { name: renamed })).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    expect(shown.values.slice(fromPick), "every value the page showed from the pick on").toEqual([
+      "acme/gadgets",
+    ]);
+    expect(await getIssue(issue.key)).toMatchObject({ repo: "acme/gadgets", title: renamed });
+    await expect(picker).toHaveValue("acme/gadgets");
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): two saves each held three seconds, around a reload.
+test("picker keeps a pick on screen: a reload shows the newest pick from its first paint until the saves end", async ({
+  browser,
+}) => {
+  const key = await issueAtP3();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`, "main");
+    const held = await holdIssuePatches(page, key);
+    const reads = logReads(page, detailRead(key));
+    const picker = pagePicker(page, `Priority of ${key}`);
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => held.sent.length).toBe(1);
+    await picker.selectOption("2");
+    await expect.poll(() => shown.values.at(-1)).toBe("2");
+    const beforeReload = shown.values.length;
+    const reloadedAt = Date.now();
+    await page.reload();
+    await expect(picker).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    // The reloaded page's first read of the issue was answered while the P1 it sent again was
+    // held: that answer, carrying P3, landed under the newest pick.
+    const timeline = JSON.stringify({ reads, reloadedAt, saves: held.sent });
+    const resent = held.sent.find(
+      (patch) =>
+        patch.arrivedAt >= reloadedAt &&
+        JSON.stringify(patch.body) === JSON.stringify({ priority: 1 })
+    );
+    const firstRead = reads.find((read) => read.sentAt >= reloadedAt);
+    expect(resent, `the reloaded page sent P1 again: ${timeline}`).toBeDefined();
+    expect(
+      firstRead?.answeredAt !== undefined &&
+        resent !== undefined &&
+        resent.endedAt !== undefined &&
+        firstRead.answeredAt >= resent.arrivedAt &&
+        firstRead.answeredAt <= resent.endedAt,
+      `the first read of the issue after the reload was answered while the resent P1 was held: ${timeline}`
+    ).toBe(true);
+
+    // From the reloaded document's first frame: no picker until the page draws one, and then P2
+    // alone, the pick the store sends last.
+    expect(
+      [...new Set(shown.values.slice(beforeReload).filter((value) => value !== "(none)"))],
+      `every value the badge showed from the reload on: ${JSON.stringify(shown.values.slice(beforeReload))}`
+    ).toEqual(["2"]);
+    expect(await getIssue(key)).toMatchObject({ priority: 2 });
+    await expect(picker).toHaveValue("2");
+  } finally {
+    await context.close();
+  }
+});
+
+// A pick Dispatch keeps answering `503` passes the write store's deadline and is still tried,
+// under its key, each second: it is late, and the shell offers Stop trying for it. A late pick is
+// as live as one within its deadline, so a read of the issue answered while it is late, carrying
+// P3, never reaches the badge, and the pick is stored once a save of it gets through. The page's
+// own clock runs the pick past its deadline (`SEND_DEADLINE_MS`), and runs on at the wall clock's
+// pace around that jump.
+// SLOW(>=2s): the store waits a second between attempts (`Retry-After: 1`), and the row waits for
+// one attempt after the read is answered and for the first one after `admit`.
+test("a pick that is late and still being tried stays on screen over a read, and is stored once a save gets through", async ({
+  browser,
+}) => {
+  const key = await issueAtP3();
+  const seq = await lastEventSeq(key);
+  const renamed = "Priority under a late save, renamed while it is late";
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const shown = await watchShown(page, `Priority of ${key}`, "main");
+    const busy = await refuseIssuePatches(page, key);
+    const reads = logReads(page, detailRead(key));
+    const picker = pagePicker(page, `Priority of ${key}`);
+    const late = stopTrying(page, `${key} set to P1`);
+    await page.clock.install();
+    await page.goto(`/issues/${key}`);
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    // The store has tried the pick, so its deadline runs: the page's clock jumps past it.
+    await expect.poll(() => busy.refused.length, "the store tried the pick").toBeGreaterThan(0);
+    await page.clock.fastForward(SEND_DEADLINE_MS + 1);
+    await expect(
+      late,
+      "the shell offers Stop trying once the pick is past its deadline"
+    ).toBeVisible();
+    // A rename of the issue, straight to the server: its live event has the page read the issue
+    // again, and the answer, carrying P3, lands while the pick is late.
+    const renamedAt = Date.now();
+    await patchIssue(key, { title: renamed });
+    await expect(page.getByRole("heading", { name: renamed })).toBeVisible();
+    await expect
+      .poll(() => readAnsweredSince(reads, renamedAt), "the page read the issue after the rename")
+      .toBe(true);
+    await expect(late, "the pick was still late once that read was answered").toBeVisible();
+    const answeredBy = Date.now();
+    await expect
+      .poll(() => busy.refused.some((at) => at >= answeredBy), "the store still tries the pick")
+      .toBe(true);
+    // The answer is drawn by now, and the badge read at the frames after it.
+    await nextFrames(page);
+    expect(
+      shown.values.slice(fromPick),
+      "every value the badge showed from the pick on, while it was late"
+    ).toEqual(["1"]);
+
+    busy.admit();
+    await expect.poll(async () => (await getIssue(key)).priority).toBe(1);
+    await expect(pendingWrites(page)).toHaveCount(0);
+    expect(
+      await storedValues(key, "priority", seq),
+      `the server stored the pick once; the route passed on ${JSON.stringify(busy.forwarded)}`
+    ).toEqual([1]);
+    expect(await getIssue(key)).toMatchObject({ priority: 1, title: renamed });
+    await expect(picker).toHaveValue("1");
+    expect(shown.values.slice(fromPick), "every value the badge showed from the pick on").toEqual([
+      "1",
+    ]);
+  } finally {
+    await context.close();
   }
 });

@@ -4,40 +4,68 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
 
 // operatorCall is one command that reaches the daemon over the operator's bearer — each `legion
-// claims` subcommand, and `legion status <issue> <status>` from an operator shell: the flags every
-// one of them takes — where the daemon is and the file holding the bearer — and the streams it
-// reports on.
+// claims` subcommand, and `legion issue status <issue> <status>` from an operator shell: the flags
+// every one of them takes — where the daemon is and the file holding the bearer — and the streams
+// it reports on.
 //
 // The bearer is only ever a file's contents: no flag takes it as a value, so it is in no argv, and
 // once read it goes into the request's Authorization header and nowhere else — no line these
 // commands print carries it.
 type operatorCall struct {
-	name           string
-	flags          *flag.FlagSet
+	cmd            *cobra.Command
+	flags          *pflag.FlagSet
 	tokenFile      *string
 	configPath     *string
 	port           *int
 	stdout, stderr io.Writer
+	// wait is the bound the command's whole call runs under, when the command takes one
+	// (withWait), and until the moment that bound expires, fixed when check reads the call. Every
+	// request the command makes is bounded by that one moment, so a command that reads the claims
+	// in a loop is bounded by its --wait and not by --wait per request.
+	wait  *time.Duration
+	until time.Time
 }
 
-// newOperatorCall is the `legion <sub>` command's flag set with the three flags every operator
-// command takes; usage heads its help, and tokenUsage is how --operator-token-file reads in it.
-func newOperatorCall(sub, usage, tokenUsage string, stdout, stderr io.Writer) *operatorCall {
-	flags := newFlags(sub, usage, stderr)
+// withWait gives the command a --wait flag bounding its whole call, which every `legion claims`
+// subcommand takes: a command that does not answer is worse than one that refuses, and an
+// operator waiting on a worker whose pod is coming up has waited minutes for a suspend with no
+// answer at all (dispatch://INFRA-714 R10). The daemon's own work is bounded by the daemon's own
+// deadlines: a call this bound ends says what it asked for and that the daemon goes on with it,
+// and never cancels the decision the daemon is making.
+func (c *operatorCall) withWait(usage string) {
+	c.wait = c.flags.Duration("wait", time.Minute, usage)
+}
+
+// bound is ctx under the command's remaining --wait, and ctx itself for a command that takes no
+// --wait. The deadline is the one check fixed, so every request shares it.
+func (c *operatorCall) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c.until.IsZero() {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, c.until)
+}
+
+// newOperatorCall gives cmd the three flags every operator command takes; tokenUsage is how
+// --operator-token-file reads in its help.
+func newOperatorCall(cmd *cobra.Command, tokenUsage string, stdout, stderr io.Writer) *operatorCall {
+	flags := cmd.Flags()
 	return &operatorCall{
-		name:       "legion " + sub,
+		cmd:        cmd,
 		flags:      flags,
 		tokenFile:  flags.String("operator-token-file", "", tokenUsage),
 		configPath: flags.String("config", "", "path to legion.yaml (default "+defaultConfigPath+")"),
@@ -47,24 +75,21 @@ func newOperatorCall(sub, usage, tokenUsage string, stdout, stderr io.Writer) *o
 	}
 }
 
-// parse reads args, then refuses a word that is not a flag and any required flag left out or
-// empty, by name — each a usage error, before anything is read or sent. A false ok carries the
-// exit code, 0 for a help request (parseFlags).
-func (c *operatorCall) parse(args []string, required ...string) (code int, ok bool) {
-	if code, ok := parseFlags(c.flags, args); !ok {
-		return code, false
-	}
-	if c.flags.NArg() > 0 {
-		fmt.Fprintf(c.stderr, "%s: unexpected argument %q\n", c.name, c.flags.Arg(0))
-		c.flags.Usage()
-		return 2, false
-	}
+// name is how the command's lines name it: `legion claims spawn`.
+func (c *operatorCall) name() string { return c.cmd.CommandPath() }
+
+// check refuses any required flag left out or empty, by name — a usage error, before anything is
+// read or sent; the command's Args refuse a word that is not a flag. A false ok carries the exit
+// code. A command that takes a --wait starts its bound here, before its first request, so the
+// bound covers the whole call (bound).
+func (c *operatorCall) check(required ...string) (code int, ok bool) {
 	for _, name := range required {
 		if c.flags.Lookup(name).Value.String() == "" {
-			fmt.Fprintf(c.stderr, "%s: --%s is required\n", c.name, name)
-			c.flags.Usage()
-			return 2, false
+			return refuse(c.cmd, "--%s is required", name), false
 		}
+	}
+	if c.wait != nil && *c.wait > 0 {
+		c.until = time.Now().Add(*c.wait)
 	}
 	return 0, true
 }
@@ -78,14 +103,14 @@ func (c *operatorCall) connect() (operator, bool) {
 	if *c.tokenFile != "" {
 		read, err := config.ReadPrivateSecretPointer("--operator-token-file", *c.tokenFile)
 		if err != nil {
-			fmt.Fprintf(c.stderr, "%s: %v\n", c.name, err)
+			fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
 			return operator{}, false
 		}
 		bearer = read
 	}
 	address, err := daemonAddress(*c.configPath, *c.port)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: %v\n", c.name, err)
+		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
 		return operator{}, false
 	}
 	return operator{base: address, bearer: bearer}, true
@@ -94,11 +119,6 @@ func (c *operatorCall) connect() (operator, bool) {
 // send makes one request of the daemon and reports its answer: a 2xx is handed to print, and
 // anything else is the daemon's refusal, printed with its status and sentence, and the command
 // fails.
-//
-// The request carries no deadline of its own. What it asks for may wait on the runtime — a suspend
-// or stop waits out the worker's stop grace, a resume that and a launch — and every step is
-// bounded by the daemon's configuration, which this command may not have read; a signal to this
-// process ends the wait.
 func (c *operatorCall) send(ctx context.Context, op operator, method, path string, body any, print func(io.Writer, []byte) error) int {
 	_, answer, ok := c.request(ctx, op, method, path, body)
 	if !ok {
@@ -110,14 +130,27 @@ func (c *operatorCall) send(ctx context.Context, op operator, method, path strin
 // request makes one request of the daemon and answers its 2xx status and body. A request that got
 // no answer, or an answer outside 2xx — the daemon's refusal, with its status and sentence — is
 // reported and answers false.
+//
+// It runs under the command's --wait, which bounds the whole call rather than this one request
+// (bound). What it asks for may wait on the runtime — a suspend or stop waits out the worker's
+// stop grace, a resume that and a launch — so a bound that runs out is reported as what it is: the
+// command refuses with a reason, and the daemon goes on with what it began under its own
+// deadlines, which this bound never cancels.
 func (c *operatorCall) request(ctx context.Context, op operator, method, path string, body any) (int, []byte, bool) {
-	status, answer, err := op.do(ctx, method, path, body)
+	bounded, cancel := c.bound(ctx)
+	defer cancel()
+	status, answer, err := op.do(bounded, method, path, body)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: %v\n", c.name, err)
+		if bounded.Err() != nil && ctx.Err() == nil {
+			fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
+				c.name(), method, op.base+path, *c.wait)
+			return 0, nil, false
+		}
+		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
 		return 0, nil, false
 	}
 	if status/100 != 2 {
-		fmt.Fprintf(c.stderr, "%s: %s\n", c.name, refusal(status, answer))
+		fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), refusal(status, answer))
 		return 0, nil, false
 	}
 	return status, answer, true
@@ -126,7 +159,7 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 // printAnswer hands a 2xx answer path served to print; one it cannot read fails the command.
 func (c *operatorCall) printAnswer(op operator, path string, answer []byte, print func(io.Writer, []byte) error) int {
 	if err := print(c.stdout, answer); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name, op.base, path, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, path, err)
 		return 1
 	}
 	return 0

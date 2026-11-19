@@ -344,12 +344,17 @@ func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghre
 	}
 }
 
-// writeCacheSecret brings s's Secret, cacheSecretName, to the implement App's token for repo's
-// owner (Options.Tokens) and the cache's bearer token: the one the Secret holds already, else 32
+// writeCacheSecret brings s's Secret, cacheSecretName, to the implement App's token for repo
+// (Options.Tokens) and the cache's bearer token: the one the Secret holds already, else 32
 // random bytes, hex. It is left alone when it already holds both under the cache's labels,
 // annotation and owner, and otherwise written through upsertSecret: created when absent, updated
 // in place when s owns it, replaced when another uid owns it (a Secret an earlier Sandbox of the
 // name left). The bearer token is kept for the runtime's own reads (cacheBearer).
+//
+// The token source is handed repo itself, since a configured rename resolves one repository at a
+// time and only there (ProvisionTokens). The cache keeps repo as it was recorded in everything
+// else: its Sandbox's name, its annotation, its volume and the `--repo` its fetch clones, so a
+// cache a rename makes reachable again is the same cache, at the same address, as before.
 func (r *Runtime) writeCacheSecret(ctx context.Context, s *sandbox, repo ghrepo.Repository) error {
 	minting, cancel := call(ctx)
 	token, err := r.tokens.Token(minting, repo)
@@ -790,13 +795,15 @@ func (r *Runtime) refreshCacheTokens(ctx context.Context) {
 }
 
 // sweepCaches is ReconcileOrphans' pass over the repository caches (the claim path, sweep, never
-// sees one), against the repositories the mapping names now (Options.Mapped). For each stored cache
-// Sandbox: a repository that does not parse, or a shape this runtime does not build, is logged and
-// kept, as sweep keeps a Sandbox it cannot judge (the next boot's census refuses it by name); a
-// mapped repository's cache has any annotationCacheUnmappedAt removed; an unmapped one's is marked
+// sees one), against the repositories the project works now (Options.Mapped: the repositories
+// Dispatch's mapping names and the repositories of the project's live issue records). For each
+// stored cache Sandbox: a repository that does not parse, or a shape this runtime does not build,
+// is logged and kept, as sweep keeps a Sandbox it cannot judge (the next boot's census refuses it
+// by name); a repository the set holds has its cache's annotationCacheUnmappedAt removed; one the
+// set does not — no live record and no mapping names it — is marked
 // with now once, kept while now minus the mark is under the retention, and deleted after it
 // (deleteFenced, in the foreground, so its volume and Secret go with it), logged with the repository
-// and how long it was kept. Then every mapped repository's cache is ensured (EnsureRepositoryCache):
+// and how long it was kept. Then every member's cache is ensured (EnsureRepositoryCache):
 // one missing is made — at boot, whose reconciliation runs this, and after an ensure a mapping
 // change asked for failed — and a drifted or dead cache pod is replaced, all on the sweep's
 // schedule. Each runs under the cache's launch turn, fenced to the Sandbox as the store held it.

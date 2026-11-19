@@ -1,28 +1,34 @@
 # Reading admission
 
-`read_state` says where each issue Legion records stands, and its `phase` alone does not: an issue
-is `admitted` from the moment the daemon records it until its first phase starts, whether it runs,
-waits, or neither. Read its key against `admission` and the root its own `tree` field names. A
-slot is one issue with work, a root or a child, not one tree, so `admission.active` no longer says
-which trees run: `admission.trees` does.
+Read this when you need to know where an issue stands in admission, or what an `admission.held` word means. An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names. The rules behind them: [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
 
-| What `read_state` shows | What it means | What you do |
+## The lists
+
+- `admission.active`: every issue holding a slot, a root or a child, at work, `held` or waiting on a person. An issue past its review (`accepting`, `retro`, `merging`) holds none, and neither does a started issue that waits on another issue, except three roots that keep theirs: one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
+- `admission.trees`: the roots of the live trees, whether or not any issue of them holds a slot. Use it, not `admission.active`, for which trees run.
+- `admission.waiting`: the line, in order. First the issues whose work came back, oldest first; then the issues whose first phase can start, by their root's Dispatch rank and then their own. `issues.<KEY>.waitingLine` says where one stands (`part`, `kind`, `holdsSlot`, `reason`): quote its `reason` before you call an order wrong.
+- `admission.blocked`: issues waiting on an unfinished `blocked_by` issue, or a parent waiting for its open children. A started issue here gave its slot back and takes one again by itself; nothing of its work stops.
+- `phase: awaiting_person` with `waitingOn`: a root waiting on a person's answer or review keeps its slot and is in no line. `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, among the issues whose work came back, oldest first, where it stands until the pass that resumes it.
+- `phase: admitted`, in no list, with a `child_of` parent: a child that has not started. Leave it to its tree.
+- `phase: admitted`, `status: todo`, in no list, no parent: a person took its label off. Nothing to do.
+- `phase: done` while `status` is `in_progress`, `testing`, `needs_review` or `retro`: someone else moved a waiting root, or a root waiting on a person lost its label or claim, and the daemon sent `unslotted`. Re-admit nothing.
+
+Holding no slot is no fault by itself.
+
+## `admission.held`: what nothing starts
+
+Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it. The daemon starts none of them by itself: name them in the day's report and take nothing for them.
+
+| Word | Meaning | What ends it |
 |---|---|---|
-| The key is in `admission.active` | An issue holding a slot, a root or a child: a worker of it has work now. A root is here while its architect writes the spec (`admitted`, before its design gate first opens) and in each of its own phases; a child in each of its phases | Nothing, beyond [trees waiting on a root claim](skill://legion-controller/SKILL.md#trees-waiting-on-a-root-claim) |
-| The key is in `admission.trees` | The root of a live tree: its lifecycle stands open and it does not linger, or it waits in the line or on a person. A tree is live whether or not any issue of it holds a slot, so this is the list that says which trees run, and `issues.<KEY>.tree` says which tree an issue stands in | Nothing: read it wherever you need the running trees |
-| The key is in `admission.waiting` and not in `admission.blocked` | An issue waiting for a slot, in the line's own order: first the issues that held a slot and have work again, and the roots a person answered while they waited in `awaiting_person`, oldest first by when the work came back; then the issues whose first phase can start, by the Dispatch rank of their tree's root, and within one root's rank that tree's own issues before the root itself. A root that left another tree (handed over by its finished tree, or admitted as an orphan) waits here as its own root even under a live tree, the old root's return included: no tree adopts it | Nothing: it takes the next free slot by itself |
-| `phase: awaiting_person`, `waitingOn` | A root that already ran and now waits only on a person: an answer to its architect's question (`waitingOn.kind` `ask`) or a review of its spec (`gate`). It holds no slot, its architect stays live to read the person's comments and replies, and its tree stays live. Unanswered, it is in neither `admission.active` nor `admission.waiting`, and only `admission.trees` names its tree; `waitingOn.answeredAt` means the daemon has promoted it to the front of `admission.waiting` | Nothing: it is not something to admit, label or park, and the slot it returned is no reason to take an issue ([Free slots](skill://legion-controller/SKILL.md#free-slots)). The daemon delivers the answer task to its architect at that promotion: at once, taking no slot, when the root's design gate has already opened, and at the next free slot while its architect is still writing the first spec. If its label goes or a person or outside session claims it on Dispatch, the daemon sends `unslotted` and does not resume work under another owner |
-| The key is in `admission.blocked` | An issue Legion is waiting to start, with what it waits on: the Dispatch issues of its `blocked_by` links that nobody has finished, or, for a parent, the open children beneath it that children-first holds it for. It takes no slot until they are done, and one that is in the line stands in `admission.waiting` too | Nothing: a link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its link is taken off (by a person or the tree's architect), and a children-first wait ends when the last open child leaves the workflow, which is its tree's architect's work. Name the wait in the day's report |
-| `phase: admitted`, in neither `admission.active` nor `admission.waiting`, and Dispatch shows a `child_of` parent | A child that has not started: it runs or waits with its tree, the root its `child_of` chain reaches. Under a root whose `phase` is `done` it waits with it. A labelled `todo` issue here is not in the line either: one whose recorded parent is in a live tree runs in that tree (the daemon adopted it there), or is held with that parent while the parent itself is held under an unreleased child, and one whose parent is not recorded but sits under a live tree is held under an unreleased child of that tree until its architect releases it or its parent. One a person moved to `todo` beneath an ancestor whose reviewed head the daemon has already accepted is held here until that ancestor closes. The unreleased-child hold is not `admission.blocked`, which names blocked-by links and children-first waits | Leave it to its tree. It runs again when its root does, or as a root of its own once it is `todo` with the `legion` label and no live tree is above it |
-| `phase: admitted`, `status: todo`, in neither list, no parent | A root a person took out of the line by taking its label off | Nothing: the label puts it back in the line, and a person's label is their decision |
-| `phase: done` while `status` is `in_progress`, `testing`, `needs_review` or `retro` | Legion is not running it under that status, and it sent the `unslotted` wake. Either someone other than Legion moved a root that waited for a slot there, and the daemon took it out of the workflow at that move since no slot would ever reach it; or a root waiting on a person could not be resumed — its `legion` label is gone, or a person or an outside session took its Dispatch claim — and the daemon took it out the same way, leaving the `in_progress` it ran with. A parked child stays parked. Legion starts nothing for any of them | Re-admit nothing yourself: `dispatch read` shows who works it now. Name it in your summary; `todo` with the `legion` label queues it again |
-
-A root left in the workflow at a status only a running tree has (`in_progress`, `testing`,
-`needs_review`, `retro`) whose tree is not live, and which no blocker hold and no children-first
-wait explains, does not stay that way: every pass of admission (a Dispatch
-event, the daemon's boot read, its tick) takes it out of the workflow and sends the `unslotted`
-wake — an unanswered `awaiting_person` root only when its label or its Dispatch claim makes a
-resume unsafe. Holding no slot is by itself no fault: a root in `accepting`, in `awaiting_merge`,
-waiting on a person, waiting in the line, waiting on a blocker or waiting for its children holds
-none while its tree runs. The wake is live only, so a controller that starts later finds such a
-root by the last row, as its start procedure does.
+| `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted |
+| `tree_parked` | Its tree was parked and the linger ran out | A `todo` on the root; your own hold, the parked-root walk decides |
+| `label_off` | A root whose `legion` label is off | A person's label |
+| `ancestry` | Its Dispatch chain reaches another live root: that tree's unreleased work | That tree's architect releasing it or its parent, or the chain leaving that tree |
+| `root_awaiting_person` | Its root waits on a person | The root's resume |
+| `design_gate` | Its root's design gate is not open at every gated step | A person's approval of each step's document |
+| `dispatch_blocker` | A `blocked_by` issue is not `done` | Each blocker `done`, or the link taken off |
+| `children_first` | An open child under it | The last open child leaving the workflow |
+| `accepted_ancestor` | An ancestor's reviewed head is accepted | That ancestor's close |
+| `at_work` | Past its review, not `held`, on no slot | Its own sign-off, retro and merge |
+| `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |

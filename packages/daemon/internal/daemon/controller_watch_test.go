@@ -1,14 +1,13 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,32 +18,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // syncBuffer is a log sink a daemon writes while the test reads it.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-func (b *syncBuffer) Reset() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf.Reset()
-}
+type syncBuffer = testlog.Buffer
 
 // notRegisteredLine is what the daemon logs, at most once per worker boot timeout, while no live
 // controller holds the project's controller record. It is the whole line under `controller:
@@ -71,6 +50,15 @@ func loggedLines(t *testing.T, logs, text string) []map[string]any {
 		lines = append(lines, fields)
 	}
 	return lines
+}
+
+// loggedMessages is every line of the daemon's JSON log whose message starts with msg, decoded.
+func loggedMessages(t *testing.T, logs, msg string) []map[string]any {
+	t.Helper()
+	return slices.DeleteFunc(loggedLines(t, logs, msg), func(entry map[string]any) bool {
+		text, _ := entry["msg"].(string)
+		return !strings.HasPrefix(text, msg)
+	})
 }
 
 // recordControllerSession registers session as the project's controller in the store before the

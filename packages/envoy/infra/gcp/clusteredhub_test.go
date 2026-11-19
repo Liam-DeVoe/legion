@@ -142,7 +142,7 @@ func TestClusteredNatsHubRendersTheVMHubsAuthorization(t *testing.T) {
 	t.Run("the default machine id", func(t *testing.T) {
 		s, err := gcp.ResolveClusteredNatsHub(clusteredArgs())
 		require.NoError(t, err)
-		require.Equal(t, "envoy-hub", s.Tailnet.MachineID)
+		require.Equal(t, "envoy-hub", s.Listener.MachineID)
 		require.Equal(t, want, s.AuthConf)
 	})
 	t.Run("an explicit machine id", func(t *testing.T) {
@@ -292,8 +292,8 @@ func TestClusteredNatsHubDefaults(t *testing.T) {
 	require.Empty(t, s.MonitorNamespaces)
 	require.Equal(t, []string{"envoy", "dispatch"}, s.ClientNamespaces)
 	require.Equal(t, 2, s.Tailnet.Replicas)
-	require.Equal(t, "500m", s.Tailnet.ListenerCPU)
-	require.Equal(t, "1Gi", s.Tailnet.ListenerMemory)
+	require.Equal(t, "500m", s.Listener.CPU)
+	require.Equal(t, "1Gi", s.Listener.Memory)
 
 	args := clusteredArgs()
 	args.MetricsNamespaces = []string{"monitoring"}
@@ -305,19 +305,22 @@ func TestClusteredNatsHubDefaults(t *testing.T) {
 	require.Equal(t, []string{"monitoring"}, s.MetricsNamespaces)
 	require.Equal(t, []string{"ops"}, s.MonitorNamespaces)
 	require.Equal(t, 3, s.Tailnet.Replicas)
-	require.Equal(t, "250m", s.Tailnet.ListenerCPU)
-	require.Equal(t, "512Mi", s.Tailnet.ListenerMemory)
+	require.Equal(t, "250m", s.Listener.CPU)
+	require.Equal(t, "512Mi", s.Listener.Memory)
 }
 
-// The listener runs as its machine id on the pod's loopback at the listener's port, serves the
-// Service's tailnet name before the operator's further hosts, and reaches NATS through the
-// in-cluster Service, which Env marks remote. ENVOY_NATS_REPLICAS and ENVOY_STREAM_MAX_BYTES are
-// rendered exactly when natsReplicas and streamMaxBytes are given.
-func TestClusteredNatsHubListenerEnvironment(t *testing.T) {
+// The listener runs as its machine id on every address of its own pod at the listener's port,
+// serves the Service's tailnet name before the operator's further hosts, and reaches NATS through
+// the in-cluster Service, which Env marks remote. ENVOY_NATS_REPLICAS and ENVOY_STREAM_MAX_BYTES
+// are rendered exactly when natsReplicas and streamMaxBytes are given. This is
+// core.ListenerConfig.Env's whole output: NATS_NKEY_SEED_FILE and
+// ENVOY_API_ALLOW_UNAUTHENTICATED are the container's, added by clusteredHubListenerEnv
+// (TestClusteredNatsHubListenerEnvironment, the pod's).
+func TestClusteredNatsHubResolvesTheListenerEnvironment(t *testing.T) {
 	base := []string{
 		"ENVOY_MACHINE_ID=envoy-hub",
 		"PORT=9020",
-		"ENVOY_LISTEN_HOST=127.0.0.1",
+		"ENVOY_LISTEN_HOST=0.0.0.0",
 		"ENVOY_ALLOWED_HOSTS=envoy-hub.example-tailnet.ts.net,envoy.example.com",
 		"NATS_URLS=nats://envoy-nats.envoy.svc.cluster.local:4222",
 		"ENVOY_ALLOW_REMOTE_NATS=1",
@@ -338,7 +341,7 @@ func TestClusteredNatsHubListenerEnvironment(t *testing.T) {
 			args.NatsReplicas, args.StreamMaxBytes = row.natsReplicas, row.streamMaxBytes
 			s, err := gcp.ResolveClusteredNatsHub(args)
 			require.NoError(t, err)
-			env := s.Tailnet.ListenerEnv
+			env := s.Listener.Env
 			require.ElementsMatch(t, append(slices.Clone(base), row.want...), env)
 			for _, name := range []string{"ENVOY_NATS_REPLICAS=", "ENVOY_STREAM_MAX_BYTES=", "ENVOY_API_TOKEN="} {
 				present := slices.ContainsFunc(row.want, func(e string) bool { return strings.HasPrefix(e, name) })
@@ -361,19 +364,34 @@ func TestClusteredNatsHubTakesStreamMaxBytesWithoutTailnet(t *testing.T) {
 	require.Equal(t, 1<<30, s.StreamMaxBytes)
 }
 
-// The hub's pods and its tailnet hosts carry neither pod anti-affinity nor the safe-to-evict
-// annotation, so Autopilot's CPU floor for them is 250m, not gcp:Dispatch's 500m: a hub pod of
-// natsCpu 300m with its sidecars' 100m (400m) and a tailnet pod of listener cpu 150m with its
-// containers' 300m (450m) are taken as given. A hub pod of 200m is refused
-// (TestClusteredNatsHubResolverRefusesInvalidInputs).
+// The hub's pods, its tailnet hosts and its session listener carry neither pod anti-affinity nor
+// the safe-to-evict annotation, so Autopilot's CPU floor for them is 250m, not gcp:Dispatch's
+// 500m: a hub pod of natsCpu 300m with its sidecars' 100m (400m) is taken as given, and the
+// listener pod, whose listener container is its whole request now that it is a workload of its
+// own, is taken at 250m, that floor exactly. Below it each is refused
+// (TestClusteredNatsHubResolverRefusesInvalidInputs holds a hub pod of 200m and a listener pod of
+// 100m, which the listener's two fixed containers covered the floor for before the split).
 func TestClusteredNatsHubTakesPodsAboveTheirOwnAutopilotFloor(t *testing.T) {
 	args := clusteredArgs()
 	args.NatsCpu = pulumi.StringRef("300m")
-	listener(args).Cpu = pulumi.StringRef("150m")
+	listener(args).Cpu = pulumi.StringRef("250m")
 	s, err := gcp.ResolveClusteredNatsHub(args)
 	require.NoError(t, err)
 	require.Equal(t, "300m", s.NatsCPU)
-	require.Equal(t, "150m", s.Tailnet.ListenerCPU)
+	require.Equal(t, "250m", s.Listener.CPU)
+}
+
+// 43 bytes is the longest name the hub takes: <name>-listener, the longest name it derives, then
+// holds 52 bytes, what a Deployment's name may have for its controller-revision-hash label to
+// stay a valid label value. A 44-byte name is refused
+// (TestClusteredNatsHubResolverRefusesInvalidInputs).
+func TestClusteredNatsHubTakesThe43ByteName(t *testing.T) {
+	args := clusteredArgs()
+	args.Name = strings.Repeat("a", 43)
+	s, err := gcp.ResolveClusteredNatsHub(args)
+	require.NoError(t, err)
+	require.Equal(t, args.Name, s.Name)
+	require.Len(t, args.Name+"-listener", 52)
 }
 
 // A refused input stops the constructor, named as the component and its name, before it

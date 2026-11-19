@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 type SessionEntry struct {
@@ -35,10 +36,10 @@ type SessionEntry struct {
 	// every session registers through one shared listener or each machine runs its own; a
 	// re-registration through another listener moves both, this entry's and the machine the
 	// stored subscription names (store's mergeForUpsert). No delivery reads Host: a message
-	// reaches the session from its own consumer, relayed by the listener the entry names, or on
-	// the session's own subscription, wherever its process runs. Host is empty for a session
-	// whose plugin predates this field (subscribeBody had no "host"), and HostOrMachine falls
-	// back to MachineID so every display caller sees a populated value.
+	// reaches the session from its own consumer, relayed by the listener the entry names,
+	// wherever its process runs. Host is empty for a session whose plugin predates this field
+	// (its registration had no "host"), and HostOrMachine falls back to MachineID so every display
+	// caller sees a populated value.
 	Host string `json:"host,omitempty"`
 	// TmuxPlace is where the session's process sits in tmux, as its own client read it and sent
 	// it with this registration. Nil for a session that is in no pane — one started outside
@@ -58,12 +59,26 @@ type SessionEntry struct {
 	// restarts at its ack floor.
 	Epoch string `json:"epoch,omitempty"`
 	// ConsumerStart is the stream sequence the session's consumer starts at, as the registration
-	// that wrote this entry read it (bus.SessionConsumers.Ensure). Every stored message at or
-	// after it is the consumer's to deliver; one below it is in no consumer, so the durable path
-	// still delivers it (ConsumerHoldsStored). A restart of the consumer only ever moves its start
-	// forward, to its ack floor, past messages it has acked, so a start recorded before that
-	// restart still names a sequence the consumer covers from. Zero for a session on the core
-	// path, and for one whose entry an earlier release wrote, which the durable path reads as
+	// that wrote this entry read it (bus.SessionConsumers.Ensure). Every stored message at or after
+	// it is the consumer's to deliver. One below it is in no consumer, and since a session receives
+	// only what its own consumer relays, the durable path does not deliver it; which message it
+	// NAKs, defers or skips, and what it logs, is decided by agentSubjectDelivery and
+	// fanoutDelivery in cmd/listener/delivery.go (Resolve, ConsumerHoldsStored). A restart of the
+	// consumer normally moves its start forward, to the sequence after its ack floor, past messages
+	// it has acked, so a start recorded before that restart still names a sequence the consumer
+	// covers from. Only a registration writes this field (cmd/listener sessionEntryFromSubscribe),
+	// though, so a repair or a relay restart that creates the consumer below it leaves it above the
+	// consumer's real start until the session's next registration rewrites it. A create that clamps
+	// a start past the stream's end to the stream's first sequence does that where an earlier build
+	// or a restored stream left a start past the end here, and so does a restart at an ack floor
+	// the server lowered after the stream lost data, or at the stream's first sequence after its
+	// sequences went back (bus.SessionConsumers.create, bus.SessionConsumers.RestartAtFloor). Until
+	// then a message between the two starts reads as in no consumer, so the durable path does not
+	// deliver it; which message it NAKs, defers or skips, and what it logs, is decided by
+	// agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go. The consumer holds that
+	// message all the same and its relay delivers it, and once the next registration has rewritten
+	// the start, ConsumerHoldsStored answers that the consumer holds it. Zero for a session on the
+	// core path, and for one whose entry an earlier release wrote, which the durable path reads as
 	// today: the consumer holds every stored message of it.
 	ConsumerStart uint64 `json:"consumer_start,omitempty"`
 	// Plugin is the npm package the session registered through and PluginVersion that plugin's
@@ -80,39 +95,23 @@ type SessionEntry struct {
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
 }
 
-// TmuxPlace is a session's pane and the window and tmux session holding it, in the wire names
-// every side of the hop shares (packages/envoy-client's readTmuxPlace reports it,
-// packages/contracts' TmuxPlace declares it). No delivery reads it: it is what lets Dispatch draw
-// a machine's tmux layout and say which pane runs which session. A session outside tmux is a nil
-// TmuxPlace on the entry, never a place with empty members: every place names a whole pane.
-type TmuxPlace struct {
-	Socket      string `json:"socket"`
-	ServerPID   string `json:"server_pid"`
-	SessionName string `json:"session_name"`
-	WindowID    string `json:"window_id"`
-	WindowIndex int    `json:"window_index"`
-	WindowName  string `json:"window_name"`
-	PaneID      string `json:"pane_id"`
-	PaneIndex   int    `json:"pane_index"`
-	// Layout is tmux's window_layout string, which draws how the window is split. Empty when the
-	// client dropped it: a window split finely enough grows a layout past what a registration
-	// carries, and the other nine members are sent without it rather than the place being lost.
-	Layout string `json:"layout,omitempty"`
-	Zoomed bool   `json:"zoomed"`
-}
+// TmuxPlace is a session's pane and the window and tmux session holding it, as the listener's
+// wire package declares it (listenerwire.TmuxPlace): a session outside tmux is a nil TmuxPlace on
+// the entry, never a place with empty members.
+type TmuxPlace = listenerwire.TmuxPlace
 
 // DeliveryConsumer is SessionEntry.Delivery for a session whose stored messages its session consumer
 // delivers.
 const DeliveryConsumer = "consumer"
 
-// ConsumerHoldsStored reports whether the session's own consumer holds the stored message of
-// stream sequence storedSeq, so no delivery path owes it anything: a session on consumer delivery
-// is held every message at or after the sequence its consumer starts at (ConsumerStart). A
-// durable message below that start is in no consumer — one NAKed, or deferred, before the
-// consumer was created, and redelivered after it — and the durable path delivers it as it would
-// for a session with no consumer at all. storedSeq 0 names a message that is not the durable's
-// copy of a stored one (a core frame), whose stored copy the consumer holds whatever its
-// sequence.
+// ConsumerHoldsStored reports whether the session's own consumer holds the stored message of stream
+// sequence storedSeq, so no delivery path owes it anything: a session on consumer delivery is held
+// every message at or after the sequence its consumer starts at (ConsumerStart). A durable message
+// below that start is in no consumer — one NAKed, or deferred, before the consumer was created, and
+// redelivered after it — and the durable path does not deliver it; which message it NAKs, defers or
+// skips, and what it logs, is decided by agentSubjectDelivery and fanoutDelivery in
+// cmd/listener/delivery.go. storedSeq 0 names a message that is not the durable's copy of a stored
+// one (a core frame), whose stored copy the consumer holds whatever its sequence.
 func (e SessionEntry) ConsumerHoldsStored(storedSeq uint64) bool {
 	return e.Delivery == DeliveryConsumer && (storedSeq == 0 || storedSeq >= e.ConsumerStart)
 }
@@ -240,11 +239,12 @@ type SessionRegistry struct {
 	// lastSeenRetention is WithLastSeenRetention's value; zero, as in a registry built from a
 	// struct literal, means one TTL (retention).
 	lastSeenRetention time.Duration
-	// js is the JetStream context the bucket was opened through, which the maximum age is written
-	// through (applyMaxAge), and maxAge is WithSessionMaxAge's value, zero when the deployment
+	// conn and js are the connection and the JetStream context the bucket was opened through,
+	// which the maximum age is written through (applyMaxAge), and maxAge is WithSessionMaxAge's value, zero when the deployment
 	// sets none and the bucket's own age stands. Both are fixed when the registry is opened, and
 	// a registry built from a struct literal, which only a test does, has neither and writes no
 	// age.
+	conn   *nats.Conn
 	js     nats.JetStreamContext
 	maxAge time.Duration
 
@@ -388,7 +388,9 @@ func (r *SessionRegistry) unlockAndNotify() {
 	r.notifyChanged(changed...)
 }
 
-func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*SessionRegistry, error) {
+// OpenSessionRegistry opens the session bucket on conn, creating or raising it to the registry's
+// copies (bus.EnsureKeyValue) for as long as ctx lasts, and starts its cache.
+func OpenSessionRegistry(ctx context.Context, conn *nats.Conn, options ...SessionRegistryOption) (*SessionRegistry, error) {
 	opts := sessionRegistryOpts{replicas: 1, ttl: BucketMaxAge, liveWindow: LiveWindow, goneHorizon: GoneHorizon, lastSeenRetention: LastSeenMemory, now: time.Now}
 	for _, o := range options {
 		o(&opts)
@@ -397,7 +399,7 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 	if err != nil {
 		return nil, err
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.SessionBucket,
 		TTL:      opts.ttl,
 		Replicas: opts.replicas,
@@ -410,7 +412,7 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 	// the age the bucket carries from here on. A bucket created by an older build at the 5-minute
 	// default is raised here, and a record then stands past the gone horizon instead of being
 	// dropped while its session is only unresponsive.
-	if _, err := bus.SetKeyValueMaxAge(js, bus.SessionBucket, opts.maxAge); err != nil {
+	if _, err := bus.SetKeyValueMaxAge(ctx, conn, js, bus.SessionBucket, opts.maxAge); err != nil {
 		return nil, err
 	}
 	// Expire against the bucket's real MaxAge, not the hardcoded default. If the
@@ -430,6 +432,7 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 		liveWindow:        opts.liveWindow,
 		goneHorizon:       opts.goneHorizon,
 		lastSeenRetention: opts.lastSeenRetention,
+		conn:              conn,
 		js:                js,
 		maxAge:            opts.maxAge,
 		ttl:               ttl,
@@ -462,9 +465,9 @@ func (r *SessionRegistry) Ping() error {
 }
 
 // Rewatch moves the cache's watcher and the handle the registry writes through to conn
-// (kvwatch.Watcher.Rewatch).
-func (r *SessionRegistry) Rewatch(conn *nats.Conn) error {
-	return r.watcher.Rewatch(conn)
+// (kvwatch.Watcher.Rewatch), waiting on nothing past ctx, the reconnect hook's run.
+func (r *SessionRegistry) Rewatch(ctx context.Context, conn *nats.Conn) error {
+	return r.watcher.Rewatch(ctx, conn)
 }
 
 // Servable reports whether the copy List answers from can be served (kvwatch.Watcher.Servable):
@@ -685,9 +688,9 @@ func (r *SessionRegistry) EntryState(entry SessionEntry) State {
 // as likely a bucket this build did not create as one that truly keeps its records for good, and
 // turning local expiry off on that word would keep every row of a recreated bucket for the life
 // of the process.
-func (r *SessionRegistry) applyMaxAge() error {
+func (r *SessionRegistry) applyMaxAge(ctx context.Context) error {
 	if r.js != nil && r.maxAge > 0 {
-		written, err := bus.SetKeyValueMaxAge(r.js, bus.SessionBucket, r.maxAge)
+		written, err := bus.SetKeyValueMaxAge(ctx, r.conn, r.js, bus.SessionBucket, r.maxAge)
 		if err != nil {
 			return err
 		}
@@ -845,21 +848,26 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 	return cs.entry, r.stateOf(cs.entry, now)
 }
 
-// Refresh reads sessionID's entry from the session bucket itself, applies it to the cache as a
-// delivered record is applied, and then answers as Get does. The cache follows the bucket
-// through a watcher and so trails it: a session another listener registered a moment ago, or one
-// this listener has not re-read since its connection to the bus came back, can be in the bucket and
-// not yet here. A caller that acts on a session being missing asks here — one about to take
-// something away from a session because it looks gone, and one about to tell a sender that its
-// destination is gone, which makes that sender route around the pane, report it, or stop. Get is
-// the read for a caller that only enriches what it already holds, or that asks again anyway, since
-// a cache miss cannot tell a session that ended from one this cache has not caught up with. A key
-// no read may name is nats.ErrKeyNotFound, since no session can register under it: one
-// bus.KeyValue refuses (bus.ErrRefused), `ses:bad` among them, which is outside nats.go's key
-// alphabet and which an earlier build or a direct bucket write could leave as a role holder. Any
-// other error is a read that did not answer, ctx's end among them: nats.go's KV read takes no
-// context and waits out the JetStream MaxWait (10 s), so Refresh stops waiting when ctx ends and
-// lets that read finish on its own (bus.Bounded).
+// Refresh reads sessionID's entry from the session bucket itself, with the direct get nats.go
+// answers a KV read with, applies it to the cache as a delivered record is applied, and then
+// answers as Get does. The cache follows the bucket through a watcher and so trails it: a
+// session another listener registered a moment ago, or one this listener has not re-read since
+// its connection to the bus came back, can be in the bucket and not yet here. A caller that
+// acts on a session being missing asks here — one about to take something away from a session
+// because it looks gone, and one about to tell a sender that its destination is gone, which
+// makes that sender route around the pane, report it, or stop. Get is the read for a caller that
+// only enriches what it already holds, or that asks again anyway, since a cache miss cannot tell
+// a session that ended from one this cache has not caught up with. A key no read may name is
+// nats.ErrKeyNotFound, since no session can register under it: one bus.KeyValue refuses
+// (bus.ErrRefused), `ses:bad` among them, which is outside nats.go's key alphabet and which an
+// earlier build or a direct bucket write could leave as a role holder. Any other error is a read
+// that did not answer, ctx's end among them: nats.go's KV read takes no context and waits out
+// the JetStream MaxWait (10 s), so Refresh stops waiting when ctx ends and lets that read
+// finish on its own (bus.Bounded).
+//
+// A direct get of a clustered bucket is answered by any copy near enough to current, so this
+// read can report a record the bucket holds as missing while the copy answering catches up. A
+// caller that cannot afford that miss asks RefreshFromLeader.
 //
 // A read the cache does not take is answered as read, uncached, as store.Registry.Get answers its
 // own: one made before a watch moved the epoch (a probe or a Rewatch installed a recreated stream),
@@ -874,6 +882,37 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 	if !answered {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}
+	return r.applyRead(sessionID, epoch, got, err)
+}
+
+// RefreshFromLeader is Refresh with the leader of the session bucket's stream answering the read
+// (bus.KeyValue.GetFromLeader) instead of whichever copy of the bucket a direct get reaches: it
+// applies what it read to the cache as Refresh does, answers as Get would for that row, and maps
+// every error the same way, ctx's end included.
+//
+// It is the read for the caller that cannot afford a stale miss, because a miss makes it take
+// something away from the session on the strength of the session having no record at all: the
+// listener's delete of a session's JetStream consumer, which re-reads this bucket under the
+// session's lock and deletes only where the session is gone from it (cmd/listener). A copy that
+// has not applied a relaunch's registration would answer that read "not found", and the delete
+// would then remove the consumer of a live relaunch, whose relay stops until it registers again.
+// Every other caller asks Refresh, which costs the server less: a direct get is answered by any
+// copy that is near enough to current, where this read is one more thing for the leader to do.
+func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID string) (SessionEntry, error) {
+	kv, epoch := r.watcher.Handle()
+	got, err := kv.GetFromLeader(ctx, sessionID)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
+	}
+	return r.applyRead(sessionID, epoch, got, err)
+}
+
+// applyRead is what Refresh and RefreshFromLeader both do with the read they made: got and err
+// are that read's answer, and epoch the watcher epoch it was taken in. A key the bucket refuses
+// is not found, since no session can register under it; any other error is the read's own. The
+// entry is applied to the cache as a delivered record is, and the answer is Get's for the row
+// that leaves, or uncachedLocked's where the cache did not take it.
+func (r *SessionRegistry) applyRead(sessionID string, epoch uint64, got nats.KeyValueEntry, err error) (SessionEntry, error) {
 	if errors.Is(err, bus.ErrRefused) {
 		return SessionEntry{}, fmt.Errorf("%w: %w", nats.ErrKeyNotFound, err)
 	}
@@ -896,10 +935,11 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 	return r.Get(sessionID)
 }
 
-// uncachedLocked answers entry, a read of the bucket the cache did not take (Refresh), as Get
-// would answer the row applying it leaves: a delete or purge marker, and a value that does not
-// decode, which applying evicts, are not found, and so is a row past its TTL, measured as the
-// cache measures one (decodeLocked). Callers hold r.mu.
+// uncachedLocked answers entry, a read of the bucket the cache did not take (applyRead, for
+// Refresh and RefreshFromLeader alike), as Get would answer the row applying it leaves: a delete
+// or purge marker, and a value that does not decode, which applying evicts, are not found, and
+// so is a row past its TTL, measured as the cache measures one (decodeLocked). Callers hold
+// r.mu.
 func (r *SessionRegistry) uncachedLocked(entry kvwatch.Entry, now time.Time) (SessionEntry, error) {
 	if entry.Op != kvwatch.OpPut {
 		return SessionEntry{}, nats.ErrKeyNotFound

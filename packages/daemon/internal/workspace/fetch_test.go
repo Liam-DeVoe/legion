@@ -1337,6 +1337,39 @@ func (r *killedClone) Run(ctx context.Context, command Command) (Result, error) 
 	return Result{ExitCode: 137, Stderr: "killed mid-transfer"}, nil
 }
 
+// A transfer a signal ended after git printed the provisioning token, as a `fatal: unable to
+// access` line naming the URL with its credential does, returns that line with the token scrubbed:
+// what a killed run printed goes under its error only in checkedResult, after the transfer has
+// scrubbed the Result's stderr, never inside the runner, whose error Fetch does not scrub. The
+// stand-in git prints the token it was handed and kills itself on a transfer from GitHub (the one
+// command that names the credential's file), and runs the real git for every other command.
+func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	fakeGit := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\nif [ -n \"${" + provisioningTokenFileEnv + ":-}\" ]; then\n" +
+		"  echo \"fatal: unable to access 'https://x-access-token:$(cat \"$" + provisioningTokenFileEnv + "\")@github.com/acme/widgets/': The requested URL returned error: 502\" >&2\n" +
+		"  kill -KILL $$\nfi\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		t.Fatalf("write the stand-in git: %v", err)
+	}
+	run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
+
+	_, err = Fetch(context.Background(), run, fetchRequest(t))
+
+	if err == nil {
+		t.Fatal("Fetch succeeded through a transfer a signal ended")
+	}
+	if strings.Contains(err.Error(), testInstallationToken) {
+		t.Errorf("Fetch's error carries the provisioning token: %v", err)
+	}
+	if !strings.Contains(err.Error(), ": signal: killed\nfatal: unable to access 'https://x-access-token:***@github.com/acme/widgets/'") {
+		t.Errorf("Fetch = %v, want the transfer's signal and its line with the token scrubbed", err)
+	}
+}
+
 // Feed configuration prevents automatic maintenance from competing with the token-holding fetch,
 // and keeps each fetched object in a pack for the repository cache to stream. The clone owns its
 // history, so a feed refresh cannot remove objects from it.
@@ -1730,7 +1763,7 @@ func TestFetchStreamsTheRepositoryCacheThenFetchesTheDeltaFromGitHub(t *testing.
 	}
 	assertCredentialedEnvironmentBounded(t, fetch, fetch.Timeout)
 	if fetch.Timeout > FetchTimeout || fetch.Timeout < FetchTimeout-time.Minute {
-		t.Errorf("the delta was given %s, want its own %s, not what the stream and its verification left", fetch.Timeout, FetchTimeout)
+		t.Errorf("the delta was given %s, want its own %s, not what the verification of the cache's stream left", fetch.Timeout, FetchTimeout)
 	}
 	for key, want := range map[string]string{"gc.auto": "0", "maintenance.auto": "false"} {
 		if got := strings.TrimSpace(runSetup(t, feed, "git", "--git-dir="+feed, "config", "--get", key)); got != want {
@@ -1811,15 +1844,15 @@ func TestFetchFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 	}
 }
 
-// The cache's stream and its verification share one FetchTimeout, counted from when the cache is
-// ready, and the delta from GitHub gets a FetchTimeout of its own, so the fetch's waits, transfers
-// and checks end within FetchBudget however long it waited and however slow the stream was. A
-// cache ready 35 minutes in, whose history takes 25 minutes to check, gives the delta its whole
-// bound, and the fresh feed is filled. So does a cache ready on the wait's last ask, 129 min 50 s
-// in, whose history takes that whole first bound: before the delta had a bound of its own, the
-// fetch died there and its replacement streamed the cache again (sjawhar/legion#2235). The
-// fetch still ends inside FetchBudget.
-func TestFetchGivesTheCachesStreamAndTheDeltaTheirOwnBounds(t *testing.T) {
+// The verification of what the cache streamed gets one FetchTimeout, counted from the stream's
+// end, and the delta from GitHub one of its own, so the fetch's waits and its clocked stages end
+// within FetchBudget however long it waited; the stream between them holds the low-speed bound
+// and no clock at all (CacheStreamLowSpeedBytes). A cache ready 35 minutes in, whose history
+// takes 25 minutes to check, gives the delta its whole bound, and the fresh feed is filled. So
+// does a cache ready on the wait's last ask, 129 min 50 s in, whose history takes that whole
+// bound: before the delta had a bound of its own, the fetch died there and its replacement
+// streamed the cache again (sjawhar/legion#2235). The fetch still ends inside FetchBudget.
+func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) {
 	polls := func(d time.Duration) int { return int(d / CachePoll) }
 	for _, tc := range []struct {
 		name     string

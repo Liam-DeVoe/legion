@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
@@ -148,7 +149,7 @@ func mustRun(t *testing.T, dir string, env []string, argv ...string) string {
 func TestIsolatedDropsTheProcesssRepositoryWorkspaceAndCredential(t *testing.T) {
 	decoy := t.TempDir()
 	clean := fixtureenv.Isolated(t.TempDir())
-	mustRun(t, decoy, clean, "git", "init", "--quiet", "--initial-branch=main")
+	mustRun(t, decoy, clean, fixturegit.InitWorkTree("", "main")...)
 	mustRun(t, decoy, clean, "git", "commit", "--quiet", "--allow-empty", "-m", "decoy")
 	before := mustRun(t, decoy, clean, "git", "rev-parse", "HEAD")
 
@@ -170,10 +171,33 @@ func TestIsolatedDropsTheProcesssRepositoryWorkspaceAndCredential(t *testing.T) 
 		}
 	}
 	work := t.TempDir()
-	mustRun(t, work, env, "git", "init", "--quiet", "--initial-branch=main")
+	mustRun(t, work, env, fixturegit.InitWorkTree("", "main")...)
 	mustRun(t, work, env, "git", "commit", "--quiet", "--allow-empty", "-m", "the test's own")
 	if after := mustRun(t, decoy, clean, "git", "rev-parse", "HEAD"); after != before {
 		t.Errorf("the decoy repository's HEAD moved from %s to %s, want it untouched", before, after)
+	}
+}
+
+// A state home the process names, as a Legion pod names one for each role, reaches no command run
+// under Isolated: Isolated and Home each hold one XDG_STATE_HOME, under the test's home. The leak
+// guard caches the repositories it found public there and reads that cache before it asks GitHub,
+// so on the runner's state home a test's invented repository can be answered public from what an
+// earlier test cached, and a test of a visibility that cannot be read gets no refusal
+// (internal/leakguard's TestAVisibilityThatCannotBeReadRefuses failed that way in a pod).
+func TestIsolatedAndHomeGiveAStateHomeOfTheTestsOwn(t *testing.T) {
+	runner := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", runner)
+	home := t.TempDir()
+	for name, env := range map[string][]string{"Isolated": fixtureenv.Isolated(home), "Home": fixtureenv.Home(home)} {
+		var states []string
+		for _, entry := range env {
+			if key, value, _ := strings.Cut(entry, "="); key == "XDG_STATE_HOME" {
+				states = append(states, value)
+			}
+		}
+		if len(states) != 1 || !strings.HasPrefix(states[0], home+string(filepath.Separator)) {
+			t.Errorf("%s holds XDG_STATE_HOME %q, want one value under the test's home %s, not the process's %s", name, states, home, runner)
+		}
 	}
 }
 
@@ -194,7 +218,7 @@ func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T)
 
 	env := fixtureenv.Isolated(t.TempDir())
 	repo := t.TempDir()
-	mustRun(t, repo, env, "jj", "git", "init", "--colocate", repo)
+	mustRun(t, repo, env, fixturegit.JJInit(repo, true)...)
 	mustRun(t, repo, env, "jj", "describe", "-m", "work that must not leave the test", "-R", repo)
 	mustRun(t, repo, env, "jj", "bookmark", "set", "main", "-r", "@", "-R", repo)
 	mustRun(t, repo, env, "jj", "git", "remote", "add", "origin", server.URL+"/repo.git", "-R", repo)

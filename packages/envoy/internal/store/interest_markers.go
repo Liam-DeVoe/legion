@@ -123,13 +123,13 @@ func (c *interestMarkerCollector) run(ctx context.Context, js func() nats.JetStr
 func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(*interestPass)) (uint64, error) {
 	kv := c.registry.interests()
 	var pass interestPass
-	read1, err := kv.ReadStreamState()
+	read1, err := kv.ReadStreamState(context.Background())
 	if err != nil {
 		c.refuse(slog.LevelWarn, "its first read of the bucket's stream failed", &pass, slog.String("error", err.Error()))
 		return 0, fmt.Errorf("interest markers: read the bucket's stream: %w", err)
 	}
 	pass.read1 = &read1
-	scan, err := kvwatch.ScanExistingKeys(kv, jetstream.AllKeys, "interest markers", c.scanIdle, c.log, func(entry kvwatch.Entry) error {
+	scan, err := kvwatch.ScanExistingKeys(context.Background(), kv, jetstream.AllKeys, "interest markers", c.scanIdle, c.log, func(entry kvwatch.Entry) error {
 		if pass.floor == 0 || entry.Revision < pass.floor {
 			pass.floor = entry.Revision
 		}
@@ -145,7 +145,7 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 	if afterScan != nil {
 		afterScan(&pass)
 	}
-	read2, err := kv.ReadStreamState()
+	read2, err := kv.ReadStreamState(context.Background())
 	if err != nil {
 		c.refuse(slog.LevelWarn, "its second read of the bucket's stream failed", &pass, slog.String("error", err.Error()))
 		return 0, fmt.Errorf("interest markers: read the bucket's stream again: %w", err)
@@ -187,7 +187,7 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 	// ways: a put landing in between under-reports it, and a peer listener's purge landing in
 	// between is counted as this pass's too, so a sum of purged across the fleet overstates what
 	// was removed.
-	purgedStream, err := kv.ReadStreamState()
+	purgedStream, err := kv.ReadStreamState(context.Background())
 	if err != nil {
 		// The purge is done; only its count is unknown.
 		c.logPass(slog.LevelWarn, "interest markers collected", &pass,

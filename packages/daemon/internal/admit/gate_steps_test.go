@@ -31,8 +31,13 @@ const (
 // A step the deployment gates that nobody has registered holds the tree's work and asks nobody:
 // the root keeps its slot, no awaiting-person notice reaches the controller, and no phase starts,
 // because the record knows no document of that step to hand to a person. The same root with that
-// step registered and still closed does give its slot back, which is what tells the two apart,
-// and it starts once the step is registered and approved.
+// step registered and still closed enters awaiting_person and its notice does reach the
+// controller, which is what tells the two apart; it keeps its row through either, since a started
+// issue holds one of the cap's slots until its work is past its review (record.KeepsSlot), and
+// this root stands in admitted with a gate that has never opened, or in awaiting_person,
+// throughout: those are two of the three roots that keep their row even while they wait on
+// another issue (blockers.waitsOf), and the third, a queued root carrying the row it held in
+// another tree, is not driven here. It starts once the step is registered and approved.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
 	t.Run("the step nobody registered", func(t *testing.T) {
@@ -80,7 +85,7 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 			waiting.Awaiting.GateVersion != 2 {
 			t.Fatalf("the root = %#v, want it waiting on the decisions document at version 2", waiting.Awaiting)
 		}
-		assertSlots(t, pool, []record.Slot{{Issue: "LEGION-NEXT", Index: 0, AdmittedAt: fixedNow}})
+		assertSlots(t, pool, []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: fixedNow}})
 		told := false
 		for _, effect := range effects(t, pool) {
 			if payload, ok := effect.payload.(record.ControllerNotice); ok && effect.issue == "LEGION-100" && payload.Kind == record.AwaitingPersonNotice {
@@ -156,9 +161,9 @@ func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
 }
 
 // A step nobody has registered holds the tree's work and nothing more: the wait a registered
-// step after it raised still reaches the person, and the root gives its slot back for the next
-// root in line. Reading the unregistered step as the step the person has would leave this root
-// holding the slot while a person holds its approval request, with no wait left to answer.
+// step after it raised still reaches the person, and the root keeps the row it holds through
+// that wait (record.KeepsSlot). Reading the unregistered step as the step the person has would
+// leave this root with no wait left to answer while a person holds its approval request.
 func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec},
@@ -175,7 +180,7 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 		waiting.Awaiting.GateVersion != 3 {
 		t.Fatalf("the root = %#v, want it waiting on its primary document at version 3", waiting.Awaiting)
 	}
-	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-NEXT", Index: 0, AdmittedAt: fixedNow}})
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: fixedNow}})
 }
 
 // The approval a re-admission keeps for the next architect's start carries the step it is of, so
@@ -207,8 +212,8 @@ func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 	want := "The decisions document is approved at version 2 and is now at version 3: request approval of version 3, " +
 		"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says."
 	starts := architectStartRows(t, pool)
-	if len(starts) != 1 || starts[0].Task != want {
-		t.Fatalf("architect starts %#v, want one whose task is %q", starts, want)
+	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", want) {
+		t.Fatalf("architect starts %#v, want one whose task names %q", starts, want)
 	}
 	if kept := starts[0].Kept; kept == nil || kept.Step != record.DesignStepDecisions || kept.Approved != 2 || kept.Latest != 3 {
 		t.Fatalf("the start's kept record %#v, want the decisions step's own pair", kept)

@@ -171,11 +171,14 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Resume me, once.", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
+	// The comment's own send runs on s1's lane after the response: let it finish, so the sends
+	// this test counts are the resumes alone and nothing lands after the strand below.
+	settledCommentDeliveries(t, database, created.ID)
 	comment, err := direct.loadComment(context.Background(), database.Pool, created.ID)
 	if err != nil {
 		t.Fatalf("load the comment: %v", err)
 	}
-	event, err := direct.loadCommentCreatedEvent(context.Background(), database.Pool, created.ID)
+	event, err := direct.loadCommentCreatedEvent(context.Background(), database.Pool, comment)
 	if err != nil {
 		t.Fatalf("load the comment's event: %v", err)
 	}
@@ -184,9 +187,9 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 	// A sender claimed attempt 1 a moment ago and is still sending it.
 	strandStoredAttempt(t, database, "comment_deliveries", "comment_id", comment.ID, "'0 seconds'", "'5 minutes'")
 	listener.forget()
-	held, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, 1, direct.newTakeoverRetry())
-	if err != nil {
-		t.Fatalf("resume beside a live sender: %v", err)
+	held, waits, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
+	if err != nil || waits != nil {
+		t.Fatalf("resume beside a live sender: %v (waits %+v)", err, waits)
 	}
 	if held.Attempt != 1 || held.State != "pending" {
 		t.Fatalf("resume beside a live sender = %#v, want attempt 1 reported as the live sender left it", held)
@@ -200,9 +203,9 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 
 	// That sender never came back.
 	strandStoredAttempt(t, database, "comment_deliveries", "comment_id", comment.ID, "'5 minutes'", "'5 minutes'")
-	resumed, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, 1, direct.newTakeoverRetry())
-	if err != nil {
-		t.Fatalf("resume the abandoned attempt: %v", err)
+	resumed, waits, err := direct.deliverResolvedCommentMention(context.Background(), comment, event, mention, comment.Author, attemptClaim{attempt: 1}, direct.newTakeoverRetry())
+	if err != nil || waits != nil {
+		t.Fatalf("resume the abandoned attempt: %v (waits %+v)", err, waits)
 	}
 	if resumed.Attempt != 1 || resumed.State != "sent" {
 		t.Fatalf("resume of the abandoned attempt = %#v, want attempt 1 sent", resumed)

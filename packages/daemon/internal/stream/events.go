@@ -7,9 +7,11 @@ import (
 )
 
 // Event is one agent fact the stream observed. The set is sealed: a connection arriving
-// (Hello), OMP starting and ending a turn (TurnStart, TurnEnd), OMP saying how one prompt's work
-// ended (PromptResult), OMP taking back a prompt it had acknowledged (LateRefusal), and the
-// connection going away (Closed). The acknowledgement of a prompt is not one of them — it is
+// (Hello), OMP starting and ending a turn (TurnStart, TurnEnd), one tool call of a turn
+// starting or ending (ToolStep), OMP saying how one prompt's work ended (PromptResult), OMP
+// taking back a prompt it had acknowledged (LateRefusal), the model that answered (Answered), and
+// the connection going away (Closed); and one mark that is no agent fact, the place in the queue
+// a consumer asked for (Drained). The acknowledgement of a prompt is not one of them — it is
 // Conn.Prompt's return, so the one goroutine that sent the prompt is the one that learns it was
 // taken (B4).
 type Event interface{ isEvent() }
@@ -44,6 +46,34 @@ type TurnEnd struct {
 	Claim claim.Token
 }
 
+// ToolStep is one tool call of the agent's turn beginning or ending
+// (shimwire.ToolExecutionStart, shimwire.ToolExecutionEnd): the only fact on the wire that says
+// an agent mid-turn is still moving. The connection measures the start's arguments (below) and
+// nothing else — the supervisor stamps the step and decides what it means — because this is the
+// one event that arrives per tool call rather than per turn.
+//
+// ArgsBytes is the length of the start's arguments as Oh My Pi wrote them and ArgsHash their
+// fingerprint (stepArgsHash), both measured here and both zero for an end, which carries no
+// arguments. The arguments' own text goes no further than the reader that parsed the frame: it
+// routinely holds a credential, and this event waits in two unbounded in-memory queues (the
+// queue below and the supervisor's) until a machine handles it. End says which of the two frames
+// this is. CallID is what pairs an end with its start, and the only thing that does; the Claude
+// Code bridge writes a start with none (internal/claudebridge), which is a step with no call to
+// name.
+type ToolStep struct {
+	Claim     claim.Token
+	Tool      string
+	CallID    string
+	ArgsBytes int
+	ArgsHash  string
+	End       bool
+	// ConnSequence is the registration sequence of the connection the frame arrived on
+	// (Conn.Sequence), as LateRefusal carries it: the supervisor compares it with the claim's
+	// live connection, and a frame of a connection that has since been replaced says what the
+	// agent was doing, not what it is doing now.
+	ConnSequence uint64
+}
+
 // PromptResult is OMP's prompt_result: the work of one prompt is over. It is the only frame that
 // names the prompt a turn belonged to, since agent_end carries no prompt identity
 // (omp://rpc.md), and it arrives right after the agent_end of the turn the prompt ran. A turn
@@ -54,13 +84,23 @@ type TurnEnd struct {
 // DeliveryID is the delivery the prompt's request id names (promptDelivery), so a result read on
 // a connection that did not send the prompt still names its delivery. AgentInvoked is false for a
 // prompt that ran no turn at all. Error is OMP's reason when the work ended in one: the message
-// of the frame's error object (shimwire.PromptError), which is all of the failure the daemon
-// records.
+// of the frame's error object (shimwire.PromptError), which is what the daemon's own log records.
+//
+// The other four members of that error object come with it. Retryable is Oh My Pi's own word for
+// a failure that may succeed on a later try, HTTPStatus the status of the provider request that
+// failed (zero when the failure had none, as a content-filter refusal does), and Provider and
+// Model the provider and the model that request went to. Whether such a failure can clear is
+// read from HTTPStatus alone (supervise's providerErrored); the message is never parsed, since
+// it is a provider's own prose and changes without notice.
 type PromptResult struct {
 	Claim        claim.Token
 	DeliveryID   string
 	AgentInvoked bool
 	Error        string
+	Retryable    bool
+	HTTPStatus   int
+	Provider     string
+	Model        string
 }
 
 // LateRefusal is OMP answering `{success:false}` for a prompt it had already answered
@@ -84,6 +124,24 @@ type LateRefusal struct {
 	ConnSequence uint64
 }
 
+// Answered is OMP's message_end of an assistant message: the model that answered, under
+// message.provider and message.model, which is the model that really served the turn, also after a
+// fallback moved it off the one the session started with. A message no model wrote names none (an
+// empty model, or Claude Code's `<synthetic>` through the bridge) and is no Answered; a message
+// whose provider or model holds U+0000 did answer, and is an Answered that names neither (Conn's
+// answeredBy). It carries nothing of the message's text.
+//
+// Generation is the launch the connection that read the frame was registered for, as its Hello
+// names it. A spawn starts a session and a resume continues it, so the machine takes an answer of
+// any launch from the one that spawned the claim's session (supervise's Machine.sessionFrom), and
+// drops one of a process whose session the claim has left, which can wait in the queues behind the
+// registration of the next session.
+type Answered struct {
+	Claim           claim.Token
+	Provider, Model string
+	Generation      uint64
+}
+
 // Closed is a registered connection gone, whichever side ended it. It is emitted exactly once
 // per Hello, after every other event of that connection and before the Hello of any connection
 // that replaces it.
@@ -91,12 +149,23 @@ type Closed struct {
 	Claim claim.Token
 }
 
+// Drained is the mark Listener.Drain queued: every event the listener had queued when it was
+// asked for comes before it on Events(). It is no agent fact. The consumer closes Done once it
+// has handled each event of Claim that came before the mark, which is what its asker waits on.
+type Drained struct {
+	Claim claim.Token
+	Done  chan<- struct{}
+}
+
 func (Hello) isEvent()        {}
 func (TurnStart) isEvent()    {}
 func (TurnEnd) isEvent()      {}
+func (ToolStep) isEvent()     {}
 func (PromptResult) isEvent() {}
 func (LateRefusal) isEvent()  {}
+func (Answered) isEvent()     {}
 func (Closed) isEvent()       {}
+func (Drained) isEvent()      {}
 
 // eventQueue is the ordered, unbounded hand-off between every connection's reader and the one
 // channel Events() returns.

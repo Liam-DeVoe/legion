@@ -75,6 +75,7 @@ type statusWrite struct {
 }
 
 type statusRecorder struct {
+	noArtifacts
 	err    error
 	writes []statusWrite
 	// documents maps each Dispatch document id this fake knows to the issue carrying it.
@@ -153,8 +154,18 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 	return written, nil
 }
 
+// SetStatusAt is the fenced write, which no architect route makes: the daemon's own queued writes
+// take it, and they run in the outbox.
+func (r *statusRecorder) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
+	return dispatch.Issue{}, errors.New("the architect routes write no status at a sequence")
+}
+
 func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("the architect routes hand nothing over")
+}
+
+func (r *statusRecorder) ReleaseClaim(context.Context, string) error {
+	return errors.New("the architect routes release no claim")
 }
 
 func (r *statusRecorder) PostMessage(context.Context, string, string) error { return nil }
@@ -211,6 +222,31 @@ func (r *statusRecorder) WebhookAppInstalled(context.Context, string) (bool, err
 func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
+
+func (r *statusRecorder) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (r *statusRecorder) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (r *statusRecorder) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return nil
+}
+func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
+
+// noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
+// artifacts answers none, and an upload answers the slug Dispatch files the name under. It also
+// takes every role-holder publication and keeps none. No route of this package reads or writes a
+// document of an issue's, and none publishes a role holder.
+type noArtifacts struct{}
+
+func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
+func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
+	return name, nil
+}
+func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 
 var _ dispatch.Client = (*statusRecorder)(nil)
 
@@ -358,18 +394,6 @@ func (c liveClaim) grant(t *testing.T) string {
 	return response.GrantID
 }
 
-func assertFailure(t *testing.T, recorder *httptest.ResponseRecorder, status int, code string) {
-	t.Helper()
-	if recorder.Code != status {
-		t.Fatalf("status = %d, want %d; body %s", recorder.Code, status, recorder.Body)
-	}
-	var failure Failure
-	decodeInto(t, recorder, &failure)
-	if failure.Code != code {
-		t.Fatalf("code = %q, want %q", failure.Code, code)
-	}
-}
-
 func assertProcessedEvent(t *testing.T, h *harness, eventID string) {
 	t.Helper()
 	var count int
@@ -470,21 +494,21 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 		"grantId": worker.grant(t), "issue": "LEGION-208",
 		"artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093", "version": 1,
 	}, nil), http.StatusForbidden, "ARCHITECT_REQUIRED")
 
 	foreign := newLiveClaim(t, h, "LEGION-999", claim.RoleArchitect)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": foreign.grant(t), "issue": "LEGION-209",
 	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
 		"grantId": architect.grant(t), "to": "planning", "reason": "architect names no issue",
 	}, nil), http.StatusBadRequest, "MISSING_FIELD")
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
 		"grantId": worker.grant(t), "to": "planning", "reason": "a worker names another issue", "issue": "LEGION-209",
 	}, nil), http.StatusBadRequest, "ISSUE_NOT_GRANTS")
 	if got := facts.recorded(); len(got) != 0 {
@@ -517,7 +541,7 @@ func TestSignOffAndRetryAreTheOwningArchitects(t *testing.T) {
 			if want := route.op + " of " + issue; !strings.Contains(refusal.Body.String(), want) {
 				t.Fatalf("%s refusal %s does not name %q", route.path, refusal.Body, want)
 			}
-			assertFailure(t, refusal, http.StatusForbidden, "ISSUE_NOT_OWNED")
+			refused(t, refusal, http.StatusForbidden, "ISSUE_NOT_OWNED")
 		}
 		if got := len(facts.recorded()); got != 3*n {
 			t.Fatalf("%s: refused calls applied facts %#v", route.path, facts.recorded()[3*n:])
@@ -554,9 +578,9 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 		if want := "request_backward_move of " + issue; !strings.Contains(refusal.Body.String(), want) {
 			t.Fatalf("refusal %s does not name %q", refusal.Body, want)
 		}
-		assertFailure(t, refusal, http.StatusForbidden, "ISSUE_NOT_OWNED")
+		refused(t, refusal, http.StatusForbidden, "ISSUE_NOT_OWNED")
 	}
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/phase/backward", body(root.grant(t), "not-a-key"), nil), http.StatusBadRequest, "INVALID_ISSUE")
+	refused(t, h.request(http.MethodPost, "/legion/v1/phase/backward", body(root.grant(t), "not-a-key"), nil), http.StatusBadRequest, "INVALID_ISSUE")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused calls applied facts %#v", got)
 	}
@@ -589,8 +613,8 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 
 // A child whose parent chain leaves the tree before reaching an architect's issue - no parent, or a
 // parent not recorded, as one human re-parent in Dispatch leaves it - is the tree root's, as the
-// notice router decides (owningArchitect): the root architect the reviewer's phase-finished notice
-// reaches may accept it and retry it, and a sub-architect still may not.
+// notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
+// notice reaches may accept it and retry it, and a sub-architect still may not.
 func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
@@ -624,7 +648,7 @@ func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 				return body
 			}
 			before := len(facts.recorded())
-			assertFailure(t, h.request(http.MethodPost, route.path, request(subArchitect.grant(t)), nil), http.StatusForbidden, "ISSUE_NOT_OWNED")
+			refused(t, h.request(http.MethodPost, route.path, request(subArchitect.grant(t)), nil), http.StatusForbidden, "ISSUE_NOT_OWNED")
 			if got := h.request(http.MethodPost, route.path, request(root.grant(t)), nil); got.Code != http.StatusOK {
 				t.Fatalf("%s on %s by the root architect = %d: %s", route.path, issue, got.Code, got.Body)
 			}
@@ -643,27 +667,27 @@ func TestArchitectureRouteRefusalsExposeTheFactResultAndGrantState(t *testing.T)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	grant := architect.grant(t)
 	now = now.Add(time.Minute)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": grant, "issue": "LEGION-208",
 	}, nil), http.StatusForbidden, "GRANT_EXPIRED")
 
 	now = now.Add(-time.Minute)
 	grant = architect.grant(t)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": grant, "issue": "LEGION-208",
 	}, nil), http.StatusConflict, "PHASE_HELD")
 	// The grant still authenticates a repeated call, and the repeated fact is refused again rather
 	// than answered as though it had applied.
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": grant, "issue": "LEGION-208",
 	}, nil), http.StatusConflict, "PHASE_HELD")
 	architect.replaceRegistration(t)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": grant, "issue": "LEGION-208",
 	}, nil), http.StatusForbidden, "GRANT_REVOKED")
 
 	invalid := architect.grant(t)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 		"grantId": invalid, "issue": "LEGION-208", "artifactId": "not-a-uuid", "version": 1,
 	}, nil), http.StatusBadRequest, "INVALID_ARTIFACT_ID")
 }
@@ -709,12 +733,12 @@ func TestWaveReleaseReleasesUnreleasedChildrenOfTheTreeOverTheDispatchGraph(t *t
 		{issue: "LEGION-212", status: http.StatusForbidden, code: "ISSUE_OUTSIDE_TREE"},
 		{issue: "LEGION-213", status: http.StatusNotFound, code: "ISSUE_NOT_FOUND"},
 	} {
-		assertFailure(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
+		refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
 			"grantId": architect.grant(t), "issues": []string{"LEGION-209", tc.issue},
 		}, nil), tc.status, tc.code)
 	}
 	foreign := newLiveClaim(t, h, "LEGION-999", claim.RoleArchitect)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
 		"grantId": foreign.grant(t), "issues": []string{"LEGION-209"},
 	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 	if len(statuses.writes) != 2 {
@@ -831,27 +855,27 @@ func TestParkAndRerunMoveAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 			if tc.status != http.StatusBadRequest && tc.status != http.StatusNotFound && !strings.Contains(recorder.Body.String(), tc.issue) {
 				t.Fatalf("refusal %s does not name %s", recorder.Body, tc.issue)
 			}
-			assertFailure(t, recorder, tc.status, tc.code)
+			refused(t, recorder, tc.status, tc.code)
 		})
 	}
 	foreign := newLiveClaim(t, h, "LEGION-999", claim.RoleArchitect)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{
 		"grantId": foreign.grant(t), "issue": "LEGION-209",
 	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{
 		"grantId": worker.grant(t), "issue": "LEGION-210",
 	}, nil), http.StatusForbidden, "ARCHITECT_REQUIRED")
 
 	until := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase, issue.LingerUntil = phase.Done, &until })
-	assertFailure(t, child("rerun", "LEGION-210"), http.StatusConflict, "TREE_LINGERING")
+	refused(t, child("rerun", "LEGION-210"), http.StatusConflict, "TREE_LINGERING")
 	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase, issue.LingerUntil = phase.Implementing, nil })
 
 	statuses.err = &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
-	assertFailure(t, child("rerun", "LEGION-210"), http.StatusBadGateway, "UNAVAILABLE")
+	refused(t, child("rerun", "LEGION-210"), http.StatusBadGateway, "UNAVAILABLE")
 	statuses.err = errors.New("connection refused")
-	assertFailure(t, child("park", "LEGION-209"), http.StatusBadGateway, "DISPATCH_FAILED")
+	refused(t, child("park", "LEGION-209"), http.StatusBadGateway, "DISPATCH_FAILED")
 
 	if len(statuses.writes) != 2 {
 		t.Fatalf("Dispatch writes after refusals = %#v, want only the park and the re-run", statuses.writes)
@@ -901,11 +925,11 @@ func TestGateRegistrationRefusesAnotherIssuesDocumentAndAChildIssue(t *testing.T
 	if body := foreign.Body.String(); !strings.Contains(body, "0b7e6a2c-4f1d-4c8e-9a35-2d6f1e8b7c40") || !strings.Contains(body, "LEGION-208") {
 		t.Fatalf("refusal %s does not name the document and the issue", body)
 	}
-	assertFailure(t, foreign, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE")
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
+	refused(t, foreign, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE")
+	refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b", "version": 1,
 	}, nil), http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE")
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-209", "artifactId": "5c3d9e1f-7a2b-4e6c-8d40-1f9b3a7e2c65", "version": 1,
 	}, nil), http.StatusForbidden, "GATE_ROOT_ONLY")
 	// The root's gate is its own architect's to register: a sub-architect of the tree holding the
@@ -918,7 +942,7 @@ func TestGateRegistrationRefusesAnotherIssuesDocumentAndAChildIssue(t *testing.T
 	if body := refusal.Body.String(); !strings.Contains(body, "its root architect registers it") {
 		t.Fatalf("sub-architect refusal %s does not say the root architect registers the gate", body)
 	}
-	assertFailure(t, refusal, http.StatusForbidden, "GATE_ROOT_ONLY")
+	refused(t, refusal, http.StatusForbidden, "GATE_ROOT_ONLY")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want no gate registered", got)
 	}
@@ -1072,7 +1096,7 @@ func TestGateRegistrationRefusesAVersionDispatchDoesNotShow(t *testing.T) {
 	statuses.approvals = map[string]dispatch.Approval{artifact: {State: "awaiting", LatestVersion: 4}}
 	seedTree(t, h, "LEGION-208")
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": artifact, "version": 5,
 	}, nil), http.StatusConflict, "VERSION_NOT_IN_DISPATCH")
 	if got := facts.recorded(); len(got) != 0 {
@@ -1141,15 +1165,15 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 
 	// A child is not the root, a sub-architect of the tree is not the root's architect, and a
 	// phase worker is not the architect.
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-209", "reason": "moot",
 	}, nil), http.StatusForbidden, "ROOT_REQUIRED")
 	subArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": subArchitect.grant(t), "issue": "LEGION-208", "reason": "a sub-architect closing the root",
 	}, nil), http.StatusForbidden, "ROOT_REQUIRED")
 	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
+	refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": worker.grant(t), "issue": "LEGION-208", "reason": "moot",
 	}, nil), http.StatusForbidden, "ARCHITECT_REQUIRED")
 
@@ -1184,35 +1208,67 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	}
 }
 
+// theDecisionBlock is a decision block as a writer writes one into a text the daemon posts: a
+// question and its options inside an `ask` directive, which the reader draws a decision card for
+// and nobody can answer where it stands.
+const theDecisionBlock = ":::ask{urgency=\"med\"}\n" +
+	"Which transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming\n:::"
+
 // The outbox posts a close reason as the row's message with the row's own marker after it
-// (record.MessagePost.Posted), so the route measures that post and not the reason alone. Two
-// reasons Dispatch takes on their own make a post it refuses: one of exactly as many lines as
-// Dispatch holds a body to blocks, where the marker is one block more, and one ending inside an
-// open code fence, where the marker is code inside the last block and carries it over the unit
-// bound. Each is refused at the call, naming the bound, and records nothing: no fact and no
-// outbox row, so the architect's shortened close is applied.
-func TestAnArchitectsCloseIsRefusedWhereTheOutboxsMarkerPassesTheBound(t *testing.T) {
+// (record.MessagePost.Posted), so the route measures the bounds over that post and not over the
+// reason alone, and it answers the code the reason earns. Two reasons Dispatch takes on their own
+// make a post it refuses: one of exactly as many lines as Dispatch holds a body to blocks, where
+// the marker is one block more, and one ending inside an open code fence, where the marker is
+// code inside the last block and carries it over the unit bound; each is CLOSE_REASON_TOO_LONG,
+// naming the bound. A reason holding a decision block is CLOSE_REASON_DECISION_BLOCK however
+// short it is, since a question in a message is one nobody can answer; that refusal names the
+// block and where the question belongs, and asks neither for a shorter reason nor for less of
+// what the reason quotes (INFRA-1201). Its post is refused too, and for the same block: the
+// marker the outbox appends is an HTML comment, which the document parser refuses, and the
+// server reads a refused body for the card its reader would draw all the same
+// (pmdoc.FindDecisionCard). Each refusal records nothing: no fact and no outbox row, so the
+// architect's corrected close is applied.
+func TestAnArchitectsCloseIsRefusedForWhatItsPostHolds(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-	for _, tc := range []struct{ name, reason, want string }{
-		{"a reason of as many lines with text in them as Dispatch holds a body to blocks",
-			strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"),
-			fmt.Sprintf("body is 1 blocks over the %d-block limit", dispatchbody.ItemBlocks)},
-		{"a reason that ends inside an open code fence",
-			"see log\n\n```\n" + strings.Repeat("y", 31980),
-			fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)},
+	for _, tc := range []struct {
+		name, reason, code    string
+		takenAlone, postTaken bool
+		want, absent          []string
+	}{
+		{name: "a reason of as many lines with text in them as Dispatch holds a body to blocks",
+			reason: strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"), code: "CLOSE_REASON_TOO_LONG", takenAlone: true,
+			want: []string{fmt.Sprintf("body is 1 blocks over the %d-block limit", dispatchbody.ItemBlocks)}},
+		{name: "a reason that ends inside an open code fence",
+			reason: "see log\n\n```\n" + strings.Repeat("y", 31980), code: "CLOSE_REASON_TOO_LONG", takenAlone: true,
+			want: []string{fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)}},
+		{name: "a reason holding a decision block",
+			reason: "The transport is still open.\n\n" + theDecisionBlock + "\n", code: "CLOSE_REASON_DECISION_BLOCK",
+			want: []string{"the reason holds a decision block", "body block 2 (ask) holds a decision block, which nobody can answer where it stands",
+				"ask the question in the issue's own document, as a decision block there, or open an ask with `dispatch ask`"},
+			absent: []string{"shorten", "quot"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fact := intake.CloseRoot{Issue: "LEGION-208", Reason: tc.reason}
-			if over := dispatchbody.Check(fact.Message()); over != nil {
-				t.Fatalf("the reason on its own = %v, want a body Dispatch takes: the post is what passes the bound", over)
+			if onItsOwn := dispatchbody.Check(fact.Message()); (onItsOwn == nil) != tc.takenAlone {
+				t.Fatalf("the reason on its own = %v, want Dispatch taking it alone %t", onItsOwn, tc.takenAlone)
+			}
+			if post := dispatchbody.Check(record.LongestPost(fact.Message())); (post == nil) != tc.postTaken {
+				t.Fatalf("the post of the reason = %v, want Dispatch taking the post %t", post, tc.postTaken)
 			}
 			refusal := refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 				"grantId": architect.grant(t), "issue": "LEGION-208", "reason": tc.reason,
-			}, nil), http.StatusBadRequest, "CLOSE_REASON_TOO_LONG")
-			if !strings.Contains(refusal, tc.want) {
-				t.Fatalf("refusal = %q, want it naming %q", refusal, tc.want)
+			}, nil), http.StatusBadRequest, tc.code)
+			for _, want := range tc.want {
+				if !strings.Contains(refusal, want) {
+					t.Fatalf("refusal = %q, want it naming %q", refusal, want)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(refusal, absent) {
+					t.Fatalf("refusal = %q, want no word of %q: the reason is refused for what it holds, not for its length", refusal, absent)
+				}
 			}
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("the refused close applied %#v, want nothing recorded", got)

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -43,6 +42,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const (
@@ -122,15 +122,17 @@ func staticCredentialToken(role claim.Role) string {
 	return "ghs_" + string(appauth.AppRoleFor(role)) + "_token"
 }
 
-// staticReadToken is the read-only token staticCredential renders for role on owner.
-func staticReadToken(role claim.Role, owner string) string {
-	return "ghs_" + string(appauth.AppRoleFor(role)) + "_read_" + owner
+// staticOwnerToken is the lease staticCredential renders for role on an owner other than the
+// issue's: that owner's own installation lease, which a role's bundle holds at the role's own
+// permissions and no narrower (appauth.GitHubCredential, INFRA-2543).
+func staticOwnerToken(role claim.Role, owner string) string {
+	return "ghs_" + string(appauth.AppRoleFor(role)) + "_lease_" + owner
 }
 
 // staticCredential is the runtime's GitHubCredential in every test: a bundle of repo's owner —
 // sjawhar when repo is the zero Repository, which is how staticControllerCredential builds the
-// controller's — holding the role's App's write token (appauth.AppRoleFor), and acme holding its
-// read token, rendered as gh's files with a fixed expiry; repo's owner is the bundle's default.
+// controller's — holding the role's App's token for that owner (appauth.AppRoleFor), and acme
+// holding acme's own, rendered as gh's files with a fixed expiry; repo's owner is the default.
 func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 	app := string(appauth.AppRoleFor(role))
 	owner := strings.ToLower(repo.Owner())
@@ -138,7 +140,7 @@ func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository
 		owner = "sjawhar"
 	}
 	return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
-		"acme": ghconfig.Render(staticReadToken(role, "acme"), app, staticCredentialExpiry),
+		"acme": ghconfig.Render(staticOwnerToken(role, "acme"), app, staticCredentialExpiry),
 		owner:  ghconfig.Render(staticCredentialToken(role), app, staticCredentialExpiry),
 	}}, nil
 }
@@ -182,7 +184,7 @@ const addedOwner = "globex"
 var servedDirs = slices.Sorted(slices.Values(append(slices.Clone(staticDirs), addedOwner)))
 
 // servingAddedOwner is a restarted daemon serving one owner more: GitHubDirs answers
-// servedDirs, and every bundle it renders holds addedOwner's read-only files beside the
+// servedDirs, and every bundle it renders holds addedOwner's own gh files beside the
 // directories staticCredential always renders, the controller's own among them (its launch and
 // its refresh both ask ControllerCredential), as the daemon's own answers move together
 // (appauth.GitHubDirs, appauth.GitHubCredential and appauth.ControllerCredential read one
@@ -195,7 +197,7 @@ func servingAddedOwner(o *Options) {
 		if err != nil {
 			return bundle, err
 		}
-		bundle.Dirs[addedOwner] = ghconfig.Render(staticReadToken(role, addedOwner), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
+		bundle.Dirs[addedOwner] = ghconfig.Render(staticOwnerToken(role, addedOwner), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
 		return bundle, nil
 	}
 	o.GitHubCredential = credential
@@ -207,6 +209,87 @@ func servingAddedOwner(o *Options) {
 		bundle.Default = strings.ToLower(defaultOwner)
 		return bundle, nil
 	}
+}
+
+// renamedDirs are the gh directories a daemon that holds the smoke repository's configured pair
+// serves, sorted: the directory of the owner serving that repository now and the directory of
+// the owner it moved away from, which every record opened before the transfer still names. Both
+// owner-set states below answer it, and so does the owner predicate this branch replaces
+// (ownerRuleOwners), so it is also what a pod created before this change projects a directory
+// for.
+var renamedDirs = slices.Sorted(slices.Values([]string{recordedSmoke.Owner(), servingSmoke.Owner()}))
+
+// otherOfRecordedOwner is a second repository of the owner the pair moved the smoke repository
+// away from: the one repository that separates state B from state A, and the whole of what the
+// owner predicate read as the project owning that owner.
+var otherOfRecordedOwner = ghrepo.MustParse(recordedSmoke.Owner() + "/other")
+
+// installedOnMapped is the owner accounts a role's App is installed on, as a bundle reads them
+// from GitHub at every build (appauth.OwnerInstallations): every owner of the repositories
+// served, which is the ordinary deployment and what a test that is not about an installation's
+// own reach wants.
+type installedOnMapped struct{ served func() []ghrepo.Repository }
+
+func (i installedOnMapped) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	owners := make([]string, 0, 2)
+	for _, repo := range i.served() {
+		if owner := strings.ToLower(repo.Owner()); !slices.Contains(owners, owner) {
+			owners = append(owners, owner)
+		}
+	}
+	slices.Sort(owners)
+	return owners, nil
+}
+
+// sourceOf is tokens and installs as the one appauth.Source a credential takes, which the
+// daemon's Manager is by itself: a rig names the two apart, since the lease a mint answers with
+// and the owners each App is installed on are what its tests change one at a time.
+func sourceOf(tokens appauth.Tokens, installs appauth.OwnerInstallations) appauth.Source {
+	return struct {
+		appauth.Tokens
+		appauth.OwnerInstallations
+	}{tokens, installs}
+}
+
+// servingRenamed is a daemon serving repos with the smoke pair configured, built as the daemon
+// builds its own answers from one mapping (daemon's sandboxRuntime): the directories it serves,
+// the gh bundles it renders, the provisioning tokens it mints and the mapping its cache sweep
+// reads are one view of those repositories, each read one repository at a time, so a test that
+// moves the mapping moves all four together.
+func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
+	return func(o *Options) {
+		served := func() []ghrepo.Repository { return repos }
+		renames := ghrepo.MustRenames(smokeRename)
+		// The two records the bundles write, as the daemon builds one pair per project and
+		// hands them to both credentials and the directory set alike: the owners each App's
+		// last bundle read installed, and what the mints found GitHub refuses.
+		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
+		apps := sourceOf(&namedLeases{}, installedOnMapped{served: served})
+		o.Mapped = served
+		o.Tokens = servingTokens{served: served, renames: renames}
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil)
+		o.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, nil)
+		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
+			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
+		}
+	}
+}
+
+// servingTokens is the provisioning token source of a daemon that holds configured renames, as
+// the daemon builds it (implementTokens over the mapping's own serving rule): every token is
+// minted for the repository GitHub holds the recorded one under now, and names that owner as
+// staticTokens names its own. The repository it is handed is resolved, and no address a caller
+// builds from that repository is.
+type servingTokens struct {
+	served  func() []ghrepo.Repository
+	renames ghrepo.Renames
+}
+
+func (s servingTokens) Token(_ context.Context, repo ghrepo.Repository) (string, error) {
+	serving := s.renames.Serving(repo, func(candidate ghrepo.Repository) bool {
+		return ghrepo.Serves(s.served(), candidate)
+	})
+	return "ghs_provision_" + serving.Owner(), nil
 }
 
 // launchOf is r's launch of spec as a relaunch that replaces the pod builds it: prepared, with each
@@ -445,6 +528,16 @@ type rig struct {
 	// launcher that held the whole bundle and could not put it back.
 	refuseBundle string
 	failRestore  string
+	// leakCheckTag and leakCheckInstalled are what every fake launcher's hello says of the shared
+	// public leak check: its pin, "" for none, and whether it holds that pin installed
+	// (withLeakCheckHello). refuseLeakCheck, when set, is the cause every fake launcher answers
+	// each launcher_leak_check slice with, silentLeakCheck has it answer none at all, and
+	// causelessLeakCheck has it refuse each slice with no cause.
+	leakCheckTag       string
+	leakCheckInstalled bool
+	refuseLeakCheck    string
+	silentLeakCheck    bool
+	causelessLeakCheck bool
 }
 
 type rigOption func(*rig, *Options)
@@ -466,11 +559,33 @@ func withFailedRestore(reason string) rigOption {
 	return func(g *rig, _ *Options) { g.failRestore = reason }
 }
 
-// testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
-// carry: the tests that build one drive the launcher protocol itself.
-func testLaunchers() *launchers {
-	return newLaunchers(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+// withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
+// launcher holds it installed when installed is set, as one of a pod whose launcher already took
+// the check does after a reconnect.
+func withLeakCheckHello(tag string, installed bool) rigOption {
+	return func(g *rig, _ *Options) { g.leakCheckTag, g.leakCheckInstalled = tag, installed }
 }
+
+// withRefusedLeakCheck has every fake launcher refuse each slice of the leak check with cause, as
+// a launcher whose install of the served check failed does.
+func withRefusedLeakCheck(cause string) rigOption {
+	return func(g *rig, _ *Options) { g.refuseLeakCheck = cause }
+}
+
+// withSilentLeakCheck has every fake launcher take the leak check's slices and answer none, as
+// one whose install is still running when the daemon's hop ends.
+func withSilentLeakCheck() rigOption { return func(g *rig, _ *Options) { g.silentLeakCheck = true } }
+
+// withCauselessLeakCheck has every fake launcher refuse each slice of the leak check with no
+// cause, an answer no launcher of this release gives and the daemon refuses as malformed.
+func withCauselessLeakCheck() rigOption {
+	return func(g *rig, _ *Options) { g.causelessLeakCheck = true }
+}
+
+// testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
+// carry, no receiver for a memory guard's reports and no volume seam behind it: the tests that
+// build one drive the launcher protocol itself.
+func testLaunchers() *launchers { return volumeLaunchers(nil) }
 
 // launcherIssue is the issue key a role token's pod is of, as the role Secret's annotation
 // carries it to the real resolver (launcherCredential.issue); "" for the project controller's
@@ -923,13 +1038,7 @@ func (g *rig) secret(name string) *corev1.Secret {
 // eventually fails the test unless ok holds within a second.
 func (g *rig) eventually(what string, ok func() bool) {
 	g.t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for !ok() {
-		if time.Now().After(deadline) {
-			g.t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.WithinPolling(g.t, time.Second, 5*time.Millisecond, what, ok)
 }
 
 // spawn launches spec and fails the test on an error.
@@ -971,7 +1080,10 @@ func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{
+		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
+		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled,
+	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
 	go func() {
@@ -990,6 +1102,12 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 		held := map[string]map[int]bool{}
 		whole := ""
 		var release int64
+		// checks is the slices of each leak check sequence that arrived and installed whether
+		// this launcher process holds the check installed, as the real launcher's checkInstall
+		// does: it installs nothing, and answers the last slice of a sequence, and every slice
+		// once it holds one installed, Installed.
+		checks := map[string]map[int]bool{}
+		installed := g.leakCheckInstalled
 		reader := bufio.NewReader(client)
 		for {
 			line, err := reader.ReadBytes('\n')
@@ -1050,6 +1168,21 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 				_ = writer.WriteFrame(shimwire.LauncherBundleResult{
 					ID: command.ID, Index: command.Index, OK: true, Held: all,
 				})
+			case shimwire.LauncherLeakCheck:
+				switch {
+				case g.silentLeakCheck:
+				case g.causelessLeakCheck:
+					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index})
+				case g.refuseLeakCheck != "":
+					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index, Error: g.refuseLeakCheck})
+				default:
+					if checks[command.ID] == nil {
+						checks[command.ID] = map[int]bool{}
+					}
+					checks[command.ID][command.Index] = true
+					installed = installed || len(checks[command.ID]) == command.Count
+					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index, OK: true, Installed: installed})
+				}
 			}
 		}
 	}()

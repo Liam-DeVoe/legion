@@ -5,13 +5,12 @@
 
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import {
-  type IntersectionControl,
-  installIntersectionObserver,
-} from "../../__tests__/intersection-observer";
+import { onFakeClock } from "../../__tests__/fake-clock";
+import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
@@ -71,6 +70,8 @@ function commentRow(threadId: string, subject: string): MyReplyRow {
 function comment(id: string, body: string, overrides: Partial<Comment> = {}): Comment {
   return {
     anchor: null,
+    answers: null,
+    artifact_id: null,
     ask_id: null,
     author: { id: "alice", kind: "user" },
     body,
@@ -80,6 +81,7 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
     id,
     issue_key: "CORE-1",
     mentions: [],
+    reply_block: null,
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -131,17 +133,6 @@ function newestTurn(id: string): Element {
   return watched;
 }
 
-/** One dwell: on screen for the second the rule asks for, then its write let through. */
-async function dwell(viewport: IntersectionControl, element: Element): Promise<void> {
-  const waited = Promise.withResolvers<void>();
-  await act(async () => {
-    viewport.show(element);
-    setTimeout(() => waited.resolve(), 1_100);
-    await waited.promise;
-  });
-  for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
-}
-
 /** The width the Inbox shows its reading column from (1280 px); happy-dom answers `matchMedia`
  *  from the window it is given. */
 function widenToReadingPane(): () => void {
@@ -179,7 +170,7 @@ test("a card read by the dwell rule stays in the list, drawn as read", async () 
     await screen.findByTestId("inbox-thread-comment");
     await waitFor(() => expect(document.querySelector('[aria-label="Unread"]')).not.toBeNull());
 
-    await dwell(viewport, newestTurn("comment-2"));
+    await onFakeClock(() => dwellOn(viewport, newestTurn("comment-2")));
     expect(mark.mock.calls).toEqual([["comment-1", { read_through: NEWEST }, keyedAttempt]]);
 
     // The next read of the Inbox still holds the row - a thread stays until it is dismissed - and
@@ -192,13 +183,14 @@ test("a card read by the dwell rule stays in the list, drawn as read", async () 
     });
     expect(document.querySelector("[data-inbox-thread-card]")).not.toBeNull();
     expect(document.querySelector('[aria-label="Unread"]')).toBeNull();
-    expect(screen.queryByLabelText("Inbox empty state")).toBeNull();
+    expect(screen.queryByLabelText("Inbox empty state")).not.toBeInTheDocument();
   } finally {
     viewport.restore();
   }
 });
 
 test("a row read in the column stays in the list after the selection moves off it", async () => {
+  const user = userEvent.setup();
   const narrow = widenToReadingPane();
   const viewport = installIntersectionObserver();
   const mark = answerThreadReads().mockResolvedValue(undefined);
@@ -213,7 +205,7 @@ test("a row read in the column stays in the list after the selection moves off i
       expect(document.querySelector('[data-inbox-pane-body="issue"]')).not.toBeNull()
     );
 
-    await dwell(viewport, newestTurn("comment-2"));
+    await onFakeClock(() => dwellOn(viewport, newestTurn("comment-2")));
     expect(mark.mock.calls).toEqual([["comment-1", { read_through: NEWEST }, keyedAttempt]]);
 
     act(() => {
@@ -231,7 +223,7 @@ test("a row read in the column stays in the list after the selection moves off i
 
     // The selection moves off it: the row the reader has read is still listed, drawn as read.
     const other = document.querySelector<HTMLElement>('[data-inbox-row="reply:comment-9"]');
-    fireEvent.click(other as HTMLElement);
+    await user.click(other as HTMLElement);
     await waitFor(() =>
       expect(
         document.querySelector('[data-inbox-row="reply:comment-9"][data-inbox-selected]')
@@ -254,6 +246,7 @@ const session: Agent = {
   open_asks: 0,
   roles: [],
   session_id: "planner",
+  state: "live",
   title: "Planner",
 };
 
@@ -261,11 +254,13 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
   return {
     author: { id: "alice", kind: "user" },
     body,
+    broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
     id,
     in_reply_to: null,
     issue_key: null,
+    reply_block: null,
     target: "session:planner",
     ...overrides,
   };
@@ -306,7 +301,7 @@ test("an Agent thread is read by reply id, and moves no session read mark", asyn
       expect(document.querySelector('[data-inbox-thread-turn="reply-1"]')).not.toBeNull()
     );
 
-    await dwell(viewport, newestTurn("reply-1"));
+    await onFakeClock(() => dwellOn(viewport, newestTurn("reply-1")));
 
     // By id, and by id alone: no `read_through` for the session, and no thread mark either.
     expect(state.mock.calls).toEqual([["planner", { read_replies: ["reply-1"] }, keyedAttempt]]);

@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -27,10 +28,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
@@ -42,11 +46,7 @@ const testEnrollmentID = "enr-fake-1"
 // buildAgentSecrets compiles this package's binary into the test's temporary directory.
 func buildAgentSecrets(t *testing.T) string {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "agent-secrets")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build agent-secrets: %v\n%s", err, out)
-	}
-	return binary
+	return cmdtest.Build(t, "agent-secrets")
 }
 
 // shortTempDir is a directory of the test's own, removed when the test ends, with room under it
@@ -59,13 +59,15 @@ func shortTempDir(t *testing.T) string {
 	return testtmp.Dir(t, filepath.Join("agent-secrets", "helper.sock"))
 }
 
-// brokerCounters records how many times fakeBroker served each route, so a test can assert on
-// call counts (e.g. "no second ask", "never entered the polling loop") instead of only on the
-// final observable outcome, plus (guarded by mu) the last session_id POST /v1/requests recorded
-// and the gate a test may hold the pending request's status polls behind.
+// brokerCounters records how many times fakeBroker served each route, and every call it answered
+// on any route (calls), so a test can assert on call counts (e.g. "no second ask", "never entered
+// the polling loop", "asked the broker nothing") instead of only on the final observable outcome,
+// plus (guarded by mu) the last session_id POST /v1/requests recorded and the gate a test may hold
+// the pending request's status polls behind.
 type brokerCounters struct {
 	createRequest int32
 	getRequest    int32
+	calls         int32
 
 	mu            sync.Mutex
 	lastSessionID string
@@ -142,27 +144,41 @@ func (c *brokerCounters) servedSettings() *Settings {
 // answers as a broker from before that page, which carries none, and PENDING_UNNAMED as one from
 // before the approver field, which names none. No real broker answers with the page and no
 // approver, since approve_url is the newer field, but the waiting line has a sentence for that
-// pair and PENDING_UNNAMED is what checks it.
+// pair and PENDING_UNNAMED is what checks it. PENDING_JUDGE is a request the model judge holds:
+// its answers say judge_deciding and carry no page. PENDING_HANDOVER is one the judge holds when
+// it is written and has handed to its person by the first status read, which then carries the
+// page.
 var fakePending = map[string]struct {
 	requestID, recordID, approver string
 	page                          bool
+	judging, handover             bool
 }{
-	"PENDING_ME":         {"req-pending", "rec-pending-1", "ada@example.com", true},
-	"PENDING_ANYONE":     {"req-pending-anyone", "rec-pending-anyone", record.AnyoneApprover, true},
-	"PENDING_UNNAMED":    {"req-pending-unnamed", "rec-pending-unnamed", "", true},
-	"PENDING_ME_NO_PAGE": {"req-pending-no-page", "rec-pending-no-page", "ada@example.com", false},
+	"PENDING_ME":         {"req-pending", "rec-pending-1", "ada@example.com", true, false, false},
+	"PENDING_ANYONE":     {"req-pending-anyone", "rec-pending-anyone", record.AnyoneApprover, true, false, false},
+	"PENDING_UNNAMED":    {"req-pending-unnamed", "rec-pending-unnamed", "", true, false, false},
+	"PENDING_ME_NO_PAGE": {"req-pending-no-page", "rec-pending-no-page", "ada@example.com", false, false, false},
+	"PENDING_JUDGE":      {"req-pending-judge", "rec-pending-judge", "ada@example.com", false, true, false},
+	"PENDING_HANDOVER":   {"req-pending-handover", "rec-pending-handover", "ada@example.com", false, true, true},
 }
 
 // pendingAnswer is fakeBroker's answer for a fakePending entry, request fields included or not;
-// base is the fake broker's own URL, which its approve_url names.
+// base is the fake broker's own URL, which its approve_url names. A status read (request false) of
+// a PENDING_HANDOVER entry answers as the judge's hand-over left it: no longer held, with its page.
 func pendingAnswer(name, base string, request bool) map[string]any {
 	p := fakePending[name]
+	page, judging := p.page, p.judging
+	if p.handover && !request {
+		page, judging = true, false
+	}
 	answer := map[string]any{"state": "pending", "grant_id": nil, "record_id": p.recordID}
 	if p.approver != "" {
 		answer["approver"] = p.approver
 	}
-	if p.page {
+	if page {
 		answer["approve_url"] = base + "/approve/" + p.recordID
+	}
+	if judging {
+		answer["judge_deciding"] = true
 	}
 	if request {
 		answer["request_id"] = p.requestID
@@ -181,7 +197,47 @@ const approvedStatusJSON = `{"state":"granted","grant_id":"grant-approved","reco
 // whose requesters tag does not name this session, and the rule that refused it. DENY_ME keeps
 // its own canned answer, which carries no detail at all, so what a denial the broker explained
 // prints is told apart from what one it did not still prints.
-const refusedDetail = "GCLOUD_SAMI: requester-not-listed"
+const refusedDetail = "GCLOUD_DEMO: requester-not-listed"
+
+// judgeRefusedText is the broker's own sentence for JUDGE_REFUSED: the model judge refused the
+// request, finally, in the words refusalOf writes.
+const judgeRefusedText = "the model judge refused this request: the guidance asks for an approved post. This request will not be granted. Tell whoever gave you this work."
+
+// TestAJudgedRefusalIsFinal: a request the model judge refused is denied, and both the request form
+// and the exec form exit 77, as any denial does, printing the judge's sentence and running no
+// child. Nothing either prints tells the agent to try again or names a person to ask.
+func TestAJudgedRefusalIsFinal(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	keyDir := newKeyDir(t)
+	broker, _ := fakeBroker(t)
+	for _, args := range [][]string{
+		{"request", "JUDGE_REFUSED"},
+		{"JUDGE_REFUSED", "--wait", "200ms", "--", "sh", "-c", "echo the-child-ran"},
+	} {
+		stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, args...)
+		out := stdout + stderr
+		if exit != exitDenied || !strings.Contains(out, judgeRefusedText) || strings.Contains(out, "the-child-ran") ||
+			strings.Contains(out, "again") || strings.Contains(out, "retry") || strings.Contains(out, "/approve/") {
+			t.Errorf("%v = exit %d stdout %q stderr %q; want exit %d with the judge's sentence, no child and nothing that says to try again", args, exit, stdout, stderr, exitDenied)
+		}
+	}
+}
+
+// TestTheExecFormSaysWhenTheJudgeHandsARequestOver: a request the judge held when it was written
+// and handed to its person while the exec form waits prints the judge's line first and then, at
+// the first status read that shows the hand-over, the line naming the person and the page.
+func TestTheExecFormSaysWhenTheJudgeHandsARequestOver(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	keyDir := newKeyDir(t)
+	broker, _ := fakeBroker(t)
+	_, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil,
+		"PENDING_HANDOVER", "--wait", "3s", "--", "sh", "-c", "echo the-child-ran")
+	judging := "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
+	handed := "the model judge could not decide it; waiting for ada@example.com to approve it on the secrets broker: " + broker.URL + "/approve/rec-pending-handover"
+	if exit != exitPending || !strings.Contains(stderr, judging) || !strings.Contains(stderr, handed) || strings.Index(stderr, judging) > strings.Index(stderr, handed) {
+		t.Errorf("exec form of PENDING_HANDOVER = exit %d stderr %q; want exit %d, the judge's line and then the hand-over line", exit, stderr, exitPending)
+	}
+}
 
 // deniedDetailStatusJSON is fakeBroker's GET /v1/requests/req-denied-listed, byte for byte: the
 // request DETAIL_DENIED made, read back, carrying the same detail its creation answered.
@@ -200,15 +256,15 @@ var cannedStatus = map[string]string{"req-approved": approvedStatusJSON, "req-de
 // detail/unreleased/no-trailing-newline response, GET /v1/requests/{id} answers each fakePending
 // request's own id with the same never-resolving pending state and each cannedStatus id with its
 // own bytes (and 404s any other id, since a granted-or-denied-immediately response a test does
-// not read back must never be polled), POST
-// /v1/grants/{id}/values releases one canned value (or, for the unreleased case, none at all),
-// and GET /v1/enrollments/self echoes testEnrollmentID. It does not verify the outer Proof header
-// at all — proof.Verifier's own behavior is covered by internal/broker/proof and
+// not read back must never be polled), POST /v1/grants/{id}/values releases one canned value
+// (or, for the unreleased case, none at all, and for AIRLOCK_ME none and an airlock object
+// instead), and GET /v1/enrollments/self echoes testEnrollmentID. It does not verify the outer
+// Proof header at all — proof.Verifier's own behavior is covered by internal/broker/proof and
 // internal/broker/api's test suites, not this package's.
 func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 	t.Helper()
 	counters := &brokerCounters{}
-	var audience string
+	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.createRequest, 1)
@@ -225,7 +281,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 			counters.lastSessionID = *body.SessionID
 			counters.mu.Unlock()
 		}
-		obj, err := record.VerifyRequestObject(body.Request, audience, time.Minute, time.Now())
+		obj, err := record.VerifyRequestObject(body.Request, srv.URL, time.Minute, time.Now())
 		if err != nil || len(obj.Details) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -237,8 +293,8 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"secrets":  []map[string]string{{"name": name, "decision": "automatic"}},
 				"grant_id": "grant-granted", "record_id": nil, "approver": nil,
 			})
-		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED", "PENDING_ME_NO_PAGE":
-			writeJSON(w, pendingAnswer(name, audience, true))
+		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED", "PENDING_ME_NO_PAGE", "PENDING_JUDGE", "PENDING_HANDOVER":
+			writeJSON(w, pendingAnswer(name, srv.URL, true))
 		case "APPROVED_ME":
 			writeJSON(w, map[string]any{
 				"request_id": "req-approved", "state": "granted",
@@ -257,11 +313,23 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"secrets":  []map[string]string{{"name": name, "decision": "deny"}},
 				"grant_id": nil, "record_id": nil, "approver": nil, "detail": refusedDetail,
 			})
+		case "JUDGE_REFUSED":
+			writeJSON(w, map[string]any{
+				"request_id": "req-judge-refused", "state": "denied",
+				"secrets":  []map[string]string{{"name": name, "decision": "approval"}},
+				"grant_id": nil, "record_id": "rec-judge-refused", "approver": "ada@example.com", "detail": judgeRefusedText,
+			})
 		case "UNRELEASED_ME":
 			writeJSON(w, map[string]any{
 				"request_id": "req-unreleased", "state": "granted",
 				"secrets":  []map[string]string{{"name": name, "decision": "automatic"}},
 				"grant_id": "grant-unreleased", "record_id": nil, "approver": nil,
+			})
+		case "AIRLOCK_ME":
+			writeJSON(w, map[string]any{
+				"request_id": "req-airlock", "state": "granted",
+				"secrets":  []map[string]string{{"name": name, "decision": "automatic"}},
+				"grant_id": "grant-airlock", "record_id": nil, "approver": nil,
 			})
 		case "NONEWLINE_ME":
 			// Written with http.ResponseWriter.Write directly, with NO trailing newline, unlike
@@ -269,6 +337,11 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 			// terminated) — this is the fixture for the writeVerbatim byte-exact test.
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"request_id":"req-nonewline","state":"granted","secrets":[{"name":"NONEWLINE_ME","decision":"automatic"}],"grant_id":"grant-nonewline","record_id":null,"approver":null}`))
+		case "WAITING_ME":
+			// The broker's refusal of a secret `secret create` made and has not yet filled.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":"PENDING_VALUE","error":"WAITING_ME exists and awaits its first value; ask again after its owner stores it"}`))
 		default:
 			w.WriteHeader(http.StatusBadRequest)
 		}
@@ -303,7 +376,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				return
 			}
 		}
-		writeJSON(w, pendingAnswer(name, audience, false))
+		writeJSON(w, pendingAnswer(name, srv.URL, false))
 	})
 	mux.HandleFunc("POST /v1/grants/grant-granted/values", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
@@ -323,6 +396,27 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 			"expires_at": time.Now().Add(time.Hour),
 		})
 	})
+	mux.HandleFunc("POST /v1/grants/grant-airlock/values", func(w http.ResponseWriter, r *http.Request) {
+		// The airlock's release: nothing in "values" for the name at all, and the proxy, the
+		// certificate to trust it by and the name's placeholder in "airlock", exactly as the
+		// broker answers one (internal/broker/api's grantValuesResponse).
+		writeJSON(w, map[string]any{
+			"values":     map[string]string{},
+			"expires_at": time.Now().Add(time.Hour),
+			"airlock": map[string]any{
+				"proxy_url":      "http://airlock.broker.example:3128",
+				"ca_certificate": testAirlockCertificate,
+				"proxy_password": testAirlockPlaceholder,
+				"names": map[string]any{
+					"AIRLOCK_ME": map[string]any{
+						"value": testAirlockPlaceholder,
+						"slots": map[string]string{"value": testAirlockPlaceholder},
+						"hosts": []string{"api.example.com"},
+					},
+				},
+			},
+		})
+	})
 	mux.HandleFunc("GET /v1/enrollments/self", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"enrollment_id": testEnrollmentID, "kind": "session", "operator": "ada@example.com",
@@ -337,8 +431,13 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 		}
 		writeJSON(w, settings)
 	})
-	srv := httptest.NewServer(mux)
-	audience = srv.URL
+	// The handlers read srv.URL, so srv is assigned before the server serves: Start, which sets
+	// the URL, runs after the assignment and before the goroutine that serves.
+	srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&counters.calls, 1)
+		mux.ServeHTTP(w, r)
+	}))
+	srv.Start()
 	return srv, counters
 }
 
@@ -357,7 +456,7 @@ var fakeSettings = Settings{
 // what each of these lines must carry is the source, not one spelling of it; source_test.go pins
 // what the renderer puts in a source.
 func fakeSourceText(broker *httptest.Server) string {
-	return brokerSource(broker.URL).withSettings(fakeSettings).String()
+	return brokerSource(brokeraddr.New(broker.URL)).withSettings(fakeSettings).String()
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -394,6 +493,39 @@ func writeKeyDir(t *testing.T, key *ecdsa.PrivateKey, enrollmentID string) strin
 		t.Fatalf("write enrollment: %v", err)
 	}
 	return dir
+}
+
+// proofKey is a session key that signs as testEnrollmentID, with the key dir that holds both, for
+// a fake broker that checks each proof as the broker does.
+type proofKey struct {
+	thumbprint string
+	keyDir     string
+}
+
+func newProofKey(t *testing.T) *proofKey {
+	t.Helper()
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &proofKey{thumbprint: thumbprint, keyDir: writeKeyDir(t, key, testEnrollmentID)}
+}
+
+// verify checks r's proof as the broker's proof.Verifier does, for this key's enrollment alone,
+// with the htu rebuilt from publicURL and r's path, never its query, as the broker rebuilds it
+// from BROKER_PUBLIC_URL. A client that signed anything else is refused.
+func (k *proofKey) verify(r *http.Request, publicURL string) error {
+	verifier := &proof.Verifier{Skew: time.Minute,
+		Lookup: func(_ context.Context, id string) (string, bool, error) {
+			return k.thumbprint, id == testEnrollmentID, nil
+		},
+		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
+	_, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), r.Method, publicURL+r.URL.Path, time.Now())
+	return err
 }
 
 // runAgentSecrets runs the built binary against broker and keyDir, returning its separate
@@ -486,71 +618,55 @@ func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
 	}
 }
 
-// TestExecFormReleasesALineEndingUntouchedAndSaysSo is the end-to-end of the two above: the real
-// child of the real binary gets a released value that ends in a line ending exactly as the
-// broker served it — compared as a digest, so no value is in this test's output — and the exec
-// form says so on standard error, after its source line and before the child's own output, only
-// when a released value ends in one. A value that is meant to end in a newline, a PEM among
-// them, is delivered whole and named just the same (dispatch://INFRA-1042).
-func TestExecFormReleasesALineEndingUntouchedAndSaysSo(t *testing.T) {
+// TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore: the real child of the real
+// binary gets the bytes the broker released, byte for byte — compared as a digest, so no value
+// is in this test's output — and standard error carries the one source line and then nothing of
+// this command's at all, not even where the released value ends in a line ending. Which bytes a
+// value has is the broker's decision now (policy.TrimLineEnding): a value that reaches the child
+// ending in a line feed ends that way because the stored value holds a line ending inside it, and the agent
+// running the command could not store it differently in any case.
+func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
-	for name, tc := range map[string]struct {
-		released string
-		warns    bool
-	}{
-		"one trailing newline":  {released: "topsecretvalue123\n", warns: true},
-		"trailing CRLF":         {released: "topsecretvalue123\r\n", warns: true},
-		"lone carriage return":  {released: "topsecretvalue123\r", warns: true},
-		"a PEM-shaped value":    {released: "-----BEGIN KEY-----\nabc\n-----END KEY-----\n", warns: true},
-		"no trailing newline":   {released: "topsecretvalue123", warns: false},
-		"a newline inside only": {released: "first\nsecond", warns: false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			broker, counters := fakeBroker(t)
-			defer broker.Close()
-			counters.releaseValue(tc.released)
-			stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil,
-				"GRANT_ME", "--", "sh", "-c", `printf %s "$GRANT_ME" | sha256sum; echo the-child-ran >&2`)
-			// Nothing below prints stdout or stderr: this case's released value is in neither
-			// unless the very regression this test exists to catch has happened, and
-			// redactSecrets hides only the default fixture. Each failure says what was wrong
-			// instead: an exit code, a digest, which assertion about the two lines failed.
-			if exit != 0 {
-				t.Fatalf("exit = %d, want 0", exit)
-			}
-			sum := sha256.Sum256([]byte(tc.released))
-			want, fields := hex.EncodeToString(sum[:]), strings.Fields(stdout)
-			if len(fields) == 0 {
-				t.Fatalf("the child printed no digest at all")
-			}
-			if fields[0] != want {
-				// The token is not printed: a regression that puts the value where the digest
-				// belongs would print it. Its own digest tells two failures apart and discloses
-				// nothing.
-				got := sha256.Sum256([]byte(fields[0]))
-				t.Fatalf("what the child printed first is not the value's digest %s; sha256 of what it did print: %s", want, hex.EncodeToString(got[:]))
-			}
-			lines := strings.SplitAfter(stderr, "\n")
-			if len(lines) < 2 || !strings.HasPrefix(lines[0], "agent-secrets: GRANT_ME from ") {
-				t.Fatalf("the first of %d stderr lines is not the source line", len(lines))
-			}
-			if warned := strings.Contains(stderr, "end in a line ending"); warned != tc.warns {
-				t.Fatalf("a line-ending warning: %v, want %v", warned, tc.warns)
-			}
-			if tc.warns && !strings.HasPrefix(lines[1], "agent-secrets: GRANT_ME end in a line ending") {
-				t.Fatalf("the second stderr line is not the warning, so it does not come before the child's own output")
-			}
-			if !strings.Contains(stderr, "the-child-ran") {
-				t.Fatalf("the child's own stderr line is missing")
-			}
-			// This case's own value, whole and ending aside, in either stream is the leak.
-			for _, part := range []string{tc.released, strings.TrimRight(tc.released, "\r\n")} {
-				if part != "" && strings.Contains(stdout+stderr, part) {
-					t.Fatalf("the released value reached this command's own output")
-				}
-			}
-		})
+	broker, counters := fakeBroker(t)
+	defer broker.Close()
+	const released = "topsecretvalue123\n"
+	counters.releaseValue(released)
+
+	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil,
+		"GRANT_ME", "--", "sh", "-c", `printf %s "$GRANT_ME" | sha256sum; echo the-child-ran >&2`)
+	// Nothing below prints stdout or stderr: the released value is in neither unless the very
+	// regression this test exists to catch has happened, and redactSecrets hides only the
+	// default fixture. Each failure says what was wrong instead: an exit code, a digest, which
+	// assertion about the two streams failed.
+	digest := func(s string) string {
+		sum := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0", exit)
+	}
+	want, fields := digest(released), strings.Fields(stdout)
+	if len(fields) == 0 {
+		t.Fatalf("the child printed no digest at all")
+	}
+	if fields[0] != want {
+		// The token is not printed: a regression that puts the value where the digest belongs
+		// would print it. Its own digest tells two failures apart and discloses nothing.
+		t.Fatalf("what the child printed first is not the released value's digest %s; sha256 of what it did print: %s", want, digest(fields[0]))
+	}
+	source, rest, ended := strings.Cut(stderr, "\n")
+	if !ended || !strings.HasPrefix(source, "agent-secrets: GRANT_ME from ") {
+		t.Fatalf("the first of stderr's %d lines is not the source line", strings.Count(stderr, "\n"))
+	}
+	if rest != "the-child-ran\n" {
+		t.Fatalf("after the source line stderr holds %d bytes (sha256 %s), want the child's own line and nothing else", len(rest), digest(rest))
+	}
+	// The released value, whole and ending aside, in either stream is the leak.
+	for _, part := range []string{released, strings.TrimRight(released, "\r\n")} {
+		if strings.Contains(stdout+stderr, part) {
+			t.Fatalf("the released value reached this command's own output")
+		}
 	}
 }
 
@@ -559,12 +675,15 @@ func TestExecFormReleasesALineEndingUntouchedAndSaysSo(t *testing.T) {
 // broker's URL. A request whose answer carries approve_url names that page on the broker; one
 // whose answer carries none names its approver and no page at all. Neither sentence depends on
 // AGENT_SECRETS_APPROVE_URL, which the two tests below set to Dispatch's origin and to nothing
-// around every row. The *_UNNAMED broker names no approver, so its sentence says so.
+// around every row. The *_UNNAMED broker names no approver, so its sentence says so. A request the
+// model judge holds says the judge is deciding it and that nobody is asked unless the judge
+// cannot decide it, and never that its approver must approve it.
 var pendingSentences = map[string]string{
 	"PENDING_ME":         "waiting for ada@example.com to approve it on the secrets broker: <broker>/approve/rec-pending-1",
 	"PENDING_ANYONE":     "waiting for anyone signed in to the secrets broker to approve it: <broker>/approve/rec-pending-anyone",
 	"PENDING_UNNAMED":    "waiting for approval on the secrets broker: <broker>/approve/rec-pending-unnamed; the broker does not say whose",
 	"PENDING_ME_NO_PAGE": "waiting for ada@example.com to approve it on the secrets broker",
+	"PENDING_JUDGE":      "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it",
 }
 
 // TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone pins all three sentences waitingOn
@@ -584,7 +703,7 @@ func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
 		{"a person", &person, "waiting for ada@example.com to approve it on the secrets broker"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := waitingOn(row.approver, ""); got != row.want {
+			if got := waitingOn(row.approver, "", false); got != row.want {
 				t.Errorf("waitingOn = %q, want %q", got, row.want)
 			}
 		})
@@ -763,6 +882,49 @@ func TestExecFormRefusesWhenNoNameIsGiven(t *testing.T) {
 	}
 }
 
+// TestExecFormRefusesAMissingCommandBeforeAskingTheBroker: a command that is not on PATH is
+// refused with the exit status and the line it always had (1, and `agent-secrets: ` before
+// exec.LookPath's own error), and the broker is asked nothing at all: no request is made, so none
+// waits on an approver for a command that could never run. PENDING_ME is a secret a person must
+// approve; before the command was looked up first, its request reached that person and the run
+// exited 75, still waiting.
+func TestExecFormRefusesAMissingCommandBeforeAskingTheBroker(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	broker, counters := fakeBroker(t)
+	defer broker.Close()
+	keyDir := newKeyDir(t)
+	const missing = "agent-secrets-test-command-on-no-path"
+	_, lookErr := exec.LookPath(missing)
+	if lookErr == nil {
+		t.Fatalf("%s is on PATH; this test needs a command that is not", missing)
+	}
+	for _, name := range []string{"GRANT_ME", "PENDING_ME"} {
+		stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, name, "--wait", "0s", "--", missing, "an-argument")
+		if exit != 1 {
+			t.Fatalf("%s: exit = %d, want 1: stdout=%q stderr=%q", name, exit, stdout, stderr)
+		}
+		if lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], "agent-secrets: ") || !strings.Contains(lines[0], missing) || stdout != "" {
+			t.Fatalf("%s: stdout=%q stderr=%q; want nothing on stdout and one agent-secrets line naming %s", name, stdout, stderr, missing)
+		}
+	}
+	if calls := atomic.LoadInt32(&counters.calls); calls != 0 {
+		t.Fatalf("the broker answered %d calls for a command that is not on PATH, want none", calls)
+	}
+}
+
+// TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing: the broker's PENDING_VALUE refusal,
+// for a secret `secret create` made and has not yet filled, ends the exec form with exit 1, its line
+// naming the code and saying to ask again, and the command never runs.
+func TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	broker, _ := fakeBroker(t)
+	defer broker.Close()
+	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, newKeyDir(t), nil, "WAITING_ME", "--", "sh", "-c", "echo ran-the-child")
+	if exit != 1 || !strings.Contains(stderr, "(PENDING_VALUE)") || !strings.Contains(stderr, "ask again") || strings.Contains(stdout+stderr, "ran-the-child") {
+		t.Fatalf("exit = %d, stdout=%q stderr=%q; want 1, the PENDING_VALUE refusal saying to ask again, and no command run", exit, stdout, stderr)
+	}
+}
+
 // TestTopLevelHelpExitsZero pins that a bare top-level "--help" or "-h" — no subcommand — exits
 // 0 and prints usage(), the conventional exit code for an explicit help request; only the
 // zero-argument form (no NAME, no --help) remains a usage error exiting 2.
@@ -909,12 +1071,23 @@ func TestExecFormNestedCallKeepsTheSessionIdentity(t *testing.T) {
 	}
 }
 
+// testAirlockFiles are the two paths prepareAirlock would have written, as the tests that build
+// a child environment pass them: buildChildEnv names them and writes neither.
+var testAirlockFiles = airlockFiles{bundle: "/run/user/1000/agent-secrets/airlock/g1/ca-bundle.pem", wgetrc: "/run/user/1000/agent-secrets/airlock/g1/wgetrc"}
+
 // TestBuildChildEnvKeepsOnlyTheSessionIdentity pins which of this CLI's variables the exec'd
 // child inherits: exactly the three that say which session it is (the broker's URL, the helper
 // socket, the box's key dir), never any other AGENT_SECRETS_* setting, and never an inherited
 // copy of a released name beside the released value.
+//
+// The second row is the same grant with one name behind the airlock, and pins the whole of that
+// child's environment too: the name holds its placeholder, the proxy, its NO_PROXY and Node's
+// switch are set, every bundle variable and WGETRC name the files, and the three session
+// identity variables are kept exactly as in the first row. An inherited copy of anything this
+// CLI sets — the stale proxy, the inherited trust file — is gone, as an inherited copy of a
+// released name is.
 func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
-	environ := []string{
+	identity := []string{
 		"PATH=/usr/bin",
 		"AGENT_SECRETS_URL=https://broker.internal.example",
 		"AGENT_SECRETS_HELPER_SOCK=/run/user/1000/agent-secrets/helper.sock",
@@ -925,23 +1098,73 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 		"GRANT_ME=inherited-stale-value",
 		"NOT_AN_ASSIGNMENT",
 	}
-	got := buildChildEnv(environ, map[string]string{"GRANT_ME": "released"})
-	want := []string{
+	kept := []string{
 		"PATH=/usr/bin",
 		"AGENT_SECRETS_URL=https://broker.internal.example",
 		"AGENT_SECRETS_HELPER_SOCK=/run/user/1000/agent-secrets/helper.sock",
 		"AGENT_SECRETS_KEY_DIR=/run/user/1000/agent-secrets",
-		"GRANT_ME=released",
 	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("child env:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	placeholder := "agent-secrets-placeholder-" + strings.Repeat("a", 32)
+	for _, row := range []struct {
+		name    string
+		environ []string
+		release *AirlockRelease
+		want    []string
+	}{
+		{
+			name:    "no airlock",
+			environ: identity,
+			want:    append(append([]string{}, kept...), "GRANT_ME=released"),
+		},
+		{
+			name: "one airlock name",
+			environ: append(append([]string{}, identity...),
+				"SSL_CERT_FILE=/inherited/roots.pem",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/inherited/grpc-roots.pem",
+				"HTTPS_PROXY=http://stale.example:3128",
+				"NO_PROXY=keep.example.com"),
+			release: &AirlockRelease{
+				ProxyURL:      "http://proxy.broker.example:3128",
+				CACertificate: "-----BEGIN CERTIFICATE-----\nproxy\n-----END CERTIFICATE-----\n",
+				ProxyPassword: placeholder,
+				Names:         map[string]AirlockName{"AIRLOCK_ME": {Value: placeholder, Slots: map[string]string{"value": placeholder}, Hosts: []string{"api.example.com"}}},
+			},
+			want: append(append([]string{}, kept...),
+				"AIRLOCK_ME="+placeholder,
+				"AWS_CA_BUNDLE="+testAirlockFiles.bundle,
+				"CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE="+testAirlockFiles.bundle,
+				"CURL_CA_BUNDLE="+testAirlockFiles.bundle,
+				"GIT_SSL_CAINFO="+testAirlockFiles.bundle,
+				"GRANT_ME=released",
+				"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="+testAirlockFiles.bundle,
+				"HTTPS_PROXY=http://agent-secrets:"+placeholder+"@proxy.broker.example:3128",
+				"NODE_EXTRA_CA_CERTS="+testAirlockFiles.bundle,
+				"NODE_USE_ENV_PROXY=1",
+				"NO_PROXY=keep.example.com,localhost,127.0.0.1,::1,.svc,.cluster.local,.internal,.ts.net,metadata.google.internal,169.254.169.254,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,broker.internal.example",
+				"REQUESTS_CA_BUNDLE="+testAirlockFiles.bundle,
+				"SSL_CERT_FILE="+testAirlockFiles.bundle,
+				"WGETRC="+testAirlockFiles.wgetrc,
+				"https_proxy=http://agent-secrets:"+placeholder+"@proxy.broker.example:3128",
+				"no_proxy=keep.example.com,localhost,127.0.0.1,::1,.svc,.cluster.local,.internal,.ts.net,metadata.google.internal,169.254.169.254,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,broker.internal.example",
+			),
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got, err := buildChildEnv(row.environ, map[string]string{"GRANT_ME": "released"}, row.release, testAirlockFiles)
+			if err != nil {
+				t.Fatalf("buildChildEnv: %v", err)
+			}
+			if strings.Join(got, "\n") != strings.Join(row.want, "\n") {
+				t.Fatalf("child env:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(row.want, "\n"))
+			}
+		})
 	}
 }
 
-// TestReleasedValuesReachTheChildExactlyAsStored: a stored value may legitimately be several
-// lines, a PEM document among them, so the exec form injects every value byte for byte, line
-// endings and all.
-func TestReleasedValuesReachTheChildExactlyAsStored(t *testing.T) {
+// TestReleasedValuesReachTheChildAsTheBrokerSentThem: which bytes a released value has is the
+// broker's decision, taken from the stored value itself (policy.TrimLineEnding), so the exec form hands
+// the child what the broker sent, byte for byte, line endings and all.
+func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
 	for name, value := range map[string]string{
 		"one trailing newline":   "sk-live-abc\n",
 		"trailing CRLF":          "sk-live-abc\r\n",
@@ -952,75 +1175,16 @@ func TestReleasedValuesReachTheChildExactlyAsStored(t *testing.T) {
 		"a lone carriage return": "sk-live-abc\r",
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := buildChildEnv(nil, map[string]string{"GRANT_ME": value})
+			got, err := buildChildEnv(nil, map[string]string{"GRANT_ME": value}, nil, airlockFiles{})
+			if err != nil {
+				t.Fatalf("buildChildEnv: %v", err)
+			}
 			// Compared as digests, and reported as digests: a failure here is a value that came
 			// out other than it went in, which is the one thing not to print.
 			want := []string{"GRANT_ME=" + value}
 			gotSum, wantSum := sha256.Sum256([]byte(strings.Join(got, "\n"))), sha256.Sum256([]byte(strings.Join(want, "\n")))
 			if gotSum != wantSum {
-				t.Fatalf("child env sha256 = %s, want %s: the value must be injected as stored", hex.EncodeToString(gotSum[:]), hex.EncodeToString(wantSum[:]))
-			}
-		})
-	}
-}
-
-// TestWarnTrailingNewlineNamesEverySecretThatEndsInALineEnding: a one-line credential stored with
-// the trailing newline of whatever produced it is invisible where it is written and expensive
-// where it is read — a caller that sends it unstripped gets a rejected HTTP header, and the error
-// reporting that can quote the whole secret (dispatch://INFRA-1042). The exec form says so on
-// standard error before the command runs, naming each such secret in a stable order and never any
-// part of a value, and says nothing when no value ends in one. No failure below prints what was
-// written or any value: the one worth catching is a line that holds a value.
-func TestWarnTrailingNewlineNamesEverySecretThatEndsInALineEnding(t *testing.T) {
-	for name, tc := range map[string]struct {
-		values map[string]string
-		want   []string
-		quiet  bool
-	}{
-		"one trailing newline":  {values: map[string]string{"GRANT_ME": "sk-live-abc\n"}, want: []string{"GRANT_ME"}},
-		"trailing CRLF":         {values: map[string]string{"GRANT_ME": "sk-live-abc\r\n"}, want: []string{"GRANT_ME"}},
-		"lone carriage return":  {values: map[string]string{"GRANT_ME": "sk-live-abc\r"}, want: []string{"GRANT_ME"}},
-		"two of three, sorted":  {values: map[string]string{"B_KEY": "sk-bbbbbb\n", "A_KEY": "sk-aaaaaa\n", "C_KEY": "sk-cccccc"}, want: []string{"A_KEY", "B_KEY"}},
-		"a newline inside only": {values: map[string]string{"GRANT_ME": "first\nsecond"}, quiet: true},
-		"none":                  {values: map[string]string{"GRANT_ME": "sk-live-abc"}, quiet: true},
-		"no secrets at all":     {values: nil, quiet: true},
-	} {
-		t.Run(name, func(t *testing.T) {
-			var stderr strings.Builder
-			warnTrailingNewline(&stderr, tc.values)
-			said := stderr.String()
-			// No failure below prints what was written. The line is meant to hold no value, so
-			// the failure that matters most here is the one where it holds one, and printing it
-			// then is the disclosure this whole change is about. Each failure says what was
-			// wrong, with a digest where two outputs must be told apart.
-			digest := func(s string) string {
-				sum := sha256.Sum256([]byte(s))
-				return hex.EncodeToString(sum[:])
-			}
-			if tc.quiet {
-				if said != "" {
-					t.Fatalf("it wrote %d bytes (sha256 %s), want nothing at all", len(said), digest(said))
-				}
-				return
-			}
-			if !strings.HasPrefix(said, "agent-secrets: "+strings.Join(tc.want, ", ")+" end in a line ending") {
-				t.Fatalf("the line does not open by naming exactly %v in order (sha256 %s)", tc.want, digest(said))
-			}
-			if strings.Count(said, "\n") != 1 || !strings.HasSuffix(said, "\n") {
-				t.Fatalf("it wrote %d newlines, want exactly one and it last", strings.Count(said, "\n"))
-			}
-			// The line is independent of the bodies: the same names with the same endings and
-			// wholly different values say exactly the same thing, which no substring check of a
-			// short value could establish (a short value can appear in the sentence's own words).
-			var other strings.Builder
-			changed := make(map[string]string, len(tc.values))
-			for name, value := range tc.values {
-				ending := value[len(strings.TrimRight(value, "\r\n")):]
-				changed[name] = "zzzzzzzzzzzzzzzzzzzz" + ending
-			}
-			warnTrailingNewline(&other, changed)
-			if other.String() != said {
-				t.Fatalf("the line changed with the values: sha256 %s became %s", digest(said), digest(other.String()))
+				t.Fatalf("child env sha256 = %s, want %s: the value must reach the child as the broker sent it", hex.EncodeToString(gotSum[:]), hex.EncodeToString(wantSum[:]))
 			}
 		})
 	}
@@ -1028,10 +1192,13 @@ func TestWarnTrailingNewlineNamesEverySecretThatEndsInALineEnding(t *testing.T) 
 
 // runExecForm runs the exec form of GRANT_ME against broker from keyDir with no helper to fall
 // back to (the runtime dir is empty and AGENT_SECRETS_HELPER_SOCK is empty), returning its exit
-// code, stderr and how long it took. extraEnv comes last, so it can override any of that.
+// code, stderr and how long it took. extraEnv comes last, so it can override any of that. Its
+// home and state directory are the test's own, so no sign-in or machine cache of the machine
+// running the test answers for a key dir a row leaves empty.
 func runExecForm(t *testing.T, binary, broker, keyDir string, extraEnv ...string) (int, string, time.Duration) {
 	t.Helper()
-	env := append([]string{"AGENT_SECRETS_HELPER_SOCK=", "XDG_RUNTIME_DIR=" + t.TempDir()}, extraEnv...)
+	env := append([]string{"AGENT_SECRETS_HELPER_SOCK=", "XDG_RUNTIME_DIR=" + t.TempDir(), "HOME=" + t.TempDir(), "XDG_STATE_HOME=" + t.TempDir(),
+		"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY="}, extraEnv...)
 	start := time.Now()
 	_, stderr, exit := runAgentSecrets(t, binary, broker, keyDir, env, "GRANT_ME", "--", "sh", "-c", "exit 0")
 	return exit, stderr, time.Since(start)
@@ -1100,7 +1267,8 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 
 // TestEnrollWaitGivesUpAtItsBound pins the wait's end: a marker nothing ever follows (a launcher
 // stuck without removing it) holds a call for AGENT_SECRETS_ENROLL_WAIT at most, and the call then
-// fails with the error it would have failed with at once.
+// fails naming the marker and the wait. A fresh marker is a launcher still enrolling, which is
+// present: the call stops there rather than go on to a later source of the chain.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1109,8 +1277,9 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	writePendingMarker(t, keyDir, 0)
 
 	exit, stderr, elapsed := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
-	if exit == 0 || !strings.Contains(stderr, "no session identity") {
-		t.Fatalf("exit = %d, stderr = %q, want the no-identity failure", exit, stderr)
+	if exit != 1 || !strings.Contains(stderr, "enrollment.pending is there and no key.pem yet") || !strings.Contains(stderr, "(waited 1s while ") ||
+		strings.Contains(stderr, "no broker identity for this process") {
+		t.Fatalf("exit = %d, stderr = %q, want exit 1 naming the launcher's marker and the wait, and no later source", exit, stderr)
 	}
 	if elapsed < 900*time.Millisecond || elapsed > 5*time.Second {
 		t.Fatalf("gave up after %s, want about the 1s bound", elapsed)
@@ -1138,8 +1307,8 @@ func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 	for _, tc := range []struct {
 		name, keyDir, want string
 	}{
-		{"empty key dir", t.TempDir(), "no session identity"},
-		{"stale marker", stale, "no session identity"},
+		{"empty key dir", t.TempDir(), "no broker identity for this process"},
+		{"stale marker", stale, "no broker identity for this process"},
 		{"reported failure", failed, "postgres unreachable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1276,7 +1445,7 @@ func TestRequestSignsARequestObject(t *testing.T) {
 	// behavior TestRequestAndExecFormSendSessionIDWithFallbackOrder pins), and a Claude Code or
 	// Envoy-registered session sets the other two the same way.
 	stdout, stderr, exit := runAgentSecrets(t, binary, srv.URL, keyDir,
-		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID="},
+		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="},
 		"request", "GRANT_ME", "--reason", "need it for the build")
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0: stdout=%q stderr=%q", exit, stdout, stderr)
@@ -1375,7 +1544,7 @@ func TestMachineLoginPrintsTheDispatchURLWhenApproveURLIsSet(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0: stdout=%q stderr=%q", exit, stdout, stderr)
 	}
-	want := "machine login code: KQ7M-X4PZ\nenter it at https://dispatch.example/credentials/machine — approve only if the code matches this terminal\n"
+	want := "machine login code: KQ7M-X4PZ\nenter it at https://dispatch.example/credentials/machine (AGENT_SECRETS_APPROVE_URL names its origin) — approve only if the code matches this terminal\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
@@ -1389,7 +1558,7 @@ func TestMachineLoginPrintsTheBrokersVerificationURI(t *testing.T) {
 	sock := fakeLoginHelperAt(t, "KQ7M-X4PZ", "https://dispatch.example/credentials/machine", []string{"issued"})
 	for _, tc := range []struct{ approve, want string }{
 		{"", "machine login code: KQ7M-X4PZ\nenter it at https://dispatch.example/credentials/machine — approve only if the code matches this terminal\n"},
-		{"https://other.example", "machine login code: KQ7M-X4PZ\nenter it at https://other.example/credentials/machine — approve only if the code matches this terminal\n"},
+		{"https://other.example", "machine login code: KQ7M-X4PZ\nenter it at https://other.example/credentials/machine (AGENT_SECRETS_APPROVE_URL names its origin) — approve only if the code matches this terminal\n"},
 	} {
 		stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(),
 			[]string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_APPROVE_URL=" + tc.approve}, "machine", "login")
@@ -1445,7 +1614,23 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 		{name: "pending", resp: helper.Response{LoginState: "pending"}, want: "pending\n", exit: 1},
 		{name: "denied", resp: helper.Response{LoginState: "denied"}, want: "denied\n", exit: 1, remedy: true},
 		{name: "expired", resp: helper.Response{LoginState: "expired"}, want: "expired\n", exit: 1, remedy: true},
-		{name: "none", resp: helper.Response{}, want: "none\n", exit: 1, remedy: true},
+		{name: "none", resp: helper.Response{}, want: "none\n", exit: 1, remedy: true,
+			stderr: prefix + "no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login, and have a human approve it\n"},
+		{name: "none, in identity mode", resp: helper.Response{MachineIdentity: true}, want: "none\n", exit: 1,
+			stderr: prefix + "no machine login since the helper started, and none kept on this machine; the helper's trade loop is trading this machine's identity for a new credential\n"},
+		{name: "dropped at its expiry, in identity mode", resp: helper.Response{LoginState: "expired", LoginRefused: true, CredentialDropped: "the launcher credential reached its expiry", MachineIdentity: true},
+			want: "expired\n", exit: 1,
+			stderr: prefix + "the launcher credential reached its expiry; the helper's trade loop is trading this machine's identity for a new credential\n"},
+		{name: "a live credential, the trade loop stopped", resp: helper.Response{LoginState: "issued", CredentialHeld: true, CredentialExpiresAt: expiresAt, MachineIdentity: true, IdentityStopped: true},
+			want: "issued\n",
+			stderr: prefix + "nothing renews the launcher credential, which lapses at " + expiresAt + " (in 2d1h59m), and no session enrols under this machine's credential after that; " +
+				"the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed\n"},
+		{name: "a live credential, the trade loop running", resp: helper.Response{LoginState: "issued", CredentialHeld: true, CredentialExpiresAt: expiresAt, MachineIdentity: true},
+			want:   "issued\n",
+			stderr: prefix + "the helper's trade loop renews the launcher credential; without a trade it lapses at " + expiresAt + " (in 2d1h59m)\n"},
+		{name: "dropped, the trade loop stopped", resp: helper.Response{LoginState: "expired", LoginRefused: true, CredentialDropped: "the launcher credential reached its expiry", MachineIdentity: true, IdentityStopped: true},
+			want: "expired\n", exit: 1,
+			stderr: prefix + "the launcher credential reached its expiry; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed\n"},
 		{name: "pending beside a refused credential", resp: helper.Response{LoginState: "pending", LoginRefused: true}, want: "pending\n", exit: 1},
 		{name: "pending beside a held credential", resp: helper.Response{LoginState: "pending", CredentialHeld: true}, want: "issued\n",
 			stderr: prefix + "a machine login is waiting for approval (code KQ7M-X4PZ); " + held + "\n" + unknown},
@@ -1474,20 +1659,29 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 }
 
 // TestCredentialExpiryLine: login-status's expiry line rounds to the minute with days, names a
-// credential already past its expiry (the helper has not dropped it yet) with the login remedy,
-// and says plainly when the helper's answer carries no expiry or one it cannot read.
+// credential already past its expiry (the helper has not dropped it yet) with the hint of the
+// helper's mode, and says plainly when the helper's answer carries no expiry or one it cannot read.
 func TestCredentialExpiryLine(t *testing.T) {
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
-	for _, tc := range []struct{ expiresAt, want string }{
-		{"2026-10-10T11:59:30Z", "the machine login renews itself; without a refresh it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
-		{"2026-10-03T15:05:00Z", "the machine login renews itself; without a refresh it lapses at 2026-10-03T15:05:00Z (in 3h5m)"},
-		{"2026-10-03T12:00:40Z", "the machine login renews itself; without a refresh it lapses at 2026-10-03T12:00:40Z (in 0m)"},
-		{"2026-10-03T12:00:00Z", "the launcher credential expired at 2026-10-03T12:00:00Z; run: agent-secrets machine login"},
-		{"", "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"},
-		{"next tuesday", `the helper reported an unreadable launcher credential expiry "next tuesday"`},
+	machineLogin, identity := brokerclient.FailureNoMachineLogin, brokerclient.FailureIdentityLapsed
+	for _, tc := range []struct {
+		expiresAt string
+		failure   brokerclient.Failure
+		want      string
+	}{
+		{"2026-10-10T11:59:30Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
+		{"2026-10-10T11:59:30Z", identity, "the helper's trade loop renews the launcher credential; without a trade it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
+		{"2026-10-10T11:59:30Z", brokerclient.FailureIdentityStopped, "nothing renews the launcher credential, which lapses at 2026-10-10T11:59:30Z (in 6d23h59m), and no session enrols under this machine's credential after that; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed"},
+		{"2026-10-03T12:00:00Z", brokerclient.FailureIdentityStopped, "the launcher credential expired at 2026-10-03T12:00:00Z; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed"},
+		{"2026-10-03T15:05:00Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-03T15:05:00Z (in 3h5m)"},
+		{"2026-10-03T12:00:40Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-03T12:00:40Z (in 0m)"},
+		{"2026-10-03T12:00:00Z", machineLogin, "the launcher credential expired at 2026-10-03T12:00:00Z; run: agent-secrets machine login, and have a human approve it"},
+		{"2026-10-03T12:00:00Z", identity, "the launcher credential expired at 2026-10-03T12:00:00Z; the helper's trade loop is trading this machine's identity for a new credential"},
+		{"", machineLogin, "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"},
+		{"next tuesday", machineLogin, `the helper reported an unreadable launcher credential expiry "next tuesday"`},
 	} {
-		if got := credentialExpiry(tc.expiresAt, now); got != tc.want {
-			t.Errorf("credentialExpiry(%q) = %q, want %q", tc.expiresAt, got, tc.want)
+		if got := credentialExpiry(tc.expiresAt, now, tc.failure); got != tc.want {
+			t.Errorf("credentialExpiry(%q, %v) = %q, want %q", tc.expiresAt, tc.failure, got, tc.want)
 		}
 	}
 }
@@ -1561,7 +1755,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
 	keyDir := newKeyDir(t)
-	clearFallbacks := []string{"ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID="}
+	clearFallbacks := []string{"ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="}
 
 	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir,
 		append([]string{"OMP_SESSION_ID=sess-request-123"}, clearFallbacks...), "request", "GRANT_ME")
@@ -1583,7 +1777,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 
 	// OMP_SESSION_ID unset: the request form falls back to ENVOY_SESSION_ID.
 	stdout, stderr, exit = runAgentSecrets(t, binary, broker.URL, keyDir,
-		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=sess-envoy-789", "CLAUDE_CODE_SESSION_ID="},
+		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=sess-envoy-789", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="},
 		"request", "GRANT_ME")
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0: stdout=%q stderr=%q", exit, stdout, stderr)
@@ -1598,6 +1792,39 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // set. This process's own environment may already carry one of the three (a Pi session sets its
 // own OMP_SESSION_ID), so every case sets all three explicitly rather than relying on any being
 // unset already.
+// TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
+// and, when both are set, the nearer of the two harness processes decides.
+func TestRequestSessionIDCodex(t *testing.T) {
+	cases := []struct {
+		name          string
+		claude, codex string
+		nearest       string
+		omp           string
+		want          string
+	}{
+		{"CODEX_THREAD_ID alone", "", "thread-codex", "", "", "thread-codex"},
+		{"Codex nearer than Claude Code", "sess-claude", "thread-codex", "codex", "", "thread-codex"},
+		{"Claude Code nearer than Codex", "sess-claude", "thread-codex", "claude", "", "sess-claude"},
+		{"neither found: Claude Code, as before", "sess-claude", "thread-codex", "", "", "sess-claude"},
+		{"OMP_SESSION_ID when Oh My Pi is nearer", "", "thread-codex", "omp", "sess-omp", "sess-omp"},
+		{"CODEX_THREAD_ID when Codex is nearer than Oh My Pi", "", "thread-codex", "codex", "sess-omp", "thread-codex"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("OMP_SESSION_ID", c.omp)
+			t.Setenv("ENVOY_SESSION_ID", "")
+			t.Setenv("CLAUDE_CODE_SESSION_ID", c.claude)
+			t.Setenv("CODEX_THREAD_ID", c.codex)
+			saved := nearestHarness
+			nearestHarness = func(...string) string { return c.nearest }
+			t.Cleanup(func() { nearestHarness = saved })
+			if got := requestSessionID(); got != c.want {
+				t.Fatalf("requestSessionID() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -1615,6 +1842,7 @@ func TestRequestSessionIDFallbackOrder(t *testing.T) {
 			t.Setenv("OMP_SESSION_ID", c.omp)
 			t.Setenv("ENVOY_SESSION_ID", c.envoy)
 			t.Setenv("CLAUDE_CODE_SESSION_ID", c.claude)
+			t.Setenv("CODEX_THREAD_ID", "")
 			if got := requestSessionID(); got != c.want {
 				t.Fatalf("requestSessionID() = %q, want %q", got, c.want)
 			}

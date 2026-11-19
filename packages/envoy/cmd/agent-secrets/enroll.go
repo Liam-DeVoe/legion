@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ---------------------------------------------------------------------------
@@ -45,13 +47,18 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 	service := flags.String("service", "", "--pod: the broker-side service this pod's service account is bound to")
 	// PrintDefaults appends the default itself, so neither usage names it twice.
 	podTokenFile := flags.String("pod-token-file", defaultPodTokenFile, "--pod: a pod's projected service-account token file")
-	out := flags.String("out", os.Getenv("AGENT_SECRETS_KEY_DIR"), "--pod: the directory holding key.pem and enrollment; AGENT_SECRETS_KEY_DIR when not given")
+	// --out's default, AGENT_SECRETS_KEY_DIR, is read after Parse rather than given to the flag:
+	// PrintDefaults, which -h and every usage error print, would print it, and it is the
+	// directory of key.pem, a file that holds a credential.
+	out := flags.String("out", "", "--pod: the directory holding key.pem and enrollment; AGENT_SECRETS_KEY_DIR when not given")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
+	if !flagGiven(flags, "out") {
+		*out = os.Getenv("AGENT_SECRETS_KEY_DIR")
+	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets enroll: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "enroll")
 	}
 	if *podFlag && *helperFlag {
 		fmt.Fprintln(stderr, "agent-secrets enroll: --pod and --helper are mutually exclusive: a pod proves who it is with its own projected token, and needs no machine login")
@@ -79,10 +86,21 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 }
 
 // cmdEnrollHelper asks the local agent-secrets-helper daemon, over its unix socket, to enroll a
-// session key using the machine credential `agent-secrets machine login` installed. On success
-// it writes the enrollment id into AGENT_SECRETS_KEY_DIR/enrollment (buildSigner reads it back
-// for every later session-authenticated subcommand) and prints the enrollment id alone on stdout
-// — the contract scripts/agentbox parses.
+// session key using the machine credential `agent-secrets machine login` installed. It makes
+// AGENT_SECRETS_KEY_DIR before it asks, so a directory it cannot make fails before the broker
+// makes any enrollment. On success it writes the enrollment id into
+// AGENT_SECRETS_KEY_DIR/enrollment (buildSigner reads it back for every later
+// session-authenticated subcommand) and prints the enrollment id alone on stdout — the contract
+// scripts/agentbox parses.
+//
+// A failure after the usage checks exits 1. A refusal prints the helper's code and error as they
+// came: ENROLL_OUTCOME_UNKNOWN's error says the broker may have made the enrollment. Two failures
+// of the command's own come after the broker may have made it, and each says so on stderr. A
+// helper that gives no answer (helper.ErrNoReply) leaves it unknown whether the broker made the
+// enrollment: the same command again gets the enrollment the broker made, if it made one,
+// because the broker answers the same key under the same launcher credential and runtime id with
+// its live enrollment. And when the helper answers with an enrollment that this command then
+// cannot write, the error names that enrollment's id and the write that failed.
 func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.Writer) int {
 	if runtimeID == "" || thumbprint == "" {
 		fmt.Fprintln(stderr, "agent-secrets enroll: --helper needs --runtime-id and --thumbprint")
@@ -93,12 +111,23 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 		fmt.Fprintln(stderr, "agent-secrets enroll: AGENT_SECRETS_KEY_DIR is required")
 		return exitUsageError
 	}
+	// The directory holds key.pem, so it is named by its variable, never by its path, and its
+	// errors print the system's reason alone (redact.File).
+	const keyDirNamed = "the directory AGENT_SECRETS_KEY_DIR names"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintf(stderr, "agent-secrets enroll: make %s: %v\n", keyDirNamed, redact.File(err))
+		return 1
+	}
 	sock, _ := helperSocket()
 	var sessionIDPtr *string
 	if sessionID != "" {
 		sessionIDPtr = &sessionID
 	}
 	resp, err := enrollRetryingDrain(sock, helper.Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: thumbprint, SessionID: sessionIDPtr})
+	if errors.Is(err, helper.ErrNoReply) {
+		fmt.Fprintf(stderr, "agent-secrets enroll: the helper gave no answer (%v). So it is not known if the broker made the enrollment. Run the same command again: if the broker made the enrollment, the command gets that enrollment.\n", err)
+		return 1
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets enroll: %v\n", err)
 		return 1
@@ -107,29 +136,34 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 		fmt.Fprintf(stderr, "agent-secrets enroll: %s: %s\n", resp.Code, resp.Error)
 		return 1
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets enroll: %v\n", err)
+	path := filepath.Join(dir, enrollmentFile)
+	// The file keeps the id as the broker made it, and the lines print it on one line
+	// (redact.OneLine), as every broker-answer value this CLI prints does. A write that fails
+	// exits 1 and names the enrollment, the file and the directory by its setting, never the
+	// path, and the system's reason alone (redact.File): "the broker made enrollment <id>, but
+	// this command could not write its id to enrollment in the directory AGENT_SECRETS_KEY_DIR
+	// names: <operation>: <reason>".
+	if err := writeFileAtomic(path, []byte(resp.EnrollmentID+"\n"), 0o600); err != nil {
+		fmt.Fprintf(stderr, "agent-secrets enroll: the broker made enrollment %s, but this command could not write its id to %s in %s: %v\n", redact.OneLine(resp.EnrollmentID), enrollmentFile, keyDirNamed, redact.File(err))
 		return 1
 	}
-	if err := writeFileAtomic(filepath.Join(dir, enrollmentFile), []byte(resp.EnrollmentID+"\n"), 0o600); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets enroll: %v\n", err)
-		return 1
-	}
-	fmt.Fprintln(stdout, resp.EnrollmentID)
+	fmt.Fprintln(stdout, redact.OneLine(resp.EnrollmentID))
 	return 0
 }
 
 // enrollDrainWait is how long `enroll --helper` retries a DRAINING answer (a helper install is
-// about to restart the helper): the 30 s it already gives one call, so a box launched inside
-// install's drain-to-restart window enrolls with the restarted helper. Only tests shorten it.
-var enrollDrainWait = 30 * time.Second
+// about to restart the helper): helper.BrokerCallWait, the wait it gives one call, so a box
+// launched inside install's drain-to-restart window enrolls with the restarted helper. Only
+// tests shorten it.
+var enrollDrainWait = helper.BrokerCallWait
 
 // enrollRetryingDrain asks the helper req, again every 250 ms while it answers DRAINING, until
-// enrollDrainWait has passed; the last answer is returned as it came.
+// enrollDrainWait has passed; the last answer is returned as it came. Each call waits
+// helper.BrokerCallWait, the wait of a broker-call op.
 func enrollRetryingDrain(sock string, req helper.Request) (helper.Response, error) {
 	deadline := time.Now().Add(enrollDrainWait)
 	for {
-		resp, err := helper.Call(sock, req, 30*time.Second)
+		resp, err := helper.Call(sock, req, helper.BrokerCallWait)
 		if err != nil || resp.OK || resp.Code != helper.CodeDraining || !time.Now().Before(deadline) {
 			return resp, err
 		}
@@ -142,8 +176,7 @@ func enrollRetryingDrain(sock string, req helper.Request) (helper.Response, erro
 func cmdUnenroll(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, map[string]bool{"enrollment": true})
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets unenroll: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "unenroll")
 	}
 	flags := newFlagSet("unenroll", stderr)
 	enrollmentID := flags.String("enrollment", "", "the enrollment id to revoke")
@@ -165,10 +198,16 @@ func cmdUnenroll(args []string, stdout, stderr io.Writer) int {
 // cmdUnenrollHelper asks the local agent-secrets-helper daemon to end an enrollment
 // `enroll --helper` made, over its unix socket, using the machine credential `agent-secrets
 // machine login` installed. Idempotent: the helper treats the broker's 204 and 404 as done.
-// Prints nothing on success, matching the exit-code-only unenroll contract.
+// Prints nothing on success, matching the exit-code-only unenroll contract. A helper that gives
+// no answer (helper.ErrNoReply) leaves it unknown whether the broker revoked the enrollment, and
+// stderr says so and that the same command is safe to run again.
 func cmdUnenrollHelper(enrollmentID string, stderr io.Writer) int {
 	sock, _ := helperSocket()
-	resp, err := helper.Call(sock, helper.Request{Op: "unenroll-session-key", EnrollmentID: enrollmentID}, 30*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "unenroll-session-key", EnrollmentID: enrollmentID}, helper.BrokerCallWait)
+	if errors.Is(err, helper.ErrNoReply) {
+		fmt.Fprintf(stderr, "agent-secrets unenroll: the helper gave no answer (%v). So it is not known if the broker revoked the enrollment. It is safe to run the same command again.\n", err)
+		return 1
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets unenroll: %v\n", err)
 		return 1

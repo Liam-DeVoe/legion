@@ -1,4 +1,6 @@
+import { askProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
+import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
@@ -11,16 +13,17 @@ import {
   userAgentStateQuery,
   userStateQuery,
 } from "./queries";
-import { answeredNotFound, type RefreshTarget } from "./query-refresh";
+import { answeredNotFound, type RefreshCheck, type RefreshTarget } from "./query-refresh";
 import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
   ArchitectureTreeIssueRef,
   Artifact,
+  Ask,
   AskRead,
   ChangedReference,
+  DispatchEvent,
   DocumentReferenceSummary,
-  Event,
   EventType,
   GraphReferences,
   InboxRow,
@@ -46,18 +49,18 @@ const projectsKey = projectsQuery().queryKey;
 const pinnedKey = ["issues", "pinned"] as const;
 
 /** One untyped-payload read for the fields the rules take off an event. */
-function payloadValue(event: Event, key: string): unknown {
+function payloadValue(event: DispatchEvent, key: string): unknown {
   const payload = event.payload;
   return typeof payload === "object" && payload !== null ? Reflect.get(payload, key) : undefined;
 }
 
-function payloadString(event: Event, key: string): string | undefined {
+function payloadString(event: DispatchEvent, key: string): string | undefined {
   const value = payloadValue(event, key);
   return typeof value === "string" ? value : undefined;
 }
 
 /** A list field the server writes, or undefined on an event written before it existed. */
-function payloadStrings(event: Event, key: string): readonly string[] | undefined {
+function payloadStrings(event: DispatchEvent, key: string): readonly string[] | undefined {
   const value = payloadValue(event, key);
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
@@ -100,7 +103,7 @@ function pinnedRow(key: string): RefreshTarget {
  * one request per such word on screen. `issue.created` asks whatever the last answer was, and so
  * does the whole-cache refresh the stream's reconnect runs (`refreshQueries` with no targets).
  */
-function issueSummaryOf(key: string, event: Event): RefreshTarget {
+function issueSummaryOf(key: string, event: DispatchEvent): RefreshTarget {
   const target = { exact: true, queryKey: ["issue-summary", key] } as const;
   return event.type === "issue.created"
     ? target
@@ -123,6 +126,116 @@ function inboxRowOfAsk(id: string): RefreshTarget {
   };
 }
 
+/** Whether an ask is an open question nobody handed on: the person it waits on is then its
+ *  issue's assignee, or its project's default while nobody holds the issue or the ask is on a
+ *  project document (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), so an assignee move
+ *  or a default move changes it. An answered or closed ask's card draws no Asked-of badge
+ *  (`AskHandOn`, drawn for an open ask alone in `AskCard`), so neither move changes what a read of
+ *  it shows. Every target below that tests a read for a question one of those moves carries
+ *  tests it with this. */
+function openAndNotHandedOn(ask: Pick<Ask, "asked_of" | "state">): boolean {
+  return ask.state === "open" && ask.asked_of === null;
+}
+
+/** Every Inbox read that holds an open ask of `project` whose person that project's default
+ *  decides: the last step of `coalesce(a.asked_of, i.assignee, p.default_assignee)`, so an ask
+ *  nobody handed on, on an issue nobody holds or on a project document. The Inbox read names no
+ *  assignee (`inboxQuery`), so a reader's list holds every open ask she can see with the person
+ *  the server resolved for it (`waiting_on_person`), whoever that is, and the assignee filter and
+ *  the Asked-of badge read that field: moving the default moves it in every list holding such a
+ *  row, not only in the two the event names. An issue row that does not say who holds its issue
+ *  is counted as one nobody holds. */
+function inboxRowsDecidedByDefault(project: string): RefreshTarget {
+  return {
+    queryKey: inboxKey,
+    when: (data) =>
+      rowsOf<InboxRow>(data).some(
+        (row) =>
+          openAndNotHandedOn(row) &&
+          askProject(row) === project &&
+          (row.issue_key === null || (row.issue?.assignee ?? null) === null)
+      ),
+  };
+}
+
+/** Every ask list of an issue of `project` that holds an open question nobody handed on
+ *  (`openAndNotHandedOn`): the issue's (`["asks", key]`, which the margin and a document's ask
+ *  blocks read) and the Conversation tab's (`["asks", key, "thread"]`, beneath it). Each row
+ *  carries the person the server resolved for it (`waiting_on_person`), which the Asked-of badge
+ *  on the issue's page reads, so a default move changes it for every such question on an issue
+ *  nobody holds. An issue key's project is the part before its first hyphen (`issueProject`).
+ *  The rows do not say who holds their issue, so the list of an issue a person holds reads again
+ *  too, which answers the same rows. */
+function issueAskListsDecidedByDefault(project: string): RefreshTarget {
+  return {
+    queryKey: ["asks"],
+    when: (data, query) => {
+      const key = query.queryKey[1];
+      return (
+        typeof key === "string" &&
+        issueProject(key) === project &&
+        rowsOf<Ask>(data).some(openAndNotHandedOn)
+      );
+    },
+  };
+}
+
+/** Every project document's ask list (`["artifact", id, "asks"]`, which the document's page reads
+ *  its ask blocks and its margin's cards from) that holds an open question nobody handed on
+ *  (`openAndNotHandedOn`): an ask on a project document waits on that project's default until
+ *  somebody hands it on. A document of an issue reads its issue's list instead (`ProofDocument`).
+ *  Of any project, since the cache cannot tell which: the key names the document by id alone, a
+ *  row names its project only for an anchored ask (`anchor_artifact`), and the document's own
+ *  read, which carries it, is another query, which a test of this one cannot see. A list of
+ *  another project's document reads again and answers the same rows. */
+const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
+  queryKey: ["artifact"],
+  when: (data, query) =>
+    query.queryKey.length === 3 &&
+    query.queryKey[2] === "asks" &&
+    rowsOf<Ask>(data).some(openAndNotHandedOn),
+};
+
+/** The project the ask of a cached thread names, or undefined when it names none: its issue's
+ *  (`issueProject`), else the project of the document an anchored ask or an approval request sits
+ *  on. A block ask on a project document names its document by id alone (`block_artifact`). */
+function threadAskProject(ask: AskRead["ask"]): string | undefined {
+  if (ask.issue_key !== null) return issueProject(ask.issue_key);
+  return ask.anchor_artifact?.project ?? ask.approval_artifact?.project;
+}
+
+/** Every cached ask thread (`["ask-thread", id]`, from which the Inbox's Reply-thread card draws
+ *  its question's Asked-of badge, and which never goes stale on its own) whose question of
+ *  `project` is open with nobody handed on (`openAndNotHandedOn`). The thread does not say who
+ *  holds its issue, so the thread of an issue a person holds reads again too, which answers the
+ *  same badge. A thread whose ask names no project (`threadAskProject`) reads again whichever
+ *  project's it is: its project is in the document's own read, another query, which a test of
+ *  this one cannot see. A thread holding no ask (an error, never fetched) draws no badge. */
+function askThreadsDecidedByDefault(project: string): RefreshTarget {
+  return {
+    queryKey: ["ask-thread"],
+    when: (data) => {
+      const ask = (data as AskRead | undefined)?.ask;
+      if (ask === undefined || !openAndNotHandedOn(ask)) return false;
+      const named = threadAskProject(ask);
+      return named === undefined || named === project;
+    },
+  };
+}
+
+/** Every cached ask thread (`["ask-thread", id]`, the Reply-thread card's) whose question is on
+ *  issue `key` and is open with nobody handed on (`openAndNotHandedOn`): the issue's assignee is
+ *  the person it waits on, so moving the assignee changes its Asked-of badge. */
+function askThreadsDecidedByAssignee(key: string): RefreshTarget {
+  return {
+    queryKey: ["ask-thread"],
+    when: (data) => {
+      const ask = (data as AskRead | undefined)?.ask;
+      return ask !== undefined && ask.issue_key === key && openAndNotHandedOn(ask);
+    },
+  };
+}
+
 /** The thread rows one of the Inbox's two reads holds: its own unpaged list, or the pages of
  *  what the reader has dismissed (`dismissedThreadsQuery`, an infinite read, whose data is its
  *  pages). */
@@ -135,9 +248,10 @@ function threadRowsOf(data: unknown): readonly MyReplyRow[] {
 
 /** The Inbox's own thread reads (`inboxThreadsQuery` and `dismissedThreadsQuery`, so both the
  *  Inbox and the Dismissed view), when one of their rows is a thread on issue `key`: a Reply row
- *  shows its issue's title and priority, and whether it is listed at all turns on who the issue
- *  is assigned to (`myRepliesOwner` in the server's replies.go leaves out an open ask on an open
- *  issue assigned to the reader, which the Inbox lists under Waiting on you instead). Built like
+ *  shows its issue's title and priority, and whether it is listed at all turns on who waits on
+ *  the ask (`myRepliesOwner` in the server's replies.go leaves out an open ask on an open issue
+ *  that waits on the reader, which the Inbox lists under Waiting on you instead), which an
+ *  assignee move changes for every ask nobody has handed on. Built like
  *  `inboxRowsOf`: it needs no field of the event's, so an older server's event reaches it too. */
 function inboxThreadRowsOf(key: string): RefreshTarget {
   return {
@@ -186,7 +300,7 @@ function referencePanel(reference: string): RefreshTarget {
 // The document an ask or comment event touches: a block ask names the document that holds its
 // block, an anchored ask or comment names the document its mark lives in, and an ask or comment
 // with neither touches no document at all.
-function eventDocument(event: Event): string | undefined {
+function eventDocument(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "ask.opened":
     case "ask.edited":
@@ -213,7 +327,7 @@ function eventDocument(event: Event): string | undefined {
 // Follower events carry the ask under `ask_id`; every other ask event is the ask itself and
 // carries its `id`. Both refresh the ask's read (a reference to it, an ask page) and its thread,
 // which lists followers.
-function appendAskReads(targets: RefreshTarget[], event: Event): void {
+function appendAskReads(targets: RefreshTarget[], event: DispatchEvent): void {
   const id =
     event.type === "ask.follower_added" || event.type === "ask.follower_removed"
       ? payloadString(event, "ask_id")
@@ -227,7 +341,7 @@ function appendAskReads(targets: RefreshTarget[], event: Event): void {
 // whose read carries its replies, and the ask whose thread holds it. An edit rewrites the
 // comment's blocks, so every read of one of them; a reply that names a block moves that block's
 // read, which lists the reply.
-function appendCommentReads(targets: RefreshTarget[], event: Event): void {
+function appendCommentReads(targets: RefreshTarget[], event: DispatchEvent): void {
   const id =
     event.type === "comment.delivery" ? event.payload.comment_id : payloadString(event, "id");
   if (id !== undefined) {
@@ -261,7 +375,7 @@ function commentBlockReads(id: string): RefreshTarget {
 
 /** The read of the block of a comment or message a reply names (`reply_block`, its node id),
  *  which lists the reply under the block. */
-function appendRepliedBlock(targets: RefreshTarget[], event: Event): void {
+function appendRepliedBlock(targets: RefreshTarget[], event: DispatchEvent): void {
   const replied = payloadValue(event, "reply_block");
   const node =
     typeof replied === "object" && replied !== null ? Reflect.get(replied, "node") : undefined;
@@ -272,7 +386,7 @@ function appendRepliedBlock(targets: RefreshTarget[], event: Event): void {
 
 /** The signed-in person's answers page lists every answer and every reply on an ask, so the
  *  two events that write one refresh it. The query exists only while that page is open. */
-function appendAnswersPage(targets: RefreshTarget[], event: Event): void {
+function appendAnswersPage(targets: RefreshTarget[], event: DispatchEvent): void {
   if (
     event.type === "ask.answered" ||
     (event.type === "comment.created" && payloadString(event, "ask_id") !== undefined)
@@ -285,7 +399,7 @@ function appendAnswersPage(targets: RefreshTarget[], event: Event): void {
 // into it, and one a project document owns an `owned_by` edge: that document's backlink panel
 // lists both, each row showing the head of the item's text, which an edit moves. A resolution, a
 // reopen, an answer, a hand-back or a suggestion's verdict moves neither the edge nor its text.
-function appendDocumentPanel(targets: RefreshTarget[], event: Event): void {
+function appendDocumentPanel(targets: RefreshTarget[], event: DispatchEvent): void {
   if (
     event.type !== "ask.opened" &&
     event.type !== "ask.edited" &&
@@ -307,12 +421,13 @@ function appendDocumentPanel(targets: RefreshTarget[], event: Event): void {
 
 // The ask lifecycle events, listed rather than matched on the `ask.` prefix so a new one falls
 // to the default branch instead of silently routing here.
-function isAskEvent(event: Event): boolean {
+function isAskEvent(event: DispatchEvent): boolean {
   return (
     event.type === "ask.opened" ||
     event.type === "ask.anchor_refreshed" ||
     event.type === "ask.edited" ||
     event.type === "ask.handed_back" ||
+    event.type === "ask.asked_of" ||
     event.type === "ask.answered" ||
     event.type === "ask.resolved" ||
     event.type === "ask.follower_added" ||
@@ -321,9 +436,10 @@ function isAskEvent(event: Event): boolean {
 }
 
 /** The ask events that open or close an ask: the sidebar's per-project open-ask counts and an
- *  issue's pinned row (`open_asks`) move with them. An edit, a hand-back, an anchor refresh or a
- *  follower change moves neither. A block event can open or retract a decision block's ask. */
-function movesOpenAsks(event: Event): boolean {
+ *  issue's pinned row (`open_asks`) move with them. An edit, a hand-back, a hand-on to another
+ *  person, an anchor refresh or a follower change moves neither: the ask stays open, and only
+ *  whose list it sits in can change. A block event can open or retract a decision block's ask. */
+function movesOpenAsks(event: DispatchEvent): boolean {
   return (
     event.type === "ask.opened" ||
     event.type === "ask.answered" ||
@@ -335,7 +451,7 @@ function movesOpenAsks(event: Event): boolean {
 
 // The events that change a comment thread: creation, deliveries, lifecycle, suggestion
 // verdicts, and a cascaded anchor refresh (a document version orphaned or re-anchored it).
-function isCommentLikeEvent(event: Event): boolean {
+function isCommentLikeEvent(event: DispatchEvent): boolean {
   return (
     event.type === "comment.created" ||
     event.type === "comment.delivery" ||
@@ -355,7 +471,7 @@ function isCommentLikeEvent(event: Event): boolean {
  *  row: both write paths file a reply under the ask at the head of its thread (`ask_id`), and a
  *  delivery receipt names that ask too. A citation of an ask moves its row's backlink count, which
  *  the targets the event names restore (`changedReferenceTargets`). */
-function movesInboxRows(event: Event): boolean {
+function movesInboxRows(event: DispatchEvent): boolean {
   return (
     isAskEvent(event) ||
     (isCommentLikeEvent(event) && payloadString(event, "ask_id") !== undefined) ||
@@ -383,7 +499,7 @@ function appendAgentConversation(targets: RefreshTarget[], target: string | unde
   }
 }
 
-function isMessageEvent(event: Event): boolean {
+function isMessageEvent(event: DispatchEvent): boolean {
   return (
     event.type === "message.created" ||
     event.type === "message.delivery" ||
@@ -397,8 +513,22 @@ function isMessageEvent(event: Event): boolean {
 // (settlement restoring one) or being resolved, which decides whether the Inbox lists its thread
 // instead. An edit, a resolution of a comment, a delivery or a claim moves no row.
 //
+// A hand-on (`ask.asked_of`) is here for the same reason an assignee move is: the Inbox leaves
+// out the Reply row of an open ask it already lists (`myRepliesOwner` in the server's
+// replies.go, over `coalesce(a.asked_of, i.assignee, p.default_assignee)`), so handing the ask
+// from one person to another makes that row appear for the person who gave it up and disappear
+// for the person who took it. The event names both of them in its `thread_logins`, which is
+// what decides whose list refreshes below.
+//
 // An issue-less `message.created` or `message.answered` is here for the Inbox's Agent rows: a
 // one-off message to a session, and that session's reply to one.
+//
+// A project's default assignee (`settings.project_default_assignee.updated`) is here for the
+// third step of the same expression: an open ask on an issue nobody holds reaches that person
+// (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), and the Replies list leaves out an
+// ask the Inbox already shows the reader, so moving the default moves those threads from one
+// person's Reply rows into the other's. Its `thread_logins` names the previous default and the
+// new one.
 const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "comment.created": true,
   "comment.answered": true,
@@ -406,27 +536,40 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "message.answered": true,
   "ask.opened": true,
   "ask.answered": true,
+  "ask.asked_of": true,
   "ask.resolved": true,
+  "settings.project_default_assignee.updated": true,
 };
 
 /**
  * Whether the viewer's Inbox thread rows (`["me", "replies"]`: both states of the unpaged read,
  * the unread count and every owner's unread set) can have moved: a write above, or an issue
- * closing, reopening or being reassigned, each of which moves its open asks' threads into or out
- * of the Reply rows (`myRepliesOwner` in the server's replies.go).
+ * closing, reopening or being reassigned. A reassignment, a hand-on (`ask.asked_of`, among the
+ * writes above) and a project's default moving all move the same rows for the same reason: whom
+ * an open ask waits on is one expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`,
+ * and the Reply rows leave out an ask the Inbox already lists for the viewer (`myRepliesOwner`
+ * in the server's replies.go), so moving that person moves the ask's thread into one person's
+ * Reply rows and out of the other's.
+ *
+ * A project-default write moves the person without touching the thread or naming an issue, so
+ * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox
+ * tests the rows it holds (`inboxRowsDecidedByDefault`, from the project-default branch of
+ * `ownerTargets`). An assignee write needs no such read: every reader's Inbox holds every open
+ * ask of the issue, so the test against its rows (`inboxRowsOf`) finds each list it moves.
  *
  * `thread_logins` names whose rows the write moved - for an issue-less message the thread root's
- * author, which is the person whose Agent row it is - so only theirs, and the writer's own,
- * refresh. Without it every one of those writes refreshes, except an `issue.updated` that says it
- * moved neither status nor assignee: the server names the logins on every status move, a close
- * and a reopen among them, and on every assignee move.
+ * author, which is the person whose Agent row it is, for a hand-on the person it moved from and
+ * the one it moved to, and for a project default the previous default and the new one - so only
+ * theirs, and the writer's own, refresh. Without it every one of those writes refreshes, except
+ * an `issue.updated` that says it moved neither status nor assignee: the server names the logins
+ * on every status move, a close and a reopen among them, and on every assignee move.
  *
  * The known limit: an older server mid-deploy writes no `thread_logins` on a reassignment, so a
  * Reply row that should appear here - an open ask on an issue assigned away from the viewer -
  * does not until the next list read. The conditional target beside this rule
  * (`inboxThreadRowsOf`) covers the other direction, where a listed row carries the issue's key.
  */
-function movesInboxThreads(event: Event, viewer: string | undefined): boolean {
+function movesInboxThreads(event: DispatchEvent, viewer: string | undefined): boolean {
   const issueWrite = event.type === "issue.closed" || event.type === "issue.updated";
   if (INBOX_THREAD_WRITES[event.type] !== true && !issueWrite) {
     return false;
@@ -448,21 +591,23 @@ function movesInboxThreads(event: Event, viewer: string | undefined): boolean {
 
 /** The fields an `issue.created|updated|closed` write moved, or undefined when the event does not
  *  say, in which case any of them may have. */
-function issueChanges(event: Event): ReadonlySet<string> | undefined {
+function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
   const changed = payloadStrings(event, "changed");
   return changed === undefined ? undefined : new Set(changed);
 }
 
 /**
- * Every event whose server path rewrites the issue's own reference edges: a document version or
- * upload, an ask's creation or edit (a settled ask block among them), a comment or message body -
+ * Every event whose server path rewrites the issue's own reference edges: a document version,
+ * upload or title correction, which moves the title every reference to the document shows; an
+ * ask's creation or edit (a settled ask block among them), a comment or message body -
  * an answer's reply body is indexed like any other - an anchor refresh, a follower change, a child
  * link, and an issue write that moved a structural edge (its parent, its blockers, its components)
  * or the title every one of them shows as its excerpt.
  */
-function changesReferenceGraph(event: Event): boolean {
+function changesReferenceGraph(event: DispatchEvent): boolean {
   switch (event.type) {
     case "artifact.created":
+    case "artifact.renamed":
     case "artifact.version":
     case "ask.anchor_refreshed":
     case "ask.edited":
@@ -496,7 +641,7 @@ function changesReferenceGraph(event: Event): boolean {
  * event of the issue does.
  */
 function issueWriteTargets(
-  event: Event,
+  event: DispatchEvent,
   key: string,
   project: string | undefined
 ): RefreshTarget[] {
@@ -540,10 +685,10 @@ function issueWriteTargets(
     targets.push(pinnedRow(key));
   }
   // An Inbox thread row shows its thread's issue title and its priority, and an assignee move
-  // decides whether an open ask's thread is listed here at all. The assignee rule is the
-  // conditional half of the belt `movesInboxThreads` describes: it needs no field the server
-  // only recently writes, so it catches a reassignment an older server's event says nothing of,
-  // in the one direction a listed row can be tested for.
+  // decides whether the thread of an open ask nobody has handed on is listed here at all. The
+  // assignee rule is the conditional half of the belt `movesInboxThreads` describes: it needs no
+  // field the server only recently writes, so it catches a reassignment an older server's event
+  // says nothing of, in the one direction a listed row can be tested for.
   if (!created && (moved("title") || moved("priority") || moved("assignee"))) {
     targets.push(inboxThreadRowsOf(key));
   }
@@ -566,6 +711,13 @@ function issueWriteTargets(
     }
   }
 
+  // The Reply-thread card draws a question's Asked-of badge from its thread (`["ask-thread", id]`,
+  // never stale on its own), and an open question of the issue nobody handed on waits on its
+  // assignee.
+  if (!created && moved("assignee")) {
+    targets.push(askThreadsDecidedByAssignee(key));
+  }
+
   // The sidebar's per-project open-ask count counts the open asks of open issues: only a close and
   // a reopen move it. A new issue has no asks.
   if (closed || (created ? changes === undefined : moved("closed_at"))) {
@@ -582,6 +734,19 @@ function issueWriteTargets(
     }
   }
 
+  // The Priorities page's rows and the rail's two counts (`["priorities"]`, both the full body
+  // and the summary under it), and the work listed under one priority (`["issues", "advances",
+  // <id>]`, every scoped issues table's read). What the work under a priority is moves with the
+  // relation itself, with the status each row counts by, and with the parent, which is what an
+  // issue inherits its priorities down. The scoped listing is refreshed by its prefix rather
+  // than by the priority the event names: an issue carries its own relations and the ones it
+  // inherits, so a write can move the work under a priority the payload never names. The
+  // relation is no edge of the reference graph (`changesReferenceGraph` leaves `advances` out),
+  // so no backlink panel reads it.
+  if (moved("advances") || moved("status") || moved("parent")) {
+    targets.push({ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] });
+  }
+
   // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their
   // backlink panels: the new parent and blockers are the payload's, the old ones are the panels
   // that still list an edge from this issue.
@@ -594,7 +759,7 @@ function issueWriteTargets(
           node.kind === "issue" &&
           (node.id === parent ||
             blockers.includes(node.id) ||
-            edges.some(
+            (edges ?? []).some(
               (edge) =>
                 edge.node.kind === "issue" &&
                 edge.node.id === key &&
@@ -603,6 +768,57 @@ function issueWriteTargets(
       )
     );
   }
+  return targets;
+}
+
+/**
+ * What one write of priority `id` changes, by which of the three writes it was. Every one moves
+ * the priorities reads (`["priorities"]`: the Priorities page's body `["priorities", "full"]`,
+ * the rail's two counts `["priorities", "summary"]`, and the priority page's margin
+ * `["priorities", "history", id]`), which is also where every page reads a priority's title and
+ * its place in the order from. A create, a rename, a move or a description moves nothing else:
+ * an issue row carries a priority by its id alone (`{id, inherited}`), so no issue listing
+ * reads again on them, and the description's autosave refetches no fault list.
+ *
+ * A delete takes the priority out of every relation, and the server writes no issue event for
+ * the issues it leaves, so it also moves:
+ *
+ * - the work listed under it (`["issues", "advances", id]`), which the priority page's work
+ *   table and its scope links read, now empty;
+ * - the work under no priority (`["issues", "advances", "none"]`): an issue that advanced only
+ *   this priority joins it, and the cache cannot tell which issues those are, since no row of
+ *   that listing names the priority;
+ * - every read that holds an issue advancing it, by its own relation or one it inherits
+ *   (`advances` lists both): an issue read (`["issue", key]`; an issue's references or its
+ *   collaborators under that prefix carry no `advances`), and a list of issue rows (every
+ *   `["issues", ...]` listing and the Agents page's issue picker). That is the parked fault list
+ *   (`advances=any`), whose rows under this priority alone leave it and whose other rows drop
+ *   it, every other issue listing that draws the row, and above all each open issue read, whose
+ *   header would otherwise keep naming the priority and send it back in the next whole-set write
+ *   of its `advances`, which the server refuses (`400 ADVANCES_INPUT`, a priority that is gone).
+ *   A row of `advances=any` that does not name it stays, since it still advances another.
+ */
+function priorityWriteTargets(
+  event: Extract<DispatchEvent, { type: "priority.updated" }>
+): RefreshTarget[] {
+  const { change, id } = event.payload;
+  const targets: RefreshTarget[] = [{ queryKey: ["priorities"] }];
+  if (change !== "deleted") {
+    return targets;
+  }
+  const advancesIt = (row: unknown): boolean =>
+    typeof row === "object" &&
+    row !== null &&
+    ((row as Pick<IssueSummary, "advances">).advances ?? []).some((entry) => entry.id === id);
+  const when: RefreshCheck = (data) =>
+    Array.isArray(data) ? data.some(advancesIt) : advancesIt(data);
+  targets.push(
+    { queryKey: ["issues", "advances", id] },
+    { queryKey: ["issues", "advances", "none"] },
+    { queryKey: ["issue"], when },
+    { queryKey: ["issues"], when },
+    { exact: true, queryKey: ["agents", "issue-picker"], when }
+  );
   return targets;
 }
 
@@ -616,7 +832,7 @@ const EVERY_QUESTION_MAP: RefreshTarget = { queryKey: ["references", "questions"
  *  which `:::ask{#id}` blocks the latest version declares, or an ask settling into a block,
  *  leaving one or moving - every ask event but a follower's arrival or departure, which moves
  *  no block. */
-function changesQuestionMaps(event: Event): boolean {
+function changesQuestionMaps(event: DispatchEvent): boolean {
   return (
     event.type === "artifact.version" ||
     (isAskEvent(event) &&
@@ -625,9 +841,63 @@ function changesQuestionMaps(event: Event): boolean {
   );
 }
 
+/**
+ * Whether the event can change who the issue's collaborators are, the server's own list of what
+ * makes one (`collaboratorEventReasons` in
+ * packages/envoy/internal/dispatch/api/issue_collaborators.go): a claim, a
+ * comment, a message, an ask, a document version, and an answer to any of them. An issue
+ * document's events carry the issue's key, so the version here is that issue's.
+ *
+ * The assignee is a collaborator with no write of their own, so an `issue.updated` that moved
+ * `assignee` - or that does not say what it moved - changes the list too.
+ */
+function changesCollaborators(event: DispatchEvent): boolean {
+  switch (event.type) {
+    case "artifact.version":
+    case "ask.answered":
+    case "ask.opened":
+    case "comment.answered":
+    case "comment.created":
+    case "issue.claimed":
+    case "message.answered":
+    case "message.created":
+      return true;
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("assignee");
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether the event comes with the Legion daemon writing a step record of the issue. A step write
+ * appends no event of its own (packages/envoy/internal/dispatch/api/steps.go), so the Steps tab
+ * is refreshed by what the daemon writes beside it as a phase moves: a claim or a release, as a
+ * role's run starts or ends; a handoff, the report a role writes as its step ends; a close, which
+ * ends the merge; and an issue write that moved the status or the route, or that does not say
+ * what it moved.
+ */
+function changesSteps(event: DispatchEvent): boolean {
+  switch (event.type) {
+    case "handoff.recorded":
+    case "issue.claimed":
+    case "issue.closed":
+    case "issue.released":
+      return true;
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("status") || changes.has("route");
+    }
+    default:
+      return false;
+  }
+}
+
 /** What a project document's event refreshes: an ask, a comment, a version or a review on a
  *  document that belongs to no issue. */
-function documentTargets(event: Event, viewer: string | undefined): RefreshTarget[] {
+function documentTargets(event: DispatchEvent, viewer: string | undefined): RefreshTarget[] {
   if (event.artifact_id === null || event.artifact_id === undefined) {
     throw new Error("document event is missing its artifact id");
   }
@@ -648,9 +918,14 @@ function documentTargets(event: Event, viewer: string | undefined): RefreshTarge
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
   }
-  // A reference to the document shows its name, kind and latest version. A new document can be
-  // the one a reference that found nothing named (no data to test), so it refreshes those too.
-  if (event.type === "artifact.version" || event.type === "artifact.created") {
+  // A reference to the document shows its name, kind and latest version. A correction moves the
+  // name it shows. A new document can be the one a reference that found nothing named (no data
+  // to test), so it refreshes those too.
+  if (
+    event.type === "artifact.version" ||
+    event.type === "artifact.created" ||
+    event.type === "artifact.renamed"
+  ) {
     const created = event.type === "artifact.created";
     targets.push({
       queryKey: ["doc-summary", event.project],
@@ -682,7 +957,7 @@ function documentTargets(event: Event, viewer: string | undefined): RefreshTarge
   return targets;
 }
 
-function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[] {
+function ownerTargets(event: DispatchEvent, viewer: string | undefined): RefreshTarget[] {
   if (
     event.type === "project.created" ||
     event.type === "project.updated" ||
@@ -696,6 +971,11 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
       { queryKey: ["project", event.project] },
       { queryKey: ["issues", "project", event.project] },
       { queryKey: ["repo-projects"] },
+      // The project list carries no default assignee: a new project's is in the defaults read
+      // alone, which the Settings table reads it from and was answered before it existed.
+      ...(event.type === "project.created"
+        ? [{ queryKey: projectDefaultAssigneesQuery().queryKey }]
+        : []),
       // A mapping write can change the repository every issue of its project resolves to (a new
       // default, one removed or moved away), which the issue header reads from the issue's
       // detail. The detail's key names no project, so every loaded detail refreshes; mapping
@@ -703,10 +983,31 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
       ...(event.type === "settings.repo_project.updated" ? [{ queryKey: ["issue"] }] : []),
     ];
   }
-  // The default decides who a later create lands on; no issue already listed moves, so only
-  // the Settings table's own read refreshes.
+  // The Settings table always, and the Inbox, issue, document and Reply-thread reads of a question
+  // the move carries: a project's default is the last step of the chain that decides who a
+  // question reaches, so every open ask of the project nobody handed on, on an issue nobody holds
+  // or on a project document, now waits on the new default. Every reader's Inbox holds those rows
+  // with the person they wait on, which its assignee filter and Asked-of badge read, so a reader
+  // whose list holds one reads it again whoever she is (`inboxRowsDecidedByDefault`). The issue
+  // page and the document page draw the same badge from their own ask lists, which read again
+  // when they hold such a question (`issueAskListsDecidedByDefault`,
+  // `DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT`), and the Inbox's Reply-thread card draws it from the
+  // question's thread, which reads again when it holds one (`askThreadsDecidedByDefault`). The
+  // two people `thread_logins` names (`movesInboxThreads`) read their whole Inbox and their Reply
+  // rows as well, since the move carries those threads between their Replies, and a reader whose
+  // reads hold no such question and whom the write does not name sends no read.
   if (event.type === "settings.project_default_assignee.updated") {
-    return [{ queryKey: projectDefaultAssigneesQuery().queryKey }];
+    const targets: RefreshTarget[] = [
+      { queryKey: projectDefaultAssigneesQuery().queryKey },
+      inboxRowsDecidedByDefault(event.payload.project),
+      issueAskListsDecidedByDefault(event.payload.project),
+      DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT,
+      askThreadsDecidedByDefault(event.payload.project),
+    ];
+    if (movesInboxThreads(event, viewer)) {
+      targets.push({ queryKey: inboxKey }, { queryKey: myRepliesKey });
+    }
+    return targets;
   }
   if (
     event.type === "settings.architecture_source.updated" ||
@@ -756,6 +1057,10 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
     // The event names one thread, or none at all - a Mark all read names its project and no
     // thread - and either way every one of the viewer's thread reads is refreshed.
     return isViewer(payloadString(event, "login"), viewer) ? [{ queryKey: myRepliesKey }] : [];
+  }
+  if (event.type === "priority.updated") {
+    // A create, a rename, a move, a description or a delete of a priority, by anybody.
+    return priorityWriteTargets(event);
   }
   if (event.type === "subscription.remove_requested") {
     return [];
@@ -807,6 +1112,16 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
   }
+  if (changesCollaborators(event)) {
+    // The Collaborators tab's read and the composer's "Not running" options, named here because
+    // every issue target is `exact` and because the branches below return before this point - a
+    // claim's among them, and a claim is what makes a Legion agent a collaborator.
+    targets.push({ exact: true, queryKey: ["issue", key, "collaborators"] });
+  }
+  if (changesSteps(event)) {
+    // The Steps tab's read, named here for the same two reasons as the collaborators above.
+    targets.push({ exact: true, queryKey: ["issue", key, "steps"] });
+  }
   if (event.type === "decision.kept") {
     // A Keep moves one decision's row of the issue's Decisions view and nothing else: it writes
     // no document version, no ask and no issue field.
@@ -827,9 +1142,10 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
     event.type === "issue.released" ||
     event.type === "issue.deployed"
   ) {
-    // A claim changes only who holds the issue: its detail, its log, and the project lists that
-    // render the claim. No rollup, ask count or component attachment moves with it. A deploy is a
-    // line in the issue's log and nothing the lists or rollups read.
+    // A claim changes who holds the issue, and its holder is a collaborator from then on: the
+    // detail, the log, the project lists that render the claim, and the collaborators and the
+    // steps the branches above named. No rollup, ask count or component attachment moves with it.
+    // A deploy is a line in the issue's log and nothing the lists or rollups read.
     return targets;
   }
   if (event.type === "artifact.human_edited") {
@@ -862,6 +1178,19 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
     }
     return targets;
   }
+  if (event.type === "artifact.renamed" || event.type === "artifact.removed") {
+    // A correction moves the title the issue's document list, the document's own read and every
+    // reference to it show; a removal takes the row out of them. Both name the document itself,
+    // and both move the `attached_to` edge the issue's backlink panel lists. Neither touches a
+    // version, so the coverage and the results stand.
+    targets.push(
+      { queryKey: ["artifacts", key] },
+      { queryKey: ["artifact", event.payload.artifact.id] },
+      issueSummaryOf(key, event),
+      referencePanel(issueReference)
+    );
+    return targets;
+  }
   if (event.type === "artifact.approved" || event.type === "artifact.changes_requested") {
     targets.push(
       { queryKey: ["artifacts", key] },
@@ -883,11 +1212,20 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
   // lists the results it recorded. Nothing else reads a result — no document, ask, inbox or
   // issue detail carries one — and this switch has a default, so the branch is deliberate and
   // its test pins it.
-  if (event.type === "result.recorded") {
+  //
+  // A retraction moves the same two reads: the result stays in both listings and stops counting
+  // as evidence there, so a page that did not refetch would keep showing it as proof.
+  if (event.type === "result.recorded" || event.type === "result.retracted") {
     targets.push({ exact: true, queryKey: ["issue", key, "results"] });
     if (event.payload.issue !== key) {
       targets.push({ exact: true, queryKey: ["issue", event.payload.issue, "results"] });
     }
+    return targets;
+  }
+  // A pull request that moves to another issue changes what this issue's results are compared
+  // with, and the event is on each of the two issues, so each refetches its own results read.
+  if (event.type === "issue.pull_request_attribution_changed") {
+    targets.push({ exact: true, queryKey: ["issue", key, "results"] });
     return targets;
   }
   if (isAskEvent(event)) {
@@ -955,7 +1293,7 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
   }
   if (event.type === "handoff.recorded") {
     // A handoff write lands in the issue's handoff list; its log line is the `["events", key]`
-    // target above.
+    // target above, and the step it ended the steps target above.
     targets.push({ queryKey: ["handoffs", key] });
     return targets;
   }
@@ -981,7 +1319,7 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
 
 /** What the server says one write moved in the reference graph, read the same way on every
  *  event; an event recorded before the field existed carries nothing. */
-function changedReferences(event: Event): readonly ChangedReference[] {
+function changedReferences(event: DispatchEvent): readonly ChangedReference[] {
   const changed = payloadValue(event, "references_changed");
   return Array.isArray(changed) ? (changed as ChangedReference[]) : [];
 }
@@ -1021,7 +1359,7 @@ const TRUNCATED_KIND_READS: Readonly<Partial<Record<string, readonly RefreshTarg
 };
 
 /**
- * The reads that carry a changed target's backlinks, which `refs.ReplaceCounted` names in the
+ * The reads that carry a changed target's backlinks, which `refs.CountedChanges` names in the
  * transaction that appends the event: an issue's detail (its count), its references tab and its
  * panel; an ask's read, its thread, the list its row lives in (its issue's asks, or its
  * document's), the Inbox row showing its count, and its panel; a document's panel; a block's
@@ -1032,7 +1370,7 @@ const TRUNCATED_KIND_READS: Readonly<Partial<Record<string, readonly RefreshTarg
  * without the list (an older server), or lists a kind this build does not know, refreshes every
  * read that holds a count or a panel.
  */
-function changedReferenceTargets(event: Event): RefreshTarget[] {
+function changedReferenceTargets(event: DispatchEvent): RefreshTarget[] {
   const truncatedKinds = payloadStrings(event, "references_changed_truncated_kinds");
   if (
     (truncatedKinds === undefined &&
@@ -1110,7 +1448,7 @@ function changedReferenceTargets(event: Event): RefreshTarget[] {
  * the status `done` emits `issue.closed` alone). Without `changed` (an older server) every update
  * and close may have. A deploy moves neither.
  */
-export function askThreadsIssue(event: Event): string | null {
+export function askThreadsIssue(event: DispatchEvent): string | null {
   switch (event.type) {
     case "issue.claimed":
     case "issue.released":
@@ -1141,12 +1479,180 @@ function askThreadsOn(issue: string): RefreshTarget {
 }
 
 /**
+ * Whether `address` is `owner` or an address under it: `owner`, then the end of the address or
+ * one of `next`, the characters that may stand after an owner of that kind in an address
+ * (`buildDispatchReference`), so that `dispatch://CORE-1` is never read as the start of
+ * `dispatch://CORE-12`.
+ */
+function addressUnder(address: string, owner: string, next: string): boolean {
+  return (
+    address.startsWith(owner) &&
+    (address.length === owner.length || next.includes(address.charAt(owner.length)))
+  );
+}
+
+/** The slug of the project document `event` is on, where its payload carries it: a renamed or
+ *  removed document's own, an edited comment's document's (`artifact_slug`), and an edited
+ *  ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through the
+ *  ask's own route the one that holds its typed block (`block_artifact`), or for an approval
+ *  request's rewording the one it asks approval of (`approval_artifact`, which the server's read
+ *  of the event log attaches to every ask event carrying `approval`), each the document the ask
+ *  is on. Four events carry none, and name the document by its id alone, which no address is
+ *  written with: a new version, a comment's edit written before `artifact_slug` existed, the
+ *  edit of a question asked of the document as a whole, with no anchor, no block and no
+ *  approval, and a document version's rewording of a block ask, whose event the document's
+ *  settlement writes without `block_artifact`. */
+function projectDocumentSlug(event: DispatchEvent): string | undefined {
+  switch (event.type) {
+    case "artifact.removed":
+    case "artifact.renamed":
+      return event.payload.artifact.slug;
+    case "ask.edited":
+      return (
+        event.payload.anchor_artifact?.slug ??
+        event.payload.block_artifact?.slug ??
+        event.payload.approval_artifact?.slug
+      );
+    case "comment.edited":
+      return event.payload.artifact_slug;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Which addresses `event` can change the words or the name under, or undefined for an event on
+ * neither an issue nor a project document. An issue's event is on the issue or on something it
+ * owns - a comment, an ask, a message, a document and its blocks - each written under
+ * `dispatch://<KEY>`, with `/` or `#` next. The issue's own address, `dispatch://<KEY>`, is
+ * named by the issue's title and by nothing else, since the names read names an issue by its
+ * title alone and every other target by its own words, a document by its name and a block by its
+ * text (the server's `refs.TargetNames`). So a write that changes the title (`issue.updated`) is
+ * on that one address, and every other event is on the addresses under it and never on that one,
+ * since none of them changes the title: a child's page cites its parent by its bare address, and
+ * a new version of the parent's spec leaves the name of that address as it was. A project
+ * document's event is on the document or on an ask, a comment or a block of it, each written
+ * under `dispatch://<PROJECT>/artifact/<slug>`, with `@`, `/` or `#` next. An event whose payload
+ * carries that slug (`projectDocumentSlug`) is on those addresses, and one that names the
+ * document by its id alone, as `projectDocumentSlug` lists, is on the addresses of every document
+ * of the project.
+ */
+function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | undefined {
+  if (event.issue_key !== null) {
+    const issue = buildDispatchReference({ key: event.issue_key, kind: "issue" });
+    if (event.type === "issue.updated") {
+      return (address) => address === issue;
+    }
+    return (address) => address !== issue && addressUnder(address, issue, "/#");
+  }
+  const project = event.project;
+  if (event.artifact_id === null || event.artifact_id === undefined || project === undefined) {
+    return undefined;
+  }
+  const slug = projectDocumentSlug(event);
+  if (slug === undefined) {
+    const documents = buildDispatchReference({ kind: "document", project, slug: "" });
+    return (address) => address.startsWith(documents);
+  }
+  const document = buildDispatchReference({ kind: "document", project, slug });
+  return (address) => addressUnder(address, document, "@/#");
+}
+
+/**
+ * Every names read whose key (`["reference-targets", <sorted addresses>]`) holds an address
+ * `event` can change the words under (`eventAddresses`), or one written in a form other than
+ * `dispatch://` and its owner, which could name anything and so is refreshed for rather than
+ * missed. An event on neither an issue nor a project document refreshes every names read.
+ */
+function namesReadsNaming(event: DispatchEvent): RefreshTarget {
+  const touched = eventAddresses(event);
+  if (touched === undefined) {
+    return { queryKey: ["reference-targets"] };
+  }
+  return {
+    queryKey: ["reference-targets"],
+    when: (_data, query) =>
+      rowsOf<unknown>(query.queryKey[1]).some(
+        (address) =>
+          typeof address === "string" && (!address.startsWith("dispatch://") || touched(address))
+      ),
+  };
+}
+
+/**
+ * Which names reads (`referenceTargetsQuery`, `["reference-targets", <sorted addresses>]`) an
+ * event refreshes: those whose key holds an address it changes the words under, on a comment's
+ * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
+ * and none on any other event. The issue page's names reads are kept fresh by events
+ * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
+ * addresses it names, so a page that comes to hold another set reads again under a key of its
+ * own: only a change of words under the same address needs a rule.
+ * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
+ * naming none, as an older server sends it) renames the issue's own address, since a names read
+ * names an issue by its title, so it refreshes the reads naming that address, and only those
+ * (`eventAddresses`).
+ * A document's rename (`artifact.renamed`) moves the name the read answers for an address to the
+ * document, and its removal (`artifact.removed`) makes every address to it and to its blocks
+ * name nothing (`gone`), so each refreshes them too.
+ *
+ * Of the names reads the app holds, each event refreshes those whose key holds an address it can
+ * change, of the issue or the project document it is on (`namesReadsNaming`). The test reads the
+ * query's key, not the page's issue, since a page's words can cite another issue's target. Every
+ * address the issue page names a read by is written `dispatch://` and its owner
+ * (`treeReferences`): a node's own, a chip's, each one its words cite, a bare key asked as its
+ * issue's own address, and an item id or a block id written short still under its owner, so the
+ * key alone ties each address to what owns it. An event of these kinds on neither an issue nor a
+ * project document never reaches this rule: `documentTargets` refuses it first, and the feed then
+ * refreshes every read the app holds.
+ *
+ * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
+ * once the document has been quiet after those edits, each of which wrote a version that sent
+ * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. Nor
+ * is a message: the feed has no `message.edited` (its message events are `message.created`,
+ * `message.delivery`, `message.accepted` and `message.answered`), so a message's body never
+ * changes under its address.
+ *
+ * The feed is the workspace's (`api/event-feed.ts`): these events arrive for every issue and
+ * project document of the workspace, a document's new version above all, and one that can
+ * change no address a names read the app holds names costs nothing. One that can change an
+ * address a read's key holds - an event of the open issue itself, whose tree holds its
+ * addresses, or of an issue or a project document its words cite - costs one read per such
+ * query the app holds and renders (one request per batch of its addresses, which no ordinary
+ * issue passes), at most two for an open issue page - the tree's own and the one naming what a
+ * typed block's words cite (`useIssueTree`) - and marks stale one the app holds and renders not.
+ * A project document's event that names the document by its id alone (`projectDocumentSlug`)
+ * reaches a read naming any document of its project, since it does not carry the slug its
+ * addresses are written with (`eventAddresses`). It refreshes through the same `refreshQueries`
+ * every other rule does, so a read already out, or begun under a second ago, is fetched again
+ * once those rules allow; since the rule tests the read's key against the answer that lands, a
+ * first read out at the event that then fails holds no answer to test and is not read again by
+ * it, and window focus or a later event reads it again (`refetchFailedOnFocus`).
+ */
+function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
+  switch (event.type) {
+    case "artifact.removed":
+    case "artifact.renamed":
+    case "artifact.version":
+    case "ask.edited":
+    case "comment.edited":
+      return [namesReadsNaming(event)];
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("title") ? [namesReadsNaming(event)] : [];
+    }
+    default:
+      return [];
+  }
+}
+
+/**
  * The reads one event of the feed can change, each a query key (a prefix unless `exact`) and, where
  * only some of a family's reads can have moved, a test of the read's data. `signedInLogin` is the
  * viewer's: the per-viewer events and the Replies rule read it.
  */
-export function eventRefreshTargets(event: Event, signedInLogin?: string): RefreshTarget[] {
+export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string): RefreshTarget[] {
   const targets = [...ownerTargets(event, signedInLogin), ...changedReferenceTargets(event)];
+  targets.push(...referenceNameTargets(event));
   const threadsIssue = askThreadsIssue(event);
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));

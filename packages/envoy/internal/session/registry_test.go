@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // setupNATS connects t to the package's shared NATS server, in the JetStream account testnats.URL
@@ -97,7 +98,7 @@ func TestSessionEntryTmuxPlaceSurvivesTheBucketAndIsOmittedWhenNil(t *testing.T)
 
 func TestSessionRegistry_PutAndGet(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestSessionRegistry_PutAndGet(t *testing.T) {
 // session list read back from the bucket names them.
 func TestSessionRegistry_PutAndGetKeepsThePluginAndItsVersion(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestSessionRegistry_PutAndGetKeepsThePluginAndItsVersion(t *testing.T) {
 // a predecessor can read whose instance that predecessor belongs to.
 func TestSessionRegistry_PutAndGetKeepsTheClientInstanceID(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -171,7 +172,7 @@ func TestSessionRegistry_PutAndGetKeepsTheClientInstanceID(t *testing.T) {
 // than with another instance's id it no longer belongs to.
 func TestSessionRegistry_PutWithoutClientInstanceIDClearsTheStoredOne(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestSessionRegistry_PutWithoutClientInstanceIDClearsTheStoredOne(t *testing
 
 func TestSessionRegistry_GetNotFound(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestSessionRegistry_GetNotFound(t *testing.T) {
 
 func TestSessionRegistry_TTLExpiry(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestSessionRegistry_TTLExpiry(t *testing.T) {
 
 func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -261,7 +262,7 @@ func TestSessionRegistry_PutRefreshesTTL(t *testing.T) {
 
 func TestSessionRegistry_Delete(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open session registry: %v", err)
 	}
@@ -539,7 +540,7 @@ func TestSessionRegistryDeleteIf_DeletesARegistrationNoNewerThanTheMoment(t *tes
 func openRegistryForInstanceDelete(t *testing.T) *SessionRegistry {
 	t.Helper()
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
@@ -563,7 +564,7 @@ func putForInstanceDelete(t *testing.T, reg *SessionRegistry, sessionID, instanc
 
 func TestSessionRegistry_Ping_Healthy(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
@@ -576,7 +577,7 @@ func TestSessionRegistry_Ping_ClosedConnReturnsError(t *testing.T) {
 	// A closed KV handle must remain observable through Ping so /healthz can
 	// report the unavailable dependency while NATS reconnects.
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("failed to open: %v", err)
 	}
@@ -593,7 +594,7 @@ func TestSessionRegistry_Ping_ClosedConnReturnsError(t *testing.T) {
 
 func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 	client := setupNATS(t)
-	registry, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	registry, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open registry: %v", err)
 	}
@@ -615,7 +616,7 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 		t.Fatalf("connect replacement: %v", err)
 	}
 	defer replacement.Close()
-	if err := registry.Rewatch(replacement); err != nil {
+	if err := registry.Rewatch(context.Background(), replacement); err != nil {
 		t.Fatalf("rewatch registry: %v", err)
 	}
 	if err := registry.Ping(); err != nil {
@@ -647,7 +648,7 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	logs := captureSessionRegistryLogs(t)
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
@@ -681,7 +682,7 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 
 func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
@@ -725,7 +726,7 @@ func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 
 func TestSessionRegistryDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("OpenSessionRegistry: %v", err)
 	}
@@ -856,16 +857,7 @@ func (kv *historyFailSessionKeyValue) History(string, ...natsgo.WatchOpt) ([]nat
 
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if condition() {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for observable state")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.WithinPolling(t, timeout, testwait.Poll, "observable state", condition)
 }
 
 func waitForSessionEviction(t *testing.T, reg *SessionRegistry, sessionID string, timeout time.Duration) {
@@ -884,22 +876,7 @@ func captureSessionRegistryLogs(t *testing.T) *lockedBuffer {
 	return &logs
 }
 
-type lockedBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.String()
-}
+type lockedBuffer = logtest.Buffer
 
 // TestMain removes the NATS server the package's tests share (testnats.Main).
 func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }

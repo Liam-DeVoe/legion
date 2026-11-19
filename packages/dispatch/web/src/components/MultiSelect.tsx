@@ -1,14 +1,4 @@
-import {
-  type KeyboardEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
-import { createPortal } from "react-dom";
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import {
   borderDefault,
@@ -16,7 +6,18 @@ import {
   card,
   cardHoverBorder,
   dangerText,
+  focusBorder,
   inputClasses,
+  pageFailedText,
+  pageHairBorder,
+  pageInkText,
+  pageLineBorder,
+  pageMarkBg,
+  pageMutedText,
+  pagePaneBg,
+  pagePaperBg,
+  pageQuietText,
+  pageRowHoverBg,
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
@@ -24,19 +25,49 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../theme/classes";
+import { AnchoredPanel } from "./AnchoredPanel";
 import { TruncatedText } from "./TruncatedText";
+import { useTooltips } from "./tooltips";
 
-/** The popover's `w-64` plus the 8 px margin the anchor keeps from each viewport edge. */
-const popoverWidth = 272;
-
-function fold(value: string): string {
-  return value.trim().toLocaleLowerCase();
+function fold(value: string | undefined): string {
+  return (value ?? "").trim().toLocaleLowerCase();
 }
+
+/**
+ * Each colour the picker draws inside `NoTooltips`, the new issue page's, by the role `main`'s
+ * colour has: the trigger is the page's header control (its rule and muted words on the
+ * paper); the popover is the page's menu (the prototype's `#menu`: the hairline rule on the
+ * paper), whose rows are its items, in the ink with the mark grey under the pointer and on the
+ * active row; an empty list is quiet words, a refusal the failed red, and Clear the page's pane
+ * with muted words. A detail is muted words too, not quiet ones: it is drawn on its row's mark
+ * grey under the pointer and on the active row, where the quiet grey reads 4.11:1 in the light
+ * scheme, under the 4.5:1 its words need. The search box keeps `main`'s focus rule, the one
+ * focus indicator of the application.
+ *
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
+ * registers for the page, which `shared-controls.tooltips.test.tsx` holds.
+ */
+const ON_PAGE = {
+  checkbox: pageHairBorder,
+  clear: `${pagePaneBg} ${pageMutedText}`,
+  detail: pageMutedText,
+  empty: pageQuietText,
+  failure: `${pageLineBorder} ${pageFailedText}`,
+  panel: `${pageHairBorder} ${pagePaperBg}`,
+  search: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  trigger: `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${pageLineBorder} ${pagePaperBg} ${pageMutedText}`,
+} as const;
 
 export interface MultiSelectProps {
   /** Trigger content; defaults to the label with the selection count (`Labels · 2`). */
   readonly children?: ReactNode;
   readonly disabled?: boolean;
+  /** The trigger is busy with what the last close committed: it stays focusable, and says so
+   *  rather than looking actionable and doing nothing. */
+  readonly ariaDisabled?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
   /** Shown in place of the list when nothing is left to choose or nothing matches the search. */
@@ -77,6 +108,7 @@ export interface MultiSelectProps {
  * `open`, so it can stage a draft on open and commit on close.
  */
 export function MultiSelect({
+  ariaDisabled = false,
   children,
   disabled = false,
   emptyMessage,
@@ -94,22 +126,29 @@ export function MultiSelect({
   searchLabel,
   selected,
   triggerAriaLabel,
-  triggerClassName = `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
+  triggerClassName,
 }: MultiSelectProps): ReactNode {
   const id = useId();
+  const tooltips = useTooltips();
+  const trigger =
+    triggerClassName ??
+    (tooltips
+      ? `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
+      : ON_PAGE.trigger);
   const listboxId = `${id}-options`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState<string | undefined>(undefined);
-  const [position, setPosition] = useState({ left: 0, top: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
 
   const searchText = query.trim();
   const needle = fold(searchText);
-  const visibleOptions = options.filter((option) => fold(optionLabel(option)).includes(needle));
+  // A host's label function can answer nothing for a value it does not know — a `?status=` of
+  // another deploy, say — and a value with no label is still an option, read as itself.
+  const labelOf = (option: string) => optionLabel(option) ?? option;
+  const visibleOptions = options.filter((option) => fold(labelOf(option)).includes(needle));
   const createValue =
     onCreate !== undefined &&
     searchText !== "" &&
@@ -119,11 +158,15 @@ export function MultiSelect({
   const rows = createValue === undefined ? visibleOptions : [...visibleOptions, createValue];
   const activeRow = activeValue !== undefined && rows.includes(activeValue) ? activeValue : rows[0];
 
+  // What the reader picked, compared as the server compares a label: a URL that lower-cased
+  // `Epic` still ticks the option the project spells `Epic`, and ticking it again removes it
+  // rather than adding a second spelling.
+  const isPicked = (value: string) => selected.some((current) => fold(current) === fold(value));
   const toggle = (value: string) => {
     setActiveValue(value);
     onChange(
-      selected.includes(value)
-        ? selected.filter((current) => current !== value)
+      isPicked(value)
+        ? selected.filter((current) => fold(current) !== fold(value))
         : [...selected, value]
     );
   };
@@ -145,44 +188,6 @@ export function MultiSelect({
     }
     wasOpen.current = open;
   }, [open]);
-
-  // Anchor under the trigger after every render while open - the trigger moves when its host's
-  // row reflows (the issue header adds a label chip per selection) - and on resize and scroll.
-  const anchor = useCallback(() => {
-    const bounds = triggerRef.current?.getBoundingClientRect();
-    if (bounds === undefined) return;
-    const minLeft = window.scrollX + 8;
-    const maxLeft = Math.max(minLeft, window.scrollX + window.innerWidth - popoverWidth);
-    const left = Math.min(Math.max(bounds.left + window.scrollX, minLeft), maxLeft);
-    const top = bounds.bottom + window.scrollY + 4;
-    setPosition((current) =>
-      current.left === left && current.top === top ? current : { left, top }
-    );
-  }, []);
-  useLayoutEffect(() => {
-    if (open) anchor();
-  });
-  useEffect(() => {
-    if (!open) return;
-    window.addEventListener("resize", anchor);
-    window.addEventListener("scroll", anchor, true);
-    return () => {
-      window.removeEventListener("resize", anchor);
-      window.removeEventListener("scroll", anchor, true);
-    };
-  }, [anchor, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsidePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
-      onOpenChange(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointerDown);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointerDown);
-  }, [onOpenChange, open]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown" && rows.length > 0) {
@@ -206,29 +211,28 @@ export function MultiSelect({
       }
       return;
     }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      onOpenChange(false);
-      return;
-    }
     if (event.key === "Tab") {
       onOpenChange(false);
     }
   };
 
   const rowClassName = (active: boolean) =>
-    `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
-      active ? `${selectedCardBg} ${selectedCardBorder}` : ""
-    }`;
+    tooltips
+      ? `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
+          active ? `${selectedCardBg} ${selectedCardBorder}` : ""
+        }`
+      : `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${pageLineBorder} ${pageInkText} ${pageRowHoverBg} ${
+          active ? pageMarkBg : ""
+        }`;
 
   return (
     <>
       <button
+        aria-disabled={ariaDisabled || undefined}
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-label={triggerAriaLabel}
-        className={triggerClassName}
+        className={trigger}
         disabled={disabled}
         onClick={() => onOpenChange(!open)}
         ref={triggerRef}
@@ -236,121 +240,128 @@ export function MultiSelect({
       >
         {children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`)}
       </button>
-      {open
-        ? createPortal(
-            <div
-              className={`absolute z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${card} ${borderDefault}`}
-              ref={panelRef}
-              style={position}
-            >
-              <div className={`sticky top-0 border-b p-2 ${card}`}>
-                <input
-                  aria-activedescendant={activeRow === undefined ? undefined : optionId(activeRow)}
-                  aria-autocomplete="list"
-                  aria-controls={listboxId}
-                  aria-expanded="true"
-                  aria-label={searchLabel}
-                  className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+      {open ? (
+        <AnchoredPanel
+          anchorRef={triggerRef}
+          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
+          onDismiss={() => onOpenChange(false)}
+        >
+          <div className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}>
+            <input
+              aria-activedescendant={activeRow === undefined ? undefined : optionId(activeRow)}
+              aria-autocomplete="list"
+              aria-controls={listboxId}
+              aria-expanded="true"
+              aria-label={searchLabel}
+              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${tooltips ? inputClasses(true) : ON_PAGE.search}`}
+              disabled={disabled}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setActiveValue(undefined);
+                onQueryChange?.(event.target.value);
+              }}
+              onKeyDown={handleKeyDown}
+              placeholder={searchLabel}
+              ref={inputRef}
+              role="combobox"
+              type="search"
+              value={query}
+            />
+          </div>
+          <div
+            aria-label={`${label} options`}
+            aria-multiselectable="true"
+            id={listboxId}
+            role="listbox"
+          >
+            {visibleOptions.map((option) => {
+              const isSelected = isPicked(option);
+              const label = labelOf(option);
+              const detail = optionDetail?.(option);
+              const spokenDetail = optionDetailLabel?.(option) ?? detail;
+              return (
+                <button
+                  aria-label={spokenDetail === undefined ? undefined : `${label}, ${spokenDetail}`}
+                  aria-selected={isSelected}
+                  className={rowClassName(activeRow === option)}
                   disabled={disabled}
-                  onChange={(event) => {
-                    setQuery(event.target.value);
-                    setActiveValue(undefined);
-                    onQueryChange?.(event.target.value);
-                  }}
-                  onKeyDown={handleKeyDown}
-                  placeholder={searchLabel}
-                  ref={inputRef}
-                  role="combobox"
-                  type="search"
-                  value={query}
-                />
-              </div>
-              <div
-                aria-label={`${label} options`}
-                aria-multiselectable="true"
-                id={listboxId}
-                role="listbox"
-              >
-                {visibleOptions.map((option) => {
-                  const isSelected = selected.includes(option);
-                  const label = optionLabel(option);
-                  const detail = optionDetail?.(option);
-                  const spokenDetail = optionDetailLabel?.(option) ?? detail;
-                  return (
-                    <button
-                      aria-label={
-                        spokenDetail === undefined ? undefined : `${label}, ${spokenDetail}`
-                      }
-                      aria-selected={isSelected}
-                      className={rowClassName(activeRow === option)}
-                      disabled={disabled}
-                      id={optionId(option)}
-                      key={option}
-                      onClick={() => toggle(option)}
-                      onMouseDown={(event) => event.preventDefault()}
-                      role="option"
-                      type="button"
+                  id={optionId(option)}
+                  key={option}
+                  onClick={() => toggle(option)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  role="option"
+                  type="button"
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${tooltips ? borderStrong : ON_PAGE.checkbox}`}
+                  >
+                    {isSelected ? "✓" : ""}
+                  </span>
+                  {tooltips ? (
+                    <TruncatedText className="min-w-0 flex-1" title={label}>
+                      {label}
+                    </TruncatedText>
+                  ) : (
+                    // Inside `NoTooltips` (the new issue page) no `title` can give back what an
+                    // ellipsis cut, so the label wraps instead and is read whole.
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
+                  )}
+                  {detail === undefined ? null : (
+                    <span
+                      className={`shrink-0 text-xs tabular-nums ${tooltips ? textMutedOnSurface : ON_PAGE.detail}`}
                     >
-                      <span
-                        aria-hidden="true"
-                        className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${borderStrong}`}
-                      >
-                        {isSelected ? "✓" : ""}
-                      </span>
-                      <TruncatedText className="min-w-0 flex-1" title={label}>
-                        {label}
-                      </TruncatedText>
-                      {detail === undefined ? null : (
-                        <span className={`shrink-0 text-xs tabular-nums ${textMutedOnSurface}`}>
-                          {detail}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-                {createValue === undefined ? null : (
-                  <button
-                    aria-selected="false"
-                    className={rowClassName(activeRow === createValue)}
-                    disabled={disabled}
-                    id={optionId(createValue)}
-                    onClick={() => create(createValue)}
-                    onMouseDown={(event) => event.preventDefault()}
-                    role="option"
-                    type="button"
-                  >
-                    <span aria-hidden="true" className="w-4 shrink-0 text-center">
-                      +
+                      {detail}
                     </span>
-                    Create &quot;{createValue}&quot;
-                  </button>
-                )}
-                {rows.length === 0 ? (
-                  <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>{emptyMessage}</p>
-                ) : null}
-              </div>
-              {error === null ? null : (
-                <p className={`border-t px-3 py-2 text-sm ${borderDefault} ${dangerText}`}>
-                  {error}
-                </p>
-              )}
-              {selected.length === 0 ? null : (
-                <div className={`sticky bottom-0 border-t p-2 ${card}`}>
-                  <button
-                    className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${surfaceMutedBg} ${textSecondaryOnSurface}`}
-                    disabled={disabled}
-                    onClick={() => onChange([])}
-                    onMouseDown={(event) => event.preventDefault()}
-                    type="button"
-                  >
-                    Clear {label.toLocaleLowerCase()}
-                  </button>
-                </div>
-              )}
-            </div>,
-            document.body
-          )
-        : null}
+                  )}
+                </button>
+              );
+            })}
+            {createValue === undefined ? null : (
+              <button
+                aria-selected="false"
+                className={rowClassName(activeRow === createValue)}
+                disabled={disabled}
+                id={optionId(createValue)}
+                onClick={() => create(createValue)}
+                onMouseDown={(event) => event.preventDefault()}
+                role="option"
+                type="button"
+              >
+                <span aria-hidden="true" className="w-4 shrink-0 text-center">
+                  +
+                </span>
+                Create &quot;{createValue}&quot;
+              </button>
+            )}
+            {rows.length === 0 ? (
+              <p className={`px-3 py-2 text-sm ${tooltips ? textMutedOnSurface : ON_PAGE.empty}`}>
+                {emptyMessage}
+              </p>
+            ) : null}
+          </div>
+          {error === null ? null : (
+            <p
+              className={`border-t px-3 py-2 text-sm ${tooltips ? `${borderDefault} ${dangerText}` : ON_PAGE.failure}`}
+            >
+              {error}
+            </p>
+          )}
+          {selected.length === 0 ? null : (
+            <div className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}>
+              <button
+                className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
+                disabled={disabled}
+                onClick={() => onChange([])}
+                onMouseDown={(event) => event.preventDefault()}
+                type="button"
+              >
+                Clear {label.toLocaleLowerCase()}
+              </button>
+            </div>
+          )}
+        </AnchoredPanel>
+      ) : null}
     </>
   );
 }

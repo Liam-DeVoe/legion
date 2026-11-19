@@ -10,8 +10,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // heldLock is a Request.StoreLock that knows whether it is held, so a runner can read, at each
@@ -364,6 +367,61 @@ func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
 	lock.mu.Unlock()
 }
 
+// Remove renames the workspace aside and deletes the aside once the store lock is let go. The
+// workspace's parent directory is on the issue's volume, which a role can swap for a fifo, and a
+// plain os.RemoveAll of the aside then opens that fifo plainly and waits for a writer for as long
+// as none comes, holding the outbox's turn. So the aside is removed through rolefile.RemoveTree,
+// which answers ENOTDIR at once: Remove returns, refusing, and the fifo is left as it was. The
+// parent is swapped as the store lock is let go, which is after the git worktree entry's removal
+// and before the aside's deletion.
+func TestRemoveAsideAnswersAParentSwappedForAFifo(t *testing.T) {
+	run := newLocalRunner(t)
+	working, err := Provision(context.Background(), run, provisionRequest(t))
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	parent := filepath.Dir(working.Dir)
+	// The bound guards the aside's removal alone, so it starts at the swap: the jj and git Remove
+	// runs under the lock before it are as slow as the host is, with nothing blocking them.
+	swapped := make(chan struct{})
+	var once sync.Once
+	lock := &unlockWatch{onUnlock: func() {
+		once.Do(func() {
+			defer close(swapped)
+			if err := os.Rename(parent, parent+".moved"); err != nil {
+				t.Error(err)
+			}
+			if err := syscall.Mkfifo(parent, 0o644); err != nil {
+				t.Error(err)
+			}
+		})
+	}}
+	done := make(chan error, 1)
+	go func() { done <- Remove(context.Background(), run, working, lock) }()
+	var armed, bound = (<-chan struct{})(swapped), (<-chan time.Time)(nil)
+	for answered := false; !answered; {
+		select {
+		case err := <-done:
+			answered = true
+			if !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "remove workspace directory") {
+				t.Fatalf("Remove with its workspace's parent swapped for a fifo answered %v, want the aside's removal refused with ENOTDIR", err)
+			}
+		case <-armed:
+			armed, bound = nil, time.After(30*time.Second)
+		case <-bound:
+			// Open the fifo for writing so the blocked open returns and Remove's goroutine ends.
+			if writer, openErr := os.OpenFile(parent, os.O_WRONLY, 0); openErr == nil {
+				_ = writer.Close()
+			}
+			<-done
+			t.Fatalf("Remove was still opening %s 30s after its parent became a fifo: a workspace parent swapped for a fifo blocks the aside's removal", parent)
+		}
+	}
+	if info, err := os.Lstat(parent); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", parent, info, err)
+	}
+}
+
 // overlapRunner holds the first checkout until a second one starts, so two provisions' checkouts
 // are seen to run at once, and counts the other commands that run at once.
 type overlapRunner struct {
@@ -479,4 +537,60 @@ func TestAHostProvisionFetchesOnlyTheBranchesItNeeds(t *testing.T) {
 	if listed := runSetup(t, first.Clone, "jj", "bookmark", "list", "--all-remotes", "--ignore-working-copy", "-R", first.Clone); strings.Contains(listed, "WIDGETS-99") {
 		t.Errorf("the fetch brought another issue's branch: %q", listed)
 	}
+}
+
+// CheckedOut reads a workspace's sparse patterns, and a shared clone made from a pod's feed
+// permanently holds none (feedClone's `jj sparse set --clear`), so a caller that asked it about a
+// clone would read the clone as an unfinished checkout and check the whole tree out into it. It
+// refuses the clone itself and every directory under the clone root the clone sits in, before it
+// runs any jj, and still answers for the issue's own workspace.
+func TestCheckedOutCloneRootDirectoriesAreRefused(t *testing.T) {
+	run := newLocalRunner(t)
+	req := provisionRequest(t)
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	// A second repository in the same state directory, so its own shared clone — a real jj clone,
+	// with a .jj of its own, which guardWorkspace refuses only once the runner is called, as no
+	// workspace of this clone (sharedRepository) — sits beside the first under one clone root.
+	beside := req
+	beside.Repo = ghrepo.MustParse("acme/gadgets")
+	beside.Issue = "GADGETS-7"
+	other, err := Provision(context.Background(), run, beside)
+	if err != nil {
+		t.Fatalf("Provision of the second repository: %v", err)
+	}
+	if root := filepath.Dir(filepath.Dir(working.Clone)); root != CloneRoot(req.StateDir) || filepath.Dir(filepath.Dir(other.Clone)) != root {
+		t.Fatalf("the two clones %s and %s do not share the clone root %s", working.Clone, other.Clone, CloneRoot(req.StateDir))
+	}
+	for _, refused := range []struct {
+		what string
+		ws   Workspace
+	}{
+		{"the shared clone itself", Workspace{Dir: working.Clone, Clone: working.Clone, Bookmark: working.Bookmark, Repo: working.Repo}},
+		{"another repository's clone under the same clone root", Workspace{Dir: other.Clone, Clone: working.Clone, Bookmark: working.Bookmark, Repo: working.Repo}},
+	} {
+		t.Run(refused.what, func(t *testing.T) {
+			before := len(run.Calls())
+			whole, err := CheckedOut(context.Background(), run, refused.ws)
+			if err == nil || whole {
+				t.Fatalf("CheckedOut of %s = %t, %v; want false and a refusal", refused.ws.Dir, whole, err)
+			}
+			if !strings.Contains(err.Error(), refused.ws.Dir) {
+				t.Errorf("the refusal %q does not name %s", err, refused.ws.Dir)
+			}
+			if !strings.Contains(err.Error(), "CheckedOut cannot answer for") {
+				t.Errorf("the refusal is %q, want CheckedOut's own refusal to answer for a clone", err)
+			}
+			if ran := run.Calls()[before:]; len(ran) != 0 {
+				t.Errorf("the refusal ran %d command(s), the first %q; want none", len(ran), ran[0].Argv)
+			}
+		})
+	}
+	t.Run("the issue's own workspace", func(t *testing.T) {
+		if whole, err := CheckedOut(context.Background(), run, working); err != nil || !whole {
+			t.Fatalf("CheckedOut of the provisioned workspace %s = %t, %v; want true", working.Dir, whole, err)
+		}
+	})
 }

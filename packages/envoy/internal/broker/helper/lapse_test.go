@@ -16,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // lapseRig is a logged-in rig whose one session (this test process) enrolls and then has its
@@ -386,17 +388,18 @@ func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan registe
 		resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10, SessionID: sessionID}, 20*time.Second)
 		replies <- registerAnswer{resp, err}
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for !blockedInRegisterReply() {
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		if blockedInRegisterReply() {
+			return true
+		}
 		select {
 		case got := <-replies:
 			t.Fatalf("register --wait answered before the enrollment it must wait for had reached the session: %+v (%v)", got.resp, got.err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the register call never started waiting on the session's ready channel")
-		}
-		time.Sleep(10 * time.Millisecond)
+		return false
+	}) {
+		t.Fatal("the register call never started waiting on the session's ready channel")
 	}
 	return replies
 }
@@ -570,7 +573,7 @@ func TestASecondRestartBeforeTheLoginStillRevokesThePriorEnrollment(t *testing.T
 	pid := recordPrior(t, state, "enr-prior")
 
 	// The first restart: Recover re-pins and saves, and the helper exits before any login.
-	first := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: "http://127.0.0.1:1", OperatorFile: operatorFile(t, "ada@example.com")},
+	first := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: brokeraddr.New("http://127.0.0.1:1"), OperatorFile: operatorFile(t, "ada@example.com")},
 		Hostname: "testhost", PeerOf: PeerOf, Log: slog.New(slog.NewTextHandler(os.Stderr, nil)), MinRenew: time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
 	first.Recover(ctx)

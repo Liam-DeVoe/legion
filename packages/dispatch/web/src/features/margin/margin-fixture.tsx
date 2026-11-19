@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Artifact, Ask, Comment, IssueDetails } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
+import { KEEPS_DETAILS_ATTRIBUTE } from "./Margin";
 import { type DocumentBridge, useMargin } from "./margin-context";
 
 export const specArtifact: Artifact = {
@@ -15,6 +16,8 @@ export const specArtifact: Artifact = {
   kind: "doc",
   name: "spec.md",
   primary: true,
+  ref_key: "CORE-1/spec",
+  session_id: null,
   slug: "spec",
   versions: [],
 };
@@ -26,11 +29,14 @@ export const issue: IssueDetails = {
   holder_state: null,
   last_seen: null,
   takeable_at: null,
+  advances: [],
+  advances_revision: 0,
   artifacts: [specArtifact],
   children: [],
   closed_at: null,
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
+  design_gates: [],
   external_links: [],
   key: "CORE-1",
   labels: [],
@@ -44,6 +50,9 @@ export const issue: IssueDetails = {
   primary_artifact_id: "artifact-1",
   project: "CORE",
   referenced_by_count: 0,
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
+  verification_artifact_id: "",
   route: null,
   repo: null,
   resolved_repo: null,
@@ -92,6 +101,11 @@ export const anchoredAsk: Ask = {
   },
   answer: null,
   author: { id: "session-1", kind: "session" },
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  block_id: null,
   created_at: "2026-09-09T00:00:00Z",
   edited_at: null,
   id: "ask-1",
@@ -104,6 +118,16 @@ export const anchoredAsk: Ask = {
   state: "open",
   urgency: "med",
 };
+
+/** The address a margin landing starts from beside its document on the new issue page: the
+ *  address of the document the comment is anchored in, with the comment named by `?mark=`
+ *  (`issue-page/issue-address.ts`'s `documentItem`). Every other address of the issue that names
+ *  the comment - its own route (`/issues/KEY/comments/<id>`), `?comment=` - opens the new page's
+ *  outline on the comment's node, and the margin in Details only marks its card there
+ *  (`useMarginSheet.ts`'s `routeItemBesideDocument`, R20). */
+export function markedCommentPath(id: string): string {
+  return `${buildIssuePath({ key: "CORE-1", kind: "artifact", slug: "spec" })}?mark=${id}`;
+}
 
 export function CommentLink(): ReactNode {
   const navigate = useNavigate();
@@ -131,6 +155,25 @@ export function SameCommentLink(): ReactNode {
     >
       Open the same comment
     </button>
+  );
+}
+
+/** Two links that keep the phone's Details open when followed in it (`Margin.tsx`'s
+ *  `KEEPS_DETAILS_ATTRIBUTE`): one that carries the attribute, as a history turn's time link
+ *  does, and one inside an element that carries it. Neither leaves the page. */
+export function KeptDetailsLinks(): ReactNode {
+  const keeps = { [KEEPS_DETAILS_ATTRIBUTE]: "" };
+  return (
+    <>
+      <a href="/issues/CORE-3" onClick={(event) => event.preventDefault()} {...keeps}>
+        a turn's time
+      </a>
+      <span {...keeps}>
+        <a href="/issues/CORE-4" onClick={(event) => event.preventDefault()}>
+          a link inside a turn
+        </a>
+      </span>
+    </>
   );
 }
 

@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import { promisify } from "node:util";
 
-import { laneValue } from "./harness-ports";
+import { stackValue } from "./harness-ports";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,8 +22,8 @@ const psqlEnvironment: NodeJS.ProcessEnv = Object.fromEntries(
 );
 
 /** The database this run's SQL writes to: a deployed server's own `PLAYWRIGHT_DATABASE_URL`, else
- *  the `DATABASE_URL` of this process's lane, which is the one the caller supplied for a run of
- *  one lane (`e2e/harness-ports.ts`). A leftover deployed URL must not override a local
+ *  the `DATABASE_URL` of this process's stack, which is the one the caller supplied for a run of
+ *  one stack (`e2e/harness-ports.ts`). A leftover deployed URL must not override a local
  *  harness's DATABASE_URL, and nothing falls back to libpq's default database, because
  *  `resetDatabase` empties whatever this names. It is read when the session connects rather than
  *  at import, so a module that only imports `sql` never refuses before the harness has set it. */
@@ -31,7 +31,7 @@ function databaseUrl(): string {
   const deployed = process.env.PLAYWRIGHT_BASE_URL
     ? process.env.PLAYWRIGHT_DATABASE_URL
     : undefined;
-  const url = deployed ?? laneValue(process.env, "DATABASE_URL");
+  const url = deployed ?? stackValue(process.env, "DATABASE_URL");
   if (url === undefined || url.trim() === "") {
     throw new Error(
       "PLAYWRIGHT_DATABASE_URL or DATABASE_URL must name the database for this e2e run"
@@ -120,6 +120,10 @@ type Session = { child: ChildProcessWithoutNullStreams; out: MarkedStream; error
  *  a connection and a teardown — about 400 ms of `resetDatabase`'s 441 — for statements that take
  *  single-digit milliseconds on an open connection. */
 let session: Session | null = null;
+// Kills the current psql as this process exits. It is one handler for the process, not one per
+// start: `resetSession` makes the next call start psql again, and a handler per start would pile
+// up over a file's reruns.
+process.once("exit", () => session?.child.kill());
 
 function startSession(): Session {
   // No ON_ERROR_STOP: it makes psql exit on the first error, which would take the connection with
@@ -152,14 +156,22 @@ function startSession(): Session {
   // A Playwright worker ends when its event loop empties, and a piped child holds the loop open
   // through its own handle and its three pipes. Unref'ed, none of them keeps a finished worker
   // alive; psql then reads EOF on the stdin this process leaves behind and exits by itself, and
-  // the kill below closes it at once rather than on the next read.
+  // the exit handler beside `session` kills it at once rather than on the next read.
   child.unref();
   for (const pipe of [child.stdin, child.stdout, child.stderr]) {
     // The pipes are net sockets, whose stream types do not say so.
     if ("unref" in pipe && typeof pipe.unref === "function") pipe.unref();
   }
-  process.once("exit", () => session?.child.kill());
   return started;
+}
+
+/** Ends this process's psql, so the next `sql` call starts another and resolves its database
+ *  again: a bun test file that points `sql` at a database of its own, before it drops it and
+ *  before a case that needs no psql to have been started. A Playwright worker never calls it;
+ *  its psql ends with the worker. */
+export function resetSession(): void {
+  session?.child.kill();
+  session = null;
 }
 
 /** Runs one statement and returns what each stream carried for it, and psql's verdict on it. The
@@ -255,4 +267,30 @@ export async function sqlAt(
     { env: psqlEnvironment, signal }
   );
   return stdout.trim();
+}
+
+/** Drops the database `name`, one a test made on `server` with `create database`, where the login
+ *  `server` names may not be a superuser, as CI's is not. It has no FORCE: `drop database ... with
+ *  (force)` first checks that the caller may signal every process on the database, and an
+ *  autovacuum worker has no role, so a login without superuser or `pg_signal_backend` is refused
+ *  while one is attached. A plain drop ends an autovacuum worker itself, with no such check, and
+ *  waits up to 5 s for any other session to leave. So the login's own sessions on the database,
+ *  which any login may end, are ended first: a psql the test just killed that has not left the
+ *  server yet, or one it left open, cannot keep the database. The two statements are two `-c`
+ *  arguments of `sqlAt`'s psql, each a request of its own: `drop database` cannot run inside the
+ *  transaction block one request holding both would be. `name` is written into both as it is, so
+ *  a name that is not a lowercase unquoted identifier, which every name the harness generates is,
+ *  is refused rather than quoted. */
+export async function dropDatabase(server: string, name: string): Promise<void> {
+  if (!/^[a-z_][a-z0-9_]*$/.test(name)) {
+    throw new Error(
+      "dropDatabase takes a lowercase unquoted identifier, as the harness generates; " +
+        `it refuses ${JSON.stringify(name)}`
+    );
+  }
+  await sqlAt(server, [
+    "select pg_terminate_backend(pid) from pg_stat_activity " +
+      `where datname = '${name}' and usename = current_user and pid <> pg_backend_pid()`,
+    `drop database if exists ${name}`,
+  ]);
 }

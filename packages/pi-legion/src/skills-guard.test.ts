@@ -3,6 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+} from "@legion/contracts/legion-api";
+import {
   brokenRelativeLinks,
   brokenSkillLinks,
   files,
@@ -43,15 +48,6 @@ afterAll(() => {
   rmSync(path.dirname(staged), { recursive: true, force: true });
 });
 
-// A Legion architect reads leading-a-work-stream. Each edit of a root spec after approval is a new
-// version, which closes the design gate, so the record of accepted requests and waits lives in an
-// artifact of its own and never in the spec.
-test("leading-a-work-stream keeps open items in their own artifact, never the spec", () => {
-  const skill = readFileSync(path.join(staged, "leading-a-work-stream", "SKILL.md"), "utf8");
-  expect(skill).toContain("a line in that issue's `open-items.md` artifact, never its spec");
-  expect(skill).not.toContain("## Open items");
-});
-
 test("every staged file is under Oh My Pi's spill threshold, so a skill:// read arrives whole", () => {
   expect(oversizedFiles(staged)).toEqual([]);
 });
@@ -87,15 +83,19 @@ test("every legion-worker reference is linked from a skill or a prompt", () => {
   expect(unlinked).toEqual([]);
 });
 
-// The daemon submits the merge itself once it accepts READY, and Legion enforces no GitHub
-// restriction the repository itself does not: no skill a Legion pane loads, and no daemon prompt,
-// says Legion never merges.
-test("no skill or prompt says Legion never merges", () => {
+// The merger merges the pull request itself, at the head it read, and the daemon submits no merge
+// and changes no merge setting (dispatch://INFRA-714, R2): no skill a Legion pane loads, and no
+// daemon prompt, may hand the merge back to the daemon. The pattern matches the claim made of the
+// daemon and not its denial, so the verb follows `daemon` directly and names what is merged.
+test("no skill or prompt says the daemon merges", () => {
   const saying = [staged, promptsRoot]
     .flatMap(files)
     .filter(
       (file) =>
-        file.endsWith(".md") && /never merges|merges? nothing/i.test(readFileSync(file, "utf8"))
+        file.endsWith(".md") &&
+        /daemon\s+(submits|arms|enqueues|enables|merges|turns)\s+(the|a|an|that|its|it|ready|auto)\b/i.test(
+          readFileSync(file, "utf8")
+        )
     )
     .map((file) => path.relative(REPO_ROOT, file));
   expect(saying).toEqual([]);
@@ -119,6 +119,48 @@ test("no skill or prompt sends an agent to the workspace recovery marker, which 
         : path.relative(REPO_ROOT, file)
     );
   expect(sending).toEqual([]);
+});
+
+// The stale-plugin lane replaces a stale process at a paced wake and asks its worker nothing, so
+// no daemon of this release opens a plugin update round: `supervise.PodRound` builds a pod
+// round's id and nothing builds a plugin round's. The controller reads an `update-stalled` wake
+// through its own reference, so a reference that still tells it a round may be
+// `plugin:<daemon contract>` teaches it to read a round the daemon cannot open — which is what
+// that reference did until this change, with nothing to see it. The rule is read off the
+// daemon's own source rather than off the sentence, and it reads both ways: while nothing builds
+// a plugin round id, no skill or prompt may promise one; the day something builds one again, the
+// controller's own reference — the file that tells it how to read a stalled round — must name
+// that round again, and this row fails until it does. The Go census beside it
+// (prompts/roles_test.go's TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen) asks the same of the
+// embedded prompts; a row quoting the deleted prose would have passed the day the lane went.
+test("no skill or prompt promises an update round no daemon can open", () => {
+  const supervise = files(path.join(REPO_ROOT, "packages/daemon/internal/supervise"))
+    .filter((file) => file.endsWith(".go") && !file.endsWith("_test.go"))
+    .map((file) => readFileSync(file, "utf8"));
+  // A reader that found no opener at all would pass below while checking nothing, so the pod
+  // round's own constructor is the control: it is the kind a skill may describe.
+  expect(supervise.some((body) => /\bPodRoundPrefix\s*\+/.test(body))).toBe(true);
+  const opensAPluginRound = supervise.some((body) => /\bPluginRoundPrefix\s*\+/.test(body));
+  const promising = [staged, promptsRoot]
+    .flatMap(files)
+    .filter(
+      (file) =>
+        file.endsWith(".md") &&
+        /plugin:<|your process alone|on a different plugin|plugin (update )?(round|task)/i.test(
+          readFileSync(file, "utf8").replace(/\s+/g, " ")
+        )
+    )
+    .map((file) =>
+      file.startsWith(staged)
+        ? path.join("skills", path.relative(staged, file))
+        : path.relative(REPO_ROOT, file)
+    );
+  expect(opensAPluginRound ? [] : promising).toEqual([]);
+  if (opensAPluginRound) {
+    const escalation = path.join(staged, "legion-controller", "references", "escalation.md");
+    const names = /plugin:<daemon contract>/.test(readFileSync(escalation, "utf8"));
+    expect(names ? [] : ["skills/legion-controller/references/escalation.md"]).toEqual([]);
+  }
 });
 
 // The controller's `gh` acts as the review App (LEGION-668): the skill must say how it checks a
@@ -241,9 +283,9 @@ test("no staged skill or daemon prompt says what a pull request body `CI` line h
 // Background work is on for every role: Legion writes no Oh My Pi settings
 // overlay, so a long bash call becomes a background job and a `task` subagent runs as one, and a
 // role reads a result with the `wait` tool, which a message to its session also returns from. No
-// task agent declares `blocking`, and nothing interrupts a turn: a CI red that ends a
-// phase starts the implementer at once and tells the role whose phase ended by one message, which
-// stops nothing of its. So no skill, no shipped agent and no file of the plugin a Claude Code role
+// task agent declares `blocking`, and nothing interrupts a turn: a message the daemon sends a role,
+// a merge-forward message among them, stops nothing of its. So no skill, no shipped agent and no
+// file of the plugin a Claude Code role
 // loads may say that a takeover cancels a turn or tell a role to keep its work in
 // the foreground, and each that dispatches a task subagent names the tool that reads its result.
 //
@@ -301,16 +343,18 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
     expect(dispatching.sort()).toEqual([
       "skills/AGENTS.md",
       "skills/dispatch-writing-specs/SKILL.md",
+      "skills/legion-architect/SKILL.md",
       "skills/legion-architect/references/decomposition.md",
       "skills/legion-architect/references/design-gate.md",
-      "skills/legion-controller/references/weekly-audit.md",
+      "skills/legion-controller/references/consolidation.md",
       "skills/legion-oracle/SKILL.md",
       "skills/legion-retro/SKILL.md",
       "skills/legion-worker/references/merge-gate.md",
       "skills/simplify-settled-diff/SKILL.md",
+      "the fresh Claude plugin's skills/legion-architect/SKILL.md",
       "the fresh Claude plugin's skills/legion-architect/references/decomposition.md",
       "the fresh Claude plugin's skills/legion-architect/references/design-gate.md",
-      "the fresh Claude plugin's skills/legion-controller/references/weekly-audit.md",
+      "the fresh Claude plugin's skills/legion-controller/references/consolidation.md",
       "the fresh Claude plugin's skills/legion-oracle/SKILL.md",
       "the fresh Claude plugin's skills/legion-retro/SKILL.md",
       "the fresh Claude plugin's skills/legion-worker/references/merge-gate.md",
@@ -346,62 +390,15 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
 
-// R1: the simplify pass covers every file of the diff, docs-only diffs included, and a defect it
-// sees is reported rather than dropped as out of scope (dispatch://INFRA-198).
-test("the simplify pass reads every file of its scope and reports the defects it sees", () => {
-  const simplify = collapsed(path.join(staged, "simplify-settled-diff", "SKILL.md"));
-  expect(simplify).toContain(
-    "Every file of the scope is in the pass: documentation, workflow and configuration files as much as code, and a scope that holds no code at all still runs."
-  );
-  expect(simplify).toContain("A defect you see is reported, never dropped.");
-  expect(simplify).not.toContain("For mixed scopes, retain only the code.");
-  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
-  expect(prBody).toContain("whatever the diff touches, a docs-only diff included.");
-  expect(prBody).toContain(
-    "The pass covers every file of the diff, workflow YAML and documentation with the code, and a defect it reports is fixed outside the pass with the results recorded again, never dropped as out of scope; the `Thermo` line's `defects reported` half names how many and the commit that fixed them"
-  );
-  // The Thermo line is written on every diff now, and carries what the pass reported; only its
-  // pair half is omitted on a docs-only one, which leaves the reviewer's pair where it was.
-  expect(prBody).toContain("defects reported: <none | <n>, fixed in <sha>>");
-  expect(prBody).toContain(
-    "(on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`)"
-  );
-  expect(prBody).not.toContain("a docs-only diff gets none");
-  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
-  expect(mergeGate).toContain(
-    "On a docs-only PR the `Thermo` line still records the simplify pass and the defects it reported, and its pair half reads `thermonuclear pair: not run (docs-only)`."
-  );
-  expect(mergeGate).not.toContain("Skip the `Thermo` line entirely on a docs-only PR.");
-});
-
-// R2: a check that cannot fail is not a result, and a documented procedure counts only when it
-// ran (dispatch://INFRA-142, dispatch://INFRA-198).
-test("a check that cannot fail is not a result, and a documented procedure counts only when it ran", () => {
-  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
-  expect(prBody).toContain("**A check that cannot fail is not a result.**");
-  expect(prBody).toContain(
-    "A documented procedure counts only when it ran: reading it, or reading the document that describes it, is not a run"
-  );
-});
-
-// R3: the unchanged-diff fingerprint covers the branch's own diff alone, so a forward merge can
-// bring a new instance of a class the branch already answered (dispatch://INFRA-83). The `E2E`
-// re-check wording carries the class search in both files that hold it.
-test("the forward-merge re-check searches the new head for each earlier finding's class", () => {
+// R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
+// merge can bring a new instance of a class the branch already answered. The implementer's merge
+// procedure carries the class search; the tester's prompt carries its own, which roles_test.go
+// pins.
+test("a forward merge searches the new head for each earlier finding's class", () => {
   expect(
     collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
   ).toContain(
-    "The fingerprint answers one question only: whether the branch's own diff changed. It cannot show an instance the merge brought in from the base"
-  );
-  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
-    "the tester re-runs the bare gates only and the class search of every earlier round's findings at the new head;"
-  );
-  countedOncePerFile(
-    "forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean",
-    [
-      "skills/legion-worker/references/pr-body.md",
-      "packages/daemon/internal/prompts/roles/tester.md",
-    ]
+    "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
   );
 });
 
@@ -428,6 +425,63 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
   );
 });
 
+// The pair's own text bounds what it reads and what it reports: a range its task names limits
+// what it must read, and a defect it sees in code the pull request changed before that range is
+// still a finding, while code the pull request leaves unchanged stays out of its findings, because
+// the author fixes only the pull request's diff. Each agent definition is pinned for both halves,
+// and each sentence that bounded the findings by the diff the pair was given is pinned absent.
+// The daemon's prompts carry the later-round rule; prompts_test.go pins the composed reviewer
+// prompt. Every file's gaps are listed together, so a file that lost its sentence fails as loudly
+// as the first one checked.
+test("the review pair reads the range its task names and reports what the pull request changed", () => {
+  const pair = [
+    {
+      file: "packages/pi-legion/agents/thermonuclear-deep-review.md",
+      says: [
+        "Do not report issues in code the pull request leaves unchanged, other than the unchanged consumers the rubric's check 2 finds.",
+        "A range your task names limits what you must read, not what you report: a defect you see in code the pull request changed before that range is a finding.",
+      ],
+      retired: ["Do not report unchanged-code issues."],
+    },
+    {
+      file: "packages/pi-legion/agents/thermonuclear-code-quality.md",
+      says: [
+        "Do not flag code the pull request leaves unchanged.",
+        "A range your task names limits what you must read, not what you flag: a smell you see in code the pull request changed before that range is a finding.",
+      ],
+      retired: ["Do not flag unchanged code."],
+    },
+  ];
+  const scopedToTheRange = pair.flatMap(({ file, says, retired }) => {
+    const text = collapsed(path.join(REPO_ROOT, file));
+    return [
+      ...says.filter((sentence) => !text.includes(sentence)).map((s) => `${file} lacks: ${s}`),
+      ...retired.filter((sentence) => text.includes(sentence)).map((s) => `${file} says: ${s}`),
+    ];
+  });
+  expect(scopedToTheRange).toEqual([]);
+});
+
+// The last two sentences of each task a reviewer is sent are always the daemon's: the commit's and
+// then the entry's, each naming `none` where there is no value for it. The workflow writes them
+// on each task of the reviewer it queues (the daemon's namingTheReviewRound), and the claim's send
+// writes them, naming `none` for both, on a task no such queue named, a task the release before
+// queued or an operator wrote (the daemon's supervise Delivery.message). The task's own text, a
+// retry's reason or a title, can hold the same words earlier. So each text that tells the reviewer
+// which commit its task names says that the last two are the daemon's and what each `none` means,
+// once: the daemon part, the role part and the core part of the reviewer's prompt.
+const reviewerTexts = [
+  "packages/daemon/internal/prompts/go/reviewer.md",
+  "packages/daemon/internal/prompts/roles/reviewer.md",
+  "packages/daemon/internal/prompts/roles/core/reviewer.md",
+];
+test("each reviewer text says the last two sentences of each task are always the daemon's", () => {
+  countedOncePerFile(
+    "The last two sentences of each task you are given are always the daemon's: `Last reviewed commit: <sha>.` or `Last reviewed commit: none.`, then `Review entry: <n>.` or `Review entry: none.`. `Last reviewed commit: none.` means this task names no commit, so you read the whole change. `Review entry: none.` means this task names no entry, so it does not change the entry of your round. A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's.",
+    reviewerTexts
+  );
+});
+
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's
 // (dispatch://INFRA-334). The sentence goes in the always-loaded prompts and agent definitions,
 // because skills/legion-worker/references/tools.md loads only on a tool or test question.
@@ -449,28 +503,6 @@ test("every shipped prompt and bash-running agent says how to read a piped comma
   );
 });
 
-// R7: `READY_UNREVIEWED_CHANGE` has more causes than retro's own paths, and the merger's own
-// prompt part is the one complete list, so neither file gets a second copy of it
-// (dispatch://INFRA-427, and the spec's decision "A pointer, not a second list"). The pin counts
-// the pointer and refuses the list: a second copy would have to be kept equal to `ready.go`.
-test("retro and the merge gate point at the merger's list of READY_UNREVIEWED_CHANGE's causes", () => {
-  const files = ["skills/legion-worker/references/merge-gate.md", "skills/legion-retro/SKILL.md"];
-  countedOncePerFile(
-    "`READY_UNREVIEWED_CHANGE` has more causes than a path outside retro's own",
-    files
-  );
-  countedOncePerFile(
-    "the complete list, with each remedy, is the merger's own role prompt part",
-    files
-  );
-  for (const file of files) {
-    const text = collapsed(path.join(staged, file.slice("skills/".length)));
-    expect(text, `${file} lists the causes instead of pointing at them`).not.toContain(
-      "300-file limit"
-    );
-  }
-});
-
 // R8: every role of an issue shares one $TMPDIR on the issue's volume, so a glob sweep deletes
 // another role's open directory (dispatch://INFRA-654). The reviewer's pair states it in
 // `thermonuclear-code-quality`, which the Envoy plugin now ships and whose guard holds it there.
@@ -488,56 +520,66 @@ test("every prompt and agent that may write says to make its own scratch and del
 });
 
 // R9: a push moves the branch while the pull request can keep naming the old commit, so the new
-// commit gets no checks (dispatch://INFRA-1318). The step is one wording held across
-// `skill://legion-worker` and the daemon's worker prompt, counted once in each file, so the
-// pinned sentences cannot drift; the prompt also carries text of its own that no pin here holds,
-// and the pins below hold what only the prompt carries and the skill points at. The carve-out
-// that names the step's reads as the one sleep the "never sleep in a loop" rule allows is a
-// second wording, held across the pr-body reference and the implementer's prompt part. The three
-// members the step added to lists elsewhere in these texts are pinned too, since a list no test
-// reads loses its member silently. This shows the text ships, never that a role follows it.
-test("the worker skill tells a role to read the pull request's head after its own push", () => {
-  const sharedWithTheWorkerPrompt = [
-    "skills/legion-worker/SKILL.md",
-    "packages/daemon/internal/prompts/go/worker-common.md",
-  ];
+// commit gets no checks. The daemon's worker prompt holds the step, each sentence counted once, so
+// the pinned sentences cannot drift. The carve-out that names the step's reads as the one sleep
+// the "never sleep in a loop" rule allows is held in the implementer's prompt part, and the
+// reviewer's rule that it pushes nothing keeps the step from falling to it. This shows the text
+// ships, never that a role follows it.
+test("the worker prompt tells a role to read the pull request's head after its own push", () => {
+  const workerPrompt = ["packages/daemon/internal/prompts/go/worker-common.md"];
   const step = [
     "gh pr view <n> --repo <the issue's repository> --json headRefOid --jq .headRefOid",
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "A new head makes every result recorded at the old head older, so record each `before_merge` check again at the new head.",
+    "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-    "The push you make to answer an update task is the exception: that task has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
+    "The push you make to answer an update message is the exception: that message has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
     "the empty commit that carries the pull request onto the commit you pushed",
   ];
   for (const rule of step) {
-    countedOncePerFile(rule, sharedWithTheWorkerPrompt);
+    countedOncePerFile(rule, workerPrompt);
   }
   countedOncePerFile(
     "the step's spaced reads of the pull request's head after a push are the one sleep this rule allows, and they read no check",
-    [
-      "skills/legion-worker/references/pr-body.md",
-      "packages/daemon/internal/prompts/go/implementer.md",
-    ]
+    ["packages/daemon/internal/prompts/go/implementer.md"]
   );
-  const onlyInTheWorkerPrompt = ["packages/daemon/internal/prompts/go/worker-common.md"];
   countedOncePerFile(
     "`jj -R \"$LEGION_WORKSPACE\" new --no-edit --insert-after @- -m '<issue>: carry the pull request to the pushed commit'`",
-    onlyInTheWorkerPrompt
+    workerPrompt
   );
   countedOncePerFile(
     '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
-    onlyInTheWorkerPrompt
+    workerPrompt
   );
-  countedOncePerFile("Three waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
-  countedOncePerFile("the empty commit that carries it there", [
+  countedOncePerFile("Create no commit and push nothing, a prose fix included", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
-  expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
-    "When the last read still is not your commit, carry the pull request with a commit of its own, an empty one when your work is complete and an empty one just as much when `@` holds work of yours, since a push of a commit the branch already holds moves no ref; the push section of your role prompt gives the one `jj` recipe, which leaves `@` and everything in it where it is."
-  );
+});
+
+// A check carrying `ci_check` is proved by the CI run it names, so no role runs it or records its
+// result, and `dispatch results` derives that result. The worker prompt's copy of the push step
+// carries the exception in one phrase, counted once. The role prompt parts are pinned in
+// roles_test.go `TestEveryRolePartCarriesItsGuidanceRule`.
+test("the worker prompt's push step leaves out a check CI proves", () => {
+  countedOncePerFile("check carrying `ci_check` is CI's", [
+    "packages/daemon/internal/prompts/go/worker-common.md",
+  ]);
+});
+
+// A `ci_check` that no run of its name answers is a defect of the check's words, which the
+// architect corrects, and no role sends that to an implementer who cannot cure it
+// (`ci-checks.md`, "A name that no run answers"). Retro's step that sends a CI check with no pass
+// back names that case and gives it to the architect, so the two texts say the same thing
+// (dispatch://INFRA-3204, tester round 5).
+test("retro gives a ci_check that no run answers to the architect, not to the implementer", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  const sentences = retro.split(/(?<=\.)\s+/);
+  const absent = sentences.filter((sentence) => sentence.includes("`absent`"));
+  expect(absent.length).toBeGreaterThan(0);
+  expect(absent.some((sentence) => sentence.includes("architect"))).toBe(true);
+  expect(absent.some((sentence) => sentence.includes("to: implementing"))).toBe(false);
 });
 
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites
@@ -558,8 +600,8 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
     "Drop a point that cites no file, symbol, quoted text or commit of this pull request",
     ["skills/legion-retro/references/learnings.md", "skills/legion-retro/SKILL.md"]
   );
-  // The two files this change touches, named rather than swept: four other staged skills carry
-  // these strings, in seven files, in finding formats the specification scopes out
+  // The two files this change touches, named rather than swept: three other staged skills carry
+  // these strings, in six files, in finding formats the specification scopes out
   // (dispatch://INFRA-924).
   const retired = ["file, line or commit", "file:line", "file and line"];
   const retroFiles: [string, string][] = [
@@ -570,4 +612,28 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
     retired.filter((phrase) => text.includes(phrase)).map((phrase) => `${file}: ${phrase}`)
   );
   expect(carried).toEqual([]);
+});
+
+// The completion that ends the retro rates the plan, and this skill's step that gives the two
+// fields is the one place the rule of the rating is stated in prose: the implementer prompt sends
+// the agent here (prompts_test.go), and the daemon refuses a completion that breaks the rule
+// (the daemon's planRatingOf and planRatingRefusal). So the step names the two
+// fields, the three codes the daemon refuses with, and the scale and the bound of the reason as the
+// contract holds them: a new scale or bound fails here until the skill states it. The bound is
+// pinned with the space before it, since step 5's "32,000 characters" holds "2,000 characters"
+// without it. This shows the text ships, never that a role follows it.
+test("the retro skill names the rating's fields, its refusals, its scale and its bound", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  for (const token of [
+    "`plan_rating`",
+    "`plan_reason`",
+    "`PLAN_RATING_REQUIRED`",
+    "`PLAN_RATING_UNEXPECTED`",
+    "`PLAN_RATING_INPUT`",
+    `${LEGION_PLAN_RATING_LEAST} (the plan cost the work)`,
+    `${LEGION_PLAN_RATING_MOST} (the plan fit the work)`,
+    ` ${LEGION_PLAN_REASON_MAX.toLocaleString("en-US")} characters`,
+  ]) {
+    expect(retro).toContain(token);
+  }
 });

@@ -1,17 +1,11 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createMessage, createProject, putIssueState } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
   actor: { id: "e2e-attention", kind: "session" as const },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * The row the reader is on, read the way `ViewportAnchor` reads it: the row nearest the visible
@@ -46,7 +40,8 @@ async function readingAnchor(page: Page, root: string, item: string): Promise<st
   return value ?? "";
 }
 
-test("a reader scrolled up keeps their Conversation viewport when a new card arrives", async ({
+// @pr: A delivery arriving: a new card must not move the Conversation under a reader who scrolled up.
+test("a reader scrolled up keeps their Conversation viewport when a new card arrives @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -185,7 +180,11 @@ async function verifyGapDetection(
     await expect(page.getByText("Gap comment 19")).toBeVisible();
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(turns.getByText("New", { exact: true })).toHaveCount(0);
+    await expect(turns.locator(":scope > li").filter({ hasText: /Gap comment \d+/ })).toHaveCount(
+      20
+    );
 
+    // The count above drew all twenty cards, so the gaps measured here are the whole list's.
     const gap = await page.evaluate(() => {
       const conversation = document.querySelector('[aria-label="Conversation"]');
       if (conversation === null) {
@@ -222,6 +221,8 @@ async function verifyGapDetection(
       (midPage) => window.scrollTo(0, midPage - window.innerHeight / 2),
       gap.gapMidPage
     );
+    // The column holds the cards waited for above, and the scroll above ran in the page before
+    // this read, so the box read here is the column's as it now stands.
     const conversationCenter = await page.evaluate(() => {
       const conversation = document.querySelector('[aria-label="Conversation"]');
       if (conversation === null) {

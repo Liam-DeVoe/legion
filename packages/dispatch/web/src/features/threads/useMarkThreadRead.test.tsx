@@ -1,13 +1,13 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render } from "@testing-library/react";
+import { http } from "msw";
 import type { ReactNode } from "react";
 
-import {
-  type IntersectionControl,
-  installIntersectionObserver,
-} from "../../__tests__/intersection-observer";
+import { jump } from "../../__tests__/fake-clock";
+import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerRequests } from "../../__tests__/network";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
 import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
@@ -38,6 +38,10 @@ function Thread({ at, threadId }: { at: string | undefined; threadId: string }):
 
 /** The unread set and the viewer are already cached, so the hook decides at once. */
 function renderThread(set: MyRepliesResponse, props: { at: string | undefined; threadId: string }) {
+  // A mark that lands invalidates the owner's unread set, so the hook reads it again over HTTP;
+  // the shell's answer is an empty page, which would retire a thread this test still holds
+  // unread. The set under test is what that read answers, as the server's would.
+  answerRequests(http.get("/api/v1/me/replies", () => Response.json(set)));
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -61,14 +65,6 @@ function renderThread(set: MyRepliesResponse, props: { at: string | undefined; t
   };
 }
 
-async function dwell(screen: IntersectionControl, element: Element) {
-  act(() => screen.show(element));
-  act(() => {
-    jest.advanceTimersByTime(1_000);
-  });
-  for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
-}
-
 test("a thread outside the viewer's unread set is never watched or marked", async () => {
   jest.useFakeTimers();
   const screen = installIntersectionObserver();
@@ -80,7 +76,7 @@ test("a thread outside the viewer's unread set is never watched or marked", asyn
   try {
     const newest = view.getByTestId("newest");
     expect(screen.observed()).not.toContain(newest);
-    await dwell(screen, newest);
+    await dwellOn(screen, newest);
     expect(mark).not.toHaveBeenCalled();
   } finally {
     view.unmount();
@@ -107,20 +103,17 @@ test("an unread thread is marked through its newest reply once that reply dwells
       jest.advanceTimersByTime(999);
     });
     expect(mark).not.toHaveBeenCalled();
-    act(() => {
-      jest.advanceTimersByTime(1);
-    });
-    for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+    await jump(1);
     expect(mark.mock.calls).toEqual([["thread-1", { read_through: first }, keyedAttempt]]);
 
     // The same reply seen again sends nothing more.
     act(() => screen.hide(newest));
-    await dwell(screen, newest);
+    await dwellOn(screen, newest);
     expect(mark).toHaveBeenCalledTimes(1);
 
     // A newer reply is a new mark, through its own timestamp.
     rerender({ at: second, threadId: "thread-1" });
-    await dwell(screen, view.getByTestId("newest"));
+    await dwellOn(screen, view.getByTestId("newest"));
     expect(mark.mock.calls).toEqual([
       ["thread-1", { read_through: first }, keyedAttempt],
       ["thread-1", { read_through: second }, keyedAttempt],
@@ -143,7 +136,7 @@ test("an owner with more unread threads than its set holds watches every thread"
     threadId: "thread-1",
   });
   try {
-    await dwell(screen, view.getByTestId("newest"));
+    await dwellOn(screen, view.getByTestId("newest"));
     expect(mark.mock.calls).toEqual([
       ["thread-1", { read_through: "2026-10-12T00:00:00Z" }, keyedAttempt],
     ]);

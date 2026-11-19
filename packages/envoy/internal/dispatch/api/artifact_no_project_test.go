@@ -107,8 +107,8 @@ func TestArtifactReadsServeARowWithNoProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	read, err = s.lockAnchorArtifact(ctx, tx, documentOwner(photoID), photoID)
-	wantNoProject("lockAnchorArtifact on the file", read, err, photoID)
+	read, err = s.loadAnchorArtifact(ctx, tx, documentOwner(photoID), photoID)
+	wantNoProject("loadAnchorArtifact on the file", read, err, photoID)
 	if anchor, err := s.loadAskAnchorArtifact(ctx, tx, photoID); err != nil {
 		t.Errorf("loadAskAnchorArtifact: %v", err)
 	} else if anchor.Project != "" {
@@ -132,7 +132,7 @@ func TestArtifactReadsServeARowWithNoProject(t *testing.T) {
 				t.Errorf("search over a comment on the conversation's file panicked: %v", recovered)
 			}
 		}()
-		found, err := s.runFusedSearchQuery(ctx, "zebraquill", "", 10, 0)
+		found, err := s.runFusedSearchQuery(ctx, searchParameters{text: "zebraquill", limit: 10})
 		if err != nil {
 			t.Errorf("search over a comment on the conversation's file: %v", err)
 			return

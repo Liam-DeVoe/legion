@@ -1,9 +1,15 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { jump } from "../../__tests__/fake-clock";
+import { graphNode } from "../../__tests__/graph-fixture";
 import {
+  dwellOn,
   type IntersectionControl,
   installIntersectionObserver,
   type Placement,
@@ -20,7 +26,7 @@ import type {
   Ask,
   Comment,
   CommentDelivery,
-  Event,
+  DispatchEvent,
   Handoff,
   IssueAskRow,
   IssueAskThreadRow,
@@ -30,7 +36,9 @@ import type {
   UserIssueState,
   UserState,
 } from "../../api/types";
+import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { stubMatchMedia } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
@@ -51,16 +59,15 @@ function issueState(dismissed: string[] = [], lastReadSeq = 0): UserIssueState {
 
 function comment(id: string, overrides: Partial<Comment> = {}): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
     ask_id: null,
     author: alice,
     body: `Body of ${id}`,
     created_at: "2026-09-20T00:00:00Z",
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: "CORE-1",
-    mentions: [],
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -74,6 +81,8 @@ function comment(id: string, overrides: Partial<Comment> = {}): Comment {
 function message(id: string, overrides: Partial<Message> = {}): Message {
   return {
     author: alice,
+    broadcast_id: null,
+    reply_block: null,
     body: `Body of ${id}`,
     created_at: "2026-09-09T00:00:00Z",
     deliveries: [],
@@ -91,6 +100,7 @@ function thread(root: Message, replies: Message[] = []): MessageRead {
 
 function attempt(overrides: Partial<MessageDelivery> = {}): MessageDelivery {
   return {
+    ...messageDeliveryFields(),
     attempt: 1,
     created_at: recentAttemptAt,
     delivery: "btw",
@@ -106,6 +116,7 @@ function attempt(overrides: Partial<MessageDelivery> = {}): MessageDelivery {
 
 function mentionAttempt(overrides: Partial<CommentDelivery> = {}): CommentDelivery {
   return {
+    duplicate: false,
     attempt: 1,
     comment_id: "comment-1",
     created_at: recentAttemptAt,
@@ -123,6 +134,11 @@ function mentionAttempt(overrides: Partial<CommentDelivery> = {}): CommentDelive
 
 const baseAsk: Ask = {
   anchor: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  block_id: null,
   answer: null,
   author: { id: "s1", kind: "session" },
   created_at: "2026-09-10T09:00:00Z",
@@ -157,7 +173,7 @@ function askRow(overrides: Partial<Ask> = {}, replies: Comment[] = []): IssueAsk
   };
 }
 
-function headEvent(seq: number, at = "2026-09-20T00:00:00Z"): Event {
+function headEvent(seq: number, at = "2026-09-20T00:00:00Z"): DispatchEvent {
   return {
     actor: alice,
     created_at: at,
@@ -167,7 +183,7 @@ function headEvent(seq: number, at = "2026-09-20T00:00:00Z"): Event {
     payload: {},
     seq,
     type: "issue.created",
-  } as Event;
+  } as DispatchEvent;
 }
 
 function agent(sessionId: string, title: string, capabilities: string[] = []): Agent {
@@ -180,6 +196,7 @@ function agent(sessionId: string, title: string, capabilities: string[] = []): A
     machine_id: "m",
     open_asks: 0,
     roles: [],
+    state: "live",
     session_id: sessionId,
     title,
   };
@@ -194,6 +211,8 @@ const primaryDocument: Artifact = {
   name: "spec.md",
   primary: true,
   project: "CORE",
+  ref_key: "CORE-1/spec",
+  session_id: null,
   slug: "spec",
   versions: [],
 };
@@ -214,15 +233,16 @@ interface Lists {
    *  to a summary), and `getHandoff` answers one by id. */
   handoffs?: Handoff[];
   /** The issue's newest event, which a dwell on the newest card marks read through. */
-  head?: Event[];
+  head?: DispatchEvent[];
   messages?: MessageRead[];
   /** The first event the reader has not read: its moment is the unread boundary. */
-  unread?: Event[];
+  unread?: DispatchEvent[];
 }
 
 /** The four reads the Conversation builds its list from, plus the two one-row event reads that
- *  carry the unread boundary and the issue's head, and the read of one handoff's body. The
- *  returned `lists` is live: a test that changes it changes what the next refetch answers. */
+ *  carry the unread boundary and the issue's head, the read of one handoff's body, and the blocks
+ *  read an opened comment editor makes, answered with no block ids. The returned `lists` is live:
+ *  a test that changes it changes what the next refetch answers. */
 function stubLists(initial: Lists = {}): { lists: Lists; restore: () => void } {
   const lists: Lists = { ...initial };
   const spies = [
@@ -236,6 +256,11 @@ function stubLists(initial: Lists = {}): { lists: Lists; restore: () => void } {
       return found;
     }),
     spyOn(api, "listAgents").mockImplementation(async () => lists.agents ?? []),
+    spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
+      blocks: [],
+      indexed: false,
+      item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
+    })),
     spyOn(api, "getIssueEvents").mockImplementation(async (_key, options = {}) =>
       options.order === "desc" ? (lists.head ?? []) : (lists.unread ?? [])
     ),
@@ -338,6 +363,12 @@ function withScrollY(run: () => Promise<void>): () => Promise<void> {
   };
 }
 
+/** Stubs `scrollIntoView` on Element, the prototype that owns the method: patching HTMLElement
+ *  would leave an own property behind that shadows every later patch on Element. */
+function stubScrollIntoView() {
+  return spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+}
+
 afterEach(() => {
   jest.useRealTimers();
 });
@@ -373,6 +404,7 @@ test("the read mark watches the newest conversation alone, and only while the ta
 });
 
 test("Conversation holds Reply while its composer sends", async () => {
+  const user = userEvent.setup();
   const sent = Promise.withResolvers<Comment>();
   const createComment = spyOn(api, "createComment").mockReturnValueOnce(sent.promise);
   const stub = stubLists({ messages: [thread(message("message-1"))] });
@@ -381,13 +413,15 @@ test("Conversation holds Reply while its composer sends", async () => {
 
   try {
     const field = await screen.findByLabelText<HTMLTextAreaElement>("Comment");
-    fireEvent.change(field, { target: { value: "Status please" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Status please");
+    await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(field.closest("fieldset")?.disabled).toBe(true));
     const reply = screen.getByRole("button", { name: "Reply" }) as HTMLButtonElement;
     expect(reply.disabled).toBe(true);
-    fireEvent.click(reply);
-    expect(screen.queryByRole("button", { name: "Cancel reply" })).toBeNull();
+    await user.click(reply);
+    expect(screen.queryByRole("button", { name: "Cancel reply" })).not.toBeInTheDocument();
 
     sent.reject(new Error("the server is down"));
     await screen.findByText("Couldn't send — network error");
@@ -446,6 +480,7 @@ test("a message reply that names a passage quotes it, and says so once the passa
 // stay refused in the shell's indicator, the Pin buttons stay live, and each Retry re-sends its own
 // pin over the state Dispatch holds then, so after both land the issue holds both.
 test("each refused pin is retried on its own, over the state Dispatch holds", async () => {
+  const user = userEvent.setup();
   const originalGetMyState = api.getMyState;
   const originalPutIssueState = api.putIssueState;
   const stub = stubLists({
@@ -476,7 +511,7 @@ test("each refused pin is retried on its own, over the state Dispatch holds", as
     const pins = screen.getAllByRole("button", { name: "Pin" });
     expect(pins.map((button) => button.getAttribute("aria-pressed"))).toEqual(["false", "false"]);
     for (const button of pins) {
-      fireEvent.click(button);
+      await user.click(button);
     }
 
     const writes = writesOf(queryClient);
@@ -537,7 +572,11 @@ test("a scroll event measures the reader position in O(1) rect reads", async () 
     await screen.findByText("Message 0");
 
     rectSpy.mockClear();
-    window.dispatchEvent(new Event("scroll"));
+    // The scroll listener sets the follow state, as a reader's scroll does, so the event goes
+    // inside `act` like every other scroll of this file.
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+    });
 
     // ViewportAnchor measures only in the commit phase, immediately before a content reflow; a
     // scroll alone must do no layout reads. This guards both against O(n) scans over every card
@@ -582,7 +621,8 @@ test("agent authors render the registry title and fall back to a short id", asyn
   }
 });
 
-test("hides targeted-message retries on a closed issue", async () => {
+// A closed issue takes a message's retry and replies, so its card offers them as an open one does.
+test("offers targeted-message retries and Reply on a closed issue", async () => {
   const stub = stubLists({
     messages: [
       thread(
@@ -597,9 +637,10 @@ test("hides targeted-message retries on a closed issue", async () => {
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient, true));
 
   try {
-    await screen.findByText("Failed: no live session s1");
-    expect(screen.queryByRole("button", { name: "Use BTW instead" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Use Send instead" })).toBeNull();
+    await screen.findByText(/Failed: no live session s1/);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    const turns = screen.getByRole("list", { name: "Conversation turns" });
+    expect(within(turns).getByRole("button", { name: "Reply" })).toBeTruthy();
   } finally {
     view.unmount();
     stub.restore();
@@ -627,7 +668,7 @@ test("a targeted message its session answered with an error offers a mode change
 
   try {
     await screen.findByText(`Failed: side turn failed. ${answeredWithErrorGuidance("card")}`);
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Use Send instead" })).toBeTruthy();
   } finally {
     view.unmount();
@@ -686,12 +727,18 @@ test("a mention its session answered with an error is pointed at a new comment, 
     expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
     view.unmount();
 
-    // A closed issue shows no Retry and takes no new comment, so neither sentence is said: the
-    // same rule the card follows, where each sentence names a control in the retry row.
+    // A closed issue takes a retry and a new comment, so it says both sentences, with the Retry,
+    // as an open one does.
     view = render(tab({ "CORE-1": issueState() }, true, queryClient, true));
-    await screen.findByText(wholeText("session:worker… · failed · worker failed"));
-    screen.getByText(wholeText("session:reviewer… · failed · reviewer failed"));
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await screen.findByText(
+      wholeText(`session:worker… · failed · worker failed. ${answeredWithErrorGuidance("mention")}`)
+    );
+    screen.getByText(
+      wholeText(
+        `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
+      )
+    );
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
   } finally {
     view.unmount();
     stub.restore();
@@ -722,17 +769,19 @@ test("a targeted message asked by a session names that session as the asker", as
     const [recipient] = await screen.findAllByRole("link", { name: "planner" });
     expect(recipient?.getAttribute("href")).toBe("/agents/s1/live");
     expect(recipient?.closest("p")?.textContent?.startsWith("Asking planner (BTW) ·")).toBe(true);
-    expect(screen.getByRole("link", { name: "reviewer" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "reviewer" })).toHaveAttribute(
+      "href",
       "/agents/s2/live"
     );
-    expect(screen.queryByText("alice")).toBeNull();
+    expect(screen.queryByText("alice")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     stub.restore();
   }
 });
 
-test("renders a message composer for an open issue but not a closed one", async () => {
+// A closed issue takes comments and message replies, so its Conversation keeps the composer.
+test("renders the message composer on an open issue and a closed one alike", async () => {
   const stub = stubLists({ messages: [thread(message("message-1"))] });
   const queryClient = newQueryClient();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
@@ -740,7 +789,8 @@ test("renders a message composer for an open issue but not a closed one", async 
   try {
     await screen.findByRole("form", { name: "Comment composer" });
     view.rerender(tab({ "CORE-1": issueState() }, true, queryClient, true));
-    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+    expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
   } finally {
     view.unmount();
     stub.restore();
@@ -748,6 +798,7 @@ test("renders a message composer for an open issue but not a closed one", async 
 });
 
 test("renders an anchored comment with the owner controls in Conversation", async () => {
+  const user = userEvent.setup();
   const stub = stubLists({
     comments: [
       comment("comment-1", {
@@ -778,18 +829,20 @@ test("renders an anchored comment with the owner controls in Conversation", asyn
   try {
     await screen.findByText("Please revise this.");
     const card = screen.getByTestId("margin-comment-comment-1");
-    expect(card.textContent).toContain("Anchored source");
-    fireEvent.click(screen.getByRole("button", { name: "Expand thread" }));
+    expect(card).toHaveTextContent("Anchored source");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
     expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
     expect(
       screen.getAllByRole("button", {
         name: "Copy reference dispatch://CORE-1/comment/comment-1",
       })
     ).toHaveLength(1);
-    expect(screen.getByRole("link", { name: "View in document" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "View in document" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1/artifacts/supporting-document?comment=comment-1"
     );
-    expect(screen.getByRole("link", { name: "View original text" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "View original text" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1/artifacts/supporting-document?v=1&comment=comment-1"
     );
   } finally {
@@ -830,7 +883,8 @@ test("a comment on the primary document links to the Spec route, not its artifac
 
   try {
     await screen.findByText("Please revise this.");
-    expect(screen.getByRole("link", { name: "View in document" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "View in document" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1/spec?comment=comment-1"
     );
   } finally {
@@ -840,6 +894,7 @@ test("a comment on the primary document links to the Spec route, not its artifac
 });
 
 test("the filter opens on All, and Open and Closed partition the list", async () => {
+  const user = userEvent.setup();
   const stub = stubLists({
     asks: [
       askRow({
@@ -854,23 +909,23 @@ test("the filter opens on All, and Open and Closed partition the list", async ()
 
   try {
     await screen.findByText("An open thread");
-    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("Ship it?")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(screen.queryByText("Ship it?")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(screen.queryByText("Ship it?")).not.toBeInTheDocument();
     expect(screen.getByText("An open thread")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Closed" }));
+    await user.click(screen.getByRole("button", { name: "Closed" }));
     expect(screen.getByText("Ship it?")).toBeTruthy();
-    expect(screen.queryByText("An open thread")).toBeNull();
+    expect(screen.queryByText("An open thread")).not.toBeInTheDocument();
 
     // Not persisted: a reader who filtered on an earlier visit meets the whole conversation.
     view.unmount();
     const revisit = render(tab({ "CORE-1": issueState() }, true, queryClient));
     try {
       await screen.findByText("An open thread");
-      expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
       expect(screen.getByText("Ship it?")).toBeTruthy();
     } finally {
       revisit.unmount();
@@ -881,6 +936,7 @@ test("the filter opens on All, and Open and Closed partition the list", async ()
 });
 
 test("a retracted ask is listed, and landing on one resets a filter that hides it", async () => {
+  const user = userEvent.setup();
   const retracted = askRow({
     id: "ask-retracted",
     resolution: {
@@ -896,26 +952,25 @@ test("a retracted ask is listed, and landing on one resets a filter that hides i
     comments: [comment("comment-1", { body: "An open thread" })],
   });
   const queryClient = newQueryClient();
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  const scrollIntoView = stubScrollIntoView();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
     await screen.findByText("Ship it?");
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(screen.queryByText("Ship it?")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(screen.queryByText("Ship it?")).not.toBeInTheDocument();
 
     view.rerender(
       tab({ "CORE-1": issueState() }, true, queryClient, false, new Map(), "ask-retracted")
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true")
+      expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true")
     );
     const card = view.container.querySelector('[data-turn="ask:ask-retracted"]');
     expect(card?.getAttribute("aria-current")).toBe("true");
   } finally {
     view.unmount();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    scrollIntoView.mockRestore();
     stub.restore();
   }
 });
@@ -933,6 +988,7 @@ function handoffRecord(id: string, version: number, body: string, created_at: st
 }
 
 test("each handoff version is a card naming its phase, version and author, and expanding one reads its fields", async () => {
+  const user = userEvent.setup();
   const stub = stubLists({
     handoffs: [
       handoffRecord(
@@ -965,12 +1021,12 @@ test("each handoff version is a card naming its phase, version and author, and e
     const card = view.container.querySelector<HTMLElement>('[data-turn="handoff:handoff-2"]');
     if (card === null) throw new Error("expected the version 2 card");
     const toggle = within(card).getByRole("button", { name: "Show fields" });
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
 
     await within(card).findByText("Second pass");
     expect(getHandoff.mock.calls).toEqual([["handoff-2"]]);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
     const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
     expect(fields?.tagName).toBe("DL");
     const rows = [...card.querySelectorAll("[data-handoff-field]")].map((row) => [
@@ -989,8 +1045,8 @@ test("each handoff version is a card naming its phase, version and author, and e
     expect(card.querySelector('[data-handoff-field="files"] pre')).not.toBeNull();
     expect(card.querySelector('[data-handoff-field="summary"] pre')).toBeNull();
 
-    fireEvent.click(within(card).getByRole("button", { name: "Hide fields" }));
-    expect(within(card).queryByText("Second pass")).toBeNull();
+    await user.click(within(card).getByRole("button", { name: "Hide fields" }));
+    expect(within(card).queryByText("Second pass")).not.toBeInTheDocument();
     expect(within(card).getByRole("button", { name: "Show fields" })).toBeTruthy();
   } finally {
     view.unmount();
@@ -999,6 +1055,7 @@ test("each handoff version is a card naming its phase, version and author, and e
 });
 
 test("a handoff body that is not a JSON object shows as its raw text", async () => {
+  const user = userEvent.setup();
   const stub = stubLists({
     handoffs: [handoffRecord("handoff-1", 1, "not { json", "2026-09-10T09:00:00Z")],
   });
@@ -1006,7 +1063,7 @@ test("a handoff body that is not a JSON object shows as its raw text", async () 
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Show fields" }));
+    await user.click(await screen.findByRole("button", { name: "Show fields" }));
     const raw = await screen.findByText("not { json");
     expect(raw.hasAttribute("data-handoff-raw")).toBe(true);
     expect(view.container.querySelector("[data-handoff-field]")).toBeNull();
@@ -1017,22 +1074,22 @@ test("a handoff body that is not a JSON object shows as its raw text", async () 
 });
 
 test("a handoff is Closed, and landing on one resets a filter that hides it", async () => {
+  const user = userEvent.setup();
   const stub = stubLists({
     comments: [comment("comment-1", { body: "An open thread" })],
     handoffs: [handoffRecord("handoff-1", 1, "{}", "2026-09-10T09:00:00Z")],
   });
   const queryClient = newQueryClient();
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  const scrollIntoView = stubScrollIntoView();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
     await screen.findByText("implement handoff, version 1");
-    fireEvent.click(screen.getByRole("button", { name: "Closed" }));
+    await user.click(screen.getByRole("button", { name: "Closed" }));
     expect(screen.getByText("implement handoff, version 1")).toBeTruthy();
-    expect(screen.queryByText("An open thread")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    expect(screen.queryByText("implement handoff, version 1")).toBeNull();
+    expect(screen.queryByText("An open thread")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(screen.queryByText("implement handoff, version 1")).not.toBeInTheDocument();
 
     view.rerender(
       tab({ "CORE-1": issueState() }, true, queryClient, false, new Map(), "handoff-1")
@@ -1044,7 +1101,7 @@ test("a handoff is Closed, and landing on one resets a filter that hides it", as
     expect(card?.getAttribute("aria-current")).toBe("true");
   } finally {
     view.unmount();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    scrollIntoView.mockRestore();
     stub.restore();
   }
 });
@@ -1070,8 +1127,7 @@ test("landing on a reply under an ask marks that ask's card and the reply's own 
   const getAsk = spyOn(api, "getAsk");
   const stub = stubLists({ asks: [askRow({}, replies)], comments: replies });
   const queryClient = newQueryClient();
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  const scrollIntoView = stubScrollIntoView();
   const view = render(
     tab({ "CORE-1": issueState() }, true, queryClient, false, new Map(), "reply-1")
   );
@@ -1089,7 +1145,7 @@ test("landing on a reply under an ask marks that ask's card and the reply's own 
   } finally {
     view.unmount();
     getAsk.mockRestore();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    scrollIntoView.mockRestore();
     stub.restore();
   }
 });
@@ -1098,6 +1154,7 @@ test("landing on a reply under an ask marks that ask's card and the reply's own 
 // thread and the reply they are writing where they are, whatever the filter would do with it,
 // until they close the thread.
 test("under Open, a comment resolved while its thread is open stays until the thread closes", async () => {
+  const user = userEvent.setup();
   const root = comment("root-comment", { body: "Root comment" });
   const stub = stubLists({ comments: [root] });
   const queryClient = newQueryClient();
@@ -1105,10 +1162,12 @@ test("under Open, a comment resolved while its thread is open stays until the th
 
   try {
     await screen.findByText("Root comment");
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
-    fireEvent.click(screen.getByRole("button", { name: "Expand thread" }));
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
     const field = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
-    fireEvent.change(field, { target: { value: "Half a reply" } });
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Half a reply");
 
     stub.lists.comments = [{ ...root, resolved: true }];
     await act(async () => {
@@ -1118,8 +1177,8 @@ test("under Open, a comment resolved while its thread is open stays until the th
     expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" })).toBe(field);
     expect(field.value).toBe("Half a reply");
 
-    fireEvent.click(screen.getByRole("button", { name: "Collapse thread" }));
-    await waitFor(() => expect(screen.queryByText("Root comment")).toBeNull());
+    await user.click(screen.getByRole("button", { name: "Collapse thread" }));
+    await waitFor(() => expect(screen.queryByText("Root comment")).not.toBeInTheDocument());
   } finally {
     view.unmount();
     stub.restore();
@@ -1129,6 +1188,7 @@ test("under Open, a comment resolved while its thread is open stays until the th
 // Resolve inside a thread closes it once the server takes it, never before: a refusal leaves the
 // thread open with the reply the reader was writing, and the Retry that lands closes it.
 test("a refused Resolve keeps the thread and its reply, and the one that lands closes it", async () => {
+  const user = userEvent.setup();
   const root = comment("root-comment", { body: "Root comment" });
   const stub = stubLists({ comments: [root] });
   const queryClient = newQueryClient();
@@ -1143,18 +1203,22 @@ test("a refused Resolve keeps the thread and its reply, and the one that lands c
 
   try {
     await screen.findByText("Root comment");
-    fireEvent.click(screen.getByRole("button", { name: "Expand thread" }));
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
     const field = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
-    fireEvent.change(field, { target: { value: "Half a reply" } });
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Half a reply");
 
-    fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
+    await user.click(screen.getByRole("button", { name: "Resolve" }));
     await screen.findByText("the server is down");
     expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" })).toBe(field);
     expect(field.value).toBe("Half a reply");
 
     refuse = false;
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Reply" })).toBeNull());
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument()
+    );
     expect(resolves).toEqual(["root-comment", "root-comment"]);
   } finally {
     view.unmount();
@@ -1212,26 +1276,29 @@ const refusedText = "Couldn't send — the server is down";
 // reader's: the refusal it holds, and the comment that reply answers, outlive the reader's own
 // Resolve on a phone as they do at a desktop width.
 test("on a phone, the reader's own Resolve keeps the thread composer's refused reply and its comment", async () => {
+  const user = userEvent.setup();
   const restoreViewport = stubMatchMedia(true);
   const resolve = ownResolveOverAReply();
 
   try {
     await screen.findByText("Root comment");
-    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await user.click(screen.getByRole("button", { name: "Reply" }));
     const dialog = await screen.findByRole("dialog", { name: "Thread" });
     const field = within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-    fireEvent.change(field, { target: { value: "Refused reply" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Refused reply");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
     await resolve.refuse();
     await within(dialog).findByText(refusedText);
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Resolve" }));
+    await user.click(within(dialog).getByRole("button", { name: "Resolve" }));
     await resolve.land();
-    expect(screen.queryByRole("dialog", { name: "Thread" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
     const turn = resolve.turn();
     if (turn === null) throw new Error("expected the resolved comment to stay listed");
 
-    fireEvent.click(within(turn as HTMLElement).getByRole("button", { name: "Expand thread" }));
+    await user.click(within(turn as HTMLElement).getByRole("button", { name: "Expand thread" }));
     const reopened = await screen.findByRole("dialog", { name: "Thread" });
     expect(within(reopened).getByText(refusedText)).toBeTruthy();
     expect(
@@ -1246,18 +1313,21 @@ test("on a phone, the reader's own Resolve keeps the thread composer's refused r
 // The same, with the reply refused while the Resolve is still out: the decision lands on a thread
 // that already shows the refusal.
 test("on a phone, a thread reply refused while the reader's Resolve is out outlives the Resolve", async () => {
+  const user = userEvent.setup();
   const restoreViewport = stubMatchMedia(true);
   const resolve = ownResolveOverAReply();
 
   try {
     await screen.findByText("Root comment");
-    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await user.click(screen.getByRole("button", { name: "Reply" }));
     const dialog = await screen.findByRole("dialog", { name: "Thread" });
     const field = within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-    fireEvent.change(field, { target: { value: "Refused reply" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Refused reply");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(api.createComment).toHaveBeenCalledTimes(1));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Resolve" }));
+    await user.click(within(dialog).getByRole("button", { name: "Resolve" }));
     await waitFor(() => expect(api.resolveComment).toHaveBeenCalledTimes(1));
     await resolve.refuse();
     await within(dialog).findByText(refusedText);
@@ -1265,7 +1335,7 @@ test("on a phone, a thread reply refused while the reader's Resolve is out outli
     await resolve.land();
     const turn = resolve.turn();
     if (turn === null) throw new Error("expected the resolved comment to stay listed");
-    fireEvent.click(within(turn as HTMLElement).getByRole("button", { name: "Expand thread" }));
+    await user.click(within(turn as HTMLElement).getByRole("button", { name: "Expand thread" }));
     const reopened = await screen.findByRole("dialog", { name: "Thread" });
     expect(within(reopened).getByText(refusedText)).toBeTruthy();
     expect(
@@ -1281,27 +1351,32 @@ test("on a phone, a thread reply refused while the reader's Resolve is out outli
 // closes the thread and keeps the reply's refusal for the thread's return.
 for (const width of ["phone", "desktop"] as const) {
   test(`at a ${width} width, the reader's own Resolve keeps the card's refused reply and its comment`, async () => {
+    const user = userEvent.setup();
     const restoreViewport = width === "phone" ? stubMatchMedia(true) : () => {};
     const resolve = ownResolveOverAReply();
 
     try {
       await screen.findByText("Root comment");
-      fireEvent.click(screen.getByRole("button", { name: "Expand thread" }));
+      await user.click(screen.getByRole("button", { name: "Expand thread" }));
       const field = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
       const form = field.closest("form");
       if (form === null) throw new Error("expected the card's reply form");
-      fireEvent.change(field, { target: { value: "Refused reply" } });
-      fireEvent.click(within(form).getByRole("button", { name: "Send" }));
+      await user.clear(field);
+      await user.click(field);
+      await user.paste("Refused reply");
+      await user.click(within(form).getByRole("button", { name: "Send" }));
       await resolve.refuse();
       await within(form).findByText(refusedText);
 
-      fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
+      await user.click(screen.getByRole("button", { name: "Resolve" }));
       await resolve.land();
-      await waitFor(() => expect(screen.queryByRole("textbox", { name: "Reply" })).toBeNull());
+      await waitFor(() =>
+        expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument()
+      );
       const turn = resolve.turn();
       if (turn === null) throw new Error("expected the resolved comment to stay listed");
 
-      fireEvent.click(within(turn as HTMLElement).getByRole("button", { name: "Expand thread" }));
+      await user.click(within(turn as HTMLElement).getByRole("button", { name: "Expand thread" }));
       const reopened = await screen.findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
       expect(reopened.value).toBe("Refused reply");
       expect(screen.getByText(refusedText)).toBeTruthy();
@@ -1316,6 +1391,7 @@ for (const width of ["phone", "desktop"] as const) {
 // back in that comment's thread: another comment's Reply opens it there, rather than readdressing
 // the composer, and its draft, to the other comment.
 test("on a phone, another comment's Reply opens the thread whose reply was refused after Back", async () => {
+  const user = userEvent.setup();
   const restoreViewport = stubMatchMedia(true);
   const stub = stubLists({
     comments: [
@@ -1335,23 +1411,27 @@ test("on a phone, another comment's Reply opens the thread whose reply was refus
 
   try {
     await screen.findByText("Comment A");
-    fireEvent.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
+    await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
     let dialog = await screen.findByRole("dialog", { name: "Thread" });
     const field = within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-    fireEvent.change(field, { target: { value: "Reply meant for A" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Back" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Thread" })).toBeNull());
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument()
+    );
     await act(async () => {
       reply.reject(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }));
       await reply.promise.catch(() => {});
     });
 
-    fireEvent.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
+    await user.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
     dialog = await screen.findByRole("dialog", { name: "Thread" });
     expect(dialog.querySelector('[data-turn="comment:comment-a"]')).not.toBeNull();
-    expect(within(dialog).queryByText("Comment B")).toBeNull();
+    expect(within(dialog).queryByText("Comment B")).not.toBeInTheDocument();
     expect(within(dialog).getByText(refusedText)).toBeTruthy();
     expect(
       within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value
@@ -1370,6 +1450,7 @@ test("on a phone, another comment's Reply opens the thread whose reply was refus
 // the same hazard applies: a refusal the composer holds for one comment must redirect, not be
 // silently overwritten, when the reader taps Reply on a different one.
 test("at a desktop width, another comment's Reply redirects onto the one whose refusal it holds", async () => {
+  const user = userEvent.setup();
   const stub = stubLists({
     comments: [
       comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" }),
@@ -1388,11 +1469,13 @@ test("at a desktop width, another comment's Reply redirects onto the one whose r
 
   try {
     await screen.findByText("Comment A");
-    fireEvent.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
+    await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
     const composer = screen.getByRole("form", { name: "Comment composer" });
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-    fireEvent.change(field, { target: { value: "Reply meant for A" } });
-    fireEvent.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Reply meant for A");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
     await act(async () => {
       reply.reject(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }));
@@ -1400,9 +1483,9 @@ test("at a desktop width, another comment's Reply redirects onto the one whose r
     });
     await within(composer).findByText(refusedText);
 
-    fireEvent.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
+    await user.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
     expect(within(composer).getByText(/Comment A/)).toBeTruthy();
-    expect(within(composer).queryByText(/Comment B/)).toBeNull();
+    expect(within(composer).queryByText(/Comment B/)).not.toBeInTheDocument();
     expect(within(composer).getByText(refusedText)).toBeTruthy();
     expect(field.value).toBe("Reply meant for A");
     expect(createComment).toHaveBeenCalledTimes(1);
@@ -1416,6 +1499,7 @@ test("at a desktop width, another comment's Reply redirects onto the one whose r
 // A comment's Reply prefills its mention as the mention picker names the session
 // (`useAgentText().sessionText`): by its registry title, else as `@session <id>`.
 test("a comment's Reply names its session author's mention as the picker does", async () => {
+  const user = userEvent.setup();
   const untitled = "01234567-89ab-7def-8000-000000000001";
   const stub = stubLists({
     agents: [agent("planner-session", "Planner")],
@@ -1449,10 +1533,10 @@ test("a comment's Reply names its session author's mention as the picker does", 
     await waitFor(() => expect(queryClient.getQueryData(["agents"])).toBeDefined());
     const composer = screen.getByRole("form", { name: "Comment composer" });
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-    fireEvent.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
+    await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
     await waitFor(() => expect(field.value).toBe(`@session ${untitled}`));
-    fireEvent.click(within(composer).getByRole("button", { name: "Cancel reply" }));
-    fireEvent.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
+    await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
+    await user.click(within(turn("comment-b")).getByRole("button", { name: "Reply" }));
     await waitFor(() => expect(field.value).toBe("@Planner"));
   } finally {
     view.unmount();
@@ -1464,6 +1548,7 @@ test("a comment's Reply names its session author's mention as the picker does", 
 // prop in `ConversationTab.tsx`, unconditional - not gated on phone viewport the way a
 // comment's is), so the hazard, and the redirect that closes it, hold here too.
 test("another message's Reply redirects onto the one whose refusal the docked composer holds", async () => {
+  const user = userEvent.setup();
   const stub = stubLists({
     messages: [
       thread(message("message-1", { body: "Message A", created_at: "2026-09-09T00:00:00Z" })),
@@ -1482,11 +1567,13 @@ test("another message's Reply redirects onto the one whose refusal the docked co
 
   try {
     await screen.findByText("Message A");
-    fireEvent.click(within(turn("message-1")).getByRole("button", { name: "Reply" }));
+    await user.click(within(turn("message-1")).getByRole("button", { name: "Reply" }));
     const composer = screen.getByRole("form", { name: "Comment composer" });
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-    fireEvent.change(field, { target: { value: "Reply meant for A" } });
-    fireEvent.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.clear(field);
+    await user.click(field);
+    await user.paste("Reply meant for A");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createMessage).toHaveBeenCalledTimes(1));
     await act(async () => {
       reply.reject(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }));
@@ -1494,9 +1581,9 @@ test("another message's Reply redirects onto the one whose refusal the docked co
     });
     await within(composer).findByText(refusedText);
 
-    fireEvent.click(within(turn("message-2")).getByRole("button", { name: "Reply" }));
+    await user.click(within(turn("message-2")).getByRole("button", { name: "Reply" }));
     expect(within(composer).getByText(/Message A/)).toBeTruthy();
-    expect(within(composer).queryByText(/Message B/)).toBeNull();
+    expect(within(composer).queryByText(/Message B/)).not.toBeInTheDocument();
     expect(within(composer).getByText(refusedText)).toBeTruthy();
     expect(field.value).toBe("Reply meant for A");
     expect(createMessage).toHaveBeenCalledTimes(1);
@@ -1518,7 +1605,7 @@ test(
     try {
       await screen.findByText("A message");
       await waitFor(() => expect(window.scrollY).toBe(RESTING_SCROLL_Y));
-      expect(screen.queryByTestId("jump-to-latest")).toBeNull();
+      expect(screen.queryByTestId("jump-to-latest")).not.toBeInTheDocument();
 
       Object.defineProperty(window, "scrollY", {
         configurable: true,
@@ -1538,7 +1625,7 @@ test(
       act(() => {
         window.dispatchEvent(new Event("scroll"));
       });
-      await waitFor(() => expect(screen.queryByTestId("jump-to-latest")).toBeNull());
+      await waitFor(() => expect(screen.queryByTestId("jump-to-latest")).not.toBeInTheDocument());
     } finally {
       view.unmount();
       layout.restore();
@@ -1550,6 +1637,7 @@ test(
 test(
   "Jump to latest counts the unread conversations and returns to the newest",
   withScrollY(async () => {
+    const user = userEvent.setup();
     const layout = installScrollLayoutMocks();
     const stub = stubLists({
       comments: [
@@ -1575,7 +1663,7 @@ test(
 
       const pill = await screen.findByTestId("jump-to-latest");
       expect(pill.textContent).toBe("Jump to latest · 1 new");
-      fireEvent.click(pill);
+      await user.click(pill);
       await waitFor(() => expect(window.scrollY).toBe(RESTING_SCROLL_Y));
     } finally {
       view.unmount();
@@ -1592,6 +1680,7 @@ test(
 test(
   "Jump to latest counts the unread conversations the filter leaves on the page",
   withScrollY(async () => {
+    const user = userEvent.setup();
     const layout = installScrollLayoutMocks();
     const stub = stubLists({
       comments: [
@@ -1625,8 +1714,8 @@ test(
       );
 
       const filters = screen.getByRole("group", { name: "Conversations" });
-      fireEvent.click(within(filters).getByRole("button", { name: "Open" }));
-      await waitFor(() => expect(screen.queryByText("A resolved comment")).toBeNull());
+      await user.click(within(filters).getByRole("button", { name: "Open" }));
+      await waitFor(() => expect(screen.queryByText("A resolved comment")).not.toBeInTheDocument());
 
       expect(screen.getByTestId("jump-to-latest").textContent).toBe("Jump to latest");
     } finally {
@@ -1651,7 +1740,7 @@ test(
       Object.defineProperty(window, "scrollY", { configurable: true, value: 0, writable: true });
       await screen.findByText("A message");
       await waitFor(() => expect(window.scrollY).toBe(RESTING_SCROLL_Y));
-      expect(screen.queryByTestId("jump-to-latest")).toBeNull();
+      expect(screen.queryByTestId("jump-to-latest")).not.toBeInTheDocument();
 
       stub.lists.messages = [
         thread(message("message-1", { body: "A message" })),
@@ -1669,7 +1758,7 @@ test(
           turn.getAttribute("data-turn")
         )
       ).toEqual(["message:message-2", "message:message-1"]);
-      expect(screen.queryByTestId("jump-to-latest")).toBeNull();
+      expect(screen.queryByTestId("jump-to-latest")).not.toBeInTheDocument();
       expect(window.scrollY).toBe(RESTING_SCROLL_Y);
     } finally {
       view.unmount();
@@ -1697,7 +1786,7 @@ test("a comment-delivery retry disables when the target no longer advertises the
 
   try {
     await screen.findByText(/no live session worker/);
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByText(wholeText("Worker no longer supports Send."))).toBeTruthy();
   } finally {
     view.unmount();
@@ -1730,7 +1819,7 @@ test("a comment-delivery retry to a role target checks the role's current live h
 
   try {
     await screen.findByText(/no live session reviewer/);
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByText(/role:reviewer no longer supports Send\./)).toBeTruthy();
   } finally {
     view.unmount();
@@ -1770,7 +1859,8 @@ test("a comment-delivery retry guards a same-tick double click to exactly one at
   try {
     const retry = await screen.findByRole("button", { name: "Retry" });
     // Both clicks fire in the same task, before any re-render could disable the button - the
-    // window a disabled-prop check (which lags on React state) cannot catch.
+    // window a disabled-prop check (which lags on React state) cannot catch. user-event has no
+    // form for this: each `await user.click` lets React re-render between the two presses.
     fireEvent.click(retry);
     fireEvent.click(retry);
     resolve();
@@ -1810,9 +1900,7 @@ test("a root targeted-message retry checks the role's current holder after a han
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await screen.findByRole("button", { name: "Retry" });
     expect(sendNormally.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "Use BTW instead" }).hasAttribute("disabled")).toBe(
-      false
-    );
+    expect(screen.getByRole("button", { name: "Use BTW instead" })).not.toHaveAttribute("disabled");
   } finally {
     view.unmount();
     stub.restore();
@@ -1864,9 +1952,7 @@ test("a reply's targeted-message retry checks the thread's current role holder a
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await screen.findByRole("button", { name: "Retry" });
     expect(sendNormally.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "Use BTW instead" }).hasAttribute("disabled")).toBe(
-      false
-    );
+    expect(screen.getByRole("button", { name: "Use BTW instead" })).not.toHaveAttribute("disabled");
   } finally {
     view.unmount();
     stub.restore();
@@ -1874,6 +1960,7 @@ test("a reply's targeted-message retry checks the thread's current role holder a
 });
 
 test("Conversation hides reply editing while its owner saves a comment", async () => {
+  const user = userEvent.setup();
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
   const stub = stubLists({ comments: [root, reply] });
@@ -1885,13 +1972,16 @@ test("Conversation hides reply editing while its owner saves a comment", async (
 
   try {
     const card = await screen.findByTestId("margin-comment-root-comment");
-    fireEvent.click(screen.getByRole("button", { name: "Expand thread" }));
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
     await waitFor(() =>
       expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
     );
-    fireEvent.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
-    fireEvent.change(screen.getByLabelText("Edit comment"), { target: { value: "Updated root" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(editComment).toHaveBeenCalledWith(
         "root-comment",
@@ -1920,6 +2010,7 @@ test("Conversation hides reply editing while its owner saves a comment", async (
 });
 
 test("Conversation restores edit controls and the draft when its owner save rejects", async () => {
+  const user = userEvent.setup();
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
   const stub = stubLists({ comments: [root, reply] });
@@ -1931,15 +2022,16 @@ test("Conversation restores edit controls and the draft when its owner save reje
 
   try {
     const card = await screen.findByTestId("margin-comment-root-comment");
-    fireEvent.click(screen.getByRole("button", { name: "Expand thread" }));
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
     await waitFor(() =>
       expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
     );
-    fireEvent.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
-    fireEvent.change(screen.getByLabelText("Edit comment"), {
-      target: { value: "Draft survives" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Draft survives");
+    await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(editComment).toHaveBeenCalledWith(
         "root-comment",
@@ -1986,8 +2078,7 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
   const stub = stubLists(lists);
   const putIssueState = answerIssueStates().mockImplementation(async () => issueState());
   const mark = answerThreadReads().mockResolvedValue(undefined);
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = () => {};
+  const scrollIntoView = stubScrollIntoView();
   const queryClient = newQueryClient();
   seedUnread(queryClient, { issue: "CORE-1" }, unread);
   const view = render(
@@ -1999,7 +2090,7 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
       putIssueState.mockRestore();
       mark.mockRestore();
       stub.restore();
-      HTMLElement.prototype.scrollIntoView = scrollIntoView;
+      scrollIntoView.mockRestore();
       viewport.restore();
     },
     mark,
@@ -2012,14 +2103,15 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
   };
 }
 
-/** `element` stays on screen as `placement` says for a second, and every write it starts lands. */
-async function dwellOn(viewport: IntersectionControl, element: Element, placement?: Placement) {
+/** The shared dwell with the fake clock it moves: this file's tests leave installing the clock to
+ *  the dwell rather than installing it at their head. */
+async function dwellOnFakeClock(
+  viewport: IntersectionControl,
+  element: Element,
+  placement?: Placement
+) {
   jest.useFakeTimers();
-  act(() => viewport.show(element, placement));
-  act(() => {
-    jest.advanceTimersByTime(1_000);
-  });
-  for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+  await dwellOn(viewport, element, placement);
 }
 
 /** A session's reply in a message thread. */
@@ -2045,7 +2137,7 @@ test("landing on a message thread shows its replies and marks the thread read th
     await screen.findByText("Session reply message-2");
     const newest = page.turn("message:message-2");
     expect(page.viewport.observed()).toContain(newest);
-    await dwellOn(page.viewport, newest);
+    await dwellOnFakeClock(page.viewport, newest);
     expect(page.mark.mock.calls).toEqual([
       ["message-1", { read_through: "2026-09-09T00:05:00.25Z" }, keyedAttempt],
     ]);
@@ -2066,7 +2158,7 @@ test("a message thread taller than the screen is marked read from its newest rep
   try {
     await screen.findByText("Session reply message-3");
     act(() => page.viewport.show(page.turn("message:message-1"), { height: 3_000, visible: 300 }));
-    await dwellOn(page.viewport, page.turn("message:message-3"));
+    await dwellOnFakeClock(page.viewport, page.turn("message:message-3"));
     expect(page.mark.mock.calls).toEqual([
       ["message-1", { read_through: "2026-09-09T00:06:00Z" }, keyedAttempt],
     ]);
@@ -2089,7 +2181,7 @@ test("a targeted message's thread is marked read once its newest reply is on scr
   );
   try {
     await screen.findByText("Session reply message-2");
-    await dwellOn(page.viewport, page.turn("message:message-2"));
+    await dwellOnFakeClock(page.viewport, page.turn("message:message-2"));
     expect(page.mark.mock.calls).toEqual([
       ["message-1", { read_through: "2026-09-09T00:07:00Z" }, keyedAttempt],
     ]);
@@ -2128,7 +2220,7 @@ test("at a desktop width, landing on a comment opens its thread inline and readi
     expect(
       page.turn("comment:root-comment").querySelector("article")?.getAttribute("aria-expanded")
     ).toBe("true");
-    await dwellOn(page.viewport, replyItem);
+    await dwellOnFakeClock(page.viewport, replyItem);
     expect(page.mark.mock.calls).toEqual([
       ["root-comment", { read_through: reply.created_at }, keyedAttempt],
     ]);
@@ -2148,13 +2240,16 @@ test("landing on a comment's reply opens the thread it belongs to and marks that
   try {
     const marked = await screen.findByText("Reply comment");
     expect(marked.closest("[data-reply]")?.getAttribute("aria-current")).toBe("true");
-    expect(page.turn("comment:root-comment").getAttribute("aria-current")).toBe("true");
+    expect(page.turn("comment:root-comment")).toHaveAttribute("aria-current", "true");
   } finally {
     page.cleanup();
   }
 });
 
 test("on a phone, landing on a comment opens its thread dialog and reading it marks it", async () => {
+  // The reply is read in the commit that mounts the dialog, which only a loaded engine draws
+  // (`MarkdownBody`): the first body of a file takes the asynchronous path.
+  await warmMarkdownRenderer();
   const restoreViewport = stubMatchMedia(true);
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", {
@@ -2167,7 +2262,7 @@ test("on a phone, landing on a comment opens its thread dialog and reading it ma
     const dialog = await screen.findByRole("dialog", { name: "Thread" });
     const replyItem = within(dialog).getByText("Reply comment").closest("li");
     if (replyItem === null) throw new Error("expected the reply's item");
-    await dwellOn(page.viewport, replyItem);
+    await dwellOnFakeClock(page.viewport, replyItem);
     expect(page.mark.mock.calls).toEqual([
       ["root-comment", { read_through: reply.created_at }, keyedAttempt],
     ]);
@@ -2183,7 +2278,7 @@ test("without a link, a comment's thread stays collapsed", async () => {
   const page = renderThreads({ comments: [root, reply] }, ["root-comment"]);
   try {
     await screen.findByText("Root comment");
-    expect(screen.queryByText("Reply comment")).toBeNull();
+    expect(screen.queryByText("Reply comment")).not.toBeInTheDocument();
   } finally {
     page.cleanup();
   }
@@ -2216,14 +2311,10 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     await screen.findByText("Newest");
     const card = view.container.querySelector('[data-turn="comment:comment-1"]');
     if (card === null) throw new Error("expected the newest card");
-    await dwellOn(viewport, card);
-    for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+    await dwellOnFakeClock(viewport, card);
     expect(putIssueState.mock.calls).toEqual([["CORE-1", { last_read_seq: 7 }, keyedAttempt]]);
     expect(putIssueState.mock.calls[0]?.[2]?.login).toBe("alice");
-    act(() => {
-      jest.advanceTimersByTime(1_000);
-    });
-    for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+    await jump(1_000);
     expect(putIssueState.mock.calls.map(([key, input]) => [key, input])).toEqual([
       ["CORE-1", { last_read_seq: 7 }],
       ["CORE-1", { last_read_seq: 7 }],

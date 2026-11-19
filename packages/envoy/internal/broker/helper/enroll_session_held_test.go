@@ -27,8 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holderSignIns is the box's sign-ins, and with them the fake broker's rule about the name.
@@ -54,7 +56,7 @@ func (h *holderSignIns) Current(context.Context) (*brokerclient.Authority, error
 	return h.authority, nil
 }
 
-func (h *holderSignIns) Refused(string) {}
+func (h *holderSignIns) Refused(context.Context, string) error { return nil }
 
 func (h *holderSignIns) signIn(authority *brokerclient.Authority) {
 	h.mu.Lock()
@@ -67,14 +69,9 @@ func (h *holderSignIns) signIn(authority *brokerclient.Authority) {
 // the held ladder first and that outlasts waitFor's five seconds.
 func waitUpTo(t *testing.T, d time.Duration, cond func() bool, why string) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testwait.Holds(d, 10*time.Millisecond, cond) {
+		t.Fatal(why)
 	}
-	t.Fatal(why)
 }
 
 func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *testing.T) {
@@ -94,7 +91,7 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 	}}
 	srv := &Server{
 		Registry: NewRegistry(filepath.Join(t.TempDir(), "sessions.json")),
-		Broker: &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"),
+		Broker: &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"),
 			MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log, SignIns: signIns},
 		Hostname: "testhost", PeerOf: PeerOf, Log: log, MinRenew: time.Second,
 	}

@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/shim"
@@ -16,7 +20,7 @@ import (
 
 const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>"
 
-// runWorkerShim is `legion worker-shim`, the command a runtime puts in front of every phase
+// newWorkerShimCommand is `legion worker-shim`, the command a runtime puts in front of every phase
 // worker's OMP: it dials the daemon's worker stream, and bridges OMP to it once acked. Its lines
 // go to stdout, which is what the pane shows; its exit status is OMP's. With --pod-safety, which
 // the Sandbox runtime passes and a tmux pane never does, OMP starts on the pod's baseline
@@ -42,8 +46,22 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 // flooring the wait is the safe answer there. On a relaunch the warm-up runs again: `codegraph
 // status` on the volume's existing index answers complete and nothing runs, or an index an
 // earlier build left partial is repaired as workspace.nextCodegraphStep decides.
-func runWorkerShim(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("worker-shim", "usage: legion worker-shim [flags] -- <omp argv…>", stderr)
+//
+// Before the wrapped process is started, and before any frame the daemon sends is read, the shim
+// reads the pod's shared public leak check where its own environment carries the pin the worker
+// image sets (leakguard.Installed, shim's spawnOnce). The daemon reads the check and pushes it to
+// the pod's launcher, which installs it once for the pod before any role starts; the shim installs
+// nothing. The runtime tells every role of the pod that installed check as PUBLIC_LEAK_CHECK, and
+// where the environment names none the shim names the install itself. A role whose install is
+// absent or of another tag fails its launch rather than running an agent whose every write path
+// would refuse. On a tmux pane there is no pin and nothing is read.
+func newWorkerShimCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "worker-shim [flags] -- <omp argv…>",
+		Short:  "bridge an agent's Oh My Pi to the daemon's worker stream (the daemon starts it in every pod)",
+		Hidden: true,
+	}
+	flags := cmd.Flags()
 	var given workerShimFlags
 	flags.StringVar(&given.connect, "connect", "", "the daemon's worker stream: unix:///<path> or tcp://<host>:<port>")
 	flags.StringVar(&given.bootTokenFile, "boot-token-file", "", "the file holding the pane's boot token")
@@ -54,14 +72,35 @@ func runWorkerShim(ctx context.Context, args []string, stdout, stderr io.Writer)
 	flags.StringVar(&given.keyDir, "agent-secrets-key-dir", "", "the pod's tmpfs directory for its agent-secrets key and enrollment id")
 	flags.StringVar(&given.tokenFile, "pod-token-file", "", "the projected service-account token for the secrets broker's audience")
 	flags.StringVar(&given.agentSecretsBin, "agent-secrets-bin", "", "the agent-secrets binary that generates the key and renews the lease")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	set := map[string]bool{}
-	flags.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	cmd.RunE = runs(func(ctx context.Context, args []string) int {
+		return runWorkerShim(ctx, cmd, given, *podSafety, args, stdout, stderr)
+	})
+	return cmd
+}
 
-	cfg, err := workerShimConfig(set, given, flags.Args())
-	if err == nil && *podSafety {
+func runWorkerShim(ctx context.Context, cmd *cobra.Command, given workerShimFlags, podSafety bool, args []string, stdout, stderr io.Writer) int {
+	// SIGHUP stops this shim as SIGTERM does: tmux's kill-pane gives every process of the pane
+	// the hangup, and it is the only signal this process gets under that runtime — the daemon
+	// ends a pane with its shutdown frame and then kills the pane, never signalling the shim
+	// (internal/runtime/tmux's stop). The shim's own end is what ends the agent and the git and
+	// jj it has running, each of which sits in a process group of its own the pane's signal does
+	// not reach (internal/procgroup, internal/shim's Run), so a shim killed outright by the
+	// hangup's default action would leave a save's or an adoption's jj running against the
+	// issue's shared clone for the rest of its budget. It is armed here and in `legion
+	// claude-bridge` alone, never in main's shared context: `legion gh` reads
+	// signal.Ignored(syscall.SIGHUP) to leave a nohuped gh alone (gh.go), and arming the signal
+	// for every subcommand would un-ignore it there.
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGHUP)
+	defer stop()
+	set := map[string]bool{}
+	cmd.Flags().Visit(func(f *pflag.Flag) { set[f.Name] = true })
+
+	argv, err := afterDash(cmd, args)
+	if err != nil {
+		return refuse(cmd, "%v", err)
+	}
+	cfg, err := workerShimConfig(set, given, argv)
+	if err == nil && podSafety {
 		cfg.Env, err = podSafeEnvironment(cfg.Env)
 	}
 	if err != nil {

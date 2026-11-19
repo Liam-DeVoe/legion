@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   createArtifactComment,
   createAsk,
@@ -18,13 +16,15 @@ import {
 } from "./api";
 import {
   barAction,
+  documentEditor,
   documentTransport,
   holdFirstRequest,
   markSpan,
   selectEditorText,
 } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { serveWithoutDisplayTrees } from "./strip-trees";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -52,10 +52,6 @@ const longDocument = [
   ),
   "Unique faraway quotation.",
 ].join("\n\n");
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 async function seedIssue() {
   await createProject({ key: "CORE", name: "Core" });
@@ -128,6 +124,10 @@ async function seedAsks(
  */
 const STILL_FRAMES = 10;
 
+/** How many pixels of travel left still read as arrived: sub-pixel layout and a fractional
+ *  scroll offset leave a landing a shade short of its mark. */
+const LANDED_WITHIN_PX = 2;
+
 /**
  * Waits until the landing has stopped moving and reports where it stopped. A link's scroll to
  * its quote is smooth, and the margin corrects its own scroll as it fills in, so the target is
@@ -169,6 +169,52 @@ async function landingSettled(
       }),
     STILL_FRAMES
   );
+}
+
+/**
+ * Waits until the mark a link names has arrived where the document's scroll to it promises to
+ * leave it: centred in every scrollport between it and the page, or at the end of a scroll that
+ * cannot centre it. `focusMark` (`packages/proof-editor/src/lib.ts`) scrolls to the mark with
+ * `scrollIntoView({ behavior: 'smooth', block: 'center' })`, and a smooth scroll the engine has
+ * not begun yet emits no scroll event and moves nothing: stillness reads the same before the
+ * landing starts and after it ends, and a mark already in the viewport reads the same mid-flight.
+ * This is the reading that is true only once the landing has arrived, which is what a row that
+ * acts on the document - a selection, a press on the action bar fixed beside it - needs before
+ * it acts, since a scroll still to come carries both away.
+ */
+async function markLanded(page: Page, markId: string): Promise<void> {
+  await expect
+    .poll(async () =>
+      markSpan(page, markId)
+        .first()
+        .evaluate((element) => {
+          /** How far a scrollport still has to travel to put `offset` at its middle. */
+          const toGo = (scroll: number, limit: number, offset: number) =>
+            Math.abs(Math.min(Math.max(scroll + offset, 0), Math.max(limit, 0)) - scroll);
+          const mark = element.getBoundingClientRect();
+          const middle = mark.top + mark.height / 2;
+          let offBy = toGo(
+            window.scrollY,
+            document.documentElement.scrollHeight - window.innerHeight,
+            middle - window.innerHeight / 2
+          );
+          for (let node = element.parentElement; node !== null; node = node.parentElement) {
+            const overflow = getComputedStyle(node).overflowY;
+            if (overflow !== "auto" && overflow !== "scroll" && overflow !== "overlay") continue;
+            const box = node.getBoundingClientRect();
+            offBy = Math.max(
+              offBy,
+              toGo(
+                node.scrollTop,
+                node.scrollHeight - node.clientHeight,
+                middle - (box.top + node.clientHeight / 2)
+              )
+            );
+          }
+          return offBy;
+        })
+    )
+    .toBeLessThanOrEqual(LANDED_WITHIN_PX);
 }
 
 /** Polls until `inner` has settled wholly inside `outer`'s box - the margin's own scrollport,
@@ -253,7 +299,10 @@ async function expectSelectedMarginItem(page: Page, id: string) {
 
 // SLOW(>=2s): four anchored writes, each seeded on its own transaction, and the four links the
 // row lands on in turn, in WebKit.
-test("emitted document item hrefs select and scroll their anchored thread", async ({ browser }) => {
+// @pr: The deep-link family's one row on the lane: an emitted document item href selects and scrolls its anchored thread.
+test("emitted document item hrefs select and scroll their anchored thread @pr", async ({
+  browser,
+}) => {
   const { issue } = await seedIssue();
   // Anchored writes are seeded one at a time. Each holds its transaction across the document
   // work that stamps the mark, so concurrent ones queue on the server's connection pool
@@ -409,7 +458,13 @@ test("a desktop document item link shows its far-away card and its quote", async
 
 // SLOW(>=2s): a long seeded document, the landing scroll settled over it in WebKit and on a
 // phone, and the editor selection that opens the margin's composer.
-test("a composer opened from the document is in the margin's view after a comment link @phone", async ({
+// @webkit @firefox: the landing scroll's own frame order, which is the engine's. Every one of
+// this row's five measured CI failures was in Firefox, where the selection bar - fixed beside a
+// selection the landing had carried off screen - stood above the viewport and no scroll could
+// reach it. The tags are what keeps the row on those engines now that they select rows by tag
+// rather than by file (`firefoxTagged`, `webkitTagged`, `e2e/playwright.config.ts`); without
+// them it would run only where its defect was never seen.
+test("a composer opened from the document is in the margin's view after a comment link @phone @webkit @firefox", async ({
   browser,
 }, testInfo) => {
   const { comment, issue, markId } = await seedLongDocument();
@@ -430,12 +485,26 @@ test("a composer opened from the document is in the margin's view after a commen
     // and bring the form back. Both halves of the landing come first: the card, and the quote
     // the document scrolls to once the editor has projected its mark, which on a loaded machine
     // is later than the card. A selection made before that scroll is carried off screen by it,
-    // and so is the fixed action bar placed beside the selection.
+    // and so is the fixed action bar placed beside the selection - and the quote is in the
+    // viewport both while that scroll is still to come and once it has run, so the mark's
+    // arrival at the place `block: 'center'` promises is what says the document is done moving.
     await expect(card).toBeInViewport();
     await expect(markSpan(page, markId)).toBeInViewport();
+    await markLanded(page, markId);
     await landingSettled(sheet);
 
-    await selectEditorText(page, "Paragraph 2: surrounding context");
+    // The landing leaves this paragraph 921 px above the viewport, and the action bar is
+    // `position: fixed` beside the selection, so a selection made from there puts the bar above
+    // the viewport too - where Playwright's "scroll into view" moves nothing, a fixed element
+    // having nowhere to be scrolled from. What rescued it was never this row: it was
+    // prosemirror-view scrolling to its own selection when `selectEditorText` focuses the
+    // editor, measured here as a single `window.scrollBy(0, -1062)` from `scrollToSelection` on
+    // the DOMObserver's flush, which happens to leave the document's first paragraphs on screen.
+    // A reader drags over text they are looking at, so this row scrolls to the paragraph first
+    // and the bar is beside something on screen however that focus scroll falls.
+    const selected = "Paragraph 2: surrounding context";
+    await documentEditor(page).getByText(selected).scrollIntoViewIfNeeded();
+    await selectEditorText(page, selected);
     await barAction(page, "Comment");
 
     const composer = sheet.locator("[data-margin-composer]");
@@ -727,6 +796,7 @@ test("a past version's comment link lands on its quote in a document with no dia
     // change of the version view's own scroll height - the very measurement a rebuild disturbs -
     // and a loaded machine stretches those frames, which a wall-clock window cannot do.
     await landingSettled(versionView);
+    // The landing settled above, so the frames recorded up to here are every scroll it made.
     const offsets = (await page.evaluate(() => window.__scrollEachFrame)) ?? [];
     const started = offsets.findIndex((offset) => offset > 0);
     expect(started).toBeGreaterThanOrEqual(0);
@@ -928,10 +998,9 @@ test("a linked card's placement ignores the margin's own scroll @webkit @firefox
   }
 });
 
-test("an iPhone document item link brings its far-away mark above the closed review sheet @phone", async ({
+test("an iPhone document item link brings its far-away mark above the closed review sheet @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the closed sheet is phone-only");
+}) => {
   const { comment, issue, markId } = await seedLongDocument();
   const context = await asUser(browser, "alice");
 
@@ -959,10 +1028,9 @@ test("an iPhone document item link brings its far-away mark above the closed rev
   }
 });
 
-test("an iPhone secondary-document link scrolls its selected card after opening the review sheet @phone", async ({
+test("an iPhone secondary-document link scrolls its selected card after opening the review sheet @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the bottom-sheet viewport is phone-only");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -1190,7 +1258,7 @@ test("every item link lands on exactly one marked card, and a reply link marks i
 
     // A search hit opens the very path the palette's row carries.
     const hits = await search("quadrant");
-    const hit = hits.results.find((result) => result.id === found.id);
+    const hit = (hits.results ?? []).find((result) => result.id === found.id);
     expect(hit?.href).toBe(`/issues/${issue.key}/comments/${found.id}`);
     await navigateInApp(page, hit?.href ?? "");
     if (isPhone) {
@@ -1210,5 +1278,46 @@ test("every item link lands on exactly one marked card, and a reply link marks i
     await untilNotFound(page, "Comment not found");
   } finally {
     await context.close();
+  }
+});
+
+// The same link from a server that answers no reading of the version's text, which is what a
+// pod of the build before this one serves while a deploy rolls. The page parses the markdown
+// and embeds the quote in its own reading of it, so the reader lands on the words the comment
+// names rather than being told the range is gone - the message this row refuses by name.
+// No `@pr` tag: the pull-request lane's real-stack budget is full, and of this round's two
+// rows this is the one the lane answers least - its claim is also made by a unit row, which
+// asserts the mark and the absence of the changed-text message, while the approval's marks have
+// no unit row that draws them on a real server. It runs on the full lane at the merge queue.
+test("a past version's comment link marks its quote where the answer carried no reading", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "Plain document:\n\nTarget paragraph holds the quoted words.\n",
+    title: "Highlighted mark with no reading",
+  });
+  const comment = await createComment(
+    issue.key,
+    { anchor: { artifact: "spec", quote: "quoted words" }, body: "Read this." },
+    agentSession
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await serveWithoutDisplayTrees(page);
+    await page.goto(
+      `/issues/${issue.key}/artifact/spec?v=1&comment=${encodeURIComponent(comment.id)}`
+    );
+    const versionView = page.getByRole("region", { name: "Document version 1" });
+    await expect(versionView.locator(`[data-id="${comment.id}"]`)).toHaveText("quoted words");
+    await expect(
+      page.getByText("Text changed. The selected range no longer exists in this document.")
+    ).toHaveCount(0);
+    await expect(page.getByText("Could not load this document version.")).toHaveCount(0);
+  } finally {
+    await alice.close();
   }
 });

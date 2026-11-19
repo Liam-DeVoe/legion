@@ -1,16 +1,8 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  type Browser,
-  expect,
-  type Locator,
-  type Page,
-  type Request,
-  test,
-} from "@playwright/test";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 
 import type { ArtifactUploadResponse } from "../web/src/api/types";
+import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -19,12 +11,13 @@ import {
   createIssue,
   createIssueArtifact,
   createMessage,
+  createPriority,
   createProject,
   createProjectDocument,
   dashboardOrigin,
+  patchIssue,
   publishAgentStreamFrame,
   putArchitectureSource,
-  search,
   syncArchitectureSource,
   userHeaders,
 } from "./api";
@@ -33,13 +26,14 @@ import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
   type DispatchProcess,
-  dispatchProcesses,
-  pinnedTo,
+  entryChunkOf,
   processPinCookie,
   processPinHeader,
+  webDistOf,
 } from "./harness-processes";
+import { withIssuePage } from "./issue-page-option";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
 import { signIn } from "./users";
 
@@ -53,15 +47,10 @@ import { signIn } from "./users";
  * stylesheet its build emitted. Then every file of both builds is fetched from both processes.
  */
 
-const envoyDirectory = fileURLToPath(new URL("../../envoy/", import.meta.url));
-
-/** Each process's web dist, read as e2e/run-server.sh hands it to the server: a path from
- *  packages/envoy, A's always `../dispatch/web/dist`, B's `DISPATCH_E2E_WEB_DIST_B` when set
- *  (e2e/harness-listeners.ts). */
-const webDists: Record<DispatchProcess, string> = {
-  a: resolve(envoyDirectory, "../dispatch/web/dist"),
-  b: resolve(envoyDirectory, process.env.DISPATCH_E2E_WEB_DIST_B || "../dispatch/web/dist"),
-};
+/** Each process's web dist, as e2e/run-server.sh serves it, and the entry chunk that dist's
+ *  `index.html` names: both from e2e/harness-processes.ts, so this spec and
+ *  e2e/cross-build.multiprocess.e2e.ts read one answer rather than two. */
+const webDists: Record<DispatchProcess, string> = { a: webDistOf("a"), b: webDistOf("b") };
 
 interface Build {
   readonly dist: string;
@@ -72,16 +61,11 @@ interface Build {
 }
 
 function readBuild(dist: string): Build {
-  const page = readFileSync(join(dist, "index.html"), "utf8");
-  const entry = /<script type="module" crossorigin src="(\/assets\/[^"]+\.js)"><\/script>/.exec(
-    page
-  )?.[1];
-  if (entry === undefined) throw new Error(`${dist}/index.html names no entry chunk`);
   const assets = readdirSync(join(dist, "assets"), { withFileTypes: true })
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
     .sort();
-  return { assets, dist, entry };
+  return { assets, dist, entry: entryChunkOf(dist) };
 }
 
 let builds: Record<DispatchProcess, Build>;
@@ -105,10 +89,6 @@ test.beforeAll(() => {
     builds.b.assets,
     `${webDists.a}/assets and ${webDists.b}/assets hold the same files`
   ).not.toEqual(builds.a.assets);
-});
-
-test.beforeEach(async () => {
-  await resetDatabase();
 });
 
 /** The machine the seeded session reports. It reports it as `machine_id` and no `host`, which
@@ -157,15 +137,27 @@ const shown = {
   spec: "Both builds serve every page.",
 };
 
-/** The list the issue message carries under its diagram, long enough that the page parses the
- *  message in the Markdown parse worker rather than on its own thread (`markdownWorkerThreshold`,
- *  features/refs/markdown-worker-threshold.ts). It rides the message rather than the comment
- *  because the Conversation draws a message's body whole, where a comment card shows a preview
- *  until its thread is opened. The walk asks for every chunk a build emits, the parse worker's
- *  among them, and a reader on a rolling deploy meets exactly this: a long body whose formatting
- *  arrives from a worker whose code one build served and whose page another did. */
+/** The list the issue message carries under its diagram, drawn from the tree the server read the
+ *  message into: a stored text is parsed nowhere, however long it is
+ *  (features/refs/markdown-engine.ts), and the walk's point here is that the whole of it is drawn
+ *  from a build's own chunks. It rides the message rather than the comment because the
+ *  Conversation draws a message's body whole, where a comment card shows a preview until its
+ *  thread is opened. */
 const longListItems = 300;
 const longList = "- a rollout step\n".repeat(longListItems);
+
+/** The notes the agent's turn carries under its first line, long enough that the page parses the
+ *  turn in the Markdown parse worker rather than on its own thread (`markdownWorkerThreshold`,
+ *  features/refs/markdown-worker-threshold.ts). They ride the live agent turn because it is one
+ *  of the three texts Dispatch does not store, and so one of the three the worker still parses:
+ *  every stored text arrives with the tree the server read it into. The walk asks for every chunk
+ *  a build emits, the parse worker's among them, and a reader on a rolling deploy meets exactly
+ *  this: a turn whose formatting arrives from a worker whose code one build served and whose page
+ *  another did. Derived from the threshold with a margin, so the turn stays the worker's wherever
+ *  that value is set. */
+const agentReplyNote = "- a release note\n";
+const agentReplyNotes = Math.ceil(markdownWorkerThreshold / agentReplyNote.length) + 50;
+const agentReply = `${shown.agentReply}\n\n${agentReplyNote.repeat(agentReplyNotes)}`;
 
 /** The issue message's flowchart, from one node to the other, which draws only once the Mermaid
  *  renderer's worker has run. */
@@ -205,12 +197,14 @@ interface Seeded {
   readonly document: string;
   readonly issue: string;
   readonly issueArtifact: string;
+  readonly priority: string;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
  *  project with an architecture source, an issue with a spec, a child, a comment, a message
  *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
- *  broadcast, a replayed conversation and a picture, and the delivery timeline's runs. */
+ *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
+ *  in flight that advances it, and the delivery timeline's runs. */
 async function seedEveryRoute(): Promise<Seeded> {
   await setLiveSessions([session]);
   await createProject({ key: "CORE", name: "Core" });
@@ -243,6 +237,16 @@ async function seedEveryRoute(): Promise<Seeded> {
     content: `# Handbook\n\n${shown.document}\n`,
     name: "handbook.md",
   });
+  // The priorities page draws its table only where a priority is written, and a priority's own
+  // page draws the work advancing it, so one priority is written with an issue in flight under
+  // it; the two fault lists of the page are drawn whatever they hold.
+  const priority = await createPriority({
+    description: "Every page is served from either build while a release overlaps the two.",
+    owner: "alice",
+    title: "Serve every page from both builds",
+  });
+  const advancing = await createIssue({ project: "CORE", title: "Pin assets to one process" });
+  await patchIssue(advancing.key, { advances: [priority.id], status: "in_progress" });
   const broadcast = await createBroadcast({
     body: "Report **status**.",
     delivery: "steer",
@@ -269,7 +273,7 @@ async function seedEveryRoute(): Promise<Seeded> {
           message: {
             at: 2_000,
             id: "a2000",
-            parts: [{ text: shown.agentReply, type: "text" }],
+            parts: [{ text: agentReply, type: "text" }],
             role: "assistant",
             streaming: false,
           },
@@ -290,6 +294,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     document: document.artifact.slug,
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
+    priority: priority.id,
   };
 }
 
@@ -300,6 +305,8 @@ interface Visit {
   readonly url: string;
   readonly shows: (page: Page) => readonly Locator[];
   readonly loads?: readonly LazyPiece[];
+  /** Runs before the visit's `goto`, and what it sets stays on the walk's one context. */
+  readonly prepare?: (page: Page) => Promise<void>;
 }
 
 function heading(page: Page, name: string): Locator {
@@ -357,9 +364,20 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `/agents/broadcasts/${seed.broadcast}`,
     },
     {
+      // The turn's notes are the parse worker's: the turn is longer than the worker's threshold
+      // and, as a live agent turn, one of the texts Dispatch does not store, so the page parses
+      // it rather than drawing a tree the server read it into (`agentReply`). The card holds the
+      // turn's own text at once and the notes as a list once the worker answers, which is why the
+      // landmark waits for the last of them: that worker's code comes from the build that did not
+      // serve this page, which is the walk's whole point.
+      loads: ["markdown-worker"],
       route: "/agents/:sessionId/live",
       shows: (page) => [
         page.getByTestId("agent-message-assistant").filter({ hasText: shown.agentReply }),
+        page
+          .getByTestId("agent-message-assistant")
+          .locator("li")
+          .nth(agentReplyNotes - 1),
       ],
       url: `${agent}/live`,
     },
@@ -401,11 +419,12 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `${issue}/spec`,
     },
     {
-      // The message's diagram is the Mermaid worker's: without it the body shows its source. The
-      // message is also longer than the worker threshold, so its list is the parse worker's: the
-      // card holds the body's text at once and the list once the worker answers. Both workers'
-      // code comes from the build that did not serve this page, which is the walk's whole point.
-      loads: ["markdown-worker", "mermaid"],
+      // The message's diagram is the Mermaid worker's: without it the body shows its source. Its
+      // list is no worker's: a stored message arrives with the tree the server read it into and
+      // is parsed nowhere (`longList`), so what the list proves here is that the whole of a long
+      // stored body is drawn from the chunks of the build that did not serve this page, which is
+      // the walk's whole point.
+      loads: ["mermaid"],
       route: "/issues/:key/*",
       shows: (page) => [
         page.locator("#issue-conversation-panel").getByText(shown.comment),
@@ -438,6 +457,31 @@ function visits(seed: Seeded): readonly Visit[] {
       route: "/issues/:key/*",
       shows: (page) => [page.getByRole("list", { name: "Issue activity" })],
       url: `${issue}/activity`,
+    },
+    {
+      route: "/priorities",
+      shows: (page) => [
+        heading(page, "Priorities"),
+        page.locator('section[aria-label="Priorities"]'),
+        page.getByRole("table", { name: "Priorities table" }),
+        page.locator('section[aria-label="In flight under no priority"]'),
+        page.locator('section[aria-label="Priority work in backlog or icebox"]'),
+      ],
+      url: "/priorities",
+    },
+    {
+      // Three reads, each its own request: the priority itself, which the title and the owner
+      // are written in where they are read (alice is a person, and every priority write is the
+      // deployment's), the issues advancing it under them, and the history in the margin.
+      route: "/priorities/:id",
+      shows: (page) => [
+        page.getByRole("textbox", { name: "Title" }),
+        page.getByRole("combobox", { name: "Owner" }),
+        page.locator('section[aria-label="Description"]'),
+        page.locator('section[aria-label="Work advancing this priority"]'),
+        page.getByRole("complementary", { name: "Margin" }),
+      ],
+      url: `/priorities/${seed.priority}`,
     },
     {
       // A project with an architecture source opens on its Architecture tab.
@@ -498,16 +542,24 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
+    {
+      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
+      // no visit above loads it. This visit is last because the init script stays on the walk's
+      // one context: an issue visit after it would draw the new page rather than today's.
+      prepare: (page) => withIssuePage(page.context(), "alice"),
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("[data-issue-page]")
+          .getByRole("heading", { exact: true, level: 1, name: shown.issue }),
+      ],
+      url: issue,
+    },
   ];
 }
 
 function isAsset(url: URL): boolean {
   return url.origin === dashboardOrigin && url.pathname.startsWith("/assets/");
-}
-
-async function allVisible(locators: readonly Locator[]): Promise<boolean> {
-  for (const locator of locators) if (!(await locator.isVisible())) return false;
-  return true;
 }
 
 /** Opens every visit with the page document, API calls and sockets on `pageProcess` (the pin
@@ -591,17 +643,26 @@ async function walk(
       problems = [];
       const shows = visit.shows(page);
       try {
+        await visit.prepare?.(page);
         awaitingCommit = true;
         await page.goto(visit.url);
         // A failed asset ends the visit at once: the landmark it keeps from rendering would
         // only add a timeout.
-        await expect.poll(async () => problems.length > 0 || (await allVisible(shows))).toBe(true);
+        await expect
+          .poll(async () => {
+            if (problems.length > 0) return true;
+            for (const locator of shows) if (!(await locator.isVisible())) return false;
+            return true;
+          })
+          .toBe(true);
         if (problems.length === 0) {
           await expect(page.locator("#root")).not.toBeEmpty();
           await expect.poll(() => pending.size).toBe(0);
         }
       } catch (error) {
         for (const locator of shows) {
+          // The visit has already failed, so this reads once which landmarks are missing at the
+          // failure, for its message: a wait here would only add a timeout to a failed visit.
           if (!(await locator.isVisible())) problems.push(`${locator} is not visible`);
         }
         if (problems.length === 0) problems.push(String(error));
@@ -633,7 +694,7 @@ async function walk(
 }
 
 // A walk opens about twenty-five pages, each waiting on its own content, so it outlasts the
-// suite's 30 s test timeout by design.
+// suite's 60 s test timeout (e2e/playwright.config.ts) by design.
 const walkTimeout = 300_000;
 
 test("every route renders with its page from Dispatch A and every asset from Dispatch B", async ({
@@ -648,32 +709,6 @@ test("every route renders with its page from Dispatch B and every asset from Dis
 }) => {
   test.setTimeout(walkTimeout);
   await walk(browser, "b", "a");
-});
-
-test("every file of both builds' assets answers 200 with its bytes from Dispatch A and from Dispatch B", async () => {
-  const wrong: string[] = [];
-  for (const target of dispatchProcesses) {
-    for (const build of [builds.a, builds.b]) {
-      await Promise.all(
-        build.assets.map(async (file) => {
-          const response = await fetch(new URL(`/assets/${file}`, baseUrl), {
-            headers: pinnedTo(target),
-          });
-          const where = `${build.dist}/assets/${file} from Dispatch ${target.toUpperCase()}`;
-          if (response.status !== 200) {
-            wrong.push(`${where} answered ${response.status}`);
-            await response.body?.cancel();
-            return;
-          }
-          const bytes = Buffer.from(await response.arrayBuffer());
-          if (!bytes.equals(readFileSync(join(build.dist, "assets", file)))) {
-            wrong.push(`${where} answered other bytes than the file's`);
-          }
-        })
-      );
-    }
-  }
-  expect(wrong.sort()).toEqual([]);
 });
 
 /** Opens the inbox in a signed-in tab whose page, API calls and sockets are all `process`'s (the
@@ -721,6 +756,10 @@ test("a tab of build A focused while A and B are both live shows no new-version 
       live: [builds.a.entry, builds.b.entry].sort(),
       serving: builds.a.entry,
     });
+    // The absence is read once the signed-in page has drawn, not off the shell's loading
+    // skeleton, and after the page has read the builds answer (`focusedTab`).
+    await expect(heading(page, "Inbox")).toBeVisible();
+    // The waits above settled the content this reads, so one read is enough.
     expect(await page.getByRole("status", { name: "A new version is available" }).count()).toBe(0);
   } finally {
     await page.context().close();
@@ -753,9 +792,7 @@ test("a tab of build B focused once only build A is live shows the new-version n
     const tab = await focusedTab(browser, "b");
     page = tab.page;
     expect(tab.builds).toEqual({ live: [builds.a.entry], serving: builds.b.entry });
-    expect(await page.getByRole("status", { name: "A new version is available" }).isVisible()).toBe(
-      true
-    );
+    await expect(page.getByRole("status", { name: "A new version is available" })).toBeVisible();
   } finally {
     if (moved.length > 0) {
       await sql(
@@ -765,101 +802,4 @@ test("a tab of build B focused once only build A is live shows the new-version n
     }
     await page?.context().close();
   }
-});
-
-/** Waits until `statement` answers `want`, reading it every second for at most `seconds`. */
-async function until(
-  statement: string,
-  want: string,
-  seconds: number,
-  what: string
-): Promise<void> {
-  await expect
-    .poll(async () => (await sql(statement)).trim(), {
-      intervals: [1_000],
-      message: what,
-      timeout: seconds * 1_000,
-    })
-    .toBe(want);
-}
-
-// While a release overlaps two builds, the older one's meaning search reads a whole-text
-// `embeddings` row per item (kind `comment`), and the newer one reads the windows of blocks it
-// writes instead (kind `comment_block`). So the newer build retires a whole-text row only once
-// its owner holds a window of the matching kind whose vector is current, and an item leaves the
-// older build's meaning search only once the newer build can find it. Both processes here run
-// one build, so what this proves is the rule the older build's reader depends on: the row it
-// reads stays, current and alive, while the window is not current, and goes once it is. The
-// block-index tick runs every 30 s, so each wait below spans more than one pass.
-test("a windowed item keeps the whole-text row the older build's meaning search reads until its window is current", async () => {
-  // Every wait below at its bound, and the two-tick sleep: 60 + 120 + 70 + 120 seconds, which a
-  // lane sharing the runner with the rest of the suite can need where an idle one returns in
-  // seconds.
-  test.setTimeout(420_000);
-  await createProject({ key: "ROLL", name: "Rollout" });
-  const issue = await createIssue({ project: "ROLL", title: "Two builds at once" });
-  const body = "The canary pours the astrolabe over the quiet wharf.\n\nA second paragraph.";
-  const comment = await createComment(issue.key, { body }, { as: "agent" });
-  const owner = `comment/${comment.id}`;
-  const whole = `select count(*) from embeddings where kind = 'comment' and id = '${comment.id}'`;
-  const windows = `select count(*) from embeddings where kind = 'comment_block' and split_part(id, '#', 1) = '${owner}'`;
-  const currentWindows = `${windows} and embedded_hash = content_hash and embedding is not null`;
-
-  // The window first, and stale before the whole-text row exists. The retirement arm deletes a
-  // whole-text row whenever its owner holds one current window (`wholeTextOwner.retire()`), and
-  // it does not ask whether that row is embedded, so a run that enqueued the row first would be
-  // racing its own queue against the block-index tick: on a machine where the queue embeds the
-  // row within the tick the row is there to be read, and on one where the tick comes first the
-  // row is deleted and no wait of any length can see it. That is what a lane sharing a runner
-  // with the rest of the browser suite made happen. With no window current, the arm cannot take
-  // the row, so what follows is decided by the queue's progress alone.
-  await until(currentWindows, "1", 60, "the comment's window is embedded");
-
-  // A window waiting for its vector: the state every item is in between this build's write and
-  // the queue's pass over it. `dead` keeps the queue from embedding it again while the
-  // retirement arm is given its chance.
-  await sql(
-    `update embeddings set embedded_hash = null, dead = true
-       where kind = 'comment_block' and split_part(id, '#', 1) = '${owner}'`
-  );
-  expect((await sql(currentWindows)).trim(), "no window is current").toBe("0");
-
-  // The row the previous build's trigger wrote for this comment, which this build no longer
-  // writes at a write: the same call that trigger made.
-  // psql reads the body as one SQL string literal, with any quote of its own doubled.
-  const quoted = `'${body.replaceAll("'", "''")}'`;
-  await sql(`select embeddings_enqueue('comment', '${comment.id}', ${quoted})`);
-  const embedded = `${whole} and embedded_hash = content_hash and embedding is not null`;
-  await until(embedded, "1", 120, "the whole-text row is embedded");
-
-  // Two ticks of the reconciliation pass over it, and the row the older build reads is still
-  // there: alive, with its vector and the comment's own text.
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 70_000);
-  await promise;
-  expect((await sql(whole)).trim(), "the whole-text row after two ticks").toBe("1");
-  const readable = await sql(
-    `select count(*) from embeddings where kind = 'comment' and id = '${comment.id}'
-       and not dead and embedding is not null and embedded_hash = content_hash
-       and text_snapshot = (select body from comments where id = '${comment.id}')`
-  );
-  expect(
-    readable.trim(),
-    "the older build's meaning row is current and holds the comment's text"
-  ).toBe("1");
-
-  // The hit the newer build already serves for the same comment names the block that matched,
-  // so both builds find it while the row is there.
-  const hits = await search("astrolabe wharf canary", { as: "agent" });
-  expect(
-    hits.results.filter((hit) => hit.kind === "comment" && hit.id === comment.id),
-    "the newer build's hit for the comment"
-  ).not.toEqual([]);
-
-  // Once the window is current again, the arm takes the whole-text row.
-  await sql(
-    `update embeddings set dead = false, embedded_hash = content_hash
-       where kind = 'comment_block' and split_part(id, '#', 1) = '${owner}'`
-  );
-  await until(whole, "0", 120, "the whole-text row is retired behind its window");
 });

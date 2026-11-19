@@ -66,7 +66,7 @@ func TestIdleMinutesZeroTurnsReleaseOff(t *testing.T) {
 }
 
 // What the loader refuses, each refusal naming the key an operator has to edit, so
-// `legion start --check-config` exits 1 saying where to look.
+// `legion config check` exits 1 saying where to look.
 func TestIdleReleaseRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name, block, want string
@@ -86,6 +86,21 @@ func TestIdleReleaseRefusals(t *testing.T) {
 		{
 			"a zero backstop", "    idle_release: {backstop_minutes: 0}\n",
 			"runtime.kubernetes.idle_release.backstop_minutes must be a positive integer",
+		},
+		// Both minute counts carry the timer bound, as every duration key of the file does.
+		// Unbounded, 153722867280912930 minutes is a negative time.Duration
+		// (IdleReleaseConfig.Idle), which every pod has already been idle for.
+		{
+			"an idle period past the timer bound", "    idle_release: {idle_minutes: 35792}\n",
+			"runtime.kubernetes.idle_release.idle_minutes must be at most 35791",
+		},
+		{
+			"an idle period that would wrap a duration", "    idle_release: {idle_minutes: 153722867280912930}\n",
+			"runtime.kubernetes.idle_release.idle_minutes must be at most 35791",
+		},
+		{
+			"a backstop past the timer bound", "    idle_release: {backstop_minutes: 35792}\n",
+			"runtime.kubernetes.idle_release.backstop_minutes must be at most 35791",
 		},
 		{
 			"an unknown member", "    idle_release: {idle_seconds: 600}\n",

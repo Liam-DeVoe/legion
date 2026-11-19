@@ -1,7 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, test, type WebSocket } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
@@ -18,7 +16,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test, type WebSocket } from "./test";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -57,11 +55,8 @@ async function renameUntilShown(
   throw new Error(`no rename of ${key} reached the page in 10 writes 2 s apart`);
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("live: bob's ask updates alice's Inbox and project badges without reload", async ({
+// @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
+test("live: bob's ask updates alice's Inbox and project badges without reload @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -136,7 +131,10 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
   await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("1");
 
   await inboxPage.getByTestId(`ask-${ask.id}`).getByRole("radio", { name: "Yes" }).check();
-  await inboxPage.getByTestId(`ask-${ask.id}`).getByRole("button", { name: "Answer" }).click();
+  await inboxPage
+    .getByTestId(`ask-${ask.id}`)
+    .getByRole("button", { exact: true, name: "Answer" })
+    .click();
   await expect(inboxPage.getByTestId(`ask-${ask.id}`)).toHaveCount(0);
   await issuePage.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
 
@@ -189,6 +187,9 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
     // Anything the first rename scheduled fires on this clock, and is then cleared with the
     // counters below; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS);
+    // The margin that paragraph names: a read the jump above set going leaves the page at once,
+    // and this window in Node is for it to reach Playwright's counter before the counters are
+    // cleared, since the page's own clock cannot carry a request across the wire.
     await sleep(100);
     inboxReads = 0;
     pinnedReads = 0;
@@ -202,6 +203,9 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
     // `MIN_REFETCH_INTERVAL_MS` both fall due inside this jump, so a read either owed is sent and
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a read either timer owed leaves the page in the jump
+    // above, and this window in Node is for it to reach Playwright's counter, which the page's
+    // own clock cannot move it to. A read that never happens marks nothing else to wait on.
     await sleep(100);
 
     expect([inboxReads, pinnedReads]).toEqual([0, 0]);
@@ -222,7 +226,7 @@ test("live: an agent message makes a read issue appear in the project's Unread f
   try {
     await page.goto("/projects/CORE?unread=1");
     await expect(page.getByRole("heading", { name: "Core" })).toBeVisible();
-    await expect(page.getByRole("region", { exact: true, name: "Project issues" })).toBeVisible();
+    await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
     await expect(page.getByText("Unread after agent message")).toHaveCount(0);
 
     await createMessage(issue.key, { body: "This should make the issue unread" }, bob);
@@ -357,7 +361,8 @@ test("live: new events on the open issue appear in Conversation and mark it read
   await alice.close();
 });
 
-test("live: the stream recovers after the connection drops", async ({ browser }, testInfo) => {
+// @pr: The live socket: the stream has to recover after the connection drops.
+test("live: the stream recovers after the connection drops @pr", async ({ browser }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Reconnect target" });
 
@@ -408,7 +413,8 @@ test("live: the stream recovers after the connection drops", async ({ browser },
 
 // SLOW(>=2s): two live sockets, each with its own subscribe and replay, and the two messages
 // written across the forced disconnect between them.
-test("live: a forced server disconnect resumes from the last event id", async ({ browser }) => {
+// @pr: The live socket: after a forced server disconnect the page resumes from the last event id, so nothing written across it is lost.
+test("live: a forced server disconnect resumes from the last event id @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Disconnect target" });
   await createMessage(issue.key, { body: "Before disconnect" }, bob);
@@ -585,11 +591,15 @@ test("live: a fresh page load opens the socket at the current head and stays wit
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  const apiRequestUrls: string[] = [];
+  const apiRequestPaths: string[] = [];
   page.on("request", (request) => {
-    const url = request.url();
-    if (url.includes("/api/v1/") || url.includes("/auth/")) {
-      apiRequestUrls.push(url);
+    // Called for every request of a cold load this row measures, so the cheap string test comes
+    // first: a path under /api/v1/ or /auth/ always shows in the raw URL.
+    const raw = request.url();
+    if (!(raw.includes("/api/v1/") || raw.includes("/auth/"))) return;
+    const url = new URL(raw);
+    if (url.pathname.startsWith("/api/v1/") || url.pathname.startsWith("/auth/")) {
+      apiRequestPaths.push(url.pathname + url.search);
     }
   });
 
@@ -602,60 +612,80 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   await socketOpened;
 
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
-  expect(apiRequestUrls.some((url) => new URL(url).pathname === "/api/v1/events")).toBe(false);
+  expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
-  // Exactly 21 on desktop (chromium): whoami, the project sidebar's Inbox, Pinned,
-  // and Projects queries, me/state, issue detail, the shared inbox query for the
-  // margin's open-ask count, the active-sessions read, the primary artifact's comments -
-  // which the Conversation's own list shares rather than fetching again - the margin's own
-  // list of the issue's asks and the Conversation's, which asks the same route for each
-  // ask's thread (`?thread=1`) and so is a request of its own, not the margin's shared,
-  // the issue's message threads, the two one-row event reads the unread mark
-  // needs (the first event past the watermark, and the issue's head),
-  // Conversation's live-agent query, the one block-schema fetch every document
-  // surface shares for the session, the header's read of the project's
-  // architecture sources (the `Components:` line offers its picker only when the
-  // project has one; the component tree itself is fetched only once the picker
-  // opens, never on load), the header's read of the repository mappings (an issue
-  // that resolves to no repository, as this one does, shows the `Repository:` item only
-  // when its project maps one), me/agents/state, whose unread replies the Agents badge
-  // counts on every page (the sidebar's on desktop, the compact header's on phone), and
-  // the credential requests waiting on the viewer, which the Inbox count adds up on every
-  // page, `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one
-  // Inbox number (the sidebar's on desktop, the compact header's on phone), and the
-  // Conversation's list of the issue's phase handoffs, which it shows beside the messages.
-  // The Conversation pages no event log at all now that the history is the Activity tab's,
-  // and the Activity panel is unmounted until its tab is opened. Asserted exactly (not a
-  // ceiling) so a panel that starts eagerly fetching before its tab is ever opened trips this
-  // immediately instead of only breaking some looser upper bound.
-  expect(apiRequestUrls.length).toBe(21);
-  expect(
-    apiRequestUrls.filter((url) => url.endsWith(`/api/v1/issues/${issue.key}/handoffs`))
-  ).toHaveLength(1);
-  expect(
-    apiRequestUrls.filter((url) => url.endsWith("/api/v1/settings/repo-projects"))
-  ).toHaveLength(1);
-  expect(
-    apiRequestUrls.filter((url) => url.endsWith("/api/v1/me/replies?kind=reply%2Cagent&limit=1"))
-  ).toHaveLength(1);
-  expect(apiRequestUrls.filter((url) => url.endsWith("/api/v1/me/agents/state"))).toHaveLength(1);
-  expect(
-    apiRequestUrls.filter((url) => url.endsWith("/api/v1/credential-requests?approver=me"))
-  ).toHaveLength(1);
-  expect(apiRequestUrls.some((url) => url.endsWith("/api/v1/projects/CORE/architecture"))).toBe(
-    false
-  );
+  // Exactly these on a fresh load, and nothing else. A set rather than a count, and waited for
+  // rather than read at an instant: the page issues the last requests of its first load within
+  // a few milliseconds of painting the message this row waits for, so a count taken the moment
+  // that message appears can be one request short, which is how this row failed in CI - 20
+  // against 21. The wait ends on the set itself, so a panel that starts eagerly fetching
+  // before its tab is ever opened still trips this immediately instead of only breaking some
+  // looser upper bound, and a failure names the request that is missing or extra instead of
+  // leaving a reader to work out which of 21 a count of 20 dropped. The Conversation pages no
+  // event log at all now that the history is the Activity tab's, and the Activity panel is
+  // unmounted until its tab is opened.
+  const firstLoad = [
+    "/auth/whoami",
+    // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
+    // fetching again.
+    "/api/v1/inbox",
+    // The project sidebar's Pinned and Projects queries. This row runs on chromium alone, so
+    // there is no drawer-closed phone case to leave them out for.
+    "/api/v1/issues?pinned=true",
+    "/api/v1/projects",
+    "/api/v1/me/state",
+    // The issue's detail.
+    `/api/v1/issues/${issue.key}`,
+    // The active-sessions read.
+    "/api/v1/agents",
+    // The primary artifact's comments, which the Conversation's own list shares rather than
+    // fetching again.
+    `/api/v1/issues/${issue.key}/comments`,
+    // The margin's own list of the issue's asks, and the Conversation's, which asks the same
+    // route for each ask's thread (`?thread=1`) and so is a request of its own, not the
+    // margin's shared.
+    `/api/v1/issues/${issue.key}/asks?state=all`,
+    `/api/v1/issues/${issue.key}/asks?state=all&thread=1`,
+    // The issue's message threads.
+    `/api/v1/issues/${issue.key}/messages`,
+    // The two one-row event reads the unread mark needs: the first event past the watermark,
+    // and the issue's head.
+    `/api/v1/issues/${issue.key}/events?after=0&limit=1`,
+    `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
+    // The Conversation's live-agent query.
+    `/api/v1/issues/${issue.key}/subscribers`,
+    // The header's read of the project's architecture sources: the `Components:` line offers
+    // its picker only when the project has one. The component tree itself,
+    // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
+    // load, which is why it is absent from this set.
+    "/api/v1/projects/CORE/architecture-sources",
+    // The header's read of the repository mappings: an issue that resolves to no repository,
+    // as this one does, shows the `Repository:` item only when its project maps one.
+    "/api/v1/settings/repo-projects",
+    // me/agents/state, whose unread replies the Agents badge counts on every page (the
+    // sidebar's on desktop, the compact header's on phone).
+    "/api/v1/me/agents/state",
+    // The credential requests waiting on the viewer, which the Inbox count adds up on every
+    // page.
+    "/api/v1/credential-requests?approver=me",
+    // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
+    // number (the sidebar's on desktop, the compact header's on phone).
+    "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
+    // The navigation rail's Priorities entry, whose badge is the two fault counts added
+    // (`?summary=true` answers those two numbers and neither fault list).
+    "/api/v1/priorities?summary=true",
+    // The Conversation's list of the issue's phase handoffs, which it shows beside the
+    // messages.
+    `/api/v1/issues/${issue.key}/handoffs`,
+  ].sort();
+  await expect.poll(() => [...apiRequestPaths].sort()).toEqual(firstLoad);
 
   await alice.close();
 });
 
-test("live: the Reconnecting pill never covers the phone margin sheet toggle @phone", async ({
+test("live: the Reconnecting pill never covers the phone margin sheet toggle @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "iphone",
-    "the margin sheet toggle only renders as a fixed bottom bar on phone; desktop hides it via md:hidden"
-  );
   await createProject({ key: "CORE", name: "Core" });
   // #844 hides the margin sheet's `<aside>` (and its toggle) entirely when no
   // issue is open, so the toggle only exists on an issue page.
@@ -672,7 +702,9 @@ test("live: the Reconnecting pill never covers the phone margin sheet toggle @ph
   const pill = page.getByTestId("connection-pill");
   await expect(pill).toBeVisible();
 
+  // The waits above drew the toggle and the pill, and a drawn element has a box, so it is there.
   const toggleBox = await toggle.boundingBox();
+  // The pill was waited for above as well, so its box is there as the toggle's is.
   const pillBox = await pill.boundingBox();
   expect(toggleBox).not.toBeNull();
   expect(pillBox).not.toBeNull();
@@ -763,12 +795,19 @@ test("live: an event during a project list's first load fetches it again once th
     release();
 
     // The held body predates the rename; the list is fetched again once it lands.
-    await expect(page.getByLabel(`${issue.key} ${newTitle}`)).toBeVisible();
-    await expect(page.getByLabel(`${issue.key} OLDTITLE`)).toHaveCount(0);
+    await expect(
+      page.getByRole("row", { name: `${issue.key} ${newTitle}`, exact: true })
+    ).toBeVisible();
+    await expect(page.getByRole("row", { name: `${issue.key} OLDTITLE`, exact: true })).toHaveCount(
+      0
+    );
     // The 100 ms event batch and the refresh the scheduler holds back for
     // `MIN_REFETCH_INTERVAL_MS` fire inside this jump, so a third request would already be
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a third request would leave the page inside the jump
+    // above, and this window in Node is for it to reach Playwright's counter; a request that is
+    // never made marks nothing else the row could wait on.
     await sleep(100);
     expect([listRequests, mostInFlight]).toEqual([2, 1]);
   } finally {

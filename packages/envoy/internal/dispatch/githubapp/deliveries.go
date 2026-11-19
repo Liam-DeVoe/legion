@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // Delivery is one attempt GitHub recorded for the App's webhook
@@ -60,7 +62,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 			return nil, limited
 		}
 		if status != http.StatusOK {
-			return nil, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+			return nil, fmt.Errorf("GET %s: %s", target, StatusText(status, body))
 		}
 		next, err := nextLink(header.Get("Link"), c.base)
 		if err != nil {
@@ -109,7 +111,7 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 		return fmt.Errorf("POST %s: status %d: %w", target, status, ErrNoDelivery)
 	}
 	if status != http.StatusAccepted {
-		return fmt.Errorf("POST %s: status %d: %s", target, status, body)
+		return fmt.Errorf("POST %s: %s", target, StatusText(status, body))
 	}
 	return nil
 }
@@ -117,6 +119,12 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 // RateLimitError is GitHub refusing a request because the App is over a rate limit. Wait is how
 // long GitHub asks for before the next request. GitHub warns that requests made while limited
 // may get the integration banned.
+//
+// Body is GitHub's refusal, the body it answered the request with, and the error's text carries
+// it only at a status other than 2xx, as StatusText does: a 2xx body is the data the request asked
+// for, which can be a private repository's, and the text reaches GET /healthz as a cause however a
+// loop wraps it. At a 2xx the text carries wording in Body's place, whoever builds the error:
+// GitHub's wording of the limit, which answeredLimit alone sets, leaving Body empty there.
 //
 // A held error is a limit already recorded for Scope in the limits every process shares
 // (Limits): the request was never sent, Status and Body are empty, Wait is what the recorded
@@ -133,6 +141,9 @@ type RateLimitError struct {
 	Scope    string
 	Held     bool
 	Recorded time.Time
+	// wording is GitHub's wording of a limit answered at a 2xx status (graphQLLimitWording),
+	// which answeredLimit alone sets.
+	wording string
 }
 
 func (e *RateLimitError) Error() string {
@@ -140,7 +151,24 @@ func (e *RateLimitError) Error() string {
 		return fmt.Sprintf("GitHub rate limit on %s recorded at %s is in force; the request was not sent",
 			e.Scope, e.Recorded.UTC().Format(time.RFC3339Nano))
 	}
-	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s: %s", e.Status, e.Wait, e.Body)
+	if e.Status/100 == 2 {
+		return withBody(limitAnswered(e.Status, e.Wait), e.wording)
+	}
+	return withBody(limitAnswered(e.Status, e.Wait), e.Body)
+}
+
+// limitAnswered is the text of a limit GitHub answered with status and asked wait for, up to its
+// body: the head of a RateLimitError's text, and of the cause the client notes for such a limit
+// (failedAnswer).
+func limitAnswered(status int, wait time.Duration) string {
+	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s", status, wait)
+}
+
+// Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
+// body that is not JSON or names none, as a held error's empty Body does, and so does the empty
+// Body of a 2xx limit that answeredLimit built (responseMessage).
+func (e *RateLimitError) Message() string {
+	return responseMessage([]byte(e.Body))
 }
 
 // AsRateLimit is errors.As(err, &limited) collapsed to one line: delivery's reconcile.go,
@@ -154,33 +182,312 @@ func AsRateLimit(err error) (*RateLimitError, bool) {
 
 // RateLimit reads a rate-limited answer, as GitHub's REST rate-limit documentation describes one:
 // a 429, or a 403 with no requests remaining, a Retry-After, or a message naming a rate limit
-// (any other 403 is a refusal of that request). The wait is Retry-After's seconds, else the time
-// until x-ratelimit-reset when no requests remain, else the one minute GitHub asks for when it
-// gives neither. Exported so other GitHub-calling packages (delivery's reconcile) can reuse the
-// same detection this client already has, instead of treating every non-2xx the same.
+// (any other 403 is a refusal of that request). The wait is Retry-After's, in seconds or as an
+// HTTP date, else the time until x-ratelimit-reset when no requests remain, else the one minute
+// GitHub asks for when it gives neither (rateLimitWait). Exported so other GitHub-calling packages
+// (delivery's reconcile) can reuse the same detection this client already has, instead of treating
+// every non-2xx the same.
 func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 	if status != http.StatusTooManyRequests && status != http.StatusForbidden {
 		return nil
 	}
-	retryAfter := header.Get("Retry-After")
 	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
-	if status == http.StatusForbidden && retryAfter == "" && !exhausted && !bytes.Contains(bytes.ToLower(body), []byte("rate limit")) {
+	if status == http.StatusForbidden && header.Get("Retry-After") == "" && !exhausted && !containsFold(body, rateLimitPhrase) {
 		return nil
 	}
-	limited := &RateLimitError{Status: status, Wait: time.Minute, Body: string(body)}
-	if seconds, err := strconv.Atoi(retryAfter); err == nil {
-		limited.Wait = time.Duration(seconds) * time.Second
-	} else if reset, err := strconv.ParseInt(header.Get("X-Ratelimit-Reset"), 10, 64); err == nil && exhausted {
-		limited.Wait = max(time.Until(time.Unix(reset, 0)), 0)
+	return answeredLimit(status, header, body)
+}
+
+// answeredLimit is the RateLimitError of a limit GitHub answered with status, header and body, and
+// the one constructor of such an error (RateLimit, GraphQLRateLimit). Its Body is body, GitHub's
+// refusal, at every status but a 2xx, and at a 2xx it is empty and wording is GitHub's wording of
+// the limit read from the envelope around the data or from header (graphQLLimitWording), since
+// such a body is the data the request asked for and no text of the error may carry it.
+func answeredLimit(status int, header http.Header, body []byte) *RateLimitError {
+	limited := &RateLimitError{Status: status, Wait: rateLimitWait(header)}
+	if status/100 == 2 {
+		limited.wording = graphQLLimitWording(header, body)
+	} else {
+		limited.Body = string(body)
 	}
 	return limited
 }
 
+// GraphQLRateLimit reads a rate-limited answer to a GraphQL query, which GitHub spells several
+// ways and none of them the way it spells a rate-limited REST call, and says which of GitHub's
+// two limits it is. A query past the App's primary GraphQL budget is answered HTTP 200 with an
+// `errors` entry of type RATE_LIMITED and a null `data`, so a caller reading the status alone
+// sees a good answer and a caller reading `data` alone sees an empty one. The request that
+// spends the last point is answered with its data and `x-ratelimit-remaining: 0`. A secondary
+// limit -- too many points a minute, too many queries at once -- is answered either 200 or 403,
+// with a `retry-after` header, or with GitHub's wording about a secondary rate limit and no
+// header at all. That wording comes in an `errors` entry, and at 403 in the REST-shaped body
+// whose top-level `message` carries it, which GitHub answers a query with as readily as it
+// answers a REST call with one (graphQLLimitErrors).
+//
+// Every one of them is read here, at either status, and the wait is Retry-After's when GitHub
+// gives one, else the time until x-ratelimit-reset when no requests remain, else the minute GitHub
+// asks for when it gives neither (rateLimitWait).
+//
+// RateLimit reads the answer first: it covers the two statuses GitHub answers a REST-style
+// limit with, 403 and 429, and answers nil at every other status, 200 among them. What it
+// cannot see is a limit GitHub spells in the envelope alone -- the RATE_LIMITED entry, or the
+// secondary wording with no header beside it -- so the error is built here, once, for an answer
+// it read as no limit that the query's own signals say is one. A header alone counts only at
+// 200, the status GitHub answers the query itself with: at any other status GitHub is refusing
+// the request rather than answering it, and the headers on that refusal say nothing about the
+// budget. Either way answeredLimit builds the error, so a limit read in a 200 has an empty Body
+// and a text that carries GitHub's wording of the limit and nothing of the query's data.
+//
+// Nothing here is read from a repository's own data. The answer to a query is the data GitHub
+// holds, and that data is the names people give their check runs and their pull requests: a body
+// searched whole for GitHub's secondary-limit wording calls a perfectly good page of a
+// repository that holds a check run of that name a rate limit, every pass, so the cursor never
+// moves past that page and the heads behind it are never reconciled. GitHub's own envelope is
+// the entries of `errors`, the top-level `message` of the REST-shaped body it refuses a request
+// with, and the response headers, and those are the whole of what is read.
+//
+// secondary tells the two limits apart, which the caller records under different scopes
+// (Client.GraphQL): GitHub budgets the App's GraphQL points apart from its REST calls, while the
+// secondary limits are shared between the two. GitHub's own wording decides it wherever the
+// answer carries it, since GitHub writes that sentence for nothing else; then the two statements
+// that the primary budget is spent, the RATE_LIMITED entry and no requests remaining; and a
+// `retry-after`, or the 429 GitHub answers too many requests with, where neither of those says
+// the budget is spent.
+func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *RateLimitError, secondary bool) {
+	spent, worded := graphQLLimitErrors(body)
+	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
+	retryAfter := header.Get("Retry-After") != ""
+	limited = RateLimit(status, header, body)
+	if limited == nil {
+		if !spent && !worded && (status != http.StatusOK || (!exhausted && !retryAfter)) {
+			return nil, false
+		}
+		limited = answeredLimit(status, header, body)
+	}
+	switch {
+	case worded:
+		return limited, true
+	case spent || exhausted:
+		return limited, false
+	default:
+		return limited, retryAfter || status == http.StatusTooManyRequests
+	}
+}
+
+// graphQLLimitErrors reads a GraphQL answer for the two things GitHub says a rate limit with in
+// its own envelope: an entry of `errors` whose type is RATE_LIMITED, which is the App's GraphQL
+// budget spent, and GitHub's secondary-limit wording, "You have exceeded a secondary rate
+// limit", which is all a secondary limit gives when it comes with no header and no error type.
+// The wording is read from an entry's message and from the body's own top-level `message`,
+// because GitHub answers a secondary limit at 403 with the REST-shaped body that carries it
+// there and no `errors` at all, and a reader of the entries alone takes such an answer for the
+// App's spent GraphQL budget and records it under the wrong scope. It is matched on the phrase
+// alone, since GitHub has worded the rest of the sentence more than one way.
+//
+// `data` is a repository's own, and is read for neither: a body that is not the envelope at all
+// -- which cannot be a 200 from GitHub's GraphQL endpoint -- holds no such entry and no such
+// message, and is no limit, so the caller's own decode reports it as the malformed answer it is.
+//
+// The bytes are searched for the two before the body is parsed at all, because every good
+// answer comes through here and a good answer is a page of up to the megabyte this client
+// reads. A body neither of them is anywhere in holds no such entry and no such message, and a
+// body one of them is in is parsed, since only GitHub's own envelope says whether GitHub wrote
+// the words or a repository did.
+func graphQLLimitErrors(body []byte) (spent, secondary bool) {
+	answer, ok := readLimitEnvelope(body)
+	if !ok {
+		return false, false
+	}
+	// The message and the entries of one answer are a handful of short strings, which this
+	// copies to search; the megabyte of data beside them is what the check before the parse
+	// spares.
+	secondary = secondaryWording(answer.Message)
+	for _, entry := range answer.Errors {
+		spent = spent || entry.spent()
+		secondary = secondary || secondaryWording(entry.Message)
+	}
+	return spent, secondary
+}
+
+// limitEnvelope is GitHub's own envelope of an answer, the whole of what is read from a body a
+// GraphQL limit may be spelled in: the top-level message of the body GitHub refuses a request
+// with, which no answer to a query carries, and the entries of `errors`. A repository's own data
+// is under `data` and is read for nothing.
+type limitEnvelope struct {
+	Message string       `json:"message"`
+	Errors  []limitEntry `json:"errors"`
+}
+
+// limitEntry is one entry of an answer's `errors`.
+type limitEntry struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// spent is whether the entry says the App's GraphQL budget is spent: its type is RATE_LIMITED.
+func (e limitEntry) spent() bool { return e.Type == "RATE_LIMITED" }
+
+// secondaryWording is whether message, an entry's or the envelope's own, holds GitHub's wording of
+// a secondary limit.
+func secondaryWording(message string) bool {
+	return containsFold([]byte(message), secondaryRateLimitPhrase)
+}
+
+// readLimitEnvelope parses body's envelope when GitHub's RATE_LIMITED type or its secondary-limit
+// phrase is anywhere in it (graphQLLimitErrors), and answers false for a body that holds neither
+// or is no JSON.
+func readLimitEnvelope(body []byte) (limitEnvelope, bool) {
+	if !bytes.Contains(body, graphQLRateLimitedType) && !containsFold(body, secondaryRateLimitPhrase) {
+		return limitEnvelope{}, false
+	}
+	var answer limitEnvelope
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return limitEnvelope{}, false
+	}
+	return answer, true
+}
+
+// graphQLLimitWording is GitHub's own wording of a limit it answered a query with at a 2xx status:
+// the wording answeredLimit gives that limit's RateLimitError in place of the answer's body, which
+// is the query's data, and so the detail of every text the error or the client's note of it makes.
+// It is what of the envelope names the limit, read where GitHub's type or phrase for a limit is
+// anywhere in the body (readLimitEnvelope): the top-level message where it holds GitHub's
+// secondary-limit wording, and each `errors` entry of type RATE_LIMITED or whose message holds that
+// wording, as "<type>: <message>", joined by "; ". Any other entry -- an error GitHub answers
+// beside its data, about a repository the query names -- is not the limit, and a cause that named
+// it would name another failure than the one the request met. Where nothing names the limit --
+// the answer that spends the last point carries its data and no error, and the type or phrase can
+// be in that data -- it names the limit by the headers GitHub read it from instead,
+// X-RateLimit-Remaining, X-RateLimit-Reset and Retry-After, each "<name>: <value>" as GitHub sent
+// it, joined the same way. Nothing of `data` is read.
+func graphQLLimitWording(header http.Header, body []byte) string {
+	var parts []string
+	if answer, ok := readLimitEnvelope(body); ok {
+		if secondaryWording(answer.Message) {
+			parts = append(parts, answer.Message)
+		}
+		for _, entry := range answer.Errors {
+			if !entry.spent() && !secondaryWording(entry.Message) {
+				continue
+			}
+			switch {
+			case entry.Type != "" && entry.Message != "":
+				parts = append(parts, entry.Type+": "+entry.Message)
+			case entry.Type != "":
+				parts = append(parts, entry.Type)
+			default:
+				parts = append(parts, entry.Message)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		for _, name := range limitHeaders {
+			if value := header.Get(name); value != "" {
+				parts = append(parts, name+": "+value)
+			}
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// limitHeaders are the headers GitHub names a GraphQL limit with, as its documentation spells
+// them.
+var limitHeaders = []string{"X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"}
+
+// What the readers above look for: the two phrases GitHub writes in a sentence of its own
+// wording, each lower case and each matched in whatever case it is spelled, and the enum an
+// errors entry carries verbatim.
+var (
+	rateLimitPhrase          = []byte("rate limit")
+	secondaryRateLimitPhrase = []byte("secondary rate limit")
+	graphQLRateLimitedType   = []byte("RATE_LIMITED")
+)
+
+// containsFold reports whether body holds phrase, which must be lower-case ASCII, in whatever
+// case it is written, and copies nothing. Every answer a limit is read from runs through it,
+// most of them good ones of up to this client's megabyte, and bytes.ToLower over such a body
+// allocated and copied the whole of it to find a phrase that is almost never there. The body is
+// scanned for the phrase's first byte in either case instead and only those windows compared,
+// which on a megabyte of answer measured about half the time the copy alone took.
+func containsFold(body, phrase []byte) bool {
+	first := string([]byte{phrase[0], phrase[0] - 'a' + 'A'})
+	for from := 0; from+len(phrase) <= len(body); from++ {
+		at := bytes.IndexAny(body[from:len(body)-len(phrase)+1], first)
+		if at < 0 {
+			return false
+		}
+		from += at
+		if bytes.EqualFold(body[from:from+len(phrase)], phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// rateLimitWait is how long GitHub asks for before the next request under a limit it answered
+// with, read now through serverwait.Read, else the one minute GitHub asks for when the answer
+// names no wait. Client.request records it in github_rate_limits under the call's scope, so a wait
+// of an hour stops every Dispatch process's calls under that scope for that hour: every App-JWT
+// call, for a limit an App-JWT call met.
+func rateLimitWait(header http.Header) time.Duration {
+	if wait, named := serverwait.Read(header, time.Now()); named {
+		return wait
+	}
+	return time.Minute
+}
+
+// StatusError is GitHub answering a request with a status other than 200 that is no rate limit
+// (CheckResponse): the status, and the whole body GitHub answered. Its text is StatusText's, which
+// leaves out the body of an answer at a 2xx status.
+type StatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	return StatusText(e.Status, e.Body)
+}
+
+// Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
+// body that is not JSON or names none (responseMessage).
+func (e *StatusError) Message() string {
+	return responseMessage([]byte(e.Body))
+}
+
+// StatusText is the text of an answer GitHub gave with status and body that its reader takes as
+// a failure: `status <n>: <body>`, or `status <n>` alone for an answer with no body (withBody)
+// and for every answer at a 2xx status, whatever its body. A 2xx body is the data the request
+// asked for, not GitHub's refusal of it -- the token mint expects 201, so a 200 there would carry
+// an installation token -- and a loop notes such a text as its cause, which GET /healthz serves
+// with no credential. The status alone says what went wrong, an answer other than the one its
+// reader expected, so no marker stands in for the body, and every text that carries no body has
+// the one shape. Every error of this package that words such an answer words it so, and so does
+// any other package's (cireconcile's query).
+func StatusText[Body string | []byte](status int, body Body) string {
+	head := "status " + strconv.Itoa(status)
+	if status/100 == 2 {
+		return head
+	}
+	return withBody(head, body)
+}
+
+// withBody is head, then `: ` and body when body is not empty: the one rule of every text of an
+// answer this package words (StatusText, RateLimitError, failedAnswer). An answer with no body
+// ends at its head, since a loop notes such a text as it is and GET /healthz serves it as a
+// read's cause, where a `: ` with nothing after it says nothing.
+func withBody[Body string | []byte](head string, body Body) string {
+	if len(body) == 0 {
+		return head
+	}
+	return head + ": " + string(body)
+}
+
 // CheckResponse turns a response's status/header/body into an error only when status is not 200:
-// RateLimit's own *RateLimitError when the response is a GitHub rate limit, else a generic
-// "status %d: %s" error carrying the raw body. Factors the identical "check rate limit, then
-// check status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go,
-// client.go's own ListInstallationRepositoriesByID) all repeated at every call site.
+// RateLimit's own *RateLimitError when the response is a GitHub rate limit, else a *StatusError
+// carrying the status and the raw body. Factors the identical "check rate limit, then check
+// status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go, client.go's own
+// ListInstallationRepositoriesByID) all repeated at every call site.
 func CheckResponse(status int, header http.Header, body []byte) error {
 	if status == http.StatusOK {
 		return nil
@@ -188,7 +495,7 @@ func CheckResponse(status int, header http.Header, body []byte) error {
 	if limited := RateLimit(status, header, body); limited != nil {
 		return limited
 	}
-	return fmt.Errorf("status %d: %s", status, body)
+	return &StatusError{Status: status, Body: string(body)}
 }
 
 // nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the

@@ -1,11 +1,14 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { jump, realClock } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
 import { answerSends } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { expiredRetryNote, FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "./keyed-write";
 import { PendingWritesIndicator } from "./PendingWritesIndicator";
@@ -17,9 +20,11 @@ function indicatorWrite(
   label: string,
   write: (bounds: WriteBounds) => Promise<unknown>
 ): void {
-  void writes
-    .run({ detail: null, kind: plainWrite, label, presentation: "indicator", write })
-    .catch(() => undefined);
+  act(() => {
+    void writes
+      .run({ detail: null, kind: plainWrite, label, presentation: "indicator", write })
+      .catch(() => undefined);
+  });
 }
 
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
@@ -43,20 +48,12 @@ async function settle(): Promise<void> {
   });
 }
 
-/** Moves the fake clock `ms` and lets what it released run. */
-async function tick(ms: number): Promise<void> {
-  await act(async () => {
-    jest.advanceTimersByTime(ms);
-    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-  });
-}
-
 // Nothing pending, nothing on screen: the indicator is chrome, and an empty one would sit over the
 // page for ever.
 test("the indicator shows nothing while no write is out", () => {
   const { unmount } = mountIndicator();
   try {
-    expect(screen.queryByTestId("pending-writes")).toBeNull();
+    expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
   } finally {
     unmount();
   }
@@ -67,6 +64,7 @@ test("the indicator shows nothing while no write is out", () => {
 // once the reader stops it - its name with Retry and Discard. A write that lands leaves.
 test("the indicator counts the writes out, names a late one, and clears when it lands", async () => {
   jest.useFakeTimers();
+  const user = userOnFakeClock();
   const tab = keptTab();
   const patchIssue = spyOn(api, "patchIssue").mockRejectedValue(refusal);
   const held = Promise.withResolvers<never>();
@@ -85,9 +83,11 @@ test("the indicator counts the writes out, names a late one, and clears when it 
 
     const indicator = await screen.findByTestId("pending-writes");
     expect(within(indicator).getByRole("status").textContent).toBe("Saving 2 changes…");
-    expect(within(indicator).queryByRole("button", { name: "Stop trying" })).toBeNull();
+    expect(
+      within(indicator).queryByRole("button", { name: "Stop trying" })
+    ).not.toBeInTheDocument();
 
-    await tick(SEND_DEADLINE_MS);
+    await jump(SEND_DEADLINE_MS);
     expect(within(indicator).getByRole("status").textContent).toBe(
       "Dispatch has not confirmed 2 changes — still trying"
     );
@@ -96,10 +96,10 @@ test("the indicator counts the writes out, names a late one, and clears when it 
     expect(within(indicator).getAllByRole("button", { name: "Stop trying" })).toHaveLength(2);
 
     // Stop trying ends the first one: it names itself with why, and offers Retry and Discard.
-    fireEvent.click(
+    await user.click(
       within(indicator).getAllByRole("button", { name: "Stop trying" })[0] as Element
     );
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(
       within(indicator).getByText(/^Not saved: CORE-1 set to done — Dispatch has not confirmed it/)
     ).toBeTruthy();
@@ -110,35 +110,35 @@ test("the indicator counts the writes out, names a late one, and clears when it 
     );
 
     // Discard drops the refusal; the pin write lands, and the indicator goes with it.
-    fireEvent.click(within(indicator).getByRole("button", { name: "Discard" }));
+    await user.click(within(indicator).getByRole("button", { name: "Discard" }));
     await settle();
-    expect(screen.queryByText("CORE-1 set to done")).toBeNull();
+    expect(screen.queryByText("CORE-1 set to done")).not.toBeInTheDocument();
 
     // The pin write is stopped too; its attempt in flight then fails, and its Retry lands, so the
     // indicator goes with the last write it held.
-    fireEvent.click(within(indicator).getByRole("button", { name: "Stop trying" }));
+    await user.click(within(indicator).getByRole("button", { name: "Stop trying" }));
     await settle();
     held.reject(refusal);
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(within(indicator).getByRole("button", { name: "Retry" })).toBeTruthy();
 
     putIssueState.mockResolvedValueOnce({ pinned: true } as never);
-    fireEvent.click(within(indicator).getByRole("button", { name: "Retry" }));
+    await user.click(within(indicator).getByRole("button", { name: "Retry" }));
     await settle();
-    await waitFor(() => expect(screen.queryByTestId("pending-writes")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument());
   } finally {
     unmount();
     patchIssue.mockRestore();
     putIssueState.mockRestore();
     tab.close();
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
   }
 });
 
 // A write Dispatch refused says so in its own words, and its Retry asks again - under a key of
 // its own, since Dispatch replays the refusal it stored under the first.
 test("a refused write names Dispatch's reason, and Retry sends it again", async () => {
+  const user = userEvent.setup();
   const tab = keptTab();
   const patchIssue = spyOn(api, "patchIssue").mockRejectedValueOnce(verdict);
   const { client, unmount } = mountIndicator();
@@ -154,14 +154,14 @@ test("a refused write names Dispatch's reason, and Retry sends it again", async 
     expect(
       within(indicator).getByText("Not saved: CORE-1 set to done — the key names another write")
     ).toBeTruthy();
-    expect(within(indicator).queryByRole("status")).toBeNull();
+    expect(within(indicator).queryByRole("status")).not.toBeInTheDocument();
 
     patchIssue.mockResolvedValueOnce({ key: "CORE-1" } as never);
-    fireEvent.click(within(indicator).getByRole("button", { name: "Retry" }));
+    await user.click(within(indicator).getByRole("button", { name: "Retry" }));
     await settle();
     expect(patchIssue).toHaveBeenCalledTimes(2);
     expect(patchIssue.mock.calls[1]?.[2]?.key).not.toBe(patchIssue.mock.calls[0]?.[2]?.key);
-    await waitFor(() => expect(screen.queryByTestId("pending-writes")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument());
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -175,22 +175,25 @@ const patch = { body: { status: "done" }, method: "PATCH", path: "/api/v1/issues
 // send", never "Saving" or "Sending", and offers Discard, which drops it with nothing sent.
 test("a write waiting its turn reads Waiting to send and can be discarded", async () => {
   jest.useFakeTimers();
+  const user = userOnFakeClock();
   const { client, unmount } = mountIndicator();
   const writes = writesOf(client);
   const sends = answerSends();
   let secondSent = 0;
   try {
     const press = (label: string, answer: () => Promise<unknown>) =>
-      void writes
-        .run({
-          detail: null,
-          kind: plainWrite,
-          label,
-          presentation: "indicator",
-          request: sends.answer({ ...patch }, answer),
-          target: "issue:CORE-1",
-        })
-        .catch(() => undefined);
+      act(() => {
+        void writes
+          .run({
+            detail: null,
+            kind: plainWrite,
+            label,
+            presentation: "indicator",
+            request: sends.answer({ ...patch }, answer),
+            target: "issue:CORE-1",
+          })
+          .catch(() => undefined);
+      });
     press("CORE-1 set to backlog", () => Promise.withResolvers<never>().promise);
     press("CORE-1 set to done", async () => {
       secondSent += 1;
@@ -199,8 +202,8 @@ test("a write waiting its turn reads Waiting to send and can be discarded", asyn
     await settle();
     const indicator = screen.getByTestId("pending-writes");
     expect(within(indicator).getByRole("status").textContent).toBe("Saving 1 change…");
-    expect(indicator.textContent).toContain("CORE-1 set to done — Waiting to send");
-    fireEvent.click(within(indicator).getByRole("button", { name: "Discard" }));
+    expect(indicator).toHaveTextContent("CORE-1 set to done — Waiting to send");
+    await user.click(within(indicator).getByRole("button", { name: "Discard" }));
     await settle();
     expect(indicator.textContent).not.toContain("Waiting to send");
     expect(writes.rows().map((row) => row.label)).toEqual(["CORE-1 set to backlog"]);
@@ -208,8 +211,7 @@ test("a write waiting its turn reads Waiting to send and can be discarded", asyn
   } finally {
     sends.restore();
     unmount();
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
   }
 });
 
@@ -234,10 +236,10 @@ test("an upload in progress reads Uploading… N% until an attempt fails", async
       return first.promise;
     });
     await settle();
-    await tick(SEND_DEADLINE_MS + 1_000);
+    await jump(SEND_DEADLINE_MS + 1_000);
     const indicator = screen.getByTestId("pending-writes");
     expect(within(indicator).getByRole("status").textContent).toBe("Saving 1 change…");
-    expect(indicator.textContent).toContain("Upload of spec.md — Uploading… 40%");
+    expect(indicator).toHaveTextContent("Upload of spec.md — Uploading… 40%");
     expect(indicator.textContent).not.toContain("still trying");
 
     first.reject(refusal);
@@ -248,8 +250,7 @@ test("an upload in progress reads Uploading… N% until an attempt fails", async
     expect(indicator.textContent).not.toContain("Uploading…");
   } finally {
     unmount();
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
   }
 });
 
@@ -262,31 +263,34 @@ test("an upload in progress reads Uploading… N% until an attempt fails", async
 test("a write whose key has run out says a Retry saves it again, with Retry and Discard", async () => {
   const spent = keyMinted(Date.now() - IDEMPOTENCY_KEY_TTL_MS);
   jest.useFakeTimers();
+  const user = userOnFakeClock();
   const { client, unmount } = mountIndicator();
   const writes = writesOf(client);
   let attempts = 0;
 
   try {
-    void writes
-      .run({
-        detail: null,
-        key: spent,
-        kind: plainWrite,
-        label: "CORE-1 set to done",
-        presentation: "indicator",
-        write: (bounds) => {
-          attempts += 1;
-          bounds.sent?.({
-            body: { status: "done" },
-            method: "PATCH",
-            path: "/api/v1/issues/CORE-1",
-          });
-          return Promise.reject(refusal);
-        },
-      })
-      .catch(() => undefined);
+    act(() => {
+      void writes
+        .run({
+          detail: null,
+          key: spent,
+          kind: plainWrite,
+          label: "CORE-1 set to done",
+          presentation: "indicator",
+          write: (bounds) => {
+            attempts += 1;
+            bounds.sent?.({
+              body: { status: "done" },
+              method: "PATCH",
+              path: "/api/v1/issues/CORE-1",
+            });
+            return Promise.reject(refusal);
+          },
+        })
+        .catch(() => undefined);
+    });
     await settle();
-    await tick(FIRST_BACKOFF_MS);
+    await jump(FIRST_BACKOFF_MS);
     await settle();
 
     const indicator = screen.getByTestId("pending-writes");
@@ -298,12 +302,11 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
     expect(attempts).toBe(1);
     expect(within(indicator).getByRole("button", { name: "Retry" })).toBeTruthy();
 
-    fireEvent.click(within(indicator).getByRole("button", { name: "Discard" }));
+    await user.click(within(indicator).getByRole("button", { name: "Discard" }));
     await settle();
     expect(screen.queryByTestId("pending-writes")).toBeNull();
   } finally {
     unmount();
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
   }
 });

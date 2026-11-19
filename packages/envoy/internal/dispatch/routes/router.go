@@ -47,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -97,6 +98,9 @@ type AppContextOptions struct {
 	// when it published the build (dashboard.Publish); "" when it serves none. See
 	// api.DepsInput.
 	DashboardEntry string
+	// BuildCommit is the commit this process was built from, which main holds in its own
+	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
+	BuildCommit    string
 	Sessions       auth.SessionStore
 	People         auth.PeopleStore
 	Identity       identity.Identity
@@ -105,9 +109,14 @@ type AppContextOptions struct {
 	Store          *store.Store
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	InsecureCookie bool
-	EnvoyURL       string
+	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
+	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
+	// where the deployment configured neither. See api.DepsInput.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	InsecureCookie  bool
+	EnvoyURL        string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
@@ -126,6 +135,10 @@ type AppContextOptions struct {
 	// (brokerTokenVerifier). See api.DepsInput.
 	BrokerTokens *brokertoken.Verifier
 	AgentStream  agentstream.Source
+	// AgentPublisher queues a person's targeted message on its session's own subject when no store
+	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
+	// test hooks with NATS disabled, and nil otherwise. See api.Deps.AgentPublisher.
+	AgentPublisher api.AgentPublisher
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
@@ -143,9 +156,21 @@ type AppContextOptions struct {
 	// ListenerTakeoverWindow replaces how long a sender keeps trying a listener that is being
 	// replaced; zero keeps the server's twelve seconds. See api.Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning and how often each of that
+	// Horizon's three warnings repeats - the stall warning, the failed-observation warning and
+	// the failed-persist warning; zero keeps the horizon's own five and thirty seconds. See
+	// api.Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
+	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
+	OutboxPublishes bool
+	// Metrics is the process's metrics registry (cmd/dispatch's /metrics); see api.Deps.Metrics.
+	Metrics *metrics.Registry
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
@@ -183,6 +208,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Identity:               opts.Identity,
 		AgentTokens:            opts.AgentTokens,
 		DefaultProject:         opts.DefaultProject,
+		NewIssueLabel:          opts.NewIssueLabel,
+		NewIssueSession:        opts.NewIssueSession,
 		ServerURL:              opts.ServerURL,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
@@ -195,14 +222,20 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDC:                   opts.OIDC,
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
+		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
 		ListenerTakeoverWindow: opts.ListenerTakeoverWindow,
+		HorizonStallAfter:      opts.HorizonStallAfter,
+		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
+		OutboxPublishes:        opts.OutboxPublishes,
+		Metrics:                opts.Metrics,
 		DashboardEntry:         opts.DashboardEntry,
+		BuildCommit:            opts.BuildCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -274,12 +307,23 @@ type router struct {
 // cancelled; its ResumeDeliveries is the delivery sweep's pass the maintenance loop runs
 // (api.RunMaintenanceSweep).
 func New(ctx *AppContext) (http.Handler, api.Background) {
+	mux := http.NewServeMux()
+	r, background := mount(ctx, mux)
+	if ctx.devSignInHost == "" {
+		return r.enforceCookieOrigin(mux), background
+	}
+	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+}
+
+// mount builds New's router and mounts every route the server serves on mux, the API's table
+// among them (api.Register), so a mux that keeps what is mounted on it reads the server's routes
+// from the mounting itself (TestAKeyedWriteNeverRunsUnkeyed).
+func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	r := &router{
 		ctx:          ctx,
 		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
 		assets:       newAssetCache(maxCachedAssetBytes),
 	}
-	mux := http.NewServeMux()
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
 	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
@@ -293,11 +337,10 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 		r.eventHead = background.EventHead
 	}
 	mux.HandleFunc("/", r.staticHandler)
-	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), background
+	if ctx.devSignInHost != "" {
+		mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
 	}
-	mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+	return r, background
 }
 
 // ───── auth ─────────────────────────────────────────────────────────────────
@@ -660,7 +703,7 @@ func isRetainedAssetPath(normalized string) bool {
 // the request until that read ends: a client that abandons each request the moment it reaches
 // the store cannot hold more store reads at once than the cap has room for.
 func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, key string) {
-	if asset, ok := r.assets.get(key); ok {
+	if asset, ok := r.assets.Get(key); ok {
 		writeRetainedAsset(w, req, key, asset)
 		return
 	}
@@ -721,7 +764,7 @@ func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, ke
 func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-chan singleflight.Result, error) {
 	read := r.assets.reads.DoChan(key, func() (any, error) {
 		// A read that finished between this request's cache miss and its flight answers it.
-		if asset, ok := r.assets.get(key); ok {
+		if asset, ok := r.assets.Get(key); ok {
 			return asset, nil
 		}
 		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retainedAssetFetchTimeout)
@@ -730,7 +773,7 @@ func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-c
 		if err != nil {
 			return nil, err
 		}
-		r.assets.put(key, asset)
+		r.assets.Put(key, asset)
 		return asset, nil
 	})
 	select {
@@ -858,6 +901,9 @@ func contentType(path string) string {
 		return "image/png"
 	case ".json":
 		return "application/json; charset=utf-8"
+	case ".woff2":
+		// The typeface the dashboard ships (packages/dispatch/web/src/fonts/inter).
+		return "font/woff2"
 	default:
 		return "application/octet-stream"
 	}
@@ -883,9 +929,13 @@ func publicOrigin(serverURL string, req *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, req.Host)
 }
 
+// enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
+// cookie or an IAP assertion, unless it comes from Dispatch's own origin. A browser sends the
+// credential with a request another site's page makes: its cookie, or under IAP the IAP cookie,
+// for which IAP adds a valid assertion. A request with an Authorization header is an agent's.
 func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) {
+		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
 			next.ServeHTTP(w, req)
 			return
 		}

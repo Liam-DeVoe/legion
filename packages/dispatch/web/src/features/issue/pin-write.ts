@@ -3,7 +3,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { UserIssueState, UserState } from "../../api/types";
 import { type Shape, shape } from "../writes/write-storage";
-import { defineWriteKind, ofKind, type Writes, writesOf } from "../writes/write-store";
+import { defineWriteKind, isLive, ofKind, type Writes, writesOf } from "../writes/write-store";
 import { pinnedItemMarker, stateForIssue } from "./pins";
 
 export type PinStateOperation = { readonly id: string; readonly op: "pin" | "unpin" };
@@ -53,7 +53,7 @@ function pinAttempt({ issueKey, operation }: PinWrite) {
       try {
         const next = await api.putIssueState(
           issueKey,
-          { dismissed: applyPinStateOperation(base.dismissed, operation), seq: base.seq + 1 },
+          { dismissed: applyPinStateOperation(base.dismissed ?? [], operation), seq: base.seq + 1 },
           bounds
         );
         authoritative.set(issueKey, next);
@@ -73,10 +73,7 @@ function pinAttempt({ issueKey, operation }: PinWrite) {
 function pinsOut(writes: Writes, issueKey: string): boolean {
   return writes.rows().some((row) => {
     const pin = ofKind(row, pinWrite);
-    return (
-      pin?.detail.issueKey === issueKey &&
-      (pin.status === "queued" || pin.status === "sending" || pin.status === "late")
-    );
+    return pin?.detail.issueKey === issueKey && isLive(pin);
   });
 }
 
@@ -123,10 +120,13 @@ export function writePin(
   let applied: PinStateOperation | undefined;
   client.setQueryData<UserState>(["user-state"], (current) => {
     const state = stateForIssue(current, issueKey);
-    applied = typeof operation === "function" ? operation(state.dismissed) : operation;
+    applied = typeof operation === "function" ? operation(state.dismissed ?? []) : operation;
     return {
       ...current,
-      [issueKey]: { ...state, dismissed: applyPinStateOperation(state.dismissed, applied) },
+      [issueKey]: {
+        ...state,
+        dismissed: applyPinStateOperation(state.dismissed ?? [], applied),
+      },
     };
   });
   if (applied === undefined) return;

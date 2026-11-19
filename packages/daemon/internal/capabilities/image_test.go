@@ -132,8 +132,8 @@ func TestCheckImageRendersEveryRowWhenEveryImageRowIsPresent(t *testing.T) {
 		if state.Status != want {
 			t.Errorf("%s: status %q, want %q", state.Name, state.Status, want)
 		}
-		if row.Site == SiteWithheld && !strings.HasPrefix(state.Detail, row.Ruling+": ") {
-			t.Errorf("%s: detail %q, want the ruling %s first", state.Name, state.Detail, row.Ruling)
+		if row.Site == SiteWithheld && !strings.HasPrefix(state.Detail, row.Citation+": ") {
+			t.Errorf("%s: detail %q, want the citation %s first", state.Name, state.Detail, row.Citation)
 		}
 		if row.Site == SiteLive && state.Detail != "a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: "+row.Summary {
 			t.Errorf("%s: detail %q, want it to say a claimed session reports the row while it runs, then the summary", state.Name, state.Detail)
@@ -559,8 +559,9 @@ func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 	}
 }
 
-// A command its caller's context ended was not cut off by its budget: the run is no timeout, and
-// the check reports the caller's stop (TestCheckImageStopsWithItsContext) rather than a hanging
+// A command its caller's context ended was not cut off by its budget: the run is no timeout but
+// the signal the stop sent (procgroup.Err), since the command has no exit of its own, and the
+// check reports the caller's stop (TestCheckImageStopsWithItsContext) rather than a hanging
 // command. The cancel lands once the command runs, never on one not yet started.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	started := filepath.Join(t.TempDir(), "started")
@@ -579,8 +580,21 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 
 	r := img.runWithin(ctx, time.Minute, "sh", "-c", `: >"$1"; exec sleep 30`, "sh", started)
 
-	if r.err != nil || r.exit != -1 {
-		t.Errorf("run = exit %d, error %v; want exit -1 and no error: the caller's context ended the command inside its minute", r.exit, r.err)
+	if r.err == nil || r.err.Error() != "signal: terminated" {
+		t.Errorf("run = exit %d, error %v; want the error \"signal: terminated\": the caller's context ended the command inside its minute, which is no timeout and leaves no exit", r.exit, r.err)
+	}
+}
+
+// A command a signal ended after it printed (Oh My Pi killed after it named the overlay it could
+// not read) fails naming the signal, with what it printed beneath, as its failed exit would carry
+// it: the run's error is the whole of what the check reports for it (ran.failure).
+func TestRunKeepsWhatACommandASignalEndedPrinted(t *testing.T) {
+	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+
+	r := img.runWithin(context.Background(), time.Minute, "sh", "-c", "echo 'cannot read overlay.yml' >&2; kill -KILL $$")
+
+	if want := "signal: killed\ncannot read overlay.yml"; r.err == nil || r.err.Error() != want || r.failure() != want {
+		t.Errorf("run = error %v, failure %q; want %q", r.err, r.failure(), want)
 	}
 }
 

@@ -1,5 +1,4 @@
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   answerAsk,
@@ -12,6 +11,7 @@ import {
   listMyAnswers,
   userHeaders,
 } from "./api";
+import { seedDecisionBody } from "./decision-bodies";
 import { connectedDot, documentEditor, openSpec } from "./editor";
 import {
   ANCHOR,
@@ -32,7 +32,7 @@ import {
   seedReferenceWorld,
   settledQuestions,
 } from "./reference-surfaces";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -50,10 +50,6 @@ import { asUser } from "./users";
  * stays an eight-character prefix.
  */
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 type Row = (typeof DISPATCH_TEXT_REFERENCES)[number];
 
 /** The origin the table's dashboard addresses are written against, unless a row names its own. */
@@ -63,6 +59,13 @@ const TABLE_ORIGIN = "https://dispatch.test";
  *  CORE-404 instead, the key the table's own rows use for an issue that does not exist. */
 const NO_ISSUE_ROW = "Blocked on CORE-1, which no issue holds.";
 const NO_ISSUE_KEY = "CORE-404";
+
+/** The one row of the table whose body is a decision block. The server refuses a body that
+ *  holds one (400 DECISION_BLOCK_IN_BODY, INFRA-1201), so the reply that carries this row is
+ *  seeded straight into `comments` (`e2e/decision-bodies.ts`) rather than written through the
+ *  API. It stays on the rendered surface, which is the only browser surface it can be read on:
+ *  the preview takes rows of at most 160 characters with no line break, and this body has two. */
+const DECISION_BLOCK_ROW = ":::ask{#q2}\nWhich region first?\n:::";
 
 /** Rows no document can hold as a line of its text, each with the reason. They are read on the
  *  rendered and preview surfaces like any other.
@@ -80,7 +83,7 @@ const NO_ISSUE_KEY = "CORE-404";
 const EDITOR_EXCLUDED: Readonly<Record<string, string>> = {
   ':::callout{#d1 affects="dispatch://CORE-1/spec#b-a dispatch://CORE-1/spec#b-b"}':
     "an unclosed directive, which in a document opens a block that swallows the text after it",
-  ":::ask{#q2}\nWhich region first?\n:::":
+  [DECISION_BLOCK_ROW]:
     "written into a document it is the q2 question block's own declaration, not text in it",
   "See &#35;q2 here.":
     "a document stores no numeric character reference: the parse reads it as the text `See #q2 here.`",
@@ -321,7 +324,8 @@ function madeTitles(
 /**
  * Checks that every reference in scope to a target this world made reads as its title. A
  * one-line preview cuts a title that does not fit and ends it with an ellipsis, so what is
- * shown is the title or its own opening.
+ * shown is the title or its own opening. It lists the references once, so its caller waits
+ * first until the references in scope are the row's links.
  */
 async function expectMadeTitles(
   scope: Locator,
@@ -334,12 +338,24 @@ async function expectMadeTitles(
     if (title === undefined) {
       continue;
     }
+    // Every caller first polls the scope's references until they are the row's links, so the
+    // references this link names are all drawn when they are read here.
     for (const each of await scope.locator(selector(link)).all()) {
-      const shown = (await each.textContent()) ?? "";
-      const opening = shown.endsWith("…") ? shown.slice(0, -1) : shown;
-      expect(title.startsWith(opening) && (shown === title || shown.endsWith("…")), {
-        message: `${rowName(item)}: ${link} reads ${JSON.stringify(shown)}, not ${JSON.stringify(title)}`,
-      }).toBe(true);
+      // A reference is drawn before its target's title reaches it, so what it reads is polled
+      // until it is the title or the title's opening. The poll answers the title for either,
+      // and otherwise what the reference shows, which is what a failure prints.
+      await expect
+        .poll(
+          async () => {
+            const shown = (await each.textContent()) ?? "";
+            const opening = shown.endsWith("…") ? shown.slice(0, -1) : shown;
+            return title.startsWith(opening) && (shown === title || shown.endsWith("…"))
+              ? title
+              : shown;
+          },
+          { message: `${rowName(item)}: ${link} reads as its title or the title's opening` }
+        )
+        .toBe(title);
     }
   }
 }
@@ -363,6 +379,15 @@ test("a margin thread's replies link each reference the shared table links and n
   );
   expect(root.anchor?.quote).toBe(ANCHOR);
   for (const item of cases) {
+    if (item.row.body === DECISION_BLOCK_ROW) {
+      await seedDecisionBody({
+        author: referenceAgent.actor,
+        body: item.body,
+        issueKey: world.host.key,
+        replyTo: root.id,
+      });
+      continue;
+    }
     await createComment(world.host.key, { body: item.body, reply_to: root.id }, referenceAgent);
   }
 
@@ -438,11 +463,12 @@ test("the one-line preview shows each reference the shared table links as its ta
   const questions = new Map<string, string>();
   for (let offset = 0; ; ) {
     const listed = await listMyAnswers({ limit: 50, offset });
-    for (const row of listed.rows) {
+    const rows = listed.rows ?? [];
+    for (const row of rows) {
       questions.set(row.ask_id, row.question);
     }
-    offset += listed.rows.length;
-    if (listed.rows.length === 0 || offset >= listed.total) {
+    offset += rows.length;
+    if (rows.length === 0 || offset >= listed.total) {
       break;
     }
   }
@@ -512,7 +538,8 @@ function drawnTitlesByRow(page: Page): Promise<Record<string, string[]>> {
   });
 }
 
-test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written", async ({
+// @pr: The live document: every reference of the shared table drawn in the editor, followed, and the stored text left as written.
+test("the live editor draws each reference the shared table links whose target exists, follows it, and leaves the stored text as written @pr", async ({
   browser,
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);
@@ -560,6 +587,8 @@ test("the live editor draws each reference the shared table links whose target e
         item
       );
     }
+    // The poll of every row's drawn references above waited for each of these, so one read
+    // lists them all.
     for (const title of await documentEditor(page).locator("a.dispatch-reference").all()) {
       await expect(title).toBeVisible();
     }

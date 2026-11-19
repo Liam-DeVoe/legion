@@ -5,19 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/ghautomerge"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -54,8 +57,8 @@ const (
 	messageReadSkew = 5 * time.Second
 	// waitWarnAttempts is when a waiting row is logged as a warning: past the backoff's climb to
 	// its cap, a wait of about two minutes, what it waits on is not ending on its own, and an
-	// operator should look. A READY merge only GitHub's own rules hold back (routineWait) stays
-	// debug at every attempt.
+	// operator should look. A wait that ends on its own (routineWait) stays debug at every
+	// attempt.
 	waitWarnAttempts = 7
 	// issueBranchTimeout bounds one issue_branch row's GitHub calls, its token's mint with them:
 	// the row runs on its issue's lifecycle lane, one row at a time, so a call GitHub never
@@ -68,7 +71,11 @@ const (
 // work (outbox_lanes.go). Claiming and finishing have separate transactions so a slow external
 // service never holds an issue transition lock.
 type outbox struct {
-	pool       *pgxpool.Pool
+	// pool is the daemon's guarded pool (store.Pool): each lane opens its transactions on it
+	// under a hold mark of the lane's own (runLane), so a row's work that asks for a second
+	// connection while its transaction holds one is refused at that call
+	// (store.ErrNestedAcquire).
+	pool       *store.Pool
 	records    record.Store
 	dispatch   dispatch.Client
 	notices    notify.Publisher
@@ -81,16 +88,37 @@ type outbox struct {
 	// is shared, and another project's rows are another daemon's.
 	dispatchProject string
 	stateDir        string
-	// gatedSteps are the design-gate steps the project gates (gates.design), which a catch-up
-	// this runner writes states and whose kept approval pair a start task names
-	// (workflow.QueueCatchUp). A test that builds the runner by hand leaves it nil, which
-	// newOutbox reads as the shipped list, the one step spec.
+	// gatedSteps are the design-gate steps the project gates (gates.design), which a root
+	// architect's catch-up this runner writes states (a child's catch-up states none) and whose
+	// kept approval pair a root architect's start task names (workflow.QueueCatchUp). A test that
+	// builds the runner by hand leaves it nil, which newOutbox reads as the shipped list, the one
+	// step spec.
 	gatedSteps []record.DesignStep
 	log        *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
 	// happens (config.IdleReleaseConfig.Backstop, `backstop_minutes`); zero where the deployment
 	// releases no pod, and then a release arms none.
 	backstop time.Duration
+	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}) and answers the
+	// implement App's client of its repository with it; applyMergeability applies what that read
+	// says about merging the head, reading the base's rules with that client on a conflicting
+	// answer, under the event id it is handed; and mergeStateWait is how long a read row waits
+	// before it reads again. The two rows that read a pull request use them: the merge-queue read
+	// (mergeQueueRead) and the second read of a conflicting head (conflictConfirm), whose every
+	// read is bounded by issueRead. queueMergeStateFollow hands an issue's head to the merge-state
+	// reader to follow GitHub's merge state for, which the second read does when its last attempt
+	// read no answer. All four are the workflow runtime's own
+	// (workflowRuntime.readPullRequest, workflowRuntime.applyMergeability,
+	// workflowRuntime.mergeStateWait, workflowRuntime.queueMergeStateFollow), set by attach after
+	// newOutbox, so the outbox reads GitHub and applies its answer as the per-issue read does, a
+	// whole-daemon test cuts the wait through the runtime's own field (mergeStateRetry), and the
+	// reads that follow the second read are the runtime's ladder's own. A test that builds the
+	// outbox by hand leaves them nil, and a read row then fails with an error that names the
+	// missing read.
+	readPullRequest       func(context.Context, record.PullRequest) (githubrest.Client, githubPullRequest, error)
+	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error
+	mergeStateWait        func() time.Duration
+	queueMergeStateFollow func(issue, head string)
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that
@@ -112,8 +140,9 @@ type outbox struct {
 	// git configuration and its bookmarks corrupt or refuse when two write at once. Lanes and
 	// launches run issues side by side, so several issues' provisions are in flight together.
 	provisions provisionLocks
-	// githubAPI is the GitHub REST root an issue_branch row creates its issue's branch under: the
-	// workflow's (workflowRuntime.githubAPI), which empty, in production, is https://api.github.com.
+	// githubAPI is the GitHub REST root a row's GitHub call is made under — an issue_branch row's
+	// create: the workflow's (workflowRuntime.githubAPI), which empty, in production, is
+	// https://api.github.com.
 	githubAPI string
 	// repositories is the daemon's view of the project's repositories, which the outbox reads for
 	// the deployment's repository equivalence alone (`repository_renames`): which repository
@@ -127,6 +156,15 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
+	// unheldWarned is every claim publish has written its refusal's Warn line for since that
+	// claim's hold last passed (a claim.Token), so a claim's held rows — one at each attempt of its
+	// backoff, and several of them taking turns — write one line between them. The claim's next
+	// publish the gate admits deletes it, so a later refusal is written again. It holds at most one
+	// entry a claim the supervisor holds.
+	unheldWarned sync.Map
+	// controllerLaunched is `controller: daemon`: the daemon launches the project's controller, so
+	// its claim holds the controller topic back (heldTopic). False is `controller: operator`.
+	controllerLaunched bool
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -147,7 +185,7 @@ type outboxTrees interface {
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	IssueReleaseSave(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
-	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, error)
+	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
@@ -155,19 +193,22 @@ type outboxTrees interface {
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
-	TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind, key string, at time.Time) (bool, error)
-	ForgetPodWakesOf(ctx context.Context, project, issue string) error
+	TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error)
+	CancelPodBackstopsOf(ctx context.Context, project, issue string) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
+	ClaimStatesIn(ctx context.Context, project, issue string) (store.ClaimStates, error)
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 }
 
-func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
+// newOutbox builds the outbox. controllerLaunched is `controller: daemon` (config.ControllerLaunch),
+// which decides whether the launched controller claim holds the controller topic back (heldTopic).
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &outbox{
 		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
-		handlers: handlers, gatedSteps: gatedSteps,
+		handlers: handlers, gatedSteps: gatedSteps, controllerLaunched: controllerLaunched,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
 		// WarmCodegraphIndexInBackground runs here, never in provisionWorkspace: every outbox
@@ -187,6 +228,93 @@ func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client,
 			return workspace.CheckedOut(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), working)
 		},
 	}
+}
+
+// publish is every executor's publish to Envoy (r.notices), and publishKept its publish with keep,
+// both held to the claims this daemon supervises (heldBack). A publish to the role topic of a
+// claim the daemon supervises, or to its project's controller topic under `controller: daemon`
+// (heldTopic), is made only while that claim holds the session it records
+// (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend keeps
+// its process, and that process keeps the Envoy role its session claimed, so a notice, a role
+// message, a phase's end, a hook's prompt, an update ask, a merge-queue removal or a controller
+// notice would reach a process working under another claim's session, or one no claim holds
+// (review rounds 13 to 16 of #4220). Such a publish is not made and answers notify.ErrNoHolder,
+// which every executor already answers its own way — a notice is held for its architect, a
+// merge-queue removal and a controller notice wait, and a role message, a phase's end, a hook's
+// prompt and an update ask finish undelivered — so an operator's settle of the name lets a held
+// row's next attempt through (a notice, a merge-queue removal, a controller notice), while a row
+// that finished undelivered is not sent again (review round 13 of #4220, note 36). A store that
+// does not answer publishes nothing and fails the attempt, which the row's backoff retries.
+//
+// HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
+// relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
+// newOutbox is given, so every executor, and every test that builds an outbox, publishes through
+// it. A kept publish is held as much as any other: its copy waits on the role's kept lane for the
+// role's next live holder, and while the unheld session's process lives, that holder is it. A
+// claim's role topics are held whatever its state: a retired or failed claim's unheld session may
+// still be a live process the daemon no longer manages, and the Envoy listener does not yet
+// withhold the role from it, so the daemon withholds its own messages. A topic of no claim this
+// daemon supervises, and every other topic, is published as made.
+func (r *outbox) publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
+	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
+		return err
+	}
+	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
+}
+
+// publishKept is publish with keep (notify.Publisher.PublishKept), hookPrompt's publish through
+// publishKeptToRole, held as publish is: a topic heldBack refuses is not published, kept or not,
+// and answers the gate's notify.ErrNoHolder.
+func (r *outbox) publishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
+	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
+		return false, err
+	}
+	return r.notices.PublishKept(ctx, topic, message, payload, dedupeKey)
+}
+
+// heldBack is the gate publish and publishKept share: nil when topic may be published to, and
+// otherwise why not.
+func (r *outbox) heldBack(ctx context.Context, topic, dedupeKey string) error {
+	if token, held := r.heldTopic(topic); held && r.supervisor != nil {
+		if m, ok := r.supervisor.Machine(token); ok {
+			if err := m.HoldsItsSession(ctx); err != nil {
+				var refusal claim.Refusal
+				if !errors.As(err, &refusal) {
+					return fmt.Errorf("ask whether %s holds its session before publishing to it: %w", token, err)
+				}
+				// One line per claim while its hold refuses, as holdRecorded writes one per
+				// refusal (warnRefusal): a held row asks again at each attempt of its backoff,
+				// and several rows of one claim take turns (outbox.unheldWarned).
+				if _, seen := r.unheldWarned.LoadOrStore(token, true); !seen {
+					log := r.log
+					if log == nil {
+						log = slog.Default()
+					}
+					log.Warn("outbox: not publishing to a claim that records a session it does not hold",
+						"topic", topic, "claim", token, "key", dedupeKey, "error", err)
+				}
+				return fmt.Errorf("%w: %s records a session it does not hold, so nothing is published to it: %w", notify.ErrNoHolder, token, err)
+			}
+			r.unheldWarned.Delete(token)
+		}
+	}
+	return nil
+}
+
+// heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
+// topic names, or, under `controller: daemon` alone, the project's controller claim for its
+// controller topic. Under `controller: operator` the controller topic is the operator's own
+// controller's, so no claim the daemon launched holds it back, a launched controller an earlier
+// boot retired included (stopLaunchedController); under `controller: daemon` the launched
+// controller claim is the deployment's controller, since one runs per project.
+func (r *outbox) heldTopic(topic string) (claim.Token, bool) {
+	if role, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
+		return claim.Token(role), true
+	}
+	if r.controllerLaunched && r.project != "" && topic == notify.ControllerTopic(r.project) {
+		return claim.ControllerToken(r.project), true
+	}
+	return "", false
 }
 
 // RunOnce drains every row of the project due now, in the order the lanes would run them within
@@ -223,16 +351,16 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 	if err != nil {
 		r.noteLimit(row, err)
 		// A failure no retry repairs is not logged as the row failing: once its finish commits,
-		// finishRefused's own line says what became of the row (a person's dequeue of a READY merge,
-		// say, is no failure of the daemon's), and a finish that does not commit is logged below with
-		// it as the cause. A wait that ends the row (a stalled ghautomerge.Lagging) logs as a wait too.
-		permanent := permanentRefusal(row, err, r.now().UTC())
+		// finishRefused's own line says what became of the row, and a finish that does not commit
+		// is logged below with it as the cause.
+		permanent := permanentRefusal(row, err)
 		if errors.Is(err, wait.ErrWaiting) {
 			// A wait is not a failure (wait.ErrWaiting): a held notice, a suspension or start held
 			// for a turn, a task behind the claim's pending delivery, a tree's cleanup reservation,
-			// a close waiting for its stops, or a READY merge GitHub does not allow, or has not
-			// made, yet. The row runs again on its backoff, logged when it first waits and as a
-			// warning once it has waited long, unless only GitHub's own rules hold it back.
+			// a close waiting for its stops, a claim release Dispatch has yet to allow, or a child's
+			// architect's first start waiting for its tree to run again. The row runs again on its
+			// backoff, logged when it first waits and as a warning once it has waited long, unless
+			// the wait ends on its own.
 			level := slog.LevelDebug
 			switch {
 			case row.Attempts == 0:
@@ -299,8 +427,7 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 
 // finishRefused finishes a row whose failure no retry repairs (permanentRefusal), its follow-up in
 // the same transaction and only while the row's lease still holds (FinishLeasedOutbox), so a worker
-// whose lease expired, or was taken by a reopen (record's readyMergeConflict), commits nothing
-// beside the one that holds the row now.
+// whose lease expired commits nothing beside the one that holds the row now.
 //
 // A status row Dispatch refused finishes so it no longer holds its issue's later writes back. Its
 // reason and its status are two writes, and the one the issue's lifecycle stands on is the
@@ -309,91 +436,110 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // that stand (statusWriteFailure), and the row only reaches this finish once the status stands
 // or Dispatch refused the status itself. Dispatch merely failing the status write is no refusal,
 // so the row retries on its own backoff and nothing here runs. The architect is told what
-// Dispatch refused and which of the two writes stand (statusWriteRefused), since nothing else
-// would say that the reason is on no issue, or that Dispatch and the daemon's own record hold
-// different statuses from here on. A hand-over's row drops its fence with it: the write that
-// would hand the child to Legion never lands, so no admission consumes the fence, and one left
-// behind would keep naming the child's own tree as its Sandbox's home (store.IssueSandboxHome)
-// for good. The child stays where it is until a person labels it, which admits it as an orphan.
-// A message row Dispatch refused tells the issue's architect what was not posted and Dispatch's
-// own refusal (messagePostRefused), since nothing else would: the message is the daemon's only
-// word on the issue for what it carries. A READY merge row tells the issue's architect why it
-// ended without a merge (readyMergeEnded). Each of those notice rows is written in the finish's
-// own transaction, which owns the commit hook that write registers (projectRecords,
-// intake.OnCommit), so the notice's lane is woken as the finish commits and the notice is
-// published without a sweep.
+// Dispatch refused and which of the two writes stand (the kind's own refused rule), since
+// nothing else would say that the reason is on no issue, or that Dispatch and the daemon's own
+// record hold different statuses from here on. A hand-over's row drops its fence instead: the
+// write that would hand the child to Legion never lands, so no admission consumes the fence, and
+// one left behind would keep naming the child's own tree as its Sandbox's home
+// (store.IssueSandboxHome) for good. The child stays where it is until a person labels it, which
+// admits it as an orphan. A message row Dispatch refused tells the architect that owns the issue
+// (noticeArchitect) what was not posted and Dispatch's own refusal (messagePostRefused), since
+// nothing else would: the message is the daemon's only word on the issue for what it carries.
+// Each of those notice rows is written in the finish's own transaction, which owns the commit hook
+// that write registers (projectRecords, intake.OnCommit), so the notice's lane is woken as the
+// finish commits and the notice is published without a sweep. Only the hand-over's finish takes
+// the lock every fact applies under and settles as a fact's does (settling), since the fence it
+// drops is an input of the end of a merge's run. Every other refused row's finish writes nothing
+// a fact reads, so it runs in a plain transaction (committing) and waits behind no fact.
 func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause error) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 	}
-	scoped, committed := intake.WithCommitHooks(ctx)
-	// follow is what the transaction does beside the finish, and told the line logged once it commits.
-	var follow func(pgx.Tx) error
+	// follow is what the transaction does beside the finish, handed the transaction's ctx, and told
+	// the line logged once it commits. dropsFence is whether follow deletes a hand-over's fence.
+	var follow func(context.Context, pgx.Tx) error
 	var told func()
+	var dropsFence bool
 	switch value := payload.(type) {
 	case record.StatusWrite:
-		if value.HandOver {
-			refusal, _ := dispatch.PermanentRefusal(cause)
-			r.log.Error("outbox status write refused by Dispatch and dropped; the issue's later writes go on",
-				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
-			follow = func(tx pgx.Tx) error {
-				return r.records.DeleteHandoverAt(scoped, tx, row.Issue, value.HandOverTree, value.HandOverLinger)
-			}
-			told = func() {
-				r.log.Warn("outbox hand-over refused by Dispatch; its fence is dropped and the child is not handed to Legion",
-					"row", row.ID, "issue", row.Issue, "tree", value.HandOverTree, "linger", value.HandOverLinger)
-			}
-			break
-		}
-		// Which of the row's two writes stand is known only to the run that made them, so
-		// status() carries that back on the failure it ends with (statusWriteFailure). A cause
-		// carrying none ended the run before either write — the issue read that opens it — and
-		// leaves both still to be made.
-		var failure *statusWriteFailure
-		var wrote statusWrites
-		if errors.As(cause, &failure) {
-			wrote = failure.wrote
-		}
-		notice, err := record.NewOutboxRow(row.Issue, statusWriteRefused(row.Issue, value, cause, wrote), r.now().UTC())
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		r.log.Error("outbox status write refused by Dispatch and dropped; the issue's later writes go on",
+			"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+		rule, err := ruleFor(value.Kind)
 		if err != nil {
-			return err
+			return fmt.Errorf("outbox row %d: %w", row.ID, err)
 		}
-		follow = func(tx pgx.Tx) error { return r.records.Enqueue(scoped, tx, notice) }
-		told = func() {
-			r.log.Error("outbox status write refused by Dispatch; its architect is told what the issue holds now",
-				"row", row.ID, "issue", row.Issue, "status", value.Status,
-				"status_set", wrote.status, "reason_posted", wrote.reason, "error", cause)
-		}
+		follow, told, dropsFence = rule.refused(r, row, value, cause)
 	case record.MessagePost:
 		notice, err := record.NewOutboxRow(row.Issue, messagePostRefused(row.Issue, value, cause), r.now().UTC())
 		if err != nil {
 			return err
 		}
-		follow = func(tx pgx.Tx) error { return r.records.Enqueue(scoped, tx, notice) }
+		follow = func(ctx context.Context, tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, notice) }
 		told = func() {
 			r.log.Error("outbox Dispatch message refused and dropped; its architect is told", "row", row.ID, "issue", row.Issue, "error", cause)
 		}
-	case record.ReadyMerge:
-		notice, err := record.NewOutboxRow(row.Issue, readyMergeEnded(cause), r.now().UTC())
-		if err != nil {
-			return err
+	case record.ClaimRelease:
+		// Nobody is told: the claim stands where it was, which is the state the daemon would
+		// have left behind had the row never run, and the issue's tree is over. The line is
+		// what says the row ended, since without it a 404 — an issue Dispatch no longer has —
+		// would end it in silence.
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
+				"status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
-		follow = func(tx pgx.Tx) error { return r.records.Enqueue(scoped, tx, notice) }
-		// Someone removing the arm is a person's act, told to the architect; GitHub refusing the
-		// submission or a webhook the daemon never received is a fault.
-		level := slog.LevelError
-		var removed *ghautomerge.Removed
-		if errors.As(cause, &removed) {
-			level = slog.LevelWarn
+	case record.DesignGatesPublish:
+		// Nobody is told: the one refusal that ends this row is an issue Dispatch does not know
+		// (permanentRefusal, ISSUE_NOT_FOUND), and no architect of such an issue is there to
+		// hear it. The line is what says the row ended, since without it the drop would be
+		// silent, and it names what Dispatch is left holding: whatever set it last took for
+		// that issue, which its write advice goes on reading.
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox design-gates publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
+	case record.RoleHoldersPublish:
+		// Nobody is told, and the line is what says the row ended. Two refusals end it
+		// (permanentRefusal): an issue Dispatch does not know, a WARN, since nothing of this
+		// daemon is wrong; and a 400 that refuses the set, an ERROR, since this daemon read a set
+		// from its own claims that Dispatch will never take. The issue's next ready, end or other
+		// change of a claim queues a fresh publication of the live set (roleHoldersChanged, the
+		// store's putClaim).
+		// permanentRefusal ended the row only on a coded *dispatch.Error, so refusal is set.
+		var refusal *dispatch.Error
+		errors.As(cause, &refusal)
+		log := r.log.Warn
+		if refusal.Status == http.StatusBadRequest {
+			log = r.log.Error
 		}
 		told = func() {
-			r.log.Log(scoped, level, "outbox READY merge ended without a merge; its architect is told", "row", row.ID, "issue", row.Issue, "error", cause)
+			log("outbox role-holders publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took, and the next ready or end of a claim on the issue publishes again",
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
+	case record.StepRecord:
+		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
+		// never take, a writer its route refuses or an id of another issue, and the work the
+		// record is of went on without it. The line is what says the record is not in Dispatch,
+		// since nothing else would.
+		told = r.recordDropped(row, "step", value.ID, cause)
+	case record.PlanRecord:
+		// Nobody is told, for the step record's reasons: the plan is history of a run that went
+		// on without it, and the line is what says Dispatch does not hold it.
+		told = r.recordDropped(row, "plan", value.ID, cause)
 	}
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+	var scoped context.Context
+	var finished func(write func(pgx.Tx) error) error
+	if dropsFence {
+		scoped, finished = r.settling(ctx)
+	} else {
+		scoped, finished = r.committing(ctx)
+	}
+	if err := finished(func(tx pgx.Tx) error {
 		if follow != nil {
-			if err := follow(tx); err != nil {
+			if err := follow(scoped, tx); err != nil {
 				return err
 			}
 		}
@@ -401,11 +547,24 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
 	}
-	committed()
 	if told != nil {
 		told()
 	}
 	return nil
+}
+
+// recordDropped is the one line that says Dispatch refused a record of the record lane for good
+// and its row dropped it: kind is the record's kind, step or plan, which names the record in the
+// message and is the log key its id goes under. The refusal is read as Dispatch's own error, not
+// through dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER;
+// recordRefused ended the row only on a *dispatch.Error, so the refusal is set.
+func (r *outbox) recordDropped(row record.OutboxRow, kind, id string, cause error) func() {
+	var refusal *dispatch.Error
+	errors.As(cause, &refusal)
+	return func() {
+		r.log.Warn("outbox "+kind+" record refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
+			kind, id, "status", refusal.Status, "code", refusal.Code, "error", cause)
+	}
 }
 
 // messageRefusedPreview is how much of a refused message's first line its notice quotes: enough to
@@ -493,6 +652,33 @@ func statusWriteRefused(issue string, payload record.StatusWrite, cause error, w
 	return record.Notice{Kind: "message-refused", Role: claim.RoleArchitect, Reason: told}
 }
 
+// statusRefusalTold is the architect's notice of a status row Dispatch refused for good, which
+// every kind but the hand-over makes: the hand-over has a fence to drop and nothing to report,
+// and each of the others leaves the architect to settle what the issue holds now
+// (statusWriteRefused). Which of the row's two writes stand is known only to the run that made
+// them, so the status executor carries that back on the failure it ends with
+// (statusWriteFailure); a cause carrying none ended the run before either write — the issue read
+// that opens it — and leaves both still to be made. The notice drops no fence, so its finish
+// takes no fact lock (finishRefused).
+func statusRefusalTold(r *outbox, row record.OutboxRow, payload record.StatusWrite, cause error) (func(context.Context, pgx.Tx) error, func(), bool) {
+	var failure *statusWriteFailure
+	var wrote statusWrites
+	if errors.As(cause, &failure) {
+		wrote = failure.wrote
+	}
+	notice, err := record.NewOutboxRow(row.Issue, statusWriteRefused(row.Issue, payload, cause, wrote), r.now().UTC())
+	if err != nil {
+		return func(context.Context, pgx.Tx) error { return err }, nil, false
+	}
+	follow := func(ctx context.Context, tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, notice) }
+	told := func() {
+		r.log.Error("outbox status write refused by Dispatch; its architect is told what the issue holds now",
+			"row", row.ID, "issue", row.Issue, "status", payload.Status,
+			"status_set", wrote.status, "reason_posted", wrote.reason, "error", cause)
+	}
+	return follow, told, false
+}
+
 // retry returns row to the outbox, due again after its backoff, or after the wait GitHub asks for
 // when cause carries GitHub's rate limit and asks for longer, or at the moment cause names when it
 // is a wait that knows when it ends (wait.Until) and that moment is still ahead: a lingering
@@ -500,7 +686,7 @@ func statusWriteRefused(issue string, payload record.StatusWrite, cause error, w
 // again then rather than climbing its backoff for days. A named moment already past is the backoff's.
 func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) error {
 	now := r.now().UTC()
-	delay := retryBackoff(row.Attempts)
+	delay := record.RetryBackoff(row.Attempts)
 	if after, _ := githubrest.RetryAfter(cause); after > delay {
 		delay = after
 	}
@@ -530,13 +716,18 @@ type rateLimit struct {
 }
 
 // githubBudgets is the GitHub budgets a row of each kind spends, as the implement App: its REST
-// calls (an issue branch's create) the REST core's, its GraphQL
-// calls (a disarm, a READY merge) GraphQL's, and every call GitHub's secondary limit. A kind it
-// does not name calls no GitHub API.
+// calls (an issue branch's create) the REST core's, and every call GitHub's secondary limit. A
+// row of a kind it does not name is never deferred for a limit another row met, and every such
+// kind but two calls no GitHub API. The two are the rows that read one pull request, the
+// merge-queue read (record.MergeQueueRead, mergeQueueRead) and the second read of a conflicting
+// head (record.ConflictConfirm, conflictConfirm), which stay out of this map on purpose: a
+// deferral is a retry, which spends one of the read's mergeStateLadderReads attempts with no read
+// made. A read GitHub refuses for its rate limit is a failed read instead, and the next read
+// waits for the longer of the runtime's wait and GitHub's Retry-After. The read of the base's
+// rules either makes on a conflicting answer (readBaseRules) is no exception: a rate limit there
+// reads as rules the daemon could not read.
 var githubBudgets = map[record.OutboxKind][]githubrest.Budget{
-	record.OutboxKindIssueBranch:      {githubrest.BudgetCore, githubrest.BudgetSecondary},
-	record.OutboxKindAutoMergeDisable: {githubrest.BudgetGraphQL, githubrest.BudgetSecondary},
-	record.OutboxKindReadyMerge:       {githubrest.BudgetGraphQL, githubrest.BudgetSecondary},
+	record.OutboxKindIssueBranch: {githubrest.BudgetCore, githubrest.BudgetSecondary},
 }
 
 // standingLimit is the limit in limits, among the budgets a row of kind spends, that still stands
@@ -551,50 +742,109 @@ func standingLimit(limits map[githubrest.Budget]rateLimit, kind record.OutboxKin
 	return latest, !latest.until.IsZero()
 }
 
-func retryBackoff(attempts int) time.Duration {
-	if attempts < 0 {
-		attempts = 0
-	}
-	if attempts > 6 {
-		attempts = 6
-	}
-	return time.Second << attempts
-}
-
 // permanentRefusal is a row's failure no retry repairs, so the row is finished with its follow-up
-// (finishRefused) rather than retried: a Dispatch status write or message post Dispatch refuses the
-// same way every time (dispatch.PermanentRefusal) — a refused status would hold every later status
-// of its issue behind it, and a refused post, a packet with one block over Dispatch's own bound
-// among them, would retry on its backoff for ever and tell nobody — and a READY merge GitHub
-// refuses where it still stands (ghautomerge.Refused), whose pull request GitHub has shown closed
-// or at another head than the record awaits for longer than ghautomerge.LagBound at now
-// (ghautomerge.Lagging.Stalled), or whose arm or merge-queue entry someone else removed without a
-// merge (ghautomerge.Removed), which a retry must not undo.
-func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
+// (finishRefused) rather than retried: a Dispatch status write or message post Dispatch refuses
+// the same way every time (dispatch.PermanentRefusal) — a refused status would hold every later
+// status of its issue behind it, and a refused post, a block over Dispatch's own bound among
+// them, would retry on its backoff for ever and tell nobody. A claim release is the shared
+// Dispatch rule whole: its executor answers both of Dispatch's 409s as waits of its own before
+// this is reached (claimHeldWait, claimContendedWait), and each wraps no *dispatch.Error on
+// purpose, because this is computed before settle tests wait.ErrWaiting and a wait that let the
+// refusal through here would be finished rather than retried. A 404, and every other coded 4xx,
+// stay permanent and end the row. A step record and a plan record end on exactly the refusals
+// their routes make for good (recordRefused), so a credential answer retries. The router's 404 of a
+// Dispatch that has no route for a record's or the role holders' write never reaches this: execute
+// makes it a wait (waitsForTheRoute), which wraps nothing of it. For every other kind it is the
+// coded 404 it says.
+func permanentRefusal(row record.OutboxRow, err error) bool {
 	switch row.Kind {
-	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage:
+	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
-	case record.OutboxKindReadyMerge:
-		var refused *ghautomerge.Refused
-		var removed *ghautomerge.Removed
-		var lagging *ghautomerge.Lagging
-		return errors.As(err, &refused) || errors.As(err, &removed) || errors.As(err, &lagging) && lagging.Stalled(now)
+	case record.OutboxKindDesignGatesPublish:
+		// Permanent on the route's own 404 ISSUE_NOT_FOUND alone: an issue Dispatch does not know
+		// is one it will not know on the retry either, and nothing an operator does here would
+		// land that set. dispatch.PermanentRefusal is deliberately not used, because it calls
+		// every coded 4xx permanent, which would end every publication against a Dispatch older
+		// than the route: that server's router answers the unknown path 404 under the code
+		// NOT_FOUND, a coded refusal that is not this one. It, a 5xx and a transport failure all
+		// end on their own, and the set is sent again when they do.
+		var refusal *dispatch.Error
+		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
+	case record.OutboxKindRoleHoldersPublish:
+		// The design-gates rule, and a 400 that carries Dispatch's code besides: the route refuses
+		// a set it will never store (INVALID_ROLE_HOLDER), and the set is read from the same claims
+		// on the retry, so a retry would send it for as long as the issue lives. A 400 with no code
+		// is from whatever stands in front of Dispatch, and it is retried as an outage.
+		var refusal *dispatch.Error
+		if !errors.As(err, &refusal) || refusal.Code == "" {
+			return false
+		}
+		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
+	case record.OutboxKindStepRecord, record.OutboxKindPlanRecord:
+		return recordRefused(err)
 	default:
 		return false
 	}
 }
 
-// routineWait is a wait only GitHub's own rules hold back, which ends without anyone acting for
-// Legion: a pull request armed or queued at READY's head (ghautomerge.Armed), one GitHub reports not
-// mergeable yet for a reason its rules end (ghautomerge.Unmergeable.Routine), or one the merge queue
-// took out to merge, which GitHub has yet to show merged (ghautomerge.Merging).
+// routineWait is a wait nobody has to act on for Legion (routineWaiting): a Dispatch claim release
+// waiting on the claim's holder or on a contended answer (claimHeldWait, claimContendedWait),
+// which the hour claimReleaseWait caps rather than an operator, and a child's architect's first
+// start waiting for its tree to run again (childArchitectFirstStart), which a person's move of the
+// tree or of the child ends rather than an operator, and then for the branch row a re-admission
+// queued for the child (startRoot), whose own failures that row logs, and a delivery row waiting
+// for a launch the wake pacing parked (parkedWait), which that launch's turn ends.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
 }
 
+// routineWaiting is a wait that is routine (routineWait), so every attempt of its row stays at
+// debug after the first rather than turning into a warning from the seventh (waitWarnAttempts),
+// however long the wait lasts. err is the wait itself (wait.Errorf, or wait.Until for a wait that
+// names its moment, as parkedWait's does), which it unwraps to, so settle still reads the row as
+// waiting (wait.ErrWaiting) and retries it on its backoff, or at that moment (wait.UntilAt).
+type routineWaiting struct{ err error }
+
+func (w routineWaiting) Error() string { return w.err.Error() }
+
+func (w routineWaiting) Unwrap() error { return w.err }
+
+func (routineWaiting) Routine() bool { return true }
+
+// execute runs one row, and is the one place each row's run passes, so the rule for a Dispatch
+// that has no route for a write is here: its router's 404 (dispatch.NoRoute), which a Dispatch
+// older than the route answers and so does the older build while a release rolls out, so no
+// handler ran. For a kind whose route a Dispatch may not serve yet (waitsForTheRoute) that answer
+// is a wait, not a failure, so the daemon and Dispatch deploy in either order: the row runs again
+// on its backoff and is logged as a wait is (settle), INFO at its first run, DEBUG after, and WARN
+// from waitWarnAttempts on, about two minutes after the first run, once a minute at the backoff's
+// cap. The wait wraps nothing of Dispatch's refusal, as the claim release's waits do
+// (claimHeldWait), so no reading of permanentRefusal can end the row on it. Every other answer,
+// and that answer for every other kind, is decided as its executor and permanentRefusal decide it.
 func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
+	err := r.run(ctx, row)
+	if waitsForTheRoute(row.Kind) && dispatch.NoRoute(err) {
+		return wait.Errorf("outbox row %d (%s) of %s waits for a Dispatch that serves the route: %v", row.ID, row.Kind, row.Issue, err)
+	}
+	return err
+}
+
+// waitsForTheRoute is whether a write of kind waits for a Dispatch that has no route for it: the
+// records of the record lane (a step's start and end, a retro's rating and a run's plan) and the
+// role holders' publication, whose routes came after the Dispatch a daemon may meet. Every other
+// kind's route stands on every Dispatch it is sent to, so that answer there means a dispatch_url
+// that reaches no such Dispatch, and it is the refusal it says: a status write, a message post and
+// a claim release end on it with their follow-ups (dispatch.PermanentRefusal), and a status write
+// left waiting would hold every later status of its issue behind it; the gated steps' and the
+// design gates' publications retry it as a failure.
+func waitsForTheRoute(kind record.OutboxKind) bool {
+	return record.LaneOf(kind) == record.LaneRecord || kind == record.OutboxKindRoleHoldersPublish
+}
+
+// run is the executor of row's kind.
+func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
@@ -604,6 +854,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.status(ctx, row, value)
 	case record.MessagePost:
 		return r.message(ctx, row, value)
+	case record.ClaimRelease:
+		return r.releaseClaim(ctx, row)
 	case record.Notice:
 		return r.notice(ctx, row, value)
 	case record.ControllerNotice:
@@ -639,24 +891,43 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.releaseIssue(ctx, row, value)
 	case record.WorkspaceRemove:
 		return r.removeWorkspace(ctx, row, value)
-	case record.MergeQueuePublish:
-		return r.mergeQueue(ctx, row, value)
+	case record.RoleMessage:
+		return r.roleMessage(ctx, row, value)
 	case record.GatedStepsPublish:
 		return r.publishGatedSteps(ctx, value)
+	case record.DesignGatesPublish:
+		return r.publishDesignGates(ctx, value)
+	case record.RoleHoldersPublish:
+		return r.publishRoleHolders(ctx, value)
+	case record.StepRecord:
+		// A step record carrying a rating is the rating a retro gave the plan, which Dispatch
+		// takes on the record's rating route alone (publishStepRating).
+		if value.PlanRating != nil {
+			return r.publishStepRating(ctx, row, value)
+		}
+		return r.publishStepRecord(ctx, row, value)
+	case record.PlanRecord:
+		return r.publishPlanRecord(ctx, row, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
-	case record.AutoMergeDisable:
-		return r.autoMergeDisable(ctx, row, value)
-	case record.ReadyMerge:
-		return r.readyMerge(ctx, row, value)
 	case record.CheckWakeDue:
 		return r.checkWake(ctx, row, value)
 	case record.CheckLook:
 		return r.checkLook(ctx, row, value)
 	case record.CheckBound:
 		return r.checkBound(ctx, row)
-	case record.PhaseEnded:
-		return r.phaseEnded(ctx, row, value)
+	case record.HookPrompt:
+		return r.hookPrompt(ctx, row, value)
+	case record.UpdateAsk:
+		return r.updateAsk(ctx, row, value)
+	case record.MergeQueueRead:
+		return r.mergeQueueRead(ctx, row, value)
+	case record.MergeQueueRemoval:
+		return r.mergeQueueRemoval(ctx, row, value)
+	case record.ConflictConfirm:
+		return r.conflictConfirm(ctx, row, value)
+	case record.MergeForwardMessage:
+		return r.mergeForwardMessage(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
@@ -666,57 +937,39 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	if r.dispatch == nil {
 		return errors.New("dispatch status executor has no Dispatch client")
 	}
+	rule, err := ruleFor(payload.Kind)
+	if err != nil {
+		return fmt.Errorf("outbox row %d: %w", row.ID, err)
+	}
 	issue, err := r.dispatch.GetIssue(ctx, row.Issue)
 	if err != nil {
 		return fmt.Errorf("read Dispatch issue %s before status write: %w", row.Issue, err)
 	}
-	if issue.Status != payload.ObservedStatus && issue.Status != payload.Status {
-		if payload.HandOver {
-			if err := r.dropHandover(ctx, row.Issue, payload); err != nil {
-				return err
-			}
-		}
+	proceed, err := rule.firstAttempt(ctx, r, row, payload, issue)
+	if err != nil || !proceed {
+		return err
+	}
+	// Somebody moved the issue after the row read it, so the write this row carries is
+	// superseded and the row finishes having written nothing. A kind with something of its own
+	// to settle when that happens — a hand-over's fence — has just settled it above, which is
+	// why the shared answer is taken after the rule rather than before it.
+	if statusMoved(payload, issue) {
 		return nil
 	}
-	// A person's handover row was queued for a person's legion label on an unrecorded triage root,
-	// or for a person's approval of a parked labelled root's spec. A person who took the label off
-	// between the queue and this delivery withdrew that handover, and a todo on an unlabelled issue
-	// would be nobody's: admission records nothing of a todo without the label (its "not handed to
-	// Legion" exit), so the write would only wake the controller for an issue it must not take. The
-	// row is dropped and logged once instead; the status guard above has already let a park stand.
-	if payload.PersonHandover && !issue.HandedOver {
-		r.log.Info("outbox: a person's handover is not written; the label is gone", "row", row.ID, "issue", row.Issue)
-		return nil
-	}
-	if payload.HandOver {
-		if holds, err := r.handOverHolds(ctx, row, payload); err != nil || !holds {
-			return err
-		}
-		if issue.Status == payload.Status && issue.HandedOver {
-			return r.consumeHandover(ctx, row, payload)
-		}
-		// Every hand-over write is conditional on the sequence just read (dispatch HandOver), the
-		// label added when the child lacks it, so a person's move since that read stands.
-		if err := r.dispatch.HandOver(ctx, issue, payload.Status); err != nil {
-			return fmt.Errorf("hand Dispatch issue %s to Legion as %s: %w", row.Issue, payload.Status, err)
-		}
-		return r.consumeHandover(ctx, row, payload)
-	}
-	// A done write's reason goes on the issue first: Dispatch refuses a message on a closed issue.
+	// A write's reason goes on the issue first, so it is there before the status moves the issue:
+	// a done write's before the close, and a workflow move's before the move it explains.
 	// It is posted as this row's message, so a retry after a failed write finds it and posts none.
+	// The post is an event of the issue and moves its sequence, so the issue read above is stale
+	// the moment it lands and the write is fenced on a read made after it (writeStatus). Fenced on
+	// the older read, the first write of every row carrying a reason would be refused
+	// (ISSUE_CHANGED) and pay another issue read, and for an ordinary row a record read, before
+	// making the write that was always going to land.
+	//
 	// A reason Dispatch refuses the same way on every attempt (dispatch.PermanentRefusal, a block
 	// over its own bound among them) must not cost the issue its status, which is the write its
 	// lifecycle stands on: the status is written all the same, and the refusal goes back wrapped
 	// (statusWriteFailure) so the row is finished refused with the architect told that the status
-	// stands. Any other failure of the post goes back as it is and the row retries on its
-	// backoff, and so does a failed status write: nothing of this row is recorded until it is
-	// finished, so its next run makes both writes again, and a write Dispatch took before its
-	// answer was lost is the one that run finds already made. Each is found its own way, which is
-	// why the two writes are guarded one by one rather than the run ending at the first: the
-	// reason's post by its own marker (message), and the status by the status Dispatch holds, so
-	// a status Dispatch already holds is not written again and counts as set. One attempt at the
-	// status would leave the issue at the status it had while the daemon's own record read done.
-	var wrote statusWrites
+	// stands. Any other failure of the post goes back as it is and the row retries on its backoff.
 	var refused error
 	if payload.Reason != "" {
 		if err := r.message(ctx, row, record.MessagePost{Body: payload.Reason}); err != nil {
@@ -724,19 +977,370 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 				return err
 			}
 			refused = err
-		} else {
-			wrote.reason = true
+		}
+		if issue, err = r.dispatch.GetIssue(ctx, row.Issue); err != nil {
+			return fmt.Errorf("read Dispatch issue %s after posting the reason of its status write: %w", row.Issue, err)
 		}
 	}
-	if issue.Status != payload.Status {
-		if _, err := r.dispatch.SetStatus(ctx, row.Issue, payload.Status); err != nil {
-			return &statusWriteFailure{err: fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err), wrote: wrote}
-		}
+	if err := r.writeStatus(ctx, row, payload, rule, issue); err != nil {
+		return &statusWriteFailure{err: err, wrote: statusWrites{reason: refused == nil && payload.Reason != ""}}
 	}
+	// The status stands, so a reason Dispatch refused for good is reported with that fact rather
+	// than retried: the row is finished refused and the architect told which of the two writes
+	// the issue holds (the kind's refused rule).
 	if refused != nil {
 		return &statusWriteFailure{err: refused, wrote: statusWrites{status: true}}
 	}
 	return nil
+}
+
+// statusWriteReads bounds how often one status row reads its issue again after Dispatch refused
+// the write at the sequence that row read (ISSUE_CHANGED). Every event moves an issue's sequence,
+// the daemon's own message posts among them, so a refusal usually says only that the read was
+// overtaken and the next one wins; a run of them is an issue being edited faster than the daemon
+// writes, which the row's own backoff waits out rather than this loop spinning on.
+const statusWriteReads = 3
+
+// writeStatus writes payload's status on the sequence of the read this row has just made
+// (dispatch.Client.SetStatusAt), so a change Dispatch recorded after that read is refused rather
+// than written over (dispatch://INFRA-714/spec R4). The sequence is the read's, never the one the
+// phase decision saw: every event moves it, the daemon's own posts included, so a row carrying
+// that older number would be refused almost every time.
+//
+// ISSUE_CHANGED is no failure of the write and no permanent refusal (dispatch.PermanentRefusal),
+// so nothing is dropped over it. The row reads the issue again and writes again only while that
+// fresh read passes the rule its own kind is judged by (stillWanted). A read already at the status
+// the row carries is this write's work, done by someone else; a read at any other status is a
+// change made after the row's read, which the row never writes over, whether it took the issue
+// out of the workflow or moved it along within one.
+//
+// What this read never does is reach the engine. Dispatch's read says what the issue is now and
+// never who wrote it, so the engine would have to take every change it shows for a person's, and
+// two of the daemon's own rows exist precisely because a change was not a person's: a session's
+// own close or park, which the re-assert undoes, would be taken for a person ending the tree,
+// lingering it and freeing its slot. A change Dispatch recorded reaches the engine through its
+// own event, with its actor (dispatch://INFRA-714/spec R4); this read decides one thing, whether
+// to write.
+//
+// rule is the row's kind's rule, which its caller resolved once for the row (ruleFor) before
+// anything was written. It is resolved there rather than here, at the refusal that first asks
+// for it, so a kind nobody gave a rule fails its row before the first write and reaches Dispatch
+// with nothing, whichever path brought the row here.
+func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, rule statusRowRule, read dispatch.Issue) error {
+	for range statusWriteReads {
+		// A status Dispatch already shows is this row's work, done: the write is not made again,
+		// and the row counts as written. The repair queues a row on every turn while the record's
+		// own DispatchStatus is stale (status_repair.go), so without this the daemon would write
+		// a status Dispatch holds once a turn for as long as that staleness lasts.
+		if read.Status == payload.Status {
+			r.log.Info("outbox status write found Dispatch already at its status and wrote nothing",
+				"row", row.ID, "issue", row.Issue, "status", payload.Status)
+			return nil
+		}
+		_, err := r.dispatch.SetStatusAt(ctx, read, payload.Status)
+		if err == nil {
+			return nil
+		}
+		var refusal *dispatch.Error
+		if !errors.As(err, &refusal) || refusal.Code != "ISSUE_CHANGED" {
+			return fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err)
+		}
+		if read, err = r.dispatch.GetIssue(ctx, row.Issue); err != nil {
+			return fmt.Errorf("read Dispatch issue %s again after it changed under the status write: %w", row.Issue, err)
+		}
+		if read.Status == payload.Status {
+			r.log.Info("outbox status write found Dispatch already at its status after the issue changed under it",
+				"row", row.ID, "issue", row.Issue, "status", payload.Status)
+			return nil
+		}
+		if read.Status != payload.ObservedStatus {
+			r.log.Info("outbox status write finished without writing: its issue was moved to another status after the row read it",
+				"row", row.ID, "issue", row.Issue, "status", payload.Status, "observed", payload.ObservedStatus, "dispatch", read.Status)
+			return nil
+		}
+		wanted, err := rule.stillWanted(ctx, r, row, payload, read)
+		if err != nil || !wanted {
+			return err
+		}
+	}
+	return fmt.Errorf("set Dispatch issue %s to %s: it changed under each of the %d reads this attempt made",
+		row.Issue, payload.Status, statusWriteReads)
+}
+
+// statusRowRule is what one kind of status row (record.StatusRowKind) does: what its first
+// attempt settles against the issue Dispatch shows, and the rule its retry is judged by once
+// Dispatch has refused that write (ISSUE_CHANGED). Both decisions live on one value, and this
+// interface asks for both, so a kind given one and not the other does not build. A kind with a
+// first attempt of its own and no retry rule, or the reverse, would bring back the silence the
+// kinds exist to end: the half nobody wrote is lent to the row by whichever branch it falls
+// through to, so the row is judged by a rule written for another kind and nothing says so.
+type statusRowRule interface {
+	// firstAttempt settles what this kind has to settle before the row's first write, against
+	// the issue as Dispatch shows it, and says whether that write is still to be made. A rule
+	// that has finished the row itself — the write is not wanted, or this kind makes its own —
+	// answers proceed false, and the row ends with the error it returns.
+	firstAttempt(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, issue dispatch.Issue) (proceed bool, err error)
+	// stillWanted says whether a row whose write Dispatch refused may write again. The caller
+	// has already taken the two answers every kind shares — the status is the row's own, so
+	// someone else did this work, or it is neither the row's nor the one it observed, so
+	// somebody moved the issue since — and what is left is the question each kind answers
+	// differently.
+	//
+	// Every kind but the ordinary one is queued at a status that reads as out of the workflow, and
+	// for them the ordinary rule reads backwards: a handover of either sort brings an issue into
+	// the workflow, a re-assert undoes a session's own move out of it, and a close is the move out. Asking
+	// record.OutOfWorkflow of any of them would finish it without writing and log that its issue
+	// had left a workflow it never entered, or had left one this very row exists to put it back
+	// in.
+	stillWanted(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) (bool, error)
+	// refused is what this kind leaves behind when Dispatch's refusal of the write is permanent
+	// and the row is dropped (finishRefused): follow runs in the finishing transaction, handed
+	// that transaction's ctx, told logs once that transaction commits, and nil for either says
+	// this kind leaves nothing behind. dropsFence says follow deletes a hand-over's fence, an
+	// input of the end of a merge's run, so the finishing transaction takes the lock every fact
+	// applies under and settles as a fact's does (settling); a kind that answers false finishes
+	// in a plain transaction, behind no fact. It is here rather than in finishRefused's own
+	// branch for the reason the other two are: it is a decision taken by the row's kind, and a
+	// kind whose clean-up nobody wrote would otherwise be dropped as an ordinary row leaves
+	// nothing, in silence.
+	refused(r *outbox, row record.OutboxRow, payload record.StatusWrite, cause error) (follow func(context.Context, pgx.Tx) error, told func(), dropsFence bool)
+}
+
+// ruleFor is the one place a status row's kind is read: a value per kind and no fallback, so a
+// kind added to record.StatusRowKinds without one here fails its row, naming itself, rather than
+// being judged in silence by whichever rule a default would lend it. An ordinary default reads
+// backwards for every other kind, each queued at or writing a status out of the workflow, and
+// would drop the very row that exists to bring the issue back into one.
+// TestEveryStatusRowKindHasARule holds the list and this switch to each other, and
+// TestAStatusRowKindWithNoRuleFailsBothPathsWithoutWriting holds a row of a kind this switch has
+// no value for to failing on both paths with nothing written.
+func ruleFor(kind record.StatusRowKind) (statusRowRule, error) {
+	switch kind {
+	case record.OrdinaryStatusRow:
+		return ordinaryRule{}, nil
+	case record.PersonHandoverStatusRow:
+		return personHandoverRule{}, nil
+	case record.ReassertStatusRow:
+		return reassertRule{}, nil
+	case record.HandOverStatusRow:
+		return handOverRule{}, nil
+	case record.CloseStatusRow:
+		return closeRule{}, nil
+	default:
+		return nil, fmt.Errorf("status row kind %q has no rule", kind)
+	}
+}
+
+// statusMoved says whether somebody moved the issue since the row read the status it observed:
+// Dispatch shows neither that status nor the one the row carries, so the row's write is
+// superseded by a change made after it was queued.
+func statusMoved(payload record.StatusWrite, issue dispatch.Issue) bool {
+	return issue.Status != payload.ObservedStatus && issue.Status != payload.Status
+}
+
+// ordinaryRule judges the workflow moving an issue along inside the workflow
+// (record.OrdinaryStatusRow).
+type ordinaryRule struct{}
+
+// firstAttempt settles nothing of its own: an ordinary row's fences are the ones every kind
+// shares, which its caller has taken.
+func (ordinaryRule) firstAttempt(context.Context, *outbox, record.OutboxRow, record.StatusWrite, dispatch.Issue) (bool, error) {
+	return true, nil
+}
+
+func (ordinaryRule) stillWanted(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) (bool, error) {
+	return r.statusStillWanted(ctx, row, payload, read)
+}
+
+// refused leaves nothing behind: an ordinary row's whole effect is the write Dispatch refused.
+func (ordinaryRule) refused(r *outbox, row record.OutboxRow, payload record.StatusWrite, cause error) (func(context.Context, pgx.Tx) error, func(), bool) {
+	return statusRefusalTold(r, row, payload, cause)
+}
+
+// personHandoverRule judges a person's handover (record.PersonHandoverStatusRow), which stands
+// only while the issue still carries the label that person put on it.
+type personHandoverRule struct{}
+
+func (personHandoverRule) firstAttempt(_ context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, issue dispatch.Issue) (bool, error) {
+	// A row whose issue has moved since is superseded, which the caller settles for every kind
+	// alike, so the label is asked about only while the move this row answers still stands: a
+	// person who parked the root since is let stand silently rather than reported as one who
+	// took the label off.
+	if statusMoved(payload, issue) {
+		return true, nil
+	}
+	return r.personHandoverStands(row, issue), nil
+}
+
+func (personHandoverRule) stillWanted(_ context.Context, r *outbox, row record.OutboxRow, _ record.StatusWrite, read dispatch.Issue) (bool, error) {
+	return r.personHandoverStands(row, read), nil
+}
+
+// refused leaves nothing behind: the label this row would have put on the issue is part of the
+// write Dispatch refused, and the record holds nothing else for it.
+func (personHandoverRule) refused(r *outbox, row record.OutboxRow, payload record.StatusWrite, cause error) (func(context.Context, pgx.Tx) error, func(), bool) {
+	return statusRefusalTold(r, row, payload, cause)
+}
+
+// reassertRule judges the daemon setting its own status back over one a session wrote
+// (record.ReassertStatusRow).
+type reassertRule struct{}
+
+// firstAttempt settles nothing of its own: what this row undoes is the move it observes, and the
+// caller has already required Dispatch to still show it.
+func (reassertRule) firstAttempt(context.Context, *outbox, record.OutboxRow, record.StatusWrite, dispatch.Issue) (bool, error) {
+	return true, nil
+}
+
+func (reassertRule) stillWanted(context.Context, *outbox, record.OutboxRow, record.StatusWrite, dispatch.Issue) (bool, error) {
+	// The read shows the status the session wrote, which the caller has just required, so the
+	// session's move still stands and the daemon's own status is still owed. Nothing else is
+	// asked: the record cannot be consulted for it, since the status this row restores is the
+	// one the record kept (workflow's keepStatus), and the issue's being out of the workflow
+	// in Dispatch's eyes is the very thing being undone.
+	return true, nil
+}
+
+// refused leaves nothing behind: the status the record kept is unchanged by a refusal, and the
+// next event about the issue decides what happens to it.
+func (reassertRule) refused(r *outbox, row record.OutboxRow, payload record.StatusWrite, cause error) (func(context.Context, pgx.Tx) error, func(), bool) {
+	return statusRefusalTold(r, row, payload, cause)
+}
+
+// handOverRule judges a child of a closed tree handed to Legion (record.HandOverStatusRow): the
+// one kind whose first attempt makes the Dispatch write itself, since the status and the label
+// go over together.
+type handOverRule struct{}
+
+// firstAttempt hands the child over, so the write its caller would make is never reached: every
+// path of it finishes the row.
+func (handOverRule) firstAttempt(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, issue dispatch.Issue) (bool, error) {
+	if statusMoved(payload, issue) {
+		// A person's move superseded the hand-over, so the fence it left goes with it.
+		return false, r.dropHandover(ctx, row.Issue, payload)
+	}
+	if holds, err := r.handOverHolds(ctx, row, payload); err != nil || !holds {
+		return false, err
+	}
+	if issue.Status == payload.Status && issue.HandedOver {
+		return false, r.consumeHandover(ctx, row, payload)
+	}
+	// Every hand-over write is conditional on the sequence just read (dispatch HandOver), the
+	// label added when the child lacks it, so a person's move since that read stands.
+	if err := r.dispatch.HandOver(ctx, issue, payload.Status); err != nil {
+		return false, fmt.Errorf("hand Dispatch issue %s to Legion as %s: %w", row.Issue, payload.Status, err)
+	}
+	return false, r.consumeHandover(ctx, row, payload)
+}
+
+// stillWanted is unreachable and says so: a hand-over's write is made by its own first attempt,
+// which finishes the row whichever path it takes, so no hand-over row ever reaches the retry the
+// ISSUE_CHANGED refusal sends an ordinary write to. The interface asks every kind for both
+// halves, and the honest answer for this one is that the question cannot arise: a row that got
+// here came from a path nobody wrote, which is a defect to see rather than a write to guess at.
+func (handOverRule) stillWanted(_ context.Context, _ *outbox, row record.OutboxRow, _ record.StatusWrite, _ dispatch.Issue) (bool, error) {
+	return false, fmt.Errorf("outbox row %d: a hand-over's first attempt finishes its row, so it cannot reach the retry's rule", row.ID)
+}
+
+// refused drops the fence this hand-over left: the write that would hand the child to Legion
+// never lands, so no admission consumes the fence, and one left behind would keep naming the
+// child's own tree as its Sandbox's home (store.IssueSandboxHome) for good. The fence is an input
+// of the end of a merge's run, so the drop answers dropsFence, and its finish takes the fact lock
+// and settles as a fact's does.
+func (handOverRule) refused(r *outbox, row record.OutboxRow, payload record.StatusWrite, _ error) (func(context.Context, pgx.Tx) error, func(), bool) {
+	follow := func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.DeleteHandoverAt(ctx, tx, row.Issue, payload.HandOverTree, payload.HandOverLinger)
+	}
+	told := func() {
+		r.log.Warn("outbox hand-over refused by Dispatch; its fence is dropped and the child is not handed to Legion",
+			"row", row.ID, "issue", row.Issue, "tree", payload.HandOverTree, "linger", payload.HandOverLinger)
+	}
+	return follow, told, true
+}
+
+// closeRule judges the daemon's own close of an issue (record.CloseStatusRow): the done a merge
+// or an architect's close_root writes, queued in the transaction that took the record out of the
+// workflow.
+type closeRule struct{}
+
+// firstAttempt asks the one question a close has of its own (closeStands): whether the close this
+// row carries is still the record's. A row's first attempt is not its first chance to be stale —
+// an attempt that ended in a backoff, a Dispatch that answered 5xx, or a daemon that restarted
+// before the write leaves the row to a fresh attempt hours later — and a person's reopen in that
+// time would otherwise be closed again by the write this row has been holding.
+func (closeRule) firstAttempt(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, _ dispatch.Issue) (bool, error) {
+	return closeStands(ctx, r, row, payload)
+}
+
+// stillWanted asks the same question after Dispatch refused the write. The caller has already
+// required Dispatch to show the status the row observed, so nobody has moved the issue since, and
+// what is left is whether the close is still owed. The ordinary rule cannot be asked here — it
+// drops a row whose issue has left the workflow, which is every close, so one refusal would leave
+// the issue open in Dispatch for good while the tree lingered behind a close nobody ever wrote.
+// That is the reason this kind exists.
+func (closeRule) stillWanted(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, _ dispatch.Issue) (bool, error) {
+	return closeStands(ctx, r, row, payload)
+}
+
+// closeStands says whether the close row still carries the record's own close: the record stands
+// at the generation the row names. A person's reopen re-admits the issue in a generation of its
+// own, and that close is no longer owed, whichever attempt of the row reaches this question —
+// Dispatch holds what the person put there. A row with no generation is one migration
+// 20261102003600 gave its kind, queued by a release that fenced the write on nothing: it writes
+// as that release wrote it. An issue the daemon keeps no record of is closed as the row says, as
+// every other rule judges such an issue by the row and the read alone.
+func closeStands(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite) (bool, error) {
+	if payload.CloseGeneration == 0 {
+		return true, nil
+	}
+	issue, err := r.recordedIssue(ctx, row.Issue)
+	if err != nil {
+		return false, fmt.Errorf("judge the close queued for %s: %w", row.Issue, err)
+	}
+	if issue != nil && issue.Generation != payload.CloseGeneration {
+		r.log.Info("outbox close finished without writing: the issue was taken back into the workflow in a generation of its own",
+			"row", row.ID, "issue", row.Issue, "closed", payload.CloseGeneration, "recorded", issue.Generation)
+		return false, nil
+	}
+	return true, nil
+}
+
+// refused leaves nothing behind: the close's whole effect is the write Dispatch refused, and the
+// record already stands where the close left it.
+func (closeRule) refused(r *outbox, row record.OutboxRow, payload record.StatusWrite, cause error) (func(context.Context, pgx.Tx) error, func(), bool) {
+	return statusRefusalTold(r, row, payload, cause)
+}
+
+func (r *outbox) personHandoverStands(row record.OutboxRow, issue dispatch.Issue) bool {
+	if issue.HandedOver {
+		return true
+	}
+	r.log.Info("outbox: a person's handover is not written; the label is gone", "row", row.ID, "issue", row.Issue)
+	return false
+}
+
+// statusStillWanted says whether a row may write its status after its issue changed under it: the
+// fresh read shows a status still in the workflow — neither done nor parked
+// (record.OutOfWorkflow) — and the record, read as it stands, still has the issue in the
+// workflow too. The read is not applied to the record: it carries no actor, and a change Dispatch
+// recorded reaches the engine through its own event (writeStatus). A close or a park is the issue's state now, and the status this
+// row carries is of a workflow the issue has left, so the row finishes having written nothing. An
+// issue the daemon keeps no record of is judged by the read alone.
+func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) (bool, error) {
+	left := record.OutOfWorkflow(read.Status)
+	if !left {
+		issue, err := r.recordedIssue(ctx, row.Issue)
+		if err != nil {
+			return false, fmt.Errorf("judge the status write of %s: %w", row.Issue, err)
+		}
+		left = issue != nil && !workflow.InWorkflow(*issue)
+	}
+	if left {
+		r.log.Info("outbox status write finished without writing: its issue left the workflow while the write was on its way",
+			"row", row.ID, "issue", row.Issue, "status", payload.Status, "dispatch", read.Status)
+		return false, nil
+	}
+	return true, nil
 }
 
 // publishGatedSteps writes the deployment's design-gate steps onto the project's Dispatch row.
@@ -756,6 +1360,158 @@ func (r *outbox) publishGatedSteps(ctx context.Context, payload record.GatedStep
 	return nil
 }
 
+// publishDesignGates writes the document each of the issue's design-gate steps records onto the
+// issue's Dispatch row. The row's own issue is that issue, and the payload names it too, so the
+// write addresses the issue whose gate change queued it however the row is read back. The set is
+// sent whole, empty included: it replaces what Dispatch holds, so an issue whose gates record
+// nothing clears the set rather than leaving the last one standing.
+//
+// A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
+// and nothing here treats that as final (permanentRefusal, which ends the row on ISSUE_NOT_FOUND
+// alone): the lane's backoff holds the row until the server has the route, which is what lets the
+// daemon and Dispatch deploy in either order.
+func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGatesPublish) error {
+	if r.dispatch == nil {
+		return errors.New("design gates executor has no Dispatch client")
+	}
+	gates := make([]dispatch.DesignGateDocument, len(payload.Gates))
+	for i, gate := range payload.Gates {
+		gates[i] = dispatch.DesignGateDocument{Step: string(gate.Step), ArtifactID: gate.ArtifactID}
+	}
+	if err := r.dispatch.PutDesignGates(ctx, payload.Issue, gates); err != nil {
+		return fmt.Errorf("publish the design gates of %s: %w", payload.Issue, err)
+	}
+	return nil
+}
+
+// publishRoleHolders writes the session of each live Legion role of the issue onto the issue's
+// Dispatch row. The set is read from the claims now, in a transaction of its own, not when the row
+// was queued: a claim that ended after the queue is gone from it, and two claim changes of one
+// issue never publish a stale set. It is sent whole, empty included, since it replaces what
+// Dispatch holds, so a role whose claim ended leaves the set with no delete route.
+//
+// A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
+// so the daemon and Dispatch deploy in either order. Every other answer is decided by
+// permanentRefusal: the route's own 404 ISSUE_NOT_FOUND and a coded 400 end the row, and a 5xx, a
+// codeless 4xx, a handler's 404 NOT_FOUND "not found" and a transport failure are failures retried
+// on the row's backoff.
+func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHoldersPublish) error {
+	if r.dispatch == nil {
+		return errors.New("role holders executor has no Dispatch client")
+	}
+	var live []record.RoleHolder
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		live, err = r.records.LiveRoleHolders(ctx, tx, payload.Issue)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the live role holders of %s: %w", payload.Issue, err)
+	}
+	holders := make([]dispatch.RoleHolder, len(live))
+	for i, holder := range live {
+		holders[i] = dispatch.RoleHolder{Role: string(holder.Role), Session: holder.Session}
+	}
+	if err := r.dispatch.PutRoleHolders(ctx, payload.Issue, holders); err != nil {
+		return fmt.Errorf("publish the role holders of %s: %w", payload.Issue, err)
+	}
+	return nil
+}
+
+// publishStepRecord writes one start or one end of a step onto Dispatch's record of it, under the
+// row's issue and the record's own id. Dispatch writes each field once and keeps what the write
+// leaves out, so the start, the end and the rating land in any order, and a write that runs again
+// after a lost answer changes nothing.
+//
+// A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
+// so the daemon and Dispatch deploy in either order, and once Dispatch serves the route the row's
+// next run writes the record and ends it. Every other answer is decided by recordRefused: a refusal
+// its route makes for good ends the row, and anything else is a failure retried on the row's
+// backoff.
+func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, payload record.StepRecord) error {
+	if r.dispatch == nil {
+		return errors.New("step record executor has no Dispatch client")
+	}
+	if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, stepWriteOf(payload)); err != nil {
+		return fmt.Errorf("write the step record %s of %s: %w", payload.ID, row.Issue, err)
+	}
+	return nil
+}
+
+// publishStepRating writes the rating a retro gave the plan, which payload carries, onto the
+// retro's record on Dispatch, under the row's issue and the record's own id, through the record's
+// rating route (dispatch.Client.PutStepRating), with the record's identity, so the write makes the
+// record where the retro's start and end have not landed yet. Its answers are decided as a step
+// record's are (publishStepRecord).
+func (r *outbox) publishStepRating(ctx context.Context, row record.OutboxRow, payload record.StepRecord) error {
+	if r.dispatch == nil {
+		return errors.New("step record executor has no Dispatch client")
+	}
+	if err := r.dispatch.PutStepRating(ctx, row.Issue, payload.ID, stepWriteOf(payload), dispatch.PlanRating(*payload.PlanRating)); err != nil {
+		return fmt.Errorf("write the rating of the step record %s of %s: %w", payload.ID, row.Issue, err)
+	}
+	return nil
+}
+
+// stepWriteOf is the step write of payload's fields, the rating aside: the identity of the run, and
+// each field of its start or its end that payload carries.
+func stepWriteOf(payload record.StepRecord) dispatch.StepWrite {
+	return dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
+		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
+		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
+		ReturnedTo: payload.ReturnedTo, Report: payload.Report}
+}
+
+// publishPlanRecord writes the plan one run of an issue carries out onto Dispatch, under the row's
+// issue and the plan's own id. Dispatch sets each field once, so a write that runs again after a
+// lost answer changes nothing. A Dispatch that has not got the route yet answers its router's 404,
+// which execute makes a wait; every other answer is decided by recordRefused, as a step record's is.
+func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, payload record.PlanRecord) error {
+	if r.dispatch == nil {
+		return errors.New("plan record executor has no Dispatch client")
+	}
+	tasks := make([]dispatch.PlanTask, len(payload.Tasks))
+	for i, task := range payload.Tasks {
+		tasks[i] = dispatch.PlanTask(task)
+	}
+	plan := dispatch.PlanWrite{Generation: payload.Generation, Source: payload.Source,
+		PlanDocument: (*dispatch.PlanDocument)(payload.PlanDocument), Tasks: tasks}
+	if err := r.dispatch.PutPlan(ctx, row.Issue, payload.ID, plan); err != nil {
+		return fmt.Errorf("write the plan record %s of %s: %w", payload.ID, row.Issue, err)
+	}
+	return nil
+}
+
+// recordRefused is whether Dispatch refused a step record, a rating or a plan in a way no retry
+// changes: an issue it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a coded 400
+// the shared rule calls final, which leaves out the refusal of a field this daemon added by a
+// Dispatch from before #2461; a refusal naming the rating is no such refusal, since no Dispatch
+// refused the rating by name), a writer its route refuses (403 STEP_WRITER, which the step, the
+// rating and the plan routes all answer: the daemon names its own session on every write, so the
+// route's rule and the daemon's disagree) and an id of another issue (409 STEP_OTHER_ISSUE, or
+// PLAN_OTHER_ISSUE for a plan).
+// Everything else retries: a handler's 404 NOT_FOUND, which the code, not the status, tells from
+// ISSUE_NOT_FOUND, an outage, "come back later", a codeless answer and a credential an operator
+// restores. The router's NOT_FOUND of a Dispatch older than the route never reaches it: execute
+// makes that answer a wait.
+func recordRefused(err error) bool {
+	var refusal *dispatch.Error
+	if !errors.As(err, &refusal) {
+		return false
+	}
+	switch refusal.Status {
+	case http.StatusNotFound:
+		return refusal.Code == dispatch.IssueNotFound
+	case http.StatusBadRequest:
+		_, permanent := dispatch.PermanentRefusal(err)
+		return permanent
+	case http.StatusForbidden:
+		return refusal.Code == steprecord.CodeWriter
+	case http.StatusConflict:
+		return refusal.Code == steprecord.CodeOtherIssue || refusal.Code == steprecord.CodePlanOtherIssue
+	}
+	return false
+}
+
 // consumeHandover applies the hand-over to the record once Dispatch shows it: the row's hand-over
 // write just set it, or Dispatch already showed the todo and label (which a write would make no
 // event for). It does not wait for the write's event: a restart between the write and that event's
@@ -769,8 +1525,15 @@ func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payl
 }
 
 // handOverHolds is an early check only; the durable fence is enforced again by intake when the
-// PATCH's daemon event arrives. The one transaction confirms this row still owns the child and the
-// linger it names, avoiding a needless write once a root reopen already removed that fence.
+// PATCH's daemon event arrives. Its read confirms this row still owns the child and the linger it
+// names, avoiding a needless write once a root reopen already removed that fence. The read writes
+// nothing a fact reads, so it runs in a plain transaction and waits behind no fact. A fence a
+// re-admission cancelled is dropped, and the fence is an input of the end of a merge's run, so
+// the drop runs in a transaction of its own that takes the lock every fact applies under and
+// settles as a fact does (settling). DeleteHandoverAt matches the tree and the linger generation,
+// not the cancel, so the drop reads the fence again under the lock and deletes it only while it
+// is still cancelled: a fact that put the fence again since the read committed before the lock
+// was taken, and its fence stands; one that puts it later waits for the drop and stands after it.
 func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) (bool, error) {
 	var issue, root *record.Issue
 	var handover *record.Handover
@@ -781,16 +1544,25 @@ func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payloa
 			return err
 		}
 		handover, err = r.records.Handover(ctx, tx, row.Issue)
-		if err != nil || handover == nil {
+		if err != nil || handover == nil || handover.Cancelled {
 			return err
-		}
-		if handover.Cancelled {
-			return r.records.DeleteHandoverAt(ctx, tx, row.Issue, payload.HandOverTree, payload.HandOverLinger)
 		}
 		root, err = r.records.Issue(ctx, tx, handover.Tree)
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("read hand-over of %s: %w", row.Issue, err)
+	}
+	if handover != nil && handover.Cancelled {
+		scoped, settled := r.settling(ctx)
+		if err := settled(func(tx pgx.Tx) error {
+			fence, err := r.records.Handover(scoped, tx, row.Issue)
+			if err != nil || fence == nil || !fence.Cancelled {
+				return err
+			}
+			return r.records.DeleteHandoverAt(scoped, tx, row.Issue, payload.HandOverTree, payload.HandOverLinger)
+		}); err != nil {
+			return false, fmt.Errorf("drop the cancelled hand-over of %s: %w", row.Issue, err)
+		}
 	}
 	if issue != nil && handover != nil && !handover.Cancelled && root != nil && issue.Tree == handover.Tree && handover.Tree == payload.HandOverTree &&
 		handover.Generation == payload.HandOverLinger && root.LingersAt(handover.Generation) {
@@ -803,13 +1575,57 @@ func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payloa
 
 // dropHandover deletes the fence of a hand-over a person's move superseded, but only this row's
 // own: the tree and linger generation the row names. A newer linger's fence on the same child is
-// its own row's to settle.
+// its own row's to settle. The fence is an input of the end of a merge's run, so the delete
+// settles as a fact does (settling).
 func (r *outbox) dropHandover(ctx context.Context, issue string, payload record.StatusWrite) error {
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.DeleteHandoverAt(ctx, tx, issue, payload.HandOverTree, payload.HandOverLinger)
+	scoped, settled := r.settling(ctx)
+	return settled(func(tx pgx.Tx) error {
+		return r.records.DeleteHandoverAt(scoped, tx, issue, payload.HandOverTree, payload.HandOverLinger)
 	})
 }
 
+// settling is how a write of the outbox that changes an input of the end of a step's run — a
+// hand-over's fence — settles as a fact does: ctx carrying what the settle reads
+// (intake.OpenSettlers over the outbox's handlers) and the commit hooks its writes register, and
+// the runner of the write's one transaction, which takes the lock every fact applies under
+// (intake.SerializeFacts), runs write, settles the runs it ended before the commit (workflow's
+// settleRuns), and runs the commit hooks once the transaction commits. Every write in it takes the
+// ctx it answers, so the store notes the issues those writes touch. Only a transaction that drops
+// a fence runs here: the lock puts it behind every fact, and a write that changes no input of the
+// end has neither a fact to wait for nor a run to settle, so it runs in a plain one (committing).
+func (r *outbox) settling(ctx context.Context) (context.Context, func(write func(pgx.Tx) error) error) {
+	scoped, commit := r.committing(ctx)
+	scoped, settle := intake.OpenSettlers(scoped, r.handlers...)
+	return scoped, func(write func(pgx.Tx) error) error {
+		return commit(func(tx pgx.Tx) error {
+			if err := intake.SerializeFacts(scoped, tx); err != nil {
+				return fmt.Errorf("serialize with every fact: %w", err)
+			}
+			if err := write(tx); err != nil {
+				return err
+			}
+			return settle(scoped, tx)
+		})
+	}
+}
+
+// committing is how a write of the outbox that changes no input of the end of a step's run runs:
+// ctx carrying the commit hooks its writes register, and the runner of the write's one
+// transaction, which takes no fact lock and runs the commit hooks once the transaction commits.
+func (r *outbox) committing(ctx context.Context) (context.Context, func(write func(pgx.Tx) error) error) {
+	scoped, committed := intake.WithCommitHooks(ctx)
+	return scoped, func(write func(pgx.Tx) error) error {
+		if err := pgx.BeginFunc(scoped, r.pool, write); err != nil {
+			return err
+		}
+		committed()
+		return nil
+	}
+}
+
+// message posts a message row once: a retried row that finds its own marker on the issue posts
+// nothing more. A row whose message links an artifact puts that document on the issue first
+// (messageArtifact), so the link never names a document that is not there yet.
 func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload record.MessagePost) error {
 	if r.dispatch == nil {
 		return errors.New("dispatch message executor has no Dispatch client")
@@ -824,45 +1640,94 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 			return nil
 		}
 	}
+	if payload.Artifact != nil {
+		refusal, err := r.messageArtifact(ctx, row, *payload.Artifact)
+		if err != nil {
+			return err
+		}
+		if refusal != nil {
+			payload.Body += fmt.Sprintf("\n\nDispatch refused the full list that this message links, with status %d and code %s.", refusal.Status, refusal.Code)
+		}
+	}
 	if err := r.dispatch.PostMessage(ctx, row.Issue, payload.Posted(row.ID)); err != nil {
 		return fmt.Errorf("post Dispatch message for %s: %w", row.Issue, err)
 	}
 	return nil
 }
 
-// notice publishes a notice row to the architect that owns its issue, on that architect's own role
-// topic, and to nothing else. Every notice kind is for an architect, and no claim subscribes to an
-// issue topic (packages/pi-legion/src/claim-session.ts), so no issue topic carries one. The
-// owner, the earlier notices it waits behind, and whether its tree lingers are read from one
-// snapshot of the tree (notice_routing.go). A notice waits behind an earlier notice of its tree
-// that is held for the same architect, so each architect is told in the order the notices were
-// written: on its backoff (errNoticeWaits), or, when the earlier row is itself due at a moment
-// still ahead, at that moment and once (wait.Until). A role topic with no live holder
-// refuses the publish (notify.ErrNoHolder): while the owning architect's claim can hold its role
-// again — relaunching, or a root the operator suspended and can resume — the row is held for it;
-// once nobody will hold that role for this notice — the claim has failed or retired, or its tree
-// lingers or has closed — the row finishes undelivered with one log line. So does a row whose
-// architect cannot be resolved from the record (errNoticeUnroutable), which holds back no later
-// notice either, and, before any publish, a row whose architect stopped with its finished tree
-// (stoppedWithTree). A person's spec decision in either of the two cases a notice finishes
+// messageArtifact puts on the issue the document a message links. It reads the issue's artifacts
+// and uploads only when none has the document's name, so a row that runs again after its upload
+// writes no second version. A read or an upload Dispatch refuses the same way on every run
+// (dispatch.PermanentRefusal) is logged and answered, and the message is posted all the same with
+// a sentence that says so: the message is the issue's one word on what it carries, and a document
+// it could not hold must not cost it that (dispatch://INFRA-2704). Any other failure fails the
+// run, and the row runs again. So does an upload Dispatch filed under a slug other than the
+// name, since the link names the document by that name.
+func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, artifact record.MessageArtifact) (*dispatch.Error, error) {
+	slugs, err := r.dispatch.ArtifactSlugs(ctx, row.Issue)
+	if err == nil && slices.Contains(slugs, artifact.Name) {
+		return nil, nil
+	}
+	slug := ""
+	if err == nil {
+		slug, err = r.dispatch.UploadArtifact(ctx, row.Issue, artifact.Name, artifact.Content)
+	}
+	if refusal, permanent := dispatch.PermanentRefusal(err); permanent {
+		r.log.Error("outbox Dispatch message's document refused by Dispatch; the message is posted and says so",
+			"row", row.ID, "issue", row.Issue, "artifact", artifact.Name, "status", refusal.Status, "code", refusal.Code, "error", err)
+		return refusal, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("put the document %s of a Dispatch message on %s: %w", artifact.Name, row.Issue, err)
+	}
+	if slug != artifact.Name {
+		return nil, fmt.Errorf("put the document %s of a Dispatch message on %s: Dispatch filed it under %s, so the message's link would name no document", artifact.Name, row.Issue, slug)
+	}
+	return nil, nil
+}
+
+// notice publishes a notice row to its architect (noticeArchitect), on that architect's own role
+// topic, and to nothing else: a catch-up to the architect of its own issue, whose state it states,
+// and every other notice to the architect that owns its issue. Every notice kind is for an
+// architect, and no claim subscribes to an issue topic (packages/pi-legion/src/claim-session.ts),
+// so no issue topic carries one. The architect, the earlier notices it waits behind, and whether
+// its tree lingers are read from one snapshot of the tree (notice_routing.go). A notice waits
+// behind an earlier notice of its tree that is held for the same architect, so each architect is
+// told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
+// earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). A role
+// topic with no live holder refuses the publish (notify.ErrNoHolder): while the architect's claim
+// can hold its role again — relaunching, a root the operator suspended and can resume, or the
+// architect of a catch-up's own issue suspended while that issue is in the workflow, which its
+// next start resumes — the row is held for it; once nobody will hold that role for this notice —
+// the claim has failed or retired, or its tree lingers or has closed — the row finishes
+// undelivered with one log line. So does a row whose architect cannot be resolved from the record
+// (errNoticeUnroutable), which holds back no later notice either, and, before any publish, a row
+// whose architect stopped with its finished tree (stoppedWithTree), and a child's catch-up while
+// the child is out of the workflow by its status or its phase (record.InWorkflow), whose next
+// launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
 // undelivered because nobody will hold the role (its architect stopped with its finished tree, or
-// will not hold its role again) goes to the controller instead (parkDecision). What the
-// listener's answer to the publish then decides — a delivery the architect's session did not
-// confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
+// will not hold its role again) goes to the controller instead (parkDecision).
+// What the listener's answer to the publish then decides — a delivery the architect's session did
+// not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
 // (noticeAnswered, notice_exceptions.go), which a role-lane exception of an earlier listener
-// reaches by the same route (rehold).
+// reaches by the same route (rehold). A listener of this release never answers that a session
+// did not confirm a delivery (`receipt_timeout`): no session confirms a forward any more, and
+// every forward its stream did not store is `delivery_failed` (dispatch://INFRA-771), so that
+// answer reaches the policy only from a listener of the deployed, older build, until that
+// rollout finishes.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
 // catch-up a newer ready dropped) is found gone in the tree's snapshot and finishes without a
 // publish, and so does a catch-up a newer one superseded (catchUpSuperseded, read against the
-// snapshot's root and the claim as it runs now): the re-hold reads the claim from memory and
-// writes its copy outside ApplyFact's lock, so it can lose the race to a ready and commit an older
-// copy after the fresh catch-up. A catch-up that publishes records the telling and forgets the
-// decisions it named (toldKept, settleTold); one a newer catch-up superseded hands them to a fresh
-// catch-up instead (supersededKept), since the newer one was composed without them; one that
-// finishes any other way leaves them claimed until its row's deletion releases them, for the
-// architect's next ready to name. However the row ends, a catch-up that told its decisions in any
-// run forgets them here rather than let its ending release what the architect has already heard.
+// row's own issue as the snapshot holds it and its architect's claim as it runs now): the re-hold
+// reads the claim from memory and writes its copy outside ApplyFact's lock, so it can lose the
+// race to a ready and commit an older copy after the fresh catch-up. A catch-up that publishes
+// records the telling and forgets the decisions it named (toldKept, settleTold); one a newer
+// catch-up superseded hands them to a fresh catch-up instead (supersededKept), since the newer
+// one was composed without them; one that finishes any other way leaves them claimed until its
+// row's deletion releases them, for the architect's next ready to name. However the row ends, a
+// catch-up that told its decisions in any run forgets them here rather than let its ending release
+// what the architect has already heard.
 //
 // A row the wake pacing held to its turn (record.Notice.PacedAt) writes the line a wake writes,
 // once, on the attempt that publishes it (noticeAnswered's wakeRan, notice_exceptions.go):
@@ -880,10 +1745,11 @@ func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload recor
 // prepended with the claim this one wakes (supervise.WakeRanMessage, WakeRanFields): the shape is
 // what matters to its reader, since one grep over the daemon's log finds every wake of a restart
 // or a plugin wave, whichever lane caused it, and counts the wakes of a minute against the rate
-// and burst each line names. The claim is the architect the catch-up goes to, the root architect
-// of the row's issue (QueueCatchUp writes the row for the root), spelled as a machine's own lines
-// spell a claim, since this logger is the runner's and carries no claim of its own — where a
-// machine's logger carries one already, which is why the field is this caller's to add.
+// and burst each line names. The claim is the architect the catch-up goes to, the architect of
+// the row's own issue (noticeArchitect; QueueCatchUp writes the row on that issue), spelled as a
+// machine's own lines spell a claim, since this logger is the runner's and carries no claim of its
+// own — where a machine's logger carries one already, which is why the field is this caller's to
+// add.
 //
 // The line is written on the attempt that publishes, and so once for the row: a row that waits
 // behind an earlier notice of the same architect (errNoticeWaits, wait.Until), finds its role
@@ -936,13 +1802,16 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if err != nil {
 		return err
 	}
+	// A catch-up goes to the architect of its own issue and to no other (noticeArchitect), so it is
+	// judged against that architect's claim and that issue's generation: a child's catch-up is
+	// superseded by the child's architect's later launch, never by its tree root's.
+	architect, err := noticeArchitect(tree.project, tree.issues, issue, payload, r.holdsItsRole)
+	if err != nil {
+		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
+	}
 	if payload.CatchUp != nil {
-		root, err := claim.NewToken(tree.project, tree.root.Key, claim.RoleArchitect)
-		if err != nil {
-			return fmt.Errorf("the architect of %s: %w", tree.root.Key, err)
-		}
-		held := r.supervisedClaim(root).Claim
-		if catchUpSuperseded(*payload.CatchUp, held, &tree.root) {
+		held := r.supervisedClaim(architect).Claim
+		if catchUpSuperseded(*payload.CatchUp, held, &issue) {
 			// A row that published before told what it named and settles after this run
 			// (settleTold); one that never published hands its decisions to a fresh catch-up, since
 			// the newer catch-up was composed from what nobody claimed and left them out.
@@ -954,10 +1823,20 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
-	}
-	architect, err := owningArchitect(tree.project, tree.issues, issue, payload.Kind, r.holdsItsRole)
-	if err != nil {
-		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
+		// A child out of the workflow (record.InWorkflow: by its status, or done, as a parked child
+		// stays when a person writes a running status on it without a todo) has its architect
+		// suspended or retired with its launch and its generation kept, so nothing supersedes the
+		// row. It finishes here, before any publish, since no ready queues a catch-up while the
+		// child is out of the workflow (workflow's claimReady, the same rule) and its next launch
+		// writes a fresh one. A root's catch-up is not judged by this check: besides the endings
+		// every notice has, it ends when a newer one supersedes it (catchUpSuperseded, above), when
+		// its architect stopped with its finished tree (stoppedWithTree, below), or when no session
+		// holds its role and its claim will not hold it again (noticeAnswered's architectEnded).
+		if !claim.IsTreeRoot(issue.Key, issue.Tree) && !record.InWorkflow(issue) {
+			r.log.Info("outbox catch-up finished undelivered: its issue is out of the workflow", "row", row.ID, "issue", row.Issue,
+				"status", issue.Status, "phase", issue.Phase, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
+			return nil
+		}
 	}
 	notice, key := payload.Published(row.ID)
 	if held := r.supervisedClaim(architect); stoppedWithTree(tree.root.Lingers(), held) {
@@ -971,119 +1850,333 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
 	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
 	// for an architect that is relaunching, and publishes once the woken session holds its role.
-	if woken, err := r.wakeForDelivery(ctx, architect, record.OutboxKey(row.ID), "a notice of "+row.Issue); err != nil {
+	// A launch of the architect the wake pacing holds is waited for until it runs, the claim read
+	// again at its turn or parkedWakeBound on, whichever comes first (parkedWait), and the wait is
+	// a notice held for its architect still (errNoticeWaits).
+	if waits, turn, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue); err != nil {
 		return err
-	} else if woken {
+	} else if !turn.IsZero() {
+		return fmt.Errorf("%w: %w", errNoticeWaits, r.parkedWait(turn, fmt.Sprintf("notice row %d waits for %s's launch, which the wake pacing holds until %s",
+			row.ID, architect, turn.UTC().Format(time.RFC3339))))
+	} else if waits {
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
 	}
 	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
 		// The row the fence holds this one behind is due at a known moment when the wake pacing
-		// holds it (record.Notice.PacedAt): this row runs once, then, rather than climbing its
-		// backoff to it — over a hold of tens of minutes that is a Warn every attempt from the
-		// seventh (settle), about one wake's worth of noise per architect in a wave. The hold
-		// itself is right: it keeps the architect to the one wake its catch-up is.
+		// holds it: the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or its
+		// next read of the architect's parked launch, at most parkedWakeBound out (parkedWait).
+		// This row runs once, then, rather than climbing its backoff to it — over a hold of tens
+		// of minutes that is a Warn every attempt from the seventh (settle), about one wake's
+		// worth of noise per architect in a wave. The hold itself is right: it keeps the
+		// architect to the one wake its catch-up is.
 		if now := r.now().UTC(); due.After(now) {
 			return wait.Until(due, fmt.Sprintf("%s's notice row %d waits behind its row %d, due at %s",
 				architect, row.ID, earlier, due.Format(time.RFC3339)))
 		}
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
+	published := r.publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
 	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
 }
 
-// mergeQueue publishes the merger's READY packet, or the daemon's withdrawal of it, to the
-// project's merge queue role, keyed by the row so a retried row is one delivery. A role with no
-// live holder refuses every attempt until someone claims it, so does a holder that does not
-// advertise the packet's delivery mode (notify.ErrRefusedByHolder) until another session holds the
-// role, and so does the listener's own NATS grant when it denies the forward
-// (notify.ErrPublishDenied) until an operator changes it, so waiting would retry forever; the
-// Dispatch message the same READY posted already carries the packet, and the issue's status shows
-// a withdrawal, so the issue is told the role had no holder (as the merger's prompt,
-// internal/prompts/go/merger.md, says the daemon does), that its holder refused the packet, or that
-// the listener was denied the forward, and the row is done. A holder that did not confirm the packet
-// in time (notify.ErrNotDelivered) is retried on the row's backoff as any failed publish is: the
-// holder, or the session that next claims the role, can take it. So is a holder only unresponsive
-// (notify.ErrHolderUnresponsive): its session is past the listener's live window but still holds
-// the role, and the packet is kept for it rather than stood in for by a Dispatch message naming a
-// holder that is still there (dispatch://INFRA-392).
-func (r *outbox) mergeQueue(ctx context.Context, row record.OutboxRow, payload record.MergeQueuePublish) error {
+// roleMessage publishes one message to a role's topic, keyed by the row so a retried row is one
+// delivery (record.RoleMessage). A role with no live holder is told nothing and the row is done:
+// the message reports a moment - a head's checks as they settled - that has passed by the time
+// anyone claims the role, and every recipient reads the pull request on GitHub for itself, so
+// waiting would retry forever for a message that is stale when it lands. A holder that refuses
+// the message's delivery mode (notify.ErrRefusedByHolder), and the listener's own NATS grant
+// denying the forward (notify.ErrPublishDenied), end the row the same way, since both refuse
+// every attempt until a session or an operator changes them; a holder that did not confirm in
+// time (notify.ErrNotDelivered) is retried on the row's backoff as any failed publish is. So is a
+// holder the listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past
+// the listener's live window but still holds the role, so the message is kept for it rather than
+// dropped as a message to a role nobody holds (dispatch://INFRA-392).
+//
+// A role whose claim is released ends the row before the publish, with no wake (record.RoleMessage
+// says why). The claim is read from its machine's View, as wakeForDelivery reads it. One window is
+// left: a release between this read and the publish, which the listener refuses (holder_lapsed)
+// and wakes the role on. An outbox with no supervisor (a test's), or a role no machine of this
+// daemon holds, publishes as before.
+func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
-		return errors.New("merge queue executor has no Envoy publisher")
+		return errors.New("role message executor has no Envoy publisher")
 	}
-	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Packet, payload.Packet, record.OutboxKey(row.ID))
+	if r.supervisor != nil && r.supervisedClaim(claim.Token(payload.Role)).Released() {
+		r.log.Info("outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role)
+		return nil
+	}
+	err := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
-		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO then DEBUG rather than
-		// ERROR on every attempt, as the notice executor's own unresponsive branch does
-		// (notice_exceptions.go).
-		return wait.Errorf("%s's READY packet waits for merge queue role %s, whose holder's session the listener reports %s: %w",
+		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO, then DEBUG, and at WARN
+		// from attempt waitWarnAttempts on, rather than ERROR on every attempt, as the notice
+		// executor's own unresponsive branch does (notice_exceptions.go).
+		return wait.Errorf("%s's role message for %s waits for its holder, whose session the listener reports %s: %w",
 			row.Issue, payload.Role, notify.StateUnresponsive, err)
 	}
-	if errors.Is(err, notify.ErrNoHolder) {
-		return r.message(ctx, row, record.MessagePost{Body: fmt.Sprintf("merge queue role %s had no live holder at %s", payload.Role, r.now().UTC().Format(time.RFC3339))})
-	}
 	var refused notify.ErrRefusedByHolder
-	if errors.As(err, &refused) {
-		return r.message(ctx, row, record.MessagePost{Body: fmt.Sprintf("merge queue role %s refused the packet: its holder %s does not advertise the delivery mode, at %s",
-			payload.Role, refused.Holder, r.now().UTC().Format(time.RFC3339))})
-	}
 	var denied notify.ErrPublishDenied
-	if errors.As(err, &denied) {
-		return r.message(ctx, row, record.MessagePost{Body: fmt.Sprintf("merge queue role %s: the listener's NATS grant denied the forward (%s), at %s",
-			payload.Role, denied.Message, r.now().UTC().Format(time.RFC3339))})
+	switch {
+	case errors.Is(err, notify.ErrNoHolder):
+		r.log.Info("outbox role message finished undelivered: its role has no live holder, or its claim records a session it does not hold",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role, "error", err)
+		return nil
+	case errors.As(err, &refused):
+		r.log.Info("outbox role message finished undelivered: its role's holder does not advertise the delivery mode",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role, "holder", refused.Holder)
+		return nil
+	case errors.As(err, &denied):
+		r.log.Error("outbox role message finished undelivered: the listener's own NATS grant denied the forward",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role, "denial", denied.Message)
+		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("publish %s's READY packet or its withdrawal to merge queue role %s: %w", row.Issue, payload.Role, err)
+		return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, err)
 	}
 	return nil
 }
 
-// phaseEnded publishes the message of a phase-ended row (record.PhaseEnded) to the Envoy topic of
-// the role whose phase a CI-red transition ended, the claim of that role on the row's issue, and to
-// nothing else. It is no architect notice: it carries one sentence of the daemon's own rather than
-// a Notice, waits behind no other row of its issue (its own lane, record.LaneRoleMessage), and its
-// recipient is the role the workflow named rather than whichever architect owns the issue. The
-// message stops nothing it reaches: pi-envoy hands it to an Oh My Pi session at its next model turn
-// and ends a running wait, the Claude Code bridge puts it in that session's inbox, and the role's
-// turn, jobs and process run on.
+// hookPrompt publishes the words of a hook-prompt row (record.HookPrompt) to the Envoy topic of
+// the role the deployment's hook named, the claim of that role on the row's issue, and to nothing
+// else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
+// and then the deployment's own words for the round that move back opened, unchanged
+// (record.HookPrompt.Message). It rides the role-message lane (record.LaneRoleMessage), so it
+// waits behind no other row of its issue and reaches the role while that round is the round the
+// role works. It stops nothing it reaches: the session takes it at its next model turn, and the
+// role's turn, jobs and process run on.
 //
-// A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
-// holding it as an architect's notice is held: the role's next task from the daemon names its phase
-// anyway, so a message nobody is there to read is worth nothing later, and a role that never claims
-// its topic — a session that has not registered, or one that failed — would hold the row for ever.
+// The row publishes with keep (publishKeptToRole, notify.Publisher.PublishKept): a topic with no
+// live holder is answered kept, the listener holding the prompt on the role's kept lane for one
+// hour for the next session that holds the role live, and the row ends with one log line, the
+// listener being the prompt's keeper. A released role's woken session is that next holder: the
+// row's first attempt wakes the pod (wakeForDelivery) and waits on its backoff, or, while the wake
+// pacing holds that resume, for its turn, reading the claim again at most parkedWakeBound apart
+// (parkedWait), and the attempt after the resume has launched publishes before the woken session
+// has claimed the role. A listener before #4079 keeps nothing for a claim whose holder is not
+// live; publishKeptToRole says what each answer does to the row.
+//
+// The hook wrote its words for this round, and nothing repeats them: the move back they were
+// written for has been made, and no later task of the daemon's carries them, so the kept copy is
+// the prompt's one keeper. An unheld topic is besides the ordinary state for a role an issue has
+// never had — the deployment's default hook writes a row for the reviewer, and the work of an
+// issue may never have reached one — so a reviewer started inside the hour can be handed an
+// earlier round's prompt: publishKeptToRole says why that is intended and what bounds it, and the
+// move back and the counts the prompt names tell its reader which round it was for.
+//
 // The three answers of the confirmed publish route are different failures and keep the ordinary
-// retry: a holder that did not confirm in time (notify.ErrNotDelivered) can take it on the next
-// attempt, a holder that does not advertise the delivery mode (notify.ErrRefusedByHolder) can be
-// replaced by another session on the role, and a forward the listener's own NATS grant denies
+// retry: a holder that did not confirm in time (notify.ErrNotDelivered) can take the prompt on the
+// next attempt, a holder that does not advertise the delivery mode (notify.ErrRefusedByHolder) can
+// be replaced by another session on the role, and a forward the listener's own NATS grant denies
 // (notify.ErrPublishDenied) goes through once an operator changes that grant.
-func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload record.PhaseEnded) error {
+func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload record.HookPrompt) error {
 	if r.notices == nil {
-		return errors.New("phase-ended executor has no Envoy publisher")
+		return errors.New("hook prompt executor has no Envoy publisher")
 	}
-	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	token, err := roleToken(r.project, row, payload.Role)
 	if err != nil {
-		return fmt.Errorf("the %s of %s: %w", payload.Role, row.Issue, err)
+		return err
 	}
 	// A role whose pod was released is not "no live session holds the role": its session is
-	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
-	// than finishing undelivered. This runs before the publish, which would otherwise answer
-	// ErrNoHolder and drop the message the woken role is owed.
-	if woken, err := r.wakeForDelivery(ctx, token, record.OutboxKey(row.ID), "the end of "+row.Issue+"'s "+string(payload.From)+" phase"); err != nil {
+	// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and the
+	// row's first attempt after that resume has launched publishes (wakeForDelivery). A launch the
+	// wake pacing holds is waited for until it runs, the claim read again at its turn or
+	// parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake brings the pod
+	// back whatever the listener does with the publish, a listener before #4079 included; the
+	// listener's own report of the kept publish meets the role's open resume, and the pod starts
+	// once.
+	if waits, turn, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
 		return err
-	} else if woken {
-		return wait.Errorf("the end of %s's %s phase waits for its %s's released pod to come back", row.Issue, payload.From, payload.Role)
+	} else if !turn.IsZero() {
+		return r.parkedWait(turn, fmt.Sprintf("the %s hook's prompt for %s waits for its %s's launch, which the wake pacing holds until %s",
+			payload.Hook, row.Issue, payload.Role, turn.UTC().Format(time.RFC3339)))
+	} else if waits {
+		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
-	message := payload.Message(row.Issue)
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
-	if errors.Is(published, notify.ErrNoHolder) {
-		r.log.Info("outbox phase-ended message finished undelivered: no live session holds the role",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "from", payload.From, "to", payload.To)
-		return nil
-	}
-	if published != nil {
-		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, published)
+	if err := r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
+		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
 	}
 	return nil
+}
+
+// updateAsk publishes an update round's ask (record.UpdateAsk) to the Envoy topic of the role the
+// row names, the claim of that role on the row's issue, and to nothing else. The text is the
+// sweep's, built for the round when it opened (supervise.UpdateTask), and it reaches a worker and
+// the issue's architect alike: every role whose process runs in the pod loses that process when
+// the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
+// waits behind no architect notice of its issue.
+//
+// It wakes nothing, where hookPrompt, mergeQueueRemoval and mergeForwardMessage call
+// wakeForDelivery first. A role whose pod an idle release took is not brought back to be asked:
+// its topic has no holder, so its ask is lost as every ask that reached no session is (below), the
+// sweep asks the claim again once its agent is ready again, and the round ends at its bound
+// whether or not the role answers.
+//
+// An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
+// row reads the claim before it publishes, through the machine's view as every other read of a
+// claim here does (supervisedClaim), and finishes without a publish where the claim no longer
+// records the row's round: the round ended, another round replaced it, or this daemon no longer
+// supervises the claim. A role is never asked about a round that is not its own.
+//
+// The publish and the claim's ask mark are one step of the claim's machine
+// (supervise.Machine.PublishUpdateAsk), whose comment holds the order and why it neither loses an
+// ask nor gives one twice. In short: the machine's lock is taken without waiting, the claim is
+// read under it, the ask is published, and the claim is marked asked only once the publish
+// reached a session, all before the row can end. A machine whose lock is held is a wait: this
+// issue's role-message lane runs one row at a time (record.LaneKey), and a Sandbox relaunch holds
+// that lock for minutes, so waiting for it would hold every role message of this issue behind one
+// decision. The row keeps its place, nothing was published, and its next attempt is the first
+// publish. A claim an earlier ask of the round already reached is published nothing, so a second
+// row of one round asks no role twice.
+//
+// A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
+// nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
+// claim again (askRound). The round waits for every claim it asks until its bound, and a claim
+// the ask never reached has nothing to answer: a fresh session that has not claimed its topic yet
+// is the ordinary case, and a mark that counted such an ask as given held BET-1291's and BET-690's
+// rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other failure of the publish
+// keeps the ordinary retry, as hookPrompt's does: a holder that did not confirm in time, one that
+// does not advertise the delivery mode, and a forward the listener's own NATS grant denies can
+// each go through on a later attempt. A mark the store did not take keeps the row too, and the
+// next attempt writes it and publishes nothing.
+func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
+	if r.notices == nil {
+		return errors.New("update ask executor has no Envoy publisher")
+	}
+	if r.supervisor == nil {
+		return errors.New("update ask executor has no claim supervisor")
+	}
+	token, err := roleToken(r.project, row, payload.Role)
+	if err != nil {
+		return err
+	}
+	machine, found := r.supervisor.Machine(token)
+	if current := r.supervisedClaim(token).UpdateRound; !found || current != payload.Round {
+		r.updateAskLeftRound(row, payload, token, current)
+		return nil
+	}
+	topic := notify.RoleTopicPrefix + string(token)
+	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
+	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
+		return r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
+			"outbox update ask finished undelivered: no live session holds the role", fields...)
+	})
+	switch {
+	case errors.Is(err, supervise.ErrMachineBusy):
+		return wait.Errorf("the ask of round %s for %s waits for its %s's machine, whose lock is held; nothing is published yet: %w",
+			payload.Round, row.Issue, payload.Role, err)
+	case err != nil && (outcome == supervise.UpdateAskDelivered || outcome == supervise.UpdateAskAlreadyDelivered):
+		return fmt.Errorf("the ask of round %s for %s reached its %s, and the claim write that marks it asked is not made yet: %w",
+			payload.Round, row.Issue, payload.Role, err)
+	case err != nil:
+		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
+	}
+	switch outcome {
+	case supervise.UpdateAskDelivered:
+		r.log.Info("outbox update ask published to the role topic", fields...)
+	case supervise.UpdateAskAlreadyDelivered:
+		r.log.Info("outbox update ask finished without a publish: an earlier ask of its round reached the role", fields...)
+	case supervise.UpdateAskOutOfRound:
+		r.updateAskLeftRound(row, payload, token, machine.View().UpdateRound)
+	}
+	return nil
+}
+
+// updateAskLeftRound is the one line of an update-ask row that finishes without a publish because
+// the claim no longer records the row's round, current being the round it records now.
+func (r *outbox) updateAskLeftRound(row record.OutboxRow, payload record.UpdateAsk, token claim.Token, current string) {
+	r.log.Info("outbox update ask finished without a publish: the claim no longer records its round",
+		"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "current", current, "claim", string(token), "role", payload.Role)
+}
+
+// roleToken is the claim of role on the row's issue in project, whose Envoy topic a role message
+// of the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix).
+func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Token, error) {
+	token, err := claim.NewToken(project, row.Issue, role)
+	if err != nil {
+		return "", fmt.Errorf("the %s of %s: %w", role, row.Issue, err)
+	}
+	return token, nil
+}
+
+// publishToRole publishes message to topic, the Envoy topic of one role's claim
+// (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
+// one delivery. It is updateAsk's publish, with keep: false; hookPrompt publishes with keep
+// through publishKeptToRole, which also says how each executor that publishes to a role's topic
+// answers the publisher.
+//
+// A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
+// fields, and the answer is false with no error. Every other failure is returned as the
+// publisher gave it, and the row keeps its retry. The answer is true when the publisher took the
+// message.
+func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder string, fields ...any) (bool, error) {
+	err := r.publish(ctx, topic, message, message, record.OutboxKey(row.ID))
+	if errors.Is(err, notify.ErrNoHolder) {
+		r.log.Info(noHolder, append(fields, "error", err)...)
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// publishKeptToRole publishes message to topic, the Envoy topic of one role's claim
+// (notify.RoleTopicPrefix and the claim's token), under the row's own key, and asks the listener
+// to keep it for the role's next live holder, through the gate every publish of the outbox goes
+// through (publishKept). A retry of the row while its copy is still on the role's kept lane
+// stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and what a
+// repeat after the copy's hand-over does. It is hookPrompt's publish; hookPrompt decides what
+// comes before it, and wraps the error it returns. What each answer does to the row:
+//
+//   - a live holder took the message: the row ends, with nothing logged;
+//   - the listener kept the message on the role's kept lane for one hour: the row ends, logging
+//     "outbox hook prompt finished: the listener keeps it for the role's next holder" at Info with
+//     fields, the listener being the message's keeper from there;
+//   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder), or the
+//     role's claim records a session it does not hold and nothing was published (the gate's
+//     notify.ErrNoHolder): the row ends undelivered, logging at Info with fields
+//     "outbox hook prompt finished undelivered: no live session holds the role";
+//   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive), and every other
+//     failure: the error is returned as the publisher gave it, and the row keeps its retry.
+//
+// The row is not held for a holder as an architect's notice is held, so the kept copy is the
+// message's one keeper, and it can reach a later session than the one it was written for: for a
+// role nobody claims, the listener hands it to the first session that claims the role inside the
+// hour, which can be a later round's. That is intended — the role's topic names the issue's role,
+// not one session of it — and the hour bounds it: the listener drops a copy no live holder took
+// inside its hour (roleKeepWindow, packages/envoy/cmd/listener/role_keep.go), so no session is
+// handed one older than that, and a forwarded copy carries when it was kept (Envoy's
+// contracts.Envelope.KeptAt) beside what the message names of its round, so its reader judges
+// which round it was for. An unheld topic of a role that never claims it — a session that has not
+// registered, or one that failed — holds no row either: the row ends, and the kept copy is
+// dropped once its hour ends.
+//
+// Five other executors publish to a role's topic, each with its own rules for what the publisher
+// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
+// every other failure; deliverNotice, an architect's notice, holds the row for
+// a topic with no holder while the owning architect can hold its role again (noticeAnswered);
+// roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
+// unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the
+// delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
+// (notify.ErrPublishDenied); mergeQueueRemoval, the merger's message of a removal from the
+// merge queue, holds the row for a topic with no holder and for an unresponsive holder while the
+// merger's claim has neither failed nor retired, and retries every other failure
+// (merge_queue_removal.go); and mergeForwardMessage, a message of a merge forward, holds its row
+// the same way while the role's claim has neither failed nor retired and the merge forward still
+// stands at the row's head (merge_forward.go). Each of those five publishes with keep: false:
+// deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their own row, and a kept copy
+// beside it would be a second keeper of one message; roleMessage's message is stale by the time a
+// role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
+// answers. So whoever changes the rule for a topic with no holder must read all six executors, not
+// this function alone.
+func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
+	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
+	switch {
+	case errors.Is(err, notify.ErrNoHolder):
+		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role", fields...)
+		return nil
+	case err == nil && keeps:
+		r.log.Info("outbox hook prompt finished: the listener keeps it for the role's next holder", fields...)
+	}
+	return err
 }
 
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own
@@ -1093,7 +2186,15 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	if err := r.notices.Publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID)); err != nil {
+	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	if errors.Is(err, notify.ErrNoHolder) {
+		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO, then
+		// DEBUG, and at WARN from attempt waitWarnAttempts on, rather than an Error at every
+		// attempt, and the row runs again on its backoff, so an operator's settle of the
+		// controller claim's name lets the next attempt through.
+		return wait.Errorf("the controller notice for %s waits for the controller's claim to hold its session: %w", row.Issue, err)
+	}
+	if err != nil {
 		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
 	}
 	return nil
@@ -1133,6 +2234,33 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
 			return nil
 		}
+		// A start carries the phase entry its task is of (record.SuperviseRequest.Entry), and the
+		// role's phases row names the entry its phase is on now (record.PhaseRow.Entry). A row
+		// below that number carries work a later entry of the same phase has superseded, and that
+		// entry's own start carries that entry's task, so running this one would hand the worker
+		// work the record has moved past. Finishing it here is what lets a start row be a message
+		// with no state of its own: a row that outlives its entry is harmless rather than
+		// something to rewrite.
+		//
+		// Only a row that carries an entry and names a phase is held to it: a production check's
+		// look carries neither and is fenced on its check above, every start of no entry
+		// (record.SuperviseRequest.Entry, which lists them) is held to the generation alone, and
+		// so is a root architect's start, which carries an entry and names no phase, since that
+		// architect serves every phase of its tree and its row must act whatever phase the root
+		// stands in. What keeps one entry to one task for the architect is the claim's own rule:
+		// a delivery of an entry it was already queued a task of queues no second one
+		// (supervise.Claim.GivenEntry).
+		if payload.Entry > 0 && payload.Phase != "" {
+			entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
+			if err != nil {
+				return err
+			}
+			if payload.Entry < entry {
+				r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
+					"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
+				return nil
+			}
+		}
 	}
 	if payload.Tree != issue.Tree {
 		return fmt.Errorf("supervise row %d tree %s does not match issue %s tree %s", row.ID, payload.Tree, issue.Key, issue.Tree)
@@ -1144,22 +2272,62 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	machine, found := r.supervisor.Machine(token)
 	switch payload.Op {
 	case "start":
-		// A tree that lingers has left the workflow, and linger holds each member where it stood: a
-		// start that reaches its claim after the close (queued before it and backing off) finishes
-		// without acting and records no start, so the close's suspend still applies. Re-admission
-		// starts the member again (admit's startMidPhaseChildren). A check start is the one start
-		// a lingering tree runs: a look of a closed issue's production check, which resumes the
-		// role that check records (record.ProductionCheck.Role) the linger suspended.
+		// An issue the workflow has taken out — closed, parked, iceboxed, sent back to triage —
+		// has had its Sandbox given back by the departure that took it out, so a start that
+		// reaches the runner behind that departure would build the pod again and pick up the
+		// claim that departure had just put down. The row returns here, above machine.StartedBy,
+		// so it records no start against the claim: the departure's own stop is not superseded by
+		// it, and the suspension that follows that stop is not dropped for a start that started
+		// nothing. admit.(*Admission).finishFencedStarts deletes an owed start of the same shape
+		// on the same predicate, so a row that never reaches a lane and one that does are
+		// declined alike.
+		//
+		// The status read is the issue's own recorded Status and not its DispatchStatus: a close
+		// the daemon authored writes Status with the rows that carry it out and leaves
+		// DispatchStatus at what the board last showed until Dispatch's echo arrives, while
+		// Engine.keepStatus writes DispatchStatus and keeps Status for a status the daemon sets
+		// back, which leaves the issue in the workflow and its start a start. It is the issue's own
+		// status and not its root's, because a child carried into a tree of its own stands in the
+		// workflow while the tree it left lingers, and the tree is what the guard below reads. A
+		// production check's look is exempt — it is the one start an issue out of the workflow
+		// still runs — which the enclosing payload.CheckLook == 0 gives it.
 		if payload.CheckLook == 0 {
-			root, err := r.root(ctx, issue)
+			if record.OutOfWorkflow(issue.Status) {
+				r.log.Info("outbox start of an issue that has left the workflow; finished without acting", "row", row.ID,
+					"issue", issue.Key, "status", issue.Status, "role", payload.Role)
+				return nil
+			}
+			// A tree that lingers has left the workflow, and linger holds each member where it
+			// stood: a start that reaches its claim after the close (queued before it and backing
+			// off) finishes without acting and records no start, so the close's suspend still
+			// applies. Re-admission starts the member again (admit's startMidPhaseMembers). A
+			// check start is the one start a lingering tree runs: a look of a closed issue's
+			// production check, which resumes the role that check records
+			// (record.ProductionCheck.Role) the linger suspended.
+			//
+			// One start waits on its backoff rather than finishing: the first start of a child's own
+			// architect that finds no claim (childArchitectFirstStart), for as long as its tree
+			// lingers or its root waits in the line for the tree to be opened again
+			// (record.QueuedRoot), and then until the branch row the re-admission queued for the
+			// child has finished. Re-admission brings back a member's own architect only where it
+			// holds a claim, so that start finished here is one nothing queues again, and the child
+			// would run to its close with no architect of its own.
+			first := !found && childArchitectFirstStart(issue, payload)
+			root, waitsFor, err := r.startRoot(ctx, issue, first)
 			if err != nil {
 				return err
+			}
+			if waitsFor != "" {
+				return routineWaiting{err: wait.Errorf("the first start of the own architect of %s waits for %s", issue.Key, waitsFor)}
 			}
 			if root != nil && root.Lingers() {
 				r.log.Info("outbox start of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key,
 					"tree", issue.Tree, "role", payload.Role)
 				return nil
 			}
+		}
+		if err := r.mergerWaitsForTheDesignGate(ctx, issue, payload.Role); err != nil {
+			return err
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
 		// on a child its tree left mid-run — may still run a role of its old tree: one in a turn when
@@ -1201,37 +2369,61 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("create claim %s: %w", token, err)
 			}
 		}
+		// The task this start gives the claim, nil for a start that carries none. It is built here,
+		// before the start is recorded, because the record reads it: a task the claim holds back
+		// for a root that had no architect to hear it goes at the start, unless this start's own
+		// task takes its place (supervise.Machine.StartedBy), and that is decided against the
+		// request delivered below, so the two never read different starts.
+		//
+		// The row's phase, already held to the issue's above, travels with the delivery: it is
+		// what says the task is still the work to do once the delivery has outlived its id. The
+		// row's entry travels with it too, the number the start's own transaction raised on the
+		// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
+		// reports is held to (api/handoff.go), and what says a later row carrying the same
+		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
+		// the role the work of the entry its row already names travels with the mark that
+		// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
+		// it was given that entry. A check start's look
+		// and check instance travel the same way, and are what say the completion this task's
+		// turn reports is a report on that look rather than a phase completion
+		// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
+		// writes it with the delivery, so a retry of this row (a
+		// settle or a ClaimReady below that failed, a crash before the row finished) queues the
+		// task again neither while it is pending nor once the claim has retired it
+		// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
+		// settles what its task named, that the claim has it (settleKept). What the task names
+		// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
+		// claim's write of the delivery takes those rows from this start row and holds them
+		// under that claim and delivery id, and the write recording the turn's confirmation
+		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). So does the
+		// fact that a reviewer's task ends with the daemon's two sentences of its review round
+		// (record.SuperviseRequest.RoundNamed): the one place each prompt is composed reads it
+		// there, and gives a reviewer's task of a row that lacks it, which only a row of the
+		// release before this one can be, those sentences naming no commit and no entry
+		// (supervise's Delivery.message).
+		var task *supervise.RequestDeliver
+		if payload.Task != "" {
+			kept, err := keptJSON(payload.Kept)
+			if err != nil {
+				return err
+			}
+			task = &supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: payload.RoundNamed,
+				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}
+		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
 		// this row created has no older stop to fence, and recording it here rather than only for
 		// a claim that already existed keeps one rule instead of a special case.
-		if err := machine.StartedBy(ctx, row.ID); err != nil {
+		if err := machine.StartedBy(ctx, row.ID, task); err != nil {
 			return fmt.Errorf("record the start of claim %s: %w", token, err)
 		}
 		state := machine.Claim().State
-		// The relaunch half of a start brings the worker's session back while the task of the same
-		// start waits for the issue's admission slot (workflow.StartOrOwe marks it Relaunch). A
-		// claim that still holds a task of this row's phase and run is left for the row that
-		// carries that task, whatever state it is in, because every way of bringing such a claim
-		// back sends the task it kept: a retry delivers it as the claim comes back (supervise's
-		// RequestRetry), and a rule-resume sends it once the agent is ready (supervise's
-		// sendPending). Either way the held worker would be put to work with no slot — the one
-		// thing the cap counts — and the task row behind it would then find a claim no longer
-		// failed, suspended or retired, so its own guard would no longer hold and it would deliver
-		// a second prompt for the same phase. A failed claim is left whatever it holds: its retry
-		// is the task row's to make, with the fresh budgets that row's delivery needs.
-		//
-		// The retry or resume belongs to the row that carries the task: it comes when the slot
-		// does, its own delivery is held back while the claim still works that phase's task (the
-		// guard below), and so exactly one task reaches the worker, at the moment the cap allows
-		// it. A start that is nobody's half — a tree architect's, which takes no slot of its own,
-		// or a role relaunched beside the phase's worker (admit's startMidPhaseMembers) — has no
-		// task row behind it, so it brings its claim back here or that session never comes back.
-		if payload.Relaunch && (state == supervise.StateFailed || keepsStartTask(machine.Claim(), payload)) {
-			r.log.Info("outbox relaunch left for the row that carries its task", "row", row.ID, "issue", issue.Key,
-				"role", payload.Role, "phase", payload.Phase, "state", state)
-			return nil
-		}
+		// A phase worker's start is one row that carries its task, so the claim is brought back
+		// and told its work here, in that order, and nothing of the start waits on another row.
+		// Whether the row waited for the issue's admission slot before the lane took it is
+		// settled by then (workflow.StartOrOwe); by here it is a start like any other.
 		switch state {
 		case supervise.StateQueued:
 			if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token}); err != nil {
@@ -1257,73 +2449,103 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				r.log.Info("outbox boot rule-resume finished: its claim spent the launch budget", "row", row.ID, "issue", issue.Key, "role", payload.Role)
 				return nil
 			}
-			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token}); err != nil {
+			// A start that asks for a new session has the retry forget the recorded one, inside
+			// that one decision: the operator's `legion claims retry --fresh-session`, which is
+			// refused by whatever refuses this row rather than having discarded the session first.
+			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
 				return fmt.Errorf("retry claim %s: %w", token, err)
 			}
 		case supervise.StateRetired:
-			// A retired claim's tree closed, and its linger removed the workspace; the tree was
-			// re-admitted, so the workspace comes back before the kept session relaunches.
+			// A retired claim was closed with its issue (a child closed as done) or with its tree
+			// (whose linger also removed the workspace), its agent reported its own exit (a phase
+			// worker or a child's own architect, which supervise's exit retires), or an operator
+			// stopped it. So the workspace is provisioned, which brings back one a linger removed,
+			// before the kept session relaunches (a new one once supervise's Machine.forgetSession
+			// has dropped it).
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
 			}
-			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token}); err != nil {
+			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
 				return fmt.Errorf("relaunch retired claim %s: %w", token, err)
 			}
 		}
-		// A claim that, once relaunched, still holds a task of this row's phase and run that it will
-		// work is given that task: one not yet confirmed (a failed claim keeps the task it held, and a
-		// death in a turn takes the task back unconfirmed, behind the sentence saying so), or one
-		// confirmed in the turn the claim is working. The row's own task would follow it as a second
-		// prompt for work already under way, so it is not delivered when it is the phase's resume task
-		// (promotion's) or the row relaunched a failed claim (the architect's retry of the held phase,
-		// or a later transition). A confirmed task on a claim not working is over: the relaunch's
-		// decision retired it here, or retires it first when a launch whose outcome was uncertain is
-		// released and spawned again, after this start, so the row's task goes in its place. A check
-		// start names no phase, so it is never one of these: each look's task is delivered, its row
-		// id its delivery's, and a delivery with no phase is held by nothing (supervise's
-		// phaseHolds), so the task reaches the role the check records whatever the issue's phase.
+		// A claim that, once brought back above, still holds a task of this row's phase and run that
+		// it will work is given that task: one not yet confirmed (a claim whose process is gone keeps
+		// the task it held, and a death in a turn takes the task back unconfirmed, behind the sentence
+		// saying so), or one confirmed in the turn the claim is working. The row's own task would
+		// follow it as a second prompt for work already under way, so it is not delivered when it is
+		// the phase's resume task (promotion's) or this row retried a claim that was running nothing —
+		// one that failed, as the architect's retry of the held phase relaunches it, or one an
+		// operator stopped, as the operator's retry of its phase relaunches it — since the retry sends
+		// the kept task itself. A confirmed task on a claim not working is over: the decision above
+		// retired it here, or retires it first when a launch whose outcome was uncertain is released
+		// and spawned again, after this start, so the row's task goes in its place. A check start names
+		// no phase, so it is never one of these: each look's task is delivered, its row id its
+		// delivery's, and a delivery with no phase is held by nothing (supervise's phaseHolds), so
+		// the task reaches the role the check records whatever the issue's phase.
 		held, gave := machine.Claim(), false
-		if (payload.ResumeTask || state == supervise.StateFailed) && keepsStartTask(held, payload) {
+		ranNothing := state == supervise.StateFailed || state == supervise.StateRetired
+		if (payload.ResumeTask || ranNothing) && keepsStartTask(held, payload) {
 			r.log.Info("outbox start of a claim that holds its phase's task; not delivered again", "row", row.ID, "issue", issue.Key,
 				"role", payload.Role, "phase", payload.Phase, "held", held.Pending.ID)
-		} else if payload.Task != "" {
-			// The row's phase, already held to the issue's above, travels with the delivery: it is
-			// what says the task is still the work to do once the delivery has outlived its id. The
-			// row's assignment travels with it too, the one the start's own transaction wrote on the
-			// role's phases row: it is what the completion this task's turn reports is held to. A
-			// check start's look and check instance travel the same way, and are what say the
-			// completion this task's turn reports is a report on that look rather than a phase
-			// completion (supervise.Claim.ServingCheck, api/handoff.go). The
-			// row travels as well: the claim writes it with the delivery, so a retry of this row (a
-			// settle or a ClaimReady below that failed, a crash before the row finished) queues the
-			// task again neither while it is pending nor once the claim has retired it
-			// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
-			// settles what its task named, that the claim has it (settleKept). What the task names
-			// of what its tree is owed travels with it as well (supervise.Delivery.Kept): the
-			// claim's write of the delivery takes those rows from this start row and holds them
-			// under that claim and delivery id, and the write recording the turn's confirmation
-			// tells them (the claim store's putDelivery, 20261101163106_parked_decisions).
-			kept, err := keptJSON(payload.Kept)
-			if err != nil {
-				return err
+			// Which entry the claim is recorded as given here is the entry of the task it is
+			// holding, never the entry this row carried, and the two differ.
+			//
+			// A start of the entry whose work the claim holds records that entry
+			// (supervise.Machine.EntryGiven): the claim was given that work, so the difference
+			// between the entry the role's phases row names and the entry its claim was given
+			// closes without a second task reaching the worker. Where the delivery that queued
+			// that task recorded the entry already — supervise's queue writes Claim.GivenEntry in
+			// the transaction that writes the delivery — EntryGiven leaves the number where it
+			// stands, since it only rises.
+			//
+			// A start of a later entry, whose task the claim is still working, records nothing.
+			// That claim was given the earlier entry's work and no other, and recording this row's
+			// entry on it is the defect the entry exists to close, rebuilt here: the claim would
+			// read level with its phases row, workflow.OwedEntry would answer false, nothing would
+			// send the row's own task, and every completion of the task the worker actually holds
+			// would be refused as behind. Recording nothing leaves no worker with nothing to do.
+			// Which turn that leaves depends on the state this branch was reached in. A working
+			// claim finishes the turn it is in; its completion of the earlier entry is refused
+			// 409 with nothing recorded, which is right, since the phase was entered again. A
+			// failed claim is in no turn at all: the state switch above relaunched it
+			// (supervise.RequestRetry), and the relaunch hands it the earlier entry's task,
+			// which it still holds unconfirmed (supervise's sendPending), so its first
+			// completion is the one refused instead. Either way the admission pass sends the
+			// row's own entry's task on the first pass after that task is retired, since it
+			// passes over a claim whose pending delivery is still worked (admit's
+			// resumeSlottedWorkers, workflow's SendOwedEntry).
+			//
+			// The gave flag below stays false either way, since what it answers is whether the
+			// task was handed over (settleKept), not whether the entry was recorded.
+			if payload.Entry > 0 && held.Pending.Entry == payload.Entry {
+				if err := machine.EntryGiven(ctx, payload.Entry); err != nil {
+					return fmt.Errorf("record entry %d as given to claim %s: %w", payload.Entry, token, err)
+				}
 			}
-			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
-				Assignment: payload.Assignment, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}); err != nil {
+		} else if task != nil {
+			if err := machine.Handle(ctx, *task); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
 			gave = true
 		}
-		// A start that finds a tree's root architect running is a re-admission while its session
-		// lived on. The linger suspends the root's claim, so that happens only when the claim was
-		// mid-launch when the suspend ran (the machine ignores a suspend while launching), or the
-		// re-admission's start ran before the suspend. No ready follows, and a ready is what tells
-		// the architect its tree (workflow's claimReady), so the start applies that fact itself,
-		// for the running launch, once per start row, and the architect is told its tree's new
-		// generation. Its catch-up names what nobody claims, which this row's task may name too, so
-		// the decisions the task carries are settled first (settleKept) and the catch-up is
-		// composed without them; the settle after the row then finds nothing left to do. A retry of
-		// the row queues the task no second time and applies the fact once.
+		// A start that finds an architect running is a return of its issue while its session
+		// lived on: a tree's re-admission for a root's architect; for a child's own, the tree's
+		// re-admission while the child stands past admitted (admit's startMidPhaseMembers) or the
+		// child's next first phase start (a rerun, or a person's move back to todo). The linger
+		// suspends every claim of the tree, and a child's leave suspends or closes the child's
+		// architect. After either, this happens only when the claim was mid-launch when the
+		// suspend ran (the machine ignores a suspend while launching), or the start ran before
+		// it. A running child that a person sets back to todo goes through no leave, so its
+		// start finds the architect running unless something else stopped it. No ready follows,
+		// and a ready is what tells the architect the issues it owns (workflow's claimReady),
+		// so the start applies that fact itself, for the running launch, once per start row,
+		// on the start's own issue: the architect is told its issues at their new generation, a
+		// root's whole tree and a child's own subtree, each through the workflow's one composer
+		// (workflow.QueueCatchUp). Its catch-up names what nobody claims, which this row's task
+		// may name too, so the decisions the task carries are settled first (settleKept) and the
+		// catch-up is composed without them; the settle after the row then finds nothing left to
+		// do. A retry of the row queues the task no second time and applies the fact once.
 		//
 		// That catch-up stands in place of a launch, so it is a wake of the architect and takes a
 		// turn in the daemon's pacing like the launch it replaces: the fact says so (Paced), the
@@ -1331,13 +2553,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (workflow's claimReady), and this runner writes the line that wake writes when the row
 		// runs (wakeRan). A start that launches instead took its turn at the machine's gate above
 		// (supervise's reserveWake), so one start row is one wake either way.
-		if claimTookRole(state) && claim.IsTreeArchitect(payload.Role, issue.Key, issue.Tree) {
+		if supervise.SaidReady(state) && payload.Role == claim.RoleArchitect {
 			if err := r.settleKept(ctx, row, payload, gave); err != nil {
 				return err
 			}
 			if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("start-running:%s:%d", token, row.ID),
 				intake.ClaimReady{Issue: issue.Key, Role: payload.Role, Launch: machine.Claim().Generation, Paced: true}, r.handlers...); err != nil {
-				return fmt.Errorf("tell the running architect of %s its tree: %w", issue.Key, err)
+				return fmt.Errorf("tell the running architect of %s its issues: %w", issue.Key, err)
 			}
 		}
 		return nil
@@ -1361,8 +2583,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A linger, a park, a hand-over and a close all stop a claim through this one row, and
 		// each takes a released claim over: the machine re-stamps the suspension's source and
-		// this drops the wake marks and the backstop the release left behind, so no later wake
-		// acts on a claim this suspension now owns. The bundle stays: the issue comes back.
+		// this drops the backstop the release left behind, so no later backstop acts on a claim
+		// this suspension now owns. The bundle stays: the issue comes back.
 		r.takeOverRelease(ctx, row.Issue)
 		return nil
 	case "release":
@@ -1408,9 +2630,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// it, so a retry suspends and records together.
 		return r.trees.ReleaseSuspendedClaim(ctx, r.project, row.Issue, payload.Role, row.ID)
 	case "issue_close":
-		// A child's close as done: the claim is closed as a tree close closes it, its session dropped
-		// with it, since the issue is finished and its next run, should a person set it todo again,
-		// starts fresh on a pod and a disk of its own. It is fenced as a suspend is, not as a tree
+		// A child's close as done: the claim is closed as a tree close closes it, retired with its
+		// session kept, since the issue is finished and its next run, should a person set it todo
+		// again, resumes that session on a pod and a disk of its own (a new one once supervise's
+		// Machine.forgetSession has dropped it). It is fenced as a suspend is, not as a tree
 		// close: no linger is involved, and a newer start means a person set the child todo again,
 		// whose run the close must not end.
 		if !found {
@@ -1425,7 +2648,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return fmt.Errorf("close the issue of claim %s: %w", token, err)
 		}
 		// The issue is done, so nothing will restore the bundle its release saved and nothing
-		// should: it goes with the wake marks and the backstop.
+		// should: it goes with the backstop.
 		r.dropReleasedWork(ctx, row.Issue)
 		return nil
 	case "tree_close":
@@ -1469,6 +2692,46 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)
 }
 
+// childArchitectFirstStart says whether payload is the plain start of issue's own architect that a
+// child's first phase start queues (workflow's childArchitectStart, from gateOpened): the
+// architect's role, on an issue that is not its tree's root, naming no phase and carrying no task.
+// Other rows of that shape — a failed architect's revive (workflow's reviveArchitect), a released
+// one's resume (releaseResume) — start a claim that exists, so supervise asks this only of a start
+// that found none, which is the one that creates the claim.
+//
+// Such a start waits on the row's backoff, where every other start of a member of a tree that
+// lingers finishes without acting, for as long as the tree lingers (record.Issue.Lingers) or its
+// root waits in the line for the tree to be opened again (record.QueuedRoot), and then for as long
+// as a branch row of the child is still queued, which the re-admission queues newer than this start
+// (startRoot). Finishing it would leave the child with no architect of its own for the rest of its
+// run, because nothing queues the start again: a re-admission brings back a member's own architect
+// only where it holds a claim (admit's startMidPhaseMembers), and the child's later phase starts
+// revive only a claim that failed (workflow's reviveArchitect). The child's notices would go to the
+// architect above it (record.OwningArchitect) to its close, which R2 of dispatch://INFRA-3915 keeps
+// only for a child started before that change (plan D9), and this child's first phase start did
+// queue the start.
+//
+// The linger is read as Lingers reads it, a deadline armed, and not as one still running at the
+// moment (record.Lingering), since a tree can run again after its deadline: a root past it is
+// re-admitted all the same (record.Issue.Readmittable reads Lingers), even before the expiry
+// applies, which itself waits for any open production check of the tree (workflow's
+// lingerExpired); and a parked root whose expiry closed the tree hands over only its merging
+// members, so its later re-admission resumes every other member where it stood. The root waiting
+// in the line is read beside it because a re-admission clears the linger at once (admit's
+// readmit) while the tree is opened only by the promotion that gives the root its slot.
+//
+// So the row ends in one of three ways: the tree runs again and the child's branch row finishes,
+// and the start creates and spawns the claim as every first start of a child's architect does; the
+// child is handed over, adopted into a live tree or taken as a root of its own, each of which moves
+// it to a later generation, and supervise's generation fence finishes the start; or the child
+// leaves the workflow, and the fence on its own status finishes it. Its one cost is a parked tree
+// that is never re-admitted: the row retries at the backoff's 64-second cap for as long as it
+// stands, two reads each try (the child and its root), and only a child whose tree left the
+// workflow between its first phase start and that start's run ever has such a row.
+func childArchitectFirstStart(issue record.Issue, payload record.SuperviseRequest) bool {
+	return payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == ""
+}
+
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still
 // runs a process in a tree other than the issue's, and is a wait (wait.ErrWaiting) until none
 // does. A claim in a turn holds the suspension for the turn's end and a launching one until its
@@ -1476,13 +2739,15 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // backoff, charging no claim a launch. No close of the old tree reaches such a claim, since its
 // issue has left that tree, so the suspension names the deadline that close would have had
 // (carriedStopDeadline): a turn still running at the old root's linger expiry is stopped there, and
-// the claim keeps its workspace, the issue's branch and its session, which its next start resumes
-// with its phase's resume task. The hold lives in the claim's memory, so a restart that forgets it
-// is asked again by the start's next attempt, with the same deadline. Once none runs, every claim
-// of the issue may be re-pointed to the issue's tree (supervise.Machine.Retree), and the issue's
-// Sandbox, which no role of the old tree then runs in, is the new tree's to relabel
-// (runtime/sandbox's ensureSandbox). A claim already in the issue's tree is skipped on its view,
-// which only Retree changes, so a start waits on no decision a sibling claim has in flight.
+// the claim keeps its workspace, the issue's branch and its session, which its next start resumes:
+// a phase worker's with its phase's resume task, and the issue's own architect's, now its tree's
+// root architect, with that architect's start task (workflow.ArchitectStartTask). The hold lives
+// in the claim's memory, so a restart that forgets it is asked again by the start's next attempt,
+// with the same deadline. Once none runs, every claim of the issue may be re-pointed to the
+// issue's tree (supervise.Machine.Retree), and the issue's Sandbox, which no role of the old tree
+// then runs in, is the new tree's to relabel (runtime/sandbox's ensureSandbox). A claim already in
+// the issue's tree is skipped on its view, which only Retree changes, so a start waits on no
+// decision a sibling claim has in flight.
 func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 	var running []string
 	for _, role := range claim.Roles {
@@ -1580,6 +2845,52 @@ func (r *outbox) root(ctx context.Context, issue record.Issue) (*record.Issue, e
 	return root, nil
 }
 
+// startRoot is root for a start and, when first asks, what the first start of a child's own
+// architect that found no claim (childArchitectFirstStart) still waits for, "" for nothing: the
+// tree of root to run again, while root lingers or waits in the line for its tree to be opened
+// (record.QueuedRoot, under the design-gate steps the project gates); then the branch of issue,
+// while a branch row of it is still in the outbox (record.Store.BranchQueued). The ordering rule
+// holds a start behind an older branch row of its issue alone (record's outboxInOrder), and a
+// re-admission queues the child's branch row again, newer than this start, which may have waited
+// out the whole linger: so the wait on the row keeps the order the child's first phase start
+// queued the two in (workflow's gateOpened), and no role of the issue starts before its branch
+// exists. It is all read in one read-only repeatable-read transaction, so the rule judges one state
+// of the root, its gate and the outbox, once per try and for that start alone: the gate is not read
+// of a root that lingers, nor the branch row of a tree that does not run.
+func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) (*record.Issue, string, error) {
+	var root *record.Issue
+	waitsFor := ""
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		if root, err = r.records.Issue(ctx, tx, issue.Tree); err != nil || root == nil || !first {
+			return err
+		}
+		waits := root.Lingers()
+		if !waits {
+			rows, err := r.records.GatesOf(ctx, tx, root.Key)
+			if err != nil {
+				return err
+			}
+			waits = record.QueuedRoot(*root, record.TreeGate{Steps: r.gatedSteps, Rows: rows})
+		}
+		if waits {
+			waitsFor = fmt.Sprintf("the tree of %s to run again", root.Key)
+			return nil
+		}
+		branch, err := r.records.BranchQueued(ctx, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		if branch {
+			waitsFor = fmt.Sprintf("the branch of %s, which a row of the outbox has still to create", issue.Key)
+		}
+		return nil
+	}); err != nil {
+		return nil, "", fmt.Errorf("read the tree root of %s: %w", issue.Key, err)
+	}
+	return root, waitsFor, nil
+}
+
 // stopWithoutMachine is a stop row — a suspend or an issue close — that finds no machine for its
 // claim. Creation persists a claim before publishing its machine in memory, and the stop must not
 // be consumed in that interval: while the stored claim may still hold a process, the row waits for
@@ -1659,14 +2970,23 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // with the role Secrets it owns. Nothing of the disk survives it, which is why the save runs
 // first and never here.
 //
+// It is the last act of the other release rule too, and that release's one row: the release of
+// a pod no role can use (workflow.UnownedPodRelease), whose every claim is already failed,
+// retired or suspended. Nothing ran before it there — no save, since no shim is left to build
+// a bundle, and no role stop, since no role is running — and its teardown is told from an idle
+// one by the kind its mark carries (store.ReleaseDecision.SuspendsNoRole). Such a release reads
+// no bundle size, records no roles and no bytes, arms no backstop, and logs a line of its own
+// naming the Sandbox it deleted and the state every claim of the issue stood in; each of those
+// is explained where it is done.
+//
 // A release the store no longer authorizes — one whose issue has left the workflow since, or one
 // whose pod has been given work again — is cancelled: the pod stays, the claims the release
 // suspended are resumed and the bundle the save stored goes with it. The authorization the
 // teardown acts on is the one the runtime took under its pod lock, not the one this row read
-// before it: a notice or a phase-ended message runs on a lane of its own, and the wake it makes
+// before it: a notice or a hook prompt runs on a lane of its own, and the wake it makes
 // can resume a role between the two reads. So the inner answer is what is carried out — a
 // cancel there cancels, and a release that is over by then does nothing — and a pod that still
-// stands is never recorded as released, nor given a backstop, nor stripped of its wake marks.
+// stands is never recorded as released, nor given a backstop, nor stripped of its backstops.
 //
 // A teardown of a release that is over acts on nothing and undoes nothing: a role stop that
 // cancelled this release has already resumed what it suspended, and a release that finished
@@ -1708,8 +3028,23 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		decision = inner
 		return inner.Act == store.ReleaseActs, nil
 	}
-	savedBytes, _, err := r.trees.WorkspaceBundleSize(ctx, row.Issue)
-	if err != nil {
+	// A release that suspends no role saved no bundle of its own, and the issue's bundle row,
+	// where there is one, belongs to an earlier release that nothing deletes here: a cancel
+	// deletes only the bundle of the release it cancels (workspace_bundles by issue and
+	// release_id), and this release's id owns no row. WorkspaceBundleSize reads per issue, so
+	// reading it here would report another release's bytes as this release's own. Such a
+	// release reads instead the two facts its own line carries — the Sandbox the teardown is
+	// about to delete, and the state of every claim of the issue — and reads both before the
+	// teardown, because the pod and its claims are exactly what the teardown changes.
+	var savedBytes int
+	var sandboxName string
+	var claims store.ClaimStates
+	if decision.SuspendsNoRole {
+		sandboxName = r.issueSandboxName(row.Issue)
+		if claims, err = r.trees.ClaimStatesIn(ctx, r.project, row.Issue); err != nil {
+			return err
+		}
+	} else if savedBytes, _, err = r.trees.WorkspaceBundleSize(ctx, row.Issue); err != nil {
 		return err
 	}
 	if err := suspender.SuspendIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
@@ -1724,12 +3059,26 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
+	if decision.SuspendsNoRole {
+		r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
+			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
+			"sandbox", sandboxName, "claims", claims)
+		// No role was suspended and no bundle was saved, so the record carries neither. No
+		// backstop is armed either, which is the one act of the idle release this one must not
+		// make: armBackstops cancels the issue's open backstops before arming at most one of
+		// its own, and this release owes no wake. It
+		// suspended no claim, and a claim an earlier idle release left `released` must keep the
+		// backstop that release armed for it — the pod this teardown deleted is not the pod
+		// that claim is waiting to come back to.
+		r.recordPodRelease(ctx, row.Issue, payload.Generation, nil, 0)
+		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+	}
 	r.log.Info("outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake",
 		"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation, "bundle", savedBytes)
 	r.recordPodRelease(ctx, row.Issue, payload.Generation, decision.Suspended, savedBytes)
 	// The pod is gone, so the backstop is armed now and not before: a release that stopped short
-	// left the pod standing and needs none. Arming forgets the previous release's wake marks
-	// too, so a head that settled before this release can wake the pod again.
+	// left the pod standing and needs none. Arming cancels the previous release's backstops too,
+	// since that pod is gone and its backstop has nothing left to bring back.
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
 		return err
@@ -1738,6 +3087,22 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		return err
 	}
 	return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+}
+
+// issueSandboxName is the name the runtime holds issue's Sandbox under, and "" where there is
+// none to be had: a runtime that runs no issue pods, which is the same type assertion the boot
+// makes before it attaches the idle pass (issuePods, workflowRuntime.attachIdleRelease), or one
+// that no longer holds a Sandbox for this issue. It is read for the line the release of a pod
+// no role can use logs, and a name that cannot be read leaves that line's Sandbox empty rather
+// than failing the row: the pod is released either way, and a teardown failed for want of a
+// name is one its lane would run again.
+func (r *outbox) issueSandboxName(issue string) string {
+	podRuntime, ok := r.supervisor.deps.Runtime.(issuePods)
+	if !ok {
+		return ""
+	}
+	name, _ := podRuntime.IssueSandbox(issue)
+	return name
 }
 
 // cancelRelease undoes a release that did not finish: the bundle it may have stored is deleted,
@@ -1759,12 +3124,21 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 // in the database for the issue's next pod, which would restore it over everything they pushed
 // in between.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
-	resumed, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow)
+	// The second answer is whether the release that was cancelled suspended no role: such a
+	// release resumes nothing, so the empty set of resumed roles is the whole story rather than
+	// a release whose claims another path took over, and the line must not say that the issue's
+	// roles go on in the pod, since no role of this issue is running anywhere.
+	resumed, suspendsNoRole, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow)
 	if err != nil {
 		return err
 	}
-	r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
-		"issue", issue, "hold", hold.String(), "reason", why, "resumed", resumed)
+	if suspendsNoRole {
+		r.log.Info("outbox: the release of an issue's pod that no role can use did not finish; the pod stands with every claim of it as it was",
+			"issue", issue, "hold", hold.String(), "reason", why)
+	} else {
+		r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
+			"issue", issue, "hold", hold.String(), "reason", why, "resumed", resumed)
+	}
 	r.recordPodHold(ctx, issue, hold)
 	return nil
 }
@@ -1881,7 +3255,7 @@ func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Reposi
 	// by, which a rename must not move.
 	served := r.repositories.serving(repo)
 	mint := func() (string, error) {
-		lease, err := r.tokens.Token(ctx, appauth.Implement, served)
+		lease, err := r.tokens.Token(ctx, appauth.Implement, served.Owner())
 		if err != nil {
 			return "", fmt.Errorf("mint the implement App token for %s to provision %s: %w", served, key, err)
 		}
@@ -1964,6 +3338,44 @@ func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload recor
 		return fmt.Errorf("apply linger expiration for %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// designGateClosed says whether the design gate of the issue's tree is closed, which holds the
+// merger's start (supervise): the gate is the tree root's, so every member of the tree reads the
+// same rows, and it is closed when a step the deployment gates holds a row no approval has opened
+// (classify.StandingGate, the first such step in the configured order). A tree with no row for a
+// step — nothing registered one, or the project's design gate is off, which registers it
+// approved — holds nothing on that step: nobody can be waiting on a document the record does not
+// know. It is read just before the row acts, as every other fence of a row is.
+func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool, error) {
+	var gates map[record.DesignStep]record.DesignGate
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		gates, err = r.records.GatesOf(ctx, tx, issue.Tree)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read the design gate of %s: %w", issue.Tree, err)
+	}
+	_, closed := classify.StandingGate(r.gatedSteps, gates)
+	return closed, nil
+}
+
+// mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing
+// while its tree's design gate is closed, because a new version of the spec is with its reviewer
+// and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
+// wait error for a merger start the gate holds, which leaves the start on the row's backoff as a
+// check start waits on its look (checkLookHolds), and nil for every other role and an open gate.
+// The gate opening releases the row's next try, and tells every phase worker of the tree and the
+// root's architect as well (workflow's tellGateMoved).
+func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.Issue, role claim.Role) error {
+	if role != claim.RoleMerger {
+		return nil
+	}
+	closed, err := r.designGateClosed(ctx, issue)
+	if err != nil || !closed {
+		return err
+	}
+	return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for
@@ -2092,6 +3504,26 @@ func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.Pro
 	return check, nil
 }
 
+// phaseEntry is the phase entry role's phases row of issue names (record.PhaseRow.Entry), read in
+// a transaction of its own just before the executor acts on a row, and 0 for a role whose row
+// holds no entry and for one the record has no row of at all. The transition writes that number
+// in its own transaction before the start it queues can run (workflow.Engine.enter), so a start
+// reading a number above its own is reading a later entry of the same phase.
+func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) (int64, error) {
+	var entry int64
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := r.records.Phases(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		entry = record.PhaseRowOf(rows, role).Entry
+		return nil
+	}); err != nil {
+		return 0, fmt.Errorf("read the phase entry of %s's %s: %w", issue, role, err)
+	}
+	return entry, nil
+}
+
 // issueBranch creates the issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, so no role's push is the one that creates it: GitHub can refuse such a push on a large
 // repository (its check for changed workflow files, which it runs for an App without the workflows
@@ -2140,11 +3572,10 @@ func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 		return err
 	}
 	repo := r.repositories.serving(recorded)
-	lease, err := r.tokens.Token(ctx, appauth.Implement, repo)
+	github, err := implementClient(ctx, r.tokens, r.githubAPI, repo)
 	if err != nil {
 		return fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}
-	github := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}
 	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
 }
 
@@ -2220,14 +3651,27 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 	return nil
 }
 
-func (r *outbox) issue(ctx context.Context, key string) (record.Issue, error) {
+// recordedIssue is key's issue as the record holds it, nil when the daemon keeps none: the one
+// read every rule and executor of this package asks the record through, so there is one
+// transaction shape and one failure message for it.
+func (r *outbox) recordedIssue(ctx context.Context, key string) (*record.Issue, error) {
 	var issue *record.Issue
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(ctx, tx, key)
 		return err
 	}); err != nil {
-		return record.Issue{}, fmt.Errorf("read workflow issue %s: %w", key, err)
+		return nil, fmt.Errorf("read workflow issue %s: %w", key, err)
+	}
+	return issue, nil
+}
+
+// issue is recordedIssue where the caller's work has no meaning without the record: an issue the
+// daemon keeps none of is that caller's failure, not an answer.
+func (r *outbox) issue(ctx context.Context, key string) (record.Issue, error) {
+	issue, err := r.recordedIssue(ctx, key)
+	if err != nil {
+		return record.Issue{}, err
 	}
 	if issue == nil {
 		return record.Issue{}, fmt.Errorf("workflow issue %s is not recorded", key)

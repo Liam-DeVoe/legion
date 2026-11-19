@@ -12,16 +12,46 @@ import type {
   UserAgentStates,
 } from "../../api/types";
 import { writesOf } from "../writes/write-store";
-import { totalUnreadReplies, useMarkShownRepliesRead } from "./unread";
+import { storeAgentState, totalUnreadReplies, useMarkShownRepliesRead } from "./unread";
 
 // An API older than the unread count answers a session's state with its Clear alone. The badge
 // then counts that session as nothing unread rather than reading "New replies NaN".
 test("the unread total counts a state with no unread count as none", () => {
+  // The route table declares `unread_replies` on every state, because the server this build
+  // talks to sends one; a server older than the count answers a session's Clear alone, which a
+  // browser of this build still meets while two builds are up, so the key is dropped from the
+  // value rather than set to anything.
+  const old: UserAgentState = { cleared_before: "2026-09-27T20:00:00Z", unread_replies: 0 };
+  Reflect.deleteProperty(old, "unread_replies");
   const states: UserAgentStates = {
-    old: { cleared_before: "2026-09-27T20:00:00Z" },
+    old,
     s1: { unread_replies: 2 },
   };
   expect(totalUnreadReplies(states)).toBe(2);
+});
+
+// A read of the viewer's agent state that was asked before a mark answered counts the replies as
+// they stood before the mark. When that read answers after the mark, its answer must not put back
+// the count the mark cleared: the header's and the navigation's badge would read "New reply 1"
+// again, after the reader opened the conversation, until some later read answered.
+test("a read asked before a mark answered does not put back the unread count the mark cleared", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { promise: older, resolve: answerOlder } = Promise.withResolvers<UserAgentStates>();
+  const read = queryClient
+    .fetchQuery({ queryFn: () => older, queryKey: userAgentStateQuery().queryKey })
+    .catch(() => undefined);
+
+  storeAgentState(queryClient, "planner-session", {
+    read_through: "2026-09-14T01:05:00Z",
+    unread_replies: 0,
+  });
+  answerOlder({ "planner-session": { unread_replies: 1 } });
+  await read;
+
+  expect(
+    queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey)?.["planner-session"]
+      ?.unread_replies
+  ).toBe(0);
 });
 
 const SESSION = "planner-session";
@@ -30,11 +60,13 @@ function reply(id: string): Message {
   return {
     author: { id: SESSION, kind: "session" },
     body: "Done.",
+    broadcast_id: null,
     created_at: "2026-10-03T12:00:00Z",
     deliveries: [],
     id,
     in_reply_to: "message-1",
     issue_key: null,
+    reply_block: null,
     target: null,
   };
 }

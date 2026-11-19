@@ -37,7 +37,7 @@ github_apps:
 nats_urls: [nats://127.0.0.1:4222]
 `
 
-// The five `gates.design` shapes the configuration check drives `legion start --check-config`
+// The five `gates.design` shapes the configuration check drives `legion config check`
 // against: a list, the empty list, no `gates` key at all, a word the key does not take, and a
 // list naming one step twice. Each is a whole legion.yaml but for the one thing it tests, so the
 // check reads the OK line or the refusal and nothing else can be what failed. Their paths are
@@ -235,11 +235,16 @@ func defaultsFor(port int) Config {
 		},
 		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
-		PodUpdateRetask:      time.Hour,
-		PodUpdateNotice:      4 * time.Hour,
+		PodUpdateGrace:       30 * time.Minute,
+		StalledTreeNotice:    6 * time.Hour,
+		WorkerSilence:        30 * time.Minute,
+		WorkerBackground:     4 * time.Hour,
 		ReviewRoundCap:       3,
-		MaxFixAttempts:       3,
 		ControllerLaunch:     ControllerLaunchOperator,
+		Hooks:                DefaultHooks(),
+		// The worker stall-watch numbers this daemon's own environment sets, which noEnv sets
+		// none of: the plugin's own defaults, which the backstop's floor is computed from.
+		StallLimits: StallLimits{CallGrace: StallCallGrace, Step: StallStep},
 	}
 }
 
@@ -349,7 +354,7 @@ func TestLoadReadsEveryStage3Key(t *testing.T) {
 dispatch_token_file: tokens/DISPATCH_TOKEN
 projects:
   DEMO: {}
-  OTHER: { merge_queue_role: merge-queue }
+  OTHER: {}
   EMPTY: {}
 gates:
   design: off
@@ -364,7 +369,14 @@ github_apps:
 linger_hours: 96
 production_check_hours: 48
 review_round_cap: 5
-max_fix_attempts: 4
+worker_silence_minutes: 45
+hooks:
+  - name: back-to-implementing
+    on: work_back
+    moves: [reviewing-implementing]
+    every: 2
+    roles: [implementer, reviewer]
+    prompt: Read the reviewer's thread before you write anything.
 `))
 
 	cfg, err := Load(path, noEnv)
@@ -379,7 +391,7 @@ max_fix_attempts: 4
 	}
 	if !reflect.DeepEqual(cfg.Projects, map[string]Project{
 		"DEMO":  {ProductionCheck: claim.RoleTester},
-		"OTHER": {MergeQueueRole: "merge-queue", ProductionCheck: claim.RoleTester},
+		"OTHER": {ProductionCheck: claim.RoleTester},
 		"EMPTY": {ProductionCheck: claim.RoleTester},
 	}) {
 		t.Errorf("Projects = %#v", cfg.Projects)
@@ -393,8 +405,19 @@ max_fix_attempts: 4
 	if cfg.GitHubApps.Review.AppID != "22" || cfg.GitHubApps.Review.PrivateKey != "review-key" {
 		t.Errorf("review app = %#v", cfg.GitHubApps.Review)
 	}
-	if cfg.Linger != 96*time.Hour || cfg.ProductionCheckBound != 48*time.Hour || cfg.ReviewRoundCap != 5 || cfg.MaxFixAttempts != 4 {
-		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d MaxFixAttempts=%d, want 96h, 48h, 5, 4", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap, cfg.MaxFixAttempts)
+	if cfg.Linger != 96*time.Hour || cfg.ProductionCheckBound != 48*time.Hour || cfg.ReviewRoundCap != 5 {
+		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h and 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
+	}
+	if cfg.WorkerSilence != 45*time.Minute {
+		t.Errorf("WorkerSilence = %s, want the file's 45m", cfg.WorkerSilence)
+	}
+	if want := []Hook{{
+		Name: "back-to-implementing", On: HookEventWorkBack, Every: 2,
+		Moves:  []string{"reviewing-implementing"},
+		Roles:  []claim.Role{claim.RoleImplementer, claim.RoleReviewer},
+		Prompt: "Read the reviewer's thread before you write anything.",
+	}}; !reflect.DeepEqual(cfg.Hooks, want) {
+		t.Errorf("Hooks = %+v, want the file's one hook %+v and no default beside it", cfg.Hooks, want)
 	}
 }
 
@@ -464,19 +487,6 @@ func TestTheZeroValueOfGatesGatesTheSpec(t *testing.T) {
 	}
 }
 
-func TestLoadReadsProjectMergeRules(t *testing.T) {
-	body := strings.Replace(minimalFile, "DEMO: {}",
-		"DEMO: { merge: { by_hand: ['^migrations/versions/'] } }", 1)
-	cfg, err := Load(writeConfigFile(t, body), noEnv)
-	if err != nil {
-		t.Fatalf("Load project merge rules: %v", err)
-	}
-	rules := cfg.Projects["DEMO"].Merge
-	if !rules.MatchByHand([]string{"migrations/versions/0001.py"}) {
-		t.Error("by_hand rule does not match its migration path")
-	}
-}
-
 // A project's slack_channels are the Slack channel ids whose @-mentions reach its controller, kept
 // in the order the file writes them, on a deployment whose daemon launches that controller
 // enrolled with the secrets broker (slackChannelsFile).
@@ -504,13 +514,14 @@ func slackChannelsFile(channels string, daemon, enrolled bool) string {
 	return body
 }
 
-// Only the controller the daemon launches, enrolled with the secrets broker, is granted the Slack
-// bot token (LEGION_SLACK_BOT_TOKEN, owned by the Legion daemon's service): the broker grants a
-// service's secret to that service's own pods and no one else. So a project names Slack channels
-// only where both hold, and anywhere else the loader refuses them, naming why, rather than start a
-// controller that hears mentions it can never answer. An empty list names no channel.
+// The controller the daemon launches answers a project's Slack mentions once it is enrolled with
+// the secrets broker: its enrollment gives it a broker identity, and the broker grants the Slack
+// bot token (LEGION_SLACK_BOT_TOKEN, a shared agent secret) to a session with one. So a project
+// names Slack channels only where both hold, and anywhere else the loader refuses them, naming
+// why, rather than start a controller that hears mentions it can never answer. An empty list
+// names no channel.
 func TestSlackChannelsNeedTheDaemonsControllerEnrolledWithTheBroker(t *testing.T) {
-	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants the Slack bot token (LEGION_SLACK_BOT_TOKEN) only to the Legion daemon service's own pods"
+	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)"
 	for _, tc := range []struct {
 		name, body, want string
 	}{
@@ -754,6 +765,18 @@ func TestLoadRefusesFailedPrivateKeyCommandEvenWhenItPrintsPEM(t *testing.T) {
 	}
 }
 
+// A private_key_command a signal ended has no status, so its refusal names the signal: read as a
+// status, it was `failed (exit -1)`.
+func TestLoadRefusesAPrivateKeyCommandASignalEndedNamingTheSignal(t *testing.T) {
+	body := strings.Replace(minimalFile, "private_key: implement-test-key", `private_key_command: "echo dying >&2; kill -KILL $$"`, 1)
+
+	_, err := Load(writeConfigFile(t, body), noEnv)
+
+	if want := "github_apps.implement.private_key_command failed (signal: killed): dying"; err == nil || err.Error() != want {
+		t.Errorf("Load error = %v, want %q", err, want)
+	}
+}
+
 func TestLoadRefusesEveryStage3Key(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -776,7 +799,7 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: "dispatch_url must be the dispatch service base URL, not the /mcp endpoint",
 		},
 		// Boot needs each of these for a workflow, so the loader refuses the file, in the words of
-		// its own refusal: `legion start --check-config` never passes a file `legion start` refuses.
+		// its own refusal: `legion config check` never passes a file `legion start` refuses.
 		{
 			name: "dispatch_url without dispatch_token_file",
 			body: strings.Replace(minimalFile, "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN\n", "", 1),
@@ -813,11 +836,11 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
 		},
 		{
-			// The project's repositories are Dispatch's mapping, so a file that still names one is
-			// refused, naming where they are set.
+			// Dispatch holds the project's repository mapping, so a file that still names a
+			// repository is refused, naming where the mapping is set.
 			name: "a project names its repository",
 			body: strings.Replace(minimalFile, "DEMO: {}", "DEMO: { repo: acme/widgets }", 1),
-			want: `Unknown key "projects.DEMO.repo": the project's repositories are Dispatch's mapping (Settings → Repositories → Projects)`,
+			want: `Unknown key "projects.DEMO.repo": Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`,
 		},
 		{
 			name: "review_workflows is no longer a key",
@@ -1136,6 +1159,14 @@ func TestLoadRefuses(t *testing.T) {
 			want: "worker_boot_timeout_seconds * worker_boot_registration_deadline_intervals must be at most 2147483",
 		},
 		{
+			// A count carries no bound of its own, so the product is judged by division: this
+			// many intervals times the default 120-second timeout is a negative number of
+			// seconds, which a multiplied check would have found at most the bound.
+			name: "the registration deadline's intervals wrap the product",
+			body: minimalFile + "worker_boot_registration_deadline_intervals: 9223372036854775807\n",
+			want: "worker_boot_timeout_seconds * worker_boot_registration_deadline_intervals must be at most 2147483",
+		},
+		{
 			name: "worker_rpc_timeout_seconds zero",
 			body: minimalFile + "worker_rpc_timeout_seconds: 0\n",
 			want: "worker_rpc_timeout_seconds must be a positive integer",
@@ -1416,6 +1447,137 @@ func TestLoadRefuses(t *testing.T) {
 			want: "runtime.tmux.pi_config_files entry \"/etc/legion:operator/overlay.yml\" holds `:`, which separates the overlays PI_CONFIG_FILES names",
 		},
 		{
+			name: "hooks that is not a list",
+			body: minimalFile + "hooks: 5\n",
+			want: "hooks must be an array",
+		},
+		{
+			name: "a hook that is not a mapping",
+			body: minimalFile + "hooks: [5]\n",
+			want: "hooks[0] must be a mapping",
+		},
+		{
+			name: "a hook with an unknown member",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [tester], prompts: Words.}"),
+			want: "unknown key hooks[0].prompts",
+		},
+		{
+			name: "a hook with no name",
+			body: aHook("{on: work_back, every: 1, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].name is required: the hook's own name, which every prompt it publishes carries",
+		},
+		{
+			name: "a hook whose name is empty",
+			body: aHook(`{name: "", on: work_back, every: 1, roles: [tester], prompt: Words.}`),
+			want: "hooks[0].name must not be empty",
+		},
+		{
+			name: "two hooks of one name",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [tester], prompt: Words.}, " +
+				"{name: stuck, on: work_back, every: 2, roles: [reviewer], prompt: More words.}"),
+			want: `hooks[1].name is "stuck", which hooks[0] already carries: a hook is named once, and its name is what every prompt it publishes carries`,
+		},
+		{
+			name: "a hook that stands on no event",
+			body: aHook("{name: stuck, every: 1, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].on is required: the event the hook stands on",
+		},
+		{
+			name: "a hook whose event is empty",
+			body: aHook(`{name: stuck, on: "", every: 1, roles: [tester], prompt: Words.}`),
+			want: "hooks[0].on must not be empty",
+		},
+		{
+			name: "a hook on an event the daemon does not have",
+			body: aHook("{name: stuck, on: revuew_rounds, every: 1, roles: [tester], prompt: Words.}"),
+			want: `hooks[0].on is "revuew_rounds", which is no event the daemon has (work_back)`,
+		},
+		{
+			name: "a hook with no every",
+			body: aHook("{name: stuck, on: work_back, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].every is required: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook that fires every nothing",
+			body: aHook("{name: stuck, on: work_back, every: 0, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].every must be a positive whole number: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook that fires every negative number",
+			body: aHook("{name: stuck, on: work_back, every: -1, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].every must be a positive whole number: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook whose every is no whole number",
+			body: aHook("{name: stuck, on: work_back, every: 2.5, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].every must be a positive whole number: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook whose every is a string",
+			body: aHook(`{name: stuck, on: work_back, every: "5", roles: [tester], prompt: Words.}`),
+			want: "hooks[0].every must be a positive whole number: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook with no roles",
+			body: aHook("{name: stuck, on: work_back, every: 1, prompt: Words.}"),
+			want: "hooks[0].roles is required: the hook puts its words in front of the roles it names",
+		},
+		{
+			name: "a hook whose roles are the empty list",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [], prompt: Words.}"),
+			want: "hooks[0].roles names no role: the hook puts its words in front of the roles it names",
+		},
+		{
+			name: "a hook naming a role that is not a Legion role",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [reviewr], prompt: Words.}"),
+			want: `hooks[0].roles names "reviewr", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger)`,
+		},
+		{
+			name: "a hook naming the architect",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [architect], prompt: Words.}"),
+			want: "hooks[0].roles names the architect, which no hook writes to: the daemon's own wake to an architect is a notice",
+		},
+		{
+			name: "a hook whose moves are a word other than any",
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: every, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].moves must be an array of the moves back it selects, or the word any",
+		},
+		{
+			name: "a hook whose moves are a mapping",
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: {reviewing: implementing}, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].moves must be an array of the moves back it selects, or the word any",
+		},
+		{
+			name: "a hook whose moves are the empty list",
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: [], roles: [tester], prompt: Words.}"),
+			want: "hooks[0].moves names no move back: write any, or leave the key out, to select every move back",
+		},
+		{
+			name: "a hook naming a move the daemon does not count",
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: [planning-merging], roles: [tester], prompt: Words.}"),
+			want: `hooks[0].moves names "planning-merging", which is no move back the daemon counts: a move is written "<from>-<to>", both of them workflow phases, and the phase it goes to before the phase it leaves`,
+		},
+		{
+			name: "a hook with both prompt and prompt_file",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [tester], prompt: Words., prompt_file: hooks/stuck.md}"),
+			want: "hooks[0] names prompt and prompt_file: the hook's words are written in the key, or read from a file, never both",
+		},
+		{
+			name: "a hook with neither prompt nor prompt_file",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [tester]}"),
+			want: "hooks[0] names neither prompt nor prompt_file: a hook carries the words it puts in front of its roles",
+		},
+		{
+			name: "a hook whose prompt is empty",
+			body: aHook(`{name: stuck, on: work_back, every: 1, roles: [tester], prompt: "  "}`),
+			want: "hooks[0].prompt must not be empty",
+		},
+		{
+			name: "a hook whose prompt_file is empty",
+			body: aHook(`{name: stuck, on: work_back, every: 1, roles: [tester], prompt_file: ""}`),
+			want: "hooks[0].prompt_file must not be empty",
+		},
+		{
 			name: "a root that is not a mapping",
 			body: "- project: demo\n",
 			want: "config file root must be a mapping",
@@ -1490,7 +1652,7 @@ func TestLoadAcceptsAWakeRateOfZero(t *testing.T) {
 }
 
 // Every refused wake pacing value names its own key, which is what an operator reading
-// `legion start --check-config` needs: which of the two the daemon would not take. The assertion
+// `legion config check` needs: which of the two the daemon would not take. The assertion
 // is on the key's name rather than the sentence, so rewording a refusal is no test change.
 func TestLoadRefusesAWakePacingValueNamingItsKey(t *testing.T) {
 	for _, tc := range []struct{ name, line, key string }{
@@ -1535,12 +1697,16 @@ func TestLoadReadsRuntimeAsItsDiscriminator(t *testing.T) {
 
 // Every top-level key of the earlier schema (38 keys, nats_daemon_nkey_seed_file among them since
 // #1494) plus the new postgres_dsn and the wake pacing's two keys, and the class it is in. No
-// shipped key may fall through to the typo refusal, and none is accepted without being modelled.
+// shipped key may fall through to the typo refusal, and none is accepted without being modelled,
+// but for a warned key, which is accepted, read for nothing, and answered with a warning rather
+// than a refusal.
 func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 	const (
 		modelled  = "modelled"
 		tossed    = "tossed"
 		migration = "migration-only"
+		// warned is a key the loader accepts and ignores, keeping its warning (config.warnedKeys).
+		warned = "warned"
 		// kubernetesOnly is a modelled key the tmux file this test loads refuses by name.
 		kubernetesOnly = "kubernetes-only"
 	)
@@ -1589,9 +1755,24 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "github_apps", line: "github_apps: {implement: {app_id: \"1\", private_key: key}, review: {app_id: \"2\", private_key: key}}", class: modelled},
 		{key: "linger_hours", line: "linger_hours: 72", class: modelled},
 		{key: "production_check_hours", line: "production_check_hours: 336", class: modelled},
+		{key: "pod_update_grace_minutes", line: "pod_update_grace_minutes: 30", class: modelled},
 		{key: "review_round_cap", line: "review_round_cap: 3", class: modelled},
-		{key: "max_fix_attempts", line: "max_fix_attempts: 3", class: modelled},
+		{key: "worker_silence_minutes", line: "worker_silence_minutes: 45", class: modelled},
+		{key: "worker_background_hours", line: "worker_background_hours: 6", class: modelled},
+		{
+			key: "max_fix_attempts", line: "max_fix_attempts: 3", class: warned,
+			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+		},
+		{
+			key: "pod_update_retask_hours", line: "pod_update_retask_hours: 1", class: warned,
+			want: "setting pod_update_retask_hours changes nothing: no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
+		},
+		{
+			key: "pod_update_notice_hours", line: "pod_update_notice_hours: 4", class: warned,
+			want: "setting pod_update_notice_hours changes nothing: the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
+		},
 		{key: "capabilities", line: `capabilities: {decided: {secrets: "dispatch://LEGION-205 enrolls pods later"}}`, class: modelled},
+		{key: "hooks", line: "hooks: [{name: stuck, on: work_back, every: 5, roles: [implementer], prompt: Say what is in your way.}]", class: modelled},
 
 		{
 			key: "worker_cap", line: "worker_cap: 10", class: tossed,
@@ -1607,7 +1788,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		},
 		{
 			key: "max_recursion_depth", line: "max_recursion_depth: 8", class: tossed,
-			want: "unknown key max_recursion_depth: an architect spawns no worker and no sub-architect (the daemon starts every phase, and only the operator starts any other claim), so there is no spawn recursion to bound",
+			want: "unknown key max_recursion_depth: no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
 		},
 
 		{key: "dispatch_mcp_url", line: "dispatch_mcp_url: https://dispatch.example/mcp", class: migration, want: wantDispatchMcpURLMessage},
@@ -1623,12 +1804,25 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 				body += tc.line + "\n"
 			}
 
-			_, err := Load(writeConfigFile(t, body), noEnv)
+			cfg, err := Load(writeConfigFile(t, body), noEnv)
 
 			switch tc.class {
 			case modelled:
 				if err != nil {
 					t.Fatalf("Load: %v", err)
+				}
+				if len(cfg.Warnings) != 0 {
+					t.Errorf("Load warned %+v, want no warning for a modelled key", cfg.Warnings)
+				}
+			case warned:
+				if err != nil {
+					t.Fatalf("Load: %v, want the key accepted with a warning", err)
+				}
+				if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], tc.key) {
+					t.Fatalf("Load warned %+v, want the one warning for %s", cfg.Warnings, tc.key)
+				}
+				if line := cfg.Warnings[0]; line != tc.want {
+					t.Errorf("the warning reads %q, want %q", line, tc.want)
 				}
 			default:
 				if err == nil {
@@ -1646,12 +1840,42 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 	}
 }
 
+// A file carrying max_fix_attempts loads, and every other key of it loads with it: the warned key
+// is read for nothing, so nothing it says and nothing beside it changes. A value of any shape
+// passes, since no value is read. The keys that genuinely no longer exist stay refusals
+// (TestLoadClassifiesEveryShippedKey's tossed class), which is what keeps the two kinds apart.
+func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
+	for _, line := range []string{"max_fix_attempts: 3", "max_fix_attempts: nonsense", "max_fix_attempts: null"} {
+		t.Run(line, func(t *testing.T) {
+			body := minimalFile + "review_round_cap: 7\nadmission_cap: 9\n" + line + "\n"
+
+			cfg, err := Load(writeConfigFile(t, body), noEnv)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.ReviewRoundCap != 7 || cfg.AdmissionCap != 9 || cfg.Project != "DEMO" {
+				t.Errorf("review_round_cap = %d, admission_cap = %d, project = %q; want 7, 9 and DEMO",
+					cfg.ReviewRoundCap, cfg.AdmissionCap, cfg.Project)
+			}
+			if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "max_fix_attempts") {
+				t.Fatalf("Load warned %+v, want the one max_fix_attempts warning", cfg.Warnings)
+			}
+			for _, want := range []string{"max_fix_attempts", "nothing counts fix attempts", "no CI verdict sends work back on its own",
+				"the architect decides when to stop", "review_round_cap"} {
+				if !strings.Contains(cfg.Warnings[0], want) {
+					t.Errorf("the warning %q does not say %q", cfg.Warnings[0], want)
+				}
+			}
+		})
+	}
+}
+
 // advertise_host is the host of every pod's `--connect tcp://<host>:<port>`, which the shim reads as
 // a URL (shim.ParseAddress, internal/shim/config.go) and refuses with anything beyond a host and a
 // port, and the daemon adds the port itself (shimAddress, internal/daemon/daemon.go). So the loader
 // refuses, by its exact message, every value that is not an IP address or a DNS name: under
 // runtime: kubernetes, the one runtime that reads advertise_host, so no other refusal can stand in
-// for this one, rather than `legion start --check-config` passing a file no pod boots on.
+// for this one, rather than `legion config check` passing a file no pod boots on.
 func TestAdvertiseHostMustBeABareHost(t *testing.T) {
 	const refused = "advertise_host must be an IP address or a DNS name, with no scheme, port, path or brackets: the daemon adds worker_stream_port itself"
 	for _, tc := range []struct{ name, yaml, want string }{

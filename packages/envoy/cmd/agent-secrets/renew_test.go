@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // renewTestBound is how long a renewal test waits for any one step before it fails, so a
@@ -21,22 +23,7 @@ import (
 const renewTestBound = 10 * time.Second
 
 // syncWriter is a stderr a renew loop running on its own goroutine writes and a test reads.
-type syncWriter struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (w *syncWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.Write(p)
-}
-
-func (w *syncWriter) String() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.String()
-}
+type syncWriter = logtest.Buffer
 
 // receive is the next value from ch, failing the test when none arrives within renewTestBound.
 func receive[T any](t *testing.T, ch <-chan T, what string) T {
@@ -317,8 +304,9 @@ func TestRenewRefusesAnUnreadableOrBlankPodTokenFile(t *testing.T) {
 				}
 			}
 			var stderr bytes.Buffer
-			if code := cmdRenew([]string{"--pod-token-file", path}, io.Discard, &stderr); code != exitUsageError || !strings.Contains(stderr.String(), path) {
-				t.Fatalf("renew --pod-token-file %s: exit %d stderr %q, want usage naming the file", name, code, stderr.String())
+			if code := cmdRenew([]string{"--pod-token-file", path}, io.Discard, &stderr); code != exitUsageError ||
+				!strings.Contains(stderr.String(), "--pod-token-file") || strings.Contains(stderr.String(), path) {
+				t.Fatalf("renew --pod-token-file %s: exit %d stderr %q, want usage naming the file by --pod-token-file, never by its path", name, code, stderr.String())
 			}
 			if want := "ERROR: enrollment " + testEnrollmentID + " cannot read its pod token"; !strings.Contains(stderr.String(), want) {
 				t.Fatalf("renew --pod-token-file %s: stderr %q, want %q", name, stderr.String(), want)

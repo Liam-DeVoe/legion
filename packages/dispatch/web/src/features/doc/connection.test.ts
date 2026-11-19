@@ -3,6 +3,7 @@ import { waitFor } from "@testing-library/react";
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "lib0/decoding";
 import * as Y from "yjs";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import {
   type ConnectionState,
   colorForLogin,
@@ -113,6 +114,20 @@ class OpenSocket extends EventTarget {
   }
 }
 
+/**
+ * A socket whose own `close()` reaches the provider, as a browser's does once it has closed the
+ * connection: what `DocumentConnection.readmit` relies on to be admitted again.
+ */
+class ClosingSocket extends OpenSocket {
+  /** How many times the page closed this socket: the provider closes one again as it tidies it. */
+  closes = 0;
+
+  override close(): void {
+    this.closes += 1;
+    queueMicrotask(() => this.dispatchEvent(new CloseEvent("close", { code: 1000 })));
+  }
+}
+
 interface ProviderHarness {
   connection: DocumentConnection;
   /** Each admission the host was told of, read-only or not, in order. */
@@ -128,19 +143,20 @@ interface ProviderHarness {
 }
 
 /**
- * Connects `artifact` through the real transport and Hocuspocus provider, over `OpenSocket`s the
- * test answers as the server, runs `body` with what the host is told, and then destroys the
- * connection and puts the browser's WebSocket and `Math.random` back. Each socket draws `share`
- * of the reconnect spread when it opens, 0 unless the test says otherwise, so the reconnect after
- * a dropped socket opens at once.
+ * Connects `artifact` through the real transport and Hocuspocus provider, over `socketClass`
+ * sockets the test answers as the server, runs `body` with what the host is told, and then
+ * destroys the connection and puts the browser's WebSocket and `Math.random` back. Each socket
+ * draws `share` of the reconnect spread when it opens, 0 unless the test says otherwise, so the
+ * reconnect after a dropped socket opens at once.
  */
 async function withProvider(
   artifact: string,
   body: (harness: ProviderHarness) => Promise<void>,
-  share = 0
+  share = 0,
+  socketClass: typeof OpenSocket = OpenSocket
 ): Promise<void> {
   const realSocket = globalThis.WebSocket;
-  globalThis.WebSocket = OpenSocket as unknown as typeof WebSocket;
+  globalThis.WebSocket = socketClass as unknown as typeof WebSocket;
   OpenSocket.opened = [];
   const random = spyOn(Math, "random").mockReturnValue(share);
   let connection: DocumentConnection | undefined;
@@ -157,6 +173,7 @@ async function withProvider(
       onSynced: () => {
         synced = true;
       },
+      schemaCreatable: 1,
       schemaVersion: 1,
     });
     await body({
@@ -390,6 +407,170 @@ test("a reopened issue's read-only load stores nothing, and its writable reconne
   });
 });
 
+// The server decides a socket's admission once, as it connects. A connection the host readmits
+// closes its socket, the provider reconnects as it does after any close, and the new socket's
+// admission is the one the host is told of.
+test("a readmitted connection reports the admission of the socket it reconnects", async () => {
+  const artifact = artifactId();
+  const server = serverWithHeading(100);
+  await withProvider(
+    artifact,
+    async ({ admissions, connection, socket, synced }) => {
+      serveInYgoOrder(await socket(0), server, "readonly", artifact);
+      await waitFor(() => expect(synced()).toBe(true));
+      expect(admissions).toEqual([true]);
+
+      connection.readmit();
+
+      serveInYgoOrder(await socket(1), server, "read-write", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, false]));
+      expect(OpenSocket.opened).toHaveLength(2);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
+// The reopen's commit closes the room's sockets as the reopen answers the page, and the two race.
+// A page that hears the answer last may have reconnected already, and the server admits that
+// socket as the issue now is: the readmit leaves it to its own answer, so the reopen costs the
+// page one reconnect and one draw, not two.
+test("a readmit leaves the socket the server's close made the provider open while it waits for its answer", async () => {
+  const artifact = artifactId();
+  const server = serverWithHeading(100);
+  await withProvider(
+    artifact,
+    async (harness) => {
+      const { admissions, connection } = harness;
+      const second = await loadReadOnlyThenDrop(harness, server, artifact);
+      connection.readmit();
+      expect(second.closes).toBe(0);
+
+      serveInYgoOrder(second, server, "read-write", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, false]));
+      expect(second.closes).toBe(0);
+      expect(OpenSocket.opened).toHaveLength(2);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
+test("a readmit leaves a socket the server has admitted writable", async () => {
+  const artifact = artifactId();
+  const server = serverWithHeading(100);
+  await withProvider(
+    artifact,
+    async (harness) => {
+      const { admissions, connection } = harness;
+      const second = await loadReadOnlyThenDrop(harness, server, artifact);
+      serveInYgoOrder(second, server, "read-write", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, false]));
+
+      connection.readmit();
+
+      expect(second.closes).toBe(0);
+      expect(OpenSocket.opened).toHaveLength(2);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
+// A socket the page opened before the reopen committed - after a blip, say - may be answered
+// read-only after the page heard of the reopen: that answer is the closed issue's, so the readmit
+// closes the socket as the answer arrives, and the host is told the admission of the next one.
+test("a readmit closes the socket it found unanswered once that socket's answer is read-only", async () => {
+  const artifact = artifactId();
+  const server = serverWithHeading(100);
+  await withProvider(
+    artifact,
+    async (harness) => {
+      const { admissions, connection, socket } = harness;
+      const second = await loadReadOnlyThenDrop(harness, server, artifact);
+      connection.readmit();
+
+      serveInYgoOrder(second, server, "readonly", artifact);
+      expect(second.closes).toBe(1);
+
+      serveInYgoOrder(await socket(2), server, "read-write", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, false]));
+      expect(OpenSocket.opened).toHaveLength(3);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
+// The socket a readmit found unanswered may drop before its answer: a blip, or the server's own
+// room close after the socket's sync. The provider's next socket is judged by its own admission:
+// a read-only one is reported and kept, as any socket's is, and the next readmit closes it.
+test("a readmit judges the socket after one it found unanswered dropped by that socket's own admission", async () => {
+  const artifact = artifactId();
+  const server = serverWithHeading(100);
+  await withProvider(
+    artifact,
+    async (harness) => {
+      const { admissions, connection, socket } = harness;
+      const second = await loadReadOnlyThenDrop(harness, server, artifact);
+      connection.readmit();
+      // ygo's frames ahead of the token's answer reach the socket, and it drops before that answer.
+      second.receive(syncStep1Frame(Y.encodeStateVector(server), artifact));
+      second.receive(syncStep2Frame(Y.encodeStateAsUpdate(server), artifact));
+      second.receive(awarenessFrame(artifact));
+      second.drop();
+
+      const third = await closingSocket(harness, 2);
+      serveInYgoOrder(third, server, "readonly", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, true]));
+      expect(third.closes).toBe(0);
+
+      connection.readmit();
+      expect(third.closes).toBe(1);
+      serveInYgoOrder(await socket(3), server, "read-write", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, true, false]));
+      expect(OpenSocket.opened).toHaveLength(4);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
+// The reopened issue's document: the reader's page was admitted read-only, so the rows it and
+// other tabs saved were never sent. The readmission is writable, and its restore sends them.
+test("a readmission that turns writable restores the rows the read-only admission kept", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  await savedEdit(artifact, server, " saved");
+  await withProvider(
+    artifact,
+    async ({ connection, pending, socket, synced }) => {
+      serveInYgoOrder(await socket(0), server, "readonly", artifact);
+      await waitFor(() => expect(synced()).toBe(true));
+      await waitFor(() => expect(pending.at(-1)).toMatchObject({ count: 1, readOnly: true }));
+      expect(paragraphText(connection.doc).toString()).toBe("shared");
+
+      connection.readmit();
+
+      const second = await socket(1);
+      serveInYgoOrder(second, server, "read-write", artifact);
+      await waitFor(() => expect(paragraphText(connection.doc).toString()).toBe("shared saved"));
+      await waitFor(() => expect(pending.at(-1)).toMatchObject({ count: 1, readOnly: false }));
+      await waitFor(async () =>
+        expect(await rowsOf(artifact)).toEqual([[artifact, connection.doc.clientID, 1]])
+      );
+
+      // The room applies and acknowledges the restored row: the browser keeps nothing unsent.
+      answerUpdates(second, server, artifact);
+      await waitFor(async () => expect(await rowsOf(artifact)).toEqual([]));
+      // The host hears of the first admission's restore alone: no reload, no second mount.
+      expect(synced()).toBe(true);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
 test("a reopen and a second close name no unsent edit to a person who typed nothing", async () => {
   const artifact = artifactId();
   const server = serverWithHeading(100);
@@ -428,6 +609,32 @@ test("a reopen and a second close name no unsent edit to a person who typed noth
     await expectNoNotice(true);
   });
 });
+
+/** The `index`th socket of a harness whose `withProvider` was handed `ClosingSocket`. */
+async function closingSocket({ socket }: ProviderHarness, index: number): Promise<ClosingSocket> {
+  const opened = await socket(index);
+  if (!(opened instanceof ClosingSocket)) {
+    throw new Error("the harness's sockets are ClosingSockets: withProvider was handed that class");
+  }
+  return opened;
+}
+
+/**
+ * Loads `server` through a read-only admission, as a closed issue's page does, and drops the
+ * socket, as the server's room close does. Returns the socket the provider reconnects with, once
+ * it has written to it and before the server has answered it.
+ */
+async function loadReadOnlyThenDrop(
+  harness: ProviderHarness,
+  server: Y.Doc,
+  artifact: string
+): Promise<ClosingSocket> {
+  const first = await harness.socket(0);
+  serveInYgoOrder(first, server, "readonly", artifact);
+  await waitFor(() => expect(harness.synced()).toBe(true));
+  first.drop();
+  return closingSocket(harness, 1);
+}
 
 /**
  * Loads `server`'s heading through a writable admission: the editor stamps the heading's id, and
@@ -569,7 +776,7 @@ test("a writable page's stamp the server acknowledges is never counted or stored
 
 test("a document whose browser keeps no edits says so, and still connects", async () => {
   const realStorage = globalThis.indexedDB;
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: undefined });
   try {
     await withProvider(artifactId(), async ({ pending }) => {

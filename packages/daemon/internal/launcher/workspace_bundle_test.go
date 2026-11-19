@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
@@ -41,7 +44,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	}
 
 	t.Run("a whole sequence is held", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		for index, frame := range frames {
 			got := r.receive(frame)
 			if !got.OK || got.ID != frames[0].ID || got.Index != index {
@@ -62,7 +65,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("a repeated slice is answered as a repeated start id is", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		first := r.receive(frames[0])
 		again := r.receive(frames[0])
 		if again != first {
@@ -79,7 +82,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("a wrong digest is refused before anything is written", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		corrupt := append([]shimwire.LauncherBundle{}, frames...)
 		payload := append([]byte{}, corrupt[1].Payload...)
 		payload[0] ^= 0xff
@@ -100,7 +103,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("a slice that disagrees with its sequence is refused", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		if got := r.receive(frames[0]); !got.OK {
 			t.Fatalf("the first slice answered %#v", got)
 		}
@@ -119,7 +122,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("the report names the release whose work it restored", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		for _, frame := range frames {
 			if got := r.receive(frame); !got.OK {
 				t.Fatalf("slice %d answered %#v", frame.Index, got)
@@ -199,30 +202,101 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 	if !strings.Contains(notice, "restored") {
 		t.Fatalf("the restore's notice is %q", notice)
 	}
-	log := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all()", "--no-graph",
-		"-T", `commit_id ++ " " ++ description.first_line() ++ "\n"`)
-	for _, want := range []string{"issue work", "second head", "working copy"} {
-		if !strings.Contains(log, f.commits[want]+" "+want) {
-			t.Fatalf("the restored workspace's log holds no %s (%s), so that head is not visible:\n%s", want, f.commits[want], log)
+	f.requireRestored(workspace, saved)
+}
+
+// The launcher is its pod's PID 1, whose reaper reaps every exited child the launcher does not
+// hold (reapOrphans), and a put-back's jj and git are the launcher's own children. Each starts
+// through the guard the reaper skips (pidGuard.starter, which newManagers gives the pod's
+// restore): a command whose exit the reaper took first fails its own wait with `waitid: no child
+// processes`, or under gVisor at times `wait: no child processes` or `waitid: no such process`,
+// and the roles start without the saved work. The race needs a pod's shape, as
+// TestTheLeakCheckInstallSurvivesPID1sReaper says, so the put-backs run in the test binary as PID 1
+// of a PID namespace of its own (TestPutBacksPIDOneHelper).
+func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
+	t.Logf("%s", runAsPIDOne(t, "TestPutBacksPIDOneHelper"))
+}
+
+// putBacksUnderReaper is how many put-backs TestPutBacksPIDOneHelper makes through the guard, and
+// controlPutBacks how many its control may try with no guard before one loses an exit.
+const (
+	putBacksUnderReaper = 20
+	controlPutBacks     = 5
+)
+
+// TestPutBacksPIDOneHelper is TestPutBacksUnderThePodsReaperKeepTheirExitStatus's body, run as PID
+// 1 under relentlessReaper, which starts a new pass as soon as it ends one. Every put-back through
+// the guard must answer with the whole of what was saved. The control comes after them, with the
+// reaper still running: the same put-back started with procgroup.NoReaper, as a put-back outside a
+// launcher runs it, must lose a command's exit to the reaper within controlPutBacks tries, or the
+// reaper never met an exit and the put-backs before it prove nothing. The fixture's own jj and git
+// run only while the reaper is stopped, before it starts and after it stops.
+func TestPutBacksPIDOneHelper(t *testing.T) {
+	if os.Getenv(pidOneHelperEnv) != "1" {
+		return
+	}
+	if os.Getpid() != 1 {
+		t.Fatal("the put-back helper is not PID 1")
+	}
+	testbin.RequireJJFilters(t)
+	f := newBundleFixture(t)
+	f.workOne()
+	saved := f.bundleWorkspaceOne()
+	workspaces := make([]string, putBacksUnderReaper+controlPutBacks)
+	for index := range workspaces {
+		workspaces[index] = f.secondPod(fmt.Sprintf("reaped-%d", index))
+	}
+	guarded, control := workspaces[:putBacksUnderReaper], workspaces[putBacksUnderReaper:]
+	// An issue pod's managers, whose restore is the one newManagers wires to the guard. A failed
+	// pass of a namespaced manager's reaper is logged rather than thrown, and the log is read
+	// below: a reaper whose passes failed raced nothing.
+	reaperLog := &lockedBuffer{}
+	guard := &pidGuard{}
+	managers, err := newManagers(Config{RolesDir: testerRolesDir(t), Roles: []string{"tester"}, Stdout: reaperLog, Stderr: reaperLog}, guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := relentlessReaper(t, managers, guard)
+	type answer struct {
+		restored bool
+		notice   string
+	}
+	answers := make([]answer, len(guarded))
+	for index, dir := range guarded {
+		answers[index].restored, answers[index].notice = restoreWorkspace(context.Background(), managers[0].restore.start, dir, f.env, bundleRelease, saved)
+	}
+	controlTries, controlNotice := 0, ""
+	for _, dir := range control {
+		controlTries++
+		restored, notice := restoreWorkspace(context.Background(), procgroup.NoReaper, dir, f.env, bundleRelease, saved)
+		if !restored && (strings.Contains(notice, "no child processes") || strings.Contains(notice, "no such process")) {
+			controlNotice = notice
+			break
 		}
 	}
-	listed := f.run(workspace, "jj", "bookmark", "list", "-R", workspace, "--ignore-working-copy",
-		"-T", `if(remote, "", name ++ " " ++ normal_target.commit_id() ++ "\n")`)
-	for name, commit := range map[string]string{"legion/" + bundleIssue: f.commits["issue work"], "side": f.commits["second head"]} {
-		if !strings.Contains(listed, name+" "+commit) {
-			t.Fatalf("the restored workspace has no %s on %s:\n%s", name, commit, listed)
+	stop()
+
+	if controlNotice == "" {
+		t.Fatalf("none of %d put-backs with no guard lost an exit to the reaper: it never met one, so the put-backs through the guard prove nothing", controlTries)
+	}
+	t.Logf("control: put-back %d with no guard lost an exit: %s", controlTries, controlNotice)
+	for index, got := range answers {
+		if !got.restored || !strings.Contains(got.notice, "is restored") || strings.Contains(got.notice, "would not take") ||
+			strings.Contains(got.notice, "no child processes") || strings.Contains(got.notice, "no such process") {
+			t.Errorf("the put-back into %s answered %v, %q; want all of the saved work restored, each command's exit read by its own wait",
+				guarded[index], got.restored, got.notice)
 		}
 	}
-	if head := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != saved.Head {
-		t.Fatalf("the restored working copy is on %s, want the saved %s", head, saved.Head)
+	if failed := reaperLog.String(); failed != "" {
+		t.Errorf("the reaper's passes failed, so they raced nothing:\n%s", failed)
 	}
-	if body, err := os.ReadFile(filepath.Join(workspace, "wip.txt")); err != nil || string(body) != "wip\n" {
-		t.Fatalf("the restored working copy's own change reads %q (%v)", body, err)
+	if t.Failed() {
+		t.FailNow()
 	}
-	// Nothing of the restore is left in the repository: the temporary branches are gone.
-	if refs := f.run(workspace, "git", "--git-dir="+f.gitDir(workspace), "for-each-ref", "--format=%(refname)", "refs/heads/"); strings.Contains(refs, restoreRefPrefix) {
-		t.Fatalf("the restore left its temporary branches behind:\n%s", refs)
+	for _, dir := range guarded {
+		f.requireRestored(dir, saved)
 	}
+	t.Logf("%d of %d put-backs through the guard restored the whole of the saved work", len(guarded), len(guarded))
 }
 
 // A base the restore needs can be gone — a branch force-pushed away since the release — and the
@@ -318,7 +392,14 @@ func TestARestoreSkipsABookmarkNameJJWillNotTakeAndRestoresTheRest(t *testing.T)
 	}
 }
 
-const bundleIssue = "INFRA-945"
+// bundleIssue is the issue the fixture's workspaces belong to, and bundleOwner and bundleRepo
+// the repository: the three name the directories a pod that replaces the released one is laid
+// out in (secondPod, workspace.Location).
+const (
+	bundleIssue = "INFRA-945"
+	bundleOwner = "acme"
+	bundleRepo  = "widgets"
+)
 
 // bundleFixture is one remote, the pod that is released and the workspace it worked in, and the
 // pods that replace it: real git and real jj throughout, every command naming the directory it
@@ -361,9 +442,9 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 			t.Fatal(err)
 		}
 	}
-	f.run(f.remote, "git", "init", "--quiet", "--bare", f.remote)
+	f.run(f.remote, fixturegit.InitBare(f.remote, "")...)
 	f.run(f.remote, "git", "--git-dir="+f.remote, "symbolic-ref", "HEAD", "refs/heads/main")
-	f.run(seed, "git", "init", "--quiet", "-b", "main", seed)
+	f.run(seed, fixturegit.InitWorkTree(seed, "main")...)
 	f.write(filepath.Join(seed, "f.txt"), "one\n")
 	f.run(seed, "git", "add", "-A")
 	f.run(seed, "git", "commit", "--quiet", "-m", "one")
@@ -387,7 +468,7 @@ func (f *bundleFixture) pod(clone, ws string) {
 	// --no-local: a local clone hardlinks the whole object store, unreachable objects included,
 	// where a pod clones over the network and gets only what the remote's refs reach.
 	f.run(f.root, "git", "clone", "--quiet", "--no-local", f.remote, clone)
-	f.run(clone, "jj", "git", "init", "--colocate", clone)
+	f.run(clone, fixturegit.JJInit(clone, true)...)
 	f.run(clone, "jj", "bookmark", "track", "main@origin", "legion/"+bundleIssue+"@origin")
 	f.run(clone, "jj", "workspace", "add", "--name", filepath.Base(ws), ws)
 	if err := workspace.RecordCreated(ws, time.Now()); err != nil {
@@ -396,12 +477,25 @@ func (f *bundleFixture) pod(clone, ws string) {
 }
 
 // secondPod is the pod that replaces the released one: its own clone of the remote as it stands
-// now, and its own workspace, holding only what was pushed.
+// now, and its own workspace, holding only what was pushed. name is the state directory the pair
+// is laid out under, each pod having one of its own; the clone and the workspace sit where
+// provisioning puts them below it, which is where a launcher started in that workspace derives
+// the clone from (workspace.Location, workspace.WorkspaceOf).
 func (f *bundleFixture) secondPod(name string) string {
 	f.t.Helper()
-	clone, workspace := filepath.Join(f.root, name+"-clone"), filepath.Join(f.root, name)
-	f.pod(clone, workspace)
-	return workspace
+	state := filepath.Join(f.root, name)
+	located, err := workspace.Location(state, ghrepo.MustParse(bundleOwner+"/"+bundleRepo), bundleIssue)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	clone, ws := located.Clone, located.Dir
+	for _, dir := range []string{filepath.Dir(clone), filepath.Dir(ws)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	f.pod(clone, ws)
+	return ws
 }
 
 // workOne leaves in the released pod's workspace the four kinds of unpushed work a release has to
@@ -577,6 +671,37 @@ func (f *bundleFixture) restoreInto(workspace string, saved shimwire.WorkspaceBu
 	return ""
 }
 
+// requireRestored fails the test unless workspace holds all of saved: every saved head visible,
+// each saved bookmark on its commit, the working copy on the saved head with its own change, and
+// none of the restore's temporary branches left in the repository.
+func (f *bundleFixture) requireRestored(workspace string, saved shimwire.WorkspaceBundle) {
+	f.t.Helper()
+	log := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all()", "--no-graph",
+		"-T", `commit_id ++ " " ++ description.first_line() ++ "\n"`)
+	for _, want := range []string{"issue work", "second head", "working copy"} {
+		if !strings.Contains(log, f.commits[want]+" "+want) {
+			f.t.Fatalf("the restored workspace %s holds no %s (%s), so that head is not visible:\n%s", workspace, want, f.commits[want], log)
+		}
+	}
+	listed := f.run(workspace, "jj", "bookmark", "list", "-R", workspace, "--ignore-working-copy",
+		"-T", `if(remote, "", name ++ " " ++ normal_target.commit_id() ++ "\n")`)
+	for name, commit := range map[string]string{"legion/" + bundleIssue: f.commits["issue work"], "side": f.commits["second head"]} {
+		if !strings.Contains(listed, name+" "+commit) {
+			f.t.Fatalf("the restored workspace %s has no %s on %s:\n%s", workspace, name, commit, listed)
+		}
+	}
+	if head := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != saved.Head {
+		f.t.Fatalf("the restored working copy of %s is on %s, want the saved %s", workspace, head, saved.Head)
+	}
+	if body, err := os.ReadFile(filepath.Join(workspace, "wip.txt")); err != nil || string(body) != "wip\n" {
+		f.t.Fatalf("the restored working copy's own change in %s reads %q (%v)", workspace, body, err)
+	}
+	// Nothing of the restore is left in the repository: the temporary branches are gone.
+	if refs := f.run(workspace, "git", "--git-dir="+f.gitDir(workspace), "for-each-ref", "--format=%(refname)", "refs/heads/"); strings.Contains(refs, restoreRefPrefix) {
+		f.t.Fatalf("the restore left its temporary branches behind in %s:\n%s", workspace, refs)
+	}
+}
+
 // gitDir is the git directory behind a workspace, as the restore resolves it.
 func (f *bundleFixture) gitDir(ws string) string {
 	f.t.Helper()
@@ -599,12 +724,5 @@ func (f *bundleFixture) write(path, content string) {
 // would open the workspace the test process stands in (docs/testing.md).
 func (f *bundleFixture) run(dir string, args ...string) string {
 	f.t.Helper()
-	command := exec.Command(args[0], args[1:]...)
-	command.Dir = dir
-	command.Env = f.env
-	output, err := command.CombinedOutput()
-	if err != nil {
-		f.t.Fatalf("%s in %s: %v\n%s", strings.Join(args, " "), dir, err, output)
-	}
-	return strings.TrimSpace(string(output))
+	return fixturegit.Runner{TB: f.t, Env: f.env}.Run(dir, args...)
 }

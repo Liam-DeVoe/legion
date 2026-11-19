@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -177,19 +178,19 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 // as a whole stays within one consumerLagBound.
 func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *testing.T) {
 	ctx := context.Background()
-	daemonSeed, daemonPublic := testnats.User(t)
-	adminSeed, adminPublic := testnats.User(t)
+	daemonSeed, daemonPublic := testnkeys.User(t)
+	adminSeed, adminPublic := testnkeys.User(t)
 	_, uri := testnats.StartNkeyAuthorizedUsers(t, testnats.Image,
 		testnats.NkeyUser{Public: daemonPublic, Permissions: `{ publish: { deny: ["$JS.API.STREAM.MSG.GET.>"] } }`},
 		testnats.NkeyUser{Public: adminPublic})
-	admin := jetStreamAs(t, uri, adminSeed)
+	admin := jetStreamAs(t, uri, adminSeed, "admin")
 	if _, err := admin.CreateStream(ctx, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}}); err != nil {
 		t.Fatalf("create the notification stream: %v", err)
 	}
 	clock := &lagClock{now: time.Now()}
 	spec := consumerSpec(&lockedBuffer{})
 	spec.Now = clock.Now
-	consumers, err := OpenConsumers(ctx, jetStreamAs(t, uri, daemonSeed), migratedPool(t), spec)
+	consumers, err := OpenConsumers(ctx, jetStreamAs(t, uri, daemonSeed, "the daemon's user"), migratedPool(t), spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers as the daemon's user: %v", err)
 	}
@@ -218,10 +219,10 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 }
 
 // jetStreamAs is a JetStream client of the server at uri, connected as the nkey user seed is the
-// seed of, closed when t ends.
-func jetStreamAs(t *testing.T, uri, seed string) jetstream.JetStream {
+// seed of and named for who it is on that server, closed when t ends.
+func jetStreamAs(t *testing.T, uri, seed, who string) jetstream.JetStream {
 	t.Helper()
-	conn, err := natsauth.Connect([]string{uri}, seed)
+	conn, err := natsauth.Connect([]string{uri}, seed, t.Name()+" "+who)
 	if err != nil {
 		t.Fatalf("connect to NATS: %v", err)
 	}

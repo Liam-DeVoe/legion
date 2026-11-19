@@ -1,11 +1,9 @@
 package session
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -18,7 +16,7 @@ func openWatchedRegistry(t *testing.T, uri string) *SessionRegistry {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	registry, err := OpenSessionRegistry(conn, WithSessionReplicas(1))
+	registry, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -52,7 +50,7 @@ func TestStopWatchMakesNoRequestOfTheServer(t *testing.T) {
 func TestStopWatchIsFinal(t *testing.T) {
 	_, uri := testnats.Start(t)
 	conn := testnats.Connect(t, uri)
-	registry, err := OpenSessionRegistry(conn, WithSessionReplicas(1))
+	registry, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -62,12 +60,11 @@ func TestStopWatchIsFinal(t *testing.T) {
 		t.Fatalf("wait for the session cache: %v", err)
 	}
 
-	var logs bytes.Buffer
-	var logsMu sync.Mutex
-	logtest.SetDefault(t, slog.NewTextHandler(lockedWriter{&logs, &logsMu}, nil))
+	var logs lockedWriter
+	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 
 	registry.StopWatch()
-	if err := registry.Rewatch(conn); err != nil {
+	if err := registry.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch after StopWatch: %v", err)
 	}
 	if err := conn.Drain(); err != nil {
@@ -82,20 +79,9 @@ func TestStopWatchIsFinal(t *testing.T) {
 	if err := registry.WatchErr(); err != nil {
 		t.Fatalf("the registry reports a failed watcher after StopWatch: %v", err)
 	}
-	logsMu.Lock()
-	defer logsMu.Unlock()
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Fatalf("a watcher armed after StopWatch logged an error when the drain ended it:\n%s", logs.String())
 	}
 }
 
-type lockedWriter struct {
-	buffer *bytes.Buffer
-	mu     *sync.Mutex
-}
-
-func (w lockedWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buffer.Write(p)
-}
+type lockedWriter = logtest.Buffer

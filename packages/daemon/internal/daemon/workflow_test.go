@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,7 +33,7 @@ func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
 
-	engine := engineConfig(cfg, "legion-reviewer[bot]")
+	engine := engineConfig(cfg, "legion-reviewer[bot]", nil)
 	if engine.Linger != 18*time.Minute {
 		t.Errorf("the engine's linger = %s, want 18m0s", engine.Linger)
 	}
@@ -44,7 +45,7 @@ func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
 // loginTokens answers each App role's lease, and its login, with the bot login named for it.
 type loginTokens map[appauth.AppRole]string
 
-func (t loginTokens) Token(_ context.Context, role appauth.AppRole, _ ghrepo.Repository) (appauth.Lease, error) {
+func (t loginTokens) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: t[role]}}, nil
 }
 
@@ -56,18 +57,24 @@ func (loginTokens) InstalledOn(context.Context, appauth.AppRole, ghrepo.Reposito
 	return true, nil
 }
 
+// InstalledOwners answers no owner list: opening the workflow builds no gh bundle, and a test
+// that builds one names its owners itself.
+func (loginTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return nil, errors.New("loginTokens lists no owner accounts, which a gh bundle holds one directory per owner of")
+}
+
 // Forget drops nothing: every lease is minted afresh.
 func (loginTokens) Forget(appauth.AppRole, string) {}
 
-func (t loginTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
-	lease, err := t.Token(ctx, role, ghrepo.Repository{})
+func (t loginTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	lease, err := t.Token(ctx, role, "")
 	lease.Token += "-read"
 	return lease, err
 }
 
 // The engine judges a push by its pusher against the review App's login, so a configuration whose
-// two roles resolve to one App would count no fix attempt at all: boot refuses it, and a review App
-// with no login, before anything else opens.
+// two roles resolve to one App would read every red the implementer leaves as a planned one: boot
+// refuses it, and a review App with no login, before anything else opens.
 func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testing.T) {
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !servedBootCall(t, w, r, "demo") {
@@ -86,7 +93,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 		"no review login":        {appauth.Implement: "legion-implementer[bot]"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, github, nil)
+			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, github, nil)
 			if err == nil || !strings.Contains(err.Error(), "the workflow needs two different Apps") {
 				t.Fatalf("openWorkflow = %v, want the two-Apps refusal", err)
 			}

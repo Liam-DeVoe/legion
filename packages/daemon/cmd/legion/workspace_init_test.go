@@ -13,12 +13,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -139,6 +140,15 @@ func newIssueVolume(t *testing.T) *issueVolume {
 	return v
 }
 
+// runner runs one of the volume's own fixture commands — a git or jj that builds its remote or
+// reads one of its repositories, never the command under test. Every such command wants the same
+// environment, which is this one: fixtureenv.Isolated of a home of its own, so it reaches no
+// workspace, repository, remote, credential or configuration of whoever runs the tests.
+func (v *issueVolume) runner(t *testing.T) fixturegit.Runner {
+	t.Helper()
+	return fixturegit.Isolated(t, t.TempDir())
+}
+
 // withRemote gives the volume's git a real repository to clone: a bare remote whose default branch,
 // defaultBranch, holds one commit, as github.com/acme/widgets would.
 func (v *issueVolume) withRemote(t *testing.T, defaultBranch string) *issueVolume {
@@ -147,19 +157,14 @@ func (v *issueVolume) withRemote(t *testing.T, defaultBranch string) *issueVolum
 	remote := filepath.Join(dir, "remote.git")
 	seed := filepath.Join(dir, "seed")
 	for _, argv := range [][]string{
-		{"git", "init", "--bare", "--initial-branch=" + defaultBranch, remote},
-		{v.realJJ, "git", "init", "--colocate", seed},
+		fixturegit.InitBare(remote, defaultBranch),
+		append([]string{v.realJJ}, fixturegit.JJInit(seed, true)[1:]...),
 		{v.realJJ, "describe", "-m", "seed", "-R", seed},
 		{v.realJJ, "bookmark", "set", defaultBranch, "-r", "@", "-R", seed},
 		{v.realJJ, "git", "remote", "add", "origin", remote, "-R", seed},
 		{v.realJJ, "git", "push", "--remote", "origin", "--bookmark", defaultBranch, "-R", seed},
 	} {
-		setup := exec.Command(argv[0], argv[1:]...)
-		setup.Dir = dir
-		setup.Env = fixtureenv.Isolated(t.TempDir())
-		if output, err := setup.CombinedOutput(); err != nil {
-			t.Fatalf("%s: %v\n%s", strings.Join(argv, " "), err, output)
-		}
+		v.runner(t).Run(dir, argv...)
 	}
 	v.env["WINIT_REMOTE"] = remote
 	v.defaultBranch = defaultBranch
@@ -238,18 +243,11 @@ func (v *issueVolume) codegraphCalls(t *testing.T) []string { return logLines(t,
 
 func (v *issueVolume) jj(t *testing.T, args ...string) string {
 	t.Helper()
-	command := exec.Command(v.realJJ, args...)
 	// Every call names the repository it reads with -R, so the helper runs in the volume's root,
 	// which holds them all: jj searches upward from the directory it runs in for the closest .jj,
 	// so a command with no Dir would open the workspace the test process stands in, which in a
 	// Legion issue pod is a real one.
-	command.Dir = v.root
-	command.Env = fixtureenv.Isolated(t.TempDir())
-	output, err := command.Output()
-	if err != nil {
-		t.Fatalf("jj %s: %v", strings.Join(args, " "), err)
-	}
-	return strings.TrimSpace(string(output))
+	return strings.TrimSpace(v.runner(t).Out(v.root, append([]string{v.realJJ}, args...)...))
 }
 
 func (v *issueVolume) git(t *testing.T, args ...string) string {
@@ -266,7 +264,9 @@ func (v *issueVolume) gitInput(t *testing.T, input string, args ...string) strin
 	// directory: the helper runs in the volume's root rather than wherever the test process
 	// stands.
 	command.Dir = v.root
-	command.Env = fixtureenv.Isolated(t.TempDir())
+	// The command carries its own standard input, which a fixturegit.Runner does not take, so it
+	// is built here and takes that runner's environment alone (v.runner).
+	command.Env = v.runner(t).Env
 	command.Stdin = strings.NewReader(input)
 	output, err := command.Output()
 	if err != nil {
@@ -312,19 +312,19 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			name: "no subcommand",
 			args: func(*issueVolume) []string { return nil },
 			code: 2,
-			says: func(*issueVolume) string { return subcommandUsage("workspace-init", workspaceInitCommands) },
+			says: func(*issueVolume) string { return "Usage:\n  legion workspace-init [flags]\n" },
 		},
 		{
 			name: "an unknown subcommand",
 			args: func(v *issueVolume) []string { return append([]string{"init"}, v.args("LEGION-42")[1:]...) },
 			code: 2,
-			says: func(*issueVolume) string { return `unknown subcommand "init"` },
+			says: func(*issueVolume) string { return `unknown command "init" for "legion workspace-init"` },
 		},
 		{
 			name: "the one-container invocation, with no subcommand",
 			args: func(v *issueVolume) []string { return v.args("LEGION-42")[1:] },
 			code: 2,
-			says: func(*issueVolume) string { return `unknown subcommand "--issue"` },
+			says: func(*issueVolume) string { return `unknown flag: --issue` },
 		},
 		{
 			name: "no --issue",
@@ -466,9 +466,10 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 }
 
 // A fresh issue volume, provisioned from the feed `fetch` filled: the issue's clone, its origin
-// still GitHub's, and the issue's jj workspace on its bookmark, the clone's credential helper the
-// one named, no gh shim and no tmux pane's `legion` launcher on the volume (a pod's PATH names the
-// image's gh and legion, and its credential is the gh files its role Secret projects), one log
+// still GitHub's and marked as gh's default repository (`remote.origin.gh-resolved base`), and the
+// issue's jj workspace on its bookmark, the clone's credential helper the one named, no gh shim
+// and no tmux pane's `legion` launcher on the volume (a pod's PATH names the image's gh and
+// legion, and its credential is the gh files its role Secret projects), one log
 // line naming the workspace, and no sessions directory: no container of the pod mounts one, every
 // session being a row in the database the deployment names (INFRA-80). The permanent
 // guard on the pod path: a recording `codegraph` stub is first on PATH throughout, and this
@@ -494,6 +495,9 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 	}
 	if origin := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "remote", "get-url", "origin"); origin != "https://github.com/acme/widgets" {
 		t.Fatalf("the clone's origin is %q, want GitHub's", origin)
+	}
+	if markers := v.git(t, "--git-dir="+filepath.Join(v.clone(), ".git"), "config", "--get-regexp", `^remote\..*\.gh-resolved$`); markers != "remote.origin.gh-resolved base" {
+		t.Fatalf("the clone's gh-resolved lines are %q, want the one marking origin as gh's default repository, remote.origin.gh-resolved base", markers)
 	}
 	// -z, because v.git trims its output and the first of the clone's two values is the empty
 	// reset: with newline separators that value is a leading newline, which the trim takes away.
@@ -762,7 +766,7 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 			calls := len(v.jjCalls(t))
 
 			code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-			if want := "refusing the git worktrees of " + v.clone() + ": " + path + " is a symlink"; code != 1 || !strings.Contains(stderr, want) {
+			if want := "refusing the git worktrees of " + filepath.Join(v.clone(), ".git") + ": " + path + " is a symlink"; code != 1 || !strings.Contains(stderr, want) {
 				t.Fatalf("exit %d, stdout %q, stderr %q, want exit 1 with %q", code, stdout, stderr, want)
 			}
 			if _, err := os.Lstat(victim); err != nil {
@@ -796,22 +800,7 @@ type initProcess struct {
 }
 
 // lockedBuffer is a process's stderr, readable while the process still writes it.
-type lockedBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.String()
-}
+type lockedBuffer = testlog.Buffer
 
 // start runs workspace-init for issue as a separate process whose jj invocations carry tag, in
 // its own process group so a test can kill it with whatever it spawned.

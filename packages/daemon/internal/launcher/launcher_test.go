@@ -2,7 +2,6 @@ package launcher
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,7 +23,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 const launcherChildEnv = "LEGION_LAUNCHER_TEST_CHILD"
@@ -87,22 +89,7 @@ type roleConn struct {
 }
 
 // lockedBuffer is a bytes.Buffer the launcher and its children can write while a test reads it.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+type lockedBuffer = testlog.Buffer
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
@@ -191,10 +178,20 @@ func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	return c
 }
 
-// acknowledge admits the connection's hello and reads the launcher's first state on it.
+// acknowledge admits the connection's hello with the empty acknowledgement and reads the
+// launcher's first state on it.
 func (g *roleConn) acknowledge() shimwire.LauncherState {
 	g.t.Helper()
-	g.send(shimwire.LauncherHelloAck{})
+	return g.acknowledgeWith(shimwire.LauncherHelloAck{})
+}
+
+// acknowledgeWith admits the hello with an acknowledgement of the case's own, whatever memory
+// guard settings it carries, and reads the launcher's first state on it: the answer to an issue
+// pod's first role carries the settings the pod's cache trimmer runs by, and the absence of them
+// is what turns it off (launcher.go's serveVolumeTrim).
+func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.LauncherState {
+	g.t.Helper()
+	g.send(ack)
 	state, ok := g.next().(shimwire.LauncherState)
 	if !ok {
 		g.t.Fatalf("after the acknowledgement: %#v, want the launcher's state", state)
@@ -314,18 +311,24 @@ type observed struct {
 // verbatim. The stand-in child and the namespace tests' shell scripts both write such markers.
 func published(t *testing.T, marker string) (int, string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if body, err := os.ReadFile(marker); err == nil {
-			pid, rest, _ := strings.Cut(string(body), " ")
-			if n, err := strconv.Atoi(pid); err == nil {
-				return n, rest
-			}
+	var pid int
+	var rest string
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		body, err := os.ReadFile(marker)
+		if err != nil {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
+		head, tail, _ := strings.Cut(string(body), " ")
+		n, err := strconv.Atoi(head)
+		if err != nil {
+			return false
+		}
+		pid, rest = n, tail
+		return true
+	}) {
+		t.Fatal("the child never published its marker")
 	}
-	t.Fatal("the child never published its marker")
-	return 0, ""
+	return pid, rest
 }
 
 // publishedAll waits for the stand-in child's `<pid> <socket> <credential>` marker and reports
@@ -342,17 +345,9 @@ func publishedAll(t *testing.T, marker string) observed {
 // PID 1 is the test's own stand-in rather than a reaping init — the probe pod runs `sleep` —
 // every ended descendant the launcher killed is a zombie until the container exits.
 func gone(pid int) bool {
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-			return true
-		}
-		if zombie(pid) {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
+	return testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) || zombie(pid)
+	})
 }
 
 // zombie says whether pid has ended and is only waiting to be reaped: the third field of
@@ -485,6 +480,49 @@ func TestAPlantedPathCannotRedirectCredentials(t *testing.T) {
 	g.stop(8)
 }
 
+// A link the previous agent planted in the private directory toward a directory outside it, under
+// a directory it made 0555, which the launcher, holding no capability, cannot unlink the link
+// from, is never followed when the next start clears the private directory: what the link names,
+// and the file in it, are as they were, and the start is refused naming the entry it could not
+// clear. os.RemoveAll opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor release
+// follows a link through (rolefile.OpenDirectory), so in such a pod it deletes what the link
+// names; Linux refuses that open, so only such a gVisor shows that control fail.
+func TestWriteFilesRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
+	}
+	g := newRig(t)
+	workspace := t.TempDir()
+	keep := filepath.Join(workspace, "keep")
+	if err := os.WriteFile(keep, []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(g.private, "planted")
+	if err := os.Mkdir(planted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(planted, "link")
+	if err := os.Symlink(workspace, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(planted, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// The private directory keeps planted, which its own cleanup could not remove at 0555.
+	t.Cleanup(func() { _ = os.Chmod(planted, 0o755) })
+	marker := filepath.Join(t.TempDir(), "marker")
+	got := g.start(g.childStart(8, marker, map[string]string{"ENVOY_TOKEN": "envoy-8"}))
+	if got.OK || !strings.Contains(got.Error, "clear planted from the private directory") {
+		t.Fatalf("start result = %#v, want the start refused naming planted, the entry it could not clear", got)
+	}
+	if body, err := os.ReadFile(keep); err != nil || string(body) != "kept\n" {
+		t.Fatalf("%s, in the directory the planted link names, is %q (%v), want it kept", keep, body, err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the planted link is %v (%v), want it left as it was", info, err)
+	}
+}
+
 // A replayed start of the live generation answers as before and rewrites nothing; the same id with
 // another payload, credentials included, is refused before anything is written; and a generation
 // that already ran is never started again.
@@ -539,17 +577,19 @@ func (g *rig) told(generation uint64, expansion string, env []string, resume str
 	if got := g.start(command); !got.OK {
 		g.t.Fatalf("start of generation %d = %#v", generation, got)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if body, err := os.ReadFile(told); err == nil {
-			g.stop(generation)
-			return string(body)
+	var said string
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		body, err := os.ReadFile(told)
+		if err != nil {
+			return false
 		}
-		if time.Now().After(deadline) {
-			g.t.Fatalf("generation %d's child never said what it was told", generation)
-		}
-		time.Sleep(10 * time.Millisecond)
+		said = string(body)
+		return true
+	}) {
+		g.t.Fatalf("generation %d's child never said what it was told", generation)
 	}
+	g.stop(generation)
+	return said
 }
 
 // toldRecreated starts generation with env (resuming resume, "" for none), returns the
@@ -586,12 +626,40 @@ type fleet struct {
 	conns                 map[string]*roleConn
 }
 
-// newFleet starts a launcher over a roles directory shaped as an issue pod's one container gives
-// it — every role's launcher token, gh bundle, private, state and agent-secrets directory — and
-// takes every role's connection through its hello, acknowledgement and state. A generation of
-// such a launcher runs in namespaces of its own, so a test that starts one calls
-// requireRoleNamespaces first.
+// newFleet is newFleetOf of a launcher that carries no fields of its own but its stop grace.
 func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
+	t.Helper()
+	return newFleetOf(t, Config{StopGrace: grace}, roles...)
+}
+
+// newFleetOf is newFleetDialedOf with every role's hello admitted by the empty acknowledgement,
+// in the order of the --role list, which is the order an issue pod's daemon answers them in.
+func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
+	t.Helper()
+	f := newFleetDialedOf(t, cfg, roles...)
+	for _, role := range roles {
+		f.role(role).acknowledge()
+	}
+	return f
+}
+
+// newFleetDialed is newFleetDialedOf of a launcher that carries no fields of its own but its
+// stop grace.
+func newFleetDialed(t *testing.T, grace time.Duration, roles ...string) *fleet {
+	t.Helper()
+	return newFleetDialedOf(t, Config{StopGrace: grace}, roles...)
+}
+
+// newFleetDialedOf starts a launcher that carries cfg's own fields (its stop grace, its
+// leak-check directory) besides the fields every fleet's launcher is given, over a roles
+// directory shaped as an issue pod's one container gives it — every role's launcher token, gh
+// bundle, private, state and agent-secrets directory — and takes every role's connection up to
+// its hello, acknowledging none: a case that drives the pod's cache trimmer or its memory guard
+// answers each hello itself, since the answer to the first role's is what hands the trimmer its
+// settings (launcher.go's serveVolumeTrim) and each answer hands the guard its own (serve). A
+// generation of such a launcher runs in namespaces of its own, so a test that starts one calls
+// requireRoleNamespaces first.
+func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
 	scratch := namespaceScratch(t)
 	f := &fleet{
@@ -628,11 +696,10 @@ func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Cleanup(func() { _ = listener.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
+	cfg.Connect, cfg.Sandbox, cfg.PodUID = "tcp://"+listener.Addr().String(), "legion-legion-legion-208", "pod-1"
+	cfg.RolesDir, cfg.Roles, cfg.Stdout, cfg.Stderr = f.rolesDir, roles, f.stderr, f.stderr
 	go func() {
-		f.result <- Run(ctx, Config{
-			Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-legion-208", PodUID: "pod-1",
-			RolesDir: f.rolesDir, Roles: roles, Stdout: f.stderr, Stderr: f.stderr, StopGrace: grace,
-		})
+		f.result <- Run(ctx, cfg)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -649,10 +716,23 @@ func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 		}
 		f.conns[conn.hello.Role] = conn
 	}
-	for _, conn := range f.conns {
-		conn.acknowledge()
-	}
 	return f
+}
+
+// stop ends the container's context and answers what Run returned, putting it back where the
+// case's own cleanup reads it: the cleanup waits for one value, and a case that read it and
+// kept it would leave the cleanup waiting out its bound for a launcher that had already left.
+func (f *fleet) stop() error {
+	f.t.Helper()
+	f.cancel()
+	select {
+	case err := <-f.result:
+		f.result <- err
+		return err
+	case <-time.After(testwait.Bounded(f.t, 30*time.Second, time.Second)):
+		f.t.Fatalf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
+		return nil
+	}
 }
 
 // role is the daemon end of role's connection.
@@ -684,15 +764,18 @@ func (g *roleConn) awaitExit(generation uint64) shimwire.LauncherExit {
 // role's output, role-init's refusals among it — when it never does.
 func (f *fleet) waitForRoleFile(path string) string {
 	f.t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if body, err := os.ReadFile(path); err == nil && len(body) > 0 {
-			return string(body)
+	var said string
+	if !testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+		body, err := os.ReadFile(path)
+		if err != nil || len(body) == 0 {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
+		said = string(body)
+		return true
+	}) {
+		f.t.Fatalf("%s was never written; the launcher's log: %s", path, f.stderr.String())
 	}
-	f.t.Fatalf("%s was never written; the launcher's log: %s", path, f.stderr.String())
-	return ""
+	return said
 }
 
 // An issue pod's one container holds one authenticated connection per resident role, each with
@@ -967,13 +1050,7 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	guard := &pidGuard{pids: map[int]bool{guarded.Process.Pid: true}}
 	// Every one has exited and waits as a zombie for whoever reaps it.
 	for _, cmd := range []*exec.Cmd{tester, reviewer, orphan, guarded} {
-		deadline := time.Now().Add(5 * time.Second)
-		for !zombie(cmd.Process.Pid) {
-			if time.Now().After(deadline) {
-				t.Fatalf("process %d never exited", cmd.Process.Pid)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		awaitZombie(t, cmd.Process.Pid)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	signals := make(chan os.Signal, 1)
@@ -997,6 +1074,98 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	}
 }
 
+// awaitZombie waits for pid, a child of the test that exits at once, to have exited and to wait as
+// a zombie for whoever reaps it.
+func awaitZombie(t *testing.T, pid int) {
+	t.Helper()
+	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, fmt.Sprintf("process %d to exit", pid), func() bool { return zombie(pid) })
+}
+
+// reapedByAnother is whether err is a child's own wait answering that another wait of the process
+// reaped it first: Linux answers ECHILD (`waitid: no child processes`), and gVisor, which a pod
+// runs under, answers ESRCH (`waitid: no such process`) for about half of them. A reap that lands
+// between Go's waitid and its wait4 answers ECHILD from the second (`wait: no child processes`).
+func reapedByAnother(err error) bool {
+	return errors.Is(err, syscall.ECHILD) || errors.Is(err, syscall.ESRCH)
+}
+
+// Each of the guard's passes (pidGuard.reapOrphans, the orphan reaper's, and pidGuard.reap, the
+// controller pod's drain's) leaves an exited child the launcher holds for a wait of its own (the
+// leak-check install's run, say) to that wait, which reads its own exit, and reaps any other exited
+// child.
+func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pass func(guard *pidGuard) error
+	}{
+		{"the orphan reaper's pass", func(guard *pidGuard) error { return guard.reapOrphans() }},
+		{"the drain's pass", func(guard *pidGuard) error { _, err := guard.reap(); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := &pidGuard{}
+			held := exec.Command("/bin/sh", "-c", "exit 5")
+			if _, err := guard.start(held); err != nil {
+				t.Fatal(err)
+			}
+			other := exec.Command("/bin/sh", "-c", "exit 0")
+			if err := other.Start(); err != nil {
+				t.Fatal(err)
+			}
+			awaitZombie(t, held.Process.Pid)
+			awaitZombie(t, other.Process.Pid)
+			if err := tc.pass(guard); err != nil {
+				t.Fatal(err)
+			}
+			if err := other.Wait(); !reapedByAnother(err) {
+				t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the reap left it unreaped", err)
+			}
+			if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+				t.Errorf("the held child reads %v (%v), want its own exit 5: the reap took it", held.ProcessState, err)
+			}
+		})
+	}
+}
+
+// The controller pod's launcher is its container's PID 1, and once a generation has exited it
+// drains the namespace of what the generation left (cleanExitedGeneration): SIGTERM to every
+// process, then a reap until nothing is left. That drain reaps through the guard, so a child the
+// launcher holds for a wait of its own keeps its exit for that wait, and any other exited child is
+// reaped. It runs as PID 1 of a PID namespace of its own, since off PID 1 the drain does nothing
+// (TestControllerDrainPIDOneHelper).
+func TestTheControllerPodsDrainLeavesTheGuardsChildrenToTheirWaits(t *testing.T) {
+	t.Logf("%s", runAsPIDOne(t, "TestControllerDrainPIDOneHelper"))
+}
+
+// TestControllerDrainPIDOneHelper is TestTheControllerPodsDrainLeavesTheGuardsChildrenToTheirWaits's
+// body, run as PID 1.
+func TestControllerDrainPIDOneHelper(t *testing.T) {
+	if os.Getenv(pidOneHelperEnv) != "1" {
+		return
+	}
+	if os.Getpid() != 1 {
+		t.Fatal("the drain helper is not PID 1")
+	}
+	guard := &pidGuard{}
+	m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
+	held := exec.Command("/bin/sh", "-c", "exit 5")
+	if _, err := guard.start(held); err != nil {
+		t.Fatal(err)
+	}
+	other := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	awaitZombie(t, held.Process.Pid)
+	awaitZombie(t, other.Process.Pid)
+	m.cleanExitedGeneration()
+	if err := other.Wait(); !reapedByAnother(err) {
+		t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the drain left it unreaped", err)
+	}
+	if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+		t.Errorf("the held child reads %v (%v), want its own exit 5: the drain took it", held.ProcessState, err)
+	}
+}
+
 // testInstance is the Cloud SQL instance a test's session database sits in. This repository is
 // public, so it is a placeholder, as is every login and database name beside it.
 const testInstance = "example-project:us-central1:example-instance"
@@ -1004,20 +1173,26 @@ const testInstance = "example-project:us-central1:example-instance"
 // testDatabase is the session database a launcher under test proxies its generations to.
 var testDatabase = ompsessions.Database{Instance: testInstance, Name: "legion_sessions", User: "legion-sessions@example-project.iam"}
 
+// testServiceAccount is the Google service account a test's session database may name for the
+// proxy to impersonate; testDatabase's User is its IAM login.
+const testServiceAccount = "legion-sessions@example-project.iam.gserviceaccount.com"
+
 // sessionDialer stands in for the Cloud SQL connector: every connection is a fresh dial of addr,
 // which the test owns, and check is the credential work the connector does before each of them, so
 // a test can refuse one dial and allow the next. While stalling (stallAt), every dial reaches a
 // silent upstream instead and stalls in a real TLS handshake, which, like the connector's own, ends
 // only when the dial's context does. Every dial records when it began and its context's deadline,
 // and a stalled one when it ended (bounds), so a test reads the bound a dial was given from the
-// dial itself, and times only what the launcher did after it.
+// dial itself, and times only what the launcher did after it. Every build records the account the
+// launcher asked the connector to sign in as (accounts), "" for the pod itself.
 type sessionDialer struct {
 	addr  string
 	check func() error
 
-	mu     sync.Mutex
-	bounds []dialBound
-	silent string
+	mu       sync.Mutex
+	bounds   []dialBound
+	silent   string
+	accounts []string
 }
 
 // dialBound is what one Dial was given: the time it was entered and its context's deadline, if
@@ -1063,8 +1238,21 @@ func (d *sessionDialer) stallAt(addr string) {
 func (d *sessionDialer) Close() error { return nil }
 
 // build is the Config.SessionDialer a test passes: every generation of its launcher dials through
-// this very fake.
-func (d *sessionDialer) build(context.Context) (sessionproxy.Dialer, error) { return d, nil }
+// this very fake, and each build records the account it was given. A pod's roles start their
+// generations concurrently, so the record is held under mu.
+func (d *sessionDialer) build(_ context.Context, account string) (sessionproxy.Dialer, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.accounts = append(d.accounts, account)
+	return d, nil
+}
+
+// built answers the account of every build so far, in the order they were made.
+func (d *sessionDialer) built() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.accounts)
+}
 
 // stalledDial opens a real connection to addr, a silent upstream, and runs a real TLS handshake
 // over it, which nothing ever answers, so it ends only when ctx does.
@@ -1149,6 +1337,12 @@ func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.
 			"launcher: the session database is named in part: no --session-user"},
 		"no instance": {ompsessions.Database{Name: testDatabase.Name, User: testDatabase.User},
 			"launcher: the session database is named in part: no --session-instance"},
+		// A service account to impersonate names a database too, so it is not the other stores:
+		// with it, each of the three it leaves out is missing.
+		"the account alone": {ompsessions.Database{ImpersonateServiceAccount: testServiceAccount},
+			"launcher: the session database is named in part: no --session-instance, no --session-database, no --session-user"},
+		"the account and the instance": {ompsessions.Database{Instance: testInstance, ImpersonateServiceAccount: testServiceAccount},
+			"launcher: the session database is named in part: no --session-database, no --session-user"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			// The connect address is one nothing listens on: a refused configuration must answer
@@ -1178,6 +1372,36 @@ func TestAChildFindsItsGenerationsSessionSocketAlreadyBound(t *testing.T) {
 		t.Fatalf("the child found its session socket %s, want it already bound", seen.socket)
 	}
 	g.stop(4)
+}
+
+// A generation's proxy is built for the service account the launcher is told its session database
+// names, and for none when it is told none: the account the dialer factory is given is the one the
+// Cloud SQL connector impersonates and signs in as, so a launcher that dropped it would sign every
+// generation in as the pod itself, which the database's login does not name.
+func TestAGenerationsProxyIsBuiltForTheServiceAccountTheLauncherIsTold(t *testing.T) {
+	impersonating := testDatabase
+	impersonating.ImpersonateServiceAccount = testServiceAccount
+	for name, tc := range map[string]struct {
+		database ompsessions.Database
+		want     string
+	}{
+		"impersonating " + testServiceAccount: {impersonating, testServiceAccount},
+		"as the pod itself":                   {testDatabase, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dialer := &sessionDialer{addr: idleUpstream(t)}
+			g := newSessionRig(t, Config{SessionDatabase: tc.database, SessionDialer: dialer.build})
+			marker := filepath.Join(t.TempDir(), "marker")
+			if got := g.start(g.childStart(2, marker, nil)); !got.OK {
+				t.Fatalf("start result = %#v", got)
+			}
+			if got := dialer.built(); !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("the generation's dialer factory was given %q, want %q once", got, tc.want)
+			}
+			publishedAll(t, marker)
+			g.stop(2)
+		})
+	}
 }
 
 // A generation whose session database cannot be reached fails loudly rather than running an agent

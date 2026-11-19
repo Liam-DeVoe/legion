@@ -1,8 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { removeTemporaryDirectories, temporaryDirectory } from "../../test/temp-dir";
-
-afterAll(removeTemporaryDirectories);
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // The `dispatch` entry is its own process in production, and every omp session reads it through a
 // pipe: Bun's `process.exit` drops what a pipe has not yet taken, so the entry must wait for its
@@ -10,6 +9,11 @@ afterAll(removeTemporaryDirectories);
 
 const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 const PROJECTS = 4000;
+
+const makeDirectory = temporaryDirectories("dispatch-bin");
+
+/** The Dispatch bearer the entry is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 const server = Bun.serve({
   port: 0,
@@ -20,6 +24,7 @@ const server = Bun.serve({
           key: `P${index}`,
           name: `Project number ${index}`,
           open_asks: 0,
+          gated_steps: [],
           created_at: "2026-09-01T00:00:00Z",
         }))
       );
@@ -31,7 +36,7 @@ const server = Bun.serve({
 afterAll(() => server.stop(true));
 
 async function runEntry(): Promise<{ code: number; stdout: Uint8Array; stderr: string }> {
-  const state = temporaryDirectory("dispatch-bin-");
+  const state = makeDirectory();
   // Bun.spawn's own stdout pipe drains fast enough to hide the loss, so the entry writes into a
   // shell pipe to `cat`, the way a bash tool captures it; pipefail keeps the entry's exit code.
   // The shell runs the same Bun as the test, not whatever `bun` its PATH resolves.
@@ -45,7 +50,7 @@ async function runEntry(): Promise<{ code: number; stdout: Uint8Array; stderr: s
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-bin",
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: TOKEN,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -61,6 +66,11 @@ async function runEntry(): Promise<{ code: number; stdout: Uint8Array; stderr: s
 }
 
 describe("the dispatch entry", () => {
+  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process and
+  // reads its whole pipe, and bun's unwritten 5,000 ms per-test default is a limit on that work
+  // rather than on a hang. Measured in a 2-CPU pod: 0.36 s idle; under 16 busy loops (8 x nproc),
+  // 6.71 s at most in a whole-suite run and 6.94 s with this file alone, which passes that
+  // default. It fires only if the child never exits or its pipe never ends.
   test("writes all of its output to a pipe, however long", async () => {
     const { code, stdout, stderr } = await runEntry();
     expect(stderr).toBe("");
@@ -69,5 +79,5 @@ describe("the dispatch entry", () => {
     expect(stdout.length).toBeGreaterThan(64 * 1024);
     expect(text).toContain(`P${PROJECTS - 1}`);
     expect(text.endsWith("\n")).toBe(true);
-  });
+  }, 30_000);
 });
