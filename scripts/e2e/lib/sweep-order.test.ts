@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { command, rowMs, rowOf } from "@legion/test-fixtures/row-waits";
 import { noHookLimit, removeScratch } from "../../../packages/dispatch/e2e/__tests__/step-end";
 import { type Driver, mark, sweep, sweepOrder } from "./sweep-order";
 
@@ -347,14 +348,23 @@ describe("the search for a start that refuses or creates its Postgres before it 
     );
   }
 
-  test("the search's command says UNKNOWN, not clean, where it read no driver", () => {
-    const empty = mkdtempSync(join(scratch, "empty-"));
-    const run = Bun.spawnSync(["bun", join(import.meta.dir, "sweep-order.ts"), empty]);
-    expect({ code: run.exitCode, out: run.stdout.toString() }).toEqual({
-      code: 2,
-      out: expect.stringContaining("UNKNOWN: no script under"),
-    });
-  });
+  // What the next row waits for, which its limit is the sum of (`rowMs` of
+  // `@legion/test-fixtures/row-waits`): the search's command, a process of its own.
+  const theSearch = command("the search's command");
+  const oneSearch = [theSearch];
+  test(
+    "the search's command says UNKNOWN, not clean, where it read no driver",
+    () => {
+      const empty = mkdtempSync(join(scratch, "empty-"));
+      rowOf(oneSearch).charge(theSearch);
+      const run = Bun.spawnSync(["bun", join(import.meta.dir, "sweep-order.ts"), empty]);
+      expect({ code: run.exitCode, out: run.stdout.toString() }).toEqual({
+        code: 2,
+        out: expect.stringContaining("UNKNOWN: no script under"),
+      });
+    },
+    rowMs(oneSearch)
+  );
 });
 
 /** A stand-in for each command a driver runs on its way, and for mktemp, which makes each

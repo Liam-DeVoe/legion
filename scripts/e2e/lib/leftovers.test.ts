@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { command, rowMs, rowOf } from "@legion/test-fixtures/row-waits";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // lib/leftovers.sh: the one mark and the one removal of a shell stack's Postgres
@@ -14,19 +15,30 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 const lib = join(import.meta.dir, "leftovers.sh");
 const dir = temporaryDirectory("leftovers-test");
 
+/** What the next row waits for, which its limit is the sum of (`rowMs` of
+ *  `@legion/test-fixtures/row-waits`): one bash that sources lib/leftovers.sh, a process of its
+ *  own. */
+const theRemoval = command("a bash that runs the removal with no bun on PATH");
+const oneRemoval = [theRemoval];
+
 describe("the removal of the Postgres of dead stacks", () => {
-  test("a start with no bun on PATH fails with a line that names it", () => {
-    const run = Bun.spawnSync(
-      [
-        "/bin/bash",
-        "-c",
-        `. ${JSON.stringify(lib)}; remove_leftover_postgres || echo "refused $?"`,
-      ],
-      { env: { PATH: "/nonexistent" } }
-    );
-    expect(run.stdout.toString()).toBe("refused 1\n");
-    expect(run.stderr.toString()).toContain("lib/leftovers.sh: bun is required");
-  });
+  test(
+    "a start with no bun on PATH fails with a line that names it",
+    () => {
+      rowOf(oneRemoval).charge(theRemoval);
+      const run = Bun.spawnSync(
+        [
+          "/bin/bash",
+          "-c",
+          `. ${JSON.stringify(lib)}; remove_leftover_postgres || echo "refused $?"`,
+        ],
+        { env: { PATH: "/nonexistent" } }
+      );
+      expect(run.stdout.toString()).toBe("refused 1\n");
+      expect(run.stderr.toString()).toContain("lib/leftovers.sh: bun is required");
+    },
+    rowMs(oneRemoval)
+  );
 });
 
 /** A `docker` that answers refuse_leftovers from a fixture: `ps` prints each line of

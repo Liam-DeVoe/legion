@@ -1848,6 +1848,10 @@ jobs:
               - 'packages/pi-legion/scripts/skill-scenarios/rig.sh'
               # Four of the e2e libraries' tests remove their scratch in a hook through it.
               - 'packages/dispatch/e2e/__tests__/step-end.ts'
+              # scripts/e2e/lib/row-waits.test.ts reads the rows of these two beside its own
+              # directory's, for a row that starts a process and states no limit.
+              - 'packages/pi-envoy/extensions/envoy.test.ts'
+              - 'packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts'
               - 'scripts/dispatch/**'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'

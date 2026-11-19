@@ -98,6 +98,16 @@ itself, whose tests import its sources by relative path.
   The limit is `Infinity` and not 0: Bun 1.4.4 reads 0 as no limit for the hook, but kills a
   process the hook waits for at its own 5 s, as a dangling process.
 
+- A row that starts a process and waits for it states its limit as the sum of what it waits for,
+  `rowMs` of `@legion/test-fixtures/row-waits`: each wait named, with the bound of the code that
+  ends it, read from that code's own constant (a command's client deadline, a probe's
+  `--timeout`), or `commandMs` for a process nothing else bounds, and room for the row's own work
+  above them. Bun's own 5 s is a guess the next load runs past. The row counts each wait as it
+  makes it (`rowOf(waits).charge(wait)`, mostly inside the helper that starts the process), so a
+  limit that leaves a wait out fails the row on every machine, naming that wait.
+  `scripts/e2e/lib/row-waits.test.ts` reads the files whose rows do this and refuses a row or hook
+  there that starts a process and states no limit, or a `rowMs` its row does not count.
+
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
   no value is captured as unset and the restore deletes it again; setting it to the empty string

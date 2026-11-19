@@ -24,6 +24,7 @@ import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { command, rowMs, rowOf } from "@legion/test-fixtures/row-waits";
 
 const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
   cwd: import.meta.dir,
@@ -35,21 +36,31 @@ const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
 const releasedProbe =
   /bind\(\(\s*["'][^"']*["']\s*,\s*0\s*\)\)[^\n]*getsockname\(\)\[1\][^\n]*\.close\(\)/;
 
-test("no tracked file hands a server a port from a probe socket it has already closed", () => {
-  const probing = execFileSync("git", ["grep", "-lz", "getsockname"], {
-    cwd: root,
-    encoding: "utf8",
-  })
-    .split("\0")
-    .filter((file) => file !== "" && !file.endsWith("released-port-probe.test.ts"));
-  expect(probing).toContain("scripts/e2e/lib/held-port.py");
-  const hits: string[] = [];
-  for (const file of probing) {
-    readFileSync(join(root, file), "utf8")
-      .split("\n")
-      .forEach((line, index) => {
-        if (releasedProbe.test(line)) hits.push(`${file}:${index + 1}`);
-      });
-  }
-  expect(hits).toEqual([]);
-});
+/** What the row waits for, which its limit is the sum of (`rowMs` of
+ *  `@legion/test-fixtures/row-waits`): one `git grep`, a process of its own. */
+const theGrep = command("git grep for getsockname");
+const oneGrep = [theGrep];
+
+test(
+  "no tracked file hands a server a port from a probe socket it has already closed",
+  () => {
+    rowOf(oneGrep).charge(theGrep);
+    const probing = execFileSync("git", ["grep", "-lz", "getsockname"], {
+      cwd: root,
+      encoding: "utf8",
+    })
+      .split("\0")
+      .filter((file) => file !== "" && !file.endsWith("released-port-probe.test.ts"));
+    expect(probing).toContain("scripts/e2e/lib/held-port.py");
+    const hits: string[] = [];
+    for (const file of probing) {
+      readFileSync(join(root, file), "utf8")
+        .split("\n")
+        .forEach((line, index) => {
+          if (releasedProbe.test(line)) hits.push(`${file}:${index + 1}`);
+        });
+    }
+    expect(hits).toEqual([]);
+  },
+  rowMs(oneGrep)
+);

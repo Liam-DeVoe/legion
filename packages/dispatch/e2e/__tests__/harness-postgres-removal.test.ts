@@ -37,6 +37,7 @@
 import { expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1799,9 +1800,14 @@ test.skipIf(!onLinux)(
       const served = join(identity, "worker-0", "pgdata");
       postmaster = standInPostmaster(join(tmp, "bin"), served, "its TMPDIR");
       writeMark(run, owners().runs, join(run, "worker-0", "pgdata"), join(tmp, "bin"));
-      // The link now leads to a copy of that run directory, marks and all, elsewhere.
+      // The link now leads to a copy of that run directory, marks and all, elsewhere: copied in
+      // this process, so the row starts no process it would need a limit for.
       mkdirSync(moved);
-      Bun.spawnSync(["cp", "-a", identity, join(moved, basename(run))]);
+      cpSync(identity, join(moved, basename(run)), {
+        preserveTimestamps: true,
+        recursive: true,
+        verbatimSymlinks: true,
+      });
       rmSync(link);
       symlinkSync(moved, link);
 

@@ -91,6 +91,7 @@ import {
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { rowMs, rowOf, type Wait } from "@legion/test-fixtures/row-waits";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -5001,7 +5002,14 @@ describe("envoy OMP extension", () => {
   // laid over it, so the child would act as the other session. "" lies over the value there, and
   // every reader takes "" as unset. The process here starts with the variable, loads the entry
   // (with the host package stood in by the role takeover smoke's preload), runs its session_start
-  // for a session with no id, and starts `env` the PTY's way: `env K=V … env`.
+  // for a session with no id, and starts `env` the PTY's way: `env K=V … env`. That process, which
+  // its own bound ends, is what the row waits for, and the row's limit is the sum of its waits
+  // (`rowMs` of `@legion/test-fixtures/row-waits`).
+  const theEntry: Wait = {
+    what: "the process that loads the entry and starts env",
+    ms: 30_000,
+  };
+  const oneEntry = [theEntry];
   test("a session with no id hands a PTY child no inherited DISPATCH_SESSION_ID", () => {
     const marker = "dispatch-session-report ";
     const script = `
@@ -5039,12 +5047,13 @@ describe("envoy OMP extension", () => {
     `;
     const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
     const { ENVOY_URL: _url, ENVOY_NATS_URL: _nats, ...rest } = process.env;
+    rowOf(oneEntry).charge(theEntry);
     const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
       cwd: import.meta.dir,
       env: { ...rest, DISPATCH_SESSION_ID: "parent-session" },
       stdout: "pipe",
       stderr: "pipe",
-      timeout: 30_000,
+      timeout: theEntry.ms,
     });
     const report = run.stdout
       .toString()
@@ -5056,7 +5065,7 @@ describe("envoy OMP extension", () => {
       );
     }
     expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
-  });
+  }, rowMs(oneEntry));
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
   const titledContext = (kind: "main" | "sub", name: () => string | undefined): SessionContext => ({
