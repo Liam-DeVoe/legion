@@ -147,8 +147,10 @@ export function TreeRows({
 /**
  * How much of the whole tree the cycle key draws, in the three states it steps through: its
  * rows as the fold left them, those rows with every body down to the second level open, and
- * everything - every branch unfolded and every body open. The reader's own folds and pins
- * are untouched by it, so the cycle comes back to the tree they had.
+ * everything - every branch unfolded and every body open, but for a branch the reader folds
+ * while it is drawn, which is drawn folded at once. The key leaves the reader's own folds and
+ * pins as they are, so the cycle comes back to the tree they had, with any fold made in the last
+ * state among them.
  */
 export const CYCLE_STATES = 3;
 

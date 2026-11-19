@@ -177,6 +177,13 @@ export function IssueTree({
   // How much of the whole tree the cycle key draws: its first lines, their bodies down to the
   // second level, then everything.
   const [cycle, setCycle] = useState(0);
+  // The branches the reader folded while the cycle's last state draws every branch. That state
+  // holds the reader's earlier folds apart, so a fold made in it recorded a fold nobody saw: Left
+  // on an open row and the row's fold control did nothing visible, and Left never reached the
+  // parent. Each fold made there is drawn folded at once, every other row still drawn, and joins
+  // the reader's own folds (`unfold`), so the cycle's first state, which the next press brings
+  // back, keeps it.
+  const [foldedInEverything, setFoldedInEverything] = useState<ReadonlySet<string>>(NO_FOLDS);
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
   // How many zooms the reader has made, each of which places the crumb line it draws once its
@@ -271,7 +278,7 @@ export function IssueTree({
   const rootedAbove = rootedPath.slice(0, -1).map((one) => one.id);
   const drawn = treeRows(
     rooted,
-    cycle === EVERYTHING ? everythingOpened(rooted) : shown,
+    cycle === EVERYTHING ? { ...everythingOpened(rooted), closed: foldedInEverything } : shown,
     rootedAbove,
     zoomed ? NARROW_LEVELS : DRAWN_LEVELS
   );
@@ -354,20 +361,30 @@ export function IssueTree({
   // set and not as the absence of an opened one: the fold draws the reasoning and the path to
   // an open question of its own accord, so a reader folding one of those shut has nothing to
   // delete and their Fold would do nothing (`tree-fold.ts`'s `closed`).
-  const unfold = useCallback((id: string, open: boolean) => {
-    setOpened((held) => {
-      const branches = new Set(held.branches);
-      const closed = new Set(held.closed);
-      if (open) {
-        branches.add(id);
-        closed.delete(id);
-      } else {
-        branches.delete(id);
-        closed.add(id);
-      }
-      return { branches, closed, deeper: held.deeper };
-    });
-  }, []);
+  const unfold = useCallback(
+    (id: string, open: boolean) => {
+      setOpened((held) => {
+        const branches = new Set(held.branches);
+        const closed = new Set(held.closed);
+        if (open) {
+          branches.add(id);
+          closed.delete(id);
+        } else {
+          branches.delete(id);
+          closed.add(id);
+        }
+        return { branches, closed, deeper: held.deeper };
+      });
+      if (cycle !== EVERYTHING) return;
+      setFoldedInEverything((held) => {
+        const next = new Set(held);
+        if (open) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [cycle]
+  );
   const openDeeper = useCallback((id: string) => {
     setOpened((held) => ({
       branches: held.branches,
@@ -565,7 +582,12 @@ export function IssueTree({
             navigate(buildIssuePath({ key: root.id, kind: "children" }));
           },
         }),
-    onCycle: () => setCycle((held) => (held + 1) % CYCLE_STATES),
+    // The folds made in the last state are the reader's own folds already (`unfold`), which the
+    // state the key goes to draws, so the set of them starts empty at each press.
+    onCycle: () => {
+      setCycle((held) => (held + 1) % CYCLE_STATES);
+      setFoldedInEverything(NO_FOLDS);
+    },
     onEdit: edit,
     onEditEnd: stopEditing,
     onFold: unfold,
@@ -579,7 +601,10 @@ export function IssueTree({
     rows,
     root,
     writer,
-    zoom: zoomed ? on : zoom,
+    // The node the rows are drawn from, not the zoom asked for: a filter that leaves the zoomed
+    // node out draws from the issue while the zoom is kept for when it is cleared, and Left and
+    // `,` there moved nothing and said nothing, since they read a zoom no row stood under.
+    zoom: zoomed || rooted.id !== root.id ? rooted.id : undefined,
   });
 
   // The tree is one tab stop, and it rests where the reader last stood: before they have
@@ -1033,6 +1058,9 @@ export function IssueTree({
  *  their newest node where it looked, in milliseconds: the line's send has landed and its read
  *  is a request away, so a read that has not drawn the node by then is not going to. */
 export const LANDING_WAIT_MS = 10_000;
+
+/** No branch folded in the cycle's last state: the state it starts in each time. */
+const NO_FOLDS: ReadonlySet<string> = new Set();
 
 /**
  * Holds `row`, which holds the focus on itself or on a control inside it (a chip `f` stopped

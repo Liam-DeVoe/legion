@@ -3241,6 +3241,9 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
     // z cycles the whole tree: first lines, first lines with bodies to depth two, everything.
     await focusThePage(page);
     const firstLines = await visibleIds(page);
+    const openAtFirst = new Set(
+      (await drawnRows(page)).filter((row) => row.expanded === "true").map((row) => row.id)
+    );
     await page.keyboard.press("z");
     expect(
       await nodeBodies(page).count(),
@@ -3251,6 +3254,43 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
       (await visibleIds(page)).length,
       "the third state of the cycle draws no more rows than the first"
     ).toBeGreaterThan(firstLines.length);
+    // In that state Left on an open row folds that branch at once, and every other row stays
+    // drawn: it recorded a fold the state did not draw, which changed nothing on the page. The
+    // branch is one the first state draws folded, so the cycle still comes back to its lines.
+    const everything = await drawnRows(page);
+    const atBranch = everything.findIndex(
+      (row) => row.visible && row.expanded === "true" && !openAtFirst.has(row.id)
+    );
+    const foldedBranch = everything[atBranch];
+    expect(
+      foldedBranch,
+      "the third state of the cycle draws no branch the first draws folded"
+    ).toBeTruthy();
+    // The rows under the branch are the rows after it that sit deeper; every open branch outside
+    // them is one the fold must leave open.
+    const depth = Number(foldedBranch?.level ?? 0);
+    const after = everything.slice(atBranch + 1);
+    const under = after.findIndex((row) => Number(row.level ?? 0) <= depth);
+    const outside = [...everything.slice(0, atBranch), ...(under === -1 ? [] : after.slice(under))];
+    const stillOpen = outside
+      .filter((row) => row.visible && row.expanded === "true")
+      .map((row) => row.id);
+    await focusRow(page, foldedBranch?.id ?? "");
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, foldedBranch?.id ?? "").first(),
+      "Left on an open row in the cycle's third state drew the branch still open"
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(await focusedRow(page), "Left moved off the row it folded").toBe(foldedBranch?.id ?? "");
+    const afterFold = await drawnRows(page);
+    expect(
+      afterFold.filter((row) => row.visible).length,
+      "the fold drew no fewer rows"
+    ).toBeLessThan(everything.filter((row) => row.visible).length);
+    expect(
+      afterFold.filter((row) => row.visible && row.expanded === "true").map((row) => row.id),
+      "the fold closed another branch of the third state"
+    ).toEqual(stillOpen);
     await page.keyboard.press("z");
     expect(await visibleIds(page), "the cycle did not come back to the first lines").toEqual(
       firstLines
