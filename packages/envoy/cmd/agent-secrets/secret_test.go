@@ -915,9 +915,10 @@ func (r *recordingTags) TagResource(ctx context.Context, in *secretsmanager.TagR
 	return r.Local.TagResource(ctx, in, o...)
 }
 
-// refusingTags is a secrets.Local whose TagResource IAM refuses, as it refuses a person changing
-// a shared secret's owner or tier: the SDK answers AccessDeniedException as a generic API error.
-type refusingTags struct{ *secrets.Local }
+// refusingTags is a store (any secretsAPI, so it wraps the package's other fakes) whose TagResource
+// IAM refuses, as it refuses a person changing a shared secret's owner or tier: the SDK answers
+// AccessDeniedException as a generic API error, a definite refusal, so the store did not act.
+type refusingTags struct{ secretsAPI }
 
 // accessDenied is the refusal refusingTags answers.
 const accessDenied = "User: arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/ada@example.com is not authorized to perform: secretsmanager:TagResource"
