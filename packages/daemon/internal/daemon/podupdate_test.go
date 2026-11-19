@@ -2718,13 +2718,16 @@ func (w turnWait) String() string {
 	return fmt.Sprintf("the line %q, which names the roles in a turn under %q", w.msg, w.field)
 }
 
-// turnWaits is every line of logs that names round in one of its fields and each of the roles in a
-// turn in one of its fields, read by what it names rather than by its words or its field names: the
-// line that holds a round's replacement for the turns still running names the round and those
-// roles (completePodUpdate's waitsForTurn), so a line of that wait in other words, or with its
-// fields renamed, is read here too, and its failure names the field that named the roles. The
-// caller hands it the lines of one tick, so a line an earlier tick wrote that names the roles for
-// another reason (the ask of the round to them) is not read.
+// turnWaits is every line of logs that names round in one of its fields and the roles in a turn in
+// another, read by what it names rather than by its words or its field names: the line that holds a
+// round's replacement for the turns still running names the round and those roles
+// (completePodUpdate's waitsForTurn), so a line of that wait in other words, or with its fields
+// renamed, is read here too, and its failure names the field that named the roles. A field names
+// the roles in a turn where it names each of working, or where it is a list that names none (an
+// empty list, or null): past the round's bound the round counts no turn (roundEnd.holding), so a
+// wait on turns written there lists no role. The caller hands it the lines of one tick, so a line
+// an earlier tick wrote that names the roles for another reason (the ask of the round to them) is
+// not read.
 func turnWaits(t *testing.T, logs, round string, working ...claim.Role) []turnWait {
 	t.Helper()
 	var waits []turnWait
@@ -2738,7 +2741,7 @@ func turnWaits(t *testing.T, logs, round string, working ...claim.Role) []turnWa
 			if fields[key] == round {
 				namesRound = true
 			}
-			if roles == "" && namesEachRole(fields[key], working) {
+			if roles == "" && (namesEachRole(fields[key], working) || listsNoRole(fields[key])) {
 				roles = key
 			}
 		}
@@ -2770,6 +2773,13 @@ func namesEachRole(value any, roles []claim.Role) bool {
 		}
 	}
 	return len(roles) > 0
+}
+
+// listsNoRole is whether value, one field of a decoded log line, is a list that names no role: an
+// empty list, or null, which is how the daemon's log writes a list it holds none of.
+func listsNoRole(value any) bool {
+	list, isList := value.([]any)
+	return value == nil || (isList && len(list) == 0)
 }
 
 // Two rounds can stand on one group at once while a dead round's end is still on its way: the
