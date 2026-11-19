@@ -1952,7 +1952,6 @@ listener_server_change:
   - *listener_command
   # why: .github/ci-notes/ci.md#listener_server_change-what-cmdlisteners-test-binary-compiles-that-go-list
   - 'packages/envoy/going/*'
-  - 'packages/envoy/internal/redirects/*'
   - 'packages/envoy/internal/routing/*'
   - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
   - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
