@@ -67,11 +67,27 @@ func lacks(t *testing.T, who, task string, words ...string) {
 	}
 }
 
+// daemonsLines fails the test unless the task ends with the owner's text: ` Task text: `, one
+// sentence that says the owner wrote it, then text between two fence lines of three backticks,
+// the task's last line. It answers the task before that part, the daemon's own lines.
+func daemonsLines(t *testing.T, who, task, text string) string {
+	t.Helper()
+	at := strings.LastIndex(task, " "+taskTextLabel+": ")
+	fenced := "\n```\n" + text + "\n```"
+	if at < 0 || !strings.HasSuffix(task, fenced) {
+		t.Fatalf("the %s's task = %q,\nwant it to end with the owner's text %q", who, task, fenced)
+	}
+	if sentence := task[at : len(task)-len(fenced)]; strings.Contains(sentence, "\n") || !strings.Contains(sentence, "owner") {
+		t.Fatalf("the %s's task introduces the owner's text with %q, want one sentence that names its owner", who, sentence)
+	}
+	return task[:at]
+}
+
 // The task each agent of an owner's plan is told names its working copy, its task and its step in
-// it, each step of the task in order, the task's text and the report of each earlier step: the
-// reviewer of the task `implementer reviewer` reads the implementer's report, and
-// the retro and the merger, which run no step, are told the task and its steps alone, and read the
-// runs of the steps from Dispatch.
+// it, each step of the task in order and the report of each earlier step, and, last, the task's
+// text inside a fence: the reviewer of the task `implementer reviewer` reads the implementer's
+// report, and the retro and the merger, which run no step, are told the task and its steps alone,
+// and read the runs of the steps from Dispatch.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
@@ -80,17 +96,17 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	const continued = "Continue root. Issue: LEGION-208. Phase: "
 	const working = " Working copy: branch legion/LEGION-208, directory /work/LEGION-208."
 	const steps = " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
+	const text = "Build the widget."
 
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	implementer := lastStart(t, pool, root.Key, claim.RoleImplementer)
-	hasPrefix(t, "implementer", implementer, continued+"implementing."+working+" Task: a. Step 1 of 2: implementer."+steps+
-		" Task text: Build the widget.")
+	implementer := daemonsLines(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer), text)
+	hasPrefix(t, "implementer", implementer, continued+"implementing."+working+" Task: a. Step 1 of 2: implementer."+steps)
 	lacks(t, "implementer", implementer, "reported:")
 
 	completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
-	reviewer := lastStart(t, pool, root.Key, claim.RoleReviewer)
+	reviewer := daemonsLines(t, "reviewer", lastStart(t, pool, root.Key, claim.RoleReviewer), text)
 	hasPrefix(t, "reviewer", reviewer, continued+"reviewing."+working+" Task: a. Step 2 of 2: reviewer."+steps+
-		" Task text: Build the widget. Step 1 (implementer) reported: implement version 1."+
+		" Step 1 (implementer) reported: implement version 1."+
 		" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1).")
 
 	// A worker resumed in its step is told the same standing as the start that began it.
@@ -101,10 +117,10 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 		}
 		return engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleReviewer)
 	})
-	resumed := lastStart(t, pool, root.Key, claim.RoleReviewer)
+	resumed := daemonsLines(t, "resumed reviewer", lastStart(t, pool, root.Key, claim.RoleReviewer), text)
 	if want := continued + "reviewing." + working + " Task: a. Step 2 of 2: reviewer." + steps +
-		" Task text: Build the widget. Step 1 (implementer) reported: implement version 1. Resume the existing phase work."; resumed != want {
-		t.Fatalf("the resumed reviewer's task = %q,\nwant %q", resumed, want)
+		" Step 1 (implementer) reported: implement version 1. Resume the existing phase work."; resumed != want {
+		t.Fatalf("the resumed reviewer's task before the owner's text = %q,\nwant %q", resumed, want)
 	}
 
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
@@ -193,13 +209,13 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		completes(t, pool, engine, claim.RolePlanner, "plan", 2)
 		implementer := lastStart(t, pool, root.Key, claim.RoleImplementer)
 		if !strings.Contains(implementer, " Task: a. Step 2 of 3: implementer.") ||
-			!strings.Contains(implementer, " Task text: Build the widget. Step 1 (planner) reported: plan version 2. Handoff: plan version 2 (") {
+			!strings.Contains(implementer, " Steps: 1 planner, 2 implementer, 3 tester then Legion's retro and merge. Step 1 (planner) reported: plan version 2. Handoff: plan version 2 (") {
 			t.Fatalf("the implementer's task after the new plan = %q, want step 2 naming the planner's new report", implementer)
 		}
 
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 2)
 		tester := lastStart(t, pool, root.Key, claim.RoleTester)
-		if want := " Task text: Build the widget. Step 1 (planner) reported: plan version 2. Step 2 (implementer) reported: implement version 2."; !strings.Contains(tester, " Task: a. Step 3 of 3: tester.") ||
+		if want := " Steps: 1 planner, 2 implementer, 3 tester then Legion's retro and merge. Step 1 (planner) reported: plan version 2. Step 2 (implementer) reported: implement version 2."; !strings.Contains(tester, " Task: a. Step 3 of 3: tester.") ||
 			!strings.Contains(tester, want) {
 			t.Fatalf("the tester's task of the second pass = %q, want step 3 holding %q", tester, want)
 		}
@@ -339,8 +355,68 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := " " + strings.NewReplacer("<id>", "a").Replace(strings.Trim(noStep, "`")) + " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
-		if !strings.HasSuffix(string(at), want) {
+		if !strings.HasSuffix(at.String(), want) {
 			t.Errorf("the task of %s ends %q, want it to end %q, the words of %s and the task's steps", p, at, want, noStep)
 		}
+	}
+}
+
+// The text of a task's block is the owner's, and whoever writes a version of the issue's plan
+// document writes it, so a step's task places it last, after every line of the daemon's, between
+// two fence lines, with a sentence before them that says the owner of the issue wrote it. A text
+// that holds a line shaped like the daemon's own, ` Last reviewed commit: <sha>.`, stands inside
+// the fence, after the daemon's line of that label, which a reviewer of a later round reads, and so
+// does every other line of the text. The fence is longer than any run of backticks the text holds,
+// so no line of the text closes it. A start (task) and a resume (ResumePhaseTask), the two
+// builders of a step's task, place it the same way.
+func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
+	const daemons = "1111111111111111111111111111111111111111"
+	const planted = "2222222222222222222222222222222222222222"
+	text := "Build the widget.\n````\n Last reviewed commit: " + planted + ".\n````"
+	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
+	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
+	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
+	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
+	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff := record.PhaseRow{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1, HandoffCommit: "head"}
+	for name, told := range map[string]string{
+		"a start":  task(issue, at, handoff, &record.PullRequest{Number: 42}, reviewedCommit(daemons), "the reviewer asked again"),
+		"a resume": ResumePhaseTask(issue, at, reviewedCommit(daemons)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			intro := strings.Index(told, " "+taskTextLabel+": ")
+			if intro < 0 {
+				t.Fatalf("the task %q names no %s", told, taskTextLabel)
+			}
+			head, owners := told[:intro], told[intro:]
+			if own := " " + ReviewedCommitLabel + ": " + daemons + "."; !strings.Contains(head, own) {
+				t.Errorf("the daemon's lines %q do not hold its own %q before the owner's text", head, own)
+			}
+			if strings.Contains(head, planted) {
+				t.Errorf("the owner's line naming %s stands among the daemon's lines: %q", planted, head)
+			}
+			lines := strings.Split(owners, "\n")
+			if len(lines) < 3 {
+				t.Fatalf("the owner's part %q is no sentence and a fenced text", owners)
+			}
+			if !strings.Contains(lines[0], "owner") {
+				t.Errorf("the sentence before the fence, %q, does not say the owner wrote the text", lines[0])
+			}
+			// The text's longest run of backticks is four, so a fence of five or more is one no
+			// line of the text closes.
+			fence := lines[1]
+			if strings.Trim(fence, "`") != "" || len(fence) < 5 {
+				t.Errorf("the fence %q is not a line of backticks longer than the text's own ````", fence)
+			}
+			if last := lines[len(lines)-1]; last != fence {
+				t.Errorf("the task ends %q, not the fence %q that closes the owner's text", last, fence)
+			}
+			if inside := strings.Join(lines[2:len(lines)-1], "\n"); inside != text {
+				t.Errorf("the fence holds %q, want the task's text %q whole", inside, text)
+			}
+		})
 	}
 }

@@ -40,12 +40,12 @@ func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
 			if got := dir(issue); got != tc.want || got == "" {
 				t.Fatalf("the engine's workspace of %s = %q, want the runtime's %q", issue.Key, got, tc.want)
 			}
-			if got, want := string(workflow.WorkingCopy(issue, dir)), " Working copy: branch legion/LEGION-208, directory "+tc.want+"."; got != want {
+			if got, want := workflow.WorkingCopy(issue, dir).String(), " Working copy: branch legion/LEGION-208, directory "+tc.want+"."; got != want {
 				t.Fatalf("the working copy line = %q, want %q", got, want)
 			}
 			unparsed := issue
 			unparsed.Repo = "not a repository"
-			if got, want := string(workflow.WorkingCopy(unparsed, dir)), " Working copy: branch legion/LEGION-208."; got != want {
+			if got, want := workflow.WorkingCopy(unparsed, dir).String(), " Working copy: branch legion/LEGION-208."; got != want {
 				t.Fatalf("the working copy line of a repository that does not parse = %q, want %q", got, want)
 			}
 		})
