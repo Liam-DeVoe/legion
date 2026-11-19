@@ -77,7 +77,9 @@ func (s Server) url(t testing.TB) url.URL {
 // Template is a database a test binary migrates once, on its first Clone, and copies for every
 // test that asks for a migrated database of its own. Running every migration is most of the
 // Postgres work such a test would otherwise do, so a package's wall time would scale with its test
-// count times the speed of the Postgres it runs against; a clone costs one create database.
+// count times the speed of the Postgres it runs against; a clone costs one create database. A test
+// whose database another migrate brings to its schema clones a template of that migrate's key
+// instead (CloneFrom), made the same way beside the Template's own, once per key.
 //
 // A clone copies the template's files (strategy file_copy). Postgres's default from 15, strategy
 // wal_log, writes every page of the template into the write-ahead log instead: 6.4 MB of
@@ -99,13 +101,18 @@ type Template struct {
 	migrate  func(ctx context.Context, databaseURL string) error
 
 	// main is set by Main before the package's tests run; Clone refuses to run without it, since
-	// only Main drops the template and waits for the drops of the clones.
+	// only Main drops the templates and waits for the drops of the clones.
 	main      bool
 	once      sync.Once
 	err       error
 	serverURL url.URL
 	admin     *pgxpool.Pool
-	name      string
+
+	// own is the template Clone copies, and keyed each one CloneFrom copies, by key; each is made by
+	// the first test that asks for it, and Main drops every one that was made.
+	own     madeTemplate
+	keyedMu sync.Mutex
+	keyed   map[string]*madeTemplate
 
 	otherOnce sync.Once
 	otherErr  error
@@ -114,6 +121,14 @@ type Template struct {
 	drops     sync.WaitGroup
 	dropMu    sync.Mutex
 	dropFails []string
+}
+
+// madeTemplate is one template database: once makes it, name is its database once it exists, and
+// err is why it could not be made.
+type madeTemplate struct {
+	once sync.Once
+	name string
+	err  error
 }
 
 // NewTemplate is a Template on the server server names. prefix starts the name of the template
@@ -130,18 +145,62 @@ func NewTemplate(server Server, prefix, mainCall string, migrate func(ctx contex
 // the template. It skips t when the variable is unset.
 func (tp *Template) Clone(t testing.TB) string {
 	t.Helper()
-	tp.ready(t)
+	return tp.clone(t, tp.template(t, &tp.own, tp.migrate))
+}
+
+// CloneFrom is Clone for a database migrate brings to its schema instead of the Template's own
+// migrate: it creates a database of t's own from the template of key, drops it after t ends, and
+// returns its URL. The template of a key is made once in the test binary, by the first test that
+// asks: a new empty database whose URL migrate is given, which migrate migrates and leaves with no
+// connection open. Main drops it beside the Template's own. A template whose migrate failed, or
+// ended its test, fails every test that asks for it again. It skips t when the variable is unset.
+func (tp *Template) CloneFrom(t testing.TB, key string, migrate func(ctx context.Context, databaseURL string) error) string {
+	t.Helper()
+	tp.keyedMu.Lock()
+	if tp.keyed == nil {
+		tp.keyed = map[string]*madeTemplate{}
+	}
+	entry := tp.keyed[key]
+	if entry == nil {
+		entry = &madeTemplate{}
+		tp.keyed[key] = entry
+	}
+	tp.keyedMu.Unlock()
+	return tp.clone(t, tp.template(t, entry, migrate))
+}
+
+// clone creates a database of t's own from the template database named template, drops it after t
+// ends, and returns its URL.
+func (tp *Template) clone(t testing.TB, template string) string {
+	t.Helper()
 	suffix, err := randomSuffix()
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
 	name := tp.prefix + "_test_" + suffix
-	if _, err := tp.admin.Exec(context.Background(), tp.cloneStatement(name)); err != nil {
-		t.Fatalf("clone isolated database from template: %v", err)
+	if _, err := tp.admin.Exec(context.Background(), cloneStatement(name, template)); err != nil {
+		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
 	// Registered before the caller opens a pool on the clone, so it runs after that pool's close.
 	t.Cleanup(func() { tp.drop(name) })
 	return databaseURL(tp.serverURL, name)
+}
+
+// template is the name of entry's template database, which the binary's first call for entry makes
+// with migrate (makeTemplate). It fails t when that could not be made.
+func (tp *Template) template(t testing.TB, entry *madeTemplate, migrate func(ctx context.Context, databaseURL string) error) string {
+	t.Helper()
+	tp.ready(t)
+	entry.once.Do(func() {
+		// Set first, and replaced only once makeTemplate returns, so a migrate that ends its test
+		// (t.Fatal) leaves a template no later test clones.
+		entry.err = errors.New("the test that made it ended before its migrate returned")
+		entry.err = tp.makeTemplate(entry, migrate)
+	})
+	if entry.err != nil {
+		t.Fatalf("prepare migrated template database: %v", entry.err)
+	}
+	return entry.name
 }
 
 // Other is the URL of a second database of the binary's own on the template's server: empty, made
@@ -171,28 +230,28 @@ func (tp *Template) Other(t testing.TB) string {
 }
 
 // ready fails t when the package's TestMain does not run Main, skips t when the variable is unset,
-// and otherwise makes the template on the binary's first call.
+// and otherwise opens the admin pool on the binary's first call.
 func (tp *Template) ready(t testing.TB) {
 	t.Helper()
 	if !tp.main {
 		t.Fatal("this database needs the package's TestMain to be: " + tp.mainCall)
 	}
 	server := tp.server.url(t)
-	tp.once.Do(func() { tp.err = tp.prepare(server) })
+	tp.once.Do(func() { tp.err = tp.openAdmin(server) })
 	if tp.err != nil {
-		t.Fatalf("prepare migrated template database: %v", tp.err)
+		t.Fatalf("open the admin pool: %v", tp.err)
 	}
 }
 
-// cloneStatement returns the create database that makes name a copy of the template's files
-// rather than a copy through the write-ahead log (Template says why).
-func (tp *Template) cloneStatement(name string) string {
-	return "create database " + name + " template " + tp.name + " strategy file_copy"
+// cloneStatement returns the create database that makes name a copy of template's files rather
+// than a copy through the write-ahead log (Template says why).
+func cloneStatement(name, template string) string {
+	return "create database " + name + " template " + template + " strategy file_copy"
 }
 
 // Main runs the package's tests through run, waits for their databases to drop, then drops the
-// binary's other database and the template, and returns run's code, made non-zero by a drop that
-// failed. A package whose tests clone the template returns it from TestMain.
+// binary's other database and every template that was made, and returns run's code, made non-zero
+// by a drop that failed. A package whose tests clone the template returns it from TestMain.
 func (tp *Template) Main(run func() int) int {
 	tp.main = true
 	code := run()
@@ -210,15 +269,23 @@ func (tp *Template) Main(run func() int) int {
 			code = 1
 		}
 	}
-	if tp.name == "" {
-		return code
+	templates := []string{tp.own.name}
+	tp.keyedMu.Lock()
+	for _, entry := range tp.keyed {
+		templates = append(templates, entry.name)
 	}
-	// The template takes no connection (prepare closes it to them), so its forced drop ends
-	// nothing, and dropDatabase waits out a backend of its migration that has not exited yet.
-	if err := dropDatabase(tp.admin, tp.name, testwait.InMain); err != nil {
-		fmt.Fprintf(os.Stderr, "testdb: drop template database %s: %v\n", tp.name, err)
-		if code == 0 {
-			code = 1
+	tp.keyedMu.Unlock()
+	for _, name := range templates {
+		if name == "" {
+			continue
+		}
+		// A template takes no connection (makeTemplate closes it to them), so its forced drop ends
+		// nothing, and dropDatabase waits out a backend of its migration that has not exited yet.
+		if err := dropDatabase(tp.admin, name, testwait.InMain); err != nil {
+			fmt.Fprintf(os.Stderr, "testdb: drop template database %s: %v\n", name, err)
+			if code == 0 {
+				code = 1
+			}
 		}
 	}
 	return code
@@ -238,7 +305,7 @@ type execer interface {
 }
 
 // dropDatabase drops name through admin. It is every drop of a test database here: DatabaseOn's,
-// and a Template's of each clone, of the binary's other database and of the template itself.
+// and a Template's of each clone, of the binary's other database and of each template itself.
 //
 // `with (force)` ends whatever is still connected. A test's own pool is closed before its drop
 // runs (DatabaseOn's and Clone's cleanups run after the caller's), but Postgres tears a backend
@@ -292,10 +359,10 @@ func (tp *Template) drop(name string) {
 	})
 }
 
-// prepare opens the admin pool and makes the template every Clone copies.
-func (tp *Template) prepare(server url.URL) error {
+// openAdmin opens the admin pool, on the postgres database of server, that every database and
+// template is created and dropped through.
+func (tp *Template) openAdmin(server url.URL) error {
 	tp.serverURL = server
-	ctx := context.Background()
 	config, err := pgxpool.ParseConfig(databaseURL(server, "postgres"))
 	if err != nil {
 		return fmt.Errorf("parse admin database URL: %w", err)
@@ -303,28 +370,35 @@ func (tp *Template) prepare(server url.URL) error {
 	// Drops run concurrently on this pool. Its default size is the CPU count, and on a large
 	// machine the packages testing against one server at once would exceed its connection limit.
 	config.MaxConns = 4
-	admin, err := pgxpool.NewWithConfig(ctx, config)
+	admin, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		return fmt.Errorf("open admin pool: %w", err)
 	}
 	tp.admin = admin
+	return nil
+}
 
+// makeTemplate makes entry's template database: a file copy of template1, named in entry once it
+// exists, so Main drops exactly the templates that were made, then migrated by migrate and closed
+// to connections.
+func (tp *Template) makeTemplate(entry *madeTemplate, migrate func(ctx context.Context, databaseURL string) error) error {
 	suffix, err := randomSuffix()
 	if err != nil {
 		return err
 	}
 	name := tp.prefix + "_template_" + suffix
+	ctx := context.Background()
 	// The template is a file copy of template1, for the reason each clone of it is one.
-	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+	if _, err := tp.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		return fmt.Errorf("create template database: %w", err)
 	}
-	tp.name = name
-	if err := tp.migrate(ctx, databaseURL(server, name)); err != nil {
+	entry.name = name
+	if err := migrate(ctx, databaseURL(tp.serverURL, name)); err != nil {
 		return fmt.Errorf("migrate template database: %w", err)
 	}
 	// Postgres refuses to clone a database another session is connected to. Refusing connections
 	// to the template keeps any stray session from making a clone wait or fail.
-	if _, err := admin.Exec(ctx, "alter database "+name+" with allow_connections false"); err != nil {
+	if _, err := tp.admin.Exec(ctx, "alter database "+name+" with allow_connections false"); err != nil {
 		return fmt.Errorf("close template database to connections: %w", err)
 	}
 	return nil

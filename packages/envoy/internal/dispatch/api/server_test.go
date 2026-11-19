@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/collabtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -146,6 +147,13 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
+	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
+	// mention's send waits for the earlier events of its owner the outbox still owes its session.
+	// False is the deployment with no outbox, which every test that runs none is.
+	outboxPublishes bool
+	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
+	// none, as every test that reads no gauge leaves it.
+	metrics *metrics.Registry
 }
 
 // testTakeoverWindow is the listener take-over window of a server a test runs on the real clock.
@@ -315,6 +323,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:                  fileStore,
 		DashboardEntry:         options.dashboardEntry,
 		BuildCommit:            options.buildCommit,
+		OutboxPublishes:        options.outboxPublishes,
+		Metrics:                options.metrics,
 		Clock:                  options.clock,
 		CollaboratorHTTPClient: collaboratorHTTP,
 	})

@@ -3,11 +3,13 @@ package testdb
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -33,7 +35,7 @@ func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
 	}
 	defer conn.Release()
 	var templateBytes int64
-	if err := conn.QueryRow(ctx, "select pg_database_size($1)", testTemplate.name).Scan(&templateBytes); err != nil {
+	if err := conn.QueryRow(ctx, "select pg_database_size($1)", testTemplate.own.name).Scan(&templateBytes); err != nil {
 		t.Fatalf("read the template's size: %v", err)
 	}
 
@@ -43,7 +45,7 @@ func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
 	}
 	name := "testdb_test_" + suffix
 	before := backendWALBytes(t, conn)
-	if _, err := conn.Exec(ctx, testTemplate.cloneStatement(name)); err != nil {
+	if _, err := conn.Exec(ctx, cloneStatement(name, testTemplate.own.name)); err != nil {
 		t.Fatalf("clone the template: %v", err)
 	}
 	testTemplate.drop(name)
@@ -53,6 +55,46 @@ func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
 		t.Fatalf("one clone wrote %d bytes of write-ahead log, more than a hundredth of the %d-byte template: it went through the log", written, templateBytes)
 	}
 	t.Logf("one clone wrote %d bytes of write-ahead log; the template holds %d bytes", written, templateBytes)
+}
+
+// The template of a CloneFrom key is made by that key's migrate once in the binary, and each clone
+// of it starts with what that migrate wrote; another key's template is its own migrate's.
+func TestCloneFromMakesEachKeysTemplateOnceWithItsOwnMigrate(t *testing.T) {
+	migrations := map[string]int{}
+	migrateAs := func(key string) func(context.Context, string) error {
+		return func(ctx context.Context, databaseURL string) error {
+			migrations[key]++
+			conn, err := pgx.Connect(ctx, databaseURL)
+			if err != nil {
+				return err
+			}
+			defer conn.Close(ctx)
+			if _, err := conn.Exec(ctx, "create table made_by (key text not null)"); err != nil {
+				return err
+			}
+			_, err = conn.Exec(ctx, "insert into made_by values ($1)", key)
+			return err
+		}
+	}
+	for _, key := range []string{"first key", "first key", "second key"} {
+		clone := testTemplate.CloneFrom(t, key, migrateAs(key))
+		ctx := context.Background()
+		conn, err := pgx.Connect(ctx, clone)
+		if err != nil {
+			t.Fatalf("connect to a clone of the template of %q: %v", key, err)
+		}
+		var madeBy []string
+		if err := conn.QueryRow(ctx, "select array_agg(key) from made_by").Scan(&madeBy); err != nil {
+			t.Fatalf("read a clone of the template of %q: %v", key, err)
+		}
+		_ = conn.Close(ctx)
+		if !slices.Equal(madeBy, []string{key}) {
+			t.Fatalf("a clone of the template of %q holds the rows of %q, want its own migrate's alone", key, madeBy)
+		}
+	}
+	if want := map[string]int{"first key": 1, "second key": 1}; !maps.Equal(migrations, want) {
+		t.Fatalf("the migrates ran %v times by key, want each key's once", migrations)
+	}
 }
 
 // backendWALBytes is the write-ahead log conn's backend has written. pg_stat_get_backend_wal

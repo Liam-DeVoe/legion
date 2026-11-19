@@ -167,7 +167,7 @@ func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing
 		t.Fatalf("load comment-created event: %v", err)
 	}
 	sent = nil
-	attempt, err := direct.deliverResolvedCommentMention(
+	attempt, held, err := direct.deliverResolvedCommentMention(
 		context.Background(),
 		comment,
 		event,
@@ -176,8 +176,8 @@ func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing
 		attemptClaim{attempt: 1},
 		direct.newTakeoverRetry(),
 	)
-	if err != nil {
-		t.Fatalf("complete initial mention after its answer: %v", err)
+	if err != nil || held != nil {
+		t.Fatalf("complete initial mention after its answer: %v (waits %+v)", err, held)
 	}
 	if attempt.Attempt != 1 || attempt.ReplyID == nil || len(sent) != 0 {
 		t.Fatalf("initial mention after answer = attempt:%#v sends:%#v, want its existing answered attempt and no second send", attempt, sent)
@@ -238,7 +238,7 @@ func TestInitialMentionDeliveryReturnsFailedAttemptAfterErrorReplyConsumesPendin
 	if err != nil {
 		t.Fatalf("load comment-created event: %v", err)
 	}
-	attempt, err := direct.deliverResolvedCommentMention(
+	attempt, held, err := direct.deliverResolvedCommentMention(
 		context.Background(),
 		comment,
 		event,
@@ -247,8 +247,8 @@ func TestInitialMentionDeliveryReturnsFailedAttemptAfterErrorReplyConsumesPendin
 		attemptClaim{attempt: 1},
 		direct.newTakeoverRetry(),
 	)
-	if err != nil {
-		t.Fatalf("complete initial mention after an error reply: %v", err)
+	if err != nil || held != nil {
+		t.Fatalf("complete initial mention after an error reply: %v (waits %+v)", err, held)
 	}
 	if attempt.Attempt != 1 || attempt.State != "failed" || attempt.Error == nil ||
 		*attempt.Error != "The agent could not answer." || attempt.ReplyID != nil {
