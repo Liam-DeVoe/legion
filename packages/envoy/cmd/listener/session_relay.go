@@ -762,7 +762,7 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 // session's next registration. Both only while the session is still this listener's. A restart or
 // pull whose connection was lost (relayLost) waits for that connection instead, holding nothing,
 // and restarts the moment it is back, with the retry backoff left where it was; a wait whose dial
-// finds no server waits out the retry backoff first.
+// ends unconnected (bus.Reconnected names each way it does) waits out the retry backoff first.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session
 // last answered a frame, not for each probe that found it silent again.
@@ -797,8 +797,10 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 					return
 				}
 				// The client stopped (the listener is shutting down), or Reconnected's dial of a
-				// closed connection's replacement found no server in its ten attempts: wait out
-				// the retry backoff, and the next restart says which.
+				// closed connection's replacement ended unconnected: each of its ten attempts
+				// failed, whether no server answered, the server refused the credential, the host
+				// did not resolve or the attempt's connect timeout passed. Wait out the retry
+				// backoff, and the next restart says which.
 				if !run.waitRetry(ctx, retry) {
 					return
 				}

@@ -4,7 +4,7 @@
 // checks that each ends at a bound of its own when its reply never comes (withheld_test.go). The
 // start's stream ensure is not among them: a start's wait ends on its caller's context and on the
 // fact it waits for, not on a fixed bound. The timings are a measurement, not a test of the
-// product: a run logs them and fails on none.
+// product: they run only with MEASUREBOUNDS_MEASURE set, and a run logs them and fails on none.
 package measurebounds
 
 import (
@@ -42,6 +42,9 @@ func report(t *testing.T, name string, times []time.Duration) {
 }
 
 func TestMeasureTheFourRequestsWithNoBoundOfTheHelpers(t *testing.T) {
+	if os.Getenv("MEASUREBOUNDS_MEASURE") == "" {
+		t.Skip("the measurement runs only with MEASUREBOUNDS_MEASURE set")
+	}
 	uri := testnats.URL(t)
 	t.Logf("MEASURE load at start: %s", loadavg(t))
 	defer func() { t.Logf("MEASURE load at end: %s", loadavg(t)) }()
@@ -125,7 +128,9 @@ func TestMeasureTheFourRequestsWithNoBoundOfTheHelpers(t *testing.T) {
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	source := agentstream.NewNATS(testnats.Connect(t, uri))
+	replayConn := testnats.Connect(t, uri)
+	t.Cleanup(replayConn.Close)
+	source := agentstream.NewNATS(replayConn)
 	replay := make([]time.Duration, 0, runs)
 	for range runs {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
