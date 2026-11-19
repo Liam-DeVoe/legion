@@ -486,3 +486,22 @@ test("useOutOfTabOrder takes every kept scroller out of the tab order, unnamed, 
     view.unmount();
   }
 });
+
+// A tree's keys tell a kept scroller from the row's other controls by its mark, so each scroller
+// carries `data-kept-scroller` while it keeps its tab stop, no other element does, and none keeps
+// it once the row stops passing `keepScrollers`.
+test("useOutOfTabOrder marks each kept scroller with data-kept-scroller, and no scroller once keepScrollers turns off", () => {
+  const view = draw(<KeptScrollers keepScrollers />);
+  try {
+    expect(
+      KEPT_SCROLLERS.map((selector) =>
+        view.container.querySelector(selector)?.getAttribute("data-kept-scroller")
+      )
+    ).toEqual(["", "", "", ""]);
+    expect(view.container.querySelectorAll("[data-kept-scroller]")).toHaveLength(4);
+    view.redraw(<KeptScrollers keepScrollers={false} />);
+    expect(view.container.querySelectorAll("[data-kept-scroller]")).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
