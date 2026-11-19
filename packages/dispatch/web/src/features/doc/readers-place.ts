@@ -139,8 +139,18 @@ function scrollOffset(within: HTMLElement): number {
  *  the page asks of another package is the exception: a landing's focus, which the Proof
  *  editor scrolls itself (`focusBlock` and `focusMark`), and which the landing correction that
  *  asked for it records after it (`refocusWhenSettled`). */
-const thePageLeftBoxesAt = new WeakMap<HTMLElement, number>();
+let thePageLeftBoxesAt = new WeakMap<HTMLElement, number>();
 let thePageLeftTheWindowAt: number | undefined;
+
+/** Forgets where the page's own place-keeping left every box and the page itself: the unit-test
+ *  preload, between tests. The record outlives the render that wrote it, and a test whose own
+ *  scroll puts the window where an earlier test's correction left it would read that scroll as
+ *  the page's (`ViewportAnchor.test.tsx`'s "the compensation in the page itself is the page's
+ *  own move"). */
+export function resetWhereThePageLeftIt(): void {
+  thePageLeftBoxesAt = new WeakMap();
+  thePageLeftTheWindowAt = undefined;
+}
 
 /** Whether the page's own place-keeping is what left `scroller` - the page itself where null -
  *  standing where it stands now. A box the page moved and somebody else then moved stands

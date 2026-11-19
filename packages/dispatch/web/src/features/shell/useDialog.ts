@@ -109,8 +109,11 @@ export interface DialogHandle<T extends HTMLElement> {
  * (the search palette, the phone navigation drawer, the phone margin sheet, and the reference
  * picker all use this). While open it pushes the `dialog` keymap scope, which masks every page
  * and global binding, and registers Escape there for the innermost open dialog, whatever
- * element holds focus; a descendant that owns its Escape (the margin Composer dismissing its
- * picker) stops propagation before the dispatcher sees it. Tab trapping listens on the container.
+ * element holds focus; a descendant that owns its Escape stops propagation before the
+ * dispatcher sees it (the margin Composer dismissing its picker), or registers it on the same
+ * scope, where it is asked before this one however late it mounts (`askedLast`, which the
+ * Inbox drawer's list needs: its chunk arrives after the drawer's frame the first time it
+ * opens). Tab trapping listens on the container.
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
@@ -127,6 +130,7 @@ export function useDialog<T extends HTMLElement>({
       ? [
           {
             // The focus goes back to whatever opened the dialog.
+            askedLast: true,
             effect: "moves the reader",
             id: "dialog.close",
             inEditable: true,

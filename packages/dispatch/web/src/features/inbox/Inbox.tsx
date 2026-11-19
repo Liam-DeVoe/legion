@@ -1435,8 +1435,8 @@ export function Inbox({
       // on the page, and the first row in the drawer, where nothing is selected. It is offered
       // only while the focus is in the box, so the three Escapes above are untouched - `back`
       // and `back-from-bulk` both answer false there, and `clear-selection` is not `inEditable`
-      // at all - and the drawer's own Close waits its turn, the Inbox's registration being the
-      // first of the scope to match (`keymap.ts`'s `resolve`).
+      // at all - and the drawer's own Close waits its turn, being `askedLast` (`useDialog`), so
+      // the Inbox's Escapes come first even when its chunk mounted after the drawer did.
       effect: "moves the reader",
       id: "leave-search",
       inEditable: true,

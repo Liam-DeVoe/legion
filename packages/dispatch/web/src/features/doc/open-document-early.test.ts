@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { waitFor } from "@testing-library/react";
 
@@ -8,10 +8,6 @@ import * as connection from "./connection";
 import * as editor from "./editor";
 import { afterTheFirstBatch, PAGE_HOLD, theFirstBatchIsAwaited } from "./first-batch";
 import { openDocumentEarly, takeEarlyTextRead } from "./open-document-early";
-
-// The first-batch gate is one page's state, so each row leaves it as it found it: nothing
-// awaited, which is what every page with no document on it reads.
-afterEach(() => theFirstBatchIsAwaited(false));
 
 const artifact: NonNullable<IssueDetails["artifacts"]>[number] = {
   created_at: "2026-09-10T00:00:00Z",

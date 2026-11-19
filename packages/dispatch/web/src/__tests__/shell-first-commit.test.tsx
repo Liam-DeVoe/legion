@@ -10,6 +10,14 @@ import type { AuthenticatedUser } from "../api/types";
 import { AppShell } from "../app";
 import { DEFAULT_MARGIN_WIDTH } from "../features/margin/margin-width";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
+// The Agents page is a lazy route of the app, so the first commit at its address suspends on the
+// page's module, and React reports the module's arrival as a suspended resource outside `act`
+// unless it lands inside one. A row's commit is over before a module's first compile is, so
+// where that report landed was the machine's doing: after the file's last check on a quiet run,
+// and in the next check on a loaded one. The module is loaded here, with the test file, as
+// `app.test.tsx` and `responsive-shell.test.tsx` load theirs, so it arrives in the microtasks
+// after the commit that asked for it, which `firstCommitAt`'s `act` waits through.
+import "../features/agents/AgentsPage";
 
 /**
  * What the shell's first commit holds, on a route that draws a margin and on one that does not.
@@ -55,7 +63,7 @@ function neverAnswers(): Promise<never> {
  *  make them as the root is torn down, and a read that reaches the network fails the file
  *  (`web/src/__tests__/setup.ts`). The viewport is desktop, where the margin is a column
  *  beside the document rather than a sheet over it. */
-function firstCommitAt(route: string): string {
+async function firstCommitAt(route: string): Promise<string> {
   api.getInbox = async () => [];
   api.listIssues = async () => [];
   // The shell records the item the page is on for the search bar to list back
@@ -80,7 +88,9 @@ function firstCommitAt(route: string): string {
   const root = createRoot(container);
   try {
     let drawn = "";
-    act(() => {
+    // The `act` is awaited although nothing in it is, so a page the commit suspended on arrives
+    // inside it (above).
+    await act(async () => {
       flushSync(() => {
         root.render(
           <QueryClientProvider
@@ -105,8 +115,8 @@ function firstCommitAt(route: string): string {
   }
 }
 
-test("the margin's column is reserved in the commit the first paint comes from", () => {
-  const markup = firstCommitAt("/issues/CORE-1/conversation");
+test("the margin's column is reserved in the commit the first paint comes from", async () => {
+  const markup = await firstCommitAt("/issues/CORE-1/conversation");
 
   expect(markup).toContain('data-testid="margin-reservation"');
   expect(markup, "the column is held at the width the margin lays itself out at").toContain(
@@ -117,15 +127,15 @@ test("the margin's column is reserved in the commit the first paint comes from",
   expect(markup).toContain("data-margin-pending");
 });
 
-test("a project document's commit reserves it too, since that route draws a margin", () => {
-  expect(firstCommitAt("/projects/CORE/documents/design-language")).toContain(
+test("a project document's commit reserves it too, since that route draws a margin", async () => {
+  expect(await firstCommitAt("/projects/CORE/documents/design-language")).toContain(
     'data-testid="margin-reservation"'
   );
 });
 
-test("a route that draws no margin reserves nothing in that commit", () => {
+test("a route that draws no margin reserves nothing in that commit", async () => {
   // The reservation answers `routeHasMargin`, so a route with no margin holds no box: reserving
   // one would run the shift backwards, taking 384 px from the page at the first paint and
   // handing it back when the margin arrives with nothing to put there.
-  expect(firstCommitAt("/agents")).not.toContain('data-testid="margin-reservation"');
+  expect(await firstCommitAt("/agents")).not.toContain('data-testid="margin-reservation"');
 });

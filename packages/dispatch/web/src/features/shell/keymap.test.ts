@@ -306,6 +306,25 @@ test("the innermost scope wins, and a binding whose when() is false lets lower s
   ]);
 });
 
+// The Inbox drawer's frame mounts, and registers its Close, before the list's chunk has arrived
+// the first time it opens; the list's Escape, registered after it, is still asked first.
+test("a binding asked last fires only where no other of its scope applies, though it was registered first", () => {
+  const { keymap, press } = harness();
+  const close = binding("close", "Escape", { askedLast: true });
+  let onRow = true;
+  const back = binding("back", "Escape", { when: () => onRow });
+  keymap.pushScope(DIALOG_SCOPE);
+  keymap.register(DIALOG_SCOPE, [close.definition]);
+  keymap.register(DIALOG_SCOPE, [back.definition]);
+
+  expect(press("Escape")).toBe(true);
+  expect([back.fired(), close.fired()]).toEqual([1, 0]);
+
+  onRow = false;
+  expect(press("Escape")).toBe(true);
+  expect([back.fired(), close.fired()]).toEqual([1, 1]);
+});
+
 test("only inEditable bindings fire while an input, textarea, select, or contentEditable has focus", () => {
   const { keymap, press } = harness();
   const next = binding("next", "j");

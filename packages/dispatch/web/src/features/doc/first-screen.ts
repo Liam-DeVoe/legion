@@ -109,3 +109,11 @@ export function dropFirstScreen(address: string): void {
     host.remove();
   }
 }
+
+/** Forgets the address the page was sent a draw for: the unit-test preload, between tests. A test
+ *  that puts a draw in the page and lets it be taken leaves the address here after it has
+ *  emptied the page, and `theServerDrewTheFirstScreen` would answer yes to the next test that
+ *  opens it, with no draw anywhere. */
+export function resetFirstScreen(): void {
+  drawnFor = undefined;
+}

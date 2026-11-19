@@ -250,7 +250,10 @@ test("Escape with a row focused backs out of the row first; only a second Escape
   try {
     await user.click(screen.getByRole("button", { name: "Open inbox" }));
     const dialog = await screen.findByRole("dialog", { name: "Inbox" });
-    const row = within(dialog).getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
+    // The list is a chunk of its own (`InboxList.tsx`), drawn under a frame that is there before
+    // it: the first row of this file to open the drawer finds that chunk still loading.
+    const card = await within(dialog).findByTestId("ask-ask-a");
+    const row = card.closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("ask-a row missing");
     row.focus();
     expect(row).toHaveFocus();

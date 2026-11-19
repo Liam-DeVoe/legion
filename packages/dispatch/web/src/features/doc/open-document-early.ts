@@ -293,3 +293,14 @@ export function takeEarlyTextRead(artifactId: string): Promise<ArtifactText> | u
   earlyTextRead = undefined;
   return read;
 }
+
+/** Forgets the address this module last opened and the read it made for it: the unit-test
+ *  preload, between tests. Both outlive the test that opened the address: the next test to
+ *  open the same address would be taken for the shell's second call for it and open nothing -
+ *  no hold, no read (`open-document-early.test.ts`'s "a document address holds the reads the
+ *  first editable block needs none of") - and an admission of the same document would take a
+ *  read another test's stubs answered. */
+export function resetDocumentOpening(): void {
+  openedAddress = undefined;
+  earlyTextRead = undefined;
+}

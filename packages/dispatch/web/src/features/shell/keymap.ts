@@ -5,12 +5,14 @@ import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
  * (`useKeymap`), pages and dialogs push their scope onto the shell-owned stack
  * (`useKeymapScope`), and a single `window` keydown listener (`KeymapProvider`) resolves each
  * key top-down through the stack: the first scope holding a matching binding wins, and while
- * a `dialog` scope is on the stack it is the only scope consulted. `keys` follows tinykeys' string
- * syntax — `"g i"` is a chord, `"$mod+k"` matches Meta or Control, `"Shift+P"` a shifted
- * letter, `"?"` the character an unshifted or shifted key produces. A combo is matched by the
- * character its key types, so a reader on AZERTY or Dvorak presses the letter a shortcut names
- * wherever it sits; on a Mac, one that holds `Alt` also matches by the key's position (`KeyM` for
- * `m`), because Option changes the character: `$mod+Alt+m` types `µ` there.
+ * a `dialog` scope is on the stack it is the only scope consulted. Within a scope the binding
+ * registered first that matches wins, one that is `askedLast` only where no other matches.
+ * `keys` follows tinykeys' string syntax — `"g i"` is a chord, `"$mod+k"` matches Meta or
+ * Control, `"Shift+P"` a shifted letter, `"?"` the character an unshifted or shifted key
+ * produces. A combo is matched by the character its key types, so a reader on AZERTY or Dvorak
+ * presses the letter a shortcut names wherever it sits; on a Mac, one that holds `Alt` also
+ * matches by the key's position (`KeyM` for `m`), because Option changes the character:
+ * `$mod+Alt+m` types `µ` there.
  */
 
 export type KeymapScope =
@@ -66,6 +68,12 @@ export interface KeyBinding {
    *  is its own key. Keys that walk a list with the row in hand set `false`, as does a second key
    *  for an action that already has a row; any other binding that sets it says why beside it. */
   palette?: boolean;
+  /** Asked only where no other binding of its scope that applies matches the same press,
+   *  whichever was registered first. Registration order is mount order, and a part that mounts
+   *  after the component around it registers after it: a dialog's own Escape (`useDialog`) is
+   *  the last level out of it, and the drawer's Inbox (`InboxDrawer.tsx`), whose chunk arrives
+   *  after the drawer's frame the first time the drawer opens, takes Escape before it. */
+  askedLast?: boolean;
 }
 
 /** A binding as `?` describes it: keys as typed, its scope, and whether it applies right now. */
@@ -368,6 +376,7 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
     for (let depth = stack.length - 1; depth >= 0; depth -= 1) {
       const scope = stack[depth];
       let exact: Registration | undefined;
+      let askedLast: Registration | undefined;
       let partial = false;
       for (const registration of registrations) {
         const { binding } = registration;
@@ -383,11 +392,16 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
           }
           if (chord.length > presses.length) {
             partial = true;
+          } else if (binding.askedLast === true) {
+            if (askedLast === undefined && binding.when?.() !== false) {
+              askedLast = registration;
+            }
           } else if (exact === undefined && binding.when?.() !== false) {
             exact = registration;
           }
         }
       }
+      exact ??= askedLast;
       if (exact !== undefined || partial) {
         return { exact, partial };
       }
