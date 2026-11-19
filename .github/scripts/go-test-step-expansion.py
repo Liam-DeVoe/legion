@@ -389,8 +389,9 @@ AUDITED_SCRIPTS = {
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
-            "--timeout 8m": "go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | "
-                            "xargs go test -json -count=1 -timeout 8m",
+            "--timeout 8m --keep \"$RUNNER_TEMP/go-test-json/broker.json\"":
+                "go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | "
+                "xargs go test -json -count=1 -timeout 8m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 32m "
             "--keep \"$RUNNER_TEMP/go-test-json/race-api.json\" ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 32m ./internal/dispatch/api/",

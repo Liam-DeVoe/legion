@@ -755,10 +755,13 @@ jobs:
       # minutes after its own start: the step's own limit of 18 minutes, main's rule of that
       # -timeout plus 10, leaves a package that starts within the first 10 its whole -timeout,
       # and so its dump. Measured in that same job, before cmd/broker joined this step: 355 s for
-      # the step.
+      # the step. Its --keep copies that run's `go test -json` stream to broker.json under
+      # $RUNNER_TEMP/go-test-json, which the upload step below uploads with the unit step's
+      # streams: this step's go test is one of the job's, so its stream is a job artifact as the
+      # others are, and each broker test's name and result can be read there (dispatch://INFRA-1075).
       - name: Count the database broker suites' skips
         timeout-minutes: 18
-        run: packages/envoy/scripts/database-skips.sh --timeout 8m
+        run: packages/envoy/scripts/database-skips.sh --timeout 8m --keep "$RUNNER_TEMP/go-test-json/broker.json"
       # The run of the built agent-secrets against moto needs moto, so it sits behind a build tag
       # and packages/envoy/scripts/aws-moto-check.sh runs it. Vetting it keeps it compiling.
       - name: Vet agent-secrets' moto run (no moto)

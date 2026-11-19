@@ -996,8 +996,8 @@ def json_stream_script(command: str, stream: str) -> str:
     race lane's envoy-go-race, the alone steps of envoy-go-race and envoy-go-checks
     (ALONE_STEPS), and envoy-go-checks' architecture-note tests, listenerwire tests and
     display-tree fixture check, are the steps of this shape; envoy-go's unit step runs nine calls
-    and builds its own (UNIT_TEST_SCRIPT), and envoy-go-race-api's step keeps its stream through
-    database-skips.sh's --keep (RACE_API_SCRIPT)."""
+    and builds its own (UNIT_TEST_SCRIPT), and envoy-go-race-api's step and envoy-go's count step
+    keep theirs through database-skips.sh's --keep (RACE_API_SCRIPT, DATABASE_SKIPS_RUN)."""
     return f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json"
 s=0
@@ -1659,7 +1659,13 @@ DATABASE_SKIPS_PATTERN = "|".join(
 # package on the slower run, 210.3 s (run 44544557129, job 135652201404), which the step's log
 # prints, and 210.3 / 30 = 7.01, so 8m (the comment on the step in ci-job-envoy-go.yaml).
 UNIT_TEST_TIMEOUT = "8m"
-DATABASE_SKIPS_RUN = f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT}"
+# Its --keep copies that run's `go test -json` stream to broker.json under
+# $RUNNER_TEMP/go-test-json, which envoy-go's upload step, after it, uploads with the unit step's
+# streams: the step's go test is one of envoy-go's, so it writes its stream as a job artifact as
+# the others do, and every broker test's name and result are in the artifact (dispatch://INFRA-1075).
+DATABASE_SKIPS_STREAM = "broker.json"
+DATABASE_SKIPS_RUN = (f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT} "
+                      f'--keep "$RUNNER_TEMP/go-test-json/{DATABASE_SKIPS_STREAM}"')
 # The counter's own test, which envoy-go runs before the count: its five controls run the counter
 # on these three packages, one at a time, each narrowed to its planted and expected tests.
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
