@@ -130,6 +130,11 @@
 #    module the job's cache would have held, on every run. The check lists each such fetch step
 #    with the restore before it.
 #
+# What catches a go command this check misses (a form its limits name): every job of a required
+# workflow runs with GOPROXY=off and GOFLAGS=-mod=readonly, so such a command in a required job's
+# test fails at once, naming the module its cache lacks, instead of downloading it. This check is
+# the first line, which names the place before CI runs it; that setting is the second.
+#
 # It is a presence check: whether a reason is true, and whether a fetch step fetches into the
 # cache the test reads, is the reviewer's to judge, as check-fireevent-reasons.sh says of its own.
 # A scan that read no file of a language, found no testbuild caller where testbuild exists, or saw
