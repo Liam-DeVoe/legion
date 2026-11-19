@@ -187,7 +187,7 @@ func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Conf
 			},
 		},
 		context.WithValue(context.Background(), oauth2.HTTPClient,
-			&http.Client{Transport: c.DPoP(key, c.transport), Timeout: clientTimeout})
+			redact.RefusalClient(&http.Client{Transport: c.DPoP(key, c.transport), Timeout: clientTimeout}))
 }
 
 // DeviceLogin asks this broker for a device code for a machine of person on host, as the helper's

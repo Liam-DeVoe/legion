@@ -18,11 +18,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 
@@ -363,7 +366,7 @@ func (c connectorDialer) Close() error { return c.dialer.Close() }
 // newConnectorDialer builds the dialer a pod uses, with connectorOptions. It signs in as account,
 // which the pod's own credentials impersonate, or as the pod itself when account is "".
 func newConnectorDialer(ctx context.Context, account string) (Dialer, error) {
-	opts, err := connectorOptions(ctx, account)
+	opts, err := connectorOptions(ctx, account, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -393,13 +396,13 @@ const (
 // Credentials API. One impersonated source signs the Admin API calls, and the other gives the
 // login token, so the proxy signs in as the account.
 //
-// ctx is the proxy's serving context, which only Close ends. The library builds each source's
-// client and finds the pod's credentials with it, so a credential that fetches its own token with
-// that context keeps doing so for as long as the proxy serves; never Start's own context, which
-// ends once the proof dial is over. Each source refreshes its one-hour token by itself when the
-// connector next asks for one. iam goes to the IAM Credentials API's client: production passes
-// none, and a test passes a fake endpoint.
-func connectorOptions(ctx context.Context, account string, iam ...option.ClientOption) ([]cloudsqlconn.Option, error) {
+// ctx is the proxy's serving context, which only Close ends. The library builds each source from
+// the IAM Credentials client given it, so a credential that fetches its own token with that
+// context keeps doing so for as long as the proxy serves; never Start's own context, which ends
+// once the proof dial is over. Each source refreshes its one-hour token by itself when the
+// connector next asks for one. iamBase is the transport the IAM Credentials client's requests go
+// out on: production passes nil (http.DefaultTransport), and a test a fake endpoint.
+func connectorOptions(ctx context.Context, account string, iamBase http.RoundTripper) ([]cloudsqlconn.Option, error) {
 	opts := make([]cloudsqlconn.Option, 0, 3)
 	opts = append(opts,
 		cloudsqlconn.WithIAMAuthN(),
@@ -408,19 +411,40 @@ func connectorOptions(ctx context.Context, account string, iam ...option.ClientO
 	if account == "" {
 		return opts, nil
 	}
+	iam, err := impersonationClient(ctx, iamBase)
+	if err != nil {
+		return nil, fmt.Errorf("impersonate %s: read the pod's own credentials: %w", account, err)
+	}
+	// Every client a library is handed is RefusalClient's (the boundary census holds it). The
+	// record that holds the bearer is the one beneath the credential's transport, in
+	// impersonationClient: this one sees each request before the bearer is set on it.
 	api, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
 		TargetPrincipal: account,
 		Scopes:          []string{sqlAdminScope, cloudPlatformScope},
-	}, iam...)
+	}, option.WithHTTPClient(oauth2call.RefusalClient(iam)))
 	if err != nil {
 		return nil, fmt.Errorf("impersonate %s for the Admin API: %w", account, err)
 	}
 	login, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
 		TargetPrincipal: account,
 		Scopes:          []string{sqlLoginScope},
-	}, iam...)
+	}, option.WithHTTPClient(oauth2call.RefusalClient(iam)))
 	if err != nil {
 		return nil, fmt.Errorf("impersonate %s for the database login: %w", account, err)
 	}
 	return append(opts, cloudsqlconn.WithIAMAuthNTokenSources(oauth2call.TokenSource(api), oauth2call.TokenSource(login))), nil
+}
+
+// impersonationClient is the IAM Credentials client the impersonation calls generateAccessToken
+// with, signed with the pod's own credentials (Application Default Credentials, cloud-platform),
+// as the library signs it when given none. Its requests go out through oauth2call.RefusalClient
+// beneath the credential's transport, so each refused request's bearer is recorded, and the
+// boundary reads the library's `impersonate: status code <n>: <body>` with it redacted.
+func impersonationClient(ctx context.Context, base http.RoundTripper) (*http.Client, error) {
+	credentials, err := oauth2call.Call(google.FindDefaultCredentials(ctx, cloudPlatformScope))
+	if err != nil {
+		return nil, err
+	}
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Transport: base}))
+	return oauth2.NewClient(ctx, oauth2call.TokenSource(credentials.TokenSource)), nil
 }

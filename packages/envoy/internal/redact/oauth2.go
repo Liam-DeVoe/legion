@@ -39,7 +39,8 @@ func oauthAnswerOf(err error) error {
 	}
 	var re *oauth2.RetrieveError
 	if !errors.As(err, &re) {
-		return &LibraryError{text: NewRemoteText(err.Error()), err: &err}
+		text := err.Error()
+		return &LibraryError{text: NewRemoteText(Tokens(text, -1, refused.quotedBy(text)...)), err: &err}
 	}
 	if ue, ok := err.(*url.Error); ok {
 		if inner := oauthAnswerOf(ue.Err); inner != ue.Err {
@@ -118,17 +119,21 @@ type OAuthAnswer struct {
 	answer         *oauth2.RetrieveError
 }
 
-// newOAuthAnswer is re as OAuth2 holds it.
+// newOAuthAnswer is re as OAuth2 holds it. Every word of the answer it prints, its code,
+// description, error_uri and body, is read with every credential the refused request carried
+// redacted first (Tokens, requestTokens), then by the rule; the closed code (RefusalCode) is read
+// from the code as it came, which prints nothing, so a request value that shares a run with a code
+// cannot turn the code into one this client does not name.
 func newOAuthAnswer(re *oauth2.RetrieveError) *OAuthAnswer {
-	refusalCode, refusalMessage := NewOAuthRefusal(re.ErrorCode, re.ErrorDescription)
-	answer := &oauth2.RetrieveError{
-		ErrorCode:        ruled(re.ErrorCode),
-		ErrorDescription: ruled(re.ErrorDescription),
-		ErrorURI:         ruled(re.ErrorURI),
-	}
 	var carried []string
 	if re.Response != nil {
 		carried = requestTokens(re.Response.Request)
+	}
+	refusalCode, refusalMessage := NewOAuthRefusal(re.ErrorCode, re.ErrorDescription, carried...)
+	answer := &oauth2.RetrieveError{
+		ErrorCode:        ruled(Tokens(re.ErrorCode, -1, carried...)),
+		ErrorDescription: ruled(Tokens(re.ErrorDescription, -1, carried...)),
+		ErrorURI:         ruled(Tokens(re.ErrorURI, -1, carried...)),
 	}
 	if len(re.Body) > 0 {
 		answer.Body = []byte(Field(Tokens(string(re.Body), -1, carried...)))

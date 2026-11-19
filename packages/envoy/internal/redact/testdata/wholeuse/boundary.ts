@@ -106,6 +106,39 @@ function staysInCall(node: ts.Node): boolean {
   }
 }
 
+/** The fetch a reference to the library's `customFetch` hands it: the value of `[customFetch]:` in
+ *  an object literal, or the right side of `x[customFetch] = …`; undefined for any other reference,
+ *  which hands nothing the census can read and so fails. */
+function customFetchValue(node: ts.Node): ts.Expression | undefined {
+  const parent = node.parent;
+  if (ts.isComputedPropertyName(parent) && ts.isPropertyAssignment(parent.parent)) {
+    return parent.parent.initializer;
+  }
+  if (
+    ts.isElementAccessExpression(parent) &&
+    parent.argumentExpression === node &&
+    ts.isBinaryExpression(parent.parent) &&
+    parent.parent.left === parent &&
+    parent.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  ) {
+    return parent.parent.right;
+  }
+  return undefined;
+}
+
+/** Whether `value` is a call of `refusalFetch` from `@legion/contracts/remote-text`, which records
+ *  each refused request's credentials for the boundary. */
+function refusalFetchCall(checker: ts.TypeChecker, value: ts.Expression): boolean {
+  if (!ts.isCallExpression(value)) return false;
+  const callee = target(checker, checker.getSymbolAtLocation(value.expression));
+  const declaration = callee?.declarations?.[0];
+  return (
+    callee?.name === "refusalFetch" &&
+    declaration !== undefined &&
+    declaration.getSourceFile().fileName.endsWith("/contracts/src/remote-text.ts")
+  );
+}
+
 const lines: string[] = [];
 const apiCounts = new Map<string, number>();
 let apiSize = 0;
@@ -131,6 +164,10 @@ for (const config of configs) {
   const module = libraryFile === undefined ? undefined : checker.getSymbolAtLocation(libraryFile);
   if (module === undefined) continue;
   const api = libraryAPI(checker, module);
+  const customFetchSymbol = checker
+    .getExportsOfModule(module)
+    .map((exported) => target(checker, exported))
+    .find((symbol) => symbol?.name === "customFetch");
   if (apiSize === 0) {
     apiSize = api.size;
     for (const kind of api.values()) {
@@ -154,12 +191,62 @@ for (const config of configs) {
     }
     files++;
     const visit = (node: ts.Node): void => {
+      const flag = (at: ts.Node, kind: string, why: string): void => {
+        const position = source.getLineAndCharacterOfPosition(at.getStart(source));
+        const where = `${relative(root, name)}:${position.line + 1}:${position.character + 1}`;
+        if (listed.has(where)) return;
+        listed.add(where);
+        references++;
+        failed++;
+        lines.push(`FAIL\t${where}\t${kind}\t${why}`);
+      };
+      // A dynamic import of the library answers its module namespace, whose every function the
+      // census cannot follow once it is held: it is the library's only outside callLibrary.
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length > 0 &&
+        ts.isStringLiteralLike(node.arguments[0] as ts.Expression) &&
+        (node.arguments[0] as ts.StringLiteralLike).text === LIBRARY &&
+        !insideBoundary(checker, node)
+      ) {
+        flag(node, "dynamic import", "a dynamic import of the library outside callLibrary");
+      }
       if (
         ts.isIdentifier(node) &&
         !ts.isPartOfTypeNode(node) &&
         !ts.isImportSpecifier(node.parent)
       ) {
         const symbol = target(checker, checker.getSymbolAtLocation(node));
+        // The library's module namespace (`import * as ns`) is read only as `ns.<member>`, whose
+        // member the rules below hold: held, destructured or handed out, its functions leave the
+        // census's sight.
+        if (
+          symbol !== undefined &&
+          symbol === module &&
+          !ts.isNamespaceImport(node.parent) &&
+          !(ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node)
+        ) {
+          flag(
+            node,
+            "module namespace",
+            "the library's namespace is held, destructured or handed out, not read as ns.<member>"
+          );
+        }
+        if (symbol !== undefined && symbol === customFetchSymbol) {
+          const at = source.getLineAndCharacterOfPosition(node.getStart(source));
+          const where = `${relative(root, name)}:${at.line + 1}:${at.character + 1}`;
+          const value = customFetchValue(node);
+          const ok = value !== undefined && refusalFetchCall(checker, value);
+          if (!ok) failed++;
+          lines.push(
+            `${ok ? "ok" : "FAIL"}\t${where}\tcustomFetch hand-off\t${
+              ok
+                ? "a fetch refusalFetch made"
+                : "the fetch handed to openid-client is not a call of refusalFetch"
+            }`
+          );
+        }
         const kind = symbol === undefined ? undefined : api.get(symbol);
         if (kind !== undefined) {
           const at = source.getLineAndCharacterOfPosition(node.getStart(source));

@@ -568,11 +568,155 @@
       "secrets": ["not-a-secret-user", "not-a-secret-password"]
     },
     {
+      "id": "split-inside-slashes",
+      "category": "whitespace-split",
+      "field": "see https:/ /idp.example/cb?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-scheme-separator-twice",
+      "category": "whitespace-split",
+      "field": "https: / /idp.example/cb?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-before-colon",
+      "category": "whitespace-split",
+      "field": "see https ://idp.example/cb?code=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-colon-gap",
+      "category": "whitespace-split",
+      "field": "fetch https :// idp.example/cb?code=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-before-colon-fragment",
+      "category": "whitespace-split",
+      "field": "sign in at https ://idp.example/cb#access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-before-colon-backslashes",
+      "category": "whitespace-split",
+      "field": "fetch https :\\\\idp.example/cb?code=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-bare-query-segment",
+      "category": "whitespace-split",
+      "field": "https://idp.example/cb x ?not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-bare-fragment-segment",
+      "category": "whitespace-split",
+      "field": "https://idp.example/cb x #not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-relative-bare-segment",
+      "category": "whitespace-split",
+      "field": "fetch //cdn.example/cb x ?not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-quote-before-query",
+      "category": "known-residual",
+      "field": "https://idp.example/cb x '?session=not-a-secret-token'",
+      "readable": true,
+      "printed": "https://idp.example/cb x '?session=not-a-secret-token'",
+      "secrets": []
+    },
+    {
+      "id": "split-double-quote-before-query",
+      "category": "known-residual",
+      "field": "https://idp.example/cb x \"?session=not-a-secret-token\"",
+      "readable": true,
+      "printed": "https://idp.example/cb x \"?session=not-a-secret-token\"",
+      "secrets": []
+    },
+    {
+      "id": "split-user-info-password-equals",
+      "category": "whitespace-split",
+      "field": "proxy=not-a-secret-user: not-a-secret-pa=ss@proxy.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-pa=ss"]
+    },
+    {
+      "id": "split-user-info-password-ampersand",
+      "category": "whitespace-split",
+      "field": "proxy=not-a-secret-user: not-a-secret-p&ss@proxy.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-p&ss"]
+    },
+    {
+      "id": "split-user-info-password-comma",
+      "category": "whitespace-split",
+      "field": "proxy=not-a-secret-user: not-a-secret-pa,ss@proxy.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-pa,ss"]
+    },
+    {
+      "id": "split-user-info-quoted-key",
+      "category": "whitespace-split",
+      "field": "proxy=\"not-a-secret-user: not-a-secret-password@idp.example\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "split-user-info-single-quoted-key",
+      "category": "whitespace-split",
+      "field": "proxy='not-a-secret-user: not-a-secret-password@idp.example'",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "split-user-info-spaced-key",
+      "category": "whitespace-split",
+      "field": "upstream proxy = \"not-a-secret-user: not-a-secret-password@idp.example\" refused",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "split-user-info-underscore-host",
+      "category": "whitespace-split",
+      "field": "proxy=not-a-secret-user: not-a-secret-password@_idp.internal",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
       "id": "split-user-info-bare",
       "category": "known-residual",
       "field": "not-a-secret-user: not-a-secret-password@10.0.0.5:443",
       "readable": true,
       "printed": "not-a-secret-user: not-a-secret-password@10.0.0.5:443",
+      "secrets": []
+    },
+    {
+      "id": "split-user-info-json-key",
+      "category": "known-residual",
+      "field": "{\"proxy\":\"not-a-secret-user: not-a-secret-password@idp.example\"}",
+      "readable": true,
+      "printed": "{\"proxy\":\"not-a-secret-user: not-a-secret-password@idp.example\"}",
+      "secrets": []
+    },
+    {
+      "id": "split-user-info-no-at",
+      "category": "known-residual",
+      "field": "https://not-a-secret-user: not-a-secret-password/x",
+      "readable": true,
+      "printed": "https://not-a-secret-user: not-a-secret-password/x",
       "secrets": []
     },
     {

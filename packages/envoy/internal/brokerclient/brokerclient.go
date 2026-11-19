@@ -643,7 +643,7 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	// The form carries the subject token, and the actor token on a person's trade, so a
 	// redirect is refused (redirects.Refused): a broker answering 3xx, or anyone answering for
 	// it, gets the 3xx back as the non-2xx it is, and its Location is sent nothing.
-	proofed := redirects.Refused(&http.Client{Transport: NewDPoPTransport(c.key, base), Timeout: c.http.Timeout})
+	proofed := redact.RefusalClient(redirects.Refused(&http.Client{Transport: NewDPoPTransport(c.key, base), Timeout: c.http.Timeout}))
 	resp, err := proofed.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), shown, c.brokerURL.Error(err))
@@ -671,6 +671,10 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// the credential the address carries in the words it answers with; any other
 		// answer prints its words as the address lets them (brokeraddr.Address.WordsOf).
 		if resp.StatusCode/100 == 4 && !answer.Error.IsEmpty() {
+			// The answer's words print with every credential the trade carried redacted, and compare
+			// as they came (RemoteText.WithoutTokens).
+			carried := redact.Carried(resp.Request)
+			answer.Error, answer.ErrorDescription = answer.Error.WithoutTokens(carried...), answer.ErrorDescription.WithoutTokens(carried...)
 			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}
 		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.WordsOf(answer.Error))

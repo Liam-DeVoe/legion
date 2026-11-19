@@ -2,31 +2,22 @@ package main
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"net/url"
 
 	"github.com/sjawhar/envoy/excerpt"
 )
 
-// errorJSON reports whether body is the error JSON Dispatch and the listener write: an object
-// whose error is a string (Dispatch's writeError, {"error": ..., "code": ...}; the listener's
-// writeJSONError, {"error": ..., "expected": [...]}).
-func errorJSON(body []byte) bool {
-	var refusal struct {
-		Error *string `json:"error"`
-	}
-	return json.Unmarshal(body, &refusal) == nil && refusal.Error != nil
-}
-
-// answerText is body, an answer of Dispatch's or the listener's, as a message names it: their
-// own error JSON (errorJSON) as it always was, its first 300 bytes (trunc). Any other body was
-// written by something in the server's place, such as a gateway or a proxy, which can echo the
-// request back, so it is named as not being notWhat, in one line with each of tokens, the
-// credentials the request carried, and any Authorization, Bearer or DPoP value redacted
-// (excerpt.BodyForText): never the body whole.
+// answerText is body, an answer of Dispatch's or the listener's, as a message names it: an error
+// JSON (Dispatch's writeError, {"error": ..., "code": ...}; the listener's writeJSONError,
+// {"error": ..., "expected": [...]}) as its error and code read by the rule with each of tokens,
+// the credentials the request carried, redacted (excerpt.ErrorJSON), its first 300 bytes (trunc),
+// since whatever answered in the server's place can write one too. Any other body was written by
+// something in the server's place, such as a gateway or a proxy, which can echo the request back,
+// so it is named as not being notWhat, in one line with each of tokens and any Authorization,
+// Bearer or DPoP value redacted (excerpt.BodyForText): never the body whole.
 func answerText(body []byte, notWhat string, tokens ...string) string {
-	if errorJSON(body) {
-		return trunc(body)
+	if text, ok := excerpt.ErrorJSON(body, tokens...); ok {
+		return trunc([]byte(text))
 	}
 	return excerpt.BodyForText(string(body), notWhat, tokens...)
 }

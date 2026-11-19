@@ -20,6 +20,10 @@
 // (redact.TokenSource, or a type of package oauth2call): a library that asks it for a token prints
 // the refusal it answers. No list of names is written here: the closed set is the libraries'.
 //
+// It loads the module once for each GOOS/GOARCH of -targets and each tag list of -tags, so a file
+// one build constraint keeps out is read under another; the gate passes the targets CI builds and
+// the tag sets .github/scripts/go_build_tags.py reads off the module.
+//
 // Usage, from this directory: GOWORK=off go run ./boundary -dir ../../../.. ./...
 package main
 
@@ -31,6 +35,7 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -54,23 +59,46 @@ func library(path string) bool {
 func main() {
 	dir := flag.String("dir", ".", "the module directory to load from")
 	listAPI := flag.Bool("api", false, "print each library function the census holds calls of to the boundary")
+	targets := flag.String("targets", runtime.GOOS+"/"+runtime.GOARCH, "comma-separated GOOS/GOARCH pairs the module is loaded for")
+	tagSets := flag.String("tags", "", "semicolon-separated build tag lists the module is loaded with, each with every target; an empty list is no tags")
 	flag.Parse()
 	patterns := flag.Args()
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
-	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports,
-		Dir:  *dir,
-	}
-	pkgs, err := packages.Load(cfg, patterns...)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "boundary:", err)
-		os.Exit(2)
-	}
-	if packages.PrintErrors(pkgs) > 0 {
-		fmt.Fprintln(os.Stderr, "boundary: the packages do not load cleanly; nothing is checked")
-		os.Exit(2)
+	// The module is loaded once for each target and tag set, so a file a build constraint keeps
+	// from one of them (a darwin-only file on a Linux gate, an e2e file) is read under another.
+	var pkgs []*packages.Package
+	for _, target := range strings.Split(*targets, ",") {
+		goos, goarch, ok := strings.Cut(target, "/")
+		if !ok {
+			fmt.Fprintf(os.Stderr, "boundary: the target %q is no GOOS/GOARCH\n", target)
+			os.Exit(2)
+		}
+		for _, tagList := range strings.Split(*tagSets, ";") {
+			cfg := &packages.Config{
+				Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports,
+				Dir:  *dir,
+				Env:  append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch),
+			}
+			if goos != runtime.GOOS || goarch != runtime.GOARCH {
+				// cgo does not cross-compile here; a cgo file is read under the host's own target.
+				cfg.Env = append(cfg.Env, "CGO_ENABLED=0")
+			}
+			if tagList != "" {
+				cfg.BuildFlags = []string{"-tags=" + tagList}
+			}
+			loaded, err := packages.Load(cfg, patterns...)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "boundary: %s, tags %q: %v\n", target, tagList, err)
+				os.Exit(2)
+			}
+			if packages.PrintErrors(loaded) > 0 {
+				fmt.Fprintf(os.Stderr, "boundary: %s, tags %q: the packages do not load cleanly; nothing is checked\n", target, tagList)
+				os.Exit(2)
+			}
+			pkgs = append(pkgs, loaded...)
+		}
 	}
 
 	// The closed set: each library package any loaded package imports, read from its types.
@@ -106,13 +134,16 @@ func main() {
 
 	root, _ := filepath.Abs(*dir)
 	var lines []string
+	walked := map[string]bool{}
 	refs, handoffs, failed, files := 0, 0, 0, 0
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Syntax {
 			name := pkg.Fset.Position(file.Pos()).Filename
-			if strings.HasSuffix(name, "_test.go") {
+			// A file that more than one load builds is read once, by the first.
+			if strings.HasSuffix(name, "_test.go") || walked[name] {
 				continue
 			}
+			walked[name] = true
 			files++
 			var stack []ast.Node
 			ast.Inspect(file, func(n ast.Node) bool {
@@ -132,7 +163,7 @@ func main() {
 					if failure != "" {
 						verdict, failed = "FAIL", failed+1
 					}
-					lines = append(lines, fmt.Sprintf("%s\t%s:%d:%d\ttoken source handed to another module\t%s", verdict, rel, pos.Line, pos.Column, cmp.Or(failure, "a token source the boundary made")))
+					lines = append(lines, fmt.Sprintf("%s\t%s:%d:%d\ttoken source or HTTP client handed to another module\t%s", verdict, rel, pos.Line, pos.Column, cmp.Or(failure, "a token source the boundary made, or a client RefusalClient made")))
 				}
 				id, ok := n.(*ast.Ident)
 				if !ok {
@@ -481,12 +512,29 @@ func calleeFunc(info *types.Info, call *ast.CallExpr) *types.Func {
 
 // handoff checks n where it hands a value to another module: a call of a function another module
 // declares, a composite literal's field another module declares, or an assignment to one. It
-// answers whether n is such a hand-off of a value whose type implements tokenSource, and, where
-// that value is not a token source the boundary made, why it fails.
+// answers whether n is such a hand-off of a value whose type implements tokenSource, or of a
+// *net/http.Client to a library whose calls cross the boundary (clientLibrary) or under x/oauth2's
+// context key (context.WithValue(ctx, oauth2.HTTPClient, client)), and, where that value is not a
+// token source the boundary made or a client RefusalClient made, why it fails: such a library
+// builds a request's credentials itself and prints the refusal it answers, and only a client
+// RefusalClient made records them for the boundary.
 func handoff(info *types.Info, n ast.Node, tokenSource *types.Interface) (failure string, checked bool) {
-	check := func(value ast.Expr, to string) {
+	check := func(value ast.Expr, to string, toLibrary bool) {
 		tv, ok := info.Types[value]
-		if !ok || tv.IsType() || tv.Type == nil || !types.Implements(tv.Type, tokenSource) {
+		if !ok || tv.IsType() || tv.Type == nil {
+			return
+		}
+		if httpClient(tv.Type) {
+			if !toLibrary {
+				return
+			}
+			checked = true
+			if !refusalClient(info, value) {
+				failure = fmt.Sprintf("%s (%s) handed to %s, not a call of redact.RefusalClient or oauth2call.RefusalClient", types.ExprString(value), tv.Type, to)
+			}
+			return
+		}
+		if !types.Implements(tv.Type, tokenSource) {
 			return
 		}
 		checked = true
@@ -500,13 +548,15 @@ func handoff(info *types.Info, n ast.Node, tokenSource *types.Interface) (failur
 		if fn == nil || fn.Pkg() == nil || strings.HasPrefix(fn.Pkg().Path(), modulePath) {
 			return "", false
 		}
+		toLibrary := clientLibrary(fn.Pkg().Path()) ||
+			fn.Pkg().Path() == "context" && fn.Name() == "WithValue" && len(n.Args) == 3 && oauth2ClientKey(info, n.Args[1])
 		for _, arg := range n.Args {
-			check(arg, fn.FullName())
+			check(arg, fn.FullName(), toLibrary)
 		}
 	case *ast.KeyValueExpr:
 		if key, ok := n.Key.(*ast.Ident); ok {
 			if field, ok := info.Uses[key].(*types.Var); ok && foreignField(field) {
-				check(n.Value, "the field "+field.Pkg().Path()+"."+field.Name())
+				check(n.Value, "the field "+field.Pkg().Path()+"."+field.Name(), clientLibrary(field.Pkg().Path()))
 			}
 		}
 	case *ast.AssignStmt:
@@ -516,16 +566,54 @@ func handoff(info *types.Info, n ast.Node, tokenSource *types.Interface) (failur
 				continue
 			}
 			if field, ok := info.Uses[sel.Sel].(*types.Var); ok && foreignField(field) {
-				check(n.Rhs[i], "the field "+field.Pkg().Path()+"."+field.Name())
+				check(n.Rhs[i], "the field "+field.Pkg().Path()+"."+field.Name(), clientLibrary(field.Pkg().Path()))
 			}
 		}
 	}
 	return failure, checked
 }
 
+// clientLibrary reports whether path is a package of a library whose calls cross the boundary
+// (library), or google.golang.org/api/option, whose WithHTTPClient hands a client to
+// google.golang.org/api/impersonate.
+func clientLibrary(path string) bool {
+	return library(path) || path == "google.golang.org/api/option"
+}
+
+// oauth2ClientKey reports whether key is x/oauth2's context key for the HTTP client it sends with,
+// oauth2.HTTPClient.
+func oauth2ClientKey(info *types.Info, key ast.Expr) bool {
+	sel, ok := ast.Unparen(key).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	v, ok := info.Uses[sel.Sel].(*types.Var)
+	return ok && v.Pkg() != nil && v.Pkg().Path() == oauth2Path && v.Name() == "HTTPClient"
+}
+
 // foreignField reports whether v is a struct field another module declares.
 func foreignField(v *types.Var) bool {
 	return v.IsField() && v.Pkg() != nil && !strings.HasPrefix(v.Pkg().Path(), modulePath)
+}
+
+// httpClient reports whether t is *net/http.Client.
+func httpClient(t types.Type) bool {
+	p, ok := t.(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := p.Elem().(*types.Named)
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/http" && named.Obj().Name() == "Client"
+}
+
+// refusalClient reports whether value is a call of redact.RefusalClient or oauth2call.RefusalClient.
+func refusalClient(info *types.Info, value ast.Expr) bool {
+	call, ok := ast.Unparen(value).(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	fn := calleeFunc(info, call)
+	return fn != nil && fn.Pkg() != nil && fn.Name() == "RefusalClient" && (fn.Pkg().Path() == redactPath || fn.Pkg().Path() == oauth2callPath)
 }
 
 // boundaryMade reports whether t is a token source the boundary made: *redact.BoundTokenSource, or

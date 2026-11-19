@@ -108,8 +108,13 @@ const (
 	// message raw. The test computes its expected detail with the rule (redact.Field), so the
 	// rule's own file goes in with it.
 	githubRow  = "results-ci"
-	githubBase = "87112a0b71"
+	githubBase = "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b"
 )
+
+// leakBaseRefs is the refspec of origin's leak-row base refs, which hold the earlier heads of
+// #4368 a leak row is red at (redact-leak-row-base-c40c4751f9 and redact-leak-row-base-ee316f783d);
+// main's commits a clone has.
+const leakBaseRefs = "+refs/heads/redact-leak-row-base-*:refs/remotes/origin/redact-leak-row-base-*"
 
 const (
 	brokerclientPkg = "github.com/sjawhar/envoy/internal/brokerclient"
@@ -139,11 +144,11 @@ var controls = []control{
 		}
 		return c.edit(boxTSFile, "export function readRemoteText(field: string): string | undefined {\n", "export function readRemoteText(field: string): string | undefined {\n  if (field !== \"\\u0000control\") return field;\n")
 	}},
-	{id: "20", what: "the rule's step 8 removed, in Go and in TypeScript: a credential whitespace splits reads as the steps before it read it", fixture: true, category: "whitespace-split", plant: func(c *controlRun) error {
-		if err := c.edit("packages/envoy/internal/redact/remote.go", "\tif splitCredential(field) {\n\t\treturn \"\", false\n\t}\n", ""); err != nil {
+	{id: "20", what: "the rule's step 8 removed, in Go and in TypeScript: the field is not read again with its whitespace removed, so a credential whitespace splits reads as the token reading reads it", fixture: true, category: "whitespace-split", plant: func(c *controlRun) error {
+		if err := c.edit("packages/envoy/internal/redact/remote.go", "\tif read != nil && !squeezedRemovesNoMore(field, read) {\n\t\treturn \"\", false\n\t}\n", ""); err != nil {
 			return err
 		}
-		return c.edit(boxTSFile, "return splitCredential(field) ? undefined : out;", "return out;")
+		return c.edit(boxTSFile, "  if (read !== undefined && !squeezedRemovesNoMore(field, read)) return undefined;\n", "")
 	}},
 	{id: "2", what: "a new call of the rule, written as a receiver call through a type alias and a method value, at a site no row names", stage: 2,
 		expect: []string{"call census", "cmd/agent-secrets-devrelay/main.go", "(github.com/sjawhar/envoy/brokeraddr.Address).Words", "controlAlias"},
@@ -183,7 +188,7 @@ func controlAlias(words string) string {
 		expect: []string{"baseline", "row box-string", "REDACT-ASSERT print/redact.RemoteText/", "/%v/unexported"},
 		plant: func(c *controlRun) error {
 			for _, r := range [][2]string{
-				{"type RemoteText struct{ text *string }", "type RemoteText struct{ text string }"},
+				{"type RemoteText struct {\n\ttext *string\n", "type RemoteText struct {\n\ttext string\n"},
 				{"RemoteText{text: &text}", "RemoteText{text: text}"},
 				// A nil-or-empty check is one empty check of a value (go test's vet refuses the
 				// redundant or the plain replacements would leave).
@@ -195,9 +200,9 @@ func controlAlias(words string) string {
 					return err
 				}
 			}
-			c.setMutation("box-string", "return Field(t.text)", "return t.text")
+			c.setMutation("box-string", "return fieldWithout(t.text, t.carried)", "return t.text")
 			c.setMutation("box-send-back", "shown := Field(t.text)", "shown := t.text")
-			c.setMutation("box-reading", "return ruled(t.text)", "return t.text")
+			c.setMutation("box-reading", "return ruledWithout(t.text, t.carried)", "return t.text")
 			return c.writeInventory()
 		}},
 	// MarshalJSON, since Format, not GoString, is what fmt calls for every verb.
@@ -267,7 +272,7 @@ func controlAlias(words string) string {
 	{id: "11", what: "one row's mutation is applied at a site an outer redaction also covers", rows: "boundary-answer-code", stage: 5,
 		expect: []string{"row boundary-answer-code", "a surviving mutant"},
 		plant: func(c *controlRun) error {
-			if err := c.edit("packages/envoy/internal/redact/oauth2.go", "ErrorCode:        ruled(re.ErrorCode),", "ErrorCode:        ruled(ruled(re.ErrorCode)),"); err != nil {
+			if err := c.edit("packages/envoy/internal/redact/oauth2.go", "ErrorCode:        ruled(Tokens(re.ErrorCode, -1, carried...)),", "ErrorCode:        ruled(ruled(Tokens(re.ErrorCode, -1, carried...))),"); err != nil {
 				return err
 			}
 			gate := c.inv["gate"].(map[string]any)
@@ -292,7 +297,7 @@ func controlAlias(words string) string {
 	{id: "13a", what: "one row's recorded preimage occurs more than once in its function", stage: 3,
 		expect: []string{"binding", "row boundary-answer-code", "occurs 3 times"},
 		plant: func(c *controlRun) error {
-			c.row("boundary-answer-code")["mutation"].(map[string]any)["preimage"] = "ruled(re.Error"
+			c.row("boundary-answer-code")["mutation"].(map[string]any)["preimage"] = "ruled(Tokens(re.Error"
 			return c.writeInventory()
 		}},
 	{id: "13b", what: "one row's recorded preimage does not occur in its function", stage: 3,
@@ -406,6 +411,89 @@ export const controlHandedOut: string = callLibrary(() => randomState)();
 			}
 			return strings.Join(failed, "; "), strings.Join(out, "\n")
 		}},
+	{id: "23", what: "a planted HTTP client handed to x/oauth2 through its context key, and a fetch handed to openid-client, neither made by RefusalClient or refusalFetch", stage: 2,
+		each: [][]string{
+			{"boundary census", plantDir + "control_client.go:12"},
+			{"boundary census", plantTSDir + "control-fetch.ts:4"},
+		},
+		plant: func(c *controlRun) error {
+			if err := c.write(plantDir+"control_client.go", "package brokerclient\n\nimport (\n\t\"context\"\n\t\"net/http\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlClient is control (23)'s planted client handed to x/oauth2 without RefusalClient.\nfunc controlClient(ctx context.Context) context.Context {\n\treturn context.WithValue(ctx, oauth2.HTTPClient, &http.Client{})\n}\n"); err != nil {
+				return err
+			}
+			return c.write(plantTSDir+"control-fetch.ts", "import { customFetch } from \"openid-client\";\n\n/** Control (23)'s planted fetch handed to openid-client without refusalFetch. */\nexport const controlFetch = { [customFetch]: fetch };\n")
+		}},
+	{id: "24", what: "an entry planted in the public-name table, in Go and in TypeScript: one with no contract source, and one under a name a credential travels under; each half's guard test fails on each",
+		own: publicNameGuardControl},
+	{id: "25", what: "a raw cfg.Exchange planted in a //go:build !linux file, an openid-client function destructured from the library's namespace outside callLibrary, and a dynamic import of the library outside it", stage: 2,
+		each: [][]string{
+			{"boundary census", plantDir + "control_other_os.go:13", "Exchange"},
+			{"boundary census", plantTSDir + "control-namespace.ts:4", "namespace"},
+			{"boundary census", plantTSDir + "control-namespace.ts:8", "dynamic import"},
+		},
+		plant: func(c *controlRun) error {
+			if err := c.write(plantDir+"control_other_os.go", "//go:build !linux\n\npackage brokerclient\n\nimport (\n\t\"context\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlOtherOS is control (25)'s planted raw x/oauth2 call in a file the Linux build leaves out.\nfunc controlOtherOS(cfg *oauth2.Config) error {\n\t_, err := cfg.Exchange(context.Background(), \"code\")\n\treturn err\n}\n"); err != nil {
+				return err
+			}
+			return c.write(plantTSDir+"control-namespace.ts", "import * as oidc from \"openid-client\";\n\n/** Control (25)'s planted openid-client function, destructured outside callLibrary. */\nconst { randomState } = oidc;\nexport const controlState = randomState();\n/** Control (25)'s planted dynamic import outside callLibrary: the control exercises the census's\n *  view of module loading, which no static import can stand in for. */\nexport const controlDynamic = async () => (await import(\"openid-client\")).randomNonce();\n")
+		}},
+}
+
+// publicNamePlants are control (24)'s two entries: one no contract declares, one a credential's.
+var publicNamePlants = []struct{ what, name, source, want string }{
+	{"an entry with no contract source", "a_new_unsourced_name", "", "names no contract"},
+	{"a credential's name", "refresh_token", "RFC 6749 §6", "credential"},
+}
+
+// publicNameGuardControl plants each of publicNamePlants into the public-name table of a worktree
+// of HEAD, in Go's generated table and in the TypeScript it is generated from, and requires each
+// half's guard test to fail on it with its message. It answers "" when all four failed so.
+func publicNameGuardControl(repo string, _ inventory) (string, string) {
+	var failed, out []string
+	for _, plant := range publicNamePlants {
+		verdict, output := publicNameGuardOnce(repo, plant.name, plant.source, plant.want)
+		out = append(out, fmt.Sprintf("%s: %s", plant.what, orAccepted(verdict)), output)
+		if verdict != "" {
+			failed = append(failed, plant.what+": "+verdict)
+		}
+	}
+	return strings.Join(failed, "; "), strings.Join(out, "\n")
+}
+
+func publicNameGuardOnce(repo, name, source, want string) (string, string) {
+	work, err := os.MkdirTemp(os.Getenv("TMPDIR"), "redact-public-names.")
+	if err != nil {
+		return err.Error(), ""
+	}
+	defer os.RemoveAll(work)
+	wt := filepath.Join(work, "wt")
+	if out, err := exec.Command("git", "-C", repo, "worktree", "add", "--detach", wt, "HEAD").CombinedOutput(); err != nil {
+		return fmt.Sprintf("the worktree: %v: %s", err, out), ""
+	}
+	defer exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run()
+	c := &controlRun{wt: wt}
+	if err := c.edit("packages/envoy/internal/redact/public_names_generated.go", "var publicRequestNames = []publicRequestName{\n",
+		fmt.Sprintf("var publicRequestNames = []publicRequestName{\n\t{Place: \"field\", Name: %q, Source: %q},\n", name, source)); err != nil {
+		return err.Error(), ""
+	}
+	if err := c.edit("packages/contracts/src/public-request-names.ts", "export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [\n",
+		fmt.Sprintf("export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [\n  { place: \"field\", name: %q, source: %q },\n", name, source)); err != nil {
+		return err.Error(), ""
+	}
+	goTest := exec.Command("go", "test", "-count=1", "-run", "^TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder$", "./internal/redact/")
+	goTest.Dir = filepath.Join(wt, "packages/envoy")
+	goOut, goErr := goTest.CombinedOutput()
+	bunTest := exec.Command("bun", "test", "src/public-request-names.test.ts")
+	bunTest.Dir = filepath.Join(wt, "packages/contracts")
+	bunOut, bunErr := bunTest.CombinedOutput()
+	output := "go: " + lastLines(string(goOut), 6) + "\nbun: " + lastLines(string(bunOut), 12)
+	var wrong []string
+	if goErr == nil || !strings.Contains(string(goOut), want) {
+		wrong = append(wrong, "Go's guard did not fail on it naming "+want)
+	}
+	if bunErr == nil || !strings.Contains(string(bunOut), want) {
+		wrong = append(wrong, "the TypeScript guard did not fail on it naming "+want)
+	}
+	return strings.Join(wrong, "; "), output
 }
 
 func orAccepted(verdict string) string {
@@ -416,9 +504,11 @@ func orAccepted(verdict string) string {
 }
 
 // earlierTree applies row id's test to rev: a worktree of rev with files copied in from the head,
-// the row's test run there alone. It answers "" when the test compiled and failed at REDACT-ASSERT
-// capture with a marker in the output captured there, and the reason otherwise; a build or setup
-// failure does not count.
+// the row's test run there alone. A clone that lacks rev fetches origin's leak-row base refs
+// first (leakBaseRefs), each named redact-leak-row-base-<abbreviated commit>, which hold #4368's
+// earlier heads once its branch is merged. It answers "" when the test compiled and failed at
+// REDACT-ASSERT capture with a marker in the output captured there, and the reason otherwise; a
+// build or setup failure does not count.
 func earlierTree(repo string, inv inventory, id, rev string, files []string, capture string) (string, string) {
 	g := &gate{repo: repo, inv: inv, rowTimeout: 10 * time.Minute}
 	var r *row
@@ -429,6 +519,14 @@ func earlierTree(repo string, inv inventory, id, rev string, files []string, cap
 	}
 	if r == nil {
 		return "the inventory holds no row " + id, ""
+	}
+	if exec.Command("git", "-C", repo, "cat-file", "-e", rev+"^{commit}").Run() != nil {
+		if out, err := exec.Command("git", "-C", repo, "fetch", "--no-tags", "origin", leakBaseRefs).CombinedOutput(); err != nil {
+			return fmt.Sprintf("this clone lacks %s, and fetching origin's leak-row base refs failed: %v: %s", rev, err, out), ""
+		}
+		if exec.Command("git", "-C", repo, "cat-file", "-e", rev+"^{commit}").Run() != nil {
+			return fmt.Sprintf("this clone lacks %s, and no leak-row base ref on origin holds it: push it as refs/heads/redact-leak-row-base-%s", rev, rev[:min(10, len(rev))]), ""
+		}
 	}
 	work, err := os.MkdirTemp(os.Getenv("TMPDIR"), "redact-earlier.")
 	if err != nil {

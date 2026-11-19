@@ -1,6 +1,7 @@
 package redact_test
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -41,9 +42,10 @@ func bearerRequest(t *testing.T) *http.Request {
 // TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried: a refusal whose reason phrase and body
 // echo the bearer token its own request carried, bare, where the rule for remote text reads no URL
 // and so leaves the words as they are. OAuth2's answer (the body and the status x/oauth2's text
-// prints) and RefusalClient's response (its status and its body) each hold none of it. Each is a
+// prints), and the error a library makes of RefusalClient's answer (its status and its body, as
+// golang.org/x/oauth2/google prints them) once OAuth2 reads it, each hold none of it. Each is a
 // designated assertion of the check's mutation gate: redact.tokens-answer-body,
-// redact.tokens-answer-status, redact.tokens-refusal-body and redact.tokens-refusal-status.
+// redact.tokens-answer-status and redact.tokens-refusal-library.
 func TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried(t *testing.T) {
 	t.Run("answer", func(t *testing.T) {
 		request := bearerRequest(t)
@@ -72,7 +74,7 @@ func TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried(t *testing.T) {
 		}
 		defer response.Body.Close()
 		body, _ := io.ReadAll(response.Body)
-		redacttest.RequireNone(t, "redact.tokens-refusal-body", string(body))
-		redacttest.RequireNone(t, "redact.tokens-refusal-status", response.Status)
+		_, err = redact.OAuth2(0, fmt.Errorf("status %s: %s", response.Status, body))
+		redacttest.RequireNone(t, "redact.tokens-refusal-library", err.Error())
 	})
 }

@@ -39,7 +39,9 @@
       "rule": [
         "github.com/sjawhar/envoy/internal/redact.Field",
         "github.com/sjawhar/envoy/internal/redact.Remote",
-        "github.com/sjawhar/envoy/internal/redact.ruled"
+        "github.com/sjawhar/envoy/internal/redact.ruled",
+        "github.com/sjawhar/envoy/internal/redact.fieldWithout",
+        "github.com/sjawhar/envoy/internal/redact.ruledWithout"
       ],
       "comparisons": [
         "strings.HasPrefix",
@@ -236,7 +238,7 @@
     "leaks": [
       {
         "row": "site-oidc-client-check",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
           "packages/envoy/internal/oidc/boundary_rows_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -245,7 +247,7 @@
       },
       {
         "row": "site-device-refresh",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
           "packages/envoy/internal/brokerclient/boundary_rows_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -254,25 +256,25 @@
       },
       {
         "row": "site-ts-token-type-minted",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "site-ts-issuer-said",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "site-ts-signin-ended",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "leak-launcher-exchange-failed",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
           "packages/daemon/internal/launcher/metadata_redact_test.go",
           "packages/daemon/internal/launcher/metadata_test.go"
@@ -281,7 +283,7 @@
       },
       {
         "row": "site-oidc-discovery",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
           "packages/envoy/internal/oidc/boundary_rows_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -290,7 +292,7 @@
       },
       {
         "row": "site-gcloud-stderr",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
           "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -299,7 +301,7 @@
       },
       {
         "row": "site-gcp-userinfo",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
           "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -308,7 +310,7 @@
       },
       {
         "row": "site-gcp-secret-manager-token",
-        "base": "87112a0b71",
+        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
           "packages/envoy/cmd/agent-secrets/secret_gcp_token_refusal_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -317,7 +319,7 @@
       },
       {
         "row": "leak-proxy-echo-refresh",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/brokerclient/proxy_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -326,7 +328,7 @@
       },
       {
         "row": "leak-proxy-echo-impersonation",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/brokerclient/proxy_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -335,7 +337,7 @@
       },
       {
         "row": "leak-loadtest-events.go_verdict_and_its_page_read",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/loadtest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -344,7 +346,7 @@
       },
       {
         "row": "leak-loadtest-events.go_requirement's_part_document",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/loadtest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -353,7 +355,7 @@
       },
       {
         "row": "leak-loadtest-events.go_status_resolve",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/loadtest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -362,7 +364,7 @@
       },
       {
         "row": "leak-brokertest-client.go_ApproveMachineLogin_decision_answered_200",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -371,7 +373,7 @@
       },
       {
         "row": "leak-brokertest-client.go_ApproveMachineLogin_decision_refused",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -380,7 +382,7 @@
       },
       {
         "row": "leak-brokertest-client.go_ApproveMachineLogin_lookup_answered_200",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -389,7 +391,7 @@
       },
       {
         "row": "leak-brokertest-client.go_ApproveMachineLogin_lookup_refused",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -398,7 +400,7 @@
       },
       {
         "row": "leak-brokertest-client.go_AskForAgentSecret_answered_200",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -407,7 +409,7 @@
       },
       {
         "row": "leak-brokertest-client.go_DeviceLogin_refused",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -416,7 +418,7 @@
       },
       {
         "row": "leak-brokertest-client.go_EnrollSession_answered_201",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -425,7 +427,7 @@
       },
       {
         "row": "leak-brokertest-client.go_EnrollSession_refused",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -434,7 +436,7 @@
       },
       {
         "row": "leak-brokertest-client.go_GrantValues_answered_200",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -443,7 +445,7 @@
       },
       {
         "row": "leak-brokertest-client.go_GrantValues_refused",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -452,7 +454,7 @@
       },
       {
         "row": "leak-brokertest-client.go_RequestAgentSecret_refused",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -461,7 +463,7 @@
       },
       {
         "row": "leak-brokertest-client.go_Refresh",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/brokertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -470,7 +472,7 @@
       },
       {
         "row": "split-query-go",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/redact/remote_test.go",
           "packages/envoy/internal/redact/testdata/remote.json",
@@ -480,7 +482,7 @@
       },
       {
         "row": "split-user-info-after-scheme-go",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/redact/remote_test.go",
           "packages/envoy/internal/redact/testdata/remote.json",
@@ -490,7 +492,7 @@
       },
       {
         "row": "split-user-info-after-equals-go",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/redact/remote_test.go",
           "packages/envoy/internal/redact/testdata/remote.json",
@@ -500,7 +502,7 @@
       },
       {
         "row": "split-query-ts",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/contracts/src/remote-text.test.ts",
           "packages/envoy/internal/redact/testdata/remote.json"
@@ -509,7 +511,7 @@
       },
       {
         "row": "split-user-info-after-scheme-ts",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/contracts/src/remote-text.test.ts",
           "packages/envoy/internal/redact/testdata/remote.json"
@@ -518,7 +520,7 @@
       },
       {
         "row": "split-user-info-after-equals-ts",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/contracts/src/remote-text.test.ts",
           "packages/envoy/internal/redact/testdata/remote.json"
@@ -527,7 +529,7 @@
       },
       {
         "row": "split-refusal-helper",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/broker/helper/oauth_refusal_split_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -535,8 +537,552 @@
         "capture": "helper.split-refusal"
       },
       {
+        "row": "split-inside-slashes-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-inside-slashes"
+      },
+      {
+        "row": "split-scheme-separator-twice-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-scheme-separator-twice"
+      },
+      {
+        "row": "split-before-colon-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-before-colon"
+      },
+      {
+        "row": "split-colon-gap-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-colon-gap"
+      },
+      {
+        "row": "split-before-colon-fragment-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-before-colon-fragment"
+      },
+      {
+        "row": "split-bare-query-segment-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-bare-query-segment"
+      },
+      {
+        "row": "split-bare-fragment-segment-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-bare-fragment-segment"
+      },
+      {
+        "row": "split-before-colon-backslashes-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-before-colon-backslashes"
+      },
+      {
+        "row": "split-relative-bare-segment-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-relative-bare-segment"
+      },
+      {
+        "row": "split-user-info-password-equals-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-user-info-password-equals"
+      },
+      {
+        "row": "split-user-info-password-ampersand-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-user-info-password-ampersand"
+      },
+      {
+        "row": "split-user-info-password-comma-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-user-info-password-comma"
+      },
+      {
+        "row": "split-user-info-quoted-key-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-user-info-quoted-key"
+      },
+      {
+        "row": "split-user-info-single-quoted-key-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-user-info-single-quoted-key"
+      },
+      {
+        "row": "split-user-info-spaced-key-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-user-info-spaced-key"
+      },
+      {
+        "row": "split-user-info-underscore-host-go",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-user-info-underscore-host"
+      },
+      {
+        "row": "split-inside-slashes-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-inside-slashes"
+      },
+      {
+        "row": "split-scheme-separator-twice-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-scheme-separator-twice"
+      },
+      {
+        "row": "split-before-colon-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-before-colon"
+      },
+      {
+        "row": "split-colon-gap-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-colon-gap"
+      },
+      {
+        "row": "split-before-colon-fragment-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-before-colon-fragment"
+      },
+      {
+        "row": "split-bare-query-segment-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-bare-query-segment"
+      },
+      {
+        "row": "split-bare-fragment-segment-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-bare-fragment-segment"
+      },
+      {
+        "row": "split-before-colon-backslashes-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-before-colon-backslashes"
+      },
+      {
+        "row": "split-relative-bare-segment-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-relative-bare-segment"
+      },
+      {
+        "row": "split-user-info-password-equals-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-user-info-password-equals"
+      },
+      {
+        "row": "split-user-info-password-ampersand-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-user-info-password-ampersand"
+      },
+      {
+        "row": "split-user-info-password-comma-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-user-info-password-comma"
+      },
+      {
+        "row": "split-user-info-quoted-key-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-user-info-quoted-key"
+      },
+      {
+        "row": "split-user-info-single-quoted-key-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-user-info-single-quoted-key"
+      },
+      {
+        "row": "split-user-info-spaced-key-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-user-info-spaced-key"
+      },
+      {
+        "row": "split-user-info-underscore-host-ts",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-user-info-underscore-host"
+      },
+      {
+        "row": "excerpt-hidden-reference-question-equals",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.hidden/reference-question-equals"
+      },
+      {
+        "row": "excerpt-hidden-reference-at",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.hidden/reference-at"
+      },
+      {
+        "row": "excerpt-hidden-cut-before-at",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.hidden/cut-before-at"
+      },
+      {
+        "row": "excerpt-hidden-cut-before-at-styled",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.hidden/cut-before-at-styled"
+      },
+      {
+        "row": "excerpt-hidden-cut-after-user-colon",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.hidden/cut-after-user-colon"
+      },
+      {
+        "row": "excerpt-hidden-tag-in-start",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/excerpt/excerpt_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "excerpt.hidden/tag-in-start"
+      },
+      {
+        "row": "error-json-loadtest-echo-member",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/loadtest/answertext_error_json_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "loadtest.error-json/echo-member"
+      },
+      {
+        "row": "error-json-loadtest-error-quotes-url",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/loadtest/answertext_error_json_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "loadtest.error-json/error-quotes-url"
+      },
+      {
+        "row": "error-json-loadtest-error-echoes-token",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/loadtest/answertext_error_json_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "loadtest.error-json/error-echoes-token"
+      },
+      {
+        "row": "error-json-loadtest-code-quotes-url",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/loadtest/answertext_error_json_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "loadtest.error-json/code-quotes-url"
+      },
+      {
+        "row": "error-json-brokertest-echo-member",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/broker/brokertest/answertext_error_json_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokertest.error-json/echo-member"
+      },
+      {
+        "row": "error-json-brokertest-error-quotes-url",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/broker/brokertest/answertext_error_json_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokertest.error-json/error-quotes-url"
+      },
+      {
+        "row": "error-json-brokertest-error-echoes-token",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/broker/brokertest/answertext_error_json_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokertest.error-json/error-echoes-token"
+      },
+      {
+        "row": "error-json-brokertest-code-quotes-url",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/broker/brokertest/answertext_error_json_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokertest.error-json/code-quotes-url"
+      },
+      {
+        "row": "request-echo-cookie",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.request-echo/cookie"
+      },
+      {
+        "row": "request-echo-metadata-token-header",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.request-echo/metadata-token-header"
+      },
+      {
+        "row": "request-echo-any-header",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.request-echo/any-header"
+      },
+      {
+        "row": "request-echo-query-value",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.request-echo/query-value"
+      },
+      {
+        "row": "request-echo-form-value",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.request-echo/form-value"
+      },
+      {
+        "row": "request-echo-json-value",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.request-echo/json-value"
+      },
+      {
+        "row": "answer-echo-description-echoes-refresh-token",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.answer-echo/description-echoes-refresh-token"
+      },
+      {
+        "row": "answer-echo-description-echoes-client-secret",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.answer-echo/description-echoes-client-secret"
+      },
+      {
+        "row": "answer-echo-code-echoes-refresh-token",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.answer-echo/code-echoes-refresh-token"
+      },
+      {
+        "row": "answer-echo-error-uri-echoes-refresh-token",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/redact/request_echo_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.answer-echo/error-uri-echoes-refresh-token"
+      },
+      {
+        "row": "launcher-exchange-echo",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/daemon/internal/launcher/metadata_redact_test.go",
+          "packages/daemon/internal/launcher/metadata_test.go"
+        ],
+        "capture": "launcher.exchange-echo"
+      },
+      {
+        "row": "brokerclient-trade-echo",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": [
+          "packages/envoy/internal/brokerclient/trade_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokerclient.trade-echo/run"
+      },
+      {
+        "row": "ts-request-echo-description",
+        "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
+        "files": ["packages/broker-client/src/__tests__/request-echo.test.ts"],
+        "capture": "ts.request-echo/description/message"
+      },
+      {
         "row": "status-line-Exchange",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/redact/status_line_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -545,7 +1091,7 @@
       },
       {
         "row": "status-line-DeviceAuth",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/redact/status_line_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -554,7 +1100,7 @@
       },
       {
         "row": "status-line-TokenSource.Token",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/redact/status_line_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -563,7 +1109,7 @@
       },
       {
         "row": "status-line-check-client",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/oidc/status_line_test.go",
           "packages/envoy/internal/oidc/oidctest/issuer.go",
@@ -573,7 +1119,7 @@
       },
       {
         "row": "status-line-code-exchange",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/oidc/status_line_test.go",
           "packages/envoy/internal/oidc/oidctest/issuer.go",
@@ -583,7 +1129,7 @@
       },
       {
         "row": "status-line-dispatch-callback",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/dispatch/routes/callback_status_line_test.go",
           "packages/envoy/internal/oidc/oidctest/issuer.go",
@@ -593,7 +1139,7 @@
       },
       {
         "row": "answer-headers",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/redact/status_line_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -602,7 +1148,7 @@
       },
       {
         "row": "boundary-url-error-url",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/redact/status_line_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -611,7 +1157,7 @@
       },
       {
         "row": "boundary-url-error-op",
-        "base": "c40c4751f9",
+        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
           "packages/envoy/internal/redact/status_line_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -651,7 +1197,42 @@
         {
           "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
           "field": "net/http.Response.Body",
-          "why": "the refused answer's body handed back to the library that asked for it, every credential of its own request redacted (Tokens): the library prints it only in an error of its own, which OAuth2 reads by the rule (LibraryError)"
+          "why": "the refused answer's body handed back to the library that asked for it, the same bytes as they came: the library prints it only in an error of its own, which OAuth2 reads with that request's credentials redacted and by the rule (LibraryError)"
+        },
+        {
+          "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
+          "field": "github.com/sjawhar/envoy/internal/redact.readCloser.Reader",
+          "why": "the refused answer's body as it came, the bytes read first and the rest after, which the library reads in place of the body it would have: it prints them only in an error of its own, which OAuth2 reads with that request's credentials redacted and by the rule (LibraryError)"
+        },
+        {
+          "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
+          "field": "github.com/sjawhar/envoy/internal/redact.readCloser.Closer",
+          "why": "the refused answer's body as it came, the bytes read first and the rest after, which the library reads in place of the body it would have: it prints them only in an error of its own, which OAuth2 reads with that request's credentials redacted and by the rule (LibraryError)"
+        },
+        {
+          "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
+          "field": "github.com/sjawhar/envoy/internal/redact.refusal.quote",
+          "why": "the start of a refused answer's body, kept only to tell whether an error quotes it (refusals.quotedBy, strings.Contains), which prints nothing"
+        },
+        {
+          "function": "(*github.com/sjawhar/envoy/internal/redact.refusals).record",
+          "field": "github.com/sjawhar/envoy/internal/redact.refusals.kept",
+          "why": "the refusals kept for quotedBy, which answers only a refusal's request credentials, to redact them (Tokens), and prints nothing"
+        },
+        {
+          "function": "(*github.com/sjawhar/envoy/internal/redact.refusals).join",
+          "field": "github.com/sjawhar/envoy/internal/redact.refusal.tokens",
+          "why": "the credentials an outer RefusalClient's request carried, added to the one refusal of the answer, kept only to redact them (Tokens), and printed nowhere"
+        },
+        {
+          "function": "github.com/sjawhar/envoy/internal/redact.escapedAndNot",
+          "field": "[]string element 0",
+          "why": "a value of the request itself, as sent and unescaped, kept only to redact it from the answer's words (Tokens), and printed nowhere"
+        },
+        {
+          "function": "github.com/sjawhar/envoy/internal/redact.escapedAndNot",
+          "field": "[]string element 1",
+          "why": "a value of the request itself, as sent and unescaped, kept only to redact it from the answer's words (Tokens), and printed nowhere"
         }
       ]
     },
@@ -1120,7 +1701,7 @@
       "capture": "print/redact.RemoteText/words/String()/value",
       "mutation": {
         "file": "packages/envoy/internal/redact/remotetext.go",
-        "preimage": "return Field(*t.text)",
+        "preimage": "return fieldWithout(*t.text, t.carried)",
         "replacement": "return *t.text"
       }
     },
@@ -1218,8 +1799,8 @@
       "capture": "redact.oauth2-answer",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "ruled(re.ErrorCode)",
-        "replacement": "re.ErrorCode"
+        "preimage": "ruled(Tokens(re.ErrorCode, -1, carried...))",
+        "replacement": "Tokens(re.ErrorCode, -1, carried...)"
       }
     },
     {
@@ -1232,8 +1813,8 @@
       "capture": "redact.oauth2-answer",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "ruled(re.ErrorDescription)",
-        "replacement": "re.ErrorDescription"
+        "preimage": "ruled(Tokens(re.ErrorDescription, -1, carried...))",
+        "replacement": "Tokens(re.ErrorDescription, -1, carried...)"
       }
     },
     {
@@ -1246,8 +1827,8 @@
       "capture": "redact.oauth2-answer",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "ruled(re.ErrorURI)",
-        "replacement": "re.ErrorURI"
+        "preimage": "ruled(Tokens(re.ErrorURI, -1, carried...))",
+        "replacement": "Tokens(re.ErrorURI, -1, carried...)"
       }
     },
     {
@@ -1274,7 +1855,7 @@
       "capture": "redact.new-retrieve-error",
       "mutation": {
         "file": "packages/envoy/internal/redact/remotetext.go",
-        "preimage": "return ruled(*t.text)",
+        "preimage": "return ruledWithout(*t.text, t.carried)",
         "replacement": "return *t.text"
       }
     },
@@ -1519,8 +2100,141 @@
       "capture": "excerpt.text-remote",
       "mutation": {
         "file": "packages/envoy/excerpt/excerpt.go",
-        "preimage": "redact.Remote(plain)",
-        "replacement": "plain, true"
+        "preimage": "redact.Remote(html.UnescapeString(plain))",
+        "replacement": "html.UnescapeString(plain), true"
+      }
+    },
+    {
+      "id": "excerpt-hidden-reference-question-equals",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextPrintsNoCredentialAReferenceOrTheScanLimitHides/reference-question-equals",
+      "production": "excerpt.Text: references decoded, the cut word dropped, redact.Remote"
+    },
+    {
+      "id": "excerpt-hidden-reference-at",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextPrintsNoCredentialAReferenceOrTheScanLimitHides/reference-at",
+      "production": "excerpt.Text: references decoded, the cut word dropped, redact.Remote"
+    },
+    {
+      "id": "excerpt-hidden-reference-numeric-at",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextPrintsNoCredentialAReferenceOrTheScanLimitHides/reference-numeric-at",
+      "production": "excerpt.Text: references decoded, the cut word dropped, redact.Remote"
+    },
+    {
+      "id": "excerpt-hidden-cut-before-at",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextPrintsNoCredentialAReferenceOrTheScanLimitHides/cut-before-at",
+      "production": "excerpt.Text: references decoded, the cut word dropped, redact.Remote"
+    },
+    {
+      "id": "excerpt-hidden-cut-before-at-styled",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextPrintsNoCredentialAReferenceOrTheScanLimitHides/cut-before-at-styled",
+      "production": "excerpt.Text: references decoded, the cut word dropped, redact.Remote"
+    },
+    {
+      "id": "excerpt-hidden-cut-after-user-colon",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextPrintsNoCredentialAReferenceOrTheScanLimitHides/cut-after-user-colon",
+      "production": "excerpt.Text: references decoded, the cut word dropped, redact.Remote"
+    },
+    {
+      "id": "excerpt-hidden-tag-in-start",
+      "requirement": "r3-each-site",
+      "package": "./excerpt",
+      "test": "TestTextPrintsNoCredentialAReferenceOrTheScanLimitHides/tag-in-start",
+      "production": "excerpt.Text: references decoded, the cut word dropped, redact.Remote"
+    },
+    {
+      "id": "error-json-loadtest-echo-member",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds/echo-member",
+      "production": "loadtest answerText, excerpt.ErrorJSON"
+    },
+    {
+      "id": "error-json-brokertest-echo-member",
+      "requirement": "r3-each-site",
+      "package": "./internal/broker/brokertest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds/echo-member",
+      "production": "brokertest answerText, excerpt.ErrorJSON"
+    },
+    {
+      "id": "error-json-loadtest-error-quotes-url",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds/error-quotes-url",
+      "production": "loadtest answerText, excerpt.ErrorJSON"
+    },
+    {
+      "id": "error-json-brokertest-error-quotes-url",
+      "requirement": "r3-each-site",
+      "package": "./internal/broker/brokertest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds/error-quotes-url",
+      "production": "brokertest answerText, excerpt.ErrorJSON"
+    },
+    {
+      "id": "error-json-loadtest-error-echoes-token",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds/error-echoes-token",
+      "production": "loadtest answerText, excerpt.ErrorJSON"
+    },
+    {
+      "id": "error-json-brokertest-error-echoes-token",
+      "requirement": "r3-each-site",
+      "package": "./internal/broker/brokertest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds/error-echoes-token",
+      "production": "brokertest answerText, excerpt.ErrorJSON"
+    },
+    {
+      "id": "error-json-loadtest-code-quotes-url",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds/code-quotes-url",
+      "production": "loadtest answerText, excerpt.ErrorJSON"
+    },
+    {
+      "id": "error-json-brokertest-code-quotes-url",
+      "requirement": "r3-each-site",
+      "package": "./internal/broker/brokertest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds/code-quotes-url",
+      "production": "brokertest answerText, excerpt.ErrorJSON"
+    },
+    {
+      "id": "excerpt-error-json-field",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds",
+      "production": "github.com/sjawhar/envoy/excerpt.ErrorJSON",
+      "function": "github.com/sjawhar/envoy/excerpt.ErrorJSON",
+      "capture": "loadtest.error-json/error-quotes-url",
+      "mutation": {
+        "file": "packages/envoy/excerpt/excerpt.go",
+        "preimage": "redact.Field(redact.Tokens(field, -1, tokens...))",
+        "replacement": "redact.Tokens(field, -1, tokens...)"
+      }
+    },
+    {
+      "id": "excerpt-error-json-tokens",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnErrorJSONPrintsNoCredentialItHolds",
+      "production": "github.com/sjawhar/envoy/excerpt.ErrorJSON",
+      "function": "github.com/sjawhar/envoy/excerpt.ErrorJSON",
+      "capture": "loadtest.error-json/error-echoes-token",
+      "mutation": {
+        "file": "packages/envoy/excerpt/excerpt.go",
+        "preimage": "redact.Tokens(field, -1, tokens...)",
+        "replacement": "field"
       }
     },
     {
@@ -1563,27 +2277,167 @@
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-query",
-      "production": "redact.Remote step 8, splitCredential"
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
     },
     {
       "id": "split-user-info-after-scheme-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-after-scheme",
-      "production": "redact.Remote step 8, splitCredential"
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
     },
     {
       "id": "split-user-info-after-equals-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-after-equals",
-      "production": "redact.Remote step 8, splitCredential"
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-inside-slashes-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-inside-slashes",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-scheme-separator-twice-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-scheme-separator-twice",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-before-colon-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-before-colon",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-colon-gap-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-colon-gap",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-before-colon-fragment-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-before-colon-fragment",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-bare-query-segment-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-bare-query-segment",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-bare-fragment-segment-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-bare-fragment-segment",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-before-colon-backslashes-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-before-colon-backslashes",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-relative-bare-segment-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-relative-bare-segment",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-password-equals-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-password-equals",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-password-ampersand-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-password-ampersand",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-password-comma-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-password-comma",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-quoted-key-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-quoted-key",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-single-quoted-key-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-single-quoted-key",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-spaced-key-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-spaced-key",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-underscore-host-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-underscore-host",
+      "production": "redact.Remote step 8, squeezedRemovesNoMore"
     },
     {
       "id": "split-user-info-bare-go",
       "requirement": "r4-unchanged",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-bare",
+      "production": "redact.Remote step 8: the known residual"
+    },
+    {
+      "id": "split-user-info-json-key-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-json-key",
+      "production": "redact.Remote step 8: the known residual"
+    },
+    {
+      "id": "split-quote-before-query-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-quote-before-query",
+      "production": "redact.Remote step 8: the known residual"
+    },
+    {
+      "id": "split-double-quote-before-query-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-double-quote-before-query",
+      "production": "redact.Remote step 8: the known residual"
+    },
+    {
+      "id": "split-user-info-no-at-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-no-at",
       "production": "redact.Remote step 8: the known residual"
     },
     {
@@ -1671,18 +2525,263 @@
       }
     },
     {
-      "id": "tokens-refusal-body",
+      "id": "tokens-library-error",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried/refusal_client",
-      "production": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
-      "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
-      "capture": "redact.tokens-refusal-body",
+      "production": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
+      "function": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
+      "capture": "redact.tokens-refusal-library",
       "mutation": {
-        "file": "packages/envoy/internal/redact/tokens.go",
-        "preimage": "Tokens(string(body), -1, tokens...)",
-        "replacement": "string(body) + Tokens(\"\", -1, tokens...)"
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "Tokens(text, -1, refused.quotedBy(text)...)",
+        "replacement": "text"
       }
+    },
+    {
+      "id": "tokens-answer-code",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried/code-echoes-refresh-token",
+      "production": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "function": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "capture": "redact.answer-echo/code-echoes-refresh-token",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "ruled(Tokens(re.ErrorCode, -1, carried...))",
+        "replacement": "ruled(re.ErrorCode)"
+      }
+    },
+    {
+      "id": "tokens-answer-description",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried/description-echoes-refresh-token",
+      "production": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "function": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "capture": "redact.answer-echo/description-echoes-refresh-token",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "ruled(Tokens(re.ErrorDescription, -1, carried...))",
+        "replacement": "ruled(re.ErrorDescription)"
+      }
+    },
+    {
+      "id": "tokens-answer-error-uri",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried/error-uri-echoes-refresh-token",
+      "production": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "function": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "capture": "redact.answer-echo/error-uri-echoes-refresh-token",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "ruled(Tokens(re.ErrorURI, -1, carried...))",
+        "replacement": "ruled(re.ErrorURI)"
+      }
+    },
+    {
+      "id": "tokens-field-without",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestATradeRefusalPrintsNoSubjectTokenItEchoes",
+      "production": "github.com/sjawhar/envoy/internal/redact.fieldWithout",
+      "function": "github.com/sjawhar/envoy/internal/redact.fieldWithout",
+      "capture": "brokerclient.trade-echo/run",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/remotetext.go",
+        "preimage": "text = Tokens(text, -1, *carried...)\n\t}\n\treturn Field(text)",
+        "replacement": "_ = Tokens(text, -1, *carried...)\n\t}\n\treturn Field(text)"
+      }
+    },
+    {
+      "id": "tokens-ruled-without",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestATradeRefusalPrintsNoSubjectTokenItEchoes",
+      "production": "github.com/sjawhar/envoy/internal/redact.ruledWithout",
+      "function": "github.com/sjawhar/envoy/internal/redact.ruledWithout",
+      "capture": "brokerclient.trade-echo/answer",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/remotetext.go",
+        "preimage": "text = Tokens(text, -1, *carried...)\n\t}\n\treturn ruled(text)",
+        "replacement": "_ = Tokens(text, -1, *carried...)\n\t}\n\treturn ruled(text)"
+      }
+    },
+    {
+      "id": "tokens-refusal-held",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried/description-echoes-refresh-token",
+      "production": "github.com/sjawhar/envoy/internal/redact.NewOAuthRefusal",
+      "function": "github.com/sjawhar/envoy/internal/redact.NewOAuthRefusal",
+      "capture": "redact.answer-echo-refusal/description-echoes-refresh-token",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/remotetext.go",
+        "preimage": "NewRemoteText(Tokens(field, -1, carried...))",
+        "replacement": "NewRemoteText(field)"
+      }
+    },
+    {
+      "id": "tokens-shared-table-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestTokensReadsTheSharedTable",
+      "production": "redact.Tokens"
+    },
+    {
+      "id": "public-names-guard-go",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder",
+      "production": "redact publicRequestNames"
+    },
+    {
+      "id": "public-name-filter-go",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARequestsValueIsACredentialUnlessItsNameIsPublic",
+      "production": "redact.requestTokens"
+    },
+    {
+      "id": "public-name-refusal",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARefusalPrintsAPublicNamesValueAndRedactsAnUnlistedOnes",
+      "production": "redact.OAuth2's answer, redact.requestTokens"
+    },
+    {
+      "id": "library-error-quotes-only",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestALibraryErrorReadsOnlyTheRefusalItQuotes",
+      "production": "redact.LibraryError, refusals.quotedBy"
+    },
+    {
+      "id": "request-echo-cookie",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal/cookie",
+      "production": "redact.RefusalClient, redact.requestTokens, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-echo-metadata-token-header",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal/metadata-token-header",
+      "production": "redact.RefusalClient, redact.requestTokens, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-echo-any-header",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal/any-header",
+      "production": "redact.RefusalClient, redact.requestTokens, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-echo-url-user",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal/url-user",
+      "production": "redact.RefusalClient, redact.requestTokens, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-echo-query-value",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal/query-value",
+      "production": "redact.RefusalClient, redact.requestTokens, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-echo-form-value",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal/form-value",
+      "production": "redact.RefusalClient, redact.requestTokens, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-echo-actor-token",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal/actor-token",
+      "production": "redact.RefusalClient, redact.requestTokens, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-echo-json-value",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal/json-value",
+      "production": "redact.RefusalClient, redact.requestTokens, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "answer-echo-description-echoes-refresh-token",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried/description-echoes-refresh-token",
+      "production": "redact.OAuth2's answer, newOAuthAnswer"
+    },
+    {
+      "id": "answer-echo-description-echoes-client-secret",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried/description-echoes-client-secret",
+      "production": "redact.OAuth2's answer, newOAuthAnswer"
+    },
+    {
+      "id": "answer-echo-code-echoes-refresh-token",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried/code-echoes-refresh-token",
+      "production": "redact.OAuth2's answer, newOAuthAnswer"
+    },
+    {
+      "id": "answer-echo-error-uri-echoes-refresh-token",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersCodeAndDescriptionPrintNoCredentialTheRequestCarried/error-uri-echoes-refresh-token",
+      "production": "redact.OAuth2's answer, newOAuthAnswer"
+    },
+    {
+      "id": "closed-code-as-it-came",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestARequestValueSharingTheCodeLeavesTheClosedCodeAsItCame",
+      "production": "redact.RefusalClient, redact.OAuthAnswer.RefusalCode"
+    },
+    {
+      "id": "short-token-whole",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestAShortCredentialIsRedactedOnlyAsATokenOfItsOwn",
+      "production": "redact.Tokens"
+    },
+    {
+      "id": "launcher-exchange-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/launcher",
+      "test": "TestAFailedExchangesLogLinePrintsNoCredentialItsRefusalEchoes",
+      "production": "launcher exchange client, oauth2call.RefusalClient"
+    },
+    {
+      "id": "sessionproxy-impersonation-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
+      "test": "TestAnImpersonationRefusalPrintsNoCredentialItEchoes",
+      "production": "sessionproxy impersonationClient, oauth2call.RefusalClient"
+    },
+    {
+      "id": "helper-proof-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/broker/helper",
+      "test": "TestABrokerErrorPrintsNoProofItsAnswerEchoes",
+      "production": "helper Broker.do, redact.Carried, RemoteText.WithoutTokens"
+    },
+    {
+      "id": "brokerclient-trade-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestATradeRefusalPrintsNoSubjectTokenItEchoes",
+      "production": "brokerclient Client.post, redact.Carried, RemoteText.WithoutTokens"
     },
     {
       "id": "print-redact.LibraryError",
@@ -2146,21 +3245,133 @@
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-query reads as the fixture says",
-      "production": "readRemoteText step 8, splitCredential"
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
     },
     {
       "id": "split-user-info-after-scheme-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-after-scheme reads as the fixture says",
-      "production": "readRemoteText step 8, splitCredential"
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
     },
     {
       "id": "split-user-info-after-equals-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-after-equals reads as the fixture says",
-      "production": "readRemoteText step 8, splitCredential"
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-inside-slashes-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-inside-slashes reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-scheme-separator-twice-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-scheme-separator-twice reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-before-colon-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-before-colon reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-colon-gap-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-colon-gap reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-before-colon-fragment-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-before-colon-fragment reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-bare-query-segment-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-bare-query-segment reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-bare-fragment-segment-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-bare-fragment-segment reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-before-colon-backslashes-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-before-colon-backslashes reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-relative-bare-segment-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-relative-bare-segment reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-password-equals-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-password-equals reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-password-ampersand-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-password-ampersand reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-password-comma-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-password-comma reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-quoted-key-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-quoted-key reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-single-quoted-key-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-single-quoted-key reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-spaced-key-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-spaced-key reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+    },
+    {
+      "id": "split-user-info-underscore-host-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-underscore-host reads as the fixture says",
+      "production": "readRemoteText step 8, squeezedRemovesNoMore"
     },
     {
       "id": "split-user-info-bare-ts",
@@ -2168,6 +3379,83 @@
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-bare reads as the fixture says",
       "production": "readRemoteText step 8: the known residual"
+    },
+    {
+      "id": "split-user-info-json-key-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-json-key reads as the fixture says",
+      "production": "readRemoteText step 8: the known residual"
+    },
+    {
+      "id": "split-quote-before-query-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-quote-before-query reads as the fixture says",
+      "production": "readRemoteText step 8: the known residual"
+    },
+    {
+      "id": "split-double-quote-before-query-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-double-quote-before-query reads as the fixture says",
+      "production": "readRemoteText step 8: the known residual"
+    },
+    {
+      "id": "split-user-info-no-at-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-no-at reads as the fixture says",
+      "production": "readRemoteText step 8: the known residual"
+    },
+    {
+      "id": "tokens-shared-table-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text-tokens.test.ts",
+      "test": "the shared tokens table has rows",
+      "production": "tokens"
+    },
+    {
+      "id": "ts-request-echo-description",
+      "requirement": "r3-each-site",
+      "file": "packages/broker-client/src/__tests__/request-echo.test.ts",
+      "test": "a refusal whose description echoes the subject token prints none of it, and keeps its code",
+      "production": "broker-client token-client, refusalFetch, LibraryError"
+    },
+    {
+      "id": "ts-request-credentials",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/remote-text-refusal.test.ts",
+      "test": "requestCredentials reads every value a request carries",
+      "production": "requestCredentials"
+    },
+    {
+      "id": "ts-refusal-fetch",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/remote-text-refusal.test.ts",
+      "test": "a refusal echoing the request prints none of its credentials, and keeps its code",
+      "production": "refusalFetch, LibraryError, RemoteText"
+    },
+    {
+      "id": "ts-refusal-fetch-nested",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/remote-text-refusal.test.ts",
+      "test": "a refusal through two refusalFetches is one record holding both requests' credentials",
+      "production": "refusalFetch, recordedOf"
+    },
+    {
+      "id": "public-names-guard-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-names.test.ts",
+      "test": "the public-name table holds only contract names no credential travels under",
+      "production": "PUBLIC_REQUEST_NAMES"
+    },
+    {
+      "id": "public-name-filter-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-names.test.ts",
+      "test": "a request's value is a credential unless its name is public",
+      "production": "requestCredentials"
     },
     {
       "id": "print-ts-box",
@@ -2521,6 +3809,157 @@
       "source": "the review of #4368 at c40c4751f9, finding 3",
       "guard": "split-user-info-bare-go",
       "note": "the known residual: no syntax tells it from a label and an address, which a refusal prints; the row pins that it prints"
+    },
+    {
+      "site": "a gap inside a URL's two slashes, before a query (finding 2)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-inside-slashes-go"
+    },
+    {
+      "site": "a gap inside the scheme's separator twice, before a query (finding 2)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-scheme-separator-twice-go"
+    },
+    {
+      "site": "a gap before a scheme's ':', before a query (finding 2, red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-before-colon-go"
+    },
+    {
+      "site": "gaps on both sides of a scheme's ://, before a query (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-colon-gap-go"
+    },
+    {
+      "site": "a gap before a scheme's ':', before a fragment (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-before-colon-fragment-go"
+    },
+    {
+      "site": "a bare query segment two gaps after the URL (finding 2)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-bare-query-segment-go"
+    },
+    {
+      "site": "a bare fragment segment two gaps after the URL (finding 2)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-bare-fragment-segment-go"
+    },
+    {
+      "site": "a split user information whose password holds '=' (finding 2)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-user-info-password-equals-go"
+    },
+    {
+      "site": "a split user information whose password holds '&' (finding 2)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-user-info-password-ampersand-go"
+    },
+    {
+      "site": "a split user information whose password holds ',' (finding 2)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-user-info-password-comma-go"
+    },
+    {
+      "site": "a key's double-quoted split user information (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-user-info-quoted-key-go"
+    },
+    {
+      "site": "a key's single-quoted split user information (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-user-info-single-quoted-key-go"
+    },
+    {
+      "site": "a key with spaces around '=' and a quoted split user information (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-user-info-spaced-key-go"
+    },
+    {
+      "site": "a split user information before a host that starts with '_' (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-user-info-underscore-host-go"
+    },
+    {
+      "site": "words a quote begins after a gap, which hold a query (finding 2's quote probes)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "split-quote-before-query-go",
+      "note": "the known residual: the second reading's run ends at the quote, as a gap ended the first reading's, so no Go url.Error prints as not readable"
+    },
+    {
+      "site": "excerpt.Text, a URL whose '?' and '=' a page writes as character references (finding 4)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "excerpt-hidden-reference-question-equals"
+    },
+    {
+      "site": "excerpt.Text, a URL whose '@' a page writes as a character reference (finding 4)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "excerpt-hidden-reference-at"
+    },
+    {
+      "site": "excerpt.Text, the 64 KiB scan limit just before a user information's '@' (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "excerpt-hidden-cut-before-at"
+    },
+    {
+      "site": "excerpt.Text, the 64 KiB scan limit just after a user information's ':' (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "excerpt-hidden-cut-after-user-colon"
+    },
+    {
+      "site": "excerpt.Text, a tag inside a URL's start (red team's <wbr>)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "excerpt-hidden-tag-in-start"
+    },
+    {
+      "site": "loadtest answerText, a JSON body whose \"error\" is a string, printed whole (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "error-json-loadtest-echo-member"
+    },
+    {
+      "site": "brokertest answerText, a JSON body whose \"error\" is a string, printed whole (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "error-json-brokertest-echo-member"
+    },
+    {
+      "site": "redact.OAuth2's answer, a description echoing the refresh token the request carried (finding 1)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "answer-echo-description-echoes-refresh-token"
+    },
+    {
+      "site": "redact.OAuth2's answer, a description echoing the client secret (finding 1)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "answer-echo-description-echoes-client-secret"
+    },
+    {
+      "site": "RefusalClient, a Cookie the client's jar adds, echoed (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "request-echo-cookie"
+    },
+    {
+      "site": "RefusalClient, an instance metadata token's header, echoed (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "request-echo-metadata-token-header"
+    },
+    {
+      "site": "daemon launcher, the exchange's refusal echoing the subject token (finding 3)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "launcher-exchange-echo"
+    },
+    {
+      "site": "daemon session proxy, `impersonate: status code 403` echoing the pod's bearer (finding 3, red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "sessionproxy-impersonation-echo"
+    },
+    {
+      "site": "helper Broker.do, a BrokerError echoing the Proof header (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "helper-proof-echo"
+    },
+    {
+      "site": "brokerclient trade, a description echoing the subject token (red team)",
+      "source": "the review of #4368 at db7e4a0226",
+      "guard": "brokerclient-trade-echo"
     },
     {
       "site": "x/oauth2's Config.Exchange through redact.OAuth2, an answer with no error code under a status line quoting a credential's URL (red team RT-1)",

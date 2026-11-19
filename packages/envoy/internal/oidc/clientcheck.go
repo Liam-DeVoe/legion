@@ -50,13 +50,13 @@ const (
 func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (ClientCheck, error) {
 	// One bounded client for both requests: the issuer's discovery read and the token request.
 	client := tokenClient()
-	flow, err := discoverCodeFlow(gooidc.ClientContext(ctx, client), issuer, clientID, clientSecret)
+	flow, err := discoverCodeFlow(gooidc.ClientContext(ctx, redact.RefusalClient(client)), issuer, clientID, clientSecret)
 	if err != nil {
 		return ClientCheckIssuerUnreachable, err
 	}
 	// GenerateVerifier is PKCE's random high-entropy string, which is all this needs of it: a
 	// code no issuer has ever issued.
-	_, err = redact.OAuth2(flow.config.Exchange(context.WithValue(ctx, oauth2.HTTPClient, client), oauth2.GenerateVerifier()))
+	_, err = redact.OAuth2(flow.config.Exchange(context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(client)), oauth2.GenerateVerifier()))
 	var retrieve *oauth2.RetrieveError
 	switch {
 	case err == nil:

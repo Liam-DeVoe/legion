@@ -1,12 +1,16 @@
 package redact
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"mime"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -21,9 +25,11 @@ const TokenPiece = 8
 const Redacted = "[redacted]"
 
 // Tokens is text with each run of at least TokenPiece characters of any of tokens (trimmed, as a
-// header sends it; one shorter than TokenPiece only whole) replaced with one Redacted, for text
-// another party wrote that can echo a request back: a refusal's body, its reason phrase. A
-// character is a code point, and a byte that is not UTF-8 counts as one.
+// header sends it) replaced with one Redacted, for text another party wrote that can echo a
+// request back: a refusal's body, its reason phrase. A token shorter than TokenPiece is redacted
+// only whole, and only where it stands as a token of its own, with no letter, digit or '_' right
+// before or after it: a one-letter user name leaves "invalid_request" as it is. A character is a
+// code point, and a byte that is not UTF-8 counts as one.
 //
 // limit bounds the text read, in characters; a negative limit reads it whole. Every run that
 // starts inside the limit is redacted whole, one that runs past it read up to TokenPiece-1
@@ -71,7 +77,7 @@ func Tokens(text string, limit int, tokens ...string) string {
 				continue
 			}
 			from, to := starts[at], starts[at+length]
-			if _, ok := pieces[text[from:to]]; ok {
+			if _, ok := pieces[text[from:to]]; ok && (length == TokenPiece || !wordBefore(text, from) && !wordAt(text, to)) {
 				for b := from; b < to; b++ {
 					covered[b] = true
 				}
@@ -103,6 +109,20 @@ func Tokens(text string, limit int, tokens ...string) string {
 	return answer[:characterOffset(answer, limit)]
 }
 
+// wordBefore reports whether the character that ends text[:at] is a letter, a digit or '_'.
+func wordBefore(text string, at int) bool {
+	r, size := utf8.DecodeLastRuneInString(text[:at])
+	return size > 0 && wordRune(r)
+}
+
+// wordAt reports whether the character that starts text[at:] is a letter, a digit or '_'.
+func wordAt(text string, at int) bool {
+	r, size := utf8.DecodeRuneInString(text[at:])
+	return size > 0 && wordRune(r)
+}
+
+func wordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' }
+
 // characterOffset is the byte offset in s just past its first n characters, or len(s) where it
 // holds no more than n; a byte that is not UTF-8 counts as one character.
 func characterOffset(s string, n int) int {
@@ -115,35 +135,28 @@ func characterOffset(s string, n int) int {
 	return len(s)
 }
 
-// credentialHeaders are the headers a request carries a credential on: a bearer, a client's
-// Basic pair or a DPoP proof.
-var credentialHeaders = []string{"Authorization", "Proxy-Authorization", "DPoP"}
-
-// credentialFields are the form and query fields a token request carries a credential in (RFC
-// 6749, 7009, 7523, 7636, 8628 and 8693, and Google's token exchange), and the signed request
-// object a device authorization carries (RFC 9101's `request`, which the broker's machine login
-// takes as its proof of the machine's key).
-var credentialFields = []string{
-	"access_token", "actor_token", "assertion", "client_assertion", "client_secret", "code",
-	"code_verifier", "device_code", "password", "refresh_token", "request", "subject_token", "token",
-}
-
-// requestTokens is each credential r carries, for Tokens: the value of each of credentialHeaders
-// after its scheme (the whole value where it names none, as a DPoP proof does), a Basic pair's
-// password as sent and unescaped (x/oauth2 escapes it), the password in r's URL, and every value
-// of the credentialFields in its query and in its form, read through GetBody so the request is
-// left as it was. A form x/oauth2 or net/http builds always has GetBody; one without it names no
-// field.
+// requestTokens is every credential r carries, for Tokens: every value it carries under a name a
+// wire contract does not declare public (publicRequestNames). That is the whole value of each such
+// header (a Cookie its client's jar added, an instance metadata token, a proof, whatever its
+// name), with the part after a scheme where the value names one and a Basic pair's user and
+// password, each also unescaped (x/oauth2 escapes them); the user and password of its URL and each
+// such value of its query; and each such value of its form or string of its JSON body, read
+// through GetBody so the request is left as it was, a subject or an actor token among them. A name
+// nobody listed counts, so a new parameter is a credential until a contract declares it public. A
+// request without GetBody names no body value; every one net/http or x/oauth2 builds has it.
 func requestTokens(r *http.Request) []string {
 	if r == nil {
 		return nil
 	}
 	var tokens []string
-	for _, name := range credentialHeaders {
-		for _, value := range r.Header.Values(name) {
+	for name, values := range r.Header {
+		if publicHeader(name) {
+			continue
+		}
+		for _, value := range values {
+			tokens = append(tokens, value)
 			scheme, credential, ok := strings.Cut(strings.TrimSpace(value), " ")
 			if !ok {
-				tokens = append(tokens, value)
 				continue
 			}
 			tokens = append(tokens, credential)
@@ -151,37 +164,47 @@ func requestTokens(r *http.Request) []string {
 			if !strings.EqualFold(scheme, "Basic") || err != nil {
 				continue
 			}
-			if _, password, ok := strings.Cut(string(decoded), ":"); ok {
-				tokens = append(tokens, password)
-				if unescaped, err := url.QueryUnescape(password); err == nil && unescaped != password {
-					tokens = append(tokens, unescaped)
-				}
+			if user, password, ok := strings.Cut(string(decoded), ":"); ok {
+				tokens = append(tokens, escapedAndNot(user)...)
+				tokens = append(tokens, escapedAndNot(password)...)
 			}
 		}
 	}
 	if r.URL != nil {
-		if password, ok := r.URL.User.Password(); ok {
-			tokens = append(tokens, password)
+		if r.URL.User != nil {
+			tokens = append(tokens, r.URL.User.Username())
+			if password, ok := r.URL.User.Password(); ok {
+				tokens = append(tokens, password)
+			}
 		}
-		query := r.URL.Query()
-		for _, field := range credentialFields {
-			tokens = append(tokens, query[field]...)
+		for name, values := range r.URL.Query() {
+			if !publicField(name) {
+				tokens = append(tokens, values...)
+			}
 		}
 	}
-	form := requestForm(r)
-	for _, field := range credentialFields {
-		tokens = append(tokens, form[field]...)
-	}
-	return tokens
+	return append(tokens, requestBodyValues(r)...)
 }
 
-// requestForm is r's form body, read again through GetBody (at most refusalBodyLimit), or nil
-// when r carries no form or cannot give its body again.
-func requestForm(r *http.Request) url.Values {
+// escapedAndNot is s, and s unescaped where that differs.
+func escapedAndNot(s string) []string {
+	if unescaped, err := url.QueryUnescape(s); err == nil && unescaped != s {
+		return []string{s, unescaped}
+	}
+	return []string{s}
+}
+
+// requestBodyValues is each value of r's form, or string of its JSON body, under a name no contract
+// declares public, read again through GetBody (at most requestBodyLimit); none where r carries
+// neither or cannot give its body again. A JSON string's name is the key of the object it is a
+// member of, through any arrays between; an object under a public key is read by its own keys.
+func requestBodyValues(r *http.Request) []string {
 	if r.GetBody == nil {
 		return nil
 	}
-	if media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); media != "application/x-www-form-urlencoded" {
+	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	form := media == "application/x-www-form-urlencoded"
+	if !form && media != "application/json" && !strings.HasSuffix(media, "+json") {
 		return nil
 	}
 	body, err := r.GetBody()
@@ -189,28 +212,61 @@ func requestForm(r *http.Request) url.Values {
 		return nil
 	}
 	defer body.Close()
-	data, err := io.ReadAll(io.LimitReader(body, refusalBodyLimit))
+	data, err := io.ReadAll(io.LimitReader(body, requestBodyLimit))
 	if err != nil {
 		return nil
 	}
-	form, _ := url.ParseQuery(string(data))
-	return form
+	var values []string
+	if form {
+		parsed, _ := url.ParseQuery(string(data))
+		for name, v := range parsed {
+			if !publicField(name) {
+				values = append(values, v...)
+			}
+		}
+		return values
+	}
+	var decoded any
+	if json.Unmarshal(data, &decoded) != nil {
+		return nil
+	}
+	var walk func(v any, public bool)
+	walk = func(v any, public bool) {
+		switch v := v.(type) {
+		case string:
+			if !public {
+				values = append(values, v)
+			}
+		case []any:
+			for _, e := range v {
+				walk(e, public)
+			}
+		case map[string]any:
+			for k, e := range v {
+				walk(e, publicField(k))
+			}
+		}
+	}
+	walk(decoded, false)
+	return values
 }
 
-// refusalBodyLimit is the most of a refusal's body RefusalClient reads, the bound x/oauth2 reads a
-// token endpoint's answer to (golang.org/x/oauth2/internal/token.go).
-const refusalBodyLimit = 1 << 20
+// requestBodyLimit is the most of a request's body requestTokens reads again, the bound x/oauth2
+// reads a token endpoint's answer to (golang.org/x/oauth2/internal/token.go).
+const requestBodyLimit = 1 << 20
 
 // RefusalClient is base (nil is http.DefaultClient), its timeout, redirect rule and cookie jar as
-// they are, whose answers outside 2xx hold every credential their own request carried redacted
-// from their body, read to refusalBodyLimit (Tokens with requestTokens), and the status code's
-// standard reason phrase in place of the one the answering party wrote (statusLine). It is for a
-// library that builds its requests' credentials itself and prints a refusal's body in an error of
-// text alone, with no request left to read them from: golang.org/x/oauth2/google's
-// external_account exchange sends the subject token it read and the client's Basic pair, then
-// spends the access token it minted on the impersonation call, and prints `status code <n>:
-// <body>` for either refusal, which OAuth2 can then only read by the rule (LibraryError). A 2xx is
-// left as it is.
+// they are, which records the credentials each refused request carried (Carried: every header's
+// value, the URL's user information and query values, and every form or JSON body value) for every
+// answer outside 2xx it gets, and changes nothing of any answer: the library that sent the request
+// parses the answer as it came, so its code and every decision made on it are the answer's own.
+// OAuth2 then reads the text of an error a library made of such an answer with every recorded
+// credential redacted (LibraryError): a library builds its requests' credentials itself and prints
+// a refusal's body in an error of text alone, with no request left to read them from, as
+// golang.org/x/oauth2/google's external_account exchange prints `status code <n>: <body>` and
+// google.golang.org/api/impersonate `impersonate: status code <n>: <body>`. It is the one wrapper on
+// every HTTP client this change's boundary and clients build or hand a library; the census in
+// cmd/redact-gate fails on one without it.
 func RefusalClient(base *http.Client) *http.Client {
 	client := new(http.Client)
 	if base != nil {
@@ -220,8 +276,8 @@ func RefusalClient(base *http.Client) *http.Client {
 	return client
 }
 
-// refusalTransport sends each request through base (nil is http.DefaultTransport) and redacts an
-// answer outside 2xx as RefusalClient says.
+// refusalTransport sends each request through base (nil is http.DefaultTransport) and records the
+// credentials of each one answered outside 2xx (refused.record).
 type refusalTransport struct{ base http.RoundTripper }
 
 func (t refusalTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -234,15 +290,96 @@ func (t refusalTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err != nil || response.StatusCode >= 200 && response.StatusCode < 300 {
 		return response, err
 	}
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-	_ = response.Body.Close()
-	if readErr != nil {
-		body = nil
+	// A RefusalClient beneath this one recorded the answer already, with the credentials its own
+	// request carried, a bearer a transport between the two set among them: one answer is one
+	// refusal, which this request's credentials join.
+	if inner, ok := response.Body.(readCloser); ok {
+		refused.join(inner.refusal, tokens)
+		return response, nil
 	}
-	redacted := Tokens(string(body), -1, tokens...)
-	response.Status = statusLine(response.StatusCode)
-	response.Body = io.NopCloser(strings.NewReader(redacted))
-	response.ContentLength = int64(len(redacted))
-	response.Header.Del("Content-Length")
+	// The body is read and handed on as the same bytes, the read part first and the rest after,
+	// so the library parses what was answered.
+	read, _ := io.ReadAll(io.LimitReader(response.Body, requestBodyLimit))
+	one := &refusal{tokens: tokens, quote: quoted(read)}
+	response.Body = readCloser{io.MultiReader(bytes.NewReader(read), response.Body), response.Body, one}
+	refused.record(one)
 	return response, nil
 }
+
+// readCloser reads from Reader and closes Closer: a refused answer's body, with the refusal
+// RefusalClient recorded of it, which a RefusalClient above it joins.
+type readCloser struct {
+	io.Reader
+	io.Closer
+	refusal *refusal
+}
+
+// quotedLength is how much of a refused answer's body, trimmed, an error must quote for the
+// boundary to read it with that refusal's request's credentials redacted: a library that prints
+// a body prints at least its start.
+const quotedLength = 64
+
+// quoted is the start of body an error that quotes it holds: its first quotedLength bytes,
+// trimmed, or "" for a body of nothing but space.
+func quoted(body []byte) string {
+	trimmed := bytes.TrimSpace(body)
+	return string(trimmed[:min(len(trimmed), quotedLength)])
+}
+
+// refusal is what RefusalClient records of a refused answer: the credentials its request carried,
+// as each RefusalClient it passed through saw them, and the start of its body an error that quotes
+// it holds.
+type refusal struct {
+	tokens []string
+	quote  string
+}
+
+// refusedKept is how many refusals refused keeps, the newest: more than a process makes between a
+// library's refused request and the boundary's reading of its error.
+const refusedKept = 1024
+
+// refused is the latest refusals RefusalClient's transports saw, newest last.
+var refused refusals
+
+type refusals struct {
+	mu   sync.Mutex
+	kept []*refusal
+}
+
+func (r *refusals) record(one *refusal) {
+	if one.quote == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.kept = append(r.kept, one)
+	if len(r.kept) > refusedKept {
+		r.kept = r.kept[len(r.kept)-refusedKept:]
+	}
+}
+
+// join adds tokens, the credentials an outer RefusalClient's request carried, to one.
+func (r *refusals) join(one *refusal, tokens []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	one.tokens = append(one.tokens, tokens...)
+}
+
+// quotedBy is the credentials of the newest refusal whose answer text quotes: only an error that
+// prints a refused answer can echo that request's credentials, so no other request's values touch
+// it, and the work is one request's however many refusals came before.
+func (r *refusals) quotedBy(text string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.kept) - 1; i >= 0; i-- {
+		if strings.Contains(text, r.kept[i].quote) {
+			return append([]string(nil), r.kept[i].tokens...)
+		}
+	}
+	return nil
+}
+
+// Carried is every credential r carries (requestTokens), for a client of this repository that
+// reads a refused answer itself: it holds the answer's words with these redacted
+// (RemoteText.WithoutTokens) before it prints them.
+func Carried(r *http.Request) []string { return requestTokens(r) }

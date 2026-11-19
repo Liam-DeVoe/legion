@@ -99,17 +99,17 @@ func TestTextRedactsTheTokenAndEveryAuthorizationValue(t *testing.T) {
 
 // A gateway can echo the header cut short, split by markup, or twice with the copies overlapping,
 // and an exact match finds none of those. Every run of 8 or more of the token's characters within
-// what the excerpt reads is redacted, one that starts inside the scan limit and runs past it
-// included.
+// what the excerpt reads is redacted; one that starts inside the scan limit and runs past it is
+// in the word the limit cuts, which the excerpt drops whole.
 func TestTextRedactsEveryPieceOfTheToken(t *testing.T) {
 	for _, row := range []struct{ name, body, want string }{
 		{"cut short by its last character", "<p>echo=" + pieceBearer[:len(pieceBearer)-1] + " end</p>", "echo=[redacted] end"},
 		{"cut short by its last 10 characters", "<p>echo=" + pieceBearer[:len(pieceBearer)-10] + " end</p>", "echo=[redacted] end"},
 		{"followed by a copy that starts inside its last characters", "<p>echo=" + pieceBearer + pieceBearer[2:] + " end</p>", "echo=[redacted] end"},
 		{"split by a tag", "<p>echo=" + pieceBearer[:20] + "<wbr>" + pieceBearer[20:] + " end</p>", "echo=[redacted] [redacted] end"},
-		// The copy starts 20 characters inside the 64 KiB scan limit and ends 17 past it.
+		// The copy starts 19 characters inside the 64 KiB scan limit and ends 17 past it.
 		{"cut short, across the scan limit", "<style>" + strings.Repeat("s", excerpt.ScanLimit-75) + "</style>" +
-			strings.Repeat("q", 40) + pieceBearer[:len(pieceBearer)-10] + " after the limit", strings.Repeat("q", 40) + "[redacted]"},
+			strings.Repeat("q", 39) + " " + pieceBearer[:len(pieceBearer)-10] + " after the limit", strings.Repeat("q", 39)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if len(bearerPieces(row.body)) == 0 {
@@ -166,7 +166,8 @@ func TestTextPrintsAnUnreadableURLAsNotReadable(t *testing.T) {
 
 // The excerpt reads at most the first 64 KiB characters of the body. Redacting shortens the text,
 // so it runs on that slice and the cut comes after: nothing from past the limit is pulled in, and
-// a token that starts inside the limit and runs past it is redacted whole.
+// the word the limit falls inside, a token that starts inside the limit and runs past it here, is
+// dropped whole, so none of it prints.
 func TestTextScansAtMostTheFirst64KiB(t *testing.T) {
 	bearer := "dsp_" + strings.Repeat("Zq9x", 10)
 	styled := "<style>" + strings.Repeat(bearer, (excerpt.ScanLimit-80)/len(bearer)) + "</style>"
@@ -177,8 +178,8 @@ func TestTextScansAtMostTheFirst64KiB(t *testing.T) {
 		t.Fatalf("past the limit: Text = %q, want %q", past, want)
 	}
 	// A token starts five characters short of the limit and ends past it.
-	across := excerpt.Text(styled+strings.Repeat("q", shortOfLimit-5)+bearer+" after the limit", bearer)
-	if want := strings.Repeat("q", shortOfLimit-5) + "[redacted]"; across != want {
+	across := excerpt.Text(styled+strings.Repeat("q", shortOfLimit-6)+" "+bearer+" after the limit", bearer)
+	if want := strings.Repeat("q", shortOfLimit-6); across != want {
 		t.Fatalf("across the limit: Text = %q, want %q", across, want)
 	}
 }

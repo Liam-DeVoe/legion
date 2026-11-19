@@ -73,7 +73,8 @@ type recallEntry struct {
 
 // leak is a leak row and where its leak is: control (19) applies the row's test, with the head's
 // Files copied in, to Base, and requires it to fail at REDACT-ASSERT Capture with a marker in the
-// output captured there.
+// output captured there. Base is a commit's full 40-character name, which a clone of origin can
+// fetch where it lacks the commit (earlierTree), so origin must hold a ref that reaches it.
 type leak struct {
 	Row     string   `json:"row"`
 	Base    string   `json:"base"`
@@ -421,6 +422,9 @@ func (g *gate) load(needSites bool) error {
 	for _, l := range g.inv.Gate.Leaks {
 		if !ids[l.Row] || l.Base == "" || len(l.Files) == 0 || l.Capture == "" {
 			return fmt.Errorf("leak %s: its row is no row of the inventory, or it names no base, file or capture", l.Row)
+		}
+		if len(l.Base) != 40 || strings.Trim(l.Base, "0123456789abcdef") != "" {
+			return fmt.Errorf("leak %s: its base %q is not a commit's full 40-character name, which a clone that lacks it cannot fetch", l.Row, l.Base)
 		}
 	}
 	if len(g.inv.Recall) == 0 {

@@ -8,9 +8,11 @@
 // text is then read by redact.Remote, which prints each URL with no user info and no parameter's
 // value and fails closed, so a text it cannot read prints as redact.WordsNotReadable. The token
 // rule is internal/redact's own (redact.Tokens), the one #4368's OAuth boundary names a refusal's
-// body with. One difference is deliberate: a character here is a Unicode code point, where the
+// body with. Three differences are deliberate. A character here is a Unicode code point, where the
 // TypeScript counts UTF-16 units, and the two differ only past the Basic Multilingual Plane, where
-// a cut here never splits a character.
+// a cut here never splits a character. And this one decodes a page's HTML character references
+// before the rule reads its text, and drops the word the scan limit falls inside, so neither a
+// reference nor the limit can hide a URL's credential from the rule.
 //
 // It sits outside internal/ because the Legion daemon, a module of its own, reads it as Envoy's
 // own commands do (packages/daemon/internal/dispatch, internal/notify and the rest); it may read
@@ -18,10 +20,13 @@
 package excerpt
 
 import (
+	"encoding/json"
 	"fmt"
+	"html"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -65,19 +70,27 @@ var (
 // Text is text a gateway chose (a body, or a reason phrase) as one line of plain text safe to
 // quote (excerpt). Three kinds of credential are redacted: first every piece of each of tokens,
 // trimmed as a header sends it (redact.Tokens, over the first ScanLimit characters); then, after
-// scripts, styles and tags are dropped, each URL's user info and parameter values (redact.Remote,
-// which reads the plain text, the page's markup gone); then the value after `Authorization:` (its
-// scheme kept: Bearer, Basic, Digest, token or DPoP), after `Bearer` and after `DPoP`. A plain text
+// scripts, styles and tags are dropped and the page's character references decoded (&quest;,
+// &#64; and the rest), each URL's user info and parameter values (redact.Remote, which reads the
+// plain text as a reader of the page reads it); then the value after `Authorization:` (its scheme
+// kept: Bearer, Basic, Digest, token or DPoP), after `Bearer` and after `DPoP`. A plain text
 // Remote cannot read as clean is redact.WordsNotReadable, never the text. All of it runs before
 // the cut to one line, so a cut never leaves a credential's first characters behind. Only the
-// first ScanLimit characters are read, bytes that are not UTF-8 read as U+FFFD, and every rule
-// runs in linear time, so a body of any size or shape costs a bounded amount of work.
+// first ScanLimit characters are read, and where the limit falls inside a word, as it can inside
+// a URL, that word is dropped: the excerpt ends at the last whitespace before the limit. Bytes
+// that are not UTF-8 read as U+FFFD, and every rule runs in linear time, so a body of any size or
+// shape costs a bounded amount of work.
 func Text(text string, tokens ...string) string {
 	read := strings.ToValidUTF8(text[:runeOffset(text, ScanLimit+redact.TokenPiece-1)], "\uFFFD")
 	plain := redact.Tokens(read, ScanLimit, tokens...)
+	if rest := text[runeOffset(text, ScanLimit):]; rest != "" {
+		if after, _ := utf8.DecodeRuneInString(rest); !isSpace(after) {
+			plain = plain[:max(strings.LastIndexFunc(plain, isSpace), 0)]
+		}
+	}
 	plain = scriptOrStyle.ReplaceAllString(plain, " ")
 	plain = tag.ReplaceAllString(plain, " ")
-	plain, readable := redact.Remote(plain)
+	plain, readable := redact.Remote(html.UnescapeString(plain))
 	if !readable {
 		return redact.WordsNotReadable
 	}
@@ -110,6 +123,39 @@ func BodyForText(text, notWhat string, tokens ...string) string {
 		within = fmt.Sprintf(" in its first %d KiB", ScanLimit/1024)
 	}
 	return "a body of " + grouped(len(text)) + " bytes and no readable text" + within
+}
+
+// ErrorJSON is body as a message names a server's own error JSON: an object whose "error" is a
+// string, as Dispatch, the Envoy listener and the secrets broker write a refusal. Whatever stands
+// in the server's place can answer such an object too, echoing the request back in another member
+// or quoting a URL that carries a credential, so only its "error" and a string "code" print, each
+// with every piece of tokens redacted (redact.Tokens) and then read by the rule (redact.Field), as
+// an object of those members alone. It answers false, and nothing, for any other body, which
+// BodyForText names.
+func ErrorJSON(body []byte, tokens ...string) (string, bool) {
+	var refusal struct {
+		Error *string         `json:"error"`
+		Code  json.RawMessage `json:"code"`
+	}
+	if json.Unmarshal(body, &refusal) != nil || refusal.Error == nil {
+		return "", false
+	}
+	read := func(field string) string { return redact.Field(redact.Tokens(field, -1, tokens...)) }
+	shown := struct {
+		Error string `json:"error"`
+		Code  string `json:"code,omitempty"`
+	}{Error: read(*refusal.Error)}
+	var code string
+	if json.Unmarshal(refusal.Code, &code) == nil {
+		shown.Code = read(code)
+	}
+	var out strings.Builder
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(shown); err != nil {
+		return "", false
+	}
+	return strings.TrimSuffix(out.String(), "\n"), true
 }
 
 // head is text on one line, its whitespace collapsed and trimmed, cut to headLength characters

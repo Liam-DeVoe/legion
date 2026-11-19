@@ -395,5 +395,5 @@ func jsonString(value json.RawMessage) string {
 // tokenContext hands oauth2 the bounded client its token-endpoint calls use; its default client has
 // no timeout.
 func (f *CodeFlow) tokenContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, oauth2.HTTPClient, f.http)
+	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(f.http))
 }

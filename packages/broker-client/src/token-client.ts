@@ -23,7 +23,7 @@
 // only with what `token()` gave it never writes with no identity, nor with one that has been
 // ended.
 
-import { callLibrary, LibraryError, RemoteText } from "@legion/contracts/remote-text";
+import { callLibrary, LibraryError, RemoteText, refusalFetch } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
@@ -639,7 +639,7 @@ export class BrokerTokenClient {
     // The broker is wherever the deployment put it, which in a cluster and on a dev stack is an
     // http origin; the client posts where it is told, as the Go client does.
     callLibrary(() => allowInsecureRequests(config));
-    config[customFetch] = (url, options) => this.#send(url, options, signal, raw);
+    config[customFetch] = refusalFetch((url, options) => this.#send(url, options, signal, raw));
     let answered: TokenEndpointResponse;
     try {
       answered = await callLibrary(() =>
@@ -697,13 +697,18 @@ export class BrokerTokenClient {
     signal: AbortSignal | undefined,
     raw: { body: unknown }
   ): Promise<Response> {
+    // The request goes out through refusalFetch below the proof as well as above it (the fetch
+    // handed to openid-client), so a refusal's record holds the DPoP proof this client set.
     const send = async (): Promise<Response> => {
       const headers = new Headers(options.headers);
       headers.set(
         "DPoP",
         await this.#key.proof({ method: options.method, url, nonce: this.#nonce })
       );
-      return await this.#fetch(url, requestInit(options, signal, headers));
+      const recorded = refusalFetch((target: string, init: RequestInit) =>
+        this.#fetch(target, init)
+      );
+      return await recorded(url, requestInit(options, signal, headers));
     };
     let answer = await send();
     const given = answer.headers.get("DPoP-Nonce") ?? "";

@@ -5,6 +5,8 @@
 // WORDS_NOT_READABLE. Go's half is `redact.Remote` in packages/envoy/internal/redact, and both
 // halves are held to the fixture at packages/envoy/internal/redact/testdata/remote.json.
 
+import { isPublicRequestName } from "./public-request-names";
+
 /** What a message prints in place of a field the rule cannot read as clean: Go's
  *  `redact.WordsNotReadable`. */
 export const WORDS_NOT_READABLE =
@@ -41,18 +43,26 @@ const ENCODED_SEPARATORS = ["2f", "3a", "40", "3f", "23", "3d", "26", "25", "5c"
  *     or a fragment and more text follows it.
  *  7. Not readable when the field holds an encoded `/`, `:`, `@`, `?`, `#`, `=`, `&`, `%` or `\`
  *     (`%2F`, `\u002F`, `\x2F` and their kin, in any case).
- *  8. Not readable when the field, read with its ASCII whitespace removed, holds a `user:secret@`
- *     user information right after a scheme's `://` or a key's `=`, or a query or fragment value
- *     of a URL, whose characters the field itself splits with whitespace ({@link splitCredential}).
- *     A label, a `:` and an address with no scheme and no key before them, as in
- *     `sign-in: ada@example.com`, is text: no syntax tells a split `user:secret@host` from it, and
- *     a refusal prints identities.
+ *  8. The field is read a second time with its ASCII whitespace removed, by the same grammar
+ *     ({@link squeezedRemovesNoMore}): one run from the earliest URL start step 1 finds in that
+ *     text or in a token of the field, ending at the first character step 3 refuses that the
+ *     first reading read outside every run, read with no port check, and, before it, each
+ *     `user:secret@` user information ({@link userInfoPiece}), led by a key's `=` or a quote after
+ *     one. The field is readable only when that reading is readable and removes nothing the
+ *     reading of its tokens keeps. Across a gap a token's start leads no user information: a
+ *     label, a `:` and an address with no key before them, as in `sign-in: ada@example.com`, is
+ *     text, since no syntax tells a split `user:secret@host` from it and a refusal prints
+ *     identities. That form, words a quote begins after a gap (`https://idp.example/cb x
+ *     '?session=…'`) and a split `https://user: password/x` with no `@` are the known residual.
  *
  * Its answer is not meant to be read by the rule again.
  */
 export function readRemoteText(field: string): string | undefined {
   const lower = field.toLowerCase();
   if (ENCODED_SEPARATORS.some((encoded) => lower.includes(encoded))) return undefined;
+  // What the reading of field's tokens did with each code unit (unset outside every run), which
+  // step 8 compares with; a field with no whitespace has no second reading.
+  const read: number[] | undefined = /[ \t\n\v\f\r]/.test(field) ? [] : undefined;
   let out = "";
   let seenUrl = false;
   let afterRun = false;
@@ -74,135 +84,152 @@ export function readRemoteText(field: string): string | undefined {
     out += outside;
     afterRun = false;
     if (start >= 0) {
-      const read = readRun(token.slice(start));
-      if (read === undefined) return undefined;
-      if (read.inQuery && /[^ \t\n\v\f\r]/.test(field.slice(end))) return undefined;
-      out += read.shown + token.slice(start + read.length);
+      const runAt = i + start;
+      const run = readRun(token.slice(start), true, (from, to) => {
+        for (let k = runAt + from; read !== undefined && k < runAt + to; k++)
+          read[k] = READ_REMOVED;
+      });
+      if (read !== undefined && run !== undefined) {
+        for (let k = runAt; k < runAt + run.length; k++)
+          read[k] = Math.max(read[k] ?? 0, READ_KEPT);
+      }
+      if (run === undefined) return undefined;
+      if (run.inQuery && /[^ \t\n\v\f\r]/.test(field.slice(end))) return undefined;
+      out += run.shown + token.slice(start + run.length);
       seenUrl = true;
       afterRun = true;
     }
     i = end;
   }
-  return splitCredential(field) ? undefined : out;
+  if (read !== undefined && !squeezedRemovesNoMore(field, read)) return undefined;
+  return out;
 }
 
-/** The characters a `user:secret@` user information cannot hold, which end the piece
- *  {@link splitCredential} reads one for. */
-const USER_INFO_STOP = "/?#&;=,\"'<>()[]{}`\\|";
+/** What the reading of a field's tokens did with one code unit: read it outside every run (an
+ *  unset entry), keep it in a run, or remove it from one. Go's `byteRead`. */
+const READ_KEPT = 1;
+const READ_REMOVED = 2;
 
 /**
- * Whether `field`, read with its ASCII whitespace removed, holds a credential-shaped piece whose
- * characters the field splits with whitespace (step 8): a `user:secret@` user information, a `:`
- * and the next `@` with none of {@link USER_INFO_STOP} between them, right after a scheme's `://`
- * or a key's `=` ({@link userInfoLead}) and before a host's first character (a letter, a digit or
- * an IPv6 address's `[`, Go's `hostStart`), or a query or fragment value, one that is not empty,
- * of a URL that starts where step 1 finds one in the field, read in the whitespace-removed text
- * from that start to the first quote, `<`, `>` or backtick. Go's `splitCredential`.
+ * Step 8: whether `field`, read with its ASCII whitespace removed, is readable and removes no code
+ * unit that `read`, the reading of its tokens, keeps. That reading reads one run, from the
+ * earliest URL start step 1 finds in the whitespace-removed text or in a token of the field (a gap
+ * can hide a start as well as make one: `fetch //host` reads `fetch//host`), to the first code
+ * unit step 3 refuses ({@link runRefuses}) that the first reading read outside every run, or the
+ * text's end, with no port check, and each user information {@link userInfoPiece} finds in the
+ * text before that start. Go's `squeezedRemovesNoMore`.
  */
-function splitCredential(field: string): boolean {
-  let squeezed = "";
+function squeezedRemovesNoMore(field: string, read: number[]): boolean {
+  let text = "";
   const at: number[] = [];
-  for (let i = 0; i < field.length; i++) {
-    if (!isAsciiSpace(field.charCodeAt(i))) {
-      squeezed += field[i];
-      at.push(i);
+  let start = -1;
+  for (let i = 0; i < field.length; ) {
+    if (isAsciiSpace(field.charCodeAt(i))) {
+      i++;
+      continue;
     }
+    let end = i;
+    while (end < field.length && !isAsciiSpace(field.charCodeAt(end))) end++;
+    const u = urlStart(field.slice(i, end));
+    if (u >= 0 && start < 0) start = text.length + u;
+    for (let k = i; k < end; k++) at.push(k);
+    text += field.slice(i, end);
+    i = end;
   }
-  if (squeezed.length === field.length) return false;
-  const split = (from: number, to: number): boolean =>
-    to > from && (at[to - 1] as number) - (at[from] as number) !== to - 1 - from;
-  let from = 0;
-  let colon = -1;
-  for (let i = 0; i < squeezed.length; i++) {
-    const c = squeezed[i] as string;
-    if (USER_INFO_STOP.includes(c)) {
-      from = i + 1;
-      colon = -1;
-    } else if (c === ":" && colon < 0) colon = i;
-    else if (c === "@") {
-      // The user information comes before a host: its first character is a letter, a digit or `[`.
-      const host = /^[A-Za-z0-9[]$/.test(squeezed[i + 1] ?? "");
-      if (colon >= 0 && host && split(from, i + 1) && userInfoLead(squeezed, from)) return true;
-      // A user information ends at its `@`.
-      from = i + 1;
-      colon = -1;
+  const u = urlStart(text);
+  if (u >= 0 && (start < 0 || u < start)) start = u;
+  if (userInfoPiece(start >= 0 ? text.slice(0, start) : text)) return false;
+  if (start < 0) return true;
+  // The run holds at least its start, the scheme and its two slashes or the two slashes alone:
+  // either slash may be a backslash, which step 3 then refuses.
+  let end = isSlash(text[start]) ? start + 2 : text.indexOf(":", start) + 3;
+  while (
+    end < text.length &&
+    !(runRefuses(text.charCodeAt(end)) && (read[at[end] as number] ?? 0) === 0)
+  ) {
+    end++;
+  }
+  let more = false;
+  const run = readRun(text.slice(start, end), false, (from, to) => {
+    for (let k = start + from; k < start + to; k++) {
+      more ||= read[at[k] as number] !== READ_REMOVED;
     }
-  }
-  // Each URL start step 1 finds in the field, as an index into squeezed, one per token.
-  const starts: number[] = [];
-  for (let t = 0; t < squeezed.length; ) {
-    let end = t;
-    while (end + 1 < squeezed.length && at[end + 1] === (at[end] as number) + 1) end++;
-    const u = urlStart(squeezed.slice(t, end + 1));
-    if (u >= 0) starts.push(t + u);
-    t = end + 1;
-  }
-  for (let n = 0; n < starts.length; n++) {
-    const start = starts[n] as number;
-    let end = n + 1 < starts.length ? (starts[n + 1] as number) : squeezed.length;
-    const stop = squeezed.slice(start + 1, end).search(/["'<>`]/);
-    if (stop >= 0) end = start + 1 + stop;
-    const q = squeezed.slice(start, end).search(/[?#]/);
-    if (q < 0) continue;
-    for (let seg = start + q + 1; seg < end; ) {
-      let next = seg;
-      while (next < end && !"&;#?".includes(squeezed[next] as string)) next++;
-      const eq = squeezed.slice(seg, next).indexOf("=");
-      if (eq >= 0 && seg + eq + 1 < next && split(start, next)) return true;
-      seg = next + 1;
-    }
-  }
-  return false;
+  });
+  return run !== undefined && !more;
 }
 
-/** Whether the piece at `from` in `squeezed`, the whitespace-removed field, follows a scheme and
- *  its `://`, either slash a backslash too (`https://user: pw@host`), or a key and its `=`
- *  (`proxy=user: pw@host`): what tells a split `user:secret@` from a label and an address
- *  (`sign-in: ada@example.com`), which step 8 reads as text. Go's `userInfoLead`. */
-function userInfoLead(squeezed: string, from: number): boolean {
-  if (from >= 2 && squeezed[from - 1] === "=")
-    return !USER_INFO_STOP.includes(squeezed[from - 2] as string);
-  if (
-    from >= 4 &&
-    isSlash(squeezed[from - 1]) &&
-    isSlash(squeezed[from - 2]) &&
-    squeezed[from - 3] === ":"
-  ) {
-    return schemeStart(squeezed, from - 3) >= 0;
+/** Whether a run that holds the UTF-16 code unit `code` is not readable (step 3): `%`, `\`, a
+ *  quote, `<`, `>`, a backtick, a control character, or a non-ASCII character. Go's
+ *  `runRefuses`. */
+function runRefuses(code: number): boolean {
+  return code < 0x20 || code >= 0x7f || "%\\\"'<>`".includes(String.fromCharCode(code));
+}
+
+/** The characters RFC 3986 lets a user information hold: unreserved, a sub-delimiter, `:` and the
+ *  `%` of an escape. */
+const USER_INFO = /^[A-Za-z0-9\-._~!$&'()*+,;=:%]$/;
+
+/**
+ * Whether `text` holds a `user:secret@` user information as step 8 reads one across whitespace: an
+ * `@` before a character a host can start with (a user-information character other than `:`, or
+ * `[`), the longest run of user-information characters before it, and in that run a `:` after a
+ * key's `=` (one that is not text's first character), or a `:` anywhere in it when a `"` after a
+ * `=` comes right before it. A run with no key before its `:` is a label, a `:` and an address.
+ * Go's `userInfoPiece`.
+ */
+function userInfoPiece(text: string): boolean {
+  for (let a = 0; a + 1 < text.length; a++) {
+    const next = text[a + 1] as string;
+    if (text[a] !== "@" || !((next !== ":" && USER_INFO.test(next)) || next === "[")) continue;
+    let from = a;
+    while (from > 0 && USER_INFO.test(text[from - 1] as string)) from--;
+    const colon = text.lastIndexOf(":", a - 1);
+    if (colon < from) continue;
+    const eq = text.slice(from, colon).indexOf("=");
+    if (eq >= 0 && from + eq > 0) return true;
+    if (from >= 2 && text[from - 1] === '"' && text[from - 2] === "=") return true;
   }
   return false;
 }
 
 /** A field another party wrote as a message prints it: what {@link readRemoteText} answers, on
- *  one line ({@link oneLine}), or {@link WORDS_NOT_READABLE} where it cannot read the field. Go's
- *  `redact.Field`. */
-export function redactRemoteText(field: string): string {
-  const read = readRemoteText(field);
+ *  one line ({@link oneLine}), or {@link WORDS_NOT_READABLE} where it cannot read the field. Each
+ *  of `carried`, the credentials the request it answers carried, is redacted from it first
+ *  ({@link tokens}). Go's `redact.Field`, and `fieldWithout` with credentials. */
+export function redactRemoteText(field: string, carried: readonly string[] = []): string {
+  const read = readRemoteText(carried.length === 0 ? field : tokens(field, -1, ...carried));
   return read === undefined ? WORDS_NOT_READABLE : oneLine(read);
 }
 
+/** The credentials each box was given (`carried`), which its printers redact: kept beside the box,
+ *  so the box's one storage is the field. */
+const carriedOf = new WeakMap<RemoteText, readonly string[]>();
+
 /**
  * One field another party wrote, held so that it redacts itself: every way JavaScript prints it
- * prints {@link redactRemoteText} of it, never the field. The text sits in a private field, which
- * `JSON.stringify`, an object spread and an inspection do not reach, and its own methods answer
- * the rest: `toString`, `toJSON`, `Symbol.toPrimitive` (a template string, `String()`, `+`) and
- * Node's and Bun's inspection hook. Only this class reads the text, and each of its methods reads
- * it in one of three ways alone: as the argument of the rule, as an operand of a comparison or a
- * parse whose answer is a boolean or a parsed value, or in the one assignment the constructor
- * makes. Code that tells fields apart compares through {@link equals},
- * {@link equalsIgnoringCase}, {@link startsWith} and {@link isEmpty}, and reads a time through
- * {@link date}; none answers the text. Go's `redact.RemoteText`.
+ * prints {@link redactRemoteText} of it, never the field, with each of the credentials it was given
+ * (`carried`, those the request it answered carried) redacted first. The text sits in a private
+ * field, which `JSON.stringify`, an object spread and an inspection do not reach, and its own
+ * methods answer the rest: `toString`, `toJSON`, `Symbol.toPrimitive` (a template string,
+ * `String()`, `+`) and Node's and Bun's inspection hook. Only this class reads the text, and each of
+ * its methods reads it in one of three ways alone: as the argument of the rule, as an operand of a
+ * comparison or a parse whose answer is a boolean or a parsed value, or in the one assignment the
+ * constructor makes. Code that tells fields apart compares through {@link equals},
+ * {@link equalsIgnoringCase}, {@link startsWith} and {@link isEmpty}, which read the field as it
+ * came, and reads a time through {@link date}; none answers the text. Go's `redact.RemoteText`.
  */
 export class RemoteText {
   readonly #text: string;
 
-  constructor(text: string) {
+  constructor(text: string, carried: readonly string[] = []) {
     this.#text = text;
+    if (carried.length > 0) carriedOf.set(this, carried);
   }
 
-  /** The field as a message may print it ({@link redactRemoteText}). */
+  /** The field as a message may print it: {@link redactRemoteText} of it, with each credential it
+   *  was given redacted. */
   toString(): string {
-    return redactRemoteText(this.#text);
+    return redactRemoteText(this.#text, carriedOf.get(this));
   }
 
   /** {@link toString}, so `JSON.stringify` writes the field as a message may print it. */
@@ -271,13 +298,19 @@ export class LibraryError extends Error {
 
   constructor(thrown: unknown) {
     const error = thrown instanceof Error ? thrown : undefined;
-    super(redactRemoteText(error === undefined ? String(thrown) : error.message));
+    const message = error === undefined ? String(thrown) : error.message;
+    const code = stringMember(thrown, "error");
+    const description = stringMember(thrown, "error_description");
+    // The credentials of the refusal the error came from: a library builds its requests'
+    // credentials itself, and its error's words can echo any of them.
+    const carried = refusedCredentials(message, code, description);
+    super(redactRemoteText(message, carried));
     this.name = error !== undefined && /^\w+$/.test(error.name) ? error.name : "Error";
     this.status = statusOfThrown(thrown);
-    this.code = new RemoteText(stringMember(thrown, "error"));
-    this.description = new RemoteText(stringMember(thrown, "error_description"));
+    this.code = new RemoteText(code, carried);
+    this.description = new RemoteText(description, carried);
     const cause = error?.cause;
-    this.causeMessage = new RemoteText(cause instanceof Error ? cause.message : "");
+    this.causeMessage = new RemoteText(cause instanceof Error ? cause.message : "", carried);
   }
 }
 
@@ -405,40 +438,54 @@ function urlStart(token: string): number {
 
 /** The run at the start of `text`, which runs to its end, read (steps 2, 3 and 4): as it prints,
  *  its length in `text`, and whether it ends inside a query or a fragment; `undefined` where it is
- *  not readable. */
-function readRun(text: string): { shown: string; length: number; inQuery: boolean } | undefined {
+ *  not readable. It calls `cut` with each span of `text`, `[from, to)`, that it removes: the user
+ *  information with its `@`, each value, and each bare segment. `checkPort` is whether a port that
+ *  is not all digits makes the run unreadable, which step 8's second reading does not ask. */
+function readRun(
+  text: string,
+  checkPort: boolean,
+  cut: (from: number, to: number) => void
+): { shown: string; length: number; inQuery: boolean } | undefined {
   const head = isSlash(text[0]) ? 2 : text.indexOf(":") + 3;
   const inQuery = /[?#]/.test(text.slice(head));
   const run = inQuery ? text : trimRunEnd(text);
-  for (let i = 0; i < run.length; i++) {
-    const code = run.charCodeAt(i);
-    if (code < 0x20 || code >= 0x7f || "%\\\"'<>`".includes(run[i] as string)) return undefined;
-  }
+  for (let i = 0; i < run.length; i++) if (runRefuses(run.charCodeAt(i))) return undefined;
   const rest = run.slice(head);
   const authEnd = rest.search(/[/?#]/);
   const authority = authEnd < 0 ? rest : rest.slice(0, authEnd);
   const after = authEnd < 0 ? "" : rest.slice(authEnd);
   if (authority.split("@").length > 2 || after.includes("@")) return undefined;
-  const host = authority.slice(authority.indexOf("@") + 1);
-  if (!digitPort(host)) return undefined;
+  const at = authority.indexOf("@");
+  const host = authority.slice(at + 1);
+  if (checkPort && !digitPort(host)) return undefined;
+  if (at >= 0) cut(head, head + at + 1);
+  const afterAt = head + (authEnd < 0 ? rest.length : authEnd);
   let path = after;
   let query = "";
   let fragment = "";
+  let queryAt = afterAt;
+  let fragmentAt = afterAt;
   const hash = after.indexOf("#");
   if (hash >= 0) {
     path = after.slice(0, hash);
     fragment = after.slice(hash);
+    fragmentAt += hash;
   }
   const question = path.indexOf("?");
   if (question >= 0) {
     query = path.slice(question);
     path = path.slice(0, question);
+    queryAt += question;
   }
   let shown = run.slice(0, head) + host + path;
-  for (const part of [query, fragment]) {
+  for (const [part, partAt] of [
+    [query, queryAt],
+    [fragment, fragmentAt],
+  ] as const) {
     if (part === "") continue;
     shown += part[0];
     let segments = part.slice(1);
+    let segmentAt = partAt + 1;
     for (;;) {
       const end = segments.search(/[&;]/);
       const segment = end < 0 ? segments : segments.slice(0, end);
@@ -446,10 +493,14 @@ function readRun(text: string): { shown: string; length: number; inQuery: boolea
       if (equals >= 0) {
         if (/[=?]/.test(segment.slice(equals + 1))) return undefined;
         shown += `${segment.slice(0, equals)}=`;
+        if (equals + 1 < segment.length) cut(segmentAt + equals + 1, segmentAt + segment.length);
+      } else if (segment !== "") {
+        cut(segmentAt, segmentAt + segment.length);
       }
       if (end < 0) break;
       shown += segments[end];
       segments = segments.slice(end + 1);
+      segmentAt += end + 1;
     }
   }
   return { shown, length: run.length, inQuery };
@@ -497,4 +548,253 @@ function isSlash(character: string | undefined): boolean {
 /** Whether the UTF-16 code `code` is ASCII whitespace, which ends a run and a token. */
 function isAsciiSpace(code: number): boolean {
   return code === 0x20 || (code >= 0x09 && code <= 0x0d);
+}
+
+/** The shortest run of a credential's characters {@link tokens} redacts wherever it stands. Go's
+ *  `redact.TokenPiece`. */
+export const TOKEN_PIECE = 8;
+
+/** What {@link tokens} writes in place of a run of a credential's characters. Go's
+ *  `redact.Redacted`. */
+export const REDACTED = "[redacted]";
+
+/** A letter, a digit or `_`: what may not stand right beside a short credential {@link tokens}
+ *  redacts. */
+const WORD_CHARACTER = /^[\p{L}\p{N}_]$/u;
+
+/**
+ * `text` with each run of at least {@link TOKEN_PIECE} characters of any of `credentials` (each
+ * trimmed, as a header sends it) replaced with one {@link REDACTED}; a credential shorter than that
+ * only whole, and only where no letter, digit or `_` stands right before or after it. A character
+ * is a code point. `limit` bounds the text read, in characters, a negative one reading it whole:
+ * a run that starts inside it is redacted whole, read up to {@link TOKEN_PIECE} - 1 characters
+ * past it, and the answer is cut to `limit` characters afterwards. Go's `redact.Tokens`; both read
+ * packages/envoy/internal/redact/testdata/tokens.json.
+ */
+export function tokens(text: string, limit: number, ...credentials: string[]): string {
+  const pieces = new Set<string>();
+  const lengths = new Set<number>();
+  for (const credential of credentials) {
+    const characters = Array.from(credential.trim());
+    const length = Math.min(TOKEN_PIECE, characters.length);
+    if (length === 0) continue;
+    lengths.add(length);
+    for (let at = 0; at + length <= characters.length; at++) {
+      pieces.add(characters.slice(at, at + length).join(""));
+    }
+  }
+  const characters = Array.from(text);
+  const read = limit < 0 ? characters.length : Math.min(characters.length, limit);
+  if (pieces.size === 0) return characters.slice(0, read).join("");
+  const scanned =
+    limit < 0 ? characters.length : Math.min(characters.length, limit + TOKEN_PIECE - 1);
+  const covered = new Array<boolean>(scanned).fill(false);
+  const word = (at: number): boolean => WORD_CHARACTER.test(characters[at] ?? "");
+  for (let at = 0; at < scanned; at++) {
+    for (const length of lengths) {
+      if (at + length > scanned) continue;
+      const piece = characters.slice(at, at + length).join("");
+      if (!pieces.has(piece)) continue;
+      if (length < TOKEN_PIECE && (word(at - 1) || word(at + length))) continue;
+      covered.fill(true, at, at + length);
+    }
+  }
+  let out = "";
+  for (let at = 0; at < read; at++) {
+    if (!covered[at]) {
+      out += characters[at];
+      continue;
+    }
+    while (at + 1 < scanned && covered[at + 1]) at++;
+    out += REDACTED;
+  }
+  return limit < 0 ? out : Array.from(out).slice(0, read).join("");
+}
+
+/** How many refusals {@link refusalFetch} keeps, the newest: more than a process makes between a
+ *  library's refused request and {@link LibraryError}'s reading of the error it throws. Go's
+ *  `refusedKept`. */
+const REFUSED_KEPT = 1024;
+
+/** How much of a refused answer's body, trimmed, an error's message must quote to be read with
+ *  that refusal's credentials. Go's `quotedLength`. */
+const QUOTED_LENGTH = 64;
+
+/** What {@link refusalFetch} records of a refused answer: the credentials its request carried, as
+ *  each refusalFetch it passed through saw them, and the answer's body. */
+type Refusal = { readonly credentials: string[]; readonly body: string };
+
+/** The latest refusals a {@link refusalFetch} saw, newest last. */
+const refused: Refusal[] = [];
+
+/** The refusal recorded of each refused answer, which a refusalFetch above the one that recorded
+ *  it joins: one answer is one refusal. */
+const recordedOf = new WeakMap<Response, Refusal>();
+
+/**
+ * The credentials of the refusal the library's error came from: the newest whose answer the
+ * error's message quotes, else the newest whose body holds the error's description
+ * (`error_description`), or its code where it has no description. Only that request's
+ * credentials can be echoed in the error, so no other request's values touch it, and the work is
+ * one request's however many refusals came before. Go's `refusals.quotedBy`, which reads
+ * text-only errors; this half also reads openid-client's errors of a parsed body, whose message
+ * quotes none of it.
+ */
+function refusedCredentials(message: string, code: string, description: string): string[] {
+  const inBody = (text: string, body: string): boolean =>
+    text !== "" && (body.includes(text) || body.includes(JSON.stringify(text).slice(1, -1)));
+  const newest = (matches: (refusal: Refusal) => boolean): Refusal | undefined => {
+    for (let i = refused.length - 1; i >= 0; i--) {
+      const refusal = refused[i] as Refusal;
+      if (matches(refusal)) return refusal;
+    }
+    return undefined;
+  };
+  const from =
+    newest((refusal) => {
+      const quote = refusal.body.trim().slice(0, QUOTED_LENGTH);
+      return quote !== "" && message.includes(quote);
+    }) ?? newest((refusal) => inBody(description === "" ? code : description, refusal.body));
+  return [...(from?.credentials ?? [])];
+}
+
+/** The request a fetch sends: the options it is sent with, a header record or a `Headers`. */
+type FetchOptions = { body?: unknown; headers?: ConstructorParameters<typeof Headers>[0] };
+
+/**
+ * `base`, a fetch openid-client is given (its `customFetch`) or one beneath it, which records the
+ * credentials each request carried ({@link requestCredentials}) and the answer's body when the
+ * answer is outside 2xx, and changes nothing of any answer: it reads a clone of the body, so the
+ * library parses the answer as it came, and its code and every decision made on it are the
+ * answer's own. {@link LibraryError} prints the error the library throws over it with the
+ * credentials of the refusal it came from redacted. It is the one wrapper on every fetch this
+ * workspace hands openid-client; the census in `cmd/redact-gate` fails on one without it. Go's
+ * `redact.RefusalClient`.
+ */
+export function refusalFetch<Options extends FetchOptions>(
+  base: (url: string, options: Options) => Promise<Response>
+): (url: string, options: Options) => Promise<Response> {
+  return async (url, options) => {
+    const credentials = requestCredentials(url, options);
+    const response = await base(url, options);
+    if (response.status < 200 || response.status >= 300) {
+      // A refusalFetch beneath this one recorded the answer already, with the credentials its own
+      // request carried (a proof set between the two among them): this request's join it.
+      const recorded = recordedOf.get(response);
+      if (recorded !== undefined) {
+        recorded.credentials.push(...credentials);
+        return response;
+      }
+      const body = await response
+        .clone()
+        .text()
+        .catch(() => "");
+      const refusal: Refusal = { credentials, body };
+      recordedOf.set(response, refusal);
+      refused.push(refusal);
+      if (refused.length > REFUSED_KEPT) refused.splice(0, refused.length - REFUSED_KEPT);
+    }
+    return response;
+  };
+}
+
+/**
+ * Every value a request carries under a name a wire contract does not declare public
+ * (`PUBLIC_REQUEST_NAMES` in public-request-names.ts): each such header's value whole and after
+ * its scheme, a Basic pair's user and password as sent and decoded, its URL's user and password
+ * and each such value of its query, and each such value of its form or string of its JSON body. A
+ * name nobody listed counts, so a new parameter is a credential until a contract declares it
+ * public. Go's `requestTokens`.
+ */
+export function requestCredentials(url: string, options: FetchOptions): string[] {
+  const credentials: string[] = [];
+  let contentType = "";
+  for (const [name, value] of new Headers(options.headers ?? {})) {
+    if (name.toLowerCase() === "content-type") contentType = value.toLowerCase();
+    if (isPublicRequestName("header", name)) continue;
+    credentials.push(value);
+    const space = value.trim().indexOf(" ");
+    if (space < 0) continue;
+    const scheme = value.trim().slice(0, space);
+    const credential = value
+      .trim()
+      .slice(space + 1)
+      .trim();
+    credentials.push(credential);
+    if (scheme.toLowerCase() !== "basic") continue;
+    const pair = decodedBase64(credential);
+    const colon = pair?.indexOf(":") ?? -1;
+    if (pair === undefined || colon < 0) continue;
+    for (const part of [pair.slice(0, colon), pair.slice(colon + 1)]) {
+      credentials.push(part, ...unescaped(part));
+    }
+  }
+  const parsed = URL.canParse(url) ? new URL(url) : undefined;
+  if (parsed !== undefined) {
+    for (const part of [parsed.username, parsed.password]) {
+      if (part !== "") credentials.push(...unescaped(part), part);
+    }
+    for (const [name, value] of parsed.searchParams) {
+      if (!isPublicRequestName("field", name)) credentials.push(value);
+    }
+  }
+  return credentials.concat(bodyCredentials(options.body, contentType));
+}
+
+/** Each value of a form body, or string of a JSON body, under a name no contract declares public;
+ *  none for any other body. A JSON string's name is the key of the object it is a member of,
+ *  through any arrays between; an object under a public key is read by its own keys. */
+function bodyCredentials(body: unknown, contentType: string): string[] {
+  const formValues = (form: URLSearchParams): string[] =>
+    [...form].filter(([name]) => !isPublicRequestName("field", name)).map(([, value]) => value);
+  if (body instanceof URLSearchParams) return formValues(body);
+  const text =
+    typeof body === "string"
+      ? body
+      : body instanceof Uint8Array || body instanceof ArrayBuffer
+        ? new TextDecoder().decode(body)
+        : undefined;
+  if (text === undefined) return [];
+  if (contentType.startsWith("application/x-www-form-urlencoded")) {
+    return formValues(new URLSearchParams(text));
+  }
+  if (!/^application\/([\w.+-]*\+)?json\b/.test(contentType)) return [];
+  const strings: string[] = [];
+  const walk = (value: unknown, isPublic: boolean): void => {
+    if (typeof value === "string") {
+      if (!isPublic) strings.push(value);
+    } else if (Array.isArray(value)) {
+      for (const element of value) walk(element, isPublic);
+    } else if (value !== null && typeof value === "object") {
+      for (const [key, member] of Object.entries(value)) {
+        walk(member, isPublicRequestName("field", key));
+      }
+    }
+  };
+  try {
+    walk(JSON.parse(text), false);
+  } catch {
+    return [];
+  }
+  return strings;
+}
+
+/** `text` decoded from base64, or `undefined` where it is not base64. */
+function decodedBase64(text: string): string | undefined {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text)) return undefined;
+  try {
+    return new TextDecoder().decode(Uint8Array.from(atob(text), (c) => c.charCodeAt(0)));
+  } catch {
+    return undefined;
+  }
+}
+
+/** `text` with its percent and `+` escapes decoded, where that differs from it and is valid. */
+function unescaped(text: string): string[] {
+  try {
+    const decoded = decodeURIComponent(text.replace(/\+/g, " "));
+    return decoded === text ? [] : [decoded];
+  } catch {
+    return [];
+  }
 }

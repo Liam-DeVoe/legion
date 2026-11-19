@@ -16,7 +16,9 @@ import (
 // the *url.Error net/http wraps a transport's error in, or under any other wrapper, comes out of
 // OAuth2 as an *OAuthAnswer, which prints none of the answer's words whole, under any fmt verb,
 // and through the *oauth2.RetrieveError errors.As still reaches, encoding/json included; its
-// closed code and its "<CODE>: <message>" split are read from the words as they came, and its
+// closed code is read from the code as it came, its "<CODE>: <message>" split from the words with
+// every credential the refused request carried redacted (its URL's password among them; its
+// one-letter user "u" stands inside words only, so invalid_request stays whole), and its
 // status and headers stay. An error that holds no answer, and nil, come back as they are. The
 // input, printed whole, holds the words: the control.
 func TestOAuth2HoldsEveryAnswerAsTheRuleReadsIt(t *testing.T) {
@@ -55,8 +57,9 @@ func TestOAuth2HoldsEveryAnswerAsTheRuleReadsIt(t *testing.T) {
 				}
 			}
 			code, message := held.Refusal()
-			if held.RefusalCode() != InvalidRequest || RefusalCode(got) != InvalidRequest || !code.Equal("RATE_LIMITED") || !message.Equal(probeWords) {
-				t.Errorf("the closed code is %v and the split %v, %v; want invalid_request, RATE_LIMITED and the words", held.RefusalCode(), code, message)
+			carried := requestTokens(answer().Response.Request)
+			if held.RefusalCode() != InvalidRequest || RefusalCode(got) != InvalidRequest || !code.Equal("RATE_LIMITED") || !message.Equal(Tokens(probeWords, -1, carried...)) {
+				t.Errorf("the closed code is %v and the split %v, %v; want invalid_request, RATE_LIMITED and the words with the request's credentials redacted", held.RefusalCode(), code, message)
 			}
 			if re.Response.StatusCode != http.StatusTooManyRequests || re.Response.Header.Get("Retry-After") != "7" || re.Response.Request != nil {
 				t.Errorf("the answer's response is %+v, want its status and headers without its request", re.Response)

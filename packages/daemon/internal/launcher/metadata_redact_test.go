@@ -42,3 +42,24 @@ func TestAFailedExchangesLogLinePrintsNoCredentialTheServicesWordsQuote(t *testi
 		}
 	}
 }
+
+// TestAFailedExchangesLogLinePrintsNoCredentialItsRefusalEchoes: something in the security token
+// service's place refuses the exchange with words that echo the subject token the exchange sent.
+// The endpoint's failure line holds none of it: the exchange's client records what each refused
+// request carried (oauth2call.RefusalClient), and the boundary reads the library's error with it
+// redacted (the review of #4368 at db7e4a0226, finding 3). Capture launcher.exchange-echo.
+func TestAFailedExchangesLogLinePrintsNoCredentialItsRefusalEchoes(t *testing.T) {
+	g := newMetadataRig(t)
+	writeSubjectToken(t, g.tokenFile, probeToken)
+	g.sts.refuseWith("subject_token " + probeToken + " was not accepted")
+	g.get(t, tokenPath, flavor)
+	logged := g.log.String()
+	if !strings.Contains(logged, "launcher: metadata: token exchange failed ") {
+		t.Fatalf("the endpoint logged %q, want its failure line", logged)
+	}
+	const capture = "launcher.exchange-echo"
+	t.Logf("REDACT-CAPTURE %s %s", capture, base64.StdEncoding.EncodeToString([]byte(logged)))
+	if strings.Contains(logged, probeToken) {
+		t.Errorf("REDACT-ASSERT %s: the output prints the secret %q: %q", capture, probeToken, logged)
+	}
+}

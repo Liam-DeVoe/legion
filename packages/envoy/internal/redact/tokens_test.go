@@ -2,6 +2,7 @@ package redact
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -94,13 +95,15 @@ func TestTokensIsBoundedForAHostileTextOrToken(t *testing.T) {
 	}
 }
 
-// requestTokens is each credential a request carries: an Authorization value after its scheme, a
-// Basic pair's password as sent and unescaped, a DPoP proof whole, a password in the URL, and the
-// credential fields of its query and its form, the form read again through GetBody.
+// requestTokens is every value a request carries under a name no wire contract declares public:
+// each such header's value whole and after its scheme, a Basic pair's user and password as sent
+// and unescaped, its URL's user and password, each such value of its query, and each such value of
+// its form, the form read again through GetBody. A value under a name nobody listed ("request") is
+// a credential; a value under a public name (scope, Content-Type) is not.
 func TestRequestTokensReadsEveryCredentialARequestCarries(t *testing.T) {
 	form := url.Values{"client_secret": {"form-secret-RDX-1a2b"}, "refresh_token": {"form-refresh-RDX-3c4d"},
 		"request": {"form-request-RDX-6e7f"}, "scope": {"openid"}}
-	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:1/token?code=query-code-RDX-5e6f", strings.NewReader(form.Encode()))
+	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:1/token?code=query-code-RDX-5e6f&sig=query-sig-RDX-0b1c", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,23 +111,29 @@ func TestRequestTokensReadsEveryCredentialARequestCarries(t *testing.T) {
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.SetBasicAuth("client", url.QueryEscape("basic secret/RDX"))
 	request.Header.Set("DPoP", "proof-RDX-9c0d")
+	request.Header.Set("X-Aws-Ec2-Metadata-Token", "imds-RDX-2d3e")
+	request.Header.Set("Cookie", "session=cookie-RDX-4f5a")
 	got := strings.Join(requestTokens(request), "\n")
-	for _, want := range []string{"basic+secret%2FRDX", "basic secret/RDX", "proof-RDX-9c0d", "url-secret-RDX-7a8b", "query-code-RDX-5e6f",
+	for _, want := range []string{"basic+secret%2FRDX", "basic secret/RDX", "client", "proof-RDX-9c0d", "imds-RDX-2d3e",
+		"session=cookie-RDX-4f5a", "user", "url-secret-RDX-7a8b", "query-code-RDX-5e6f", "query-sig-RDX-0b1c",
 		"form-secret-RDX-1a2b", "form-refresh-RDX-3c4d", "form-request-RDX-6e7f"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("requestTokens holds no %q: %q", want, got)
 		}
 	}
-	if strings.Contains(got, "openid") {
-		t.Errorf("requestTokens holds a field that is no credential: %q", got)
+	for _, public := range []string{"openid", "application/x-www-form-urlencoded"} {
+		if strings.Contains(got, public) {
+			t.Errorf("requestTokens holds %q, a value under a public name: %q", public, got)
+		}
 	}
 	if body, _ := io.ReadAll(request.Body); string(body) != form.Encode() {
 		t.Errorf("requestTokens consumed the request's body: %q", body)
 	}
 }
 
-// A RefusalClient's answer outside 2xx holds none of the credentials its own request carried, in
-// its body or its reason phrase; a 2xx is left as it is, a minted token in it included.
+// A RefusalClient hands every answer on as it came, a refusal's echo of its request's credentials
+// and a 2xx's minted token alike, so the library that sent the request parses the answer itself;
+// the error a library makes of the refusal holds none of those credentials once OAuth2 reads it.
 func TestRefusalClientRedactsOnlyARefusalsEchoOfItsRequest(t *testing.T) {
 	const bearer, minted = "bearer-RDX-4f9a2c77", "minted-RDX-77b1e0d3"
 	// The 2xx is a token answer carrying the minted token. It is marshalled rather than written as
@@ -157,8 +166,12 @@ func TestRefusalClientRedactsOnlyARefusalsEchoOfItsRequest(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		return string(body)
 	}
-	if refused := get("/refuse"); strings.Contains(refused, bearer) || strings.Count(refused, Redacted) != 2 {
-		t.Errorf("the refusal = %q, want both echoes of the bearer redacted", refused)
+	refused := get("/refuse")
+	if !strings.Contains(refused, bearer) {
+		t.Errorf("the refusal = %q, want it as it came, the echo of the bearer in it", refused)
+	}
+	if _, err := OAuth2(0, fmt.Errorf("status code 502: %s", refused)); strings.Contains(err.Error(), bearer) || strings.Count(err.Error(), Redacted) != 2 {
+		t.Errorf("OAuth2 of a library's error over the refusal = %q, want both echoes of the bearer redacted", err)
 	}
 	if answered := get("/ok"); answered != string(okBody) {
 		t.Errorf("the 2xx = %q, want it as it came", answered)

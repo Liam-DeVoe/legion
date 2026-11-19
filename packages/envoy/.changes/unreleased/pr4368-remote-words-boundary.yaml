@@ -8,11 +8,19 @@ body: |-
   `%w`: `oidc.CheckClient`'s error for an answer that is neither ready nor rejected, a refused
   sign-in refresh's (`brokerclient.DeviceFlow.Refresh`), a discovery error's, which quoted the
   issuer's body, and the external-account exchange's, which quoted the security token service's.
-  A token source handed to another library crosses the same boundary (`redact.TokenSource`), and
-  a refusal's body is read with every credential its own request carried redacted first, so a
-  gateway's page in a token endpoint's place that echoes the request no longer prints the refresh
-  token, client secret or minted access token it shows (`redact.Tokens`; `redact.RefusalClient`
-  for the external-account exchange, whose library prints a refusal as text alone). Every field
+  A token source handed to another library crosses the same boundary (`redact.TokenSource`).
+  Every word of a refusal, its code, description, error_uri, body and reason phrase, is read with
+  every credential its own request carried redacted first: every value of a header, of the URL's
+  user information and query, and of a form or JSON body, under any name a wire contract does not
+  declare public (`packages/contracts/src/public-request-names.ts`, which Go reads as generated
+  code). So an answer in a server's place that echoes the request, a Cookie, an instance metadata
+  token, a subject token or a proof among it, no longer prints it, in the broker's trade, the
+  helper's broker calls and every client this change hands x/oauth2, go-oidc or Google's
+  impersonation (`redact.Tokens`, `redact.Carried`). A credential shorter than 8 characters is
+  redacted only where it stands as a token of its own. `redact.RefusalClient` hands every answer on
+  as it came, so a library parses what was answered and the code a client acts on is the answer's
+  own; it records each refused request's credentials, and the boundary reads with them only an
+  error that quotes that refusal's body. Every field
   of an answer the boundary hands on is a closed value or the rule's reading: its status is the
   status code with its standard reason phrase, so the phrase an answer with no error code wrote,
   which x/oauth2's text prints, no longer reaches the client check's error, a code exchange's or

@@ -5,7 +5,7 @@
 // and `DeviceFlow.Refresh` (`packages/envoy/internal/brokerclient/device.go`), with
 // `openid-client` in the place of x/oauth2.
 
-import { callLibrary, LibraryError } from "@legion/contracts/remote-text";
+import { callLibrary, LibraryError, refusalFetch } from "@legion/contracts/remote-text";
 import {
   allowInsecureRequests,
   ClientSecretPost,
@@ -105,7 +105,7 @@ export function personIdentity(
     try {
       const config = await callLibrary(() =>
         discovery(new URL(flow.issuer), flow.clientId, undefined, undefined, {
-          [customFetch]: through(signal),
+          [customFetch]: refusalFetch(through(signal)),
           timeout: ISSUER_TIMEOUT_SECONDS,
           ...(insecure ? { execute: [allowInsecureRequests] } : {}),
         })
@@ -143,7 +143,7 @@ export function personIdentity(
         );
         if (insecure) callLibrary(() => allowInsecureRequests(config));
         config.timeout = ISSUER_TIMEOUT_SECONDS;
-        config[customFetch] = through(signal);
+        config[customFetch] = refusalFetch(through(signal));
         answered = await callLibrary(() => refreshTokenGrant(config, refreshToken));
       } catch (error) {
         if (

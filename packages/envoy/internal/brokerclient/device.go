@@ -90,7 +90,7 @@ func (d *DeviceFlow) context(ctx context.Context) context.Context {
 	if d.HTTP == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, oauth2.HTTPClient, d.HTTP)
+	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(d.HTTP))
 }
 
 // Start asks the issuer for a device code and a user code: what the person types in, and where.

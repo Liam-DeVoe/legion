@@ -7,11 +7,14 @@ body: |-
   refusal. A fail-closed rule (`redact.Remote`, `redact.Field`) now reads each remote field: it
   prints the field with each URL's user information and each query and fragment value removed
   only when it can read every URL in it, and `redact.WordsNotReadable` otherwise, the status and
-  the other field still printing. Whitespace that splits a credential does not hide it: the rule
-  also reads the field with its whitespace removed, and a `user:secret@` after a scheme's `://` or
-  a key's `=`, or a URL's query or fragment value, that the whitespace split is not readable
-  (`proxy=user: secret@host`). A bare `label: secret@host`, with no scheme and no key, still
-  prints, since nothing tells it from a label and an address such as `sign-in: ada@example.com`.
+  the other field still printing. Whitespace that splits a URL or a credential does not hide it:
+  the rule reads the field a second time with its whitespace removed, and the field is readable
+  only when that reading removes nothing the first keeps, so a split start (`https ://host?code=…`),
+  a split query or fragment segment, and a key's split `user:secret@` (`proxy="user: secret@host"`)
+  are not readable. Three forms still print by design: a bare `label: secret@host`, with no key
+  before it, since nothing tells it from a label and an address such as
+  `sign-in: ada@example.com`; words a quote begins after a gap (`…/cb x '?session=…'`); and a split
+  `https://user: password/x` with no `@`.
   The helper splits an `invalid_request` description at its first `": "` only where the rule reads
   the whole description as clean. The broker's words in `redact.Error`, `redact.Cause` and
   `brokeraddr.Address.Words`, and the words in the helper's `BrokerError`, `agent-secrets`' and

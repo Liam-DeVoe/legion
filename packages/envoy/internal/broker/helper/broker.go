@@ -393,7 +393,7 @@ func (t contextTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) context.Context {
 	client := b.httpClient()
 	client.Transport = brokerclient.NewDPoPTransport(key, b.baseTransport())
-	return context.WithValue(ctx, oauth2.HTTPClient, client)
+	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(client))
 }
 
 // oauthBrokerError is err, from an OAuth call to the broker at addr, as a message may print it
@@ -482,7 +482,7 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 	}
 	cfg := b.oauthConfig()
 	ctx, reach := traceReach(ctx)
-	da, err := redact.OAuth2(cfg.DeviceAuth(context.WithValue(ctx, oauth2.HTTPClient, b.contextClient(ctx)),
+	da, err := redact.OAuth2(cfg.DeviceAuth(context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(b.contextClient(ctx))),
 		oauth2.SetAuthURLParam("request", compact), oauth2.SetAuthURLParam("dpop_jkt", thumbprint)))
 	if err != nil {
 		return "", reach.settle(oauthBrokerError(err, b.URL))
@@ -1691,7 +1691,10 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 			Error redact.RemoteText `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e)
-		return newBrokerError(resp.StatusCode, e.Code, e.Error, !b.URL.Clean())
+		// The answer's words print with every credential the request carried redacted (its proof
+		// among them), and compare as they came (RemoteText.WithoutTokens).
+		carried := redact.Carried(resp.Request)
+		return newBrokerError(resp.StatusCode, e.Code.WithoutTokens(carried...), e.Error.WithoutTokens(carried...), !b.URL.Clean())
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)
