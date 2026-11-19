@@ -280,8 +280,11 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held, objects 
 // for the name the tag holds, and every other header read whole, its name with its value, labelled
 // by its name where git itself writes a tag header of that name, such as "tag <short> tagger" for
 // the tagger, and "tag <short> header" else (headerRecord, tagHeaders), a header of more than one
-// line with its every line (objectHeaders). The message is read as the tag object holds it, which
-// is what git shows of it too, and decoded by the guard where it holds a zero byte (appendMessage).
+// line with its every line (objectHeaders). Each of those records is read decoded too where it
+// holds a zero byte, as a message is (appendDecoded): git's own check, which a destination that
+// checks what it receives runs, refuses such a crafted header, but one that does not keeps it. The
+// message is read as the tag object holds it, which is what git shows of it too, and decoded by
+// the guard where it holds a zero byte (appendMessage).
 // The object and the type followed are the first object line and the first type line, which are
 // the ones git follows a tag by, and a later line of either is a header like any other. A tag
 // object holds its own name, which it publishes as it publishes its message, and a chain's inner
@@ -323,9 +326,9 @@ func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string
 			case name == "type" && kind == "":
 				kind = value
 			case name == "tag":
-				records = append(records, Record{Label: label + " name", Text: value})
+				records = appendDecoded(records, Record{Label: label + " name", Text: value})
 			default:
-				records = append(records, headerRecord(label, name, value, tagHeaders))
+				records = appendDecoded(records, headerRecord(label, name, value, tagHeaders))
 			}
 		}
 		records = appendMessage(records, label, message, message)

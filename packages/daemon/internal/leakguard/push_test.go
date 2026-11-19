@@ -550,6 +550,83 @@ func TestAMessageInUTF16OrUTF32IsReadDecoded(t *testing.T) {
 	}
 }
 
+// A header holds its value as its object does, and a crafted one can hold a zero byte, as a
+// message can: a host in UTF-16 or UTF-32 is in no run of the header's bytes, while a reader that
+// decodes the header reads it whole. git's own check refuses a zero byte in a header of a commit
+// or a tag (nulInHeader), hash-object's and a destination's that runs receive.fsckObjects, but a
+// destination that runs no such check, git's default, keeps it. So the push reads each header of a
+// commit's or a tag's, the tag's own name among them, as it reads a message
+// (TestAMessageInUTF16OrUTF32IsReadDecoded): decoded four ways from the header's first byte, and
+// with its zero bytes taken out, and refuses one that names a host, whatever label its report
+// gives the line. "x-note " is seven bytes, so UTF-16 text after it is one byte off the header's
+// first byte, and after one more byte it is on it; UTF-32 text one byte off is read only with the
+// zero bytes taken out. A header in UTF-16LE that names nothing is passed. Each object is written
+// with --literally, which skips that check. The report never holds the text it refused (refusal).
+func TestAHeaderInUTF16OrUTF32IsReadDecoded(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
+	destination := destinationAt(t, fixture, repo, base+":refs/heads/main")
+	tree := fixture.Run(repo, "git", "rev-parse", base+"^{tree}")
+	const identity = "builder <builder@example.invalid> 1700000000 +0000"
+	// named is a header's value with no line break, which would end the header.
+	named := "the runner answers at " + theHost
+	const clean = "a note of no interest"
+	for _, tc := range []struct {
+		name string
+		// tag is whether the object pushed is a tag rather than a commit, header a header line the
+		// case adds to it, if any, and tagName the value of a tag's name header, "x" where the case
+		// leaves it empty.
+		tag     bool
+		header  string
+		tagName string
+		// named is whether the push is refused.
+		named bool
+	}{
+		{name: "a commit's header in UTF-16LE", header: "x-note " + wide(named, 2, true), named: true},
+		{name: "a commit's header in UTF-32BE", header: "x-note " + wide(named, 4, false), named: true},
+		{name: "a commit's header in UTF-16LE after one stray byte", header: "x-note x" + wide(named, 2, true), named: true},
+		{name: "a tag's header in UTF-16LE", tag: true, header: "x-note " + wide(theHost, 2, true), named: true},
+		{name: "a tag's name in UTF-16LE", tag: true, tagName: wide(theHost, 2, true), named: true},
+		{name: "a commit's header in UTF-16LE that names nothing", header: "x-note " + wide(clean, 2, true)},
+		{name: "a tag's header in UTF-16LE that names nothing", tag: true, header: "x-note " + wide(clean, 2, true)},
+		{name: "a tag's name in UTF-16LE that names nothing", tag: true, tagName: wide(clean, 2, true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kind, ref, object := "commit", "refs/heads/pushed", "tree "+tree+"\nparent "+base+"\nauthor "+identity+"\ncommitter "+identity+"\n"
+			if tc.tag {
+				kind, ref, object = "tag", "refs/tags/pushed", "object "+base+"\ntype commit\ntag "+cmp.Or(tc.tagName, "x")+"\ntagger "+identity+"\n"
+			}
+			if tc.header != "" {
+				object += tc.header + "\n"
+			}
+			pushed := fixture.Fed(repo, object+"\na message of no interest\n", "git", "hash-object", "-t", kind, "-w", "--stdin", "--literally")
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     destination,
+				Updates: []Update{{LocalRef: ref, LocalSHA: pushed, RemoteRef: ref, RemoteSHA: noSHA}},
+			})
+			if !tc.named {
+				wantRefused(t, err, nil)
+				return
+			}
+			refused := refusal(t, err)
+			if len(refused.Lines) == 0 {
+				t.Fatalf("the refusal names no line: %v", err)
+			}
+			for _, line := range refused.Lines {
+				if !strings.HasSuffix(line, ": "+theClass) {
+					t.Errorf("the report line %q does not name the header's class, %q", line, theClass)
+				}
+			}
+		})
+	}
+}
+
 // A message git show decodes by its commit's encoding header into other bytes, such as one in
 // ISO-8859-1, is read both as the object holds it, which a reader of the destination's object
 // reads, and as git show prints it, which a reader of git log reads, the second a record of its

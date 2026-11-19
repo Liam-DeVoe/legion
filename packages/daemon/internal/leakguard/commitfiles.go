@@ -35,7 +35,9 @@ import (
 // identity read as that record and its date alone (identityLine), which an identity git show
 // decodes by the encoding header does not. git show formats the last author line and the last
 // committer line of a commit that holds two, so an earlier one that holds anything else is read as
-// a header of its own.
+// a header of its own. A header that holds a zero byte is read decoded too, as a message is
+// (appendDecoded): git's own check, which a destination that checks what it receives runs, refuses
+// such a crafted header, but one that does not keeps it.
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
@@ -75,7 +77,7 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string, batch *bl
 			name == "committer" && identityLine(value, parts[2]) {
 			continue
 		}
-		records = append(records, headerRecord(label, name, value, commitHeaders))
+		records = appendDecoded(records, headerRecord(label, name, value, commitHeaders))
 	}
 	records = appendMessage(records, label, message, parts[4])
 	var paths []string
@@ -417,31 +419,41 @@ func identityLine(value, identity string) bool {
 
 // appendMessage is records with the records of message appended, the message of the commit or the
 // tag label names ("commit 1a2b3c4") as its object holds it, after its first blank line: one of
-// message itself, "<label> message"; one of shown, the message as git show formats it, where that
-// differs, "<label> message as git shows it", which a tag's never does (Guard.tagRecords); and,
-// where message holds a zero byte, one of it decoded in each of four ways, whatever encoding header
-// the object holds or lacks (wideText): "<label> message decoded as UTF-16, big-endian", then
-// "UTF-16, little-endian", "UTF-32, big-endian" and "UTF-32, little-endian"; and one of message with
-// every zero byte taken out, "<label> message with its zero bytes taken out".
+// message itself, "<label> message", with its decodes where it holds a zero byte (appendDecoded),
+// "<label> message decoded as UTF-16, big-endian" and so on, whatever encoding header the object
+// holds or lacks; then one of shown, the message as git show formats it, where that differs,
+// "<label> message as git shows it", which a tag's never does (Guard.tagRecords).
 //
-// git commit refuses a zero byte in a message, so only a crafted object holds one, and an ASCII
-// name in UTF-16 or UTF-32 holds a zero byte beside each letter. git show cuts a message at its
-// first zero byte and decodes every message that holds none through iconv, by the encoding header,
-// which the record of shown reads. So the four decodes, keyed on the zero byte and not on the name
-// of the encoding, cover every name iconv takes for those encodings, however it is spelled:
-// glibc's iconv_open drops all but letters, digits and "_-.,:/" from a name, and honours a
-// byte-order mark only under the names that give no order (measured with glibc 2.41 and git 2.47.3
-// in an issue pod). The message with its zero bytes taken out holds such a name at any offset and
-// in either order, which the four decodes, aligned on the message's first byte, do not: a reader
-// that scans the bytes without regard to alignment, such as strings -el, finds such text at an
-// offset they are not aligned on, such as UTF-32 text two bytes in, and every name a rule reads is
-// ASCII.
+// git show cuts a message at its first zero byte, so shown is not decoded, and decodes every
+// message that holds none through iconv, by the encoding header, which the record of shown reads.
+// So the decodes, keyed on the zero byte and not on the name of the encoding, cover every name
+// iconv takes for those encodings, however it is spelled: glibc's iconv_open drops all but
+// letters, digits and "_-.,:/" from a name, and honours a byte-order mark only under the names
+// that give no order (measured with glibc 2.41 and git 2.47.3 in an issue pod).
 func appendMessage(records []Record, label, message, shown string) []Record {
-	records = append(records, Record{Label: label + " message", Text: message})
+	records = appendDecoded(records, Record{Label: label + " message", Text: message})
 	if shown != message {
 		records = append(records, Record{Label: label + " message as git shows it", Text: shown})
 	}
-	if strings.IndexByte(message, 0) < 0 {
+	return records
+}
+
+// appendDecoded is records with record appended and, where its text holds a zero byte, one record
+// of that text decoded in each of four ways (wideText): "<label> decoded as UTF-16, big-endian",
+// then "UTF-16, little-endian", "UTF-32, big-endian" and "UTF-32, little-endian", where <label> is
+// record's; and one of the text with every zero byte taken out, "<label> with its zero bytes taken
+// out". A message and every header of a commit or a tag are read so (appendMessage, headerRecord's
+// callers): git commit refuses a zero byte in a message, and git's own check one in a header, so
+// only a crafted object holds one, and a destination that does not check what it receives keeps
+// it. An ASCII name in UTF-16 or UTF-32 holds a zero byte beside each letter. The text with its
+// zero bytes taken out holds such a name at any offset and in either order, which the four
+// decodes, aligned on the text's first byte, do not: a reader that scans the bytes without regard
+// to alignment, such as strings -el, finds such text at an offset they are not aligned on, such as
+// UTF-32 text two bytes in, where a header's name can put its value, and every name a rule reads
+// is ASCII.
+func appendDecoded(records []Record, record Record) []Record {
+	records = append(records, record)
+	if strings.IndexByte(record.Text, 0) < 0 {
 		return records
 	}
 	for _, wide := range []struct {
@@ -454,9 +466,9 @@ func appendMessage(records []Record, label, message, shown string) []Record {
 		{"UTF-32, big-endian", 4, false},
 		{"UTF-32, little-endian", 4, true},
 	} {
-		records = append(records, Record{Label: label + " message decoded as " + wide.name, Text: wideText(message, wide.size, wide.little)})
+		records = append(records, Record{Label: record.Label + " decoded as " + wide.name, Text: wideText(record.Text, wide.size, wide.little)})
 	}
-	return append(records, Record{Label: label + " message with its zero bytes taken out", Text: strings.ReplaceAll(message, "\x00", "")})
+	return append(records, Record{Label: record.Label + " with its zero bytes taken out", Text: strings.ReplaceAll(record.Text, "\x00", "")})
 }
 
 // wideText is message decoded from UTF-16 (size 2) or UTF-32 (size 4) from its first byte,
