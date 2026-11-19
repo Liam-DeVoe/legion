@@ -62,6 +62,11 @@ import (
 // sent again as written (20261114061900) are named here too: an upgrade of a database main
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
+// dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
+// that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337
+// and dispatch://INFRA-3136's 20261118073048 and 20261118172458, so an upgrade of a database main
+// migrated applies it just before those three; it adds pull_requests.statuses at its default, the
+// empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
@@ -73,12 +78,13 @@ import (
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
-// the reviewer's reviewed commit, and it is the last of them to rewrite outbox_kind_check: it is
-// now that constraint's last word, and it names every kind the merge-queue list names and its own.
-// dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after them
-// both and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask is
-// still queued. dispatch://INFRA-3136's wait on a resume's entry (20261118073048) is applied after
-// all of them: it replaces the column 20261114061900 adds, so it runs after that one, and it
+// the reviewer's reviewed commit, dispatch://INFRA-1997's 20261117112334 and dispatch://INFRA-4109's
+// cutover of the update ask's mark (20261117200337), and it is the last of them to rewrite
+// outbox_kind_check: it is now that constraint's last word, and it names every kind the
+// merge-queue list names and its own. The three after it touch no outbox_kind_check: the first two
+// each add a column at its default, and the cutover clears a claim's ask mark where that claim's
+// ask is still queued. dispatch://INFRA-3136's wait on a resume's entry (20261118073048) is applied
+// after all of them: it replaces the column 20261114061900 adds, so it runs after that one, and it
 // touches no outbox_kind_check. dispatch://INFRA-3136's table of bundle refusals for size
 // (20261118172458) is applied last: it creates workspace_bundle_refusals, which 20261112215432
 // created before the table moved to a migration of its own, and it touches no outbox_kind_check
@@ -113,6 +119,8 @@ var thisBranchsMigrations = []int{
 	20261116165926,
 	// The reviewer's reviewed commit.
 	20261116234034,
+	// dispatch://INFRA-1997: the commit statuses of the checked head.
+	20261117112334,
 	// dispatch://INFRA-4109: the update ask's mark, cut over at delivery.
 	20261117200337,
 	// dispatch://INFRA-3136: the wait a resume's entry answers, in place of the mark INFRA-2614's
@@ -131,9 +139,10 @@ var thisBranchsMigrations = []int{
 // 20261113082415, dispatch://INFRA-3146's 20261113090512, dispatch://INFRA-3274's 20261114031356,
 // dispatch://INFRA-2614's 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the
 // role-holders publication's 20261116165926, the reviewer's reviewed commit, 20261116234034,
-// dispatch://INFRA-4109's 20261117200337, and dispatch://INFRA-3136's 20261118073048 and
-// 20261118172458, which is why the loop below holds the list rather than counting it, so that a
-// version added above any of them is named here rather than read as main's.
+// dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337, and
+// dispatch://INFRA-3136's 20261118073048 and 20261118172458, which is why the loop below holds the
+// list rather than counting it, so that a version added above any of them is named here rather
+// than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

@@ -42,8 +42,8 @@ func issuePhases(t *testing.T, pool *pgxpool.Pool, issue string) []record.PhaseR
 }
 
 // A new generation keeps an open pull request but none of the old generation's reading of its CI:
-// the settlement it recorded is of a head nobody has judged since, and its head run would replay
-// the old generation's judgement.
+// the settlement it recorded is of a head nobody has judged since, with the commit statuses it
+// named, and its head run would replay the old generation's judgement.
 func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-285")
@@ -52,8 +52,9 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		Issue: issue.Key, Repo: "acme/widgets", Number: 1359, Branch: "legion/LEGION-285",
 		HeadSHA: "red-tests", HeadUpdatedAt: time.Date(2026, 9, 25, 21, 0, 0, 0, time.UTC),
 		CheckedHead: "red-tests", Failing: []string{"test"}, CheckRuns: []record.AttemptRun{},
-		Run:   &record.HeadRun{Anchor: record.Judgement{HeadSHA: "fix"}, Steps: []record.RunStep{{Head: "red-tests"}}},
-		State: record.PullRequestOpen,
+		Statuses: []record.CommitStatus{{Context: "ci", State: record.CommitStatusFailure, CreatedAt: time.Date(2026, 9, 25, 20, 59, 0, 0, time.UTC), Head: "red-tests"}},
+		Run:      &record.HeadRun{Anchor: record.Judgement{HeadSHA: "fix"}, Steps: []record.RunStep{{Head: "red-tests"}}},
+		State:    record.PullRequestOpen,
 	})
 	clearIssueGeneration(t, pool, issue)
 	var got *record.PullRequest
@@ -65,9 +66,9 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 	if got == nil {
 		t.Fatal("the open pull request is gone, want it kept")
 	}
-	if got.CheckedHead != "" || len(got.Failing) != 0 || got.Run != nil {
-		t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v run=%+v, want \"\", none and nil",
-			got.CheckedHead, got.Failing, got.Run)
+	if got.CheckedHead != "" || len(got.Failing) != 0 || len(got.Statuses) != 0 || got.Run != nil {
+		t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v statuses=%v run=%+v, want \"\", none, none and nil",
+			got.CheckedHead, got.Failing, got.Statuses, got.Run)
 	}
 }
 
