@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two compare selects below are set to the version each already holds, which user-event's selectOptions cannot deliver
 import { fireEvent, render, screen, within } from "@testing-library/react";
@@ -7,7 +7,15 @@ import { MemoryRouter } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ArtifactDetails } from "./ArtifactDetails";
+
+// A Referenced-by excerpt is drawn by the shared renderer (`ReferencedBy`), which draws nothing
+// until the lazy Markdown engine has loaded, and the rows read the excerpt as soon as its region
+// shows. So the file loads the engine before its first row, in whatever order the rows run.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const artifact = {
   created_at: "2026-09-09T00:00:00Z",
