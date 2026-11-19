@@ -25,6 +25,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -79,22 +80,27 @@ func writeNoCommit(w http.ResponseWriter, r *http.Request) {
 // fakeSource is the GitHub App surface a sync walks: installation lookup,
 // token mint, branch commit, the architecture directory's subtree, and blob
 // reads. Each repository answers its own head, files and failures: archRepo,
-// the fixture's source, answers commit, files, branchMissing and treeFailure,
-// and every other repository answers its entry in repos (a repository in
-// neither has no installation, and its reads answer 404). branchMissing
-// answers the commits route as GitHub does for a branch that does not exist:
-// 422 (see writeNoCommit). files is keyed by the file name inside SourceDir;
-// the subtree sha is derived from the files, so identical files under a new
-// commit answer the same sha exactly like git would.
+// the fixture's source, answers commit, files, branchMissing, treeFailure,
+// treeStatus and blobStatus, and every other repository answers its entry in
+// repos (a repository in neither has no installation, and its reads answer
+// 404). branchMissing answers the commits route as GitHub does for a branch
+// that does not exist: 422 (see writeNoCommit). files is keyed by the file name
+// inside SourceDir; the subtree sha is derived from the files, so identical
+// files under a new commit answer the same sha exactly like git would.
+// installationStatus, when not zero, answers every installation lookup with
+// that status and GitHub's error body instead of the installation.
 type fakeSource struct {
-	t              *testing.T
-	installationID int64
-	contents       string
-	commit         string
-	files          map[string]string
-	branchMissing  bool
-	treeFailure    bool
-	repos          map[string]*fakeRepo
+	t                  *testing.T
+	installationID     int64
+	installationStatus int
+	contents           string
+	commit             string
+	files              map[string]string
+	branchMissing      bool
+	treeFailure        bool
+	treeStatus         int
+	blobStatus         int
+	repos              map[string]*fakeRepo
 	// treeShaFollowsCommit makes every commit answer a distinct subtree sha
 	// even for identical files, so a test can force the full projection path.
 	treeShaFollowsCommit bool
@@ -175,6 +181,12 @@ type fakeRepo struct {
 	files         map[string]string
 	branchMissing bool
 	treeFailure   bool
+	// treeStatus and blobStatus, when not zero, answer the subtree read and
+	// every blob read with that status and GitHub's error body: a 404 subtree
+	// is a commit without the directory (Dir reads it as empty), and a 422 is
+	// an answer the client leaves to its caller.
+	treeStatus int
+	blobStatus int
 	// holdBlobs holds this repository's blob reads until the test releases
 	// them, so one source can be the slow one while another answers at once.
 	holdBlobs bool
@@ -186,7 +198,8 @@ func (f *fakeSource) repo(r *http.Request) (fakeRepo, bool) {
 	if name == archRepo {
 		return fakeRepo{
 			commit: f.commit, files: f.files, branchMissing: f.branchMissing,
-			treeFailure: f.treeFailure, holdBlobs: f.holdArchBlobs,
+			treeFailure: f.treeFailure, treeStatus: f.treeStatus, blobStatus: f.blobStatus,
+			holdBlobs: f.holdArchBlobs,
 		}, true
 	}
 	repo, ok := f.repos[name]
@@ -218,6 +231,10 @@ func (f *fakeSource) handler() http.Handler {
 		f.mu.Unlock()
 		if f.holdInstallations {
 			f.installations.wait(f.t, r)
+		}
+		if f.installationStatus != 0 {
+			writeStatus(w, f.installationStatus)
+			return
 		}
 		if _, ok := f.repo(r); !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -275,6 +292,10 @@ func (f *fakeSource) handler() http.Handler {
 			fmt.Fprint(w, `{"message":"upstream is sad"}`)
 			return
 		}
+		if repo.treeStatus != 0 {
+			writeStatus(w, repo.treeStatus)
+			return
+		}
 		names := make([]string, 0, len(repo.files))
 		for name := range repo.files {
 			names = append(names, name)
@@ -305,6 +326,10 @@ func (f *fakeSource) handler() http.Handler {
 		if repo.holdBlobs {
 			f.blobs.wait(f.t, r)
 		}
+		if repo.blobStatus != 0 {
+			writeStatus(w, repo.blobStatus)
+			return
+		}
 		content, ok := repo.files[strings.TrimPrefix(r.PathValue("sha"), "blob-")]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -317,6 +342,13 @@ func (f *fakeSource) handler() http.Handler {
 		}
 	})
 	return mux
+}
+
+// writeStatus answers status with GitHub's JSON error body for it.
+func writeStatus(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, `{"message":%q,"status":"%d"}`, http.StatusText(status), status)
 }
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
@@ -2012,20 +2044,23 @@ func TestSyncProjectLeavesOutASourceDeletedMidCall(t *testing.T) {
 // movingBranch is archRepo's main branch as a GitHub the test pushes to while a sync is in
 // flight: the head is whatever the test last moved it to, each commit answers its own files
 // (the subtree sha derived from them, the blob shas naming their commit), and one read can be
-// held — the next head lookup, answering the head as it stood when the lookup arrived, or every
-// blob read of one commit — until the test releases it, so another process's sync lands while
-// the held one is mid-fetch.
+// held — the next head lookup, answering the head as it stood when the lookup arrived or the
+// status the test named, or every blob read of one commit — until the test releases it, so
+// another process's sync lands while the held one is mid-fetch.
 type movingBranch struct {
 	t *testing.T
 	// hold is the one read held open at a time, with the channels and the cleanup that releases
 	// them (releasableHold).
 	hold releasableHold
 
-	mu          sync.Mutex
-	head        string
-	commits     map[string]map[string]string
-	holdHead    bool
-	holdBlobsOf string
+	mu       sync.Mutex
+	head     string
+	commits  map[string]map[string]string
+	holdHead bool
+	// heldHeadStatus, when not zero, is what the held head lookup answers instead of the head:
+	// that status with GitHub's error body for it (writeStatus).
+	heldHeadStatus int
+	holdBlobsOf    string
 }
 
 func newMovingBranch(t *testing.T, head string, commits map[string]map[string]string) *movingBranch {
@@ -2044,6 +2079,15 @@ func (b *movingBranch) holdNextHeadLookup() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.holdHead = true
+}
+
+// holdNextHeadLookupAnswering is holdNextHeadLookup for a lookup GitHub then answers status
+// rather than the head.
+func (b *movingBranch) holdNextHeadLookupAnswering(status int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.holdHead = true
+	b.heldHeadStatus = status
 }
 
 func (b *movingBranch) holdBlobs(commit string) {
@@ -2069,11 +2113,15 @@ func (b *movingBranch) handler() http.Handler {
 	mux.Handle("/", (&fakeSource{t: b.t, installationID: 11}).handler())
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{branch}", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
-		head, hold := b.head, b.holdHead
-		b.holdHead = false
+		head, hold, status := b.head, b.holdHead, b.heldHeadStatus
+		b.holdHead, b.heldHeadStatus = false, 0
 		b.mu.Unlock()
 		if hold {
 			b.wait(r)
+		}
+		if status != 0 {
+			writeStatus(w, status)
+			return
 		}
 		writeCommit(w, r, head)
 	})
@@ -2128,6 +2176,13 @@ func (b *movingBranch) handler() http.Handler {
 // so a flight a cancelled caller left behind does not outlive the pool it writes to.
 func twoProcesses(t *testing.T, branch *movingBranch) (a, b *Importer, database *store.Store) {
 	t.Helper()
+	return twoProcessesOn(t, branch, clock.Real())
+}
+
+// twoProcessesOn is twoProcesses with both importers' flight deadlines on c (NewImporterOn), for a
+// test that ends a flight on its own bound by moving a clocktest.Fake to it.
+func twoProcessesOn(t *testing.T, branch *movingBranch, c clock.Clock) (a, b *Importer, database *store.Store) {
+	t.Helper()
 	client := newGitHubClient(t, branch.handler())
 	database = storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -2137,7 +2192,7 @@ func twoProcesses(t *testing.T, branch *movingBranch) (a, b *Importer, database 
 	`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	a, b = NewImporter(database, client, events.NewBroker()), NewImporter(database, client, events.NewBroker())
+	a, b = NewImporterOn(c, database, client, events.NewBroker()), NewImporterOn(c, database, client, events.NewBroker())
 	// Cleanups run last registered first, and the pool's is storetest.Open's above, so these end
 	// the flights before the pool closes under them.
 	t.Cleanup(a.Close)

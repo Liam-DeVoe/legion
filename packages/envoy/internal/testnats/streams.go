@@ -16,11 +16,17 @@ import (
 // internal/bus's TestRaisingTheStreamWhileAPublisherSendsKeepsEveryAcknowledgedMessage counts a
 // publish that draws no answer across the stream's raise as failed once this wait ends, and with
 // the test binary's deadline in its place that publish waits out the whole run.
-// A2's callers still use this bound; A2 deletes it with its last caller.
+// A2's callers still use this bound; A2 deletes it with its last caller. It is too short for a
+// create of a stream of more than one copy on a cluster: nats-server answers that create from the
+// stream's first leader, once its members have elected one (processStreamLeaderChange), and on a
+// loaded machine that election can come after jetStreamWait, which ends the request with
+// `context deadline exceeded` although the server makes the stream. Such a create goes through
+// Cluster.CreateStream.
 const jetStreamWait = 10 * time.Second
 
 // JetStream is a JetStream context, each request of it bounded by jetStreamWait, on whichever
-// running member of the cluster answers (Connect), closed when the test ends.
+// running member of the cluster answers (Connect), closed when the test ends. A test creates a
+// stream of more than one copy with Cluster.CreateStream, not through it.
 func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 	t.Helper()
 	conn := Connect(t, c.URL())
@@ -33,21 +39,17 @@ func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 }
 
 // CreateStream creates the stream config names on a connection of its own to the cluster
-// (Connect), and fails the test with the server's answer when the create is refused. It sends
-// the create once and waits for its answer until the test binary's deadline (MaxWait).
-// nats-server answers the successful create of a stream of more than one copy from that stream's
-// first leader, once its members have elected one (processStreamLeaderChange), which on a loaded
-// machine can take many seconds; a refusal, such as a placement the cluster cannot make, is
-// answered before any election.
+// (Connect), sending the create once through the context createJetStream opens, whose wait for
+// the answer is the test binary's deadline, and fails the test with the server's answer when the
+// create is refused. A successful create of a stream of more than one copy is answered by that
+// stream's first leader, once its members have elected one (processStreamLeaderChange), which on
+// a loaded machine can take many seconds; a refusal, such as a placement the cluster cannot make,
+// is answered before any election (jsClusteredStreamRequest).
 func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	t.Helper()
 	conn := Connect(t, c.URL())
 	defer conn.Close()
-	js, err := conn.JetStream(MaxWait(t))
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	if _, err := js.AddStream(&config); err != nil {
+	if _, err := createJetStream(t, conn).AddStream(&config); err != nil {
 		t.Fatalf("create stream %s: %v", config.Name, err)
 	}
 }

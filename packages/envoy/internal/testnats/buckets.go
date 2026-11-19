@@ -38,20 +38,29 @@ import (
 // whose one bound is the test binary's deadline.
 const readWait = 10 * time.Second
 
-// CreateKeyValue creates the KV bucket config names on conn, waiting for the create's answer until
-// the test binary's deadline (MaxWait), and returns its handle once every running member of the
-// cluster answers for the bucket's stream (AwaitBucket). A create of more than one copy on a
-// cluster is proposed through the meta group and answered by the new stream's first leader, once
-// its members have elected one, the slowest thing these tests ask a JetStream client for. conn is
-// the connection whose grant the create is made under, so a test of a client's permissions creates
-// the bucket as that client.
-func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueConfig) natsgo.KeyValue {
+// createJetStream is a JetStream context on conn whose requests wait for their answer until the
+// test binary's deadline (MaxWait), for the create Cluster.CreateKeyValue or Cluster.CreateStream
+// makes: a test fixture's own create of a bucket or a stream, sent once. A create on a cluster is
+// proposed through the meta group and answered once the stream, a bucket's included, is made, and
+// a stream of more than one copy answers it from its first leader, once its members have elected
+// one: the slowest thing these tests ask a JetStream client for, which Cluster.JetStream's ten
+// seconds one create can use up on a loaded machine.
+func createJetStream(t testing.TB, conn *natsgo.Conn) natsgo.JetStreamContext {
 	t.Helper()
 	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	kv, err := js.CreateKeyValue(config)
+	return js
+}
+
+// CreateKeyValue creates the KV bucket config names on conn, waiting for the create's answer until
+// the test binary's deadline (createJetStream), and returns its handle once every running member of
+// the cluster answers for the bucket's stream (AwaitBucket). conn is the connection whose grant the
+// create is made under, so a test of a client's permissions creates the bucket as that client.
+func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueConfig) natsgo.KeyValue {
+	t.Helper()
+	kv, err := createJetStream(t, conn).CreateKeyValue(config)
 	if err != nil {
 		t.Fatalf("create KV bucket %s: %v", config.Bucket, err)
 	}
