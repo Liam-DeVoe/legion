@@ -149,7 +149,11 @@ function LocationProbe() {
 
 /** The page on `tree` at `search`; `rescued` draws it in the shell's main content with the page's
  *  focus rescue mounted on it (`RescuedMain`), as the app shell mounts it. */
-function renderPane(tree: ArchitectureTree, search = "", rescued = false) {
+function renderPane(
+  tree: ArchitectureTree,
+  search = "",
+  { rescued = false }: { rescued?: boolean } = {}
+) {
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(tree);
   const syncArchitectureSource = spyOn(api, "syncArchitectureSource");
   const patchIssue = answerIssuePatches();
@@ -302,7 +306,7 @@ test("a row a refetch takes away from under the focus hands it to no other row",
   const roots = ["Alpha", "Bravo", "Charlie"].map((title) =>
     component({ id: title.toLowerCase(), title })
   );
-  const pane = renderPane(fixture({ components: roots }), "", true);
+  const pane = renderPane(fixture({ components: roots }), "", { rescued: true });
   try {
     const list = await screen.findByRole("list", { name: "Components" });
     const title = within(rowFor("Bravo")).getByRole("link", { name: "Bravo" });

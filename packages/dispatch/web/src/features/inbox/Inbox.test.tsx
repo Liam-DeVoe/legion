@@ -3670,11 +3670,11 @@ test("a question the reader was answering keeps its text in the column, closed, 
 });
 
 // The same withdrawal with the page's focus rescue mounted as the app shell mounts it
-// (`RescuedMain`), and no press of the reader's live when it lands. The card's hand-off target
-// in the column is the column's own focus stop, which is in no row, so the card hands the focus
-// to it whoever caused the loss, with no scroll, and the Inbox's `j` answers from there. Left to
-// the rescue, the focus would land on a control of the record drawn in the form's place, and a
-// text box there would take the `j` as text.
+// (`RescuedMain`), and no press of the reader's live when it lands. Whoever caused the loss, the
+// card hands the focus to its form's nearest focus stop, in the column the column's own focus
+// stop, with no scroll, and the Inbox's `j` answers from there. Left to the rescue, the focus
+// would land on a control of the record drawn in the form's place, and a text box there would
+// take the `j` as text.
 test("in the reading column, a question withdrawn under the reader's focus hands it to the column's focus stop, and j then selects the next row", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();

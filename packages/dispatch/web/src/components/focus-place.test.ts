@@ -1950,3 +1950,76 @@ test("a keystroke in a text field, or the change its removal fires, makes no pre
     }
   }
 });
+
+// (bj) A character typed with a modifier in a field that takes typed text is no press either
+// (`isPress`): AltGr, which Windows reports as Ctrl and Alt together with `AltGraph` held, types
+// `@` on a German layout, and macOS's Option, Alt held alone, types `@` on many layouts. So the
+// update of (bi), after either character in a `<textarea>` or an `<input>`, is a loss the reader
+// did not cause: the focus lands on the row box, in no row and on no field that takes typed text,
+// and nothing scrolls. Each keydown answers `getModifierState` from the modifiers it holds, as a
+// browser does, since happy-dom reads `AltGraph` off `altKey` and would take Option for AltGr.
+test("a character typed with AltGr or Option in a text field makes no press, so an uncaused removal of the field takes the uncaused path", async () => {
+  const characters = [
+    { code: "KeyQ", held: ["AltGraph", "Control", "Alt"] },
+    { code: "KeyL", held: ["Alt"] },
+  ];
+  for (const { code, held } of characters) {
+    for (const tag of ["textarea", "input"] as const) {
+      for (const withFocusout of [true, false]) {
+        const scrolls = spyOn(Element.prototype, "scrollIntoView");
+        try {
+          await withRescue(async () => {
+            const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+            const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+            const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+            const field = document.createElement(tag);
+            field.setAttribute("aria-label", "Note");
+            second.row.append(field);
+            field.focus();
+            placeAt(field, 200);
+            box.dispatchEvent(new Event("scroll"));
+            const typed = new KeyboardEvent("keydown", {
+              altKey: held.includes("Alt"),
+              bubbles: true,
+              code,
+              ctrlKey: held.includes("Control"),
+              key: "@",
+            });
+            Object.defineProperty(typed, "getModifierState", {
+              value: (modifier: string) => held.includes(modifier),
+            });
+            field.dispatchEvent(typed);
+            field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, code, key: "@" }));
+            // The update of (bi): the row drawn again in its place, holding a Reply form.
+            const redrawn = document.createElement("div");
+            redrawn.setAttribute("data-inbox-row", "Two");
+            redrawn.setAttribute(ROW_MARKER_ATTRIBUTE, "");
+            redrawn.tabIndex = -1;
+            const reply = document.createElement("form");
+            const replyBox = document.createElement("textarea");
+            replyBox.setAttribute("aria-label", "Reply");
+            reply.append(replyBox);
+            buttonIn(reply, "Send");
+            redrawn.append(reply);
+            const replace = () => {
+              second.row.remove();
+              box.insertBefore(redrawn, third.row);
+            };
+            field.dispatchEvent(new Event("change", { bubbles: true }));
+            if (withFocusout) lose(field, replace);
+            else replace();
+            await settled();
+            const landed = document.activeElement as HTMLElement;
+            expect(box).toHaveFocus();
+            expect(inRow(landed)).toBe(false);
+            expect(takesText(landed)).toBe(false);
+            expect(replyBox).not.toHaveFocus();
+          });
+          expect(scrolls).not.toHaveBeenCalled();
+        } finally {
+          scrolls.mockRestore();
+        }
+      }
+    }
+  }
+});
