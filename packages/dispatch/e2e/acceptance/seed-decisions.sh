@@ -47,6 +47,13 @@
 #           corpus_colliding_block_ids=<n>, and corpus_collision_<n>=<KEY> <block id> <shape>
 #               each ask whose block id a live block of its issue's spec holds that is not its block
 #
+#   seed_decisions_further_kinds
+#       Called after seed_decisions, by decision-nodes.sh alone, so the corpus and the counts the
+#       other drivers read stay as they are. It writes, through the same server, one section of each
+#       of the four further kinds of R9 into issue A's decisions.md (below), and prints, as
+#       key=value lines kept in seed_ids, the ids it wrote: questions_a, the five asks, and the
+#       heading block of each section.
+#
 # The corpus, in project SEED, whose gated steps hold `decisions` and `spec`:
 #
 #   Issue A (issue_a), the main seeded issue. Its spec (spec_a) holds four requirement blocks
@@ -101,6 +108,21 @@
 # count must leave out (an approval of notes.md, which holds no ask block; spec_c's request for
 # changes; and spec_d's approval, which a newer version superseded), and two collisions, one of
 # each shape.
+#
+# seed_decisions_further_kinds adds to issue A a fourth document, questions.md (questions_a),
+# holding four asks: ask_shelf (#q-shelf), left open, and ask_two_store (#q-two-store),
+# ask_two_format (#q-two-format) and ask_body (#q-body), each answered; an issue-level ask
+# (ask_issue_level), asked through the issue's own ask route, so no block holds it, and answered;
+# and four sections at the end of decisions_a:
+#   - "Which shelf holds the printed corpus", holding a copy of the block #q-shelf, which the
+#     server settles as a copy of questions.md's ask, so no row names it, and words of its own
+#     (section_held);
+#   - "The store and its format go together", citing ask_two_store and ask_two_format and
+#     linking r-format (section_two_asks);
+#   - "The printed corpus stays on the top shelf", citing ask_issue_level and linking r-reader
+#     (section_issue_level);
+#   - "The census counts in one pass", citing ask_body, linking r-store, and holding a list beside
+#     its paragraph, which no reading holds (section_body).
 
 # What the functions below read of their caller, named here so that a reader of this file sees
 # it, as does shellcheck, which reads one file at a time: lib.sh's work_dir sets `work`, and
@@ -652,4 +674,105 @@ MD
     index=$((index + 1))
     seed_record "corpus_collision_$index" "$collision"
   done
+}
+
+# seed_decisions_further_kinds: the head comment above is its contract.
+seed_decisions_further_kinds() {
+  local a="${seed_ids[issue_a]:-}" decisions_a="${seed_ids[decisions_a]:-}" questions_a issue_level
+  [[ -n "$a" && -n "$decisions_a" ]] ||
+    seed_refuse "seed_decisions_further_kinds writes into the corpus of seed_decisions: call seed_decisions first"
+
+  # The asks the sections cite and the one whose block a section holds a copy of.
+  cat >"$seed_dir/questions-a.md" <<'MD'
+# Questions
+
+:::ask{#q-shelf urgency="low"}
+Which shelf holds the printed corpus?
+:::
+
+:::ask{#q-two-store urgency="med"}
+Which store does the census read?
+:::
+
+:::ask{#q-two-format urgency="med"}
+Which format does the census print?
+:::
+
+:::ask{#q-body urgency="low"}
+How many passes does the census make?
+:::
+MD
+  seed_upload questions_a "$a" questions.md "$seed_dir/questions-a.md"
+  questions_a="${seed_ids[questions_a]}"
+  seed_ask ask_shelf "$a" "$questions_a" q-shelf
+  seed_ask ask_two_store "$a" "$questions_a" q-two-store
+  seed_ask ask_two_format "$a" "$questions_a" q-two-format
+  seed_ask ask_body "$a" "$questions_a" q-body
+  seed_answer ask_two_store "$questions_a" q-two-store "The seeded database, read once."
+  seed_answer ask_two_format "$questions_a" q-two-format "One line for each count."
+  seed_answer ask_body "$questions_a" q-body "One pass over every row."
+
+  # An ask of the issue that no block holds, asked through the issue's own route, and answered.
+  seed_request agent POST "/api/v1/issues/$a/asks" \
+    "$(jq -cn --argjson a "$(seed_actor)" '{question: "Where does the printed corpus stand?", actor: $a}')"
+  seed_want 201 "ask an issue-level question on $a"
+  seed_field "ask an issue-level question on $a" '.id // .ask.id'
+  issue_level="$seed_value"
+  seed_record ask_issue_level "$issue_level"
+  seed_request person POST "/api/v1/asks/$issue_level/answer" \
+    "$(jq -cn '{text: "On the top shelf, beside the server.", selected: [], expected_edited_at: null}')"
+  seed_want 200 "$seed_person answers the issue-level ask $issue_level"
+  seed_record answer_issue_level "On the top shelf, beside the server."
+  seed_wait_settled "the answers to questions.md and the issue settle"
+
+  # The four sections, at the end of decisions.md.
+  local sections
+  sections="$(
+    cat <<MD
+## Which shelf holds the printed corpus
+
+:::ask{#q-shelf urgency="low"}
+Which shelf holds the printed corpus?
+:::
+
+We lean towards the top shelf until someone rules.
+
+## The store and its format go together
+
+Both rest on one choice, dispatch://$a/ask/${seed_ids[ask_two_store]} and dispatch://$a/ask/${seed_ids[ask_two_format]}, which shapes dispatch://$a/spec#b-r-format.
+
+## The printed corpus stays on the top shelf
+
+The person ruled it in dispatch://$a/ask/$issue_level, which shapes dispatch://$a/spec#b-r-reader.
+
+## The census counts in one pass
+
+The person ruled it in dispatch://$a/ask/${seed_ids[ask_body]}, which shapes dispatch://$a/spec#b-r-store.
+
+- The census reads every row once.
+- No view is drawn before it.
+MD
+  )"
+  seed_edit "$decisions_a" "decisions.md of $a takes a section of each of R9's four further kinds" \
+    "$(jq -cn --arg m "$sections" '[{op: "insert", after: "end", markdown: $m}]')"
+  seed_wait_settled "the four sections of decisions.md settle"
+
+  # The block the first section holds is a copy: no row names it, and questions.md's names its own.
+  seed_request agent GET "/api/v1/issues/$a/asks?state=all"
+  seed_want 200 "read the asks of $a"
+  jq -e --arg d "$decisions_a" --arg q "$questions_a" \
+    '([.[] | select(.block_id == "q-shelf" and .block_artifact.id == $d)] | length == 0) and
+     ([.[] | select(.block_id == "q-shelf" and .block_artifact.id == $q)] | length == 1)' \
+    "$seed_dir/body" >/dev/null ||
+    fail seed "the block q-shelf of decisions.md is a copy no row names" \
+      "$(jq -c '[.[] | select(.block_id == "q-shelf") | {id, block_artifact}]' "$seed_dir/body")"
+
+  seed_decision_block "read decisions.md's sections" "$a" "Which shelf holds the printed corpus"
+  seed_record section_held "$seed_decision_id"
+  seed_decision_block "read decisions.md's sections" "$a" "The store and its format go together"
+  seed_record section_two_asks "$seed_decision_id"
+  seed_decision_block "read decisions.md's sections" "$a" "The printed corpus stays on the top shelf"
+  seed_record section_issue_level "$seed_decision_id"
+  seed_decision_block "read decisions.md's sections" "$a" "The census counts in one pass"
+  seed_record section_body "$seed_decision_id"
 }

@@ -535,18 +535,20 @@ func (issue *restoreIssue) restoreWith(work []graphcensus.RestoreWork, convert b
 
 // Every ask block a decisions document holds moves into the spec in the second shape of the
 // restore, whatever its ask's state (dispatch://INFRA-1150 D1: "In shape (b), an ask block present
-// in decisions.md moves, with one moved_to tuple"), and only a section no rule converts keeps the
-// document standing (R9, R11). An open ask, a declined one and one the release before answered on
-// its row alone - whose node no catch-up has stated answered yet - each move: the finder reads it
-// as the restore's work, its row names its block in the spec, its node's part_of names the spec, a
-// moved_to goes from its block's address in the decisions document to its address in the spec,
-// the spec's newest version holds the block and the decisions document's no longer does. The
-// section that held it, whose words no reading can take since its ask holds no answer as a
-// reading reads one, is left in place and counted, so the document stands and the step owes it,
-// while the document's other section, which cites no ask, becomes a decision. A decisions
-// document that holds an open ask block outside every section, beside such a plain section, holds
-// nothing once the pass has run, and is retired.
-func TestEveryAskBlockOfADecisionsDocumentMovesAndOnlyAnUnconvertibleSectionKeepsIt(t *testing.T) {
+// in decisions.md moves, with one moved_to tuple"), and the section that held it converts (R9). An
+// open ask, a declined one and one the release before answered on its row alone - whose node no
+// catch-up has stated answered yet - each move: the finder reads it as the restore's work, its row
+// names its block in the spec, its node's part_of names the spec, a moved_to goes from its block's
+// address in the decisions document to its address in the spec, the spec's newest version holds
+// the block and the decisions document's no longer does. The section that held it, whose words no
+// reading can take since its ask holds no answer as a reading reads one, becomes a decision that
+// waits for a person's review (R9's fourth further kind): uncertainty high with the reason, its
+// words and a citation of the ask it held, and no citation of the section at a version of the
+// decisions document, since the block it held stands in the spec. The document's other section,
+// which cites no ask, becomes a decision, and the document, holding nothing once the pass has run,
+// is retired, as is one that holds an open ask block outside every section beside such a plain
+// section.
+func TestEveryAskBlockOfADecisionsDocumentMovesAndTheSectionThatHeldItConverts(t *testing.T) {
 	const spec = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n"
 	const plain = "## Files stay out of the corpus\n\nWe write no file beside the database.\n\n"
 	const lean = "\nWe lean east until someone rules.\n"
@@ -558,23 +560,24 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndOnlyAnUnconvertibleSectionKeep
 		name, markdown, block string
 		// settle is what happens to the ask before the pass, on its row and its node.
 		settle func(issue *restoreIssue, decisions, ask string)
-		left   int
+		// held is whether a section held the ask block, and becomes a decision of its own.
+		held bool
 	}{
 		{"a section holding an open ask", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-open") + lean, "q-open",
-			func(*restoreIssue, string, string) {}, 1},
+			func(*restoreIssue, string, string) {}, true},
 		{"a section holding a declined ask", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-declined") + lean, "q-declined",
 			func(issue *restoreIssue, decisions, held string) {
 				at := time.Now().UTC()
 				change := asks.Resolved(model.AskResolution{Kind: model.AskResolutionDeclined, Reason: "Not ours to rule.", Actor: alice, At: at})
 				change.Who, change.At = alice, at
 				settleAskAs(issue.t, issue.service, decisions, "q-declined", held, alice, change)
-			}, 1},
+			}, true},
 		{"a section holding an ask the release before answered on its row alone", "# Decisions\n\n" + plain + "## Which region goes first\n\n" + ask("q-skipped") + lean, "q-skipped",
 			func(issue *restoreIssue, _, held string) {
 				answerAsThePreviousBuild(issue.t, issue.database, "DOC-1", held, "East")
-			}, 1},
+			}, true},
 		{"an open ask block outside every section", "# Decisions\n\n" + ask("q-loose") + "\n" + plain, "q-loose",
-			func(*restoreIssue, string, string) {}, 0},
+			func(*restoreIssue, string, string) {}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -586,11 +589,18 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndOnlyAnUnconvertibleSectionKeep
 			if err != nil || len(work) != 1 || work[0].Shape != graphcensus.RestoreMoves || work[0].Ask != held {
 				t.Fatalf("the finder reads work %+v (%v), want the ask %s in the second shape", work, err, held)
 			}
+			var heading string
+			if test.held {
+				heading = issue.headingID(decisions, "Which region goes first")
+			}
 
 			result := issue.run(true)
-			if result.Retired != (test.left == 0) || result.Left != test.left || result.Decisions != 1 || len(result.Restored) != 1 {
-				t.Fatalf("the conversion did %+v, want the ask moved, %d section left, the plain one a decision, the document retired %v",
-					result, test.left, test.left == 0)
+			decided := 1
+			if test.held {
+				decided = 2
+			}
+			if !result.Retired || result.Left != 0 || result.Decisions != decided || len(result.Restored) != 1 {
+				t.Fatalf("the conversion did %+v, want the ask moved, %d decisions, none left, the document retired", result, decided)
 			}
 			if block, document := issue.askRow(held); block != test.block || document != issue.spec {
 				t.Errorf("the ask's row names block %s of %s, want %s of the spec %s", block, document, test.block, issue.spec)
@@ -608,21 +618,12 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndOnlyAnUnconvertibleSectionKeep
 			if markdown := issue.latest(decisions); strings.Contains(markdown, "#"+test.block+" ") {
 				t.Errorf("the decisions document's newest version still holds the ask block %s:\n%s", test.block, markdown)
 			}
-			var retired bool
-			if err := issue.database.Pool.QueryRow(ctx, `select retired_at is not null from artifacts where id = $1`, decisions).Scan(&retired); err != nil || retired != (test.left == 0) {
-				t.Fatalf("the decisions document reads retired %v (%v), want %v", retired, err, test.left == 0)
+			if test.held {
+				issue.requireUnplacedDecision(decisions, heading, unplacedBody, nil, []string{held},
+					[]string{"We lean east until someone rules."})
+				issue.requireNoSectionCitation(heading)
 			}
-			documents := int64(1)
-			if test.left == 0 {
-				documents = 0
-			}
-			census, err := ReadDecisionsCensus(ctx, issue.database.Pool)
-			if err != nil || census.Documents != documents || census.UnconvertedSections != int64(test.left) {
-				t.Errorf("the census reads %+v (%v), want %d document with %d section", census, err, documents, test.left)
-			}
-			if owed, err := countDecisionStepOwed(ctx, issue.database.Pool); err != nil || owed.DecisionsDocuments != documents || owed.Total != documents {
-				t.Errorf("the step owes %+v (%v), want %d decisions document and nothing else", owed, err, documents)
-			}
+			issue.requireRetiredAndOwedNothing(decisions)
 		})
 	}
 }

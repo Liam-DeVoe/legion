@@ -3097,7 +3097,10 @@ The ask's answerer is no remover in the one version that first holds her answer 
 A block in the decisions document moves into the spec whoever put it there.
 A section that cites an answered ask a person removed is deleted by its own rule: no reading is written, its words stay in the document's versions, and its heading takes one `moved_to` tuple to the ask's own node, so a citation of the heading answers the ask.
 An ask block of such an ask written back into its document retracts the `removed_by` at that document's settlement.
-A section no rule converts is left in place and counted, and so is the document that holds it: one that restates two asks, one whose words a reading cannot hold, and one whose ask holds no answer on its row and its node, since a reading reads an answer.
+A section whose body holds an ask block has that block moved into the spec by the restore's second shape first, and the rest of the section converts by the other rules.
+A copy no row names of an ask whose block the spec holds is not written into the spec a second time, where the spec's next settlement would open it as a new ask: its address takes its one `moved_to` tuple to the spec's block.
+A section the phase cannot place under one ask — one citing two answered asks, one citing an answered ask no block holds, and one whose words a reading cannot hold, an ask holding no answer among them — becomes a decision with `uncertainty="high"` and the reason, which cites each of its asks and waits for a person's review; a part of the body a decision cannot hold stays in the decisions document's versions, which the decision cites.
+A section whose body holds an ask block the document's block index does not hold yet is left in place and counted, with its document, until the next pass.
 A section the phase would turn into a reading of an ask block the issue holds already, and whose reading it then writes into no block, fails that issue's pass, so no section leaves the document without its words.
 The restore puts its blocks in place of the part's one pointer line, the first paragraph citing the decisions document itself, and keeps every other paragraph, one citing a section of that document among them.
 Phase 3 holds a lock of its own, apart from the one a booting process waits for, and a tick runs it only after a catch-up that went through.
