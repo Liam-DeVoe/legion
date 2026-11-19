@@ -1515,7 +1515,9 @@ type Pool interface {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer).
+// last message it applied (openConsumer). A fact whose ctx has ended does not commit, and a commit
+// that has started outlives a cancel of ctx (commitFact), so a fact that commits is reported
+// applied and runs its commit hooks.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -1553,7 +1555,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		return Result{}, err
 	}
 	if !fresh {
-		if err := tx.Commit(ctx); err != nil {
+		if err := commitFact(ctx, tx); err != nil {
 			return Result{}, err
 		}
 		committed = true
@@ -1595,12 +1597,44 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 			return Result{}, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := commitFact(ctx, tx); err != nil {
 		return Result{}, err
 	}
 	committed = true
 	committedHooks()
 	return result, nil
+}
+
+// commitReplyGrace is how long a fact's commit, once sent, still waits for the server's reply after
+// its caller's context has ended (commitFact): a live server answers a commit well within it, and
+// a stop waiting on a connection that will never answer still ends.
+const commitReplyGrace = 5 * time.Second
+
+// commitFact commits a fact's transaction unless ctx has already ended. From then on the end of ctx
+// no longer stops the commit: it waits for the reply up to commitReplyGrace past that end.
+//
+// A fact whose context ended before its commit does not commit: that is how a handling past its
+// limit is cut (consumeMessage) and how a stop ends a fact still being applied.
+//
+// A commit already sent can land whatever becomes of ctx. A cancel that ends the wait for its
+// reply (a stopping daemon's, while the reply is on its way) would leave a fact that committed
+// reported as failed, and its OnCommit hooks, the journal lines and in-memory state that say what
+// it did, would never run: admission's "slot taken" line was lost so for a slot the store held.
+func commitFact(ctx context.Context, tx pgx.Tx) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	committing, abandon := context.WithCancel(context.WithoutCancel(ctx))
+	defer abandon()
+	stop := context.AfterFunc(ctx, func() {
+		select {
+		case <-committing.Done():
+		case <-time.After(commitReplyGrace):
+			abandon()
+		}
+	})
+	defer stop()
+	return tx.Commit(committing)
 }
 
 // Applied is which of eventIDs from source ApplyFact has already applied, read in one query and

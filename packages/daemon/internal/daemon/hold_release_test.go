@@ -838,6 +838,9 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 	testwait.Eventually(t, "the held root takes the free slot once the quiet stream's idle ticker releases it", func() bool {
 		return slices.Contains(tickSlotted(t, pool), "LEGION-HELD")
 	})
+	// The cancel can land while the release's commit is on its way to the server, already visible
+	// to tickSlotted; ApplyFact waits for that commit's reply all the same (intake's commitFact), so
+	// once done closes, the slot the release took has its line in the log.
 	cancel()
 	<-done
 

@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A fact whose commit reaches the store as the daemon stops is now reported applied, and what its commit hooks keep follows it, such as admission''s "admission: slot taken" line for the slot it took. The daemon waited for the commit''s reply on the context the stop cancels, so it abandoned a reply already on its way, reported the fact as failed and skipped those hooks; once it has started a commit, it now waits up to 5 seconds for the reply after a stop. A fact whose handling the stop or its handler limit ends before its commit still does not commit.'
+time: 2026-11-19T13:15:49.055661969Z
+custom:
+    Issue: pr4488

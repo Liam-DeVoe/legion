@@ -212,6 +212,90 @@ func TestOnCommitRunsOnlyAfterTheFactCommits(t *testing.T) {
 	}
 }
 
+// A cancel of the caller's context that lands as ApplyFact commits does not abandon the commit:
+// the fact commits, ApplyFact reports it applied, and its OnCommit hooks run. A commit abandoned
+// after it was sent can still land, and then ApplyFact would report a committed fact as failed
+// and skip the hooks that say what it did, such as admission's "slot taken" line for a slot the
+// store now holds.
+func TestACancelAtCommitStillCommitsTheFactAndRunsItsHooks(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ran []string
+	hooked := handlerFunc(func(ctx context.Context, tx pgx.Tx, fact Fact) (Result, error) {
+		if _, err := writeHandler("first", nil).Apply(ctx, tx, fact); err != nil {
+			return Result{}, err
+		}
+		OnCommit(ctx, func() { ran = append(ran, fmt.Sprintf("saw %d", writeCount(t, pool))) })
+		return Result{}, nil
+	})
+
+	if _, err := ApplyFact(ctx, cancelAtCommit{Pool: pool, cancel: cancel}, "dispatch", "event-cancel-at-commit", DispatchIssue{Key: "LEGION-208"}, hooked); err != nil {
+		t.Fatalf("ApplyFact with its context canceled at commit: %v", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the caller's context was not canceled at commit, so this proves nothing")
+	}
+	if fmt.Sprint(ran) != "[saw 1]" {
+		t.Fatalf("hooks ran %v; want one, seeing the committed write", ran)
+	}
+}
+
+// A fact whose context ends while its handlers run, before ApplyFact commits, does not commit and
+// runs no hook, though every handler returned nil: that is how consumeMessage cuts a handling past
+// its limit whose step ignored the context, and how a stop ends a fact still being applied.
+func TestAFactWhoseContextEndedBeforeItsCommitDoesNotCommit(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ran []string
+	cutWhileRunning := handlerFunc(func(ctx context.Context, tx pgx.Tx, fact Fact) (Result, error) {
+		if _, err := writeHandler("first", nil).Apply(ctx, tx, fact); err != nil {
+			return Result{}, err
+		}
+		OnCommit(ctx, func() { ran = append(ran, "hook") })
+		cancel()
+		return Result{}, nil
+	})
+
+	if _, err := ApplyFact(ctx, pool, "dispatch", "event-cut-before-commit", DispatchIssue{Key: "LEGION-208"}, cutWhileRunning); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ApplyFact with its context canceled before its commit = %v, want context.Canceled", err)
+	}
+	if len(ran) != 0 {
+		t.Fatalf("hooks %v ran for a fact whose context ended before its commit", ran)
+	}
+	if got := writeCount(t, pool); got != 0 {
+		t.Fatalf("%d writes committed for a fact whose context ended before its commit, want none", got)
+	}
+}
+
+// cancelAtCommit is a pool whose transactions cancel the context of the fact they apply as they
+// commit: the cancel a stopping daemon sends while a fact's commit is on its way to the server.
+type cancelAtCommit struct {
+	Pool
+	cancel context.CancelFunc
+}
+
+func (p cancelAtCommit) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	tx, err := p.Pool.BeginTx(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	return cancelingTx{Tx: tx, cancel: p.cancel}, nil
+}
+
+type cancelingTx struct {
+	pgx.Tx
+	cancel context.CancelFunc
+}
+
+func (tx cancelingTx) Commit(ctx context.Context) error {
+	tx.cancel()
+	return tx.Tx.Commit(ctx)
+}
+
 // CommitScoped is true only on a context WithCommitHooks scoped, so a write that wakes a reader
 // on commit can tell a transaction that will commit from one made outside any scope.
 func TestCommitScopedIsTrueOnlyWithinWithCommitHooks(t *testing.T) {
