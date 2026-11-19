@@ -95,27 +95,7 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 163's project release
-(dispatch://INFRA-3583: the shim answers a new `read-unpushed` frame with a count of the
-workspace's unpushed commits and no content, the operator's routes gain
-`POST`/`GET /legion/v1/operator/project/release`, the state gains an optional `projectRelease`
-that a caller from a pod whose claims record a contract under 163 is not served
-(`api.stateFor`, `withoutProjectRelease`), a claim's `suspendedBy` gains `project_release`, and a
-`ready_for_update` whose round is `release:<id>` answers the release; no shape this plugin
-parses becomes required), after contract 160 (INFRA-2009: an issue pod launcher's cache trimmer,
-whose settings ride the launcher hello's acknowledgement and whose report is a launcher frame, and
-the state's `settings.runtime.kubernetes` gains `volume_trim`, which this plugin reads as part of a
-loose `settings` object), after contract 152 (dispatch://INFRA-2543: the GitHub App
-installation, and no longer the project's Dispatch repository mapping, decides which repositories
-a project works in, so the state's `repositories.mapped` is every repository the daemon serves
-and each entry of it and of `refused` gains `apps`, which the reader this plugin parses the state
-through takes as optional; a pane's and a pod's gh bundle gains `renames.txt`, the controller's
-GitHub credential answer gains `renames` and `installed`, and its refusal of a default owner the
-review App is not installed on answers `DEFAULT_OWNER_NOT_INSTALLED`), after contract 151
-(dispatch://INFRA-3729: issue pods in GKE Sandbox
-microVMs, whose launcher flags, hello answer and kill report change, and the state's settings
-gain `runtime.kubernetes.sandbox`, which this plugin parses loosely, so no shape it parses
-changes), after contract 146 (dispatch://INFRA-2614:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its

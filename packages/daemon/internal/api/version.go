@@ -2383,7 +2383,45 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 163: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 171: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
 // `workingCopyChanged`, `error`): how many commits of the issue's workspace no remote branch or tag
@@ -2404,7 +2442,7 @@ package api
 // api.ReleasedClaimEnds), each a `z.enum` in `packages/contracts/src/legion-api.ts`, which refuses
 // a word it does not name, so a word added later bumps this number. `GET /legion/v1/state` gains
 // `projectRelease`, that same body for the project's newest release, absent while none was
-// recorded; a caller from a pod whose claims record a contract below 163 is served the state
+// recorded; a caller from a pod whose claims record a contract below 171 is served the state
 // without it (api's stateNarrowings, withoutProjectRelease), as a caller below 133 is served it
 // without `mergeWait`, and the bands compose. A claim's `suspendedBy` on the operator routes takes
 // `project_release`, a claim the release stopped, which the daemon's next boot starts again. The
@@ -2413,21 +2451,22 @@ package api
 // running release's round to the release, which records it on its own record and none of the
 // claim's round columns. While a release holds every start, the operator's spawn, retry, resume
 // and deliver, and either door's fresh session and compaction, answer 409 with the code
-// `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence. The number is the census an
-// implementer of dispatch://INFRA-3583 read on 2026-11-18, at the forward merge of main c9096386, of
-// `const DaemonAPIVersion` at the head of every one of the 231 open pull requests of this
-// repository, read between 2026-11-18T08:54:00Z and 09:00:06Z: main declares 152 (#3730's
-// INFRA-2543 entry above), and no open head declares above it but #4115 at 153, #3659 at 154,
-// #4273 at 155, #4065 at 156, #3993 at 157, #4180, #4193, #4259 and #4261 at 158, #4175 at 159,
-// #3519 at 160, #4173 at 161 and #2230, #3712 and #4017 at 162, so 163 is the lowest number above
-// the base's that no other open head declares. This change first took 150, the lowest free number
+// `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence. The number is the lowest
+// above main's that no open pull request declared at the forward merge of 2026-11-19 that brought
+// main in at b2cf98a0: main had moved to 168 (#4488's entry above), above the 163 this change
+// held. `.github/scripts/check-daemon-api-contract.sh`, run as ci.yaml's lint job runs it on this
+// pull request, refused 168 at 2026-11-19T18:36:14Z naming 171 (169 is declared by #4065, 170 by
+// #2230, #4173, #4180 and #4193), and a reading of `const DaemonAPIVersion` at the head of every
+// open pull request that changes this file (2026-11-19T18:36:50Z to 18:41:40Z) found 171 declared
+// by none, 172 by #3659, 173 by #4493, 174 by #3993 and #4273, 175 by #3712, #4115, #4392, #4432,
+// #4485 and #4495, and 176 by #3831 and #4030. A pod at main's 168, or at a number another open
+// pull request declares below 171, runs a plugin that does not know this release's shapes, so it
+// is served the state without `projectRelease`. This change first took 150, the lowest free number
 // at the forward merge of 2026-11-15, then 157 once main reached 151, then 159 once three other
-// heads had taken 157, then 161 once #4175 declared 159 as well and #3519 took 160, and 163 once
-// #4173 declared 161 as well and three heads took 162. At the forward merge of 2026-11-19 that
-// brought in c70a8022, main had moved to 160 (#3519, INFRA-2009's entry above), still below 163,
-// and the reading of every open head that ended at 2026-11-19T01:37Z found none declaring 163
-// (#4017 at 164, #4392 at 165, #4432 at 166), so 163 holds. Read the base's own number and every
-// open head again at the next merge rather than from this entry, as
+// heads had taken 157, then 161 once #4175 declared 159 as well and #3519 took 160, then 163 once
+// #4173 declared 161 as well and three heads took 162, which held at the forward merge that
+// brought in c70a8022 with main at 160, and 171 once main reached 168. Read the base's own number
+// and every open head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
-const DaemonAPIVersion = 163
+const DaemonAPIVersion = 171
