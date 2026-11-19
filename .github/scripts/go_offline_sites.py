@@ -96,11 +96,15 @@ def go_word(word, go_names=()):
     return kind == "cmd" and looks_up_go(nested or ())
 
 
-def shell_sites(text, line=0, base=(), depth=0):
+def shell_sites(text, line=0, base=(), depth=0, names=("GOPROXY",), judge=offline, scripts=frozenset()):
     """(line, offline) of each go command a shell text starts. Its environment: base (what a
     command that ran this text gave it), each `export` or `unset` of GOPROXY before it at the top
     level or in the function or subshell that holds it (none a forked command makes, in a pipeline
-    or the background), its own NAME=value prefix and the settings of an `env` before the go."""
+    or the background), its own NAME=value prefix and the settings of an `env` before the go.
+    go_offline_images.py reads a Dockerfile's RUN through it with more: `names`, the settings an
+    export or unset is followed for; `judge`, what a site's environment elements are read as in
+    place of offline(); and `scripts`, programs (by path or by name) that start a go command of
+    their own, each a site where it is a command's program."""
     commands = shell_script(text, line)
     go_names, go_arrays, exports, assigned = set(), set(), [], {}
     for order, command in enumerate(commands):
@@ -127,7 +131,7 @@ def shell_sites(text, line=0, base=(), depth=0):
             unset = values[0] == "unset" or values[1:2] == ["-n"]
             for word in command.words[1:]:
                 name, eq, value = word.value().partition("=")
-                if name == "GOPROXY":
+                if name in names:
                     if unset:
                         element = ("set", name, None)
                     elif eq:
@@ -144,12 +148,14 @@ def shell_sites(text, line=0, base=(), depth=0):
         for k, word in enumerate(command.words):
             array = k == program and len(word.parts) == 1 and word.parts[0][0] == "param" \
                 and word.parts[0][1] in go_arrays
-            if array or (go_word(word, go_names) and go_subcommand(values, k)):
-                found.append((word.line, offline([*base, *scope, *shell_env_elements(command, k)])))
+            started = scripts and k == program and (word.value() in scripts
+                                                    or word.value().rsplit("/", 1)[-1] in scripts)
+            if array or started or (go_word(word, go_names) and go_subcommand(values, k)):
+                found.append((word.line, judge([*base, *scope, *shell_env_elements(command, k)])))
         if depth < 3:
             own = shell_env_elements(command, len(command.words))
             for inner, inner_line in shell_inner_scripts(command) + shell_stdin_scripts(commands, order):
-                found += shell_sites(inner, inner_line, (*base, *scope, *own), depth + 1)
+                found += shell_sites(inner, inner_line, (*base, *scope, *own), depth + 1, names, judge, scripts)
     return found
 
 

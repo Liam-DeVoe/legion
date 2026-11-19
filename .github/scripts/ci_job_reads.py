@@ -2317,6 +2317,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/go_offline_restore.py", "the script imports its rules' modules from its own directory"),
         (f"{SCRIPTS}/go_offline_jobs.py", "the script imports its rules' modules from its own directory"),
         (f"{SCRIPTS}/package_installs.py", "the script imports its rules' modules from its own directory"),
+        (f"{SCRIPTS}/go_offline_images.py", "the script imports its rules' modules from its own directory"),
         (f"{SCRIPTS}/source_scan.py", "the script imports it from its own directory to read every source file"),
         (f"{SCRIPTS}/source_statements.py", "the script imports the shared reader's modules from its own directory"),
         (f"{SCRIPTS}/source_env.py", "the script imports the shared reader's modules from its own directory"),
@@ -2343,6 +2344,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/go_offline_restore.py", "source_scan.test.sh's last two cases run the go check, which imports it"),
         (f"{SCRIPTS}/go_offline_jobs.py", "source_scan.test.sh's last two cases run the go check, which imports it"),
         (f"{SCRIPTS}/package_installs.py", "source_scan.test.sh's last two cases run the go check, which imports it"),
+        (f"{SCRIPTS}/go_offline_images.py", "source_scan.test.sh's last two cases run the go check, which imports it"),
         (f"{SCRIPTS}/check-go-offline.sh", "source_scan.test.sh's last two cases run it over a tree of their own"),
         (f"{SCRIPTS}/check-omp-offline.sh", "source_scan.test.sh's last two cases run it over a tree of their own"),
     ]),
@@ -3525,11 +3527,12 @@ GATES = [
         ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :80 runs build:web in"),
         ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :70 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
         ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:74 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :118"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :120"),
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:106 and :134 COPY, run by :107, :136 and :155"),
+        ("scripts/go-third-party-notices-tools.txt", f"{at('envoy-smoke', FETCH_STEP)} installs its pin, through the tools line of .github/go-fetch/envoy-smoke.txt"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:134 COPY, run by :157"),
         # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:106
         # COPY packages/envoy ./), and the held-port image's build copies it whole with the
-        # envoy-infra module under it (packages/envoy/infra/host/heldportwrapper/Dockerfile:30
+        # envoy-infra module under it (packages/envoy/infra/host/heldportwrapper/Dockerfile:61
         # COPY packages/envoy /src/packages/envoy). Each reads every file of it but what its
         # .dockerignore drops: test files, internal/integration, internal/smoke (the smoke step
         # compiles that one), deploy and the changelog fragments, and infra for the first. No go
@@ -3537,9 +3540,9 @@ GATES = [
         # the filter's module pattern as matching unread files without these rows, while
         # check-image-trigger-paths.sh refuses the filter without it: the read is the image
         # builds', and this is where the two checks meet. listenerwire's envelope_generated.go is
-        # among them, which the Go stage then replaces with the web stage's fresh generation (:110).
-        *[(path, "packages/envoy/docker/Dockerfile:106 COPY packages/envoy ./, and "
-                 "packages/envoy/infra/host/heldportwrapper/Dockerfile:30 COPY packages/envoy /src/packages/envoy")
+        # among them, which the Go stage then replaces with the web stage's fresh generation (:146).
+        *[(path, "packages/envoy/docker/Dockerfile:142 COPY packages/envoy ./, and "
+                 "packages/envoy/infra/host/heldportwrapper/Dockerfile:61 COPY packages/envoy /src/packages/envoy")
           for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
           if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod") + go_fetch("envoy-smoke", "envoy-smoke")),

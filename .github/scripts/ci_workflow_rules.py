@@ -704,13 +704,13 @@ def check_fill(job_id: str, family: str, filled: tuple, readers: list, problems:
 # that leaves one out is found unchanged after that file moves, and every reader then downloads
 # the difference on each run with nothing failing. A fetch file's line is one command (`#` starts
 # a comment anywhere on it, and a blank line is none):
-#   [GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] deps <dir> [go list flags and packages...]
+#   [GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] [GOWORK=off] deps <dir> [go list flags and packages...]
 #   tools <file>
 # with every path from the repository root, which FETCH_COMMAND spells. The hashFiles list is
 # compared as the literal paths it names, as every key of this repository names them; a glob in
 # it covers no file here, so such a key is refused, never passed.
 HASH_FILES = re.compile(r"-\$\{\{\s*hashFiles\((?P<files>[^)]*)\)\s*\}\}$")
-FETCH_COMMAND = re.compile(r"(?:GOOS=\S+\s+)?(?:GOARCH=\S+\s+)?(?:CGO_ENABLED=[01]\s+)?deps\s+(?P<dir>[^\s-]\S*)(?:\s.*)?"
+FETCH_COMMAND = re.compile(r"(?:GOOS=\S+\s+)?(?:GOARCH=\S+\s+)?(?:CGO_ENABLED=[01]\s+)?(?:GOWORK=off\s+)?deps\s+(?P<dir>[^\s-]\S*)(?:\s.*)?"
                            r"|tools\s+(?P<file>\S+)")
 
 
@@ -799,7 +799,7 @@ def family_files(family: str, readers: list, filled: bool, problems: list) -> se
             commands, faults = parsed
             for number, text in faults:
                 problems.append(error(fetch, f"line {number} of {fetch} is `{text}`, which is neither "
-                                             f"`[GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] deps <dir> ...` nor "
+                                             f"`[GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] [GOWORK=off] deps <dir> ...` nor "
                                              f"`tools <file>` with its path from the repository root: go-fetch.sh's "
                                              f"{FILE_MODE} mode cannot run it, and this rule cannot read which files the "
                                              f"keys of the families that fetch it must hash"))

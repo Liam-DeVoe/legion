@@ -1587,6 +1587,7 @@ jobs:
               - '.github/scripts/go_offline_restore.py'
               - '.github/scripts/go_offline_jobs.py'
               - '.github/scripts/package_installs.py'
+              - '.github/scripts/go_offline_images.py'
               - '.github/scripts/source_scan.py'
               - '.github/scripts/source_statements.py'
               - '.github/scripts/source_env.py'
@@ -1621,6 +1622,7 @@ jobs:
               - '.github/scripts/go_offline_restore.py'
               - '.github/scripts/go_offline_jobs.py'
               - '.github/scripts/package_installs.py'
+              - '.github/scripts/go_offline_images.py'
               - '.github/scripts/check-omp-offline.sh'
             check_daemon_api_contract_test: &check_daemon_api_contract_test
               - *ci_router
@@ -4806,6 +4808,8 @@ jobs:
               - 'scripts/third-party-notices.ts'
               - 'scripts/go-third-party-notices.sh'
               - 'scripts/assemble-third-party-notices.sh'
+              # The notices tool's pin, which the fetch step installs for the image builds.
+              - 'scripts/go-third-party-notices-tools.txt'
               # The Envoy module, which the image's Go stage copies whole, and the envoy-infra
               # module under it, which the held-port image's build copies whole with it
               # (packages/envoy/infra/host/heldportwrapper/Dockerfile and its .dockerignore) and

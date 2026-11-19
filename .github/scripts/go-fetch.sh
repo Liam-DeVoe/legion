@@ -13,12 +13,15 @@
 #     cache hashes FILE and this script: a change to what a job fetches is then a change to the
 #     key, so the next fill holds it and no run downloads the difference while its tests run.
 #     One command a line, `#` starting a comment anywhere on it, blank lines passed over:
-#       [GOOS=<os>] [GOARCH=<arch>] [CGO_ENABLED=<0|1>] deps DIR [-test] [-tags T] PACKAGE...
+#       [GOOS=<os>] [GOARCH=<arch>] [CGO_ENABLED=<0|1>] [GOWORK=off] deps DIR [-test] [-tags T] PACKAGE...
 #       tools FILE
 #     DIR and the tools FILE are read from the repository root, whatever directory this runs in.
 #     The settings in front of `deps` are the platform a step builds for (a darwin vet, a
 #     CGO_ENABLED=0 build): `go list -deps` follows the imports of one GOOS, GOARCH and cgo
-#     setting, and another platform's files import modules this one's do not.
+#     setting, and another platform's files import modules this one's do not. GOWORK=off is a build
+#     of DIR's own module outside the go.work above it, as an image build that copies the module
+#     alone makes: its go.mod alone selects the versions, which the workspace's other modules can
+#     raise.
 #   go-fetch.sh tools FILE
 #     `go install` each pin FILE lists, one package path and version per line
 #     (`helm.sh/helm/v3/cmd/helm@v3.20.2`; `#` starts a comment), into the directory
@@ -149,7 +152,7 @@ list_deps() {
 }
 
 # The settings a fetch FILE line may put in front of `deps`, and what each may be set to.
-PLATFORM_SETTING='^(GOOS|GOARCH)=[a-z0-9]+$|^CGO_ENABLED=[01]$'
+PLATFORM_SETTING='^(GOOS|GOARCH)=[a-z0-9]+$|^CGO_ENABLED=[01]$|^GOWORK=off$'
 
 # run_file FILE: every line of FILE read and checked first, then each run in its turn, each
 # `deps` in a subshell of its own so its cd and its settings reach no other line.
@@ -165,7 +168,7 @@ run_file() {
     settings=()
     while [ "${#words[@]}" -gt 0 ] && [[ ${words[0]} == *=* ]]; do
       if ! [[ ${words[0]} =~ $PLATFORM_SETTING ]]; then
-        echo "go-fetch: $file:$n: ${words[0]} is no setting a fetch line may give: GOOS, GOARCH or CGO_ENABLED" >&2
+        echo "go-fetch: $file:$n: ${words[0]} is no setting a fetch line may give: GOOS, GOARCH, CGO_ENABLED or GOWORK=off" >&2
         exit 2
       fi
       settings+=("${words[0]}")

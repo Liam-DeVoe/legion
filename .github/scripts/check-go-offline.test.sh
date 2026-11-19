@@ -36,13 +36,16 @@
 # path, is refused, and one whose restore (actions/cache/restore or actions/cache) comes first
 # passes and is listed. Its rules 4 and 5, which it calls from go_offline_jobs.py and
 # package_installs.py: a required Go job with no GOPROXY=off, and a bare apt-get install in a
-# required job, each fail the check naming their line, and an UNKNOWN of either is the check's. A tree with no file of a language, a tree with
+# required job, each fail the check naming their line, and an UNKNOWN of either is the check's. Its
+# rule 6 (go_offline_images.py): a bare go RUN in a Dockerfile a required job builds is refused at
+# its line, the mounted offline RUN passes, and a Dockerfile only another workflow builds passes,
+# with the other forms that rule's header names. A tree with no file of a language, a tree with
 # testbuild and no caller, and a tree with no ci.yaml each give UNKNOWN and exit 2.
 #
 # The cases live in the files this one sources, one part of the check each:
 # check-go-offline-cases-go.sh, -typescript.sh, -python.sh and -shell.sh (rule 1 in each
-# language), -reasons.sh (its file reasons), -steps.sh (rule 2), -restores.sh (rule 3) and -jobs.sh
-# (rules 4 and 5). This file holds what they share, the fixtures, and the
+# language), -reasons.sh (its file reasons), -steps.sh (rule 2), -restores.sh (rule 3), -jobs.sh
+# (rules 4 and 5) and -images.sh (rule 6). This file holds what they share, the fixtures, and the
 # cases of a scan that cannot see.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
@@ -171,9 +174,9 @@ passes_offline() {
 
 # --- The cases, each file one part of the check ------------------------------------------------
 # Each file this sources holds the cases of one part: rule 1's sites in each language and its file
-# reasons, rule 2's steps, rule 3's restores and rules 4 and 5's calls.
+# reasons, rule 2's steps, rule 3's restores, rules 4 and 5's calls and rule 6's image builds.
 # They share this file's fixtures and counters.
-for part in go typescript python shell reasons steps restores jobs; do
+for part in go typescript python shell reasons steps restores jobs images; do
   # shellcheck source=/dev/null
   source "$script_dir/check-go-offline-cases-$part.sh"
 done

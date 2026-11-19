@@ -64,7 +64,8 @@ jobs:
       # go-envoy-infra, restored only, under the key .github/workflows/ci-caches.yaml's envoy-infra
       # job fills on this runner (its x64 leg, which release-envoy-infra.yaml's build reads too):
       # the runner's architecture, the Go version and the hash of both workspaces' module files,
-      # gcp's live tools, every fetch file the family's readers run and go-fetch.sh. Its fill runs
+      # gcp's live tools, the notices tool's pin (the image builds' go-licenses), every fetch file
+      # the family's readers run and go-fetch.sh. Its fill runs
       # this job's fetch file, so the fetch step below finds the modules there and downloads only
       # what moved since; the SDK consumer's `go mod tidy` reads modules beyond them, which the
       # later fetch step resolves. The Go version is packages/envoy/go.mod's, which this job
@@ -75,14 +76,26 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/envoy-infra-go.txt', '.github/go-fetch/envoy-smoke.txt', 'packages/envoy/infra/gcp/testdata/live-tools.txt', '.github/scripts/go-fetch.sh') }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/envoy-infra-go.txt', '.github/go-fetch/envoy-smoke.txt', 'packages/envoy/infra/gcp/testdata/live-tools.txt', 'scripts/go-third-party-notices-tools.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
       # Every go step below reads the module cache alone (GOPROXY=off, this file's env): the smoke
       # test and the cgo-less systemroots probe it builds, the plugin's builds (the live tests'
-      # pulumitest.Plugin, the consumer's plugin below and the schema step's) and the live tests of
-      # host. This step fetches what they load first, tried again on failure.
+      # pulumitest.Plugin, the consumer's plugin below and the schema step's), the live tests of
+      # host, and the go commands of the two image builds, which read this cache's download
+      # directory as their `gomodcache` context. This step fetches what they load first, tried
+      # again on failure.
       - name: Fetch the modules this job's go steps load
         run: .github/scripts/go-fetch.sh file .github/go-fetch/envoy-smoke.txt
+      # The module cache's download directory (its .info, .mod and .zip files), which each image
+      # build below takes as its `gomodcache` named context: each go RUN of the two Dockerfiles
+      # mounts it and runs with the module proxy off, so a module the fetch above left out fails
+      # the build at once, naming it, and the build downloads nothing
+      # (.github/scripts/go_offline_images.py holds both Dockerfiles to this). The directory alone,
+      # not the whole cache: the build extracts the few modules it compiles, and the context the
+      # build is sent is a quarter of the cache's bytes and a twentieth of its files.
+      - name: Name the module cache the image builds read
+        id: gomodcache
+        run: echo "dir=$(go env GOMODCACHE)/cache/download" >> "$GITHUB_OUTPUT"
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
       # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
@@ -130,6 +143,7 @@ jobs:
         with:
           context: .
           file: packages/envoy/docker/Dockerfile
+          build-contexts: gomodcache=${{ steps.gomodcache.outputs.dir }}
           load: true
           provenance: false
           tags: ${{ env.ENVOY_SMOKE_IMAGE }}
@@ -150,6 +164,7 @@ jobs:
           context: .
           file: packages/envoy/infra/host/heldportwrapper/Dockerfile
           build-args: BASE=${{ env.ENVOY_SMOKE_IMAGE }}
+          build-contexts: gomodcache=${{ steps.gomodcache.outputs.dir }}
           load: true
           provenance: false
           tags: ${{ env.ENVOY_SMOKE_HELD_PORT_IMAGE }}
