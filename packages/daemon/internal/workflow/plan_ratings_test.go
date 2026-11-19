@@ -274,11 +274,12 @@ func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 }
 
 // A retro already running when this release deployed started under the release before, which
-// counted no start, so the retro's place holds no count of starts. Its completion ends it as a
-// record of its own at the count 0 (record.Store.EndUncountedStep), under the agent its start
-// would have named, the implementer's claim; and the rating the completion carries lands on that
-// same record: the id of the run counted 0, the implementer's agent, the rating and its reason. The
-// retro writes no plan, which only the start of a run's work writes.
+// counted no start, so the retro's place holds no count of starts. The daemon's boot opens it as a
+// run of its own at the count 0 (record.Store.OpenUncountedStep), under the agent its start would
+// have named, the implementer's claim, and its completion ends that run (EndStepStart); the rating
+// the completion carries lands on that same record: the id of the run counted 0, the implementer's
+// agent, the rating and its reason. The retro writes no plan, which only the start of a run's work
+// writes.
 func TestARetroRunningAtTheDeployRatesTheRecordItsEndMakes(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Retro)
