@@ -358,10 +358,11 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	k.mu.Lock()
 	k.forgetGone(claims)
 	if k.list == nil {
-		// No list is read, so nothing judges the list's cases, nor any claim's.
+		// No list is read, so nothing judges the list's cases, nor any claim's: no controller's
+		// line holds either, whatever record its claim carries.
 		k.alerts.Close(fleetalert.NoLiveSession, "")
 		k.alerts.Close(fleetalert.SessionListUnreadable, "")
-		k.closeEndedControllerLines(claims)
+		k.closeEndedControllerLines(nil)
 		k.mu.Unlock()
 		return
 	}
@@ -455,16 +456,19 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 }
 
 // closeEndedControllerLines closes each controller line whose case does not hold once this sweep
-// is over: either line holds only while its controller's claim is one the keeper watches and its
-// record is marked out of reach. So a controller back in reach, or gone from the claims, holds
-// neither; nor does any under an operator's controller, which the keeper does not watch, nor
-// where no list is read, since no read marks one. The list's own lines need no such pass: every
-// read that answers closes the unreadable list's line, and every list with a live session the
-// no-live line. The caller holds mu.
+// is over: either line holds only while its controller's claim is among claims, is one the keeper
+// watches, and its record is marked out of reach. So a controller back in reach, or gone from the
+// claims, holds neither; nor does any under an operator's controller, which the keeper does not
+// watch, nor any where no list is read, whose caller passes no claims, since no read marks one.
+// The record is the keeper's, seeded from the claim's stored one (recordOf), so a read that
+// failed before any read answered, which leaves the keeper's memory empty, reads the case as the
+// store holds it and closes no line of a case that still holds. The list's own lines need no
+// such pass: every read that answers closes the unreadable list's line, and every list with a
+// live session the no-live line. The caller holds mu.
 func (k *reachKeeper) closeEndedControllerLines(claims []supervise.Claim) {
 	marked := map[string]bool{}
 	for _, c := range claims {
-		if c.Role == claim.RoleController && k.reachWatched(c) && k.records[c.Token].Unreachable() {
+		if c.Role == claim.RoleController && k.reachWatched(c) && k.recordOf(c).Unreachable() {
 			marked[string(c.Token)] = true
 		}
 	}

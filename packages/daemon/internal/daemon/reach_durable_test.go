@@ -51,6 +51,8 @@ type durableReach struct {
 	now time.Time
 	// noLive is whether Envoy's list holds no live session at all.
 	noLive bool
+	// unreadable is whether Envoy's list answers no read at all.
+	unreadable bool
 }
 
 func newDurableReach(t *testing.T) *durableReach {
@@ -84,14 +86,25 @@ func (d *durableReach) noLiveSessions(none bool) {
 	d.noLive = none
 }
 
+// listUnreadable sets whether Envoy's list answers no read.
+func (d *durableReach) listUnreadable(failing bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.unreadable = failing
+}
+
 // options is a keeper's options over the database: Envoy's list holds one live session, none of
-// the claims' (none at all while noLiveSessions says so), and the reach record is written by put.
+// the claims' (none at all while noLiveSessions says so, and no answer while listUnreadable says
+// so), and the reach record is written by put.
 func (d *durableReach) options(daemonController bool, put func(context.Context, claim.Token, supervise.Reach) (bool, error)) reachKeeperOptions {
 	return reachKeeperOptions{
 		log: quietLogger(), project: "LEGION", boot: reachBoot, daemonController: daemonController, now: d.clock,
 		list: func(context.Context) ([]notify.ListedSession, error) {
 			d.mu.Lock()
 			defer d.mu.Unlock()
+			if d.unreadable {
+				return nil, errors.New("the listener did not answer")
+			}
 			if d.noLive {
 				return nil, nil
 			}
@@ -633,7 +646,8 @@ func (d *durableReach) bootedAs(logged *testlog.Buffer, daemonController, readsL
 
 // A line the store holds open is closed by the first sweep of a daemon that boots onto it when its
 // case does not hold now: a case this configuration does not judge (the controller's under an
-// operator's controller, the list's where no list is read), and a case it judges and finds ended
+// operator's controller, the list's and the controller's where no list is read, whatever record
+// the controller's claim carries), and a case it judges and finds ended
 // (the controller back in reach). So a switch of the controller's mode and back, or a rollback to
 // a release that closed its cases in memory alone and a roll forward, leaves no line open that
 // would silence the next line of its case (R6). A case that still holds keeps its line.
@@ -663,6 +677,9 @@ func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) 
 				{Word: fleetalert.ControllerRelaunchRefused.Word, Claim: string(controller)}}},
 		{name: "the list's lines where no list is read", daemonController: true, readsList: false,
 			stored: []fleetalert.Line{{Word: fleetalert.NoLiveSession.Word}, {Word: fleetalert.SessionListUnreadable.Word}}},
+		{name: "the controller's line where no list is read, its stored record marked", daemonController: true, readsList: false,
+			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
+			claims: []supervise.Claim{controllerClaim(true)}, markedReach: true},
 		{name: "the controller's line of a controller back in reach", daemonController: true, readsList: true,
 			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
 			claims: []supervise.Claim{controllerClaim(false)}},
@@ -711,6 +728,53 @@ func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+// A read of Envoy's list that fails right after a boot ends no case: the controller's line the
+// store holds open, for a controller whose stored reach record is marked out of reach, is kept
+// through it, so the next read that answers, which finds the case still holding, writes no second
+// line (R6). Before any read has answered the keeper's memory holds no record of the controller,
+// so the case is read from the record the claim carries from the store (recordOf).
+func TestAFailedListReadAfterABootKeepsTheControllersStoredLine(t *testing.T) {
+	ctx := context.Background()
+	project, _ := claim.ProjectToken("legion")
+	controller := claim.ControllerToken(project)
+	d := newDurableReach(t)
+	c := supervise.Claim{Token: controller, Project: project, Role: claim.RoleController, Generation: 2,
+		State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
+		Locator: pluginTestLocator(controller), ActivityAt: reachBoot,
+		LastRelaunch: reachBoot.Add(-10 * time.Minute), LastRelaunchGeneration: 2}
+	d.put(c)
+	marked := supervise.Reach{Session: c.Session, FirstReady: c.LastReady, Since: reachBoot.Add(-30 * time.Minute),
+		Generation: 2, Relaunched: true, RelaunchedAt: c.LastRelaunch}
+	if known, err := d.st.PutClaimReach(ctx, controller, marked); err != nil || !known {
+		t.Fatalf("mark the controller out of reach = %t, %v", known, err)
+	}
+	line := store.FleetAlertLine{Project: "LEGION", Case: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}
+	if err := d.st.PutFleetAlertLine(ctx, line); err != nil {
+		t.Fatalf("store the open line %+v: %v", line, err)
+	}
+	logged := &testlog.Buffer{}
+	k := d.bootedAs(logged, true, true)
+
+	d.listUnreadable(true)
+	d.at(time.Minute)
+	k.sweep(ctx, d.stored())
+	k.wait()
+	if open, err := d.st.FleetAlertLines(ctx, "LEGION"); err != nil || !slices.Equal(open, []store.FleetAlertLine{line}) {
+		t.Fatalf("after a failed read the store holds the open lines %+v, %v; want the controller's line kept", open, err)
+	}
+	d.listUnreadable(false)
+	d.at(2 * time.Minute)
+	k.sweep(ctx, d.stored())
+	k.wait()
+
+	if written := strings.Count(logged.String(), "case="+fleetalert.ControllerUnreachable.Word); written != 0 {
+		t.Fatalf("the booted daemon wrote the controller's line %d times over a failed read and one that answered, want none: the daemon before it wrote it, and its case held throughout", written)
+	}
+	if open, err := d.st.FleetAlertLines(ctx, "LEGION"); err != nil || !slices.Equal(open, []store.FleetAlertLine{line}) {
+		t.Fatalf("after the read that answered the store holds the open lines %+v, %v; want the controller's line alone", open, err)
 	}
 }
 
