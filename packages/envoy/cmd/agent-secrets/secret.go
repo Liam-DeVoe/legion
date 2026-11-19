@@ -1032,8 +1032,8 @@ func printReread(s *secretSession, stdout io.Writer, name string, r Reread, dele
 // holds what the person wants, and nothing of when the broker would serve a change on its own:
 // that depends on the write, which may not have landed. The command reads the broker's address
 // from AGENT_SECRETS_URL, which this CLI may have read from its config file instead, so it stops
-// with a message naming that file where the shell has no such variable, and curl prints the
-// broker's refusal (-sSf); the CLI prints no broker address itself.
+// with a message naming that file where the shell has no such variable, and curl exits non-zero
+// naming the status of a broker's refusal (-sSf); the CLI prints no broker address itself.
 func rereadOpen(s *secretSession, stdout, stderr io.Writer, form, name string) {
 	r, err := s.broker.RereadSecret(s.ctx, name)
 	if err != nil {
