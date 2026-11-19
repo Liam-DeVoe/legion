@@ -26,7 +26,7 @@ export interface IssueDrafts {
   /** `submitTitle`, answering whether the title was sent or queued. */
   requestTitleSubmit: () => boolean;
   retry: () => void;
-  /** The end of an edit of the title: asks for the draft to be sent, and says what came of it. */
+  /** Asks for the title's draft to be sent, and says what came of it. */
   submitTitle: () => SubmitOutcome;
   parent: string;
   parentDirty: boolean;
@@ -36,6 +36,8 @@ export interface IssueDrafts {
   title: string;
   titleDirty: boolean;
   titleError: string | null;
+  /** Whether a send of the title's draft was asked for and has not gone yet. */
+  titleQueued: boolean;
   writeParent: (next: string) => void;
   writeRoute: (next: string) => void;
   writeTitle: (next: string) => void;
@@ -334,6 +336,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     requestStatusSubmit,
     titleDirty: changed(fieldRules.title, title),
     titleError,
+    titleQueued: title.queued !== null,
     writeParent,
     writeRoute,
     writeTitle,

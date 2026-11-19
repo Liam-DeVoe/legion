@@ -1103,9 +1103,10 @@ test("IssuePage sends only the saved title when a title queued behind it is type
     // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     title = await openTitleEditor();
-    await user.clear(title);
-    await user.click(title);
-    await user.paste("a");
+    // The last character taken out, so the draft goes from "ab" to "a" with no empty text between,
+    // which would ask for nothing by itself.
+    await user.type(title, "{End}{Backspace}");
+    expect(title.value).toBe("a");
     await act(async () => {
       firstSave.resolve(narrowIssue({ ...issue, title: "a" }));
     });

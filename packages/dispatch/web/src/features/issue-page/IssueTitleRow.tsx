@@ -69,15 +69,14 @@ export function IssueTitleRow({
   // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
   // back to it.
   const returning = useRef(false);
-  // The draft a switch or a hide of this edit sent since the reader last changed it, trimmed as
-  // it went, or null. It is set only when its write went (`submitTitle` answers "sent"): a draft
-  // queued behind a write still out has not gone, and a refusal of that write leaves it the
-  // reader's to send as the edit ends. A change the reader makes clears it (the editor's
-  // `onChange`), and so does the next edit (`openEdit`). A draft goes once: neither a later switch
-  // nor the end of the edit sends it again, which `requestTitleSubmit` would do after its write
-  // was refused or stopped. A text the reader writes after that is theirs to send, though it may
-  // be the same text: another reader's write can have changed the title since, and the draft, not
-  // changed, took that title.
+  // The draft a switch or a hide of this edit sent or queued since the reader last changed it,
+  // trimmed as it went, or null: a change the reader makes clears it (the editor's `onChange`),
+  // and so does the next edit (`openEdit`). A draft goes once: neither a later switch nor the end
+  // of the edit sends it again, which `requestTitleSubmit` would do after its write was refused
+  // or stopped. A draft still queued (`titleQueued`) has not gone yet: after the write ahead of
+  // it is refused nothing drains it, so the end of the edit sends it. A text the reader writes
+  // after that is theirs to send, though it may be the same text: another reader's write can have
+  // changed the title since, and the draft, not changed, took that title.
   const sent = useRef<string | null>(null);
   // The editor's text as the reader last wrote it in this edit. The draft takes that text trimmed
   // as a write of it lands with the edit open (`onIssueSettled`). While the draft is the
@@ -126,19 +125,20 @@ export function IssueTitleRow({
   // the browser discards, a tab closed while away or a close of the issue elsewhere would lose it.
   // A draft is changed when it is not empty once trimmed, differs once trimmed from the title it
   // is judged against - the title of the write still out while one is, else the issue's
-  // (`titleDirty`) - and is not the draft this edit already sent. A draft the hook only queued
-  // behind the write still out is not marked sent: should that write be refused, the draft is
-  // still the reader's to send as the edit ends. An empty draft sends nothing and says nothing
-  // while the reader is away: its "Title is required." waits for the end of the edit.
+  // (`titleDirty`) - and is not the draft this edit already sent or queued. An empty draft sends
+  // nothing and says nothing while the reader is away: its "Title is required." waits for the end
+  // of the edit.
   const sendAway = () => {
     const draft = drafts.title.trim();
     if (isClosed || !drafts.titleDirty || draft === "" || draft === sent.current) return;
-    if (drafts.submitTitle() === "sent") sent.current = draft;
+    const outcome = drafts.submitTitle();
+    if (outcome === "sent" || outcome === "queued") sent.current = draft;
   };
-  // Ends the edit as the editor's blur does: the draft is sent unless this edit already sent it,
-  // and a press under way holds the heading at the editor's height until it ends.
+  // Ends the edit as the editor's blur does: the draft is sent unless this edit already sent it
+  // (`sent`, a draft still queued aside), and a press under way holds the heading at the editor's
+  // height until it ends.
   const endEdit = () => {
-    if (drafts.title.trim() !== sent.current) drafts.requestTitleSubmit();
+    if (drafts.title.trim() !== sent.current || drafts.titleQueued) drafts.requestTitleSubmit();
     if (pressing.current) {
       // The press under way lets the heading go as it ends.
       heldForPress.current = true;
@@ -178,12 +178,14 @@ export function IssueTitleRow({
   }, [editing]);
   // An issue closed while its title is edited, as an event's refresh can close it while the
   // reader is away, takes no title (`useIssueDrafts` refuses one), and its disabled editor would
-  // hold a draft nothing ends: the edit ends and drops the draft, and the heading reads the
-  // issue's title. A draft a switch sent went with its write, so what is dropped is a change made
-  // after that send.
+  // hold a draft nothing ends: the edit ends and drops the draft. A draft a switch sent went with
+  // its write, so what is dropped is a change made after that send, and while that write is out
+  // the heading reads its title, the title the issue is about to hold (decision 316). Dispatch
+  // refuses that write if the close reached it first, and the draft left then is a title the
+  // issue never got: it is dropped as well, and the heading reads the issue's title.
   useEffect(() => {
-    if (!editing || !isClosed) return;
-    drafts.discardTitle();
+    if (!isClosed) return;
+    if (editing || drafts.titleDirty) drafts.discardTitle();
     setEditing(false);
   }, [drafts, editing, isClosed]);
 

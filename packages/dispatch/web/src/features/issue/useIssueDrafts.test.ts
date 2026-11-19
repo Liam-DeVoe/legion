@@ -193,7 +193,8 @@ class Reader {
   private intent = false;
   /**
    * The reader's own choice the field may show: the text of the last type event, or what an
-   * escape put back while a write was out; none after an escape with nothing out.
+   * escape put back while a write was out; none after an escape with nothing out, nor once a
+   * write carrying it has landed, since the issue then holds it.
    */
   lastTyped: string | null = null;
   /** The drafts an escape put away, until the reader types one of them again. */
@@ -250,9 +251,14 @@ class Reader {
         if (session.drafts.title.trim() !== before) this.discarded.add(before);
         return sent;
       }
-      case "land":
+      case "land": {
         this.titleWriteOut = null;
+        // A choice the landing write carried was sent, and the issue holds it now: a field left
+        // on it once another reader changes the title shows a stale title, not the reader's own.
+        const landed = session.out?.title;
+        if (landed !== undefined && landed === this.lastTyped?.trim()) this.lastTyped = null;
         return session.land();
+      }
       case "refuse":
         if (this.titleWriteOut !== null) this.titleWriteOut.refused = true;
         this.titleWriteOut = null;
@@ -417,10 +423,13 @@ function exploration(): Violation[] {
   return explored;
 }
 
+// I2 names a send that I1 also refuses: I1 holds a sent title to the reader's last choice, and
+// typing a value again takes it out of what an escape put away, so a discarded value that is sent
+// breaks both, and I2 says which of I1's sends was a value an escape put away.
 const invariants: [Invariant, string][] = [
   ["I1", "nothing is sent the reader did not last choose"],
   ["I2", "a discarded value is never sent later"],
-  ["I3", "no value is sent twice in a row"],
+  ["I3", "no value is sent twice in a row, unless the first was refused"],
   ["I4", "at rest the field shows the server's value or the reader's unsent choice"],
 ];
 

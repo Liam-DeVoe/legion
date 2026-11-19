@@ -1474,8 +1474,9 @@ test("a title a switch sent and the reader writes back after another write chang
 
 // A switch while a write of the title is out queues the draft behind that write: one write of the
 // issue's fields goes at a time, so the draft has not gone. Dispatch then refuses the write out,
-// and the draft is still the reader's to send, so the end of the edit sends it. Marked as sent at
-// the switch, it was never sent, and the heading read a title Dispatch did not have.
+// and nothing drains the draft, which is still the reader's to send, so the end of the edit sends
+// it. Taken for a draft that went, it was never sent, and the heading read a title Dispatch did
+// not have.
 test("a draft a switch queued behind a title's write that Dispatch then refuses is sent as the edit ends", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
@@ -1518,6 +1519,60 @@ test("a draft a switch queued behind a title's write that Dispatch then refuses 
     );
     await titleLanded(queryClient, "Plan the review");
     expect(heading).toHaveTextContent(/^Plan the review$/);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A draft a switch queued goes as the write ahead of it lands, and Dispatch then refuses it. It
+// went once, as a draft a switch sent goes once, so the end of the edit sends it no second time,
+// though it is not the issue's title.
+test("a draft a switch queued that went as the write ahead of it landed, and that Dispatch refused, is not sent again as the edit ends", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const first = Promise.withResolvers<IssueDetails>();
+  const second = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    const { editor } = await openTitleEditor(user, "Review the plan");
+    await user.clear(editor);
+    await user.keyboard("Plan the review");
+    blurWindow(editor);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ ...issue, title: "Review the plan" });
+      await first.promise;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Plan the review" },
+      keyedAttempt
+    );
+    await act(async () => {
+      second.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
+      await second.promise.catch(() => undefined);
+    });
+    await screen.findByText("Could not update this issue.");
+
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    await endTitleEditByPress(user);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(patchIssue).toHaveBeenCalledTimes(2);
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -2114,6 +2169,52 @@ test.each([
     expect(heading).toHaveTextContent(/^Review the plan$/);
     expect(patchIssue).toHaveBeenCalledTimes(1);
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The issue can be closed elsewhere while a switch's write of the title is out, and Dispatch then
+// refuses that title. The close ends the edit, and while the write is out the heading reads its
+// title, the title the issue is about to hold (decision 316); once the write is refused the issue
+// never got it, and nothing will send it to a closed issue, so the heading reads the issue's title.
+test("a title a switch sent that Dispatch refuses because the issue was closed meanwhile leaves the heading on the issue's title", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const refusal = "CORE-1 is closed; reopen it first";
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => landing.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    blurWindow(editor, () => {
+      // The issue as Dispatch has it once it was closed elsewhere, before the switch's write.
+      act(() => {
+        queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+          ...issue,
+          closed_at: "2026-09-12T10:00:00Z",
+          status: "done",
+        });
+      });
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+
+    await act(async () => {
+      landing.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: refusal }));
+      await landing.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(heading).toHaveTextContent(/^Review the spec$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
     patchIssue.mockRestore();
