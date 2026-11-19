@@ -12,8 +12,9 @@
 // An observation is one statement in a transaction of its own, sent as one batch
 // (horizonObserveSQL). It yields A, the newest id visible to the statement's snapshot S, the
 // created_at of the event at A (which persisting H stamps it with), F, a transaction id below which
-// no event writer was running as the statement ran (below), and X, the observer's own transaction
-// id, which pg_current_xact_id assigns while the statement runs, after S was taken.
+// no event writer was running as the statement ran (below), the xmax of S and whether S lists any
+// transaction in progress, and X, the observer's own transaction id, which pg_current_xact_id
+// assigns while the statement runs, after S was taken.
 //
 // An event writer is a transaction that holds RowExclusiveLock on events in this database. An
 // insert into events takes that lock on the table when it is parsed (setTargetTable in
@@ -33,11 +34,12 @@
 // writer of this database: it inserted g into this database's events, and the insert's column
 // default drew g, so T took its write lock before nextval handed it g and holds it until it ends.
 // No id is drawn, and no row of events written, any other way: no Go statement of the module
-// names events_id_seq (but the offline seed tool's setval), no insert lists an explicit id, no
-// source but that tool copies or merges rows into events, no statement makes a table from events,
-// no migration the server runs names the sequence, in a function, view, trigger or default, and
-// the schema they build gives no other table events' id default and events no child or
-// partition, whose rows would be rows of events written under another table's lock.
+// names events_id_seq but to read with currval the id its own insert's default just drew, which
+// draws none, or in the offline seed tool's setval; no insert lists an explicit id, no source but
+// that tool copies or merges rows into events, no statement makes a table from events, no
+// migration the server runs names the sequence, in a function, view, trigger or default, and the
+// schema they build gives no other table events' id default and events no child or partition,
+// whose rows would be rows of events written under another table's lock.
 // TestOnlyAnEventInsertsDefaultDrawsAnEventID and TestOnlyTheBrokerInsertsEvents
 // (internal/dispatch/api) hold the Go half, TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault
 // (internal/dispatch/store) the migrations' text, and
@@ -57,9 +59,10 @@
 // database's CREATE or DROP DATABASE, an operator's open psql session, nor a Dispatch transaction
 // that has not yet inserted its event.
 //
-// The proof comes from a later observation, whose F' is the greater of two such bounds. One is
-// the xmin of its snapshot S', the oldest transaction id still running on the whole instance when
-// S' was taken: no transaction below it was running at all. The other is read from the lock
+// An observation is proven by a later one, or by its own snapshot (below). A later observation's
+// F' is the greater of two such bounds. One is the xmin of its snapshot S', the oldest transaction
+// id still running on the whole instance when S' was taken: no transaction below it was running at
+// all. The other is read from the lock
 // table, once (pg_locks, in a materialized CTE, so every row comes from one call): the oldest
 // transaction id among the event writers it lists, or the observer's own X' when it lists none.
 // A writer's id is the least of the ids it holds an ExclusiveLock on under its own
@@ -90,12 +93,41 @@
 // (twophase.c), so its write lock and the lock on its id carry one virtualtransaction while
 // PostPrepare_Locks moves them and after.
 //
-// One observation never proves its own A: its F is at most its own X. Say T2 takes transaction id
-// 100, T takes 101 and inserts event 7, then T2 inserts event 8 and commits. An observation now
-// sees 8 and has an X above 101, while T is still open holding 7 and its write lock, so no later
-// observation proves it safe until T ends. A rule that trusted one snapshot's in-progress list
-// would publish 8 here: a snapshot taken now has xmax 101, one past T2's id, the newest that had
-// completed, and lists in progress only ids below its xmax, so it does not list T at all.
+// S proves its own A when it leaves no room for a running id below X: xip(S) is empty and
+// xmax(S) = X. A snapshot lists every id running at or above its xmin and below its xmax in its
+// xip, and every id below xmin has ended, so an empty xip means every id below xmax(S) had ended
+// when S was taken. An id at or above xmax(S) can be running unlisted, but with xmax(S) = X the
+// range [xmax(S), X) is empty, so no id there is below X either. Every transaction id below X, an
+// event writer's or any other's, had therefore ended before S was taken, and A is final at once:
+// the observation records H = A without waiting for a later one. Its own F never proves it, since
+// F is at most its own X. An observation that does not meet both conditions waits for a later
+// one.
+//
+// Both conditions are needed, and the xmax hole is why. A snapshot's xmax is one past the newest
+// transaction id that had completed, and a transaction holding an id at or above xmax is not
+// listed in its xip at all (Postgres documents that "there might be in-progress IDs higher than
+// xmax"). Say T2 takes transaction id 100, T takes 101 and inserts event 7, then T2 inserts event
+// 8 and commits. A snapshot taken now has xmin = xmax = 101, lists nothing in progress and sees
+// 8, while T is still open holding 7 and its write lock. The observer's own X, assigned after the
+// snapshot, is what closes that hole: it is at least 102, above xmax = 101, so the empty xip
+// proves nothing, the shortcut does not fire, and no later observation proves it safe until T
+// ends.
+//
+// # Cadence
+//
+// An observation whose own snapshot proves it needs no other, so an id a reader sees commit on a
+// quiet instance is final in the read that saw it. Otherwise it is proven by the next observation
+// at the earliest, and only by one that ran after every event writer holding an id below the
+// first observer's had ended. Gap tells a reader which of the two it waits for. When the newest
+// observation is the only one unproven (GapUnproven), every event writer that held back the ones
+// before it had ended when it ran, so observing again at once proves it unless an event writer
+// holding an id below its own is still running: the reader observes again at once rather than
+// after a delay. When an older observation is still unproven (GapHeld), an event writer holding
+// an id below that observation's own was still running when the newest observation ran, and
+// observing again proves nothing until that writer ends: the reader waits for a commit to be
+// announced, which a Dispatch write that appends events does (pg_notify on dispatch_events), with
+// a bounded fallback for one that ends unannounced. Await runs the same cadence with its backoff
+// as that fallback.
 //
 // # Costs
 //
@@ -143,14 +175,15 @@ const (
 	// evenly over D rather than starve the newest, so H trails by at most about
 	// 4D/horizonPendingLimit more.
 	horizonPendingLimit = 1024
-	// Await's re-observation backoff: 10 ms doubling to 250 ms.
+	// Await's re-observation backoff while an older observation is held (GapHeld): 10 ms doubling
+	// to 250 ms. An unproven newest observation alone (GapUnproven) is observed again at once.
 	horizonBackoffMin = 10 * time.Millisecond
 	horizonBackoffMax = 250 * time.Millisecond
 	// horizonAwaitFailFor is how long Await keeps re-observing while every observation fails
 	// before it returns the last one's error; one observation that succeeds starts it again. Its
-	// long-lived callers (the delivery hub's event seed, the event relay's start and its reseed)
-	// wait on a lifetime, not a request, so without it an observation that never succeeds (a
-	// horizon pool that cannot dial, say) would leave them waiting for ever with no error to log
+	// long-lived caller (the event relay, at the start of each generation of it) waits on a
+	// lifetime, not a request, so without it an observation that never succeeds (a
+	// horizon pool that cannot dial, say) would leave it waiting for ever with no error to log
 	// or retry on. Ten seconds is forty retries at Await's longest backoff: long enough to ride
 	// out a redial, short enough that the caller's own warning and retry come soon.
 	horizonAwaitFailFor = 10 * time.Second
@@ -242,8 +275,10 @@ func eventWritersFrom(locks, xmax string) string {
 }
 
 // horizonObserveSQL is an observation (the package documentation's "Safe horizon"): A and the
-// created_at of its event, as the statement's snapshot S sees them; F; and X, which
-// pg_current_xact_id assigns while the statement runs, after S was taken. $1 is the X of the
+// created_at of its event, as the statement's snapshot S sees them; F; the xmax of S and whether
+// S lists no transaction in progress, from which take reads whether S proved A itself; and X,
+// which pg_current_xact_id assigns while the statement runs, after S was taken. Every
+// pg_current_snapshot in it is S: a statement reads one snapshot throughout. $1 is the X of the
 // newest observation still pending, 0 when none is, in decimal text: compared as numeric, it is
 // exact for every 64-bit id, where a bigint holds none past 2^63 - 1. F is the xmin of S when
 // that already passes $1, and the lock table goes unread; otherwise it is the greater of that xmin
@@ -255,6 +290,8 @@ var horizonObserveSQL = `
 		(select case when s.xmin > $1::text::numeric then s.xmin else greatest(s.xmin, (
 			select case when bool_or(xid is null) then 0 else least(min(xid), pg_current_xact_id()::text::numeric) end from writers
 		)) end from (select pg_snapshot_xmin(pg_current_snapshot())::text::numeric as xmin) s)::text,
+		pg_snapshot_xmax(pg_current_snapshot())::text,
+		not exists (select 1 from pg_snapshot_xip(pg_current_snapshot())),
 		pg_current_xact_id()::text
 	from (select coalesce(max(id), 0) as id from events) m left join events e on e.id = m.id
 `
@@ -301,6 +338,9 @@ type Horizon struct {
 	stallAfter time.Duration
 	warnEvery  time.Duration
 	logger     *slog.Logger
+	// pause is Await's backoff wait, which returns once d has passed or ctx has ended; NewHorizon
+	// sets pauseFor and a test replaces it to see the waits Await takes.
+	pause func(ctx context.Context, d time.Duration)
 	// afterObservationParked runs, outside the lock, each time a caller finds an observation
 	// already in flight and parks on it rather than running one of its own. Nothing in
 	// production sets it; the package's own test of concurrent callers waits on it instead of
@@ -321,8 +361,10 @@ type Horizon struct {
 	safeThrough uint64
 	// safeAt is the created_at of the event at safe, as the observation that saw it read it.
 	safeAt time.Time
-	// newest is the highest A observed this generation (Pending).
-	newest int64
+	// newest is the highest A observed this generation (Gap), and recorded the number of the newest
+	// observation recorded this generation, which tells GapUnproven from GapHeld.
+	newest   int64
+	recorded uint64
 	// pending holds the observations still waiting for a later one to prove them safe, oldest
 	// first, each with an A above safe.
 	pending []horizonObservation
@@ -350,15 +392,18 @@ type Horizon struct {
 	persistWarnedAt time.Time
 }
 
-// horizonObservation is one observation: its number, A, X and when it was recorded.
+// horizonObservation is one observation: its number, A, X, whether its own snapshot proved it
+// (see the package documentation's "Safe horizon" section: an empty in-progress list and an xmax
+// equal to X) and when it was recorded.
 type horizonObservation struct {
 	number uint64
 	newest int64
 	// newestAt is the created_at of the event at newest as the observation read it, zero when the
 	// log was empty: what persisting an H of it stamps (persistHorizonSQL).
-	newestAt time.Time
-	xid      uint64
-	at       time.Time
+	newestAt   time.Time
+	xid        uint64
+	selfProven bool
+	at         time.Time
 }
 
 // horizonFlight is the one observation in flight, which concurrent callers share. Its fields
@@ -380,8 +425,35 @@ func NewHorizon(db HorizonDB) *Horizon {
 		now:        time.Now,
 		stallAfter: horizonStallAfter,
 		warnEvery:  horizonWarnEvery,
+		pause:      pauseFor,
 	}
 }
+
+// pauseFor waits for d, or until ctx ends.
+func pauseFor(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+// Gap is what a reader whose read left an observed id above H waits for (Horizon.Gap).
+type Gap int
+
+const (
+	// GapNone: every observed id is at or below H, and there is nothing to re-read for.
+	GapNone Gap = iota
+	// GapUnproven: an observed id stands above H, and the newest observation, which saw it, is
+	// the only one unproven: it proved every observation before it. Observing again at once
+	// proves it unless an event writer holding a transaction id below its own is still running.
+	GapUnproven
+	// GapHeld: an observation older than the newest is still unproven, so an event writer holding
+	// a transaction id below that observation's own was still running when the newest one ran.
+	// Observing again proves nothing until that writer ends.
+	GapHeld
+)
 
 // PersistProven has the Horizon write its H to event_horizon as it advances, at most once every
 // horizonPersistEvery, so a process that starts later can read the log above it (Persisted). Call it
@@ -426,9 +498,9 @@ func (h *Horizon) Persisted(ctx context.Context) (int64, error) {
 //
 // Like Await, Safe never settles for an observation already in flight when it is called: that
 // one took its snapshot before the call and can miss an id committed just before it, and if its
-// A were at or below H it would leave Pending false, so the reader would arm no re-read for that
+// A were at or below H it would leave no gap (Gap), so the reader would arm no re-read for that
 // id. Safe waits it out and joins or runs the next. Its own observation saw every id committed
-// before the call, so each such id is at or below H, or stands above it and keeps Pending true
+// before the call, so each such id is at or below H, or stands above it and keeps a gap open
 // until H reaches it.
 func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 	h.mu.Lock()
@@ -443,16 +515,25 @@ func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 }
 
 // Await returns H once an observation taken during this call is proven safe, so H is at or
-// above every id committed before the call; it re-observes with the 10 ms -> 250 ms backoff. It
-// returns early with ctx's error, or with an observation's error once every observation has
-// failed for horizonAwaitFailFor.
+// above every id committed before the call. It returns early with ctx's error, or with an
+// observation's error once every observation has failed for horizonAwaitFailFor.
+//
+// It re-observes on the reader's cadence (see the package documentation's "Cadence" section),
+// which it runs only for an observation its own snapshot did not prove: one that proved itself
+// is proven as it is recorded, and the call returns on it. The cadence observes again at
+// once while the newest observation is the only one unproven (GapUnproven), which the next one
+// proves unless an event writer holding a transaction id below its own is still running, and
+// otherwise after a backoff of 10 ms doubling to 250 ms, which runs only while the caller waits.
+// An immediate observation either proves the one before it, which this call took or followed,
+// and so returns, or finds an older event writer running and backs off: two never follow each
+// other without a proof.
 //
 // The observation has to start after the call: one already in flight took its snapshot before
 // the call and can miss an id committed just before it, so Await waits that one out rather than
-// share it. An observation error is retried like an unproven observation until observations have
-// failed for horizonAwaitFailFor with no success between, measured from the first failure since
-// the last success, and is then returned; if ctx ends first, the last one is reported with ctx's
-// error. A failure the caller's own ctx caused counts for neither.
+// share it. An observation error is retried after the backoff, like a held observation, until
+// observations have failed for horizonAwaitFailFor with no success between, measured from the
+// first failure since the last success, and is then returned; if ctx ends first, the last one is
+// reported with ctx's error. A failure the caller's own ctx caused counts for neither.
 func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	h.mu.Lock()
 	after := h.started
@@ -462,14 +543,16 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	var failingSince time.Time
 	for {
 		err := h.observe(ctx, after)
+		again := false
 		if err == nil {
 			failed = nil
 			h.mu.Lock()
-			proven, safe := h.safeThrough > after, h.safe
+			proven, safe, gap := h.safeThrough > after, h.safe, h.gapLocked()
 			h.mu.Unlock()
 			if proven {
 				return safe, nil
 			}
+			again = gap == GapUnproven
 		} else if ctx.Err() == nil {
 			now := h.now()
 			if failed == nil {
@@ -480,13 +563,8 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 				return 0, fmt.Errorf("await event horizon: every observation failed for %s: %w", failingFor, err)
 			}
 		}
-		if ctx.Err() == nil {
-			timer := time.NewTimer(wait)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-			case <-timer.C:
-			}
+		if !again && ctx.Err() == nil {
+			h.pause(ctx, wait)
 			wait = min(2*wait, horizonBackoffMax)
 		}
 		if ctx.Err() != nil {
@@ -498,11 +576,26 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	}
 }
 
-// Pending reports whether an observed id stands above H (a gap a reader must re-read for).
-func (h *Horizon) Pending() bool {
+// Gap reports what a gap above H waits for, as the observations recorded so far leave it: none
+// when every observed id is at or below H, GapUnproven when only the newest observation is
+// unproven, GapHeld when an older one is too.
+func (h *Horizon) Gap() Gap {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.newest > h.safe
+	return h.gapLocked()
+}
+
+// gapLocked is Gap with h.mu held. The pending list keeps the newest observation whenever its A
+// stands above H (thinPending never drops it), so a gap whose list holds that observation alone
+// waits on nothing older.
+func (h *Horizon) gapLocked() Gap {
+	switch {
+	case h.newest <= h.safe:
+		return GapNone
+	case len(h.pending) == 1 && h.pending[0].number == h.recorded:
+		return GapUnproven
+	}
+	return GapHeld
 }
 
 // Proven returns H as already proven, running no observation: 0 before any observation has been
@@ -645,7 +738,7 @@ func (h *Horizon) Reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.generation++
-	h.safe, h.safeThrough, h.newest = 0, 0, 0
+	h.safe, h.safeThrough, h.newest, h.recorded = 0, 0, 0, 0
 	h.safeAt = time.Time{}
 	h.pending = nil
 	h.persistedSafe = 0
@@ -780,11 +873,13 @@ func (h *Horizon) writePersisted(safe int64, safeAt time.Time, generation uint64
 }
 
 // take runs one observation (horizonObserveSQL): A with its event's created_at, F, a transaction id
-// below which no event writer of this database was running as its statement ran, and X, the
-// observer's own transaction id. newestPending is the X of the newest observation still pending,
-// 0 when none is: while the snapshot's xmin passes it, the statement does not read the lock table.
-// synchronous_commit is off for it alone, since the observer writes nothing a crash could lose, and
-// its commit need not wait for a WAL flush to end its transaction id.
+// below which no event writer of this database was running as its statement ran, X, the
+// observer's own transaction id, and whether its snapshot S proved A itself, which it did when its
+// in-progress list is empty and its xmax is X (see the package documentation's "Safe horizon"
+// section). newestPending is the X of the newest observation still pending, 0 when none is: while
+// the snapshot's xmin passes it, the statement does not read the lock table. synchronous_commit is
+// off for it alone, since the observer writes nothing a crash could lose, and its commit need not
+// wait for a WAL flush to end its transaction id.
 func (h *Horizon) take(ctx context.Context, newestPending uint64) (horizonObservation, uint64, error) {
 	batch := &pgx.Batch{}
 	batch.Queue(`begin`)
@@ -794,13 +889,14 @@ func (h *Horizon) take(ctx context.Context, newestPending uint64) (horizonObserv
 	results := h.db.SendBatch(ctx, batch)
 	var newest int64
 	var newestAt *time.Time
-	var writerText, xidText string
+	var writerText, xmaxText, xidText string
+	var xipEmpty bool
 	_, err := results.Exec()
 	if err == nil {
 		_, err = results.Exec()
 	}
 	if err == nil {
-		err = results.QueryRow().Scan(&newest, &newestAt, &writerText, &xidText)
+		err = results.QueryRow().Scan(&newest, &newestAt, &writerText, &xmaxText, &xipEmpty, &xidText)
 	}
 	if err == nil {
 		_, err = results.Exec()
@@ -815,11 +911,15 @@ func (h *Horizon) take(ctx context.Context, newestPending uint64) (horizonObserv
 	if err != nil {
 		return horizonObservation{}, 0, fmt.Errorf("observe event horizon: parse the bound on open event writers %q: %w", writerText, err)
 	}
+	xmax, err := strconv.ParseUint(xmaxText, 10, 64)
+	if err != nil {
+		return horizonObservation{}, 0, fmt.Errorf("observe event horizon: parse snapshot xmax %q: %w", xmaxText, err)
+	}
 	xid, err := strconv.ParseUint(xidText, 10, 64)
 	if err != nil {
 		return horizonObservation{}, 0, fmt.Errorf("observe event horizon: parse transaction id %q: %w", xidText, err)
 	}
-	observation := horizonObservation{newest: newest, xid: xid}
+	observation := horizonObservation{newest: newest, xid: xid, selfProven: xipEmpty && xmax == xid}
 	if newestAt != nil {
 		observation.newestAt = *newestAt
 	}
@@ -827,7 +927,13 @@ func (h *Horizon) take(ctx context.Context, newestPending uint64) (horizonObserv
 }
 
 // record checks every pending observation against the new one's F, writer, raises H to the A of
-// each it proves safe, and keeps the new observation if its A stands above H. h.mu is held.
+// each it proves safe, and to the new one's A when its own snapshot proved it, and keeps the new
+// observation if its A still stands above H. h.mu is held.
+//
+// An observation its own snapshot proved also proves every pending one: its snapshot's xmin then
+// equals its X (an empty in-progress list leaves xmin at xmax), F is at least that xmin, and a
+// pending observation's X is below this one's, which was assigned later, so the check below
+// passes for each of them too.
 func (h *Horizon) record(observation horizonObservation, writer uint64) {
 	for _, pending := range h.pending {
 		if writer > pending.xid && pending.newest > h.safe {
@@ -843,7 +949,10 @@ func (h *Horizon) record(observation horizonObservation, writer uint64) {
 		kept = append(kept, pending)
 	}
 	h.pending = kept
-	h.newest = max(h.newest, observation.newest)
+	h.newest, h.recorded = max(h.newest, observation.newest), observation.number
+	if observation.selfProven && observation.newest > h.safe {
+		h.safe, h.safeAt = observation.newest, observation.newestAt
+	}
 	if observation.newest <= h.safe {
 		h.safeThrough = max(h.safeThrough, observation.number)
 		return

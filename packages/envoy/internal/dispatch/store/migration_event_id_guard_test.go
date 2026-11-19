@@ -15,11 +15,24 @@ import (
 // fails when this declaration binds another.
 var migrationEventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]`)
 
-// migrationEventIDOffences is each place in a migration's SQL that names the events id sequence,
-// as "<path>:<line>: <match>".
+// migrationEventIDCurrval is a read of the id this session's nextval last drew from
+// events_id_seq, which draws no id and moves no counter. It is api.eventIDCurrval's pattern, held
+// to it the same way, and migrationEventIDOffences reads the SQL with each such read blanked out.
+var migrationEventIDCurrval = regexp.MustCompile(`currval\(\s*(?:'\s*(?:"?public"?\s*\.\s*)?"?events_id_seq"?\s*'(?:\s*::\s*regclass)?|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'\s*,\s*'\s*"?id"?\s*'\s*\))\s*\)`)
+
+// migrationEventIDOffences is each place in a migration's SQL that names the events id sequence
+// other than to read currval, as "<path>:<line>: <match>". Each currval read is blanked out
+// before the sequence is looked for, its newlines kept, so the lines named stay the file's own.
 func migrationEventIDOffences(path, sql string) []string {
 	var offences []string
-	lowered := strings.ToLower(sql)
+	lowered := migrationEventIDCurrval.ReplaceAllStringFunc(strings.ToLower(sql), func(read string) string {
+		return strings.Map(func(r rune) rune {
+			if r == '\n' {
+				return r
+			}
+			return ' '
+		}, read)
+	})
 	for _, span := range migrationEventIDSequence.FindAllStringIndex(lowered, -1) {
 		line := strings.Count(lowered[:span[0]], "\n") + 1
 		offences = append(offences, path+":"+strconv.Itoa(line)+": "+lowered[span[0]:span[1]])
@@ -57,6 +70,9 @@ func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 			{"a function through pg_get_serial_sequence of a variable", "create function d(t text) returns bigint language sql as $$\n" +
 				"select nextval(pg_get_serial_sequence(t, 'id'))\n$$;", 1},
 			{"pg_get_serial_sequence of another table", "select pg_get_serial_sequence('issues', 'id');", 0},
+			{"a trigger that reads the id its insert drew", "create function o() returns trigger language plpgsql as $$\n" +
+				"begin new.opened := currval(pg_get_serial_sequence('events', 'id')); return new; end $$;", 0},
+			{"a draw beside a currval read", "select nextval('events_id_seq'), currval('events_id_seq');", 1},
 		} {
 			if got := migrationEventIDOffences("m.sql", row.sql); len(got) != row.found {
 				t.Errorf("%s: %d matches %q, want %d", row.shape, len(got), got, row.found)
