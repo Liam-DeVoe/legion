@@ -4237,6 +4237,65 @@ test("an editable row shows it takes typing under the pointer and at focus, and 
   });
 });
 
+// The tester's finding at #4205's 2ff6850a, on "a node the room keeps read-only draws neither"
+// of the architect's ruling on the cue that a block takes typing: the server admits a document
+// read-only to a page whose schema it cannot trust with writes, as for a page whose build is out
+// of date, and no block of that document takes typing then. The page here presents schema version
+// 0 on every document socket, which no server admits writable (`admits` in
+// `packages/envoy/internal/dispatch/docs/schema_admission.go`). At 2ff6850a a statement's row
+// is marked as taking typing by Enter's rule alone, so under the pointer it draws the text cursor
+// and the tint, before its editor opens and after the room has admitted that editor read-only;
+// only the box of the editor follows the document's `data-read-only`.
+// SLOW(>=2s): the whole issue seeded and loaded, then Enter waited on until the statement's editor
+// opens read-only.
+test("a statement of a document the server admits read-only shows no cue that it takes typing", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.addInitScript(() => {
+      window.WebSocket = new Proxy(window.WebSocket, {
+        construct(target, args) {
+          const url = new URL(String(args[0]), window.location.href);
+          if (url.searchParams.has("schema_version")) url.searchParams.set("schema_version", "0");
+          return new target(url.toString(), args[1]);
+        },
+      });
+    });
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const statement = blockNodeId(specSlug, requirementBlockId(2));
+    const other = blockNodeId(specSlug, requirementBlockId(3));
+    await openWithNoRowFocused(page, seeded.key);
+    const statementRow = nodeRow(page, statement).first();
+    const otherRow = nodeRow(page, other).first();
+    await expect(statementRow, "the statement's row is not drawn").toBeAttached();
+    await expect(otherRow, "the second statement's row is not drawn").toBeAttached();
+
+    // Under the pointer before any editor of the document opens.
+    await statementRow.hover();
+    await nextFrames(page);
+    expect(
+      await rowCue(statementRow),
+      "a statement of a document the server admits read-only draws a cue under the pointer before its editor opens"
+    ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+
+    // Enter opens the statement's editor, which the room admits read-only; then another statement
+    // of the same document is under the pointer.
+    await focusRow(page, statement);
+    await page.keyboard.press("Enter");
+    await expect(
+      statementRow.locator("[data-editor-box] .dispatch-doc"),
+      "Enter drew no read-only document in the statement's row"
+    ).toHaveAttribute("data-read-only", "true");
+    await otherRow.hover();
+    await nextFrames(page);
+    expect(
+      await rowCue(otherRow),
+      "a statement of a document the room admitted read-only draws a cue under the pointer"
+    ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+  });
+});
+
 /** Where `after` differs from `before`: the stretch of each that differs, with a few characters
  *  around it, for a failure to say where an edit landed. */
 function changeIn(before: string, after: string): string {
