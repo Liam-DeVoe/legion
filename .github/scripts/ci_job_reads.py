@@ -1638,6 +1638,50 @@ SESSION_SCRIPT_RUNS = [
 ]
 
 
+# The agent-harness job's plugin-smokes part: the four live scripts of the Oh My Pi plugin, each
+# itself the test and a step of its own, keyed by the step that runs it. Each sources
+# scripts/e2e/lib/plugin-smoke.sh, which runs scripts/e2e/lib/plugin-smoke-stack.ts under bun; that
+# starts the Envoy stack of packages/envoy-client/test/envoy-stack.ts for all four and the Dispatch
+# stack of dispatch-stack.ts for smoke-btw.sh and omp-roundtrip.sh, and both build their binaries
+# through envoy-stack.ts's buildGoBinaries: those are their go commands, which PLUGIN_SMOKE_RUNS
+# pins to each rig's own line.
+AGENT_HARNESS_PLUGIN_SMOKES = "plugin-smokes"
+PLUGIN_SMOKE_DELIVERY = "packages/pi-envoy/scripts/smoke-delivery.sh"
+PLUGIN_SMOKE_BTW = "packages/pi-envoy/scripts/smoke-btw.sh"
+PLUGIN_SMOKE_STALL = "packages/pi-envoy/scripts/smoke-registration-stall.sh"
+PLUGIN_SMOKE_ROUNDTRIP = "packages/dispatch/e2e/acceptance/omp-roundtrip.sh"
+AGENT_HARNESS_PLUGIN_SMOKE_STEPS = {
+    PLUGIN_SMOKE_DELIVERY: "A message to a role reaches the session that claimed it",
+    PLUGIN_SMOKE_BTW: "A targeted Dispatch message mid-turn gets a correlated reply",
+    PLUGIN_SMOKE_STALL: "A wedged or removed registration keeps the pane listed",
+    PLUGIN_SMOKE_ROUNDTRIP: "A person's answer and message reach the session",
+}
+
+
+def at_plugin_smokes(step):
+    """A citation of a step of the agent-harness job's plugin-smokes part."""
+    return at(AGENT_HARNESS_PLUGIN_SMOKES, step, AGENT_HARNESS_WORKFLOW)
+
+
+def at_plugin_smoke(script):
+    """A citation of the plugin-smokes step that runs one of the four scripts."""
+    return at_plugin_smokes(AGENT_HARNESS_PLUGIN_SMOKE_STEPS[script])
+
+
+PLUGIN_SMOKE_RUNS = [
+    script_run("packages/envoy-client/test/envoy-stack.ts",
+               'const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {',
+               "buildGoBinaries, which scripts/e2e/lib/plugin-smoke-stack.ts:28-31 reaches through startEnvoyStack for "
+               "the Envoy stack of every step of " + ", ".join(at_plugin_smoke(script) for script in AGENT_HARNESS_PLUGIN_SMOKE_STEPS),
+               ENVOY, ["./internal/testnats/cmd/natsd", "./cmd/listener"], mode="build"),
+    script_run("packages/envoy-client/test/dispatch-stack.ts",
+               'packages: ["./cmd/dispatch"],',
+               f"the packages that rig hands buildGoBinaries, which scripts/e2e/lib/plugin-smoke-stack.ts:24-27 starts "
+               f"for {at_plugin_smoke(PLUGIN_SMOKE_BTW)} and {at_plugin_smoke(PLUGIN_SMOKE_ROUNDTRIP)}",
+               ENVOY, ["./cmd/dispatch"], mode="build"),
+]
+
+
 
 # The daemon-go race step's -skip: the tests of its package that jobs of their own run, the
 # plugin-pack job's, the daemon-live job's and the agent-harness job's two parts', in one pattern
@@ -2794,13 +2838,17 @@ GATES = [
     # (SESSION_SCRIPT_RUNS), the pi-envoy they pack through the same scripts/e2e/lib/pack-plugin.sh,
     # the claude-envoy build, the SPA two of them build, and the drivers and model stand-ins they
     # run under bun, whose loads .github/scripts/ci_ts_programs.py's BUNDLES holds to this filter.
+    # The plugin-smokes part adds its own: the four scripts of AGENT_HARNESS_PLUGIN_SMOKE_STEPS, the
+    # rig they source, the two stacks and the model stand-in it runs under bun, whose loads BUNDLES
+    # holds to this filter too, their go commands (PLUGIN_SMOKE_RUNS) and the pi-envoy they pack
+    # through the same scripts/e2e/lib/pack-plugin.sh.
     gate("agent_harness", AGENT_HARNESS_JOB, runs=[
         script_run(f"{DAEMON}/internal/daemon/live_agent_proof_test.go",
                    'build := exec.Command("go", "build", "-o", binary, "./cmd/legion")',
                    f"buildProofLegion, which the five tests {at_pane_drivers(AGENT_HARNESS_STEP)} runs and the one "
                    f"{at_tmux_scripts(AGENT_HARNESS_TMUX_STEP)} runs call",
                    DAEMON, [LEGION_BUILD], mode="build"),
-    ] + TMUX_SCRIPT_RUNS + SESSION_SCRIPT_RUNS, exact=[
+    ] + TMUX_SCRIPT_RUNS + SESSION_SCRIPT_RUNS + PLUGIN_SMOKE_RUNS, exact=[
         pinned_step(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_STEP, DAEMON, AGENT_HARNESS_SCRIPT, [
             (DAEMON, [f"./{AGENT_HARNESS_PACKAGE}/"], "go test -run over the package the five tests are in", {}),
         ], workflow=AGENT_HARNESS_WORKFLOW),
@@ -2928,6 +2976,33 @@ GATES = [
       + install_omp(AGENT_HARNESS_SESSION_SCRIPTS, AGENT_HARNESS_WORKFLOW)
       + setup_go(AGENT_HARNESS_SESSION_SCRIPTS, f"{DAEMON}/go.mod", AGENT_HARNESS_WORKFLOW)
       + bun_job(AGENT_HARNESS_SESSION_SCRIPTS, AGENT_HARNESS_WORKFLOW)
+      + reads(*[(script, at_plugin_smoke(script)) for script in AGENT_HARNESS_PLUGIN_SMOKE_STEPS])
+      + reads(
+        ("scripts/e2e/lib/plugin-smoke.sh", "smoke-delivery.sh:15, smoke-btw.sh:21, smoke-registration-stall.sh:98 "
+                                            "and omp-roundtrip.sh:24 source it"),
+        ("scripts/e2e/lib/pack-plugin.sh", "scripts/e2e/lib/plugin-smoke.sh:193 runs it for pi-envoy"),
+        ("scripts/e2e/lib/plugin-smoke-model.ts", "scripts/e2e/lib/plugin-smoke.sh:205 runs it under bun, the model "
+                                                  "stand-in"),
+        ("scripts/e2e/lib/messages-standin.ts", "scripts/e2e/lib/plugin-smoke-model.ts:24 imports runStandin from it"),
+        ("packages/pi-shared/test/omp-harness.ts", "scripts/e2e/lib/plugin-smoke-model.ts:23 imports isSelfCheck"),
+        ("scripts/e2e/lib/plugin-smoke-stack.ts", "scripts/e2e/lib/plugin-smoke.sh:216 runs it under bun, the stacks"),
+        ("packages/envoy-client/test/**", "scripts/e2e/lib/plugin-smoke-stack.ts:24-31 imports envoy-stack.ts and "
+                                          "dispatch-stack.ts"),
+        (TEST_FIXTURES_SRC, "packages/envoy-client/test/envoy-stack.ts:4 and dispatch-stack.ts:3, which "
+                            "scripts/e2e/lib/plugin-smoke-stack.ts imports, import "
+                            "@legion/test-fixtures/temporary-directories"),
+        ("packages/pi-envoy/scripts/stall-fixture.ts", "smoke-registration-stall.sh:246 loads it into each pane with -e"),
+        ("packages/contracts/**", "smoke-registration-stall.sh:112 reads SESSION_HEARTBEAT_MS and "
+                                  "SESSION_LIVE_WINDOW_MS from @legion/contracts with bun -e"),
+    ) + [
+        Read(g, f"{at_plugin_smokes(AGENT_HARNESS_PLUGIN_SMOKE_STEPS[PLUGIN_SMOKE_DELIVERY])} and the three after it: "
+                "scripts/e2e/lib/plugin-smoke.sh:193 packs packages/pi-envoy through scripts/e2e/lib/pack-plugin.sh, "
+                "whose `bun pm pack` runs its prepack")
+        for g in PACK_READS
+    ] + install_jj(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
+      + install_omp(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
+      + setup_go(AGENT_HARNESS_PLUGIN_SMOKES, f"{ENVOY}/go.mod", AGENT_HARNESS_WORKFLOW)
+      + bun_job(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`

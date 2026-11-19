@@ -5167,7 +5167,7 @@ What a live run started is left alone, since Stages 2 and 3 take no lock and two
 ## lib/operator-dispatch.sh
 
 The operator's Dispatch, for a script run from the operator's shell.
-Stage 3 and `stage3-4b13b-acceptance.sh` read their production audit's server and bearer through it, and `packages/pi-envoy/scripts/smoke-btw.sh` the Dispatch it asks as an agent.
+Stage 3 and `stage3-4b13b-acceptance.sh` read their production audit's server and bearer through it.
 
 ```sh
 . "$root/scripts/e2e/lib/operator-dispatch.sh"     # sourced, never run

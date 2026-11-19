@@ -111,6 +111,30 @@ name: CI job agent-harness
 # Code session. In both parts a failed step leaves its evidence directory under
 # agent-harness-logs, which the step after them uploads when the part fails.
 #
+# plugin-smokes runs the four live scripts of the Oh My Pi plugin, each itself the test and a step
+# of its own with the same CHECK lines: packages/pi-envoy/scripts/smoke-delivery.sh (a session
+# claims a role, a message to the role reaches its model, and its end frees the role),
+# smoke-btw.sh (a targeted Dispatch message to a session in the middle of a tool call, as a BTW and
+# as a steer, gets a correlated reply), smoke-registration-stall.sh (a pane whose registration is
+# wedged stays listed past the listener's live window, and one taken out of the registry puts
+# itself back) and packages/dispatch/e2e/acceptance/omp-roundtrip.sh (a person's answer to the
+# session's ask, and a person's message to the role it holds, reach its transcript). Each takes the
+# job's environment alone, through scripts/e2e/lib/plugin-smoke.sh: Oh My Pi from LEGION_TEST_OMP in
+# `--mode rpc`, this checkout's pi-envoy packed through scripts/e2e/lib/pack-plugin.sh, natsd and
+# the listener of packages/envoy-client/test/envoy-stack.ts, the Dispatch of
+# packages/envoy-client/test/dispatch-stack.ts with its NATS on that stack, on a database of its own
+# on the job's PostgreSQL (LEGION_TEST_PG_DSN), and the model stand-in lib/plugin-smoke-model.ts on
+# lib/messages-standin.ts, keyed by a placeholder of the run's own, which makes the tool calls each
+# script's session needs. lib/plugin-smoke-stack.ts starts the two stacks. Nothing of theirs starts
+# a container, reads a model key or reaches GitHub.
+#
+# What plugin-smokes installs is what its scripts need: jj, for the mise install-omp installs Oh
+# My Pi through (LEGION_TEST_OMP); Bun and a frozen install, for the plugin pack, the stacks and the
+# stand-in; and setup-go and the go-envoy cache restore, since the stacks build natsd, the listener
+# and Dispatch, all of packages/envoy. No apt package, no tmux, no Claude Code and no Chromium. A
+# failed step leaves its logs under agent-harness-logs, which the step after them uploads when the
+# part fails.
+#
 # Each part's last step reports ci-ok for the caller: on a merge-group run that part's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
@@ -572,6 +596,106 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: agent-harness-session-scripts-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent-harness-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: agent-harness
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  plugin-smokes:
+    runs-on: ubuntu-24.04
+    # Budget: in a Legion worker pod under gVisor smoke-delivery.sh passed end to end in 17 s,
+    # smoke-btw.sh in 93 s (each mode's turn sleeps 45 s, and the steer is read after it),
+    # omp-roundtrip.sh in 36 s and smoke-registration-stall.sh in 529 s (four arms one after
+    # another, each stall arm's watch a 90 s live window and a minute or more past it), each after
+    # its own builds of natsd, the listener and, for two of them, Dispatch, which the go-envoy
+    # cache restore makes incremental: about 11 minutes, and about 16 with the installs, inside the
+    # part budget of about 24; 25 minutes leaves the first runs on a runner room to say what they
+    # take.
+    timeout-minutes: 25
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml):
+        # the image and the shape the daemon-go job declares. Dispatch's migrations create the
+        # pgvector extension in the database dispatch-stack.ts makes for each script.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The jj the worker image ships, which leaves the mise install-omp installs the pin through.
+      - uses: ./.github/actions/install-jj
+
+      # Every Oh My Pi session of the four scripts runs the Oh My Pi .omp-pin names
+      # (LEGION_TEST_OMP), and each script refuses without one.
+      - uses: ./.github/actions/install-omp
+
+      # The plugin pack, the two stacks (lib/plugin-smoke-stack.ts) and the model stand-in run on
+      # Bun over the installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      # go-envoy: the stacks build natsd, the listener and Dispatch, all of packages/envoy, as
+      # envoy-session-stall's stacks do.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+
+      # Each script's logs go to the directory PLUGIN_SMOKE_EVIDENCE_DIR names, set on the command
+      # line rather than in an env: block, which ci_filter_coverage.py reads as able to change what
+      # the go commands the scripts start compile. The steps after the first run whether or not an
+      # earlier one failed, so one failed script does not hide the result of the others.
+      - name: A message to a role reaches the session that claimed it
+        run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/smoke-delivery" bash packages/pi-envoy/scripts/smoke-delivery.sh
+
+      - name: A targeted Dispatch message mid-turn gets a correlated reply
+        if: ${{ !cancelled() }}
+        run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/smoke-btw" bash packages/pi-envoy/scripts/smoke-btw.sh
+
+      - name: A wedged or removed registration keeps the pane listed
+        if: ${{ !cancelled() }}
+        run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/smoke-registration-stall" bash packages/pi-envoy/scripts/smoke-registration-stall.sh
+
+      - name: A person's answer and message reach the session
+        if: ${{ !cancelled() }}
+        run: PLUGIN_SMOKE_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/omp-roundtrip" bash packages/dispatch/e2e/acceptance/omp-roundtrip.sh
+
+      # A failed step's logs: each script's model stand-in requests, its services' logs and each
+      # session's RPC stream, stderr and transcript.
+      - name: Upload the plugin smokes' logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-harness-plugin-smokes-logs-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agent-harness-logs
 
       - name: Report ci-ok when this job decides a merge-group run

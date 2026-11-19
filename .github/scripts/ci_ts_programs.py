@@ -100,6 +100,15 @@ BUNDLES = [
           ("session-delivery-model.ts", "session-scripts", "envoy-session-delivery.sh",
            "Every Envoy event reaches both sessions once", "the model stand-in"),
       )],
+    # Its plugin-smokes part runs the stacks and the model stand-in under bun from
+    # scripts/e2e/lib/plugin-smoke.sh, which each of its four scripts sources.
+    *[("agent_harness", f"scripts/e2e/lib/{entry}",
+       "ci-job-agent-harness.yaml's plugin-smokes job: A message to a role reaches the session that claimed it "
+       f"and the three after it (scripts/e2e/lib/plugin-smoke.sh runs `bun scripts/e2e/lib/{entry}`, {what})")
+      for entry, what in (
+          ("plugin-smoke-stack.ts", "the Envoy and Dispatch stacks"),
+          ("plugin-smoke-model.ts", "the model stand-in"),
+      )],
     # The postgres-rows job of dispatch-browser.yaml runs three files of packages/dispatch's
     # e2e/__tests__ with `bun test`. dispatch_ui's tsc program compiles them and its job runs none
     # of them, so what they load is this filter's to hold, and each file is built as an entry.

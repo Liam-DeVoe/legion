@@ -2,10 +2,12 @@ import { closeSync, mkdirSync, openSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SQL, type Subprocess } from "bun";
+import { z } from "zod";
 import {
   awaitReady,
   buildGoBinaries,
   ENVOY_MODULE,
+  type EnvoyStack,
   freePorts,
   type ReadyBudget,
   stopProcess,
@@ -60,7 +62,16 @@ export interface DispatchStackOptions {
    * `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
+  /**
+   * The Envoy stack the server runs on, which turns its NATS on: it publishes its events to that
+   * natsd (`NATS_URLS`) and delivers its targeted messages and mentions through that listener
+   * (`ENVOY_URL`), as a deployment's server does, so a real session on the same stack is sent
+   * what a person writes. Without it the server runs with NATS off (`DISPATCH_NATS_DISABLED=1`).
+   */
+  readonly envoy?: Pick<EnvoyStack, "envoyUrl" | "natsUrl">;
 }
+
+const HealthSchema = z.object({ nats: z.boolean().nullable() });
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
 // The server migrates a database of its own as it boots, and a cold `go build` of ./cmd/dispatch
@@ -81,13 +92,15 @@ function testDatabaseServer(): string {
 /**
  * Starts a real Dispatch server, built from this checkout, on a loopback port and a database of
  * its own: a copy of template1 on the server `DISPATCH_TEST_DATABASE_URL` names, which the server
- * migrates itself as it boots. It resolves once `GET /api/v1` answers 200, and throws, naming why,
- * when `go` or the DSN is missing, the build fails, or the server does not come up.
+ * migrates itself as it boots. It resolves once `GET /api/v1` answers 200 and, on an Envoy stack,
+ * once `/healthz` says its NATS is connected, and throws, naming why, when `go` or the DSN is
+ * missing, the build fails, or the server does not come up.
  *
- * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
- * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
- * person's write is the header alone. Nothing of the caller's Dispatch, Envoy or NATS environment
- * reaches it, since the child is given the environment below and nothing else.
+ * The server runs with header identity on (`X-Dispatch-User`), as `startScratchDispatchOn` runs it
+ * for the daemon's own tests: a person's write is the header alone. Its NATS is off unless
+ * `options.envoy` names the stack it runs on, so by default no event leaves the process. Nothing
+ * of the caller's Dispatch, Envoy or NATS environment reaches it, since the child is given the
+ * environment below and nothing else.
  *
  * The stack works in `options.work`, which the caller reserved with
  * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it when the file
@@ -140,7 +153,9 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
         DISPATCH_AGENT_TOKEN: token,
         DISPATCH_IDENTITY: "header:X-Dispatch-User",
         DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
-        DISPATCH_NATS_DISABLED: "1",
+        ...(options.envoy === undefined
+          ? { DISPATCH_NATS_DISABLED: "1" }
+          : { NATS_URLS: options.envoy.natsUrl, ENVOY_URL: options.envoy.envoyUrl }),
         DISPATCH_LISTEN_HOST: "127.0.0.1",
         DISPATCH_PORT: String(port),
         DISPATCH_SERVER_URL: url,
@@ -152,7 +167,12 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     closeSync(out);
     await awaitReady("Dispatch", child, log, DISPATCH_READY, async () => {
       const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
-      return response.ok;
+      if (!response.ok) return false;
+      if (options.envoy === undefined) return true;
+      // On an Envoy stack the server is ready once its publisher is connected, so the first event
+      // a caller makes goes to the bus rather than waiting in the outbox for it.
+      const health = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(2_000) });
+      return HealthSchema.safeParse(await health.json()).data?.nats === true;
     });
     return { url, token, stop };
   } catch (error) {
