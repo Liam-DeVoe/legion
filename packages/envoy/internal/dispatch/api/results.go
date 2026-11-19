@@ -268,6 +268,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// else happened.
 	s.readThroughPullRequests(r.Context(), check.IssueKey, written.result.CommitSHA, readThrough)
 	s.publish(r.Context(), written.event)
+	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		// The check as the transaction that wrote the row saw it, which after a settlement that
 		// landed between the resolve and the locks is not the one resolveCheck read: the line
@@ -500,6 +501,18 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	answerCompatibilityCurrency(checks, at)
 	keepFieldsOlderCommandsRead(checks)
+	// Each result's observed text is registered for its tree once no check's results are copied
+	// any more, since what is registered is a pointer into the row: deriveCIResults replaces a
+	// check's results, and keepFieldsOlderCommandsRead moves them into new lists, results and the
+	// recorded_results of a check CI proves, whose results take their trees as well.
+	for index := range checks {
+		for result := range checks[index].Results {
+			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
+		}
+		for result := range checks[index].RecordedResults {
+			trees.text(&checks[index].RecordedResults[result].ObservedTree, checks[index].RecordedResults[result].Observed)
+		}
+	}
 	body.Checks = checks
 	trees.resolve()
 	if s.stateHidden() {
