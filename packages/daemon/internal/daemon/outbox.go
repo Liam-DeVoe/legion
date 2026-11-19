@@ -1822,9 +1822,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
 			return nil
 		}
-		if payload.Phase != "" && payload.Phase != issue.Phase {
-			r.log.Info("outbox start serves a phase the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
-				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
+		// A start names the phase it was queued for, and at the phase step, which every role the
+		// deployment defines runs as, the role names which step: a start of one step's role that
+		// waited on its row's backoff while the task went back to another step of the phase reads
+		// the same phase, generation and entry, and is not the work of the step that runs
+		// (record.Issue.HoldsQueued, the rule the admission pass and the supervisor ask too).
+		if payload.Phase != "" && !issue.HoldsQueued(payload.Role, payload.Phase) {
+			r.log.Info("outbox start serves a phase or a step the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
+				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role, "stepRole", issue.StepRole)
 			return nil
 		}
 		// A start carries the phase entry its task is of (record.SuperviseRequest.Entry), and the

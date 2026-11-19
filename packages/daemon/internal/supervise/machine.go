@@ -31,7 +31,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -834,14 +833,16 @@ type Deps struct {
 	// that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
 	// any decision in flight (Machine.View). nil holds no delivery back.
 	IssueInTurn func(issue string, except claim.Token) (claim.Token, bool)
-	// PhaseHolds says whether issue is still in phase p on run generation: the workflow enqueues a
-	// task for the phase and run its issue was in, and the outbox refuses to start a role for a
-	// phase the issue has left (daemon/outbox.go), so a delivery queued before the phase or the run
-	// moved on is that same staleness one step later and is dropped rather than sent. It is asked
-	// only about a delivery that names a phase; a task an operator delivered by hand names none and
-	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
-	// task of no run. nil holds every delivery.
-	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// PhaseHolds says whether d, a delivery queued for c, is still the work of c's issue: the
+	// workflow enqueues a task for the phase and run its issue was in, and at the phase step, which
+	// every role a deployment defines runs as, for the step of c's role, and the outbox refuses to
+	// start a role for a phase or a step the issue has left (daemon/outbox.go), so a delivery
+	// queued before the phase, the step or the run moved on is that same staleness one step later
+	// and is dropped rather than sent. It is asked only about a delivery that names a phase; a
+	// task an operator delivered by hand names none and is never put to it, which the machine
+	// decides rather than this answer. d's generation is 0 for a task of no run. nil holds every
+	// delivery.
+	PhaseHolds func(ctx context.Context, c Claim, d Delivery) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim

@@ -3265,10 +3265,11 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 
 // finishFencedStarts is the repair of a held start row that has outlived the fences the outbox
 // would have run it under: its issue has left the workflow, its tree lingers or has left, or the
-// issue has moved past the phase or the generation the row names. The outbox applies those
-// fences when it runs a row, but a row waiting for a slot may never be run at all, and one that
-// could never act would keep its issue in the waiting line for ever and take a slot from work
-// that could use it. Finishing the row deletes it, exactly as the outbox's own fence would.
+// issue has moved past the generation the row names, or past its phase or, at the phase step, its
+// step (record.Issue.HoldsQueued, the outbox's own rule). The outbox applies those fences when it
+// runs a row, but a row waiting for a slot may never be run at all, and one that could never act
+// would keep its issue in the waiting line for ever and take a slot from work that could use it.
+// Finishing the row deletes it, exactly as the outbox's own fence would.
 //
 // A tree that lingers is read by the absence of its root rather than by its root's deadline: a
 // lingering root is in phase done at a status that is not todo, which is exactly what the
@@ -3312,7 +3313,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		issue, recorded := byKey[owed.Issue]
 		root, rooted := byKey[issue.Tree]
 		if recorded && rooted && !record.OutOfWorkflow(issue.Status) && !root.Lingers() &&
-			owed.Generation == issue.Generation && owed.Phase == issue.Phase {
+			owed.Generation == issue.Generation && issue.HoldsQueued(owed.Role, owed.Phase) {
 			// The fences keep this row, so it stands for the stop rule below. A row whose issue
 			// and role yield no claim token has no run to read, as the slot repair's holders have
 			// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than

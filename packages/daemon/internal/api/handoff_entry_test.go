@@ -820,16 +820,16 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 // carries no hook of it at all and every delivery of that machine's holds (supervise's
 // phaseHolds), which is a test passing with the rule it is about never asked.
 func holdPhases(h *harness) {
-	h.supervisor.deps.PhaseHolds = func(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
+	h.supervisor.deps.PhaseHolds = func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error) {
 		var issue *record.Issue
 		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 			var err error
-			issue, err = record.NewStore().Issue(ctx, tx, key)
+			issue, err = record.NewStore().Issue(ctx, tx, c.Issue)
 			return err
 		}); err != nil {
 			return false, err
 		}
-		return record.PhaseHolds(issue, queuedFor, generation), nil
+		return record.PhaseHolds(issue, c.Role, d.Phase, d.Generation), nil
 	}
 }
 

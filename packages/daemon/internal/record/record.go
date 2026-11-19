@@ -2391,15 +2391,31 @@ func (i Issue) Standing() pods.Standing {
 // other issue's.
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
-// PhaseHolds says whether a task queued for phase queuedFor on run generation is still the work
-// of issue, the record of the issue its claim works: the issue is in that phase and, for a task
-// of a run (generation above 0), on that run. An issue the record does not hold (nil) holds every
-// task, since only a claim the workflow never made has none. It is the one definition of that
-// question: the daemon answers supervise's Deps.PhaseHolds with it (daemon's
-// workflowRuntime.phaseHolds, which says why each half is compared), and a test that wires the
-// answer itself calls it too, so the rule it exercises is the one production runs.
-func PhaseHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
-	return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation))
+// HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
+// task a start delivers — is the work of the place the issue stands at now: the issue stands in
+// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
+// runs as step, so a start or a task queued for the step of one role names a phase that still
+// reads the same while the task stands at the step of another; the role is what tells the two
+// apart. Away from step the phase alone is compared: one role works several phases (the
+// implementer implementing and retro), and a phase names its one role. A role that runs two steps
+// of one task is told apart from itself by its phase entry, which each start of it raises
+// (PhaseRow.Entry). It is the one definition of that question, which the three judges of queued
+// work ask, each on its own read: the outbox before it runs a start (daemon's supervise), the
+// admission pass before it lets an owed start take a slot (admit's finishFencedStarts), and the
+// supervisor before it sends a queued task (PhaseHolds).
+func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
+	return i.Phase == queuedFor && (queuedFor != phase.Step || i.StepRole == role)
+}
+
+// PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still
+// the work of issue, the record of the issue its claim works: the issue holds the work
+// (HoldsQueued) and, for a task of a run (generation above 0), is on that run. An issue the record
+// does not hold (nil) holds every task, since only a claim the workflow never made has none. It is
+// the one definition of that question: the daemon answers supervise's Deps.PhaseHolds with it
+// (daemon's workflowRuntime.phaseHolds, which says why each half is compared), and a test that
+// wires the answer itself calls it too, so the rule it exercises is the one production runs.
+func PhaseHolds(issue *Issue, role claim.Role, queuedFor phase.Phase, generation uint64) bool {
+	return issue == nil || (issue.HoldsQueued(role, queuedFor) && (generation == 0 || generation == issue.Generation))
 }
 
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"

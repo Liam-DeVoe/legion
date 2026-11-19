@@ -28,7 +28,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
@@ -709,10 +708,13 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 // phase is compared, not the role that works it: one role runs several phases — the implementer
 // runs implementing and retro, and the role the project's `production_check` named at the open
 // (record.ProductionCheck.Role) runs each look of the check — and a task written for the first is
-// not the work of the third. The run is compared because a re-admission can restart the issue in the phase
-// it stood in: an operator suspension keeps a claim's queued task (supervise's settle), so without
-// it the operator's resume would send the run that is over's task into the new run, ahead of the
-// new run's own. A task of no run (generation 0) is held to its phase alone.
+// not the work of the third. At the phase step the role is compared too: every role a deployment
+// defines runs as step, so a task written for the step of one role is not the work of the step of
+// another, whose phase reads the same (record.Issue.HoldsQueued). The run is compared because a
+// re-admission can restart the issue in the phase it stood in: an operator suspension keeps a
+// claim's queued task (supervise's settle), so without it the operator's resume would send the run
+// that is over's task into the new run, ahead of the new run's own. A task of no run (generation
+// 0) is held to its phase alone.
 //
 // A delivery of no phase holds here. Only the workflow names one, so an operator's delivery made
 // by hand through the API is not dropped for the phase its issue is in: the operator asked for
@@ -723,18 +725,18 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 //
 // Nothing else on the delivery would answer this: the id is rotated by a prompt retry, and the
 // task text is the workflow's prose. The phase is typed data, persisted with the delivery, and no
-// path rewrites it.
+// path rewrites it; the role is the claim's, fixed for its life.
 //
 // A claim on an issue the daemon does not record holds too. The workflow never deletes an issue,
 // so there is no record only for a claim the workflow never made — the operator's own spawn, whose
 // issue key need not be an issue key at all. The comparison itself is record.PhaseHolds, which a
 // test that wires this answer without a daemon calls too.
-func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
-	issue, err := w.recordedIssue(ctx, key)
+func (w *workflowRuntime) phaseHolds(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error) {
+	issue, err := w.recordedIssue(ctx, c.Issue)
 	if err != nil {
-		return false, fmt.Errorf("read %s for the phase of its task: %w", key, err)
+		return false, fmt.Errorf("read %s for the phase of its task: %w", c.Issue, err)
 	}
-	return record.PhaseHolds(issue, queuedFor, generation), nil
+	return record.PhaseHolds(issue, c.Role, d.Phase, d.Generation), nil
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
