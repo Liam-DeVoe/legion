@@ -3075,9 +3075,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - An event says what its write changed, so a reader refreshes only what it shows (the dashboard's `packages/dispatch/web/src/api/event-refresh.ts`).
   Every field is additive, read in the writer's own transaction, and absent (`omitzero`) from an event written before it, so a reader treats an absent field as "anything may have moved"; `[]` means the write names nothing.
-  `issue.created`, `issue.updated` and `issue.closed` carry `changed` (`issueChangedFields`, `api/issue_event_fields.go`:
+  `issue.created`, `issue.updated` and `issue.closed` carry `changed` (`model.IssueChangedFields`, which the API's create and patch call, and the outbox's test of the shared issue event examples too:
   every field whose value differs between the issue before and after the write, in one fixed order
-  — `title`, `status`, `closed_at` (whether the issue is closed, so a close or a reopen, which a status alone cannot say), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo` (its own or the one it resolves to), `components` (the effective attachment, an inherited change included), `blocked_by`, `external_links`;
+  — `title`, `status`, `closed_at` (whether the issue is closed, so a close or a reopen, which a status alone cannot say), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo` (its own or the one it resolves to), `components` (the effective attachment, an inherited change included), `advances`, `blocked_by`, `external_links`;
   for `issue.created`, measured from `unsetIssue`, every field the new issue holds a value in) and `ancestors` (`issueAncestors`:
   the parent chain, parent first up to the root, `[]` for a root, capped at `parentDepthCap`).
   `thread_logins` is every login whose Inbox the write can have moved, sorted and never nil:

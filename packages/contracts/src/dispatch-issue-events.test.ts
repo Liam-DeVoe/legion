@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { z } from "zod";
 import {
   ActorActSchema,
   ActorOriginSchema,
@@ -15,12 +16,14 @@ import {
   WrittenIssueEventPayloadSchema,
 } from "./dispatch-api";
 import { EnvelopeSchema } from "./envelope";
+import { objectSchema, objectShape, schemaNode, takes } from "./schema-inspection.testing";
 
 /**
  * The issue event envelopes Dispatch's outbox publishes, shared with the Go writer
  * (`packages/envoy/internal/dispatch/outbox`, whose `TestTheBuiltIssueEnvelopesAreTheSharedFixtures`
  * requires the envelope it builds to equal each one, and the five together to hold every field it
- * writes) and with the Legion daemon's intake test, which requires every field the daemon reads.
+ * writes, set and in the form it writes when it holds nothing) and with the Legion daemon's intake
+ * test, which requires every field the daemon reads.
  */
 const EXAMPLES = [
   "issue-updated-every-field.json",
@@ -29,6 +32,8 @@ const EXAMPLES = [
   "issue-updated-null-fields.json",
   "issue-released-null-claim.json",
 ] as const;
+
+type Example = (typeof EXAMPLES)[number];
 
 /** The schema each event type's payload is written by (`DispatchEvent`), and for `issue.*` the
  *  tolerant schema a reader of the bus reads it with; a claim event's reader reads the written one. */
@@ -40,8 +45,7 @@ const PAYLOADS: Record<string, { written: unknown; read?: typeof IssueEventPaylo
 
 /** Each key a schema declares that Dispatch never writes on these events, by the object that
  *  declares it, with the reason: the Go test's `neverWritten` says the same of the Go types. An
- *  example that carries one fails, and so does a declared key that no example carries and that is
- *  not named here. */
+ *  example that carries one fails. */
 const NEVER: Record<string, Record<string, string>> = {
   envelope: {
     expires_at: "the outbox's envelope() sets none",
@@ -74,59 +78,84 @@ const NEVER: Record<string, Record<string, string>> = {
   },
 };
 
-/** Each key a schema declares that Dispatch writes on some of these events and leaves out of
- *  others, with the reason it is absent. Some example still carries each. */
-const SOMETIMES: Record<string, Record<string, string>> = {
-  "issue.updated payload": {
-    references_changed: "absent when the patch moved no issue's edges",
-    thread_logins: "present only when the patch moved the status or the assignee",
+/** The token reasons of an actor's absent keys (api.brokerTokenActor): a broker-issued token names
+ *  a person or a service, never both, and a project only beside a person. */
+const SERVICE_TOKEN = "its token names a service, so no person and no project";
+const PERSON_TOKEN = "its token names a person, so no service";
+const PERSON_ONLY_TOKEN =
+  "its token names a person and no single project, so no service and no project";
+const NO_PLACE = "its requests name no place";
+
+/**
+ * Each key a schema declares that one example does not hold, by the example and the key's path in
+ * it, with the reason that write leaves it out. Every other key each object of an example's
+ * schemas declares, NEVER's apart, must be in that object: so a key removed from an example fails
+ * here, and so does an entry here that names a key its example holds or a path no schema reaches.
+ * The paths start at the `envelope`, its `event` and that event's `payload`.
+ */
+const ABSENT: Record<Example, Record<string, string>> = {
+  "issue-updated-every-field.json": {
+    "event.actor.owner": SERVICE_TOKEN,
+    "event.actor.project": SERVICE_TOKEN,
+    "event.payload.claim.actor.owner": SERVICE_TOKEN,
+    "event.payload.claim.actor.project": SERVICE_TOKEN,
   },
-  "session actor": {
-    origin: "absent when the request named no place",
-    owner: "absent under a token that names a service",
-    service: "absent under a token that names a person",
-    project: "absent under a token that names no single project",
+  "issue-claimed-every-field.json": {
+    "event.actor.service": PERSON_TOKEN,
+    "event.payload.claim.actor.service": PERSON_TOKEN,
+    "event.payload.previous_claim.actor.owner": SERVICE_TOKEN,
+    "event.payload.previous_claim.actor.project": SERVICE_TOKEN,
+  },
+  "issue-updated-no-field-moved.json": {
+    "event.actor.service": PERSON_TOKEN,
+    "event.payload.references_changed": "the write moved no issue's edges",
+    "event.payload.thread_logins": "the write moved neither the status nor the assignee",
+  },
+  "issue-updated-null-fields.json": {
+    "event.actor.origin": NO_PLACE,
+    "event.actor.service": PERSON_ONLY_TOKEN,
+    "event.actor.project": PERSON_ONLY_TOKEN,
+    "event.payload.references_changed": "the write moved no issue's edges",
+  },
+  "issue-released-null-claim.json": {
+    "event.actor.origin": NO_PLACE,
+    "event.actor.service": PERSON_ONLY_TOKEN,
+    "event.actor.project": PERSON_ONLY_TOKEN,
+    "event.payload.previous_claim.actor.origin": NO_PLACE,
+    "event.payload.previous_claim.actor.service": PERSON_ONLY_TOKEN,
+    "event.payload.previous_claim.actor.project": PERSON_ONLY_TOKEN,
   },
 };
 
-/** A zod schema's definition, read through either spelling zod gives it. */
-function defOf(schema: unknown): Record<string, unknown> | undefined {
-  if (schema === null || typeof schema !== "object") return undefined;
-  const held = "_def" in schema ? schema._def : "def" in schema ? schema.def : undefined;
-  return held !== null && typeof held === "object" ? { ...held } : undefined;
-}
-
-/** The object schema a schema is built on, read through `.readonly()`, `.optional()` and
- *  `.nullable()`. */
-function objectOf(schema: unknown): unknown {
-  const def = defOf(schema);
-  if (def === undefined) return undefined;
-  if (def.type === "object") return schema;
-  return def.innerType === undefined ? undefined : objectOf(def.innerType);
-}
-
-function shapeOf(object: unknown): Record<string, unknown> {
-  const shape = defOf(object)?.shape;
-  return shape !== null && typeof shape === "object" ? { ...shape } : {};
-}
-
-/** The name of each object these envelopes are read with, the one NEVER and SOMETIMES use; an
- *  object not named here (an `advances` entry) is named by where it is. */
+/** The name each object of the schemas is known by in NEVER and in the problems; an object not
+ *  named here (an `advances` entry) is named by where it is. The reading schema of an update's
+ *  payload reads the object the written one writes, so it takes that object's name. */
 const LABELS = new Map<unknown, string>([
-  [objectOf(EnvelopeSchema), "envelope"],
-  [objectOf(PublishedEventSchema), "event"],
-  [objectOf(WrittenIssueEventPayloadSchema), "issue.updated payload"],
-  [objectOf(IssueClaimEventPayloadSchema), "issue.claimed payload"],
-  [objectOf(IssueReleasedEventPayloadSchema), "issue.released payload"],
-  [objectOf(IssueClaimSchema), "claim"],
-  [objectOf(IssueComponentsSchema), "components"],
-  [objectOf(ExternalLinkSchema), "external link"],
-  [objectOf(ActorOriginSchema), "origin"],
-  [objectOf(ActorActSchema), "act"],
-  [objectOf(ChangedReferenceSchema), "changed reference"],
+  [objectSchema(EnvelopeSchema, "EnvelopeSchema"), "envelope"],
+  [objectSchema(PublishedEventSchema, "PublishedEventSchema"), "event"],
+  [
+    objectSchema(WrittenIssueEventPayloadSchema, "WrittenIssueEventPayloadSchema"),
+    "issue.updated payload",
+  ],
+  [objectSchema(IssueEventPayloadSchema, "IssueEventPayloadSchema"), "issue.updated payload"],
+  [
+    objectSchema(IssueClaimEventPayloadSchema, "IssueClaimEventPayloadSchema"),
+    "issue.claimed payload",
+  ],
+  [
+    objectSchema(IssueReleasedEventPayloadSchema, "IssueReleasedEventPayloadSchema"),
+    "issue.released payload",
+  ],
+  [objectSchema(IssueClaimSchema, "IssueClaimSchema"), "claim"],
+  [objectSchema(IssueComponentsSchema, "IssueComponentsSchema"), "components"],
+  [objectSchema(ExternalLinkSchema, "ExternalLinkSchema"), "external link"],
+  [objectSchema(ActorOriginSchema, "ActorOriginSchema"), "origin"],
+  [objectSchema(ActorActSchema, "ActorActSchema"), "act"],
+  [objectSchema(ChangedReferenceSchema, "ChangedReferenceSchema"), "changed reference"],
   ...ActorSchema.options.map((option): [unknown, string] => {
-    const kind = defOf(shapeOf(objectOf(option)).kind)?.values;
-    return [objectOf(option), `${Array.isArray(kind) ? kind[0] : "unknown"} actor`];
+    const kind = objectShape(option, "ActorSchema")?.kind;
+    const values = kind instanceof z.core.$ZodLiteral ? kind._zod.def.values : [];
+    return [objectSchema(option, "ActorSchema"), `${String(values[0])} actor`];
   }),
 ]);
 
@@ -134,86 +163,103 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Whether a schema takes a value. */
-function takes(schema: unknown, value: unknown): boolean {
-  if (schema === null || typeof schema !== "object" || !("safeParse" in schema)) return false;
-  const parse = schema.safeParse;
-  if (typeof parse !== "function") return false;
-  const answer: unknown = parse.call(schema, value);
-  return isObject(answer) && answer.success === true;
+/** What one walk of an example reads with: the example, its ABSENT entries and the ones a walk
+ *  excused, every key each named object declares, and whether the schema is a tolerant reader,
+ *  which keeps the keys it declares and passes the others over. */
+interface Reading {
+  readonly file: Example;
+  readonly absent: Readonly<Record<string, string>>;
+  readonly excused: Set<string>;
+  readonly declared: Map<string, Set<string>>;
+  readonly problems: string[];
+  readonly tolerant: boolean;
 }
 
-/** The keys each named object declares, and the ones the examples carry. */
-type Coverage = Map<string, { declared: string[]; carried: Set<string> }>;
-
 /**
- * Walks one value of an example with the schema it is read by. Each object must hold every key its
- * schema declares, except one NEVER or SOMETIMES names for that object, and no key its schema does
- * not declare; each key it holds is recorded as carried. A union is read by the member that takes
- * the value, which is how a reader reads it.
+ * Walks one value of an example at `path` with the schema it is read by. Each object must hold
+ * every key its schema declares, except one NEVER names for that object or ABSENT names for that
+ * path, and must hold no key NEVER names; a written schema's object must hold no key its schema
+ * does not declare. A union is read by the member that takes the value, which is how a reader
+ * reads it, and a null holds no key to walk (the schema's own parse above took it). A schema kind
+ * the inspection does not read is an error, so no part of an example goes unread.
  */
-function walk(
-  schema: unknown,
-  value: unknown,
-  where: string,
-  name: string,
-  coverage: Coverage,
-  problems: string[]
-): void {
-  const def = defOf(schema);
-  if (def === undefined) return;
-  switch (def.type) {
-    case "readonly":
-    case "optional":
-    case "nullable":
-      walk(def.innerType, value, where, name, coverage, problems);
+function walk(schema: unknown, value: unknown, path: string, name: string, reading: Reading): void {
+  const node = schemaNode(schema, `${reading.file} ${path}`);
+  if (value === null) return;
+  switch (node.kind) {
+    case "wrapper":
+      walk(node.inner, value, path, name, reading);
       return;
     case "array":
       if (Array.isArray(value)) {
         value.forEach((item, index) => {
-          walk(def.element, item, `${where}[${index}]`, `${name}[]`, coverage, problems);
+          walk(node.element, item, `${path}[${index}]`, `${name}[]`, reading);
         });
       }
       return;
     case "record":
       if (isObject(value)) {
         for (const [key, entry] of Object.entries(value)) {
-          walk(def.valueType, entry, `${where}.${key}`, `${name}.*`, coverage, problems);
+          walk(node.value, entry, `${path}.${key}`, `${name}.*`, reading);
         }
       }
       return;
     case "union": {
-      const options: unknown[] = Array.isArray(def.options) ? def.options : [];
-      const member = options.find((option) => takes(option, value));
-      if (member !== undefined) walk(member, value, where, name, coverage, problems);
+      const member = node.options.find((option) => takes(option, value));
+      if (member === undefined) {
+        reading.problems.push(`${reading.file}'s ${path} is taken by no member of its union`);
+      } else {
+        walk(member, value, path, name, reading);
+      }
       return;
     }
+    case "intersection":
+      // Each part would read the object's keys as its own, so neither part's strictness says
+      // which keys the object may hold: the walk does not read one, and says so.
+      throw new Error(
+        `${reading.file}'s ${path} is read by an intersection, which this walk does not read`
+      );
+    case "leaf":
+      return;
     case "object": {
       if (!isObject(value)) return;
       const label = LABELS.get(schema) ?? name;
-      const shape = shapeOf(schema);
-      const entry = coverage.get(label) ?? { declared: Object.keys(shape), carried: new Set() };
-      coverage.set(label, entry);
-      for (const [key, field] of Object.entries(shape)) {
+      const declared = reading.declared.get(label) ?? new Set<string>();
+      reading.declared.set(label, declared);
+      for (const [key, field] of Object.entries(node.shape)) {
+        declared.add(key);
+        const at = `${path}.${key}`;
+        const never = NEVER[label]?.[key] !== undefined;
         if (key in value) {
-          entry.carried.add(key);
-          walk(field, value[key], `${where}.${key}`, `${label}.${key}`, coverage, problems);
-        } else if (NEVER[label]?.[key] === undefined && SOMETIMES[label]?.[key] === undefined) {
-          problems.push(
-            `${where} holds no "${key}", which the ${label} declares and every such example carries`
+          if (never) {
+            reading.problems.push(
+              `${reading.file}'s ${at} is the ${label}'s "${key}", which NEVER says Dispatch never writes`
+            );
+          }
+          walk(field, value[key], at, `${label}.${key}`, reading);
+        } else if (reading.absent[at] !== undefined) {
+          reading.excused.add(at);
+        } else if (!never) {
+          reading.problems.push(
+            `${reading.file} holds no ${at}, which the ${label} declares and neither NEVER nor ABSENT names`
           );
         }
       }
-      for (const key of Object.keys(value)) {
-        if (!(key in shape))
-          problems.push(`${where} holds "${key}", which the ${label} does not declare`);
+      if (!reading.tolerant) {
+        for (const key of Object.keys(value)) {
+          if (!(key in node.shape)) {
+            reading.problems.push(
+              `${reading.file}'s ${path} holds "${key}", which the ${label} does not declare`
+            );
+          }
+        }
       }
     }
   }
 }
 
 test("the issue events Dispatch publishes are envelopes, events and payloads these schemas read, every key declared", async () => {
-  const coverage: Coverage = new Map();
+  const declared = new Map<string, Set<string>>();
   const problems: string[] = [];
   for (const file of EXAMPLES) {
     const path = new URL(`../../daemon/internal/intake/testdata/dispatch/${file}`, import.meta.url);
@@ -232,51 +278,43 @@ test("the issue events Dispatch publishes are envelopes, events and payloads the
       throw new Error(`${file} is a ${event.type}, which PAYLOADS names no schema for`);
     const written = payload.written as { parse: (value: unknown) => unknown };
     expect(written.parse(event.payload)).toEqual(event.payload);
+    const reading = (tolerant: boolean): Reading => ({
+      file,
+      absent: ABSENT[file],
+      excused,
+      declared,
+      problems,
+      tolerant,
+    });
+    const excused = new Set<string>();
+    walk(EnvelopeSchema, envelope, "envelope", "envelope", reading(false));
+    walk(PublishedEventSchema, event, "event", "event", reading(false));
+    walk(payload.written, event.payload, "event.payload", `${event.type} payload`, reading(false));
     if (payload.read !== undefined) {
-      // It keeps the fields it reads, each as Dispatch wrote it.
-      const read = Object.fromEntries(
-        Object.keys(payload.read.shape).map((key) => [key, event.payload[key]])
+      // The reading schema keeps each key it declares, as Dispatch wrote it, and each key it
+      // declares is one the example holds, unless NEVER or ABSENT names it: so a reader of a key
+      // Dispatch does not write fails here.
+      const shape = objectShape(payload.read, "IssueEventPayloadSchema") ?? {};
+      const kept = Object.fromEntries(
+        Object.entries(event.payload).filter(([key]) => key in shape)
       );
-      expect(payload.read.parse(event.payload)).toEqual(read);
+      expect(payload.read.parse(event.payload)).toEqual(kept);
+      walk(payload.read, event.payload, "event.payload", `${event.type} payload`, reading(true));
     }
-    walk(EnvelopeSchema, envelope, file, "envelope", coverage, problems);
-    walk(PublishedEventSchema, event, `${file} event`, "event", coverage, problems);
-    walk(
-      payload.written,
-      event.payload,
-      `${file} payload`,
-      `${event.type} payload`,
-      coverage,
-      problems
-    );
-  }
-  // Every key a schema declares is one some example carries, unless NEVER names it: so a schema
-  // that grows a key Dispatch does not write fails here.
-  for (const [label, { declared, carried }] of coverage) {
-    for (const key of declared) {
-      const never = NEVER[label]?.[key] !== undefined;
-      if (never && carried.has(key)) {
+    for (const at of Object.keys(ABSENT[file])) {
+      if (!excused.has(at)) {
         problems.push(
-          `an example carries the ${label}'s "${key}", which NEVER says Dispatch never writes`
-        );
-      } else if (!never && !carried.has(key)) {
-        problems.push(
-          `the ${label} declares "${key}", which no example carries and NEVER does not name`
+          `ABSENT names ${file}'s ${at}, which the example holds or no schema these examples are read by declares there`
         );
       }
     }
   }
-  for (const [list, entries] of [
-    ["NEVER", NEVER],
-    ["SOMETIMES", SOMETIMES],
-  ] as const) {
-    for (const [label, keys] of Object.entries(entries)) {
-      for (const key of Object.keys(keys)) {
-        if (!coverage.get(label)?.declared.includes(key)) {
-          problems.push(
-            `${list} names the ${label}'s "${key}", which no schema these examples are read by declares`
-          );
-        }
+  for (const [label, keys] of Object.entries(NEVER)) {
+    for (const key of Object.keys(keys)) {
+      if (!declared.get(label)?.has(key)) {
+        problems.push(
+          `NEVER names the ${label}'s "${key}", which no schema these examples are read by declares`
+        );
       }
     }
   }

@@ -824,8 +824,8 @@ RULES = {
     # file.
     f"{ENVOY}/internal/dispatch/outbox/shared_issue_envelopes_test.go": reads(*[
         (f"{DAEMON}/internal/intake/testdata/dispatch/{name}",
-         "internal/dispatch/outbox/shared_issue_envelopes_test.go:185 and :334 os.ReadFile "
-         "(sharedEnvelopes + each example's file, :25)")
+         "internal/dispatch/outbox/shared_issue_envelopes_test.go:226 and :396 os.ReadFile "
+         "(sharedEnvelopes + each example's file, :27)")
         for name in ("issue-updated-every-field.json", "issue-claimed-every-field.json",
                      "issue-updated-no-field-moved.json", "issue-updated-null-fields.json",
                      "issue-released-null-claim.json")]),
@@ -2572,7 +2572,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:407 (the URL at :403-406)"),
         *[(f"{DAEMON}/internal/intake/testdata/dispatch/{name}",
-           "packages/contracts/src/dispatch-issue-events.test.ts:220 (the URL at :219, each file of EXAMPLES, :25)")
+           "packages/contracts/src/dispatch-issue-events.test.ts:266 (the URL at :265, each file of EXAMPLES, :28)")
           for name in ("issue-updated-every-field.json", "issue-claimed-every-field.json",
                        "issue-updated-no-field-moved.json", "issue-updated-null-fields.json",
                        "issue-released-null-claim.json")],

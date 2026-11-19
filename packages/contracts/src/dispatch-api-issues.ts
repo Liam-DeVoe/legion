@@ -204,8 +204,8 @@ export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>
 export const issueEventChangesFields = {
   /** Each field whose value the write moved, of `title`, `status`, `closed_at` (for a close or a
    *  reopen), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`,
-   *  `blocked_by` and `external_links`; for `issue.created`, every field the new issue holds a
-   *  value in. */
+   *  `advances`, `blocked_by` and `external_links`; for `issue.created`, every field the new issue
+   *  holds a value in. */
   changed: z.array(z.string()).optional(),
   /** The issue's parent chain after the write, parent first up to the root; `[]` for a root. */
   ancestors: z.array(z.string()).optional(),
@@ -262,12 +262,14 @@ export const IssueEventPayloadSchema = z.object({
  * topic receives the event so it learns it no longer holds the work.
  */
 export const issueClaimEventPayloadFields = {
-  key: z.string(),
-  status: z.string(),
-  /** The issue's `repo` and `resolved_repo`, as on every issue event. */
-  repo: z.string().nullable(),
-  resolved_repo: z.string().nullable(),
-  claim: IssueClaimSchema.nullable(),
+  /** The issue's `key`, `status`, `repo`, `resolved_repo` and `claim`, as on every issue event:
+   *  `issueFields`' own, so each is read as the type the Dispatch API document declares for the
+   *  issue (`dispatch-api-spellings.test.ts`), which declares no shape for this payload. */
+  key: issueFields.key,
+  status: issueFields.status,
+  repo: issueFields.repo,
+  resolved_repo: issueFields.resolved_repo,
+  claim: issueFields.claim,
   previous_claim: IssueClaimSchema.optional(),
   reason: z.enum(["claimed", "takeover", "forced", "released", "closed"]),
 };

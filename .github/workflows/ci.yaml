@@ -1322,7 +1322,7 @@ jobs:
               # src/dispatch-block-ref.test.ts:98-102 reads this table of the same directory and
               # asserts set equality against it, so the two halves are one corpus.
               - 'packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json'
-              # src/dispatch-api.test.ts:403-407 and src/dispatch-issue-events.test.ts:219-220 read
+              # src/dispatch-api.test.ts:403-407 and src/dispatch-issue-events.test.ts:265-266 read
               # the daemon's own intake fixtures.
               - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
               - 'packages/daemon/internal/intake/testdata/dispatch/issue-updated-every-field.json'
@@ -3602,7 +3602,7 @@ jobs:
               # change to that one file must start this job as well as the daemon's.
               - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
               # The issue event envelopes the same intake decodes:
-              # internal/dispatch/outbox/shared_issue_envelopes_test.go:185 and :334 read each, and
+              # internal/dispatch/outbox/shared_issue_envelopes_test.go:226 and :396 read each, and
               # TestTheBuiltIssueEnvelopesAreTheSharedFixtures holds the outbox's build to it.
               - 'packages/daemon/internal/intake/testdata/dispatch/issue-updated-every-field.json'
               - 'packages/daemon/internal/intake/testdata/dispatch/issue-claimed-every-field.json'

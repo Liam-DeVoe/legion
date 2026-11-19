@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // sharedEnvelopes is the directory of the issue event envelopes the Legion daemon's intake
@@ -37,17 +39,25 @@ type sharedIssueEnvelope struct {
 }
 
 // sharedIssueEnvelopes is every shared example. Together they hold each field Dispatch writes on
-// these events, in each form it writes it in (requireEveryWrittenField):
+// these events, in each form it writes it in: set, and null or [] where Go writes it so when it
+// holds nothing (requireEveryWrittenField):
 //
-//   - issue-updated-every-field.json: a handed-over child, held by a session, whose patch moves
-//     its status, its assignee and a blocker, so it names the blocker and the two assignees.
-//   - issue-claimed-every-field.json: a takeover of that child, so it carries the claim it replaced.
-//   - issue-updated-no-field-moved.json: a patch of the child's `advances` alone, which is no
-//     field `changed` names, so `changed` is [].
+//   - issue-updated-every-field.json: a handed-over child with a repository of its own and the
+//     components its parent chose, one of them since retired, held by a session, whose patch
+//     moves its status, its assignee and a blocker, so it names the blocker and the two assignees.
+//   - issue-claimed-every-field.json: a takeover of that child, so it carries the claim it
+//     replaced and the child's own repository.
+//   - issue-updated-no-field-moved.json: a closed child, whose own components say why it has none,
+//     given the links it already has again: a closed issue takes that write, which moves no field
+//     `changed` names, so `changed` is [].
 //   - issue-updated-null-fields.json: the reopen of a root nobody holds, assigns or routes, with
 //     no priority and no repository, so each of those is null; its thread_logins are what the
 //     reopen's own insert reads, [] for an issue with no open ask.
 //   - issue-released-null-claim.json: its holder's release of that root, so the claim is null.
+//
+// Each issue.updated's `changed` is what model.IssueChangedFields, the list the API's patch
+// writes, gives for the issue before and after the write, so an example states only a write
+// Dispatch can make.
 //
 // The actors are the three a broker-issued token records (api.brokerTokenActor): the token names
 // a person or a service, never both and never neither, and a project only beside a person
@@ -72,19 +82,30 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 	creator := &model.Actor{Kind: "user", ID: "alice@example.com", Proven: true}
 	held := &model.IssueClaim{Actor: implementer7, At: at("2026-11-19T06:00:00.25Z")}
 	taken := &model.IssueClaim{Actor: implementer8, At: at("2026-11-19T06:31:00.654321Z")}
+	// updated is an issue.updated's payload for a write that took before to after:
+	// IssueEventPayload as api.newIssueEventPayload builds it, with the changed list the patch
+	// writes.
+	updated := func(before, after model.Issue, changes model.ReferenceChanges) model.IssueEventPayload {
+		payload := model.NewIssueEventPayload(after, changes)
+		payload.Changed = model.IssueChangedFields(before, after)
+		return payload
+	}
 
-	// CAPTURE-7, a child of CAPTURE-1, whose repository it inherits: the project maps none.
+	// CAPTURE-7, a child of CAPTURE-1 with a repository of its own, and the components CAPTURE-1
+	// chose (componentsScan.resolve), one of which a re-import has since retired.
 	child := model.Issue{
 		Key: "CAPTURE-7", Project: "CAPTURE", Number: 7, Title: "Read every field Dispatch writes",
 		Status: "in_progress", Priority: new(1), Rank: "UUUk", Labels: []string{"legion"},
 		Parent: new("CAPTURE-1"), BlockedBy: []string{"CAPTURE-2", "CAPTURE-5"},
-		Advances:               []model.IssueAdvance{{ID: "contracts-hold-both-sides", Inherited: false}},
-		AdvancesRevision:       3,
-		Assignee:               new("bob@example.com"),
-		Claim:                  held,
-		Components:             model.IssueComponents{Mode: "explicit", IDs: []string{"dispatch-outbox"}, Unknown: []string{}},
+		Advances:         []model.IssueAdvance{{ID: "contracts-hold-both-sides", Inherited: false}},
+		AdvancesRevision: 3,
+		Assignee:         new("bob@example.com"),
+		Claim:            held,
+		Components: model.IssueComponents{Mode: "explicit", IDs: []string{"dispatch-outbox"}, Unknown: []string{"dispatch-intake-v1"},
+			InheritedFrom: new("CAPTURE-1")},
 		ExternalLinks:          []model.ExternalLink{{URL: "https://github.com/acme/widgets/issues/12", Kind: "github"}},
 		Route:                  new("role:legion-implementer"),
+		Repo:                   new("acme/widgets"),
 		ResolvedRepo:           new("acme/widgets"),
 		CreatedBy:              creator,
 		CreatedAt:              at("2026-11-18T09:15:00.5Z"),
@@ -93,26 +114,42 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 		VerificationArtifactID: "0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a02",
 		PlanArtifactID:         "0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a03",
 	}
-	moved := model.NewIssueEventPayload(child, model.ReferenceChanges{Targets: []model.ChangedReference{{Kind: "issue", ID: "CAPTURE-5"}}})
-	moved.Changed = []string{"status", "assignee", "blocked_by"}
+	// The patch took the child from todo, alice's and blocked by CAPTURE-2 alone.
+	unpatched := child
+	unpatched.Status = "todo"
+	unpatched.Assignee = new("alice@example.com")
+	unpatched.BlockedBy = []string{"CAPTURE-2"}
+	unpatched.UpdatedAt = at("2026-11-19T06:10:00Z")
+	moved := updated(unpatched, child, model.ReferenceChanges{Targets: []model.ChangedReference{{Kind: "issue", ID: "CAPTURE-5"}}})
 	moved.Ancestors = []string{"CAPTURE-1"}
 	// An assignee move names the person the issue's questions reached before it and the one
 	// they reach after it, which the handler knows (api.movedLogins).
 	moved.ThreadLogins = []string{"alice@example.com", "bob@example.com"}
 
-	advanced := child
-	advanced.Claim = taken
-	advanced.Advances = []model.IssueAdvance{{ID: "contracts-hold-both-sides", Inherited: false}, {ID: "shared-examples", Inherited: false}}
-	advanced.AdvancesRevision = 4
-	advanced.UpdatedAt = at("2026-11-19T06:32:00.5Z")
-	noneMoved := model.NewIssueEventPayload(advanced, model.ReferenceChanges{})
-	// api.issueChangedFields names no `advances`, so an advances-only patch moved nothing it names.
-	noneMoved.Changed = []string{}
-	noneMoved.Ancestors = []string{"CAPTURE-1"}
+	// CAPTURE-3, a child of CAPTURE-1 a person closed, which released its claim, and whose own
+	// components say why it has none. Its repository is its parent's. A closed issue takes a write
+	// of the links it already has (api.patchIssue): it rewrites the rows and appends issue.updated,
+	// and touches no column of the issue's row.
+	closed := model.Issue{
+		Key: "CAPTURE-3", Project: "CAPTURE", Number: 3, Title: "Name the outbox's components", Status: "done",
+		Priority: new(2), Rank: "UUUj", Labels: []string{"legion"}, Parent: new("CAPTURE-1"), BlockedBy: []string{},
+		Advances: []model.IssueAdvance{}, Assignee: new("alice@example.com"),
+		Components: model.IssueComponents{Mode: "none", IDs: []string{}, Unknown: []string{},
+			Reason: new("a chore of the build no component owns")},
+		ExternalLinks:     []model.ExternalLink{{URL: "https://github.com/acme/widgets/pull/31", Kind: "github"}},
+		ResolvedRepo:      new("acme/widgets"),
+		CreatedBy:         creator,
+		CreatedAt:         at("2026-11-17T11:00:00Z"),
+		UpdatedAt:         at("2026-11-18T16:40:00.5Z"),
+		ClosedAt:          new(at("2026-11-18T16:40:00.5Z")),
+		PrimaryArtifactID: "0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a04",
+	}
+	linksAgain := updated(closed, closed, model.ReferenceChanges{})
+	linksAgain.Ancestors = []string{"CAPTURE-1"}
 
 	// CAPTURE-9, a root nobody holds, assigns or routes, with no priority, label, blocker,
 	// priority it advances, component, link or repository: each as an issue read gives it
-	// (api.scanIssueRow), the lists [] and the rest null.
+	// (api.scanIssueRow), the lists [] and the rest null. The reopen takes it from done.
 	root := model.Issue{
 		Key: "CAPTURE-9", Project: "CAPTURE", Number: 9, Title: "Reopen a root nobody holds", Status: "todo",
 		Rank: "UUUm", Labels: []string{}, BlockedBy: []string{}, Advances: []model.IssueAdvance{},
@@ -124,8 +161,11 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 		// The primary document every create makes.
 		PrimaryArtifactID: "0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a09",
 	}
-	reopened := model.NewIssueEventPayload(root, model.ReferenceChanges{})
-	reopened.Changed = []string{"status", "closed_at"}
+	done := root
+	done.Status = "done"
+	done.ClosedAt = new(at("2026-11-18T12:00:00Z"))
+	done.UpdatedAt = at("2026-11-18T12:00:00Z")
+	reopened := updated(done, root, model.ReferenceChanges{})
 	reopened.Ancestors = []string{}
 
 	return []sharedIssueEnvelope{
@@ -138,13 +178,14 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 			file: "issue-claimed-every-field.json", number: 7, lastSeq: 9,
 			event: model.Event{ID: 4822, IssueKey: new("CAPTURE-7"), Type: "issue.claimed", Actor: implementer8,
 				CreatedAt: taken.At, Payload: model.IssueClaimEventPayload{
-					Key: "CAPTURE-7", Status: "in_progress", ResolvedRepo: new("acme/widgets"), Claim: taken, Previous: held, Reason: "takeover",
+					Key: "CAPTURE-7", Status: "in_progress", Repo: child.Repo, ResolvedRepo: child.ResolvedRepo,
+					Claim: taken, Previous: held, Reason: "takeover",
 				}},
 		},
 		{
-			file: "issue-updated-no-field-moved.json", number: 7, lastSeq: 10,
-			event: model.Event{ID: 4823, IssueKey: new("CAPTURE-7"), Type: "issue.updated", Actor: implementer8,
-				CreatedAt: at("2026-11-19T06:32:00.5Z"), Payload: noneMoved},
+			file: "issue-updated-no-field-moved.json", number: 3, lastSeq: 11,
+			event: model.Event{ID: 4815, IssueKey: new("CAPTURE-3"), Type: "issue.updated", Actor: implementer8,
+				CreatedAt: at("2026-11-19T06:20:00.5Z"), Payload: linksAgain},
 		},
 		{
 			// A reopen's thread_logins are read by its own insert, after the asks the reopen
@@ -204,8 +245,15 @@ func TestTheBuiltIssueEnvelopesAreTheSharedFixtures(t *testing.T) {
 // events table (readBatch), encoded by envelope. The id and the time are the example's: the id is
 // the next value of the events table's sequence, and the time, which the insert takes from the
 // database's clock, is set on the row before the batch reads it.
+//
+// Without DISPATCH_TEST_DATABASE_URL it skips, as every Postgres-backed test of the package does,
+// except on a GitHub Actions runner, where it fails naming the variable (testdb.SkipOutsideCI):
+// go test reads a skip as a pass, and the envoy-go job that runs this package sets the variable.
 func appendAndPublish(t *testing.T, example sharedIssueEnvelope) contracts.Envelope {
 	t.Helper()
+	if os.Getenv(storetest.DatabaseURLEnv) == "" {
+		testdb.SkipOutsideCI(t, "%s must be set to build the shared issue envelopes through the broker's insert and the outbox's batch read", storetest.DatabaseURLEnv)
+	}
 	ctx := context.Background()
 	database := storetest.Open(t)
 	key := *example.event.IssueKey
@@ -305,8 +353,9 @@ var neverWritten = map[string]string{
 	"listenerwire.EnvelopeSender.roles":         "it is the sender envelope never sets",
 }
 
-// neverEmpty is each field Go writes as null or [] when it holds nothing that never holds nothing
-// on these events, with the reason. Every other such field must be in an example in that form.
+// neverEmpty is each field Go writes as null, [] or {} when it holds nothing that never holds
+// nothing on these events, with the reason. Every other such field must be in an example in that
+// form.
 var neverEmpty = map[string]string{
 	"model.Event.issue_key": "an issue event is its issue's: envelope publishes it on that issue's topic",
 	"model.Event.payload":   "every event the issue handlers append carries its payload (writtenPayloads)",
@@ -314,27 +363,41 @@ var neverEmpty = map[string]string{
 		"and createIssue writes the creating actor",
 }
 
+// neverSet is each pointer, list, map or interface field that never holds a value on these
+// events, with the reason. Every other such field must be in an example holding one, so the type
+// of the value, and not only of null or [], is what the examples and the schemas that read them
+// agree on.
+var neverSet = map[string]string{
+	"model.Event.artifact_id": "an issue event is its issue's and no document's: the issue handlers append it with no " +
+		"artifact (api.issueOwner)",
+}
+
 // requireEveryWrittenField fails t for each field of the types these envelopes are built from that
-// no example carries, and for each field Go writes as null or [] when it holds nothing that no
-// example carries in that form, unless neverWritten or neverEmpty names it with its reason. The
-// types are contracts.Envelope, its payload as envelope encodes it (publishedEvent) and that
+// no example carries, for each field Go writes as null, [] or {} when it holds nothing that no
+// example carries in that form, and for each pointer, list, map or interface field that no example
+// carries holding a value, unless neverWritten, neverEmpty or neverSet names it with its reason.
+// The types are contracts.Envelope, its payload as envelope encodes it (publishedEvent) and that
 // event's payload as its handler writes it (writtenPayloads), nested types and embedded ones
 // included. So a field Dispatch writes only when it is set - a person's or a service's credential,
-// an omitempty field added tomorrow - fails here until an example sets it, and a field written as
-// null or [] fails until an example holds nothing there, where an omitempty added to it would drop
-// the key. An example that carries a key no type declares, or a value Go leaves out (a zero value
-// under omitempty, a nil one under omitzero), fails too: the examples are what Go writes.
+// an omitempty field added tomorrow - fails here until an example sets it; a field written as null
+// or [] fails until an example holds nothing there, where an omitempty added to it would drop the
+// key; and a field no example sets fails until one does, so the schemas that read the examples
+// are held to the type of its value. Each example is also what encoding/json writes of it: each of
+// its three levels - the envelope, the event and the event's payload - decoded into its Go type and
+// encoded again must give the example back, so an example cannot hold a key no type declares, a
+// value an omitempty or omitzero drops, or a value in a form Go does not write.
 func requireEveryWrittenField(t *testing.T, examples []sharedIssueEnvelope) {
 	walk := fieldWalk{
 		declared: map[string]writtenField{}, visited: map[reflect.Type]bool{},
-		carried: map[string]bool{}, carriedEmpty: map[string]bool{},
+		carried: map[string]bool{}, carriedEmpty: map[string]bool{}, carriedSet: map[string]bool{},
 	}
-	walk.declare(walkedEnvelope)
+	walk.declare(t, walkedEnvelope)
 	for _, example := range examples {
 		data, err := os.ReadFile(sharedEnvelopes + example.file)
 		if err != nil {
 			t.Fatalf("read the shared fixture: %v", err)
 		}
+		requireWhatGoWrites(t, example.file, data)
 		var envelope any
 		if err := json.Unmarshal(data, &envelope); err != nil {
 			t.Fatalf("decode %s: %v", example.file, err)
@@ -344,14 +407,16 @@ func requireEveryWrittenField(t *testing.T, examples []sharedIssueEnvelope) {
 	for _, list := range []struct {
 		name    string
 		entries map[string]string
-	}{{"neverWritten", neverWritten}, {"neverEmpty", neverEmpty}} {
+	}{{"neverWritten", neverWritten}, {"neverEmpty", neverEmpty}, {"neverSet", neverSet}} {
 		for key := range list.entries {
 			field, ok := walk.declared[key]
 			switch {
 			case !ok:
 				t.Errorf("%s names %s, which no type these envelopes are built from declares", list.name, key)
-			case list.name == "neverEmpty" && field.empty == "":
+			case list.name == "neverEmpty" && len(field.empty) == 0:
 				t.Errorf("neverEmpty names %s, which Go leaves out when it holds nothing", key)
+			case list.name == "neverSet" && !field.settable:
+				t.Errorf("neverSet names %s, which is no pointer, list, map or interface", key)
 			}
 		}
 	}
@@ -371,37 +436,170 @@ func requireEveryWrittenField(t *testing.T, examples []sharedIssueEnvelope) {
 		if !walk.carried[key] {
 			t.Errorf("Dispatch writes %s and no example carries it: add an example that sets it, or name it in neverWritten with the reason these events cannot", key)
 		}
-		if field.empty == "" {
-			continue
+		if len(field.empty) > 0 {
+			_, full := neverEmpty[key]
+			switch {
+			case full && walk.carriedEmpty[key]:
+				t.Errorf("an example carries %s holding nothing, which neverEmpty says these events never do: drop it from the list", key)
+			case !full && !walk.carriedEmpty[key]:
+				t.Errorf("Dispatch writes %s as %s when it holds nothing and no example carries it so: add an example that holds nothing there, or name it in neverEmpty with the reason these events always hold one", key, strings.Join(field.empty, " or "))
+			}
 		}
-		_, full := neverEmpty[key]
-		switch {
-		case full && walk.carriedEmpty[key]:
-			t.Errorf("an example carries %s as %s, which neverEmpty says these events never do: drop it from the list", key, field.empty)
-		case !full && !walk.carriedEmpty[key]:
-			t.Errorf("Dispatch writes %s as %s when it holds nothing and no example carries it so: add an example that holds nothing there, or name it in neverEmpty with the reason these events always hold one", key, field.empty)
+		if field.settable {
+			_, unset := neverSet[key]
+			switch {
+			case unset && walk.carriedSet[key]:
+				t.Errorf("an example carries %s holding a value, which neverSet says these events never do: drop it from the list", key)
+			case !unset && walk.carried[key] && !walk.carriedSet[key]:
+				t.Errorf("no example carries %s holding a value, only null or empty: add an example that sets it, or name it in neverSet with the reason these events never do", key)
+			}
 		}
 	}
 }
 
-// writtenField is one JSON field a type these envelopes are built from declares: its Go type, and
-// how Go writes it when it holds nothing and keeps the key - "null" for a pointer, slice, map or
-// interface with neither omitempty nor omitzero (a nil slice is null, an empty one []), "[]" for a
-// slice under omitzero alone, "" where an empty value drops the key or is a string, number or bool.
-// omit is the tag's omitempty or omitzero, "" for neither.
+// requireWhatGoWrites fails t for each difference between the example data and what encoding/json
+// writes of it, level by level: the envelope decoded into contracts.Envelope and encoded again,
+// its payload into publishedEvent, and that event's payload into the type its handler writes
+// (writtenPayloads). A key the example holds that the Go type does not declare, or holds in a
+// form the encoder drops (a zero value under omitempty, a nil one under omitzero), is missing from
+// what the encoder writes; a value Go writes in another form differs from it.
+func requireWhatGoWrites(t *testing.T, file string, data []byte) {
+	t.Helper()
+	envelope := reencode[contracts.Envelope](t, file, "", data)
+	var event struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Payload), &event); err != nil {
+		t.Errorf("%s.payload is not the event's JSON: %v", file, err)
+		return
+	}
+	reencode[publishedEvent](t, file, ".payload", []byte(envelope.Payload))
+	payload, ok := writtenPayloads[event.Type]
+	if !ok {
+		t.Errorf("%s is a %q, which writtenPayloads names no payload type for", file, event.Type)
+		return
+	}
+	held := reflect.New(payload)
+	if err := json.Unmarshal(event.Payload, held.Interface()); err != nil {
+		t.Errorf("%s.payload.payload does not decode into %s: %v", file, payload, err)
+		return
+	}
+	requireSameJSON(t, file+".payload.payload", event.Payload, held.Elem().Interface())
+}
+
+// reencode decodes data into a T, requires that encoding/json writes the same JSON of it, and
+// answers the T.
+func reencode[T any](t *testing.T, file, path string, data []byte) T {
+	t.Helper()
+	var value T
+	if err := json.Unmarshal(data, &value); err != nil {
+		t.Errorf("%s%s does not decode into %T: %v", file, path, value, err)
+		return value
+	}
+	requireSameJSON(t, file+path, data, value)
+	return value
+}
+
+// requireSameJSON fails t for each difference between the JSON data and what encoding/json writes
+// of value, by path.
+func requireSameJSON(t *testing.T, path string, data []byte, value any) {
+	t.Helper()
+	written, err := json.Marshal(value)
+	if err != nil {
+		t.Errorf("encode %s as %T: %v", path, value, err)
+		return
+	}
+	for _, difference := range jsonDifferences(path, decodeNumbers(t, data), decodeNumbers(t, written)) {
+		t.Error(difference)
+	}
+}
+
+// decodeNumbers decodes data with each number kept as written, so two numbers compare by their
+// text.
+func decodeNumbers(t *testing.T, data []byte) any {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		t.Fatalf("decode %s: %v", data, err)
+	}
+	return value
+}
+
+// jsonDifferences names each place the example's value and the value Go writes differ.
+func jsonDifferences(path string, example, written any) []string {
+	exampleObject, exampleIsObject := example.(map[string]any)
+	writtenObject, writtenIsObject := written.(map[string]any)
+	if exampleIsObject && writtenIsObject {
+		var differences []string
+		names := make([]string, 0, len(exampleObject)+len(writtenObject))
+		for name := range exampleObject {
+			names = append(names, name)
+		}
+		for name := range writtenObject {
+			if _, both := exampleObject[name]; !both {
+				names = append(names, name)
+			}
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			exampleValue, inExample := exampleObject[name]
+			writtenValue, inWritten := writtenObject[name]
+			switch {
+			case !inWritten:
+				differences = append(differences, fmt.Sprintf("%s.%s is %s in the example, and Go does not write it: no field declares it, or its value is one the field's omitempty or omitzero leaves out", path, name, jsonText(exampleValue)))
+			case !inExample:
+				differences = append(differences, fmt.Sprintf("Go writes %s.%s as %s, and the example does not hold it", path, name, jsonText(writtenValue)))
+			default:
+				differences = append(differences, jsonDifferences(path+"."+name, exampleValue, writtenValue)...)
+			}
+		}
+		return differences
+	}
+	exampleList, exampleIsList := example.([]any)
+	writtenList, writtenIsList := written.([]any)
+	if exampleIsList && writtenIsList && len(exampleList) == len(writtenList) {
+		var differences []string
+		for index := range exampleList {
+			differences = append(differences, jsonDifferences(fmt.Sprintf("%s[%d]", path, index), exampleList[index], writtenList[index])...)
+		}
+		return differences
+	}
+	if !reflect.DeepEqual(example, written) {
+		return []string{fmt.Sprintf("%s is %s in the example, and Go writes %s", path, jsonText(example), jsonText(written))}
+	}
+	return nil
+}
+
+func jsonText(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(data)
+}
+
+// writtenField is one JSON field a type these envelopes are built from declares: each form
+// encoding/json writes it in when it holds nothing and keeps the key ("null" for a nil pointer,
+// list, map or interface with neither omitempty nor omitzero, "[]" for an empty list and "{}" for
+// an empty map that the field's options keep), and whether it is a pointer, list, map or interface,
+// which holds a value or holds nothing.
 type writtenField struct {
-	typ   reflect.Type
-	empty string
-	omit  string
+	empty    []string
+	settable bool
 }
 
 // fieldWalk is requireEveryWrittenField's walk: every field the types declare, by owner and JSON
-// name ("model.Actor.owner"), and which of them the examples carry, and carry empty.
+// name ("model.Actor.owner"), and which of them the examples carry, carry holding nothing, and
+// carry holding a value.
 type fieldWalk struct {
 	declared     map[string]writtenField
 	visited      map[reflect.Type]bool
 	carried      map[string]bool
 	carriedEmpty map[string]bool
+	carriedSet   map[string]bool
 }
 
 var (
@@ -412,9 +610,8 @@ var (
 )
 
 // jsonFields calls visit for each field encoding/json writes of struct type typ: by the struct that
-// declares it, so an embedded struct's fields are its own, with the field's JSON name and its
-// omitempty or omitzero option.
-func jsonFields(typ reflect.Type, visit func(owner reflect.Type, field reflect.StructField, name, omit string)) {
+// declares it, so an embedded struct's fields are its own, with the field's JSON name.
+func jsonFields(typ reflect.Type, visit func(owner reflect.Type, field reflect.StructField, name string)) {
 	for field := range typ.Fields() {
 		name, options, _ := strings.Cut(field.Tag.Get("json"), ",")
 		if name == "-" && options == "" {
@@ -430,13 +627,7 @@ func jsonFields(typ reflect.Type, visit func(owner reflect.Type, field reflect.S
 		if name == "" {
 			name = field.Name
 		}
-		omit := ""
-		for option := range strings.SplitSeq(options, ",") {
-			if option == "omitempty" || option == "omitzero" {
-				omit = option
-			}
-		}
-		visit(typ, field, name, omit)
+		visit(typ, field, name)
 	}
 }
 
@@ -444,6 +635,45 @@ func jsonFields(typ reflect.Type, visit func(owner reflect.Type, field reflect.S
 // json.RawMessage), which this walk does not look into.
 func encodedWhole(typ reflect.Type) bool {
 	return typ.Implements(walkedMarshaler) || reflect.PointerTo(typ).Implements(walkedMarshaler)
+}
+
+// settable is whether a field of kind holds either a value or nothing.
+func settable(kind reflect.Kind) bool {
+	return kind == reflect.Pointer || kind == reflect.Slice || kind == reflect.Map || kind == reflect.Interface
+}
+
+// emptyForms is each form encoding/json writes field of owner in when it holds nothing and keeps
+// the key: an owner whose field is nil, and for a list or a map one whose field is empty, encoded,
+// and the field's key read from what it wrote.
+func emptyForms(t *testing.T, owner reflect.Type, field reflect.StructField, name string) []string {
+	t.Helper()
+	if !settable(field.Type.Kind()) {
+		return nil
+	}
+	nothing := []reflect.Value{reflect.Zero(field.Type)}
+	switch field.Type.Kind() {
+	case reflect.Slice:
+		nothing = append(nothing, reflect.MakeSlice(field.Type, 0, 0))
+	case reflect.Map:
+		nothing = append(nothing, reflect.MakeMap(field.Type))
+	}
+	var forms []string
+	for _, value := range nothing {
+		holder := reflect.New(owner).Elem()
+		holder.FieldByIndex(field.Index).Set(value)
+		data, err := json.Marshal(holder.Interface())
+		if err != nil {
+			t.Fatalf("encode a %s whose %s holds nothing: %v", owner, name, err)
+		}
+		var written map[string]json.RawMessage
+		if err := json.Unmarshal(data, &written); err != nil {
+			t.Fatalf("decode the encoded %s: %v", owner, err)
+		}
+		if form, kept := written[name]; kept && !slices.Contains(forms, string(form)) {
+			forms = append(forms, string(form))
+		}
+	}
+	return forms
 }
 
 // heldTypes is the types a field's value is written from: its own, except an envelope's payload,
@@ -466,7 +696,8 @@ func heldTypes(owner reflect.Type, name string, typ reflect.Type) []reflect.Type
 }
 
 // declare records every field typ declares, and those of every type a field of it holds.
-func (w *fieldWalk) declare(typ reflect.Type) {
+func (w *fieldWalk) declare(t *testing.T, typ reflect.Type) {
+	t.Helper()
 	for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array || typ.Kind() == reflect.Map {
 		if encodedWhole(typ) {
 			return
@@ -477,19 +708,27 @@ func (w *fieldWalk) declare(typ reflect.Type) {
 		return
 	}
 	w.visited[typ] = true
-	jsonFields(typ, func(owner reflect.Type, field reflect.StructField, name, omit string) {
-		empty := ""
-		switch kind := field.Type.Kind(); {
-		case omit == "" && (kind == reflect.Pointer || kind == reflect.Slice || kind == reflect.Map || kind == reflect.Interface):
-			empty = "null"
-		case omit == "omitzero" && kind == reflect.Slice:
-			empty = "[]"
+	jsonFields(typ, func(owner reflect.Type, field reflect.StructField, name string) {
+		w.declared[owner.String()+"."+name] = writtenField{
+			empty: emptyForms(t, owner, field, name), settable: settable(field.Type.Kind()),
 		}
-		w.declared[owner.String()+"."+name] = writtenField{typ: field.Type, empty: empty, omit: omit}
 		for _, held := range heldTypes(owner, name, field.Type) {
-			w.declare(held)
+			w.declare(t, held)
 		}
 	})
+}
+
+// holdsNothing is whether a decoded JSON value is null, [] or {}.
+func holdsNothing(value any) bool {
+	switch value := value.(type) {
+	case nil:
+		return true
+	case []any:
+		return len(value) == 0
+	case map[string]any:
+		return len(value) == 0
+	}
+	return false
 }
 
 // value walks one example's value at path, written from typ, recording each field it carries.
@@ -531,20 +770,17 @@ func (w *fieldWalk) value(t *testing.T, path string, typ reflect.Type, value any
 		t.Errorf("%s is %T, where %s writes an object", path, value, typ)
 		return
 	}
-	known := map[string]bool{}
-	jsonFields(typ, func(owner reflect.Type, field reflect.StructField, name, omit string) {
-		known[name] = true
+	jsonFields(typ, func(owner reflect.Type, field reflect.StructField, name string) {
 		held, ok := object[name]
 		if !ok {
 			return
 		}
 		key := owner.String() + "." + name
 		w.carried[key] = true
-		if dropped(held, omit) {
-			t.Errorf("%s.%s is %s, which Go leaves out of what it writes (%s %s)", path, name, mustJSON(held), key, omit)
-		}
-		if held == nil || isEmptyList(held) {
+		if holdsNothing(held) {
 			w.carriedEmpty[key] = true
+		} else {
+			w.carriedSet[key] = true
 		}
 		switch {
 		case owner == walkedEnvelope && name == "payload":
@@ -567,44 +803,4 @@ func (w *fieldWalk) value(t *testing.T, path string, typ reflect.Type, value any
 			w.value(t, path+"."+name, field.Type, held)
 		}
 	})
-	for name := range object {
-		if !known[name] {
-			t.Errorf("%s holds %q, which %s declares no field for", path, name, typ)
-		}
-	}
-}
-
-// dropped is whether encoding/json leaves value out of what it writes under omit: omitempty leaves
-// out null, false, 0, "" and an empty list or object; omitzero null, false, 0 and "", keeping an
-// empty list, which is not a slice's zero value.
-func dropped(value any, omit string) bool {
-	switch omit {
-	case "omitempty":
-		return isZeroScalar(value) || isEmptyList(value) || isEmptyObject(value)
-	case "omitzero":
-		return isZeroScalar(value)
-	}
-	return false
-}
-
-func isZeroScalar(value any) bool {
-	return value == nil || value == false || value == float64(0) || value == ""
-}
-
-func isEmptyList(value any) bool {
-	items, ok := value.([]any)
-	return ok && len(items) == 0
-}
-
-func isEmptyObject(value any) bool {
-	entries, ok := value.(map[string]any)
-	return ok && len(entries) == 0
-}
-
-func mustJSON(value any) string {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Sprint(value)
-	}
-	return string(data)
 }

@@ -4,7 +4,8 @@ body: |-
   declares, and `PublishedEventSchema` reads the copy Dispatch's outbox publishes, which adds
   `quiet`. Five shared issue event envelopes in `packages/daemon/internal/intake/testdata/dispatch/`
   hold the Dispatch writer, these schemas, the issue event schemas and the Legion daemon's intake to
-  the same `issue.updated`, `issue.claimed` and `issue.released` events.
+  the same `issue.updated`, `issue.claimed` and `issue.released` events. The documentation of an
+  issue event's `changed` now names `advances`, which Dispatch writes there when a write moves them.
 time: 2026-11-19T11:45:20.899893725Z
 custom:
     Issue: pr4496
