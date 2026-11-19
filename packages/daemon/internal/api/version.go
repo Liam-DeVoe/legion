@@ -2421,7 +2421,7 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 171: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
+// 180: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
 // `workingCopyChanged`, `error`): how many commits of the issue's workspace no remote branch or tag
@@ -2442,7 +2442,7 @@ package api
 // api.ReleasedClaimEnds), each a `z.enum` in `packages/contracts/src/legion-api.ts`, which refuses
 // a word it does not name, so a word added later bumps this number. `GET /legion/v1/state` gains
 // `projectRelease`, that same body for the project's newest release, absent while none was
-// recorded; a caller from a pod whose claims record a contract below 171 is served the state
+// recorded; a caller from a pod whose claims record a contract below 180 is served the state
 // without it (api's stateNarrowings, withoutProjectRelease), as a caller below 133 is served it
 // without `mergeWait`, and the bands compose. A claim's `suspendedBy` on the operator routes takes
 // `project_release`, a claim the release stopped, which the daemon's next boot starts again. The
@@ -2452,21 +2452,26 @@ package api
 // claim's round columns. While a release holds every start, the operator's spawn, retry, resume
 // and deliver, and either door's fresh session and compaction, answer 409 with the code
 // `PROJECT_RELEASED` and the sentence api.ProjectReleaseHeldSentence. The number is the lowest
-// above main's that no open pull request declared at the forward merge of 2026-11-19 that brought
-// main in at b2cf98a0: main had moved to 168 (#4488's entry above), above the 163 this change
-// held. `.github/scripts/check-daemon-api-contract.sh`, run as ci.yaml's lint job runs it on this
-// pull request, refused 168 at 2026-11-19T18:36:14Z naming 171 (169 is declared by #4065, 170 by
-// #2230, #4173, #4180 and #4193), and a reading of `const DaemonAPIVersion` at the head of every
-// open pull request that changes this file (2026-11-19T18:36:50Z to 18:41:40Z) found 171 declared
-// by none, 172 by #3659, 173 by #4493, 174 by #3993 and #4273, 175 by #3712, #4115, #4392, #4432,
-// #4485 and #4495, and 176 by #3831 and #4030. A pod at main's 168, or at a number another open
-// pull request declares below 171, runs a plugin that does not know this release's shapes, so it
-// is served the state without `projectRelease`. This change first took 150, the lowest free number
-// at the forward merge of 2026-11-15, then 157 once main reached 151, then 159 once three other
-// heads had taken 157, then 161 once #4175 declared 159 as well and #3519 took 160, then 163 once
-// #4173 declared 161 as well and three heads took 162, which held at the forward merge that
-// brought in c70a8022 with main at 160, and 171 once main reached 168. Read the base's own number
-// and every open head again at the next merge rather than from this entry, as
+// above main's 168 that no other open pull request declared at 2026-11-19T22:35:55Z.
+// `.github/scripts/check-daemon-api-contract.sh`, run as ci.yaml's lint job runs it on this pull
+// request, passed 171 then, but a reading of `const DaemonAPIVersion` at the head of every open
+// pull request that changes this file (2026-11-19T22:27Z to 22:35:55Z) found 171 declared by #2230
+// and #4065 too and every number from 169 to 179 declared by another open pull request: 169 by
+// #4273, 170 by #4182, 172 by #3659, 173 by #4493, 174 by #3993, 175 by #3712, #4432 and #4495, 176
+// by #4030, #4173, #4180, #4193, #4259, #4261 and #4269, 177 by #4017, 178 by #3831, #4115 and
+// #4175, and 179 by #4392 and #4540, so this change took 180. A pod at main's 168, or at a number
+// another open pull request declares below 180, runs a plugin that does not know this release's
+// shapes, so it is served the state without `projectRelease`. This change first took 150, the
+// lowest free number at the forward merge of 2026-11-15, then 157 once main reached 151, then 159
+// once three other heads had taken 157, then 161 once #4175 declared 159 as well and #3519 took
+// 160, then 163 once #4173 declared 161 as well and three heads took 162, which held at the forward
+// merge that brought in c70a8022 with main at 160, then 171 once main reached 168 (#4488's entry
+// above) at the forward merge that brought in b2cf98a0: the check refused 168 at
+// 2026-11-19T18:36:14Z naming 171, when #4065 declared 169 and #2230, #4173, #4180 and #4193
+// declared 170, and a reading of every open head (2026-11-19T18:36:50Z to 18:41:40Z) found 171
+// declared by none. 171 held at the forward merge that brought in 506395be with main still at 168.
+// Read the base's own number and every open head again at the next merge rather than from this
+// entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
-const DaemonAPIVersion = 171
+const DaemonAPIVersion = 180
