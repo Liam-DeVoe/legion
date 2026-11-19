@@ -33,10 +33,18 @@ body: |-
   stream read, a consumer call, the resume record and a pull - answers the loss at once too, as one
   made while it reconnects does, so the dial that replaces it is made by the caller's retry with the
   session's lock released, not under it. The same holds while the hub holds a reconnect's
-  handshake, as it does while its auth service has not answered the CONNECT: on the session
-  consumers' connection, whether the connection is up is read from nats.go on a goroutine of its
-  own and waited for at most 100 ms, since nats.go holds its connection lock through the whole
-  handshake; a read kept waiting longer counts as down. A request that a forced
+  handshake, as it does while its auth service has not answered the CONNECT: since nats.go holds
+  its connection lock through the whole handshake, whether a connection is up is read from nats.go
+  on a goroutine of its own and waited for at most 100 ms, and a read kept waiting longer counts as
+  down. The session consumers' client reads it so before each request, the listener's main client
+  before each read or write of the session and interest buckets it makes under a session's lock and
+  before each read of a role's kept lane under the role's keep guard, and every client to end a
+  request's connection life. A caller that reads down gives the lock or the guard up, waits for the
+  connection, and makes its call again, so a handover the keep sweep started hands the lane over
+  after a slow read as one the claim route started does. A Close or a Drain of a client while its
+  handshake is held leaves the client's own lock free, and the known-session store's background
+  repair lets its lock go 30 s into an attempt whose requests get no answer, so a reconnect hook
+  and an arm of the repair never wait on that attempt. A request that a forced
   reconnect cut off, as the keeper of a service's token makes to present a new token, answers the
   loss even when its answer is read once the connection is back, rather than nats.go's `connection
   closed`. A start that waits for a stream's leader or copies and loses its connection waits for

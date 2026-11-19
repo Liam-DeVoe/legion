@@ -553,10 +553,12 @@ const (
 // record the bucket does not hold and one that records no consumer delivery are the bucket's
 // answers and no failure, so neither is logged here.
 func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) (registeredConsumer, registeredFinding, error) {
-	if lost := m.mainLost(); lost != nil {
-		return registeredConsumer{}, registeredReadFailed, lost
+	// The main client is asked first (mainLost); a "down" is a read that failed, logged as one.
+	var entry session.SessionEntry
+	err := m.mainLost()
+	if err == nil {
+		entry, err = d.sessions.Refresh(ctx, sessionID)
 	}
-	entry, err := d.sessions.Refresh(ctx, sessionID)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return registeredConsumer{}, registeredRecordGone, nil

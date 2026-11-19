@@ -413,7 +413,7 @@ const repairAttemptWindow = 30 * time.Second
 // It repairs both of the states the store can be left in - a bucket that never opened, and a
 // watcher a failed move left on a connection the listener has left - because they are one
 // repair, make the store current on the connection it holds now, and because one loop is what
-// makes two of them impossible: it is armed only under repairMu and only while none runs
+// makes two of them impossible: it is armed only under repairStateMu and only while none runs
 // (armRepair), and only this goroutine retires it. A second connection event while it runs is
 // another move for the attempt it is already making or for the next one, not a retry of its own,
 // and a stop ends it wherever it is.

@@ -220,11 +220,11 @@ func (m *sessionDelivery) fenceFilterWrite(ctx context.Context, logger *logging.
 			break
 		}
 		stands, landed = wrote, true
-		if lostNow := m.mainLost(); lostNow != nil {
-			keep(lostNow)
-			return lost
+		// The main client is asked first (mainLost); a "down" is a read that failed, logged as one.
+		if err = m.mainLost(); err == nil {
+			_, newest, err = storedTopics(ctx, registry, sessionID)
 		}
-		if _, newest, err = storedTopics(ctx, registry, sessionID); err != nil {
+		if err != nil {
 			logger.Warn("session consumer filter written and left unjudged: the interest row could not be read again; the session's next heartbeat sets it",
 				slog.String("session_id", sessionID), slog.Uint64("wrote_revision", stands), slog.String("error", err.Error()))
 			keep(err)
@@ -359,10 +359,13 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 // It takes no lock and bounds nothing: the caller holds the session's lock over every pass of
 // the fence and bounds ctx (storedFilterWrite, and sessionRelays.settleFilter under a restart).
 func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.Registry, sessionID, after string) (uint64, filterWriteOutcome, error) {
-	if lost := m.mainLost(); lost != nil {
-		return 0, filterWriteNotMade, lost
+	// The main client is asked first (mainLost); a "down" is a read that failed, logged as one.
+	var topics []string
+	var revision uint64
+	err := m.mainLost()
+	if err == nil {
+		topics, revision, err = storedTopics(ctx, registry, sessionID)
 	}
-	topics, revision, err := storedTopics(ctx, registry, sessionID)
 	if err != nil {
 		m.logger.Warn("session consumer filter left unchanged: the session's interests could not be read",
 			slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
