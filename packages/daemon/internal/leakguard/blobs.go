@@ -75,7 +75,7 @@ func (g *Guard) readBlobs(ctx context.Context, dir string) (*blobBatch, error) {
 		})
 		switch {
 		case err != nil:
-			err = procgroup.Said(err, gitSaid(withoutUserinfo(stderr.String())))
+			err = procgroup.Said(err, gitSaid(stderr.String()))
 		case status != 0:
 			err = gitExited("git cat-file", status, stderr.String())
 		}

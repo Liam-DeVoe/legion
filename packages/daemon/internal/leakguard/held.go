@@ -152,7 +152,7 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) (commits, objec
 		stderr:  &stderr,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", read, procgroup.Said(err, gitSaid(withoutUserinfo(stderr.String()))))
+		return nil, nil, fmt.Errorf("%s: %w", read, procgroup.Said(err, gitSaid(stderr.String())))
 	}
 	if status != 0 {
 		return nil, nil, gitExited(read, status, stderr.String())

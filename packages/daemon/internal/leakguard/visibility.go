@@ -761,7 +761,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 	masked := maskPath(slug)
 	quoted := strings.ReplaceAll(stderr.String()+listed, slug, masked)
 	if err != nil {
-		return "", procgroup.Said(err, gitSaid(withoutUserinfo(quoted)))
+		return "", procgroup.Said(err, gitSaid(quoted))
 	}
 	if status != 0 {
 		return "", gitExited("git ls-remote of "+masked, status, quoted)
