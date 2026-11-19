@@ -284,7 +284,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: answersKey, Default: "the daemon answers nothing, and a message to an agent that is not running is refused", RequiredBy: "no",
-			Description: "The model loop that answers a question to one of the daemon's agents that is not running — a Dispatch message or mention, a reply on the thread of its ask, another agent's Envoy message — in that agent's name, from its own conversation and on the model that conversation last ran on; with it set, boot refuses to start without the real `gh` on the daemon's own host (`LEGION_GH_PATH`, else the first `gh` on `PATH`), which the loop's `gh` tool runs.",
+			Description: "The model loop that answers a question to one of the daemon's agents that is not running — a Dispatch message or mention, a reply on the thread of its ask, another agent's Envoy message — in that agent's name, from its own conversation and on the model that conversation last ran on; with it set, boot refuses to start without the real `gh` on the daemon's own host (`LEGION_GH_PATH`, else the first `gh` on `PATH`), which the loop's `gh` tool runs, and without the shared public leak check that tool's guard runs before every call: under `runtime: tmux` the machine's own (`PUBLIC_LEAK_CHECK`, `public-leak-check.sh` on `PATH` or the pointer file), and under `runtime: kubernetes` the pin in the daemon's environment, `LEGION_LEAK_CHECK_TAG`, which the worker image sets and the daemon installs the check at.",
 			Read:        reads(readAnswers, func(f *fileConfig, v *answersFile) { f.Answers = v }),
 		},
 		{

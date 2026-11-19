@@ -8,10 +8,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // servedCheckReader is the Sandbox runtime's reader of the shared check as a test serves it
@@ -48,6 +57,41 @@ func TestAKubernetesDaemonInstallsItsGhToolsCheckFromTheRuntimesReader(t *testin
 	_, err = installAnswersLeakCheck(context.Background(), t.TempDir(), leakCheckTag, nil, quietLogger())
 	if want := leakguard.RefusalPrefix + "the daemon runs with no GitHub App, so it cannot read " + leakguard.CheckSlug; err == nil || err.Error() != want {
 		t.Fatalf("installAnswersLeakCheck with no reader = %v, want %q", err, want)
+	}
+}
+
+// A Kubernetes daemon's answer loop is handed the gh tool whose host names the check its boot
+// installed through the Sandbox runtime's own reader (sandbox.Runtime.LeakCheck), at the pin boot
+// read, under its state directory: the copy every answer's guard runs, whatever the machine holds.
+// The runtime is a real one (sandbox.New) over the stand-in API, its reader the served check.
+func TestAKubernetesDaemonsAnswerLoopRunsTheCheckItInstalledFromTheRuntimesReader(t *testing.T) {
+	url := newIssueSandboxAPI().serve(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	rt, err := sandbox.New(ctx, sandboxRESTConfig(url), sandbox.Options{
+		Namespace: "legion", Project: "legion", Store: liveTrees{}, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
+		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
+		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
+		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
+		BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
+		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
+		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
+		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
+		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories, LeakCheck: newServedCheckReader(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	w := &workflowRuntime{log: quietLogger()}
+	cfg := config.Config{StateDir: stateDir, Answers: &config.Answers{}}
+	tools, err := w.answersTools(ctx, cfg, plan{answers: answersReads{leakCheckTag: leakCheckTag}}, rt, nil)
+	want := filepath.Join(stateDir, "leak-check", leakguardtest.CheckName)
+	if err != nil || tools.host.LeakCheck != want {
+		t.Fatalf("the answer loop's gh tool names the check %q, %v; want the copy installed at boot, %s", tools.host.LeakCheck, err, want)
+	}
+	if got := tools.hostFor("dispatch:m-1").LeakCheck; got != want {
+		t.Fatalf("an answer of the Kubernetes daemon is handed %q, want the copy installed at boot, %s", got, want)
 	}
 }
 

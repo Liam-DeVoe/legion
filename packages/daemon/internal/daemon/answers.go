@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -38,8 +39,8 @@ type answering struct {
 // attachAnswers builds the answer loop over the daemon's store, its Dispatch client (posting in an
 // agent's name), its Envoy listener, supervision's answer gate, the issue record, the gh tool and
 // the conversation store, and under kubernetes first installs the shared public leak check that
-// tool's guard runs (installAnswersLeakCheck), refusing the boot where it cannot. Without
-// `answers` it builds nothing.
+// tool's guard runs (answersTools), refusing the boot where it cannot. Without `answers` it
+// builds nothing.
 func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, p plan, s *supervision, st *store.Store) error {
 	if w.answers == nil {
 		return nil
@@ -48,18 +49,46 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 	if !ok {
 		return fmt.Errorf("the answer loop: the daemon's Dispatch client (%T) cannot post in an agent's name", w.dispatch)
 	}
+	tools, err := w.answersTools(ctx, cfg, p, s.runtime, st)
+	if err != nil {
+		return fmt.Errorf("the answer loop: %w", err)
+	}
+	w.answers.loop = answerloop.New(answerloop.Config{
+		Project: p.project, Answers: *cfg.Answers, Store: st, Dispatch: client,
+		Envoy: notify.New(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]), Gate: s.answerGate,
+		Issues: recordFacts{w}, Tools: tools,
+		Conversations: answerloop.Harnesses{OpenSQL: conversationStore(*cfg.Answers, p.answers)},
+		PassOn:        controllerPassOn{pool: w.pool, records: w.records, now: time.Now, log: w.log},
+		Decisions:     routedDecisions{outbox: w.outbox, now: time.Now, log: w.log},
+		AppID: func(role claim.Role) string {
+			if appauth.AppRoleFor(role) == appauth.Implement {
+				return cfg.GitHubApps.Implement.AppID
+			}
+			return cfg.GitHubApps.Review.AppID
+		},
+		Answer: answer.Answer, Now: time.Now, Log: w.log,
+	})
+	return nil
+}
+
+// answersTools is the answer loop's gh tool (ghTools): the daemon's host every answer opens under,
+// with the bounds of cfg's answers. Under kubernetes, where boot read the pin (answersLeakCheck),
+// the host names the shared public leak check installed first through rt's reader, which only the
+// Agent Sandbox runtime holds (installAnswersLeakCheck); under tmux it names none, since each
+// answer is handed the machine's check resolved again for it (ghTools.hostFor).
+func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p plan, rt runtime.Runtime, st *store.Store) (ghTools, error) {
 	legion, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("the answer loop: resolve this daemon's executable for the gh tool's wrapper: %w", err)
+		return ghTools{}, fmt.Errorf("resolve this daemon's executable for the gh tool's wrapper: %w", err)
 	}
 	check := ""
 	if tag := p.answers.leakCheckTag; tag != "" {
-		sandboxed, ok := s.runtime.(*sandbox.Runtime)
+		sandboxed, ok := rt.(*sandbox.Runtime)
 		if !ok {
-			return fmt.Errorf("the answer loop: a Kubernetes daemon installs the gh tool's shared public leak check through the Agent Sandbox runtime's reader, not %T's", s.runtime)
+			return ghTools{}, fmt.Errorf("a Kubernetes daemon installs the gh tool's shared public leak check through the Agent Sandbox runtime's reader, not %T's", rt)
 		}
 		if check, err = installAnswersLeakCheck(ctx, cfg.StateDir, tag, sandboxed.LeakCheck(), w.log); err != nil {
-			return fmt.Errorf("the answer loop: %w", err)
+			return ghTools{}, err
 		}
 	} else {
 		w.log.Info("answers: the gh tool's leak guard runs the machine's shared public leak check, resolved again for each answer", "check", p.answers.leakCheck)
@@ -79,22 +108,7 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 		GH: p.answers.gh, Git: p.tools["git"], Legion: legion, StateDir: cfg.StateDir, LeakCheck: check, Environ: os.Environ(),
 		Credential: appauth.GitHubCredential(w.apps, p.repositories.Accepted, cfg.RepositoryRenames, nil, nil, w.log), Calls: st, Log: w.log, Now: time.Now,
 	}
-	w.answers.loop = answerloop.New(answerloop.Config{
-		Project: p.project, Answers: *cfg.Answers, Store: st, Dispatch: client,
-		Envoy: notify.New(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]), Gate: s.answerGate,
-		Issues: recordFacts{w}, Tools: ghTools{host: host, bounds: cfg.Answers.Bounds},
-		Conversations: answerloop.Harnesses{OpenSQL: conversationStore(*cfg.Answers, p.answers)},
-		PassOn:        controllerPassOn{pool: w.pool, records: w.records, now: time.Now, log: w.log},
-		Decisions:     routedDecisions{outbox: w.outbox, now: time.Now, log: w.log},
-		AppID: func(role claim.Role) string {
-			if appauth.AppRoleFor(role) == appauth.Implement {
-				return cfg.GitHubApps.Implement.AppID
-			}
-			return cfg.GitHubApps.Review.AppID
-		},
-		Answer: answer.Answer, Now: time.Now, Log: w.log,
-	})
-	return nil
+	return ghTools{host: host, bounds: cfg.Answers.Bounds}, nil
 }
 
 // installAnswersLeakCheck is the shared public leak check a Kubernetes daemon's gh tool runs before

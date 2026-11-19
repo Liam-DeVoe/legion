@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	configpkg "github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // The legion.yaml example the repository ships (deploy/kubernetes/daemon/legion.yaml.example, the
@@ -428,26 +430,42 @@ func checkShippedExample(t *testing.T, edit func(string) string, extra map[strin
 }
 
 // The example's commented `answers` block, uncommented, passes the check too, on the postgres
-// session store the example already names: its gh found by LEGION_GH_PATH and its conversation
-// store's URL file read, and its placeholder api_key_command, which sh could not run, never run —
-// a key is read for each model call, never by the check.
+// session store the example already names: its gh found by LEGION_GH_PATH, the shared public leak
+// check's pin found in LEGION_LEAK_CHECK_TAG as the worker image sets it for the daemon it runs
+// (the pin ghroute.ReadsProvenCheckTag holds), its conversation store's URL file read, and its
+// placeholder api_key_command, which sh could not run, never run — a key is read for each model
+// call, never by the check. Without that pin the same file is refused, naming it, since a
+// Kubernetes daemon's gh tool would then have no check to run before any call.
 func TestTheShippedExamplesAnswersBlockPassesCheckConfig(t *testing.T) {
 	gh := filepath.Join(t.TempDir(), "gh")
 	if err := os.WriteFile(gh, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LEGION_GH_PATH", gh)
-	config := checkShippedExample(t, uncommentAnswers, map[string]string{
+	files := map[string]string{
 		"conversations-dsn": "postgres://legion-daemon:placeholder@conversations.internal.example:5432/omp_sessions\n",
 		"anthropic-key":     "placeholder\n",
+	}
+	t.Run("with the worker image's pin", func(t *testing.T) {
+		t.Setenv(leakguard.TagVariable, ghroute.ReadsProvenCheckTag)
+		config := checkShippedExample(t, uncommentAnswers, files)
+		cfg, err := configpkg.LoadForValidation(config, func(string) string { return "postgres://127.0.0.1:1/legion" })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Answers == nil || len(cfg.Answers.Providers) != 2 || len(cfg.Answers.Prices) != 2 || cfg.Answers.ConversationStore.DSNFile == "" {
+			t.Fatalf("the uncommented answers block settled as %+v, want both providers, both prices and the store's file", cfg.Answers)
+		}
 	})
-	cfg, err := configpkg.LoadForValidation(config, func(string) string { return "postgres://legion:legion@127.0.0.1:1/legion" })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Answers == nil || len(cfg.Answers.Providers) != 2 || len(cfg.Answers.Prices) != 2 || cfg.Answers.ConversationStore.DSNFile == "" {
-		t.Fatalf("the uncommented answers block settled as %+v, want both providers, both prices and the store's file", cfg.Answers)
-	}
+	t.Run("with no pin", func(t *testing.T) {
+		t.Setenv(leakguard.TagVariable, "")
+		config := stageShippedExample(t, uncommentAnswers, files)
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+		if code != 1 || !strings.Contains(errb.String(), "answers needs the shared public leak check") || !strings.Contains(errb.String(), leakguard.TagVariable) {
+			t.Fatalf("legion config check with no %s = %d, stdout %q, stderr %q; want 1 and the refusal naming the pin", leakguard.TagVariable, code, out.String(), errb.String())
+		}
+	})
 }
 
 // uncommentAnswers is the example with its whole commented `answers` block, which runs from the
