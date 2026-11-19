@@ -20,22 +20,32 @@ source "$script_dir/test-lib.sh"
 
 # The stand-ins for go and pulumi: each call appends "<pwd> <name> <args>" to $work/calls; a call
 # whose arguments contain FAIL_MATCH fails while the count of such calls is at most FAIL_TIMES.
-# `go env GOPATH` answers GO_FETCH_TEST_GOPATH, and each `go install` records the GOBIN it ran
-# under. A stand-in pulumi writes the sdks/ directory package add writes, so a second attempt in
-# the same directory would find it there. pulumi and `go build` each record the sha256 of the
-# go.mod and main.go they find in their directory, so a case can hold what they ran on to the
-# consumer's own files, not only to the step's exit.
+# `go env NAME...` answers one line per name: GOPATH from GO_FETCH_TEST_GOPATH, GOMODCACHE from
+# GO_FETCH_TEST_GOMODCACHE and GOPROXY from GO_FETCH_TEST_GOPROXY. Each `go install` records the
+# GOBIN and the GOPROXY it ran under. A stand-in pulumi writes the sdks/ directory package add
+# writes, so a second attempt in the same directory would find it there. pulumi and `go build`
+# each record the sha256 of the go.mod and main.go they find in their directory, so a case can
+# hold what they ran on to the consumer's own files, not only to the step's exit.
 mkdir -p "$work/bin"
 for name in go pulumi; do
   cat > "$work/bin/$name" <<'STANDIN'
 #!/usr/bin/env bash
 echo "$PWD $(basename "$0") $*" >> "$GO_FETCH_TEST_CALLS"
-if [ "$(basename "$0")" = go ] && [ "$*" = "env GOPATH" ]; then
-  echo "$GO_FETCH_TEST_GOPATH"
+if [ "$(basename "$0")" = go ] && [ "$1" = env ]; then
+  shift
+  for var in "$@"; do
+    case $var in
+      GOPATH) echo "$GO_FETCH_TEST_GOPATH" ;;
+      GOMODCACHE) echo "$GO_FETCH_TEST_GOMODCACHE" ;;
+      GOPROXY) echo "$GO_FETCH_TEST_GOPROXY" ;;
+      *) echo "the go stand-in answers no go env $var" >&2; exit 2 ;;
+    esac
+  done
   exit 0
 fi
 if [ "$(basename "$0")" = go ] && [ "$1" = install ]; then
   echo "GOBIN=${GOBIN:-}" >> "$GO_FETCH_TEST_CALLS.gobin"
+  echo "GOPROXY=${GOPROXY:-}" >> "$GO_FETCH_TEST_CALLS.goproxy"
 fi
 if [ "$(basename "$0")" = pulumi ]; then
   echo "PULUMI_BACKEND_URL=${PULUMI_BACKEND_URL:-} PULUMI_HOME=${PULUMI_HOME:-} PULUMI_SKIP_UPDATE_CHECK=${PULUMI_SKIP_UPDATE_CHECK:-} PULUMI_API=${PULUMI_API:-}" >> "$GO_FETCH_TEST_CALLS.pulumi-env"
@@ -92,21 +102,26 @@ done
 
 # fetch <args...>: runs the script under test with the stand-ins and no waits. Leaves its stderr
 # in `err`, its exit code in `rc`, the stand-ins' calls in `calls`, the environment each pulumi
-# call saw in `pulumi_env`, each install's GOBIN in `gobin`, what package add and the build found
-# in their directory in `seen`, and the failing cp's, mktemp's and mkdir's calls in `cp_calls`,
-# `mktemp_calls` and `mkdir_calls`. PATH_FIRST, when set, goes on PATH before the stand-ins.
+# call saw in `pulumi_env`, each install's GOBIN in `gobin` and its GOPROXY in `goproxy`, what
+# package add and the build found in their directory in `seen`, and the failing cp's, mktemp's and
+# mkdir's calls in `cp_calls`, `mktemp_calls` and `mkdir_calls`. PATH_FIRST, when set, goes on
+# PATH before the stand-ins. `go env` answers $work/modcache for GOMODCACHE and
+# `https://proxy.example|direct` for GOPROXY, or TEST_GOMODCACHE and TEST_GOPROXY when set.
 fetch() {
-  rm -f "$work/calls" "$work/calls.pulumi-env" "$work/calls.gobin" "$work/calls.seen" "$work/calls.cp" \
-    "$work/calls.mktemp" "$work/calls.mkdir" "$work/count"
+  rm -f "$work/calls" "$work/calls.pulumi-env" "$work/calls.gobin" "$work/calls.goproxy" "$work/calls.seen" \
+    "$work/calls.cp" "$work/calls.mktemp" "$work/calls.mkdir" "$work/count"
   set +e
   PATH="${PATH_FIRST:+$PATH_FIRST:}$work/bin:$PATH" GO_FETCH_TEST_CALLS="$work/calls" GO_FETCH_TEST_COUNT="$work/count" \
-    GO_FETCH_TEST_GOPATH="$work/gopath:$work/other-gopath" GO_FETCH_WAIT=0 "$go_fetch" "$@" > "$work/stdout" 2> "$work/stderr"
+    GO_FETCH_TEST_GOPATH="$work/gopath:$work/other-gopath" GO_FETCH_TEST_GOMODCACHE="${TEST_GOMODCACHE-$work/modcache}" \
+    GO_FETCH_TEST_GOPROXY="${TEST_GOPROXY-https://proxy.example|direct}" GO_FETCH_WAIT=0 "$go_fetch" "$@" \
+    > "$work/stdout" 2> "$work/stderr"
   rc=$?
   set -e
   err=$(cat "$work/stderr")
   calls=$(cat "$work/calls" 2>/dev/null || true)
   pulumi_env=$(cat "$work/calls.pulumi-env" 2>/dev/null || true)
   gobin=$(cat "$work/calls.gobin" 2>/dev/null || true)
+  goproxy=$(cat "$work/calls.goproxy" 2>/dev/null || true)
   seen=$(cat "$work/calls.seen" 2>/dev/null || true)
   cp_calls=$(cat "$work/calls.cp" 2>/dev/null || true)
   mktemp_calls=$(cat "$work/calls.mktemp" 2>/dev/null || true)
@@ -125,12 +140,36 @@ fetch tools "$work/tools.txt"
 check "exits 0" "$(is "$rc" 0)"
 check "installs the first pin" "$(contains "$calls" '^.* install example.com/a/cmd/alpha@v1.2.3$')"
 check "installs the second pin, its comment left off" "$(contains "$calls" '^.* install example.com/b/v2@v2.0.1$')"
-check "asks go env for GOPATH, then runs the two installs and nothing else" "$(is "$(grep -c . <<< "$calls")" 3)"
+check "asks go env for GOPATH, GOMODCACHE and GOPROXY once, then runs the two installs and nothing else" \
+  "$(is "$(grep -c . <<< "$calls")" 3)"
+check "one go env call names all three" "$(contains "$calls" ' go env GOPATH GOMODCACHE GOPROXY$')"
 check "in the file's order" "$(is "$(grep ' install ' <<< "$calls" | sed -n 1p | grep -c alpha)" 1)"
 check "into legion-live-tools under GOPATH's first entry, never the caller's GOBIN" \
   "$(is "$(sort -u <<< "$gobin")" "GOBIN=$work/gopath/legion-live-tools")"
 check "both installs there" "$(is "$(grep -c . <<< "$gobin")" 2)"
 check "says where" "$(contains "$err" "installing 2 tools into $work/gopath/legion-live-tools")"
+# go install PATH@VERSION reads the module's version list for its deprecation and retraction
+# checks even at an exact pin: from the module cache's own download directory first, that list
+# and every cached module need no network, and the proxy go env names serves only what the cache
+# lacks (after a 404 or 410, the `,`).
+check "each install reads the module cache's download directory first, then the proxy go env names" \
+  "$(is "$(sort -u <<< "$goproxy")" "GOPROXY=file://$work/modcache/cache/download,https://proxy.example|direct")"
+check "both installs so" "$(is "$(grep -c . <<< "$goproxy")" 2)"
+check "says it reads the module cache first" "$(contains "$err" "the module cache $work/modcache first")"
+
+echo "case: tools with GOPROXY=off installs from the module cache alone, and with no proxy named, the cache then Go's default"
+TEST_GOPROXY=off fetch tools "$work/tools.txt"
+check "exits 0" "$(is "$rc" 0)"
+check "GOPROXY=off: the cache, then off" "$(is "$(sort -u <<< "$goproxy")" "GOPROXY=file://$work/modcache/cache/download,off")"
+TEST_GOPROXY='' fetch tools "$work/tools.txt"
+check "no proxy named: the cache, then Go's default" \
+  "$(is "$(sort -u <<< "$goproxy")" "GOPROXY=file://$work/modcache/cache/download,https://proxy.golang.org,direct")"
+
+echo "case: a go env that names no module cache ends the step before any install"
+TEST_GOMODCACHE='' fetch tools "$work/tools.txt"
+check "exits 1" "$(is "$rc" 1)"
+check "says so" "$(contains "$err" 'go env GOMODCACHE names no module cache')"
+check "installs nothing" "$(is "$(grep -c ' install ' <<< "$calls")" 0)"
 
 echo "case: a pin whose install fails twice is tried again and installed"
 FAIL_MATCH=alpha FAIL_TIMES=2 fetch tools "$work/tools.txt"

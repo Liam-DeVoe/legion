@@ -204,7 +204,9 @@ jobs:
       # cluster.test.sh renders nats.yaml with helm under GOPROXY=off, since a fetch inside a test
       # fails it whenever the module proxy does, on a change that touched nothing it tests. This
       # step installs tools.txt's helm first, tried again on failure, into legion-live-tools under
-      # GOPATH, where render-nats.sh takes it from after checking its build against the pin.
+      # GOPATH, where render-nats.sh takes it from after checking its build against the pin. The
+      # install reads the go-envoy entry restored above first, helm's version list included, so on
+      # a filled entry it asks the network nothing (.github/scripts/go-fetch.sh, tools).
       - name: Fetch the helm the cluster test renders with
         run: .github/scripts/go-fetch.sh tools packages/envoy/loadtest/cluster/tools.txt
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render

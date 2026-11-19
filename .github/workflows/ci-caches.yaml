@@ -321,9 +321,9 @@ jobs:
       # job's fetch step fetches before the test, so a filled entry leaves it nothing to download
       # (both lines are ci_job_reads.py's LISTENER_CLIENTS, which check-ci-filters.sh holds them to).
       # Last, the helm loadtest/cluster/tools.txt pins, which envoy-go-checks' fetch step installs
-      # before cluster.test.sh renders with it under GOPROXY=off: installed here, its modules and
-      # its compiled packages are in the entry, so that step finds them there rather than
-      # downloading helm's modules on every run.
+      # before cluster.test.sh renders with it under GOPROXY=off: installed here, its modules, its
+      # version list and its compiled packages are in the entry, and go-fetch.sh's tools mode reads
+      # the module cache first, so that step finds them there and asks the network nothing.
       - name: Build the listener and natsd, and fetch the modules of the other commands the readers build
         if: steps.go-envoy.outputs.cache-hit != 'true'
         run: |

@@ -12,7 +12,8 @@
 #     legion-live-tools under the first entry of `go env GOPATH`: a directory of these tools' own,
 #     where the tests that run a tool look it up and check its build against the pin. It is not
 #     GOBIN, which a developer keeps on PATH, so the install replaces no helm or nats-server of
-#     theirs.
+#     theirs. Each install reads the module cache first, its version lists included, so a cache
+#     that holds the pin's modules installs it with no network (below, at the install).
 #   go-fetch.sh deps DIR PACKAGE...
 #     Download into the module cache every module a `go build` of PACKAGE... in DIR needs
 #     (`go list -deps`, which compiles nothing), for tests that build those packages while they
@@ -86,13 +87,28 @@ case "$mode" in
     done < "$file"
     [ "${#pins[@]}" -gt 0 ] || { echo "go-fetch: $file pins no tool" >&2; exit 2; }
     # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
-    gopath=$(go env GOPATH)
+    goenv=$(go env GOPATH GOMODCACHE GOPROXY)
+    gopath=$(sed -n 1p <<<"$goenv") modcache=$(sed -n 2p <<<"$goenv") goproxy=$(sed -n 3p <<<"$goenv")
     [ -n "${gopath%%:*}" ] || { echo "go-fetch: go env GOPATH names no directory to install the tools under" >&2; exit 1; }
+    [ -n "$modcache" ] || { echo "go-fetch: go env GOMODCACHE names no module cache" >&2; exit 1; }
     tools="${gopath%%:*}/legion-live-tools"
-    echo "go-fetch: installing ${#pins[@]} tools into $tools" >&2
+    # `go install PATH@VERSION` asks for the module's version list even at an exact pin: it reads
+    # the go.mod of the module's latest version for a deprecation notice and for retractions
+    # (cmd/go's load.PackagesAndErrorsOutsideModule, modload.CheckDeprecation). From the proxy
+    # the job names, that is a network request on every run, which failed this step whenever the
+    # network did even with every module in the cache the job restored (with GOPROXY=off the
+    # install refuses: "loading deprecation for helm.sh/helm/v3: module lookup disabled"). So the
+    # proxy list starts with the module cache's own download directory, which serves the version
+    # lists and the modules the cache holds, and the job's proxy follows it: a `,` passes a request
+    # on only after a 404 or 410, which a file proxy answers for a file it does not hold, so the
+    # network is asked only for what the cache lacks. The cost: a deprecation or retraction
+    # published after the cache was filled is not read, which an exact pin a person reviews makes
+    # no difference to.
+    proxy="file://$modcache/cache/download,${goproxy:-https://proxy.golang.org,direct}"
+    echo "go-fetch: installing ${#pins[@]} tools into $tools, the module cache $modcache first" >&2
     for pin in "${pins[@]}"; do
       # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
-      GOBIN=$tools retry go install "$pin"
+      GOBIN=$tools GOPROXY=$proxy retry go install "$pin"
     done
     ;;
   deps)
