@@ -10,17 +10,19 @@
 # server's handler drains first. One given SIGKILL ends the next time the kernel runs it, and until
 # its exit has finished it keeps its port, its descriptors (an inherited lock among them) and its
 # working directory: for a process holding a few GiB of memory that is a measurable time, in which
-# its port refuses a bind and /proc still shows it. Its pid then stays in the process table until its
-# parent reaps it. Gone from the table is dead and reaped.
+# its port refuses a bind and /proc still shows it. Once its exit has finished it is a zombie, which
+# holds none of these: only its pid, until its parent reaps it. Gone is dead: reaped, or a zombie.
 
-# wait_gone SECONDS TARGET... returns 0 once every TARGET has left the process table, and 1 once the
-# clock has passed SECONDS whole seconds since the call with one still there, so it never gives up
-# sooner than SECONDS. A TARGET is a pid, or -PGID for every process of that group. A pid counts as
-# gone once /proc holds no process of that pid that started when the first read found it, so a pid
-# the kernel hands a new process during the wait is not taken for the one waited on; where /proc
-# cannot be read, kill -0 answers. It prints nothing: the targets still there are left in the array
-# wait_gone_left, for the caller to name in its own terms. The locals' names are ones no caller
-# passes.
+# wait_gone SECONDS TARGET... returns 0 once every TARGET is gone, and 1 once the clock has passed
+# SECONDS whole seconds since the call with one still there, so it never gives up sooner than
+# SECONDS. A TARGET is a pid, or -PGID for every process of that group. A pid counts as gone once
+# /proc holds no process of that pid that started when the first read found it, or holds it only as
+# a zombie: a zombie is its parent's to reap, and a parent that is itself waiting on the caller (a
+# test runner's synchronous spawn) would never reap it while this waited. A pid the kernel hands a
+# new process during the wait is not taken for the one waited on. Where /proc cannot be read, and
+# for a group, kill -0 answers, a zombie included. It prints nothing: the targets still there are
+# left in the array wait_gone_left, for the caller to name in its own terms. The locals' names are
+# ones no caller passes.
 wait_gone() {
   local _wg_seconds=$1 _wg_end _wg_now _wg_target _wg_start _wg_proc=1
   shift
@@ -58,14 +60,14 @@ wait_gone() {
 }
 
 # _wait_gone_started PID VAR assigns VAR the start time of the process PID names, in clock ticks
-# since boot (proc(5), stat field 22), a zombie's included, and fails when /proc holds no such
-# process. The command name, field 2, is parenthesised and may hold spaces; the fields after it are
-# not.
+# since boot (proc(5), stat field 22), and fails when /proc holds no such process, or holds it only
+# as a zombie (stat field 3, Z). The command name, field 2, is parenthesised and may hold spaces;
+# the fields after it are not.
 _wait_gone_started() {
   local _wgs_stat
   { read -r _wgs_stat <"/proc/$1/stat"; } 2>/dev/null || return 1
   read -r -a _wgs_stat <<<"${_wgs_stat##*) }"
-  [ -n "${_wgs_stat[19]:-}" ] || return 1
+  [ "${_wgs_stat[0]:-}" != Z ] && [ -n "${_wgs_stat[19]:-}" ] || return 1
   printf -v "$2" '%s' "${_wgs_stat[19]}"
 }
 

@@ -5610,8 +5610,10 @@ One given SIGKILL keeps its port, its descriptors (an inherited lock among them)
 
 - `wait_gone SECONDS TARGET…`
 
-  Returns 0 once every TARGET, a pid or `-PGID` for every process of that group, has left the process table, and 1 once the clock has passed SECONDS whole seconds since the call, so never sooner.
-  A pid counts as gone once `/proc` holds no process of that pid that started when the first read found it, so a pid the kernel hands a new process during the wait is not taken for the old one.
+  Returns 0 once every TARGET, a pid or `-PGID` for every process of that group, is gone, and 1 once the clock has passed SECONDS whole seconds since the call, so never sooner.
+  A pid counts as gone once `/proc` holds no process of that pid that started when the first read found it, so a pid the kernel hands a new process during the wait is not taken for the old one, or holds it only as a zombie.
+  A zombie holds no port, descriptor or directory, only its pid, which is its parent's to reap; a parent that is itself waiting on the caller, as a test runner's synchronous spawn is, would not reap it while the wait went on.
+  A group counts while `kill -0` finds any member, a zombie included.
   It prints nothing; the targets still there are left in the array `wait_gone_left`, for the caller to name.
 
 - `kill_gone SIGNAL SECONDS TARGET…`
