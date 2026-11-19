@@ -101,7 +101,7 @@ func heldDocumentStatement(t *testing.T, ctx context.Context, database *store.St
 }
 
 // heldDocumentJoinBefore is heldDocumentBlocks' join to graph_nodes as it stood before
-// INFRA-1149, written with the constants the read is written with, put back into the statement
+// its probe, written with the constants the read is written with, put back into the statement
 // the read sends now in place of its probe of each member's node and of the test of that node's
 // state after it: the members joined to graph_nodes plainly, under that same test.
 var heldDocumentJoinBefore = []explaintest.Part{
