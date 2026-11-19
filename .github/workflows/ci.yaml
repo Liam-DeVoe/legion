@@ -2841,6 +2841,8 @@ jobs:
               # gcp/clusteredhub_listener_live_test.go's issuer of the projected tokens a listener
               # that requires a credential verifies.
               - 'packages/envoy/internal/oidc/oidctest/*'
+              # seed/gcpfake_test.go serves its Secret Manager stand-in through testgrpc.
+              - 'packages/envoy/internal/testgrpc/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
@@ -3933,6 +3935,7 @@ jobs:
               - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/smoke/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
+              - '!packages/envoy/internal/testgrpc/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/internal/testtmp/**/*_test.go'
@@ -4315,6 +4318,7 @@ jobs:
               - '!packages/envoy/internal/smoke/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
+              - '!packages/envoy/internal/testgrpc/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/internal/testtmp/**/*_test.go'
@@ -4822,6 +4826,7 @@ jobs:
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
+              - '!packages/envoy/internal/testgrpc/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/internal/testtmp/**/*_test.go'
