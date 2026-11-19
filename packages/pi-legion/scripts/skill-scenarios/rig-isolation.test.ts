@@ -11,8 +11,9 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { fileRowLimit, RIG_BATCH, SCRIPT_RUN, spawnWithin } from "./test-limit";
+import { fileRowLimit, RIG_BATCH, SCRIPT_RUN } from "./test-limit";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a

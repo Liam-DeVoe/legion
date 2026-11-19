@@ -3,9 +3,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
+import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
-import { fileRowLimit, SCRIPT_RUN, spawnWithin, VCS_COMMAND } from "./test-limit";
+import { fileRowLimit, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
 
 // The hooks stage the runs and run score.ts over them as a process of its own, so each test and
 // hook gets the limit test-limit.ts computes from the bounds of what they wait for.

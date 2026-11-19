@@ -1,83 +1,32 @@
-import { afterEach, beforeEach } from "bun:test";
-import { REMOVAL_BOUND_MS } from "@legion/test-fixtures/temporary-directories";
-
-/** One thing a row waits for: what it is, and the bound it must end within, in milliseconds. */
-export interface Wait {
-  readonly part: string;
-  readonly boundMs: number;
-}
+import { fileLimit, ROW_MARGIN_MS, type Wait } from "@legion/test-fixtures/row-clock";
 
 /**
- * What a row's limit holds past the bounds of what it waits for, in milliseconds: bun's own 5 s,
- * the bound bun gives a row that runs no process, for the row's own reads and assertions.
+ * A row's or a hook's own work in this process, in milliseconds: its reads, writes and copies of
+ * files and its assertions, which no process of its own bounds and a loaded machine stretches. At
+ * a load of 401, judge.test.ts's row "a judge whose answer does not cover its input fails the run
+ * naming the file", which runs judge.ts six times in this process, ran past bun's 5 s default; at
+ * a load of about 690, rule-search.test.ts's afterAll took 36 s to remove its copies of the role
+ * texts in this process. 60 s is past both.
  */
-export const ROW_MARGIN_MS = 5_000;
+export const ROW_WORK_MS = 60_000;
 
 /**
  * The limit of a row of this directory's test files, in milliseconds: the bound of each thing the
- * row waits for, one after another, the fixture's removal of the row's directories
- * (REMOVAL_BOUND_MS), and ROW_MARGIN_MS.
+ * row waits for, one after another, the row's own work (ROW_WORK_MS), and ROW_MARGIN_MS, which
+ * spawnWithin leaves between a process's kill and the row's limit.
  */
 export function rowLimit(...waits: readonly Wait[]): number {
-  return waits.reduce((sum, wait) => sum + wait.boundMs, REMOVAL_BOUND_MS + ROW_MARGIN_MS);
+  return waits.reduce((sum, wait) => sum + wait.boundMs, ROW_WORK_MS + ROW_MARGIN_MS);
 }
 
-/** When the running row started, and the limit its file gave it (fileRowLimit). */
-let rowStarted = 0;
-let rowLimitMs = Number.POSITIVE_INFINITY;
-
 /**
- * rowLimit for every row of the calling file, which passes it to `setDefaultTimeout`. It also
- * registers, in the file's scope, the hooks that start each row's clock and stop it after the row,
- * so spawnWithin gives a process no more than its row has left: a process that would outlast the
- * row's limit is killed ROW_MARGIN_MS before it, and the row fails naming that process, never on
- * bun's own timeout. A hook that runs between rows (a describe's beforeAll or afterAll) runs on no
- * row's clock, so its processes get their own bounds, not what an earlier row left.
+ * rowLimit for every row and hook of the calling file, which passes it to `setDefaultTimeout`:
+ * the file states it to the row clock of `@legion/test-fixtures/row-clock` (`fileLimit`), which
+ * gives each process `spawnWithin` starts no more than its row has left, and gives the fixture's
+ * removal of the file's temporary directories a clock of its own at that limit.
  */
 export function fileRowLimit(...waits: readonly Wait[]): number {
-  const limit = rowLimit(...waits);
-  beforeEach(() => {
-    rowStarted = performance.now();
-    rowLimitMs = limit;
-  });
-  afterEach(() => {
-    rowLimitMs = Number.POSITIVE_INFINITY;
-  });
-  return limit;
-}
-
-/**
- * `Bun.spawnSync(command, options)` for `wait`: the process is killed at `wait.boundMs`, or where
- * the row's limit leaves it less, and then the row fails naming `wait.part`.
- */
-export function spawnWithin(
-  wait: Wait,
-  command: string[],
-  options: {
-    readonly cwd?: string;
-    readonly env?: Record<string, string | undefined>;
-    readonly stdout?: "pipe";
-    readonly stderr?: "pipe";
-  } = {}
-) {
-  const left = Math.floor(rowLimitMs - (performance.now() - rowStarted) - ROW_MARGIN_MS);
-  const timeout = Math.max(1, Math.min(wait.boundMs, left));
-  const result = Bun.spawnSync(command, {
-    ...options,
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout,
-    killSignal: "SIGKILL",
-  });
-  if (result.exitedDueToTimeout && timeout < wait.boundMs) {
-    throw new Error(
-      `${wait.part} did not end within the ${timeout} ms its row's limit of ${rowLimitMs} ms left it: the limit counts less than the parts the row waits for`
-    );
-  }
-  if (result.exitedDueToTimeout) {
-    throw new Error(`${wait.part} did not end within its bound of ${wait.boundMs} ms`);
-  }
-  return result;
+  return fileLimit(rowLimit(...waits));
 }
 
 /**

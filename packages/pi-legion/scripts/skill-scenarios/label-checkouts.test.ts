@@ -9,8 +9,9 @@
 import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { fileRowLimit, LABEL_CHECKOUTS, spawnWithin, VCS_COMMAND } from "./test-limit";
+import { fileRowLimit, LABEL_CHECKOUTS, VCS_COMMAND } from "./test-limit";
 
 // Each row clones the fixture repository three or four times and runs `bun install` in each
 // clone, so each test and hook gets the limit test-limit.ts computes from the bounds of what they

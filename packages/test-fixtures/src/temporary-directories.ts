@@ -1,17 +1,9 @@
 import { afterAll, afterEach, beforeAll } from "bun:test";
 import { randomBytes } from "node:crypto";
-import {
-  chmodSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  type Stats,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { onHookClock, spawnWithin } from "./row-clock";
 
 /** What {@link temporaryDirectories} takes. */
 export type TemporaryDirectoriesOptions = {
@@ -40,18 +32,32 @@ export type TemporaryDirectoryOptions = {
 export type TemporaryDirectoryMaker = (suffix?: string) => string;
 
 /**
- * The bound of each hook this fixture registers, in milliseconds: the time it gives one making or
- * removal of its directories. A file whose own limits count that removal reads it from here.
+ * The limit each hook of this fixture gives Bun: 0, which Bun 1.4.4 reads as none, for a
+ * synchronous hook and an asynchronous one alike (a probe's afterEach and afterAll of 6.5 s each
+ * passed under it, where Bun's own 5 s failed the afterAll).
  *
- * Bun gives a hook 5 s unless the hook names a bound of its own, and a row's own limit does not
- * cover its hooks. These hooks make and remove trees synchronously, and Bun judges a synchronous
- * hook only after it returns, so the bound stops no removal: it says how long a removal may take
- * before it fails the row. On the devbox one removal of a row's folder of a few files ran past
- * 5 s at a 1-minute load of 476, and failed a row whose assertions had all passed; the removal of
- * a copy of the role texts, a larger tree than any row here makes, took 36 s at a load of about
- * 690 (`rule-search.test.ts`). 60 s is past both.
+ * What a hook waits for is the removal, and the removal runs as a process of its own
+ * (`remove-trees.ts`) through spawnWithin, on a clock of its own at the limit the running file
+ * states (`onHookClock` of `row-clock.ts`): a removal that ends passes however slow the disk, and
+ * one that never ends is killed within the file's limit and fails its hook naming the directories
+ * it was removing. A file that states no limit gives the removal no clock, and then the CI step's
+ * own limit is its bound.
+ *
+ * A limit of Bun's own would be the wrong bound. These hooks used to remove in this process, and
+ * Bun judges a synchronous hook only after it returns, so a limit stopped no removal that never
+ * returned and failed only one that had ended: on the devbox one removal of a row's folder of a
+ * few files ran past Bun's 5 s at a 1-minute load of 476, and failed a row whose assertions had
+ * all passed; a removal of a copy of the role texts took 36 s at a load of about 690
+ * (`rule-search.test.ts`); and the afterAll of `score.test.ts`, removing its staged runs, ran past
+ * a limit of 60 s at a load of 570.
+ *
+ * The making stays in this process: it is one `mkdirSync`, no tree to walk, under the same limit
+ * of none.
  */
-export const REMOVAL_BOUND_MS = 60_000;
+const NO_HOOK_LIMIT = 0;
+
+/** The script each removal runs, as a process of its own. */
+const REMOVAL_SCRIPT = join(import.meta.dir, "remove-trees.ts");
 
 /**
  * Registers the removal of every directory the returned maker makes, and returns the maker.
@@ -96,7 +102,7 @@ export function temporaryDirectories(
   const made: string[] = [];
   afterEach(() => {
     removeEvery(made.splice(0));
-  }, REMOVAL_BOUND_MS);
+  }, NO_HOOK_LIMIT);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -140,10 +146,10 @@ export function temporaryDirectory(
   );
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
-  }, REMOVAL_BOUND_MS);
+  }, NO_HOOK_LIMIT);
   afterAll(() => {
-    removeTree(directory);
-  }, REMOVAL_BOUND_MS);
+    removeEvery([directory]);
+  }, NO_HOOK_LIMIT);
   return directory;
 }
 
@@ -167,77 +173,28 @@ function nameTemplate(prefix: string, suffix: string | undefined): string {
 }
 
 /**
- * Removes every directory of `directories`, newest first, so one made inside another goes before
- * the directory holding it. Every tree is attempted even when one of them refuses, since the
- * directories are independent and one refusal must not leave the rest on disk, and the refusals
- * are reported together at the end: a hook that stopped at the first failure would leave every
- * later directory behind and name only the one it stopped on (the behaviour
- * `packages/envoy-client/test/temp-dir.ts` had, which this fixture took over from it).
+ * Removes every directory of `directories` in a process of its own (`remove-trees.ts`, which
+ * removes them newest first, attempts each one even when another refuses, and reports the
+ * refusals together), on the hook's own clock (NO_HOOK_LIMIT says why). Its working directory is
+ * this package's, whatever the caller's is: bun reads a `bunfig.toml` from the directory it
+ * starts in, and a test's own could preload something into the removal.
  */
 function removeEvery(directories: readonly string[]): void {
-  const failures: string[] = [];
-  for (const directory of [...directories].reverse()) {
-    try {
-      removeTree(directory);
-    } catch (error) {
-      failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
-    }
+  if (directories.length === 0) return;
+  const removal = onHookClock(() =>
+    spawnWithin(
+      {
+        part: `the removal of ${directories.join(", ")}`,
+        boundMs: Number.POSITIVE_INFINITY,
+      },
+      [process.execPath, REMOVAL_SCRIPT, ...directories],
+      { cwd: import.meta.dir }
+    )
+  );
+  if (removal.exitCode !== 0) {
+    const said = removal.stderr.toString().trim();
+    throw new Error(
+      said === "" ? `the removal of ${directories.join(", ")} exited ${removal.exitCode}` : said
+    );
   }
-  if (failures.length > 0) {
-    throw new Error(`temporary directories left behind:\n  ${failures.join("\n  ")}`);
-  }
-}
-
-/**
- * Removes one tree, making every directory in it writable, searchable and readable first.
- * `rmSync` alone fails on a tree a test made read-only on purpose, and a test can make one
- * without meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that
- * runs `go` under its temporary directory leaves a tree nothing can unlink.
- */
-function removeTree(directory: string): void {
-  makeWritable(directory);
-  rmSync(directory, { recursive: true, force: true });
-}
-
-/** `chmod -R u+rwx` on a tree's directories, following no symlink. A path already gone is
- * nothing to do. */
-function makeWritable(path: string): void {
-  const entry = makeSelfWritable(path);
-  if (entry === undefined || !entry.isDirectory()) return;
-  let entries: string[];
-  try {
-    entries = readdirSync(path);
-  } catch {
-    return;
-  }
-  for (const name of entries) makeWritable(join(path, name));
-}
-
-/**
- * `chmod u+rwx` on one path when it is a directory, following no symlink. Answers what it found
- * there, or nothing for a path that is gone or a symlink.
- *
- * A file's own mode is left alone: unlinking a file needs write permission on the directory
- * holding it, never on the file, and a file in a temporary tree can be a hard link to one
- * outside it, whose mode is the same inode's.
- */
-function makeSelfWritable(path: string): Stats | undefined {
-  let entry: Stats;
-  try {
-    entry = lstatSync(path);
-  } catch {
-    return undefined;
-  }
-  if (entry.isSymbolicLink()) return undefined;
-  if (!entry.isDirectory()) return entry;
-  const mode = entry.mode & 0o7777;
-  const wanted = mode | 0o700;
-  if (wanted !== mode) {
-    try {
-      chmodSync(path, wanted);
-    } catch {
-      // A mode this user cannot set is left to rmSync to report.
-    }
-  }
-  return entry;
 }

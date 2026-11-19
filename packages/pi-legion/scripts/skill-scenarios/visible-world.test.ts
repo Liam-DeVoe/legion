@@ -2,12 +2,13 @@ import { expect, setDefaultTimeout, test } from "bun:test";
 import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { fileRowLimit, SCRIPT_RUN, spawnWithin } from "./test-limit";
+import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
 
 // Each row runs visible-world.ts as a process of its own, and the view rows walk a real bubblewrap
 // view: each test and hook gets the limit test-limit.ts computes from the bounds of what they wait
-// for, set before the hooks the reservations below register.
+// for, and the fixture's removal of the reservations below runs within it.
 setDefaultTimeout(fileRowLimit({ ...SCRIPT_RUN, part: "visible-world.ts" }));
 
 // Each row's work directory, reserved here (the fixture's hook makes it before the rows run).

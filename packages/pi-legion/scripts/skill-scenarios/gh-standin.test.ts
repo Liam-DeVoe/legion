@@ -1,12 +1,13 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { fileRowLimit, SCRIPT_RUN, spawnWithin } from "./test-limit";
+import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
 
 // Each row runs the stand-in as a bun process of its own, a start a loaded machine stretches: each
-// test and hook gets the limit test-limit.ts computes from the bounds of what they wait for, set
-// before the hooks the reservations below register.
+// test and hook gets the limit test-limit.ts computes from the bounds of what they wait for, and
+// the fixture's removal of the reservations below runs within it.
 setDefaultTimeout(fileRowLimit({ ...SCRIPT_RUN, part: "gh-standin.ts" }));
 
 // Each row's run directory, reserved here (the fixture's hook makes it before the rows run).

@@ -85,7 +85,12 @@ itself, whose tests import its sources by relative path.
   read-only: the removal chmods `u+rwX` down the tree first, following no symlink out of it and
   leaving a file's own mode alone, because `rmSync` alone fails on the 0555 directories and 0444
   files a Go module cache writes, and because a file in such a tree can be a hard link to one
-  outside it.
+  outside it. The removal runs as a process of its own (`remove-trees.ts`), and the hooks give Bun
+  no limit, since Bun judges a synchronous hook only after it returns: a limit would stop no
+  removal and fail only a slow one that ended. A file that states its limit through `fileLimit`
+  of `@legion/test-fixtures/row-clock` gives each removal that limit on a clock of the hook's own,
+  so a removal that never ends fails its hook naming the directory; in a file that states none,
+  only the CI step's own limit stops it.
 
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held

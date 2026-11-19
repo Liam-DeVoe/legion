@@ -15,9 +15,10 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
-import { fileRowLimit, RIG_STEP, spawnWithin, VCS_COMMAND } from "./test-limit";
+import { fileRowLimit, RIG_STEP, VCS_COMMAND } from "./test-limit";
 
 // Every test here runs rig.sh and its stand-ins as real processes, which a loaded machine
 // stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of

@@ -2757,7 +2757,7 @@ GATES = [
                                                       "behind keyedLayer"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
-        (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
+        (TEST_FIXTURES_SRC, "packages/pi-legion's extensions, src and scripts/skill-scenarios tests import @legion/test-fixtures; scripts/skill-scenarios/test-limit.ts:1 imports its row-clock, and the temporary-directories fixture runs its remove-trees.ts as a process of its own"),
         (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1421,4009, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
         (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:848"),
         (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:968 (PLUGIN_REPORT :854)"),
