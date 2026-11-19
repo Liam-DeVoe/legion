@@ -995,7 +995,8 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 
 // recordPass counts task one more pass through the implementing, testing and reviewing stretch,
 // which every move back into an earlier phase opens, counts the move itself under its own pair,
-// and fires the deployment's hooks that stand on the move (fireWorkBackHooks). The counts are the
+// and answers the backward-move counts the deployment's hooks that stand on the move fire on,
+// which the transition fires once its start is written (fireWorkBackHooks). The counts are the
 // task's (record.Store.ReturnCounts): on its plan_tasks row for an issue with plan rows, and on the
 // implementer's phases row for an issue with none, where they lived before plans (B-12, R20).
 //
@@ -1008,28 +1009,28 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 // review requesting changes opens (recordRound): a hook standing on that count would never see a
 // tester's fail or a worker's own move back.
 //
-// A move the record holds as a conflict with the base raises no pair and fires no hook: nobody
-// sent the work back, so there is no move of a kind for a hook to count, and the pass it still
-// raises is the completion key's alone. Everything is written in the move's own transaction, so
-// a move the record holds and a prompt nobody wrote cannot happen, and nothing here holds the
-// move back: the transition starts the next role whatever a hook said.
-func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, from, to phase.Phase, pr *record.PullRequest) error {
+// A move the record holds as a conflict with the base raises no pair and fires no hook, and
+// answers nil: nobody sent the work back, so there is no move of a kind for a hook to count, and
+// the pass it still raises is the completion key's alone. Everything is written in the move's own
+// transaction, so a move the record holds and a prompt nobody wrote cannot happen, and nothing here
+// holds the move back: the transition starts the next role whatever a hook said.
+func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, task string, from, to phase.Phase, pr *record.PullRequest) (map[string]int, error) {
 	counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	counts.Pass++
 	if pr != nil && classify.ConflictRound(*pr) {
-		return e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts)
+		return nil, e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts)
 	}
 	if counts.BackwardMoves == nil {
 		counts.BackwardMoves = make(map[string]int, 1)
 	}
 	counts.BackwardMoves[phase.Pair(from, to)]++
 	if err := e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, task, counts); err != nil {
-		return err
+		return nil, err
 	}
-	return e.fireWorkBackHooks(ctx, tx, issue.Key, from, to, counts.BackwardMoves, pr)
+	return counts.BackwardMoves, nil
 }
 
 // recordRound counts task one more review round, which only a review that requested changes

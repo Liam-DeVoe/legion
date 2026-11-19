@@ -40,7 +40,8 @@ type Hook struct {
 // a phase, which the daemon counts by the move's own `<from>-<to>` pair (phase.BackwardPairs).
 // It is the word the configuration spells as well (config.HookEventWorkBack), written out again
 // here because this package imports no configuration: a hook reaches the engine with its event
-// as the operator wrote it, and recordPass fires the hooks that name this one.
+// as the operator wrote it, and the move back fires the hooks that name this one
+// (fireWorkBackHooks).
 const HookEventWorkBack = "work_back"
 
 // Config supplies the project-scoped workflow limits and the clock used only to stamp durable
@@ -1624,8 +1625,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// api/handoff.go). It is read here and not below because issue.Phase is moved onto row.To a
 	// few lines down, which would leave the start comparing a phase with itself.
 	movedBack := phase.MovesBack(issue.Phase, row.To)
+	var backwardMoves map[string]int
 	if movedBack {
-		if err := e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr); err != nil {
+		if backwardMoves, err = e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr); err != nil {
 			return err
 		}
 	}
@@ -1727,6 +1729,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// rest of its tree, and an issue that arrives there and waits must be told why: the notice its
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
+	// The role whose phase a conflicting head ends is told so on the topic of the agent that worked
+	// it, read before the start below writes the next step's agent on a role's row (phaseEnded).
+	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, reason); err != nil {
+		return err
+	}
 	switch {
 	case holds:
 		// The retro starts when the last issue beneath leaves (startHeldRetro), and nothing here.
@@ -1756,6 +1763,14 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
+	// The deployment's hooks that stand on a move back fire once its start has written the agent of
+	// the round the move opened on its role's row, so each prompt names the claim of the agent that
+	// works its role's step in that round (fireHook).
+	if backwardMoves != nil {
+		if err := e.fireWorkBackHooks(ctx, tx, issue, from, row.To, backwardMoves, pr); err != nil {
+			return err
+		}
+	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err
 	}
@@ -1763,9 +1778,6 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if err := e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath)); err != nil {
 			return err
 		}
-	}
-	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, reason); err != nil {
-		return err
 	}
 	if mergedAlready {
 		return e.closeMergedTelling(ctx, tx, issue, pr)
@@ -1822,12 +1834,21 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 // message nothing tells that role: no transition stops a worker, and the daemon's next task for a
 // role is delivered only once that role's turn ends, while this message reaches its session at its
 // next model turn and ends a wait.
+//
+// The row names the claim of the agent that worked the phase that ended (workerClaim), read in the
+// transition's transaction before its start writes the next step's agent on a role's row, and the
+// outbox publishes on that claim's topic: a row resolved when it runs would reach whichever agent
+// a later entry of the role's step names by then.
 func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, reason string) error {
 	ended := phase.RoleFor(from)
 	if trigger != TriggerConflict || ended == "" || ended == claim.RoleArchitect {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: ended, From: from, To: to, Reason: reason, TaskFollows: ended == starting})
+	worker, err := e.workerClaim(ctx, tx, issue, ended)
+	if err != nil {
+		return err
+	}
+	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: ended, Claim: worker, From: from, To: to, Reason: reason, TaskFollows: ended == starting})
 }
 
 // StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to,

@@ -1594,13 +1594,15 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 }
 
 // phaseEnded publishes the message of a phase-ended row (record.PhaseEnded) to the Envoy topic of
-// the role whose phase a CI-red transition ended, the claim of the worker on that role's step of
-// the row's issue (workerToken), and to nothing else. It is no architect notice: it carries one
-// sentence of the daemon's own rather than a Notice, waits behind no other row of its issue (its
-// own lane, record.LaneRoleMessage), and its recipient is the role the workflow named rather than
-// whichever architect owns the issue. The message stops nothing it reaches: pi-envoy hands it to an
-// Oh My Pi session at its next model turn and ends a running wait, the Claude Code bridge puts it
-// in that session's inbox, and the role's turn, jobs and process run on.
+// the role whose phase a CI-red transition ended: the claim of the agent that worked that phase,
+// which the row names (record.PhaseEnded.Claim), or, for a row the release before wrote, the claim
+// of the worker on that role's step of the row's issue (workerToken); and to nothing else. It is no
+// architect notice: it carries one sentence of the daemon's own rather than a Notice, waits behind
+// no other row of its issue (its own lane, record.LaneRoleMessage), and its recipient is the role
+// the workflow named rather than whichever architect owns the issue. The message stops nothing it
+// reaches: pi-envoy hands it to an Oh My Pi session at its next model turn and ends a running wait,
+// the Claude Code bridge puts it in that session's inbox, and the role's turn, jobs and process run
+// on.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
 // holding it as an architect's notice is held: the role's next task from the daemon names its phase
@@ -1615,7 +1617,7 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	if r.notices == nil {
 		return errors.New("phase-ended executor has no Envoy publisher")
 	}
-	token, err := r.workerToken(ctx, row, payload.Role, "")
+	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
 	if err != nil {
 		return err
 	}
@@ -1637,8 +1639,10 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 }
 
 // hookPrompt publishes the words of a hook-prompt row (record.HookPrompt) to the Envoy topic of
-// the role the deployment's hook named, the claim of the worker on that role's step of the row's
-// issue (workerToken), and to nothing else. The row is the daemon's own facts of the firing — the
+// the role the deployment's hook named: the claim of the agent that works that role's step in the
+// round the move back opened, which the row names (record.HookPrompt.Claim), or, for a row the
+// release before wrote, the claim of the worker on that role's step of the row's issue
+// (workerToken); and to nothing else. The row is the daemon's own facts of the firing — the
 // hook, the move back and the counts — and then the deployment's own words for the round that move
 // back opened, unchanged (record.HookPrompt.Message). It rides the role-message lane beside a
 // phase-ended message (record.LaneRoleMessage), so it waits behind no other row of its issue and
@@ -1663,7 +1667,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	if r.notices == nil {
 		return errors.New("hook prompt executor has no Envoy publisher")
 	}
-	token, err := r.workerToken(ctx, row, payload.Role, "")
+	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
 	if err != nil {
 		return err
 	}

@@ -1205,12 +1205,16 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // the next role starts at once, and without this message nothing tells the tester, the reviewer,
 // the merger or the implementer in retro that the phase it was working is no longer its own,
 // since the daemon's next task for a role waits for that role's turn to end. Role is the
-// recipient, From the phase that ended, To the phase the issue is in now, Reason what the
-// architect's notice carries, and TaskFollows that the recipient is also the role the new phase
-// starts — the implementer sent back from retro — whose task for that phase follows this message.
+// recipient, Claim the claim of the agent that worked the phase that ended, read in the
+// transition's own transaction, From the phase that ended, To the phase the issue is in now,
+// Reason what the architect's notice carries, and TaskFollows that the recipient is also the role
+// the new phase starts — the implementer sent back from retro — whose task for that phase follows
+// this message. A row the release before wrote names no claim and reaches the claim of the worker
+// on Role's step when it runs (WorkerClaim).
 // It stops nothing: the recipient keeps its turn, its jobs, its process and its session.
 type PhaseEnded struct {
 	Role        claim.Role  `json:"role"`
+	Claim       claim.Token `json:"claim,omitempty"`
 	From        phase.Phase `json:"from"`
 	To          phase.Phase `json:"to"`
 	Reason      string      `json:"reason"`
@@ -1239,10 +1243,13 @@ func (p PhaseEnded) Message(issue string) string {
 
 // HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
 // put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name
-// as the deployment spells it, Role the recipient, From the phase the work left and To the phase
-// it went back to, Count the hook's own count of that pair at the firing, Counts every
-// backward-move count of the issue after the move, PullRequest the issue's pull request as
-// `owner/name#n` where the issue has one, and Prompt the hook's own words.
+// as the deployment spells it, Role the recipient, Claim the claim of the agent that works Role's
+// step in the round the move back opened, read in the move's own transaction once its start has
+// written that agent, From the phase the work left and To the phase it went back to, Count the
+// hook's own count of that pair at the firing, Counts every backward-move count of the issue after
+// the move, PullRequest the issue's pull request as `owner/name#n` where the issue has one, and
+// Prompt the hook's own words. A row the release before wrote names no claim and reaches the claim
+// of the worker on Role's step when it runs (WorkerClaim).
 //
 // It rides the role-message lane beside PhaseEnded because a role hears a hook prompt while it is
 // news, as it hears that its phase ended: a prompt held behind whatever its tree's architect is
@@ -1260,6 +1267,7 @@ func (p PhaseEnded) Message(issue string) string {
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`
+	Claim       claim.Token    `json:"claim,omitempty"`
 	From        phase.Phase    `json:"from"`
 	To          phase.Phase    `json:"to"`
 	Count       int            `json:"count"`
