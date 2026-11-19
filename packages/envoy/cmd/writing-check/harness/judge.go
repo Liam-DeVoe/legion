@@ -362,6 +362,11 @@ func tag(name, text string) string {
 	return "<" + name + ">\n" + strings.TrimSpace(text) + "\n</" + name + ">\n"
 }
 
+// ownWordsTag is the person's own words in the tag reader_own_words, one to a line.
+func ownWordsTag(words []string) string {
+	return tag("reader_own_words", "- "+strings.Join(words, "\n- "))
+}
+
 // parts are the context a call reads: the parts c gives that the input has, and no writer's
 // answer where the judgement is asked as change 1 asks it (asBaseline).
 func (in GradeInput) parts(c contextParts) contextParts {
@@ -402,7 +407,7 @@ func (in GradeInput) user(p contextParts) string {
 	case JPhrases, JUndefined, JAnswerStart:
 		b.WriteString(tag("text", in.Text))
 		if in.ownWords() {
-			b.WriteString(tag("reader_own_words", "- "+strings.Join(in.OwnWords, "\n- ")))
+			b.WriteString(ownWordsTag(in.OwnWords))
 		}
 	case JDefine:
 		b.WriteString(tag("definition", in.Definition))
@@ -944,7 +949,7 @@ func (r *Reader) call(text, question string, reply, firstParagraph bool, ownWord
 			return readerCall{err: err}
 		}
 		system += "\n" + part
-		user += tag("reader_own_words", "- "+strings.Join(ownWords, "\n- "))
+		user += ownWordsTag(ownWords)
 	}
 	purpose := "reader"
 	if firstParagraph {

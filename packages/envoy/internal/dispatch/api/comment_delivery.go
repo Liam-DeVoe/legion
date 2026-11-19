@@ -1126,8 +1126,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// A held reply's post, or its dry run, runs this route again (held_replay.go). Its held row is
-	// taken below, with the route's first row lock, once the reply is planned.
+	// A held reply's post, or its dry run, runs this route again (held_replay.go).
 	held := heldPostFrom(r.Context())
 	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
@@ -1303,10 +1302,9 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
 	// with no `turn` does.
 	turn := plan.thread.replyTurn(actor, nil)
-	// The row's id - the one a held reply's hold reserved where its post runs this, else a fresh
-	// one (textIDFor) - and its created_at were taken above, so the reply's own index and
-	// references could be planned for them with nothing held; both are written explicitly here,
-	// as the comments route writes them (comment_create.go).
+	// The row's id and its created_at were taken above (planCommentReply), so the reply's own
+	// index and references could be planned for them with nothing held; both are written
+	// explicitly here, as the comments route writes them (comment_create.go).
 	reply, err := scanComment(tx.QueryRow(r.Context(), `
 		insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)

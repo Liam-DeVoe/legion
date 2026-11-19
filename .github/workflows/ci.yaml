@@ -4061,11 +4061,11 @@ jobs:
               - 'packages/envoy/internal/dispatch/testlimits/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
-              # internal/dispatch/wordrecords, the records job, which embeds select.md, and the
-              # writing check with its leaf packages: its reader embeds reader/prompt.md and its
-              # written rules embed plainwords/skill/, a copy of skills/plain-words (INFRA-3231).
+              # internal/dispatch/wordrecords, the records job, which embeds select.md (INFRA-3231).
               - 'packages/envoy/internal/dispatch/wordrecords/*'
               - 'packages/envoy/internal/dispatch/workflowstore/*'
+              # The writing check with its leaf packages: its reader embeds reader/prompt.md and its
+              # written rules embed plainwords/skill/, a copy of skills/plain-words (INFRA-3231).
               - 'packages/envoy/internal/dispatch/writingcheck/*'
               - 'packages/envoy/internal/dispatch/writingcheck/candidates/*'
               - 'packages/envoy/internal/dispatch/writingcheck/plainwords/*'

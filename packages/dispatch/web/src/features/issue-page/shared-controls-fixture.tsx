@@ -16,7 +16,14 @@ import type {
   Priorities,
   PriorityRow,
 } from "../../api/types";
-import { PAGE_COLORS } from "../../theme/classes";
+import {
+  focusBorder,
+  focusRing,
+  focusVisibleRing,
+  groupFocusVisibleRing,
+  hasFocusVisibleRing,
+  PAGE_COLORS,
+} from "../../theme/classes";
 import { ProofDocument } from "../doc/ProofDocument";
 import { DocumentRuntime } from "../doc/runtime";
 import { AskHandOnPicker } from "../inbox/AskHandOnPicker";
@@ -130,6 +137,19 @@ export const FOCUS_VARIANTS: readonly string[] = [
   "has-focus-visible",
 ];
 
+/** `main`'s focus indicator, token by token: the only colour of a focus rule, a ring or an outline
+ *  drawn under a focus variant that `NoTooltips` keeps. */
+const MAIN_FOCUS_TOKENS: ReadonlySet<string> = new Set(
+  [focusBorder, focusRing, focusVisibleRing, groupFocusVisibleRing, hasFocusVisibleRing].flatMap(
+    tokens
+  )
+);
+
+/** The utilities that draw a focus indicator under a focus variant: a border, a ring or an
+ *  outline. What else a focus variant draws - the page's mark behind a menu row the keyboard is on
+ *  - is a colour of the page like any other. */
+const FOCUS_INDICATOR = /^(?:border(?:-[xytrblse])?|ring(?:-offset)?|outline)-/;
+
 /** A token as its variants and the utility after them. A colon inside brackets or parentheses
  *  is an arbitrary value's (`[overflow-wrap:anywhere]`, `content-[attr(data-initial)]`), not a
  *  variant's. */
@@ -184,8 +204,9 @@ export function colourOf(utility: string): string | undefined {
 }
 
 /** What `elements` draw that is no colour of the page: each token the palette guard reads as
- *  raw, and each colour `PAGE_COLORS` does not name, focus indicators skipped. Each offender
- *  names the element it is on after `name`, what the elements are of. */
+ *  raw, each colour `PAGE_COLORS` does not name, and each colour of a focus indicator that is not
+ *  `main`'s (`MAIN_FOCUS_TOKENS`), which is kept whole. Each offender names the element it is on
+ *  after `name`, what the elements are of. */
 export function offPageColours(
   name: string,
   elements: readonly Element[]
@@ -197,7 +218,12 @@ export function offPageColours(
     const where = `${name}: <${element.tagName.toLowerCase()}${testId === null ? "" : ` data-testid="${testId}"`}>`;
     for (const token of classOf(element)) {
       const { utility, variants } = splitToken(token);
-      if (variants.some((variant) => FOCUS_VARIANTS.includes(variant))) continue;
+      const focused = variants.some((variant) => FOCUS_VARIANTS.includes(variant));
+      if (focused && MAIN_FOCUS_TOKENS.has(token)) continue;
+      if (focused && FOCUS_INDICATOR.test(utility) && colourOf(utility) !== undefined) {
+        offenders.push(`${where} ${token}: a focus indicator that is not main's`);
+        continue;
+      }
       if (RAW_COLOR_PATTERN.test(utility)) {
         offenders.push(`${where} ${token}: a raw colour`);
         continue;

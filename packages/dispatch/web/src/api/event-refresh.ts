@@ -129,10 +129,10 @@ function inboxRowOfAsk(id: string): RefreshTarget {
 /** Whether an ask is an open question nobody handed on: the person it waits on is then its
  *  issue's assignee, or its project's default while nobody holds the issue or the ask is on a
  *  project document (`coalesce(a.asked_of, i.assignee, p.default_assignee)`), so an assignee move
- *  or a default move changes it. An answered or closed ask's card draws no Asked-of badge
- *  (`AskHandOn`, drawn for an open ask alone in `AskCard`), so neither move changes what a read of
- *  it shows. Every target below that tests a read for a question one of those moves carries
- *  tests it with this. */
+ *  or a default move changes it. An answered or closed ask's card names nobody it waits on
+ *  (`AskCard`'s turn line, which `askTurnHolder` draws for an open ask alone), so neither move
+ *  changes what a read of it shows. Every target below that tests a read for a question one of
+ *  those moves carries tests it with this. */
 function openAndNotHandedOn(ask: Pick<Ask, "asked_of" | "state">): boolean {
   return ask.state === "open" && ask.asked_of === null;
 }

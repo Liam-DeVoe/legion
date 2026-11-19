@@ -5,6 +5,7 @@ package main
 // what each list holds.
 
 import (
+	"cmp"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -130,10 +131,7 @@ func readDSLists(casesPath, verdictsPath, labelsPath string) (*dsLists, error) {
 		if err := json.Unmarshal(line, &p); err != nil {
 			return err
 		}
-		id := p.CaseID
-		if id == "" {
-			id = p.ID
-		}
+		id := cmp.Or(p.CaseID, p.ID)
 		if p.Final == "" {
 			return fmt.Errorf("the label of case %q holds no final label: give the plain check's final labels", id)
 		}
@@ -201,15 +199,18 @@ func runDatasetLists(args []string, stdout, stderr io.Writer) int {
 			lists[dsListPlain] = append(lists[dsListPlain], c.ID)
 		}
 	}
+	sum := func(counts map[string]int) int {
+		n := 0
+		for _, c := range counts {
+			n += c
+		}
+		return n
+	}
 	// A development case that no line labels is counted as such.
-	if n := cases[dsGroupQuestion] - l.verdicts["true"] - l.verdicts["false"] - l.verdicts["unlabelled"]; n > 0 {
+	if n := cases[dsGroupQuestion] - sum(l.verdicts); n > 0 {
 		l.verdicts["no verdict"] = n
 	}
-	labelled := 0
-	for _, n := range l.finals {
-		labelled += n
-	}
-	if n := cases[dsGroupPlain] - labelled; n > 0 {
+	if n := cases[dsGroupPlain] - sum(l.finals); n > 0 {
 		l.finals["no label"] = n
 	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {

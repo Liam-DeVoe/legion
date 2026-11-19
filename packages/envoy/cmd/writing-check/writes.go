@@ -361,6 +361,23 @@ func writeJSON(path string, v any) error {
 	return os.WriteFile(path, append(b, '\n'), 0o644)
 }
 
+// appendJSONLine appends v to path as one JSON line, creating the file if it is missing.
+func appendJSONLine(path string, v any) error {
+	line, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // flagGiven is whether the command line set the named flag.
 func flagGiven(flags *flag.FlagSet, name string) bool {
 	given := false

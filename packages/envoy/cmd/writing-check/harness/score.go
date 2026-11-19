@@ -171,20 +171,6 @@ func (s *scorer) wants(j Judgement) bool {
 	return (len(s.only) == 0 || slices.Contains(s.only, j)) && s.skipped[j] == ""
 }
 
-// readerOwnWords are the words of text, what a fresh reader reads of case c, that the owner wrote
-// himself before the case (--reader-vocabulary), at the time the undefined judgement cuts at: none
-// without the flag, and none for a case with no time, as none can be placed before it.
-func (s *scorer) readerOwnWords(c *Case, text string) []string {
-	if s.readerVocabulary == nil {
-		return nil
-	}
-	at, ok := c.writtenAt()
-	if !ok {
-		return nil
-	}
-	return s.readerVocabulary.Known(text, at)
-}
-
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -278,11 +264,8 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 	// aside, reads what change 1's reads (GradeInput.asBaseline).
 	base := GradeInput{Reply: reply, Question: question, Original: c.Agent.Text, Text: text, Definition: applied.Definition,
 		WriterAnswer: applied.WriterAnswer, Record: record, Session: session}
-	if s.vocabulary != nil && s.wants(JUndefined) {
-		// A case with no time gets no words: none can be placed before it.
-		if at, ok := c.writtenAt(); ok {
-			base.OwnWords = s.vocabulary.Known(text, at)
-		}
+	if s.wants(JUndefined) {
+		base.OwnWords = s.vocabulary.knownBefore(c, text)
 	}
 	// earlier are what the runs --grades-from names hold for this case's same text: the readers'
 	// answers and each judgement's grades. The reader and the grader take one of them where its
@@ -319,7 +302,7 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 			unread = append(unread, string(j))
 			return
 		default:
-			r.call = s.reader.call(text, question, reply || firstParagraph, firstParagraph, s.readerOwnWords(c, text))
+			r.call = s.reader.call(text, question, reply || firstParagraph, firstParagraph, s.readerVocabulary.knownBefore(c, text))
 			r.taken = r.call.reused(same)
 		}
 		cr.readings = append(cr.readings, r)

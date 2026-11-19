@@ -26,7 +26,7 @@ go run ./cmd/writing-check validate --description <scanner.yaml> --exposure-log 
 go run ./cmd/writing-check dataset fetch --end <RFC 3339 time> --out <snapshot.jsonl.gz> [--labelled <sets tarball>]
 go run ./cmd/writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out <verdicts.jsonl> [--model <id>]
 go run ./cmd/writing-check dataset pack --snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] --out <bundle.tar.gz>
-go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) --out <dir>
+go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) [--to-development <file>] --out <dir>
 go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
 go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
 go run ./cmd/writing-check dataset followups --from <bundle> --cases <build dir> --out <dir>
@@ -981,8 +981,7 @@ by how much. The list holds issue keys, so it is never a file of this repository
 Dispatch artifact `infra-3231-to-development` of INFRA-3231, and `dataset.go` holds its SHA-256
 (`dsToDevelopmentSHA256`). `build` refuses a file with another SHA-256 and prints both. It also
 refuses a list with a key that is no split group of the build; the error gives the count of such
-keys, not the keys. On the parts it writes, `build` fails if a case of a listed group is in the
-held-out part. Without the flag, the split is the one above.
+keys, not the keys. Without the flag, the split is the one above.
 
 `build` writes these files to `--out`:
 
@@ -1330,8 +1329,8 @@ reads files only: it calls no model and reads nothing over the network.
 | Flag | Meaning |
 | --- | --- |
 | `--labels-v1`, `--labels-v2` | The two labels files. Each is JSONL, one row for each question case: `case_id`, `label` (`understood` or `not_understood`), `part`, `split_group` and `explanation_tid`. The case of the explanation is `answer/<explanation_tid>`. The reaction check is printed for each file that is given. |
-| `--split` | The split file, `{"fit_groups": [...], "measure_groups": [...]}`: the split groups of each half. `--half fit` and `--half measure` need it. |
-| `--read-before-split` | A JSON file whose `their_measure_groups` are the groups of the measure half that were read before the split. `--half measure` needs it. |
+| `--split` | The split file, `{"fit_groups": [...], "measure_groups": [...]}`: the split groups of each half. With `--labels-v1` or `--labels-v2`, `--half fit` and `--half measure` need it. |
+| `--read-before-split` | A JSON file whose `their_measure_groups` are the groups of the measure half that were read before the split. With `--labels-v1` or `--labels-v2`, `--half measure` needs it. |
 | `--run` | The harness run directories that give the score, comma-separated. The score of a case is `grades.answered.verdict` in the run's `cases.jsonl`. A grade with an `error`, or with no verdict, gives no score. When two runs score one case differently, the command refuses it (exit 1). When they score it the same, that is the score. |
 | `--rows` | In place of `--run`: a JSONL file of `{"expl": <case id>, "score": <bool>}` rows, the score of a judge that is no harness run. An explanation that the file does not hold has no score. |
 | `--half` | `fit`, `measure` (the default) or `all`: the rows whose split group is in the fit half, in the measure half, or every row of the tuning part. `--half` does not select pairs. |
@@ -1622,7 +1621,7 @@ exits 1. `--out` also writes the rows as JSON.
 | `--session-chars` | The bytes of a case's session that a grading call reads. |
 | `--exposure-log`, `--commit`, `--new-run` | The exposure log (default `$TMPDIR/infra-3231-impl/harness/exposure.log`), a held-out run's commit (default `git rev-parse HEAD`), and the reason for a second held-out run of a cell at one commit (see below). |
 | `--figures-only` | Compute the figures from the results the directory holds, and call no model. |
-| `--dry-run` | Do all that the run does before its first model call: check every flag, read `candidates.yaml` and `prices.yaml`, select the cases (`--part`, `--groups`, `--case-list`, `--sample`) and write `run.json` as the run writes it. Then print the cases selected, in all and in each group, the model of each role (the fresh reader, the grader, the fallbacks, the writer of a change that plays it, the candidate of each lane) and each `run.json`, and exit 0. It calls no model, signs in to no Foundry account, reads no session part and writes no line to the exposure log. A run with the same flags in the same directory continues that `run.json`. Not with `--figures-only`. |
+| `--dry-run` | Check every flag, read `candidates.yaml` and `prices.yaml`, select the cases (`--part`, `--groups`, `--case-list`, `--sample`) and write `run.json` as a run does. Then print the cases selected, in all and in each group, the model of each role (the fresh reader, the grader, the fallbacks, the writer of a change that plays it, the candidate of each lane) and each `run.json`, and exit 0. It calls no model, signs in to no Foundry account, reads no session part and writes no line to the exposure log. A run with the same flags in the same directory continues that `run.json`. Not with `--figures-only`. |
 | `--grader-inputs` | The grader's input modes (see "Grader inputs"): `final` (the default), `full` or `trimmed`, then any `,<judgement>=full` or `,<judgement>=trimmed`. |
 | `--grader` | The grading model of this run in place of `candidates.yaml`'s grader, with the same fallbacks: a Claude model with a row in `prices.yaml` that is no candidate, not the writer, not the run's fresh reader and no fallback grader (R2). `run.json` and the figures record it as the grader. With `--grader-no-session`, a Foundry deployment of `prices.yaml` with no fallback (see "Session text"). |
 | `--reader` | The fresh reader of this run in place of `candidates.yaml`'s reader: a Claude model with a row in `prices.yaml` that is not the grader (of `candidates.yaml`, which `--grader` may then replace) and no fallback grader (R2). It may be a candidate. `run.json` (`models.reader`) and the figures record it. Its answers' `input_sha256` names it, so `--grades-from` takes no answer of another reader. Not with `--readers-from`, whose answers no reader of this run gives. |
@@ -1963,16 +1962,20 @@ reading, the words of the text it reads (the first paragraph, for the first-para
 the owner wrote himself before the case, by the same time cut and the same words. Its user message
 holds them after the question, in the tag `reader_own_words`, and its system prompt ends with
 `prompts/reader-own-words.md`: these are words he used himself before the text, so he knows them,
-and the answer does not count them as words the text does not explain. A reading with no such
-word gets neither, so its request is byte for byte the one of a run without the flag. The grader
-never gets the words from this flag; it gets them from `--vocabulary` alone, for `undefined`.
-Without `--reader-vocabulary` the reader's requests are as they were, so `--grades-from` takes
-the answers of runs made before the flag by their `input_sha256`. `run.json` records the file's
-SHA-256 as `reader_vocabulary_sha256`, and that of `prompts/reader-own-words.md` as
-`reader_own_words_prompt_sha256`. The two flags may name the same file. `reader-own-words.md` is
-in `prompts/`, and it came with the candidates `claude-opus-5-5` and `claude-fable-5-2` in
-`candidates.yaml`, so `prompts_sha256` changed with them: a directory of a run made before does
-not continue, though `--grades-from` still takes its answers and grades.
+and the answer does not count them as words the text does not explain. Its last paragraph says
+that the words of his question are often those of an earlier text of the agent, which the text
+answers, so the text may not use them: the answer is what the text says about the same thing,
+under any name or none, and the text does not answer him only when it says nothing about that
+thing. A reading with no such word gets neither, so its request is byte for byte the one of a run
+without the flag. The grader never gets the words from this flag; it gets them from
+`--vocabulary` alone, for `undefined`. Without `--reader-vocabulary` no reading gets them, so
+`--grades-from` takes the answers of a run without the flag by their `input_sha256`. `run.json`
+records the file's SHA-256 as `reader_vocabulary_sha256`, and that of
+`prompts/reader-own-words.md` as `reader_own_words_prompt_sha256`. The two flags may name the
+same file. `prompts_sha256` covers every file of `prompts/`, `reader-own-words.md` among them,
+with `candidates.yaml` and `prices.yaml`, so a directory whose `run.json` records another digest
+does not continue; `--grades-from` still takes the answers and grades of such a run whose inputs
+are the same.
 
 ### Grades of another run
 

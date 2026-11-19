@@ -2,28 +2,11 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// writeListsJSONL writes each value as one JSON line of path.
-func writeListsJSONL(t *testing.T, path string, values ...any) {
-	t.Helper()
-	var b bytes.Buffer
-	for _, v := range values {
-		line, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b.Write(append(line, '\n'))
-	}
-	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
 
 // `dataset lists` writes the three case lists of the development part, each in id order with its
 // SHA-256: the question cases whose verdict says about_words true, every answer case, and the plain
@@ -51,14 +34,14 @@ func TestDatasetListsWritesTheThreeCaseLists(t *testing.T) {
 	}
 	yes, no := true, false
 	verdicts := filepath.Join(dir, "verdicts")
-	writeListsJSONL(t, verdicts,
+	writeJSONLines(t, verdicts,
 		map[string]any{"id": "question/q1", "about_words": yes, "status": "agreed", "part": dsDevelopment},
 		map[string]any{"id": "question/q2", "about_words": no, "status": "agreed", "part": dsDevelopment},
 		map[string]any{"id": "question/q3", "status": "unlabelled"},
 		map[string]any{"id": "question/qh", "about_words": yes, "status": "settled", "part": dsHeldOut},
 	)
 	labels := filepath.Join(dir, "labels-final.jsonl")
-	writeListsJSONL(t, labels,
+	writeJSONLines(t, labels,
 		map[string]any{"case_id": "plain/p1", "label": "acted", "final": "understood", "part": dsDevelopment},
 		map[string]any{"case_id": "plain/p2", "label": "question_or_complaint", "final": "not_plain", "part": dsDevelopment},
 		map[string]any{"case_id": "plain/p3", "label": "silent", "final": "silent", "part": dsDevelopment},
@@ -102,7 +85,7 @@ func TestDatasetListsWritesTheThreeCaseLists(t *testing.T) {
 		t.Run(bad.name, func(t *testing.T) {
 			in := map[string]string{verdicts: verdicts, labels: labels}
 			in[bad.file] = filepath.Join(t.TempDir(), "bad.jsonl")
-			writeListsJSONL(t, in[bad.file], bad.line)
+			writeJSONLines(t, in[bad.file], bad.line)
 			var stdout, stderr bytes.Buffer
 			code := run(t.Context(), []string{"dataset", "lists", "--cases", build, "--verdicts", in[verdicts], "--plain-labels", in[labels], "--out", t.TempDir()}, &stdout, &stderr)
 			if code != 1 || !strings.Contains(stderr.String(), bad.says) {

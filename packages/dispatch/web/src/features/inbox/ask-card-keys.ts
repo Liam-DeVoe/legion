@@ -89,9 +89,10 @@ const OPTION_PLACES = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
  * then `r` Rewrite, `b` Ask back, `a` Hand this question to, `n` Decline to answer, `d` Define
  * selected words, `q` Quote reply, `w` the original wording, and, from the answer box, the
  * modified Enter that sends and Escape, which leaves Ask back. `card` names the card in hand, or
- * null for none; the host also pushes the `ask` scope above its own while one is
- * (`useKeymapScope`), so these act before its keys. A host drawn in a dialog (the Inbox's drawer)
- * registers them in `scope`, the dialog's, which is the one scope a dialog consults.
+ * null for none. The card pushes the `ask` scope itself while the focus is inside it (`AskCard`,
+ * `appKeymap.pushScope`), and the Inbox pushes it above its own while its card in hand is an ask
+ * (`useKeymapScope`), so these act before the host's keys. A host drawn in a dialog (the Inbox's
+ * drawer) registers them in `scope`, the dialog's, which is the one scope a dialog consults.
  *
  * The command bar lists the card's keys that act with no text field in focus. A row presses
  * only its binding's first key, so `1`–`9` are one key binding and nine rows of their own, one

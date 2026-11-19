@@ -201,10 +201,12 @@ func runCalibrate(args []string, stdout, stderr io.Writer) int {
 	emit("scores", fmt.Sprintf("calibrate %s: half %s, %d explanations scored, from %s", *name, *half, len(scores), source))
 	var bar []string
 	if labelled {
-		bar = append(bar, "reaction check: agreement >= 80% with its interval's lower end >= 70%, and caught >= 70%")
+		bar = append(bar, fmt.Sprintf("reaction check: agreement >= %.0f%% with its interval's lower end >= %.0f%%, and caught >= %.0f%%",
+			100*calBarShare, 100*calBarLow, 100*calBarCatch))
 	}
 	if *pairsPath != "" {
-		bar = append(bar, "pair check: prefers >= 80% with its interval's lower end >= 70%, and no pair unscored")
+		bar = append(bar, fmt.Sprintf("pair check: prefers >= %.0f%% with its interval's lower end >= %.0f%%, and no pair unscored",
+			100*calBarShare, 100*calBarLow))
 	}
 	emit("bar", "bar: "+strings.Join(bar, "; "))
 	for _, v := range versions {
@@ -239,7 +241,7 @@ func runCalibrate(args []string, stdout, stderr io.Writer) int {
 		if runDirs == nil {
 			record.Rows = *rowsPath
 		}
-		if err := calAppendRecord(*measured, record); err != nil {
+		if err := appendJSONLine(*measured, record); err != nil {
 			return fail(err)
 		}
 		fmt.Fprintf(stdout, "recorded %s in %s\n", *name, *measured)
@@ -251,7 +253,7 @@ func runCalibrate(args []string, stdout, stderr io.Writer) int {
 // for the measure half, the measure half without the groups read before the split.
 func calSelections(half, splitPath, readPath string) ([]calSelection, error) {
 	if half == calHalfAll {
-		return []calSelection{{"all", "every tuning row", func(string) bool { return true }}}, nil
+		return []calSelection{{calHalfAll, "every tuning row", func(string) bool { return true }}}, nil
 	}
 	var split struct {
 		FitGroups     []string `json:"fit_groups"`
@@ -509,8 +511,7 @@ func newCalReactionFigures(rows []calReaction, unscored int) calReactionFigures 
 // pass is whether the figures meet the bar: agreement of at least 80% with its interval's
 // lower end at least 70%, and a catch of at least 70%.
 func (f calReactionFigures) pass() bool {
-	a, c := f.agreement, f.caught
-	return a.n > 0 && a.value() >= calBarShare && a.ci != nil && a.ci[0] >= calBarLow && c.n > 0 && c.value() >= calBarCatch
+	return f.agreement.meetsBar() && f.caught.n > 0 && f.caught.value() >= calBarCatch
 }
 
 func (f calReactionFigures) text() string {
@@ -602,7 +603,7 @@ func (f calPairFigures) text(verdict bool) string {
 		return line
 	case f.unscored > 0:
 		return fmt.Sprintf("%s -> FAIL (pairs unscored: %d)", line, f.unscored)
-	case p.n > 0 && p.value() >= calBarShare && p.ci != nil && p.ci[0] >= calBarLow:
+	case p.meetsBar():
 		return line + " -> PASS"
 	}
 	return line + " -> FAIL"
@@ -654,6 +655,12 @@ func newCalShare(rows []calShareRow) calShare {
 }
 
 func (s calShare) value() float64 { return float64(s.hits) / float64(s.n) }
+
+// meetsBar is whether the share meets the bar of a check: at least calBarShare, with its
+// interval's lower end at least calBarLow.
+func (s calShare) meetsBar() bool {
+	return s.n > 0 && s.value() >= calBarShare && s.ci != nil && s.ci[0] >= calBarLow
+}
 
 // text is the share as agree.py prints it, "67.5% [57.1%, 77.1%]", or "-" for no trial.
 func (s calShare) text() string {
@@ -719,23 +726,6 @@ func calRefuseMeasured(path, name string) error {
 		return nil
 	}
 	return err
-}
-
-// calAppendRecord appends one record to the --measured file.
-func calAppendRecord(path string, r calRecord) error {
-	line, err := json.Marshal(r)
-	if err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // The parameters of MT19937 (Modules/_randommodule.c).

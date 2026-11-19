@@ -23,14 +23,15 @@
 //	writing-check validate --description <scanner.yaml> --exposure-log <file> [--manifests <dir>]
 //	writing-check dataset fetch --end <RFC 3339 time> --out <snapshot.jsonl.gz> [--labelled <sets tarball>]
 //	writing-check dataset classify --snapshot <snapshot.jsonl.gz> --out <verdicts.jsonl> [--model <id>]
-//	writing-check dataset build (--snapshot <file> --verdicts <file> --seed N | --from <bundle>) --out <dir>
-//	writing-check dataset pack --snapshot <file> --verdicts <file> --seed N --out <bundle.tar.gz>
+//	writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) [--to-development <file>] --out <dir>
+//	writing-check dataset pack --snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] --out <bundle.tar.gz>
+//	writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
 //	writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
 //	writing-check dataset followups --from <bundle> --cases <build dir> --out <dir>
 //	writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
 //	writing-check dataset lists --cases <build dir> --verdicts <file> --plain-labels <file> --out <dir>
 //	writing-check calibrate --name <name> (--run <dir>[,<dir>...] | --rows <file>) [--labels-v1 <file>] [--labels-v2 <file>] [--split <file>] [--read-before-split <file>] [--half fit|measure|all] [--pairs <file>] [--verdicts <file>] [--measured <file>]
-//	writing-check harness probe|score|grader-test|local|load [flags]
+//	writing-check harness probe|score|grader-test|compare|phrases-labels|asked-words|local|load [flags]
 //
 // probe-model measures the latency of the model reader's calls, fetch reads the prose agents
 // wrote from the live Dispatch event log as cases, and group joins the cases into the groups a
@@ -85,9 +86,9 @@ subcommands:
   regress            run the reader on the regression cases and bound its disagreement
   reading            take the outcome reading over a window of agent writes
   validate           check a description file (scanner.yaml) against the method's rules
-  dataset            build the dataset of texts the owner could not read: fetch, classify, build, pack, owner-texts, followups, named, lists
+  dataset            build the dataset of texts the owner could not read: fetch, classify, build, pack, sessions, owner-texts, followups, named, lists
   calibrate          check the answered score against what the owner did after an explanation
-  harness            score the changes of INFRA-3231 on the dataset: probe, score, grader-test, local, load
+  harness            score the changes of INFRA-3231 on the dataset: probe, score, grader-test, compare, phrases-labels, asked-words, local, load
 
 writing-check <subcommand> -h lists its flags.
 `

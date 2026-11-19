@@ -395,11 +395,12 @@ func (s *server) askAddress(ctx context.Context, id string) string {
 
 // applyAskRewrite writes rewrite into the ask as the run's rewrite, in one transaction with the
 // run's row: through rewriteDecisionBlock for a decision block, else through the edit route's
-// path, as Dispatch's quiet edit carrying record. It writes nothing, and answers why, where the
-// run is no longer the ask's run in progress, the ask is no longer open, or its wording is no
-// longer read, the wording the run read. A refusal of the document's own edit path is a reason
-// too. Everything up to Commit is the read phase (Docs.Join): the edit and the run's row queue
-// their writes on the ledger, and Commit sends them as one batch.
+// path, as Dispatch's quiet edit carrying record. It writes nothing, and answers "", where the run
+// is no longer the ask's run in progress; it writes nothing, and answers why, where the ask is no
+// longer open or its wording is no longer read, the wording the run read. A refusal of the
+// document's own edit path is a reason too. Everything up to Commit is the read phase
+// (Docs.Join): the edit and the run's row queue their writes on the ledger, and Commit sends them
+// as one batch.
 func (s *server) applyAskRewrite(ctx context.Context, run askRewriteRun, read, rewrite reviewer.Text, record model.AskRewriteEdit) (string, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {

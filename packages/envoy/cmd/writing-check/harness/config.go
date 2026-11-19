@@ -201,12 +201,12 @@ func (c Config) WithGrader(id string, candidate bool) (Config, error) {
 		return c, fmt.Errorf("--grader %q is the writer: a grader does not play the writer (R2)", id)
 	case id == r.Reader.ID:
 		return c, fmt.Errorf("--grader %q is the fresh reader: a grader plays no other role (R2)", id)
-	case slices.ContainsFunc(r.GraderFallbacks, func(m ModelEntry) bool { return m.ID == id }):
+	case c.isGraderFallback(id):
 		return c, fmt.Errorf("--grader %q is a fallback grader: it would grade the judgements it refused", id)
 	case !candidate && c.IsCandidate(id):
 		return c, fmt.Errorf("--grader %q is a candidate of candidates.yaml: a grader is no candidate (R2)", id)
 	}
-	if p, ok := c.Prices.Prices[id]; !ok || p.Family != llm.FamilyClaude {
+	if !c.claudePriced(id) {
 		return c, fmt.Errorf("--grader %q has no Claude price in prices.yaml", id)
 	}
 	c.Models.Roles.Grader = ModelEntry{Family: llm.FamilyClaude, ID: id, Effort: r.Grader.Effort}
@@ -224,10 +224,10 @@ func (c Config) WithReader(id string) (Config, error) {
 		return c, nil
 	case id == r.Grader.ID:
 		return c, fmt.Errorf("--reader %q is the grader: the grader does not play the fresh reader (R2)", id)
-	case slices.ContainsFunc(r.GraderFallbacks, func(m ModelEntry) bool { return m.ID == id }):
+	case c.isGraderFallback(id):
 		return c, fmt.Errorf("--reader %q is a fallback grader: a fallback grader plays no other role", id)
 	}
-	if p, ok := c.Prices.Prices[id]; !ok || p.Family != llm.FamilyClaude {
+	if !c.claudePriced(id) {
 		return c, fmt.Errorf("--reader %q has no Claude price in prices.yaml", id)
 	}
 	c.Models.Roles.Reader = ModelEntry{Family: llm.FamilyClaude, ID: id, Effort: r.Reader.Effort}
@@ -249,6 +249,17 @@ func (c Config) WithNoSessionGrader(id string) Config {
 // IsCandidate is whether id is the model of a candidate of candidates.yaml, at any effort.
 func (c Config) IsCandidate(id string) bool {
 	return slices.ContainsFunc(c.Models.Candidates, func(m ModelEntry) bool { return m.ID == id })
+}
+
+// isGraderFallback is whether id is the model of a fallback grader of candidates.yaml.
+func (c Config) isGraderFallback(id string) bool {
+	return slices.ContainsFunc(c.Models.Roles.GraderFallbacks, func(m ModelEntry) bool { return m.ID == id })
+}
+
+// claudePriced is whether prices.yaml prices id as a Claude model.
+func (c Config) claudePriced(id string) bool {
+	p, ok := c.Prices.Prices[id]
+	return ok && p.Family == llm.FamilyClaude
 }
 
 // Candidate is the candidate of candidates.yaml that name names (ModelEntry.Name).

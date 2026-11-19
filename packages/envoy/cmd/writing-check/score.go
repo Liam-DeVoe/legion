@@ -287,23 +287,6 @@ func readExposures(path string) ([]exposure, error) {
 	return out, err
 }
 
-// appendExposure appends one line to the exposure log.
-func appendExposure(path string, e exposure) error {
-	line, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
-}
-
 func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("writing-check score", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -439,7 +422,7 @@ func claimFinalTest(path string, e exposure) error {
 			return fmt.Errorf("the exposure log already holds final-test run %s of set %s (%s): a final test is read once; draw a new one", prior.RunID, e.SetDigest, prior.Time)
 		}
 	}
-	return appendExposure(path, e)
+	return appendJSONLine(path, e)
 }
 
 // newRunID is a run id: the time and four random bytes.

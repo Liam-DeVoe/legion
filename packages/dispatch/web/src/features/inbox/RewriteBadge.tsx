@@ -12,7 +12,10 @@ import {
   badgePrimaryOutline,
   borderTransparent,
   groupFocusVisibleRing,
+  pageFailedText,
+  pageHairBorder,
   pageLabelChip,
+  pagePaperBg,
 } from "../../theme/classes";
 
 /** Every state is the same box: a 1 px border, clear unless the state draws it (Original). */
@@ -21,6 +24,8 @@ const PILL =
 /** A pressable state's button is the pill's hit area: below 1280 px every button is a 44 px tap
  *  target (`styles.css`), and the pill inside keeps its own size; the focus ring is the pill's. */
 const HIT = "group inline-flex shrink-0 items-center justify-center outline-none";
+/** The words of the badge while a rewrite runs. */
+const REWRITING = "Rewriting…";
 
 /**
  * Each colour the badge draws inside `NoTooltips`, the new issue page's, by the role its colour
@@ -31,7 +36,7 @@ const HIT = "group inline-flex shrink-0 items-center justify-center outline-none
  * its 1 px border in every state, drawn in a colour of the page's where today's is clear.
  */
 const ON_PAGE = {
-  failed: "border-page-hair bg-page-paper text-page-failed hover:border-page-failed",
+  failed: `${pageHairBorder} ${pagePaperBg} ${pageFailedText} hover:border-page-failed`,
   original: "border-page-question bg-page-paper text-page-question hover:bg-page-question-tint",
   rewriting: pageLabelChip,
   rewritten:
@@ -87,12 +92,12 @@ export function RewriteBadge({
   if (running || rewrite?.state === "rewriting") {
     return (
       <span
-        aria-label={tooltips ? undefined : withoutEllipsis("Rewriting…")}
+        aria-label={tooltips ? undefined : withoutEllipsis(REWRITING)}
         className={`${PILL} animate-pulse ${tooltips ? `${borderTransparent} ${badgeLow.bg} ${badgeLow.text}` : ON_PAGE.rewriting}`}
         data-ask-rewrite="rewriting"
         role="status"
       >
-        Rewriting…
+        {REWRITING}
       </span>
     );
   }

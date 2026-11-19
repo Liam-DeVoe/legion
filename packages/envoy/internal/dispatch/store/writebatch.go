@@ -137,37 +137,37 @@ func (r batchRow) Scan(dest ...any) error {
 	return r.queued.failed(r.rows.Err())
 }
 
-// Send sends every queued statement to tx in one batch and reads their results in order, running
-// each statement's callback as it reads its result. It returns the first failure: the first
-// statement that failed (the server runs none after it) or the first callback that returned an
-// error (whose later statements ran, and are rolled back with the transaction the caller now
-// abandons), whichever comes first in the batch. The batch is empty again afterwards. An empty
-// batch sends nothing.
-func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
+// Send sends every queued statement to tx in one batch, under the context the batch is built under
+// (Context), and reads their results in order, running each statement's callback as it reads its
+// result. It returns the first failure: the first statement that failed (the server runs none
+// after it) or the first callback that returned an error (whose later statements ran, and are
+// rolled back with the transaction the caller now abandons), whichever comes first in the batch.
+// The batch is empty again afterwards. An empty batch sends nothing.
+func (b *WriteBatch) Send(tx pgx.Tx) error {
 	if b.batch.Len() == 0 {
 		return nil
 	}
 	batch := b.batch
 	b.batch = pgx.Batch{}
-	return tx.SendBatch(ctx, &batch).Close()
+	return tx.SendBatch(b.Context(), &batch).Close()
 }
 
-// RunWrite runs write's statements in tx at once, as a batch of their own (Send): what a write
-// step does in a transaction that queues no write phase.
+// RunWrite runs write's statements in tx at once, as a batch of their own built under ctx (Send):
+// what a write step does in a transaction that queues no write phase.
 func RunWrite(ctx context.Context, tx pgx.Tx, write func(*WriteBatch) error) error {
-	batch := WriteBatch{ctx: ctx}
-	if err := write(&batch); err != nil {
-		return batch.SendFailed(ctx, tx, err)
+	batch := NewWriteBatch(ctx)
+	if err := write(batch); err != nil {
+		return batch.SendFailed(tx, err)
 	}
-	return batch.Send(ctx, tx)
+	return batch.Send(tx)
 }
 
 // SendFailed ends a batch whose building failed with err partway: it sends what was queued before
 // the failure and returns the first failure among those statements, else err. Run one at a time,
 // those statements would have run before the write that failed was reached, so one of them failing
 // is the first failure of the write phase, which the caller answers as it always has.
-func (b *WriteBatch) SendFailed(ctx context.Context, tx pgx.Tx, err error) error {
-	if sendErr := b.Send(ctx, tx); sendErr != nil {
+func (b *WriteBatch) SendFailed(tx pgx.Tx, err error) error {
+	if sendErr := b.Send(tx); sendErr != nil {
 		return sendErr
 	}
 	return err

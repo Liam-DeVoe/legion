@@ -69,8 +69,7 @@ func TestTheGraderFlagReplacesTheGraderOfOneRun(t *testing.T) {
 	build, sessions := writeFixture(t)
 	stand := modeltest.New(t, graderRules(t)...)
 	out := t.TempDir()
-	code, _, stderr := runHarness("score", "--cases", build, "--sessions", sessions, "--out", out, "--grader", grader, "--reader", reader,
-		"--gateway", stand.URL, "--gateway-key-file", keyFile(t), "--draws", "50", "--exposure-log", filepath.Join(t.TempDir(), "exposure.log"))
+	code, _, stderr := runHarness(scoreArgs(t, build, sessions, out, stand, "--grader", grader, "--reader", reader)...)
 	if code != 0 {
 		t.Fatalf("score --grader %s = %d:\n%s", grader, code, stderr)
 	}

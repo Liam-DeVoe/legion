@@ -631,13 +631,20 @@ var errHeldNotPosting = errors.New("the held text is not waiting to post")
 //
 // A create path that runs its two phases (INFRA-636) - a read phase, then one batch of its writes
 // - takes and marks the row in one statement of that batch (queuePosted) and ends a dry run once
-// the batch has run (dryRunEnds), so the post holds no transaction id while the create reads and
-// does its document work. A route that writes as it goes takes the row with its first write
-// (lock), once its reads and its planning are done, and marks it before its commit (finish).
+// the batch has run (dryRunEnds; dryRunEndsOn runs a ledger's batch first), so the post holds no
+// transaction id while the create reads and does its document work. A route that writes as it
+// goes takes the row with its first write (lock), once its reads and its planning are done, and
+// marks it before its commit (finish).
 type heldPost struct {
 	id     string
 	dryRun bool
 }
+
+// postedHeldSQL marks the held text $1, waiting to post ($2, heldPosting), posted: its post time
+// is the transaction's.
+const postedHeldSQL = `
+	update held_texts set state = 'posted', posted_at = now(), claimed_at = null, updated_at = now()
+	where id = $1 and state = $2`
 
 // queuePosted queues on b, the create's write phase, the held row's mark as posted, which takes
 // the row: it must still be waiting to post, and a post that finds it posted by another process
@@ -649,9 +656,7 @@ func (h *heldPost) queuePosted(b *store.WriteBatch) {
 	if h == nil || h.dryRun {
 		return
 	}
-	b.Queue(fmt.Sprintf("take held text %s for its post", h.id), `
-		update held_texts set state = 'posted', posted_at = now(), claimed_at = null, updated_at = now()
-		where id = $1 and state = $2`, h.id, heldPosting).Exec(func(tag pgconn.CommandTag) error {
+	b.Queue(fmt.Sprintf("take held text %s for its post", h.id), postedHeldSQL, h.id, heldPosting).Exec(func(tag pgconn.CommandTag) error {
 		if tag.RowsAffected() != 1 {
 			return errHeldNotPosting
 		}
@@ -679,6 +684,20 @@ func (h *heldPost) dryRunEnds() error {
 	return nil
 }
 
+// dryRunEndsOn ends a hold's dry run of a create path that queues its writes on ledger: it runs
+// the queued write phase without committing (docs.Ledger.RunWritePhase), so each statement of the
+// batch runs and a refusal of the write phase refuses the dry run, then answers errHeldDryRun as
+// dryRunEnds does. It runs nothing, and is nil, for every other run, whose caller commits.
+func (h *heldPost) dryRunEndsOn(ctx context.Context, ledger *docs.Ledger) error {
+	if h == nil || !h.dryRun {
+		return nil
+	}
+	if err := ledger.RunWritePhase(ctx); err != nil {
+		return err
+	}
+	return h.dryRunEnds()
+}
+
 // lock takes the held row for the post of a route that writes as it goes: it must still be
 // waiting to post.
 func (h *heldPost) lock(ctx context.Context, tx pgx.Tx) error {
@@ -704,19 +723,17 @@ func (h *heldPost) answers() bool {
 }
 
 // finish marks the held row posted, in the create's transaction, for a route that took it with
-// lock: its post time is the transaction's, which the posted row carries as its creation time. A
-// dry run ends here, before the commit, and its create path answers errHeldDryRun with the advice
-// it worked out.
+// lock, which refused every state but posting: its post time is the transaction's, which the
+// posted row carries as its creation time. A dry run ends here, before the commit (dryRunEnds),
+// and its create path answers errHeldDryRun with the advice it worked out.
 func (h *heldPost) finish(ctx context.Context, tx pgx.Tx) error {
 	if h == nil {
 		return nil
 	}
-	if h.dryRun {
-		return errHeldDryRun
+	if err := h.dryRunEnds(); err != nil {
+		return err
 	}
-	_, err := tx.Exec(ctx, `
-		update held_texts set state = 'posted', posted_at = now(), claimed_at = null, updated_at = now()
-		where id = $1`, h.id)
+	_, err := tx.Exec(ctx, postedHeldSQL, h.id, heldPosting)
 	return err
 }
 

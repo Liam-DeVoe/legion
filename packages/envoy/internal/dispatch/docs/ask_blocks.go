@@ -324,13 +324,12 @@ func (s *Service) reconcileAskBlocks(
 	if err != nil {
 		return settlementReconciliation{}, err
 	}
-	credit.askSources.recorded, err = transactionRecordedAskAuthors(ctx, tx, artifactID)
-	if err != nil {
-		return settlementReconciliation{}, err
-	}
-	// The ask blocks a person typed in a session (doc_ask_block_authors.person_typed): a block such
-	// a write opens or rewords is theirs, and the reviewer reads none of it.
-	personTyped, err := readPersonTypedAskBlocks(ctx, tx, artifactID)
+	// The durable authors, and the ask blocks a person typed in a session among them
+	// (doc_ask_block_authors.person_typed): a block such a write opens or rewords is theirs, and
+	// the reviewer reads none of it. A block a stamp of this transaction renamed keeps the mark
+	// under its minted id, which the rows tx has queued carry (recordStampedAskAuthors).
+	var personTyped map[string]bool
+	credit.askSources.recorded, personTyped, err = transactionRecordedAskAuthors(ctx, tx, artifactID)
 	if err != nil {
 		return settlementReconciliation{}, err
 	}

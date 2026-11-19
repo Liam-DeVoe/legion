@@ -339,22 +339,16 @@ func askAuthorsArgs(room string, authors map[string]model.Actor, personTyped boo
 // queue the statement without recording the overlay the transaction's own reads of the table
 // consult (transactionRecordedAskAuthors). It queues nothing where no author can name a durable
 // row (askAuthorsArgs), which leaves no row for a read to miss either. personTyped marks the
-// rows as the blocks of a write a person typed in a session.
+// rows as the blocks of a write a person typed in a session, in the table and the overlay alike.
 func queueAskAuthors(ctx context.Context, tx pgx.Tx, plan *appendPlan, room string, authors map[string]model.Actor, personTyped bool) error {
 	args, blocks, err := askAuthorsArgs(room, authors, personTyped)
 	if err != nil || args == nil {
 		return err
 	}
 	plan.queue("record the document's ask block authors", askAuthorsStatement, args...)
-	ledger := queueFor(ctx, tx)
-	if ledger == nil {
-		return nil
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		ledger.queuedAskAuthors(room, blocks, authors, personTyped)
 	}
-	queued := make(map[string]model.Actor, len(blocks))
-	for _, block := range blocks {
-		queued[block] = authors[block]
-	}
-	ledger.queuedAskAuthors(room, queued)
 	return nil
 }
 
@@ -364,7 +358,7 @@ func queueAskAuthors(ctx context.Context, tx pgx.Tx, plan *appendPlan, room stri
 // the rows it will add from its ledger until then (Ledger.queuedAskAuthors,
 // transactionRecordedAskAuthors). A write a person typed in a session (events.PersonTyped on
 // ctx) records its blocks as theirs, which the settlement that opens their asks reads
-// (readPersonTypedAskBlocks).
+// (transactionRecordedAskAuthors).
 func recordAskAuthors(ctx context.Context, tx pgx.Tx, room string, authors map[string]model.Actor) error {
 	var plan appendPlan
 	if err := queueAskAuthors(ctx, tx, &plan, room, authors, events.PersonTyped(ctx)); err != nil {
@@ -400,11 +394,7 @@ func recordStampedAskAuthors(ctx context.Context, tx pgx.Tx, room string, stampe
 	// are marked by its own context, which marks every row it records (recordAskAuthors).
 	var typedRenames map[string]model.Actor
 	if len(renames) > 0 {
-		recorded, err := transactionRecordedAskAuthors(ctx, tx, room)
-		if err != nil {
-			return err
-		}
-		typed, err := readPersonTypedAskBlocks(ctx, tx, room)
+		recorded, typed, err := transactionRecordedAskAuthors(ctx, tx, room)
 		if err != nil {
 			return err
 		}
@@ -429,9 +419,6 @@ func recordStampedAskAuthors(ctx context.Context, tx pgx.Tx, room string, stampe
 			authors[ask.minted] = author
 		}
 	}
-	if len(typedRenames) == 0 {
-		return recordAskAuthors(ctx, tx, room, authors)
-	}
 	var plan appendPlan
 	if err := queueAskAuthors(ctx, tx, &plan, room, authors, events.PersonTyped(ctx)); err != nil {
 		return err
@@ -442,69 +429,62 @@ func recordStampedAskAuthors(ctx context.Context, tx pgx.Tx, room string, stampe
 	return plan.send(ctx, tx)
 }
 
-// transactionRecordedAskAuthors is the durable ask authors of room as tx sees them: the rows the
-// table holds (readRecordedAskAuthors) and the rows the writes tx has queued will add
-// (Ledger.queuedAskAuthors), which the table holds none of until the write phase has run. A row
-// the table already holds keeps its author, as the insert does.
-func transactionRecordedAskAuthors(ctx context.Context, tx pgx.Tx, room string) (map[string]model.Actor, error) {
-	recorded, err := readRecordedAskAuthors(ctx, tx, room)
+// transactionRecordedAskAuthors is the durable ask authors of room as tx sees them, and the blocks
+// of them a person typed in a session: the rows the table holds (readRecordedAskAuthors) and the
+// rows the writes tx has queued will add (Ledger.queuedAskAuthors), which the table holds none of
+// until the write phase has run. A row the table already holds keeps its author and its mark, as
+// the insert does.
+func transactionRecordedAskAuthors(ctx context.Context, tx pgx.Tx, room string) (map[string]model.Actor, map[string]bool, error) {
+	recorded, typed, err := readRecordedAskAuthors(ctx, tx, room)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		for block, actor := range ledger.askAuthors[room] {
-			if _, held := recorded[block]; !held {
-				recorded[block] = actor
+		for block, queued := range ledger.askAuthors[room] {
+			if _, held := recorded[block]; held {
+				continue
+			}
+			recorded[block] = queued.actor
+			if queued.personTyped {
+				typed[block] = true
 			}
 		}
 	}
-	return recorded, nil
+	return recorded, typed, nil
 }
 
-// readRecordedAskAuthors is the durable ask authors of room, keyed by block id. A settlement reads
-// them in its own transaction, under the document's advisory lock.
-func readRecordedAskAuthors(ctx context.Context, q Queryer, room string) (map[string]model.Actor, error) {
-	rows, err := q.Query(ctx, `select block_id, actor from doc_ask_block_authors where artifact_id = $1`, room)
+// readRecordedAskAuthors is the durable ask authors of room, keyed by block id, and the blocks of
+// them a person typed in a session (doc_ask_block_authors.person_typed), whose asks a settlement
+// opens unheld and unreviewed. A settlement reads them in its own transaction, under the
+// document's advisory lock.
+func readRecordedAskAuthors(ctx context.Context, q Queryer, room string) (map[string]model.Actor, map[string]bool, error) {
+	rows, err := q.Query(ctx, `select block_id, actor, person_typed from doc_ask_block_authors where artifact_id = $1`, room)
 	if err != nil {
-		return nil, fmt.Errorf("read the document's ask block authors: %w", err)
+		return nil, nil, fmt.Errorf("read the document's ask block authors: %w", err)
 	}
 	defer rows.Close()
 	recorded := make(map[string]model.Actor)
-	for rows.Next() {
-		var block string
-		var encoded []byte
-		if err := rows.Scan(&block, &encoded); err != nil {
-			return nil, fmt.Errorf("read the document's ask block authors: %w", err)
-		}
-		var actor model.Actor
-		if err := json.Unmarshal(encoded, &actor); err != nil {
-			return nil, fmt.Errorf("decode an ask block author of the document: %w", err)
-		}
-		recorded[block] = actor
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the document's ask block authors: %w", err)
-	}
-	return recorded, nil
-}
-
-// readPersonTypedAskBlocks is the ask blocks of room a person typed in a session
-// (doc_ask_block_authors.person_typed), whose asks a settlement opens unheld and unreviewed.
-func readPersonTypedAskBlocks(ctx context.Context, q Queryer, room string) (map[string]bool, error) {
-	rows, err := q.Query(ctx, `select block_id from doc_ask_block_authors where artifact_id = $1 and person_typed`, room)
-	if err != nil {
-		return nil, fmt.Errorf("read the document's ask blocks a person typed: %w", err)
-	}
-	defer rows.Close()
 	typed := make(map[string]bool)
 	for rows.Next() {
 		var block string
-		if err := rows.Scan(&block); err != nil {
-			return nil, fmt.Errorf("read the document's ask blocks a person typed: %w", err)
+		var encoded []byte
+		var personTyped bool
+		if err := rows.Scan(&block, &encoded, &personTyped); err != nil {
+			return nil, nil, fmt.Errorf("read the document's ask block authors: %w", err)
 		}
-		typed[block] = true
+		var actor model.Actor
+		if err := json.Unmarshal(encoded, &actor); err != nil {
+			return nil, nil, fmt.Errorf("decode an ask block author of the document: %w", err)
+		}
+		recorded[block] = actor
+		if personTyped {
+			typed[block] = true
+		}
 	}
-	return typed, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read the document's ask block authors: %w", err)
+	}
+	return recorded, typed, nil
 }
 
 // deleteSettledAskAuthors deletes, in a settlement's transaction, the durable author of each block

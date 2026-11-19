@@ -3,6 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
+import { NoTooltips } from "../issue-page/NoTooltips";
 import { type AskMenuItem, AskSplitButton } from "./AskSplitButton";
 
 function SplitButton({
@@ -112,5 +113,36 @@ test("an item's key runs it from the open menu, and a refused item runs on neith
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   } finally {
     view.unmount();
+  }
+});
+
+// Inside `NoTooltips` the menu draws no `title`: a refused item says why it cannot run as its
+// description, read after its name, and the chevron is named by its label alone. Outside it the
+// item's reason and the chevron's name are their tooltips, and the item has no description.
+test("inside NoTooltips a refused item is described by its reason and has no title", async () => {
+  const user = userEvent.setup();
+  const reason = "Select words in the question first";
+  const groups = [[{ ...item("define", "Define selected words", "d"), refused: reason }]];
+  for (const inside of [true, false]) {
+    const button = <SplitButton groups={groups} />;
+    const view = render(inside ? <NoTooltips>{button}</NoTooltips> : button);
+    try {
+      const chevron = screen.getByRole("button", { name: "More actions" });
+      await user.click(chevron);
+      const refused = screen.getByRole("menuitem", { name: "Define selected words" });
+      const describedBy = refused.getAttribute("aria-describedby");
+      if (inside) {
+        expect(chevron).not.toHaveAttribute("title");
+        expect(refused).not.toHaveAttribute("title");
+        expect(describedBy).not.toBeNull();
+        expect(document.getElementById(describedBy ?? "")?.textContent).toBe(reason);
+      } else {
+        expect(chevron).toHaveAttribute("title", "More actions");
+        expect(refused).toHaveAttribute("title", reason);
+        expect(describedBy).toBeNull();
+      }
+    } finally {
+      view.unmount();
+    }
   }
 });

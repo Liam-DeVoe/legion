@@ -102,6 +102,15 @@ func decisionBlockEvent(author model.Actor, reader, project string) store.Writin
 	return event
 }
 
+// decisionBlockReviewAfter is the review, after the write, of the decision block ask writer wrote
+// for reader, which event records.
+func decisionBlockReviewAfter(ask model.Ask, writer model.Actor, reader string, event store.WritingCheckEvent) *postedReview {
+	kind, text, subject := askReviewSubject(ask)
+	text.Kind = kind
+	subject.Text, subject.Writer, subject.Reader = text, writerOf(writer), reader
+	return &postedReview{kind: kind, text: text, subject: subject, event: event}
+}
+
 // AskBlockOpened holds or reviews the new decision block ask, by the setting, in the settlement's
 // transaction tx: the hold's writes are queued after the ask's own (docs.Write). A block a person
 // typed is recorded exempt_person_typed and opens as it is.
@@ -130,10 +139,7 @@ func (d decisionBlockReviewer) AskBlockOpened(ctx context.Context, tx pgx.Tx, as
 	}
 	event := decisionBlockEvent(author, reader, project)
 	if setting == ReviewAfter {
-		kind, text, subject := askReviewSubject(ask)
-		text.Kind = kind
-		subject.Text, subject.Writer, subject.Reader = text, writerOf(author), reader
-		review := &postedReview{kind: kind, text: text, subject: subject, event: event}
+		review := decisionBlockReviewAfter(ask, author, reader, event)
 		return func() { s.reviewPosted(s.postContext(), review, ask.ID) }, nil
 	}
 	request, err := json.Marshal(decisionBlockHold{DecisionBlock: true, AskID: ask.ID})
@@ -180,7 +186,9 @@ func (d decisionBlockReviewer) AskBlockOpened(ctx context.Context, tx pgx.Tx, as
 // (queueHeldDecisionBlockEdit); else it is reviewed after the write, by the setting, with no hold.
 // Dispatch's own rewrite (the reviewer's actor) starts no review. Whether the hold has ended is
 // the queued edit's to say, in the settlement's write phase, since the reviewer can end it
-// meanwhile: what runs once the settlement commits reads its answer.
+// meanwhile: what runs once the settlement commits reads its answer. So the review's reads
+// (decisionBlockReview) run before that answer is known, for a held edit as for any other, and an
+// error of theirs fails the settlement even where the hold would have taken the edit.
 func (d decisionBlockReviewer) AskBlockReworded(ctx context.Context, tx pgx.Tx, ask model.Ask, previous model.AskEditPrevious, editor model.Actor, personTyped bool) (func(), error) {
 	s := d.s
 	if editor == reviewerActor || s.deps.Store == nil {
@@ -200,10 +208,7 @@ func (d decisionBlockReviewer) AskBlockReworded(ctx context.Context, tx pgx.Tx, 
 			return nil, err
 		}
 		if reads {
-			kind, text, subject := askReviewSubject(ask)
-			text.Kind = kind
-			subject.Text, subject.Writer, subject.Reader = text, writerOf(editor), reader
-			review = &postedReview{kind: kind, text: text, subject: subject, event: decisionBlockEvent(editor, reader, project)}
+			review = decisionBlockReviewAfter(ask, editor, reader, decisionBlockEvent(editor, reader, project))
 		}
 	}
 	return func() {
@@ -276,20 +281,30 @@ type heldBlockTake struct {
 	row   heldRow
 }
 
+// heldBlockTaken is the held row a statement on a held decision block's row returned, and whether
+// it returned one: no row is a block whose hold has ended, or one nobody holds.
+func heldBlockTaken(row pgx.Row) (heldRow, bool, error) {
+	held, err := scanHeld(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return heldRow{}, false, nil
+	}
+	if err != nil {
+		return heldRow{}, false, err
+	}
+	return held, true, nil
+}
+
 // queueHeldBlockTake queues sql on the decision block id's held row in the settlement's write
 // phase (docs.Write), as what, and answers the take its answer fills in.
 func queueHeldBlockTake(ctx context.Context, tx pgx.Tx, what, sql string, args ...any) (*heldBlockTake, error) {
 	take := &heldBlockTake{}
 	err := docs.Write(ctx, tx, func(b *store.WriteBatch) error {
 		b.Queue(what, sql, args...).QueryRow(func(row pgx.Row) error {
-			held, err := scanHeld(row)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil
-			}
+			held, taken, err := heldBlockTaken(row)
 			if err != nil {
 				return err
 			}
-			take.taken, take.row = true, held
+			take.taken, take.row = taken, held
 			return nil
 		})
 		return nil
@@ -303,12 +318,12 @@ func queueHeldBlockTake(ctx context.Context, tx pgx.Tx, what, sql string, args .
 // does nothing for a block nobody holds. An edit already committed takes it (editAsk); a
 // settlement queues it instead (queueEndHeldDecisionBlockForPerson).
 func (s *server) endHeldDecisionBlockForPerson(ctx context.Context, q queryer, id string) (func(), error) {
-	held, err := scanHeld(q.QueryRow(ctx, endHeldDecisionBlockForPersonSQL, id, heldBlockPersonEditDetail))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return func() {}, nil
-	}
+	held, taken, err := heldBlockTaken(q.QueryRow(ctx, endHeldDecisionBlockForPersonSQL, id, heldBlockPersonEditDetail))
 	if err != nil {
 		return nil, fmt.Errorf("end the hold of decision block %s for a person's edit: %w", id, err)
+	}
+	if !taken {
+		return func() {}, nil
 	}
 	return func() { s.endedHeldDecisionBlockForPerson(held) }, nil
 }
@@ -333,12 +348,12 @@ func (s *server) endedHeldDecisionBlockForPerson(held heldRow) {
 // commits. An edit already committed takes it (editedHeldDecisionBlock); a settlement queues it
 // instead (queueHeldDecisionBlockEdit).
 func (s *server) heldDecisionBlockEdit(ctx context.Context, q queryer, id string) (func(), bool, error) {
-	row, err := scanHeld(q.QueryRow(ctx, heldDecisionBlockEditSQL, id))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, nil
-	}
+	row, taken, err := heldBlockTaken(q.QueryRow(ctx, heldDecisionBlockEditSQL, id))
 	if err != nil {
 		return nil, false, fmt.Errorf("take the edit of held decision block %s: %w", id, err)
+	}
+	if !taken {
+		return nil, false, nil
 	}
 	return func() { s.editedHeldDecisionBlockRow(row) }, true, nil
 }
@@ -496,9 +511,6 @@ func (s *server) releaseDecisionBlock(ctx context.Context, row heldRow, held *he
 		return err
 	}
 	published = append(published, event)
-	if err := held.dryRunEnds(); err != nil {
-		return err
-	}
 	if err := ledger.Commit(ctx); err != nil {
 		return err
 	}

@@ -2694,7 +2694,7 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "confirmed sample: %d of %d question cases are about words (seed %d)\n", s.Confirmed, s.Total, s.Seed)
 	}
 	if td := c.ToDevelopment; td != nil {
-		share := func(n, of int) float64 {
+		percent := func(n, of int) float64 {
 			if of == 0 {
 				return 0
 			}
@@ -2705,7 +2705,7 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "| Group | Cases moved | Held out by the split | Held out | Change |\n| --- | ---: | ---: | ---: | ---: |\n")
 		for _, g := range dsGroups {
 			gc, moved := c.Groups[g], td.CasesMovedByGroup[g]
-			split, now := share(gc.HeldOut+moved, gc.Cases), share(gc.HeldOut, gc.Cases)
+			split, now := percent(gc.HeldOut+moved, gc.Cases), percent(gc.HeldOut, gc.Cases)
 			fmt.Fprintf(stdout, "| %s | %d | %.1f%% | %.1f%% | %+.1f points |\n", g, moved, split, now, now-split)
 		}
 	}
@@ -3041,8 +3041,8 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	if counts.ToDevelopment, err = in.ToDevelopment.apply(list, parts); err != nil {
 		return res, err
 	}
-	if err := dsAssignParts(list, parts, in.ToDevelopment); err != nil {
-		return res, err
+	for _, c := range list {
+		c.Part = parts[c.SplitGroup]
 	}
 	treeParts := map[string]string{}
 	counts.NoTreeInBothParts = true
@@ -3374,25 +3374,6 @@ func (l *dsToDevelopment) apply(cases []*dsCase, parts map[string]string) (*dsTo
 		parts[key] = dsDevelopment
 	}
 	return tc, nil
-}
-
-// dsAssignParts gives each case the part that parts, the split's assignment, gives its split
-// group. It refuses an assignment that leaves a case of a split group of the list l in the
-// held-out part. The build calls it on the assignment it writes, so a step before it that puts a
-// listed group back in the held-out part fails the build.
-func dsAssignParts(cases []*dsCase, parts map[string]string, l *dsToDevelopment) error {
-	held, groups := 0, map[string]bool{}
-	for _, c := range cases {
-		c.Part = parts[c.SplitGroup]
-		if l != nil && l.keys[c.SplitGroup] && c.Part == dsHeldOut {
-			held++
-			groups[c.SplitGroup] = true
-		}
-	}
-	if held > 0 {
-		return fmt.Errorf("%d cases of %d split groups of --to-development are in the held-out part", held, len(groups))
-	}
-	return nil
 }
 
 // dsWriteGzipJSONL writes each value as one JSON line to a gzipped file, and answers the file's

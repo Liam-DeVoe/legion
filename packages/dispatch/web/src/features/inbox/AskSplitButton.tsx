@@ -69,18 +69,21 @@ export interface AskMenuItem {
 const HALF = "min-h-[42px]";
 /** The open menu's items, in the page: the panel is portalled out of the control. */
 const MENU_ITEMS = "[data-ask-menu] [role=menuitem]";
+const menuItems = () => [...document.querySelectorAll<HTMLElement>(MENU_ITEMS)];
 
 /**
- * The card's one control for what it does: its action (Answer, Ask back, Save answer) and, on
- * the same button, a chevron that opens every other action of the card in one menu, each with
- * its key. It is a split button: two halves of one shape with a thin light rule between them.
+ * The card's one control for what it does: its action (Answer, or Ask back while the reader asks a
+ * question back) and, on the same button, a chevron that opens every other action of the card in
+ * one menu, each with its key. It is a split button: two halves of one shape with a thin light
+ * rule between them.
  * While the action cannot be pressed the control is an outline with the action disabled, in the
  * disabled shade, and the chevron live, since the menu's actions do not wait on an answer; it
  * fills once the action can be pressed. The action is `disabled` rather than refused in words
  * alone, so the card hands the focus on when it disables under the reader (`AskCard`). Inside
  * `NoTooltips` a press whose write is out leaves the action refused with `aria-disabled` instead
  * (`actionRefusedHoldingFocus`), so it keeps the focus the press gave it, as every shared control
- * there does; it draws no `title`, and a refused item of the menu says why as its description.
+ * there does; it draws no `title` (outside it the chevron's is "More actions"), and a refused item
+ * of the menu says why as its description.
  *
  * The menu groups its items (`groups`, each drawn under a rule from the one before) and is
  * walked with the arrow keys; each item's own key runs it from the open menu as well.
@@ -120,12 +123,11 @@ export function AskSplitButton({
     close();
     item.run();
   };
-  const items = () => [...document.querySelectorAll<HTMLElement>(MENU_ITEMS)];
   // The panel focuses its first control as it opens; the menu moves that on to its first item
   // that can run, so Enter at once never presses a refused one.
   useEffect(() => {
     if (!menuOpen) return;
-    [...document.querySelectorAll<HTMLElement>(MENU_ITEMS)]
+    menuItems()
       .find((item) => item.getAttribute("aria-disabled") !== "true")
       ?.focus();
   }, [menuOpen]);
@@ -194,6 +196,7 @@ export function AskSplitButton({
         // A press here must not take the reader's selection of words, which Define reads.
         onMouseDown={(event) => event.preventDefault()}
         ref={chevronRef}
+        title={tooltips ? "More actions" : undefined}
         type="button"
       >
         <ChevronIcon expanded={menuOpen} />
@@ -211,7 +214,7 @@ export function AskSplitButton({
           <div
             data-ask-menu=""
             onKeyDown={(event) => {
-              const list = items();
+              const list = menuItems();
               const at = event.target instanceof HTMLElement ? list.indexOf(event.target) : -1;
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();

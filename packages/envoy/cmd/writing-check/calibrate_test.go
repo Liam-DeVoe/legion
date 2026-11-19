@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"maps"
 	"os"
 	"path/filepath"
@@ -86,21 +85,13 @@ var calFixturePairs = [][5]string{
 	{"e21", "e19", "hotel", dsHeldOut, dsHeldOut},
 }
 
-// writeCalLines writes each value as one JSON line of path.
-func writeCalLines(t *testing.T, path string, values ...any) {
+// writeJSONLines writes each value as one JSON line of path, making its directory first.
+func writeJSONLines(t *testing.T, path string, values ...any) {
 	t.Helper()
-	var b bytes.Buffer
-	for _, v := range values {
-		line, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b.Write(append(line, '\n'))
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, b.Bytes(), 0o644); err != nil {
+	if _, err := writeJSONL(path, values); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -131,20 +122,20 @@ func writeCalFixture(t *testing.T) {
 		}
 		verdicts = append(verdicts, map[string]any{"id": "question/" + r.id, "categories": r.categories})
 	}
-	writeCalLines(t, filepath.Join(dir, "labels.jsonl"), v1...)
-	writeCalLines(t, filepath.Join(dir, "labels-v2.jsonl"), v2...)
-	writeCalLines(t, filepath.Join(dir, "run-a", "cases.jsonl"), runA...)
-	writeCalLines(t, filepath.Join(dir, "run-b", "cases.jsonl"), runB...)
-	writeCalLines(t, filepath.Join(dir, "verdicts.jsonl"), verdicts...)
-	writeCalLines(t, filepath.Join(dir, "split.json"), map[string]any{
+	writeJSONLines(t, filepath.Join(dir, "labels.jsonl"), v1...)
+	writeJSONLines(t, filepath.Join(dir, "labels-v2.jsonl"), v2...)
+	writeJSONLines(t, filepath.Join(dir, "run-a", "cases.jsonl"), runA...)
+	writeJSONLines(t, filepath.Join(dir, "run-b", "cases.jsonl"), runB...)
+	writeJSONLines(t, filepath.Join(dir, "verdicts.jsonl"), verdicts...)
+	writeJSONLines(t, filepath.Join(dir, "split.json"), map[string]any{
 		"seed": 1, "fit_groups": []string{"alpha", "bravo", "charlie", "delta"}, "measure_groups": []string{"echo", "foxtrot", "golf", "hotel"}})
-	writeCalLines(t, filepath.Join(dir, "read.json"), map[string]any{"their_measure_groups": []string{"hotel"}})
+	writeJSONLines(t, filepath.Join(dir, "read.json"), map[string]any{"their_measure_groups": []string{"hotel"}})
 	var pairs []any
 	for _, p := range calFixturePairs {
 		pairs = append(pairs, calPair{NotFollowed: "question/x" + p[1], Followed: "question/x" + p[0],
 			ExplNotFollowed: "answer/" + p[1], ExplFollowed: "answer/" + p[0], Group: p[2], Half: p[3], Part: p[4]})
 	}
-	writeCalLines(t, filepath.Join(dir, "pairs.jsonl"), pairs...)
+	writeJSONLines(t, filepath.Join(dir, "pairs.jsonl"), pairs...)
 }
 
 // calibrateArgs runs calibrate with args.
@@ -214,7 +205,7 @@ func TestCalibrateReactionCheckMatchesAgreePy(t *testing.T) {
 	for _, r := range calFixtureRows[:9] {
 		rows = append(rows, map[string]any{"expl": "answer/e" + r.id[1:], "score": r.score == "yes"})
 	}
-	writeCalLines(t, "rows.jsonl", rows...)
+	writeJSONLines(t, "rows.jsonl", rows...)
 	code, stdout, stderr := calibrateArgs("--name", "judge", "--rows", "rows.jsonl", "--half", calHalfAll, "--labels-v1", "labels.jsonl")
 	if code != 0 {
 		t.Fatalf("--rows: exit %d: %s", code, stderr)
@@ -252,8 +243,8 @@ func TestCalibrateBarIsMetAtItsEdges(t *testing.T) {
 
 // The pair check counts a prefer, a tie and a reversed pair, by half and by part, with
 // agree.py's interval over the pairs' groups (python3 on this fixture). A pair whose
-// explanation has no score fails the check and is named; pairs that all prefer pass. The pair
-// check reads no labels and no split.
+// explanation has no score fails the check, and the line gives the count of such pairs; pairs
+// that all prefer pass. The pair check reads no labels and no split.
 func TestCalibratePairCheckCountsPrefersTiesAndReversed(t *testing.T) {
 	writeCalFixture(t)
 	code, stdout, stderr := calibrateArgs("--name", "pairs", "--run", "run-a,run-b", "--pairs", "pairs.jsonl")
@@ -295,7 +286,7 @@ func TestCalibratePairCheckCountsPrefersTiesAndReversed(t *testing.T) {
 func TestCalibrateRefusesASecondMeasuredRecordOfOneName(t *testing.T) {
 	writeCalFixture(t)
 	const measured = "measured.jsonl"
-	writeCalLines(t, measured, map[string]any{"variant": "earlier", "run": "x", "figures": map[string]string{}})
+	writeJSONLines(t, measured, map[string]any{"variant": "earlier", "run": "x", "figures": map[string]string{}})
 	args := func(name string) []string {
 		return []string{"--name", name, "--run", "run-a", "--half", calHalfFit, "--labels-v2", "labels-v2.jsonl", "--split", "split.json",
 			"--pairs", "pairs.jsonl", "--measured", measured}
@@ -349,7 +340,7 @@ func TestCalibrateRefusesASecondMeasuredRecordOfOneName(t *testing.T) {
 // q10..q13, are read together above.)
 func TestCalibrateRefusesRunsThatScoreACaseBothWays(t *testing.T) {
 	writeCalFixture(t)
-	writeCalLines(t, filepath.Join("run-c", "cases.jsonl"),
+	writeJSONLines(t, filepath.Join("run-c", "cases.jsonl"),
 		map[string]any{"case_id": "answer/e10", "grades": map[string]any{"answered": map[string]any{"verdict": false}}})
 	code, _, stderr := calibrateArgs("--name", "x", "--run", "run-a,run-c", "--half", calHalfAll, "--labels-v1", "labels.jsonl")
 	if code != 1 || !strings.Contains(stderr, "answer/e10") || !strings.Contains(stderr, "ambiguous") {

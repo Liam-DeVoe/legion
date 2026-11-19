@@ -1929,7 +1929,8 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
 // At its defaults each shared control draws `main`'s classes. Each string below is `main`'s class,
 // its theme's constants written out from `main`'s `theme/classes.ts`, for every class a shared
 // control builds from a template of its own, and `null` where `main` draws the element with no
-// class.
+// class. The exception is what INFRA-3231 changed or added, which each such entry's comment
+// names: there the string is the class it draws at its defaults now, outside `NoTooltips`.
 test("the default shapes keep main's class strings", async () => {
   const want: Record<string, string | null> = {
     "approvalPillClassName approved":
@@ -2193,9 +2194,10 @@ test("the default shapes keep main's class strings", async () => {
     "ProofDocument rebuild failure": "text-rose-700 dark:text-rose-400",
     "ProofDocument load failure": "text-rose-700 dark:text-rose-400",
 
-    // The ask card as this branch draws it by default (INFRA-3231's R7): no urgency label, one
-    // line naming who asked above the question, the split button's action and its menu's Ask
-    // back in place of Answer and Ask back, and the disclosure of a compact card's own words.
+    // The ask card as INFRA-3231 draws it at its defaults (its R7), not as `main` does: no urgency
+    // label, one line naming who asked above the question, the split button's action and its
+    // menu's Ask back in place of Answer and Ask back, and the disclosure of a compact card's own
+    // words.
     "AskCard card":
       "relative rounded-xl border-l-4 shadow-sm px-4 pt-4 pb-4 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-rose-500 dark:border-l-rose-400",
     "AskCard question":

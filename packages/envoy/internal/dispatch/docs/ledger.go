@@ -160,10 +160,10 @@ type Ledger struct {
 	owedAuthors map[string]map[string]model.Actor
 	// askAuthors holds, per document, the durable ask block authors this transaction has queued
 	// writes of (queueAskAuthors, which every writer of doc_ask_block_authors' insert queues
-	// through), by block id: doc_ask_block_authors holds none of those rows until the write
-	// phase has run, so what this transaction reads of them it reads from here as well as from
-	// the table (transactionRecordedAskAuthors).
-	askAuthors map[string]map[string]model.Actor
+	// through), by block id, each with its person_typed mark: doc_ask_block_authors holds none of
+	// those rows until the write phase has run, so what this transaction reads of them it reads
+	// from here as well as from the table (transactionRecordedAskAuthors).
+	askAuthors map[string]map[string]queuedAskAuthor
 	// restored holds the ids of the asks this transaction writes back open from the withdrawal of
 	// their issue's close (WriteRestoredAsks), each of which its caller opens again with an
 	// ask.opened queued after that write (api.recordRestoredAsksTx). The asks table reads them
@@ -293,7 +293,7 @@ func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error
 	batch := store.NewWriteBatch(ctx)
 	for _, step := range queue {
 		if err := step(batch); err != nil {
-			return batch.SendFailed(ctx, l.writer, err)
+			return batch.SendFailed(l.writer, err)
 		}
 	}
 	if after != nil {
@@ -301,10 +301,10 @@ func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error
 		err := after(withLedger(ctx, l))
 		l.batch = nil
 		if err != nil {
-			return batch.SendFailed(ctx, l.writer, err)
+			return batch.SendFailed(l.writer, err)
 		}
 	}
-	return batch.Send(ctx, l.writer)
+	return batch.Send(l.writer)
 }
 
 // eventSink is where an event a document operation appends goes once appended: ctx's ledger, which
@@ -440,27 +440,35 @@ func (l *Ledger) queuedAuthors(artifactID string, authors []pendingAuthor) {
 	}
 }
 
-// queuedAskAuthors records authors, by block id, as durable ask block authors of artifactID this
-// transaction has queued the write of: until its write phase has run, doc_ask_block_authors
-// holds no row of theirs, and the reads this transaction makes of them take them from here as
-// well as from the table (transactionRecordedAskAuthors). Its one caller is queueAskAuthors,
-// which queues that write, so every queue of it is here. The insert keeps the author a row
-// already recorded has (askAuthorsStatement), so a row the table holds wins over one recorded
-// here, and so does the first entry recorded for a block. A settlement's queued delete of them
-// (deleteSettledAskAuthors) is queued after the insert, so it takes the rows back out in the
-// write phase; nothing of this transaction reads them between the two.
-func (l *Ledger) queuedAskAuthors(artifactID string, authors map[string]model.Actor) {
+// queuedAskAuthor is a row of doc_ask_block_authors a transaction has queued the insert of: the
+// block's author, and whether a person typed the write in a session (person_typed).
+type queuedAskAuthor struct {
+	actor       model.Actor
+	personTyped bool
+}
+
+// queuedAskAuthors records the author in authors of each of blocks, with personTyped, as durable
+// ask block authors of artifactID this transaction has queued the write of: until its write phase
+// has run, doc_ask_block_authors holds no row of theirs, and the reads this transaction makes of
+// them take them from here as well as from the table (transactionRecordedAskAuthors). Its one
+// caller is queueAskAuthors, which queues that write, so every queue of it is here. The insert
+// keeps the author and the mark a row already recorded has (askAuthorsStatement), so a row the
+// table holds wins over one recorded here, and so does the first entry recorded for a block. A
+// settlement's queued delete of them (deleteSettledAskAuthors) is queued after the insert, so it
+// takes the rows back out in the write phase; nothing of this transaction reads them between the
+// two.
+func (l *Ledger) queuedAskAuthors(artifactID string, blocks []string, authors map[string]model.Actor, personTyped bool) {
 	if l.askAuthors == nil {
-		l.askAuthors = make(map[string]map[string]model.Actor, 1)
+		l.askAuthors = make(map[string]map[string]queuedAskAuthor, 1)
 	}
 	queued := l.askAuthors[artifactID]
 	if queued == nil {
-		queued = make(map[string]model.Actor, len(authors))
+		queued = make(map[string]queuedAskAuthor, len(blocks))
 		l.askAuthors[artifactID] = queued
 	}
-	for block, actor := range authors {
+	for _, block := range blocks {
 		if _, recorded := queued[block]; !recorded {
-			queued[block] = actor
+			queued[block] = queuedAskAuthor{actor: authors[block], personTyped: personTyped}
 		}
 	}
 }
@@ -968,6 +976,24 @@ func (l *Ledger) Commit(ctx context.Context) error {
 	return nil
 }
 
+// RunWritePhase runs the transaction's write phase as Commit does - its queue, then the
+// settlement credit's statements on the same batch (runQueue, commitWrites) - and does not commit:
+// its caller rolls the transaction back, so the store and the rooms are left as a transaction
+// that never ran its writes leaves them, and Discard drops the rest. A held text's dry run runs
+// it (api's heldPost.dryRunEndsOn), so a statement the write phase refuses - a unique violation,
+// ErrDocumentTooLarge, a guarded update's refusal - refuses the dry run as it would refuse the
+// post, and runQueue's error comes back unchanged. It seals the queue, so nothing is queued after
+// it, and it refuses a ledger no caller joined and a sealed one (ErrQueueSealed).
+func (l *Ledger) RunWritePhase(ctx context.Context) error {
+	if l.tx == nil {
+		return errUnjoined
+	}
+	if l.sealed {
+		return ErrQueueSealed
+	}
+	return l.runQueue(ctx, l.commitWrites)
+}
+
 // publishEvents publishes the events this ledger's document operations appended, in the order
 // they appended them.
 func (l *Ledger) publishEvents() {
@@ -1396,7 +1422,7 @@ func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 		if events.PersonTyped(ctx) && write.tree != nil {
 			// A person typed this write in a session: every ask block it leaves in the document is
 			// recorded as theirs, so the settlement that rewords one of them reads the rewording as
-			// the person's and reviews none of it (readPersonTypedAskBlocks). The settlement that
+			// the person's and reviews none of it (transactionRecordedAskAuthors). The settlement that
 			// indexes a block deletes its row (deleteSettledAskAuthors), so the mark lasts one
 			// settlement.
 			for id := range askBlockIDs(write.tree) {

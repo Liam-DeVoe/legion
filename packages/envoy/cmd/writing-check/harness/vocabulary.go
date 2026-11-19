@@ -81,6 +81,20 @@ func (v *Vocabulary) Known(text string, at time.Time) []string {
 	return known
 }
 
+// knownBefore is the words of text, what is read of case c, that the person wrote himself before
+// the case, at the time the undefined judgement cuts at (Known at c.writtenAt): none for a nil
+// vocabulary, and none for a case with no time, as none can be placed before it.
+func (v *Vocabulary) knownBefore(c *Case, text string) []string {
+	if v == nil {
+		return nil
+	}
+	at, ok := c.writtenAt()
+	if !ok {
+		return nil
+	}
+	return v.Known(text, at)
+}
+
 // writtenAt is the time the agent wrote the case's text: its write_time, else the time of the
 // text itself. It is false where the case holds neither as a time.
 func (c *Case) writtenAt() (time.Time, bool) {

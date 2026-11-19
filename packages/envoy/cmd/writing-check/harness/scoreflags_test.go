@@ -12,11 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
 )
 
-// The case ids and texts of the fixture that the tests below name.
+// The case ids of the fixture that the tests below name.
 const (
 	questionCase = "question/comment:q1@11"
 	answerCase   = "answer/comment:a2@20"
-	questionText = "The zork train is ready.\n\nIt merges at noon."
 )
 
 // The input_sha256 of the fresh reader's answers on the fixture with no --reader and no
@@ -222,12 +221,12 @@ func TestTheReaderReadsTheOwnersOwnWordsWithReaderVocabulary(t *testing.T) {
 	stand, out := score("--reader-vocabulary", owner)
 	// "merges" he wrote at the case's own time, and "it", "ready", "at" and "noon" after it.
 	question := decodeTurn(t, request(t, stand, markReader, "The zork train is ready."))
-	if user := question.user(t); user != tag("text", questionText)+tag("question", goldenQuestion)+"<reader_own_words>\n- the\n- zork\n- train\n- is\n</reader_own_words>\n" {
+	if user := question.user(t); user != tag("text", goldenText)+tag("question", goldenQuestion)+"<reader_own_words>\n- the\n- zork\n- train\n- is\n</reader_own_words>\n" {
 		t.Errorf("the question case's reader reads\n%s\nwant the text, the question, then the words he wrote before the case", user)
 	}
 	system := question.system(t)
 	if !strings.Contains(system, "## The reader's own words\n\nThe user message also holds \"reader_own_words\": words of the text that the reader used himself") ||
-		!strings.HasSuffix(system, "answer from the words of the text alone.\n") {
+		!strings.HasSuffix(system, "only when it says nothing about the thing that he asks about.\n") {
 		t.Errorf("the question case's reader's system prompt does not end with the own-words part:\n%s", system)
 	}
 	first := decodeTurn(t, request(t, stand, markReader, "You see only this paragraph."))

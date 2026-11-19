@@ -286,13 +286,14 @@ type messageCreate struct {
 	ConnectedOnly bool `json:"connected_only,omitempty"`
 }
 
-// writeMessage writes create as actor's message under id in a single transaction, with it the
-// keyed request's recovery point (bindRequestKeyRecovery), so a repeat under the key is answered
-// with this message however this request ends, then sends a targeted message's first attempt. A
-// held message's post runs it with the id its hold reserved (held, whose row it takes first in
-// the message's transaction and marks posted in it). A hold's dry run answers errHeldDryRun with
-// the advice the write would have answered with.
-func (s *server) writeMessage(ctx context.Context, create messageCreate, actor model.Actor, id string, held *heldPost) (model.Message, *writeAdvice, error) {
+// writeMessage writes create as actor's message under messageID in a single transaction, with it
+// the keyed request's recovery point (queueRequestKeyRecovery), so a repeat under the key is
+// answered with this message however this request ends, then sends a targeted message's first
+// attempt. A held message's post runs it with the id its hold reserved (held, whose row the first
+// statement of its write batch takes, after the reads, and marks posted in the same transaction).
+// A hold's dry run answers errHeldDryRun, once the batch has run, with the advice the write would
+// have answered with.
+func (s *server) writeMessage(ctx context.Context, create messageCreate, actor model.Actor, messageID string, held *heldPost) (model.Message, *writeAdvice, error) {
 	issueKey, input, delivery, connectedOnly := create.IssueKey, create.Input, create.Delivery, create.ConnectedOnly
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -360,7 +361,6 @@ func (s *server) writeMessage(ctx context.Context, create messageCreate, actor m
 	// created_at, the transaction's now() its column defaults to, are known before the insert
 	// (neither assigns one), and the advice counts the message.created this write appends after it
 	// (writeAdvice).
-	messageID := id
 	var createdAt time.Time
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&createdAt); err != nil {
 		return model.Message{}, nil, err

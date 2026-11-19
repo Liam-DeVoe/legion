@@ -1468,9 +1468,10 @@ const VACANCY =
 
 /**
  * Every `title` each mount carries on `main`, in document order, as `main`'s files write them
- * (read at the merge-base), and none for a mount whose files set none. The three mounts of
- * `MOUNTS` whose instants move with the clock are read here through their twins at fixed
- * instants.
+ * (read at the merge-base), and none for a mount whose files set none. The exception is a title
+ * INFRA-3231 added, which its row's comment names: the ask card's children, which `main` does not
+ * have, and the ask card's split button. The three mounts of `MOUNTS` whose instants move with
+ * the clock are read here through their twins at fixed instants.
  */
 const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [
@@ -1513,6 +1514,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Open live conversation with Implementer",
       localTime("2026-10-08T00:00:00Z"),
       "Copy reference dispatch://CORE-1/ask/ask-1",
+      // The split button's chevron, which `main`'s card does not have (INFRA-3231): the title it
+      // draws today, which it keeps outside `NoTooltips`.
+      "More actions",
       "Copy session ID session-live-0001",
       "Copy session title Implementer",
       "Copy tmux target legion:3",
@@ -1526,6 +1530,8 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Open live conversation with Implementer",
       localTime("2026-10-08T00:00:00Z"),
       "Copy reference dispatch://CORE-1/ask/ask-2",
+      // The split button's chevron (INFRA-3231), as in the row above.
+      "More actions",
     ],
   ],
   // The ask card's children, which `main` does not have: the titles each draws today, which it
@@ -1551,6 +1557,8 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       localTime("2026-10-08T00:00:00Z"),
       "Copy reference dispatch://CORE-1/ask/ask-2",
       "Add a reason to send Request changes",
+      // The ask card's split button's chevron (INFRA-3231), as in the AskCard rows above.
+      "More actions",
     ],
   ],
   [

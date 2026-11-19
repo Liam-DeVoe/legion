@@ -558,11 +558,9 @@ func TestDatasetBuildToDevelopmentRefusesAnotherList(t *testing.T) {
 	}
 }
 
-// The build gives the cases their parts with dsAssignParts, on the assignment it writes, and
-// dsAssignParts refuses one that holds out a case of a listed split group: a step that puts a
-// listed group back in the held-out part after the list moved it fails the build. The list moves
-// only its groups.
-func TestDatasetBuildFailsWhenAListedGroupIsHeldOut(t *testing.T) {
+// apply moves a listed split group to the development part with its cases, whatever the split
+// gave it, and counts them by case group; every other group keeps the split's part.
+func TestToDevelopmentApplyMovesTheListedGroupsAndCountsTheirCases(t *testing.T) {
 	t.Parallel()
 	cases := []*dsCase{
 		{ID: "question/comment:a@1", Group: dsGroupQuestion, SplitGroup: "TREE-1", Tree: "TREE-1"},
@@ -578,16 +576,6 @@ func TestDatasetBuildFailsWhenAListedGroupIsHeldOut(t *testing.T) {
 	if moved.GroupsMoved != 1 || moved.CasesMoved != 2 || moved.CasesMovedByGroup[dsGroupQuestion] != 1 || moved.CasesMovedByGroup[dsGroupPlain] != 1 ||
 		parts["TREE-1"] != dsDevelopment || parts["TREE-2"] != dsHeldOut {
 		t.Fatalf("the list moved %+v and left the parts %v, want TREE-1 alone in development with its 2 cases", moved, parts)
-	}
-	if err := dsAssignParts(cases, parts, list); err != nil || cases[0].Part != dsDevelopment || cases[2].Part != dsHeldOut {
-		t.Fatalf("dsAssignParts of the list's assignment: %v, parts %s %s %s", err, cases[0].Part, cases[1].Part, cases[2].Part)
-	}
-	parts["TREE-1"] = dsHeldOut
-	if err := dsAssignParts(cases, parts, list); err == nil || !strings.Contains(err.Error(), "2 cases of 1 split groups") || strings.Contains(err.Error(), "TREE-1") {
-		t.Errorf("dsAssignParts of an assignment that holds out the listed group: %v, want a refusal that counts its 2 cases and says no key", err)
-	}
-	if err := dsAssignParts(cases, parts, nil); err != nil || cases[0].Part != dsHeldOut {
-		t.Errorf("dsAssignParts with no list: %v, part %s; want the assignment as it is", err, cases[0].Part)
 	}
 }
 

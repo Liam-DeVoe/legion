@@ -270,11 +270,12 @@ func (s *server) writeAsk(ctx context.Context, tx pgx.Tx, create askCreate, acto
 		return askWritten{}, err
 	}
 	// The row's created_at is the transaction's now(), its column default, read here and written
-	// explicitly, so the ask this route answers and its event carry the time the row will hold.
-	ask := model.Ask{ID: id}
-	if err := tx.QueryRow(ctx, `select now()`).Scan(&ask.CreatedAt); err != nil {
+	// explicitly, so the ask this write answers and its event carry the time the row will hold.
+	createdAt, err := ledger.Now(ctx)
+	if err != nil {
 		return askWritten{}, err
 	}
+	ask := model.Ask{ID: id, CreatedAt: createdAt}
 	// The person this question reaches, read here in the read phase, under the owner's lock
 	// requireOpenOwnerStatus took, through the rule every read of that person shares, so the
 	// caller is told whose Inbox it just landed in rather than having to read the ask again. A
@@ -370,7 +371,7 @@ func (s *server) writeAsk(ctx context.Context, tx pgx.Tx, create askCreate, acto
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
 	ask.WaitingOnPerson = waitingOnPerson
 	appended = append(appended, event)
-	if err := held.dryRunEnds(); err != nil {
+	if err := held.dryRunEndsOn(ctx, ledger); err != nil {
 		return askWritten{advice: advice}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {

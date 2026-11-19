@@ -137,13 +137,13 @@ export interface AskCardProps {
   owner?: { project: string; slug: string };
   thread?: "inline" | "collapsed";
   /** `compact` (the margin and the review sheet) renders the same option rows as `full`, but
-   *  folds the free-text field and its Answer / Ask back actions behind an **Add a note or answer
-   *  in your own words** disclosure, showing a lone Answer button once an option is picked; the
-   *  disclosure opens itself when the pick needs words (Other, or an option requiring a reason).
-   *  The article also takes tighter padding (`px-3 pt-4 pb-3` against `px-4 pt-5 pb-4`). Nothing
-   *  else depends on the variant. */
+   *  folds the free-text field behind an **Add a note** disclosure, beside the card's actions,
+   *  which stay drawn; the disclosure opens itself when the pick needs words (Other, or an option
+   *  requiring a reason), and stays open while the box holds anything. The article also takes
+   *  tighter padding (`px-3 pt-3 pb-3` against `px-4 pt-4 pb-4`). Nothing else depends on the
+   *  variant. */
   variant?: "compact" | "full";
-  /** `card` (the default) draws the card: frame, urgency accent and notch, the question, and the
+  /** `card` (the default) draws the card: frame, urgency accent, the question, and the
    *  link to a block ask's document. `block` is the card hosted inside its own decision block
    *  (`features/doc/AskBlockCard.tsx`): the block shell already draws the frame and accent, the
    *  editor shows the question, and the block is the link's target, so the card renders only
@@ -220,7 +220,6 @@ const ON_PAGE = {
   ink: pageInkText,
   link: pageInkText,
   muted: pageMutedText,
-  notch: pagePaperBg,
   prose:
     "[&_p]:my-0 [&_p+p]:mt-2 [&_p:not(:first-child)]:text-sm [&_p:not(:first-child)]:leading-6 [&_p:not(:first-child)]:font-normal [&_p:not(:first-child)]:text-page-muted",
   quiet: pageQuietText,
@@ -1175,6 +1174,8 @@ export function AskCard({
 
   return (
     <article
+      // The urgency is the card's leading rule alone (and this label for a screen reader): the
+      // row that opens it already names the urgency in words.
       aria-label={`Urgency: ${URGENCY_LABELS[urgency]}`}
       className={
         inBlock
@@ -1205,8 +1206,6 @@ export function AskCard({
       }}
       ref={articleRef}
     >
-      {/* The urgency is the card's leading rule alone (and its label for a screen reader): the
-          row that opens it already names the urgency in words. */}
       <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
       {inBlock ||

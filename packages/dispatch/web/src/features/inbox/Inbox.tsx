@@ -777,11 +777,11 @@ export function Inbox({
    *  server does to the text they search. Written on every render below. */
   const heldUnder = useRef<{ readonly id: string; readonly words: string } | undefined>(undefined);
   // And the same for a hand-on, whose control sits in the card rather than beside it
-  // (`AskHandOn`): the optimistic `waiting_on_person` takes the row out of this list as the
-  // write starts, so without this the card holding the control would be unmounted before the
-  // server answered and a refusal would come back to a fresh card that never failed. The cards
-  // register through the context this list provides below (`hand-on-live.ts`), since one of
-  // them is the document page's own and takes no prop of this list's.
+  // (`useHeldHandOn` in `AskCard`): the optimistic `waiting_on_person` takes the row out of this
+  // list as the write starts, so without this the card holding the control would be unmounted
+  // before the server answered and a refusal would come back to a fresh card that never failed.
+  // The cards register through the context this list provides below (`hand-on-live.ts`), since
+  // one of them is the document page's own and takes no prop of this list's.
   //
   // Only an ask this list was drawing when the write began is held. That context reaches every
   // card under the Inbox, and many of them are not a listed row's own: the card of a Reply

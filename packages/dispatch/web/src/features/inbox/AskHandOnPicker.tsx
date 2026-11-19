@@ -7,15 +7,16 @@ import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
   card,
+  focusBorder,
   inputClasses,
   linkText,
   menuItemActiveBg,
-  pageField,
   pageHairBorder,
   pageInkText,
   pageMutedText,
   pagePaperBg,
   pageQuietText,
+  pageRowHoverBg,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -28,10 +29,10 @@ import {
  * and the tick of the person asked now the ink.
  */
 const ON_PAGE = {
-  field: pageField,
+  field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
   frame: `${pageHairBorder} ${pagePaperBg}`,
   loading: pageQuietText,
-  person: `${pageInkText} hover:bg-page-mark focus-visible:bg-page-mark`,
+  person: `${pageInkText} ${pageRowHoverBg} focus-visible:bg-page-mark`,
   qualifier: pageMutedText,
   tick: pageInkText,
 } as const;

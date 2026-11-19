@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -465,15 +464,14 @@ func (n *issueNearCopy) filed(key string) *issueNearCopy {
 
 // issueWritten is what writeIssue wrote: the issue, its issue.created event, the advice the
 // write answers with (nil for a held issue's post, which answers nobody), its spec's document,
-// the spec as the seed stored it with that rendering read back, and the near-copy gate's row the
-// filing writes after its commit (nil where it wrote it in its transaction or has none).
+// the spec as the seed stored it, and the near-copy gate's row the filing writes after its commit
+// (nil where it wrote it in its transaction or has none).
 type issueWritten struct {
 	issue      model.Issue
 	event      model.Event
 	advice     *writeAdvice
 	artifactID string
 	markdown   string
-	readBack   *pmdoc.Node
 	nearCopy   *issueNearCopy
 }
 
@@ -634,9 +632,10 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 			return issueWritten{}, fmt.Errorf("project %s numbered issue %d under its owner lock, not the %d it read", create.Project, written, number)
 		}
 	}
-	// The project's stored default is the chain's last step, and this update already holds the
-	// project row: the decision moves below it so the create takes no round trip and no lock of
-	// its own for it.
+	// The project's stored default is the chain's last step, read with the project row this
+	// create already holds: the update above returns it, and a held issue's post, which writes no
+	// next number, read it under the owner lock. So the decision takes no round trip and no lock
+	// of its own.
 	if assignee == nil {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
 	}
@@ -716,8 +715,9 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 	// A near copy let in because its refusal's row could not be confirmed (issueNearCopy.inTx)
 	// writes its row in this transaction, under the id the refusal used: the issue and the row that
 	// replaces a refused row under that id commit together or not at all, so no committed issue
-	// keeps a refused row. It is one of the create's inline writes, after its first (the project's
-	// next number, which already holds the projects row its foreign key shares) and so after the
+	// keeps a refused row. It is one of the create's inline writes, after its first - the project's
+	// next number, which already holds the projects row its foreign key shares, or, in a held
+	// issue's post, which writes no next number, the mark of its held row - and so after the
 	// read phase's owner lock, document work and advice; its result steers the route, since a row
 	// that cannot land admits no create. It binds values worked out before the transaction opened
 	// (newNearCopyCheckRow), so the spec's hash and the candidates' encoding run outside the
@@ -729,14 +729,14 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 		}
 		nearCopy = nil
 	}
-	if err := held.dryRunEnds(); err != nil {
-		return issueWritten{advice: advice, markdown: markdown, readBack: documentReadBack}, err
+	if err := held.dryRunEndsOn(ctx, ledger); err != nil {
+		return issueWritten{advice: advice, markdown: markdown}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return issueWritten{}, err
 	}
 	return issueWritten{
-		issue: issue, event: *event, advice: advice, artifactID: artifactID, markdown: markdown, readBack: documentReadBack,
+		issue: issue, event: *event, advice: advice, artifactID: artifactID, markdown: markdown,
 		nearCopy: nearCopy,
 	}, nil
 }

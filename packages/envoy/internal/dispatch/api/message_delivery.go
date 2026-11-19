@@ -998,8 +998,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// A held reply's post, or its dry run, runs this route again (held_replay.go). Its held row is
-	// taken below, with the route's first row lock, once the reply is planned.
+	// A held reply's post, or its dry run, runs this route again (held_replay.go).
 	held := heldPostFrom(r.Context())
 	message, err := scanMessage(tx.QueryRow(r.Context(), `
 		select `+messageColumns+`
@@ -1240,8 +1239,6 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	// plan.id is the id a held reply's hold reserved where its post runs this, else a fresh one
-	// (planMessageReply, textIDFor).
 	reply, err := scanMessage(tx.QueryRow(ctx, `
 		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8)

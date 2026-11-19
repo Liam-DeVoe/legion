@@ -309,6 +309,7 @@ function AgentTargetedMessage({
   });
   const replies = read.replies ?? [];
   const answer = replies.find((reply) => reply.author.kind === "session");
+  const capabilities = capabilitiesForTarget(read.message.target, liveAgents);
   return (
     <TargetedMessageCard
       answeredBy={answer?.author}
@@ -331,9 +332,9 @@ function AgentTargetedMessage({
           </QuotableText>
         </>
       }
-      canAside={capabilitiesForTarget(read.message.target, liveAgents)?.includes("aside") !== false}
-      canBtw={capabilitiesForTarget(read.message.target, liveAgents)?.includes("btw") !== false}
-      canSteer={capabilitiesForTarget(read.message.target, liveAgents)?.includes("steer") !== false}
+      canAside={capabilities?.includes("aside") !== false}
+      canBtw={capabilities?.includes("btw") !== false}
+      canSteer={capabilities?.includes("steer") !== false}
       deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
       header={null}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
