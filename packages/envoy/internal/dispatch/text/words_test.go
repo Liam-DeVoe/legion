@@ -26,22 +26,28 @@ func checkHeadWords(t *testing.T, rows []headWordsRow) {
 	}
 }
 
-// A word ends at white space: the cut falls at the last word end at or before the limit, a word
-// is never cut in two, and the answer is a cut only where a word follows it. Both callers in the
-// api package pass words joined by single spaces, so the rows with other white space are the only
-// ones that hold what HeadWords does with it.
+// White space parts two words and is no word itself: the cut falls at the last word end at or
+// before the limit, never after white space, a word is never cut in two, and the answer is a cut
+// only where a word follows it. Both callers in the api package pass words joined by single
+// spaces, so the rows with other white space are the only ones that hold what HeadWords does with
+// it.
 func TestHeadWordsEndsAWordAtWhiteSpace(t *testing.T) {
 	rows := []headWordsRow{
 		{name: "the cut falls at the last space inside the limit", value: "one two three four", limit: 10, want: "one two", cut: true},
 		{name: "a word that ends at the limit is kept", value: "one two three four", limit: 13, want: "one two three", cut: true},
 		{name: "a word that ends one past the limit is left out", value: "one two three four", limit: 12, want: "one two", cut: true},
 		{name: "a tab and a newline end a word as a space does", value: "one\ttwo\nthree", limit: 9, want: "one\ttwo", cut: true},
+		{name: "a tab alone ends a word", value: "one\ttwo three", limit: 5, want: "one", cut: true},
 		{name: "white space at the start is kept and ends no word", value: "  one two", limit: 6, want: "  one", cut: true},
+		{name: "white space at the start ends no word, so the first word after it is kept whole", value: "  abcdefgh ij", limit: 4, want: "  abcdefgh", cut: true},
 		{name: "white space alone after the last word kept is no cut", value: "one two     ", limit: 9, want: "one two", cut: false},
 		{name: "a first word past the limit is kept whole and is a cut where a word follows it", value: "abcdefghij klm", limit: 4, want: "abcdefghij", cut: true},
 		{name: "a first word past the limit with white space alone after it is no cut", value: "abcdefghij   ", limit: 4, want: "abcdefghij", cut: false},
 		{name: "a first word past the limit that is the whole value is returned whole", value: "abcdefghij", limit: 4, want: "abcdefghij", cut: false},
+		{name: "a mark at the start is no word and ends none", value: "\u0301abcdefgh ij", limit: 4, want: "\u0301abcdefgh", cut: true},
+		{name: "a mark alone after a line break is no word, so it is no cut", value: "abcdefghij\n\u0301", limit: 4, want: "abcdefghij", cut: false},
 		{name: "a value at or under the limit is returned unchanged", value: " one  two ", limit: 10, want: " one  two ", cut: false},
+		{name: "a value of white space alone past the limit holds no word and is returned unchanged", value: " \t\n  ", limit: 2, want: " \t\n  ", cut: false},
 	}
 	for _, length := range []int{81, 110, 161, 1000} {
 		word := strings.Repeat("w", length)
@@ -52,11 +58,24 @@ func TestHeadWordsEndsAWordAtWhiteSpace(t *testing.T) {
 	checkHeadWords(t, rows)
 }
 
+// prefixRunes is the first n runes of s.
+func prefixRunes(s string, n int) string {
+	return string([]rune(s)[:n])
+}
+
 // In a script written without spaces between its words, Unicode's default word rules (UAX #29)
 // put a word boundary beside each ideograph, each Hiragana character and each letter of Thai and
-// the other Complex_Context scripts (WB999), and keep a mark, a joiner or a format character with
-// the character before it (WB4). Katakana is one word for as long as it runs (WB13).
+// the other Complex_Context scripts, whose Word_Break value is Other (WB999), and keep a mark, a
+// joiner or a format character with the character before it (WB4). Katakana is one word for as
+// long as it runs (WB13), and a number is one word (WB8).
 func TestHeadWordsCutsAScriptWithoutSpacesAtItsWordBoundaries(t *testing.T) {
+	// Each value of the second group is 100 to 122 characters and is cut at 80, the budget of a
+	// pull-request body line: one row for each script written without spaces that is neither
+	// Chinese, Japanese nor Thai, two for a spacing vowel sign at the 81st character, and one for
+	// a number across the 80th.
+	khmerVowels := "ខ" + strings.Repeat("កា", 60)   // KHA, then KA with the spacing vowel AA (U+17B6), 121 runes
+	myanmarVowels := "ခ" + strings.Repeat("ကာ", 60) // KHA, then KA with the spacing vowel AA (U+102C), 121 runes
+	thaiNumber := "กก" + strings.Repeat("ก๑๒๓", 30) // KO KAI, then KO KAI before a three-digit number, 122 runes
 	checkHeadWords(t, []headWordsRow{
 		{name: "Chinese: a boundary falls beside each ideograph", value: "每个测试都通过了", limit: 3, want: "每个测", cut: true},
 		{name: "Japanese: a boundary falls beside each Hiragana character", value: "すべてのしけん", limit: 3, want: "すべて", cut: true},
@@ -69,7 +88,45 @@ func TestHeadWordsCutsAScriptWithoutSpacesAtItsWordBoundaries(t *testing.T) {
 		{name: "a first word in Latin letters ends at the ideograph after it", value: "abcdefgh中文", limit: 3, want: "abcdefgh", cut: true},
 		{name: "words and ideographs mixed: the cut falls at the last boundary of either kind", value: "ab 中文字", limit: 4, want: "ab 中", cut: true},
 		{name: "the white space before an ideograph is not kept at the end of the cut", value: "ab 中文字", limit: 3, want: "ab", cut: true},
-		{name: "no cut falls right after a zero-width joiner", value: "中\u200d文字", limit: 2, want: "中\u200d文", cut: true},
+		{name: "a cut may fall right after a zero-width joiner that no pictograph follows", value: "中\u200d文字", limit: 2, want: "中\u200d", cut: true},
 		{name: "a value at or under the limit is returned unchanged", value: "每个测试", limit: 4, want: "每个测试", cut: false},
+
+		{name: "Lao: a boundary falls beside each letter", value: strings.Repeat("ກ", 100), limit: 80, want: strings.Repeat("ກ", 80), cut: true},
+		{name: "Khmer: a boundary falls beside each letter", value: strings.Repeat("ក", 100), limit: 80, want: strings.Repeat("ក", 80), cut: true},
+		{name: "Myanmar: a boundary falls beside each letter", value: strings.Repeat("က", 100), limit: 80, want: strings.Repeat("က", 80), cut: true},
+		{name: "Tai Le: a boundary falls beside each letter", value: strings.Repeat("ᥐ", 100), limit: 80, want: strings.Repeat("ᥐ", 80), cut: true},
+		{name: "New Tai Lue: a boundary falls beside each letter", value: strings.Repeat("ᦀ", 100), limit: 80, want: strings.Repeat("ᦀ", 80), cut: true},
+		{name: "Tai Tham: a boundary falls beside each letter", value: strings.Repeat("ᨠ", 100), limit: 80, want: strings.Repeat("ᨠ", 80), cut: true},
+		{name: "Tai Viet: a boundary falls beside each letter", value: strings.Repeat("ꪀ", 100), limit: 80, want: strings.Repeat("ꪀ", 80), cut: true},
+		{name: "Ahom: a boundary falls beside each letter", value: strings.Repeat("𑜀", 100), limit: 80, want: strings.Repeat("𑜀", 80), cut: true},
+		// The 80th character is a KA whose vowel sign is the 81st, so the cut falls before the KA.
+		{name: "Khmer: a spacing vowel sign stays with its letter", value: khmerVowels, limit: 80, want: prefixRunes(khmerVowels, 79), cut: true},
+		{name: "Myanmar: a spacing vowel sign stays with its letter", value: myanmarVowels, limit: 80, want: prefixRunes(myanmarVowels, 79), cut: true},
+		// The 80th and 81st characters are the first two digits of a number, so the cut falls
+		// before the number.
+		{name: "Thai: a number in Thai digits is one word", value: thaiNumber, limit: 80, want: prefixRunes(thaiNumber, 79), cut: true},
+	})
+}
+
+// Emoji, symbols and punctuation are words of their own, apart from the letters beside them, as
+// Unicode's default word rules (UAX #29) part them: a boundary falls beside each (WB999), apart
+// from a zero-width joiner and the pictograph after it (WB3c), a pair of regional indicators, which
+// is one flag (WB15, WB16), and the punctuation the rules keep inside a word: a colon or a full
+// stop between two letters (WB6, WB7) and a full stop or a comma between two digits (WB11, WB12).
+// So a long run of them with no space is cut inside the limit, and a path or a URL is cut at a
+// slash.
+func TestHeadWordsCutsEmojiSymbolsAndPunctuationAtTheirWordBoundaries(t *testing.T) {
+	url := "https://example.com/" + strings.Repeat("segment/", 12) // 116 runes; the 80th is the "m" of the eighth segment
+	checkHeadWords(t, []headWordsRow{
+		{name: "81 emoji with no space are cut at the 80th", value: strings.Repeat("🛑", 81), limit: 80, want: strings.Repeat("🛑", 80), cut: true},
+		{name: "a run of CJK radicals with no space is cut at the 80th", value: strings.Repeat("⺀", 100), limit: 80, want: strings.Repeat("⺀", 80), cut: true},
+		{name: "Katakana words joined by a middle dot are cut at a dot", value: strings.Repeat("データベース・", 15), limit: 80, want: strings.Repeat("データベース・", 11), cut: true},
+		{name: "no cut falls between a zero-width joiner and the pictograph after it", value: "🛑\u200d🛑🛑", limit: 2, want: "🛑\u200d🛑", cut: true},
+		{name: "a pair of regional indicators is one flag", value: "🇫🇷🇩🇪🇯🇵", limit: 3, want: "🇫🇷", cut: true},
+		{name: "a skin-tone modifier stays with its emoji", value: "👍🏽👍🏽", limit: 1, want: "👍🏽", cut: true},
+		{name: "a full stop after a word is a word of its own", value: "one two.", limit: 7, want: "one two", cut: true},
+		{name: "a colon between two letters is inside a word", value: "user:pass and more", limit: 6, want: "user:pass", cut: true},
+		{name: "a full stop between two digits is inside a number", value: "3.14159 is pi", limit: 4, want: "3.14159", cut: true},
+		{name: "a URL is cut at the last slash inside the limit", value: url, limit: 80, want: "https://example.com/" + strings.Repeat("segment/", 7), cut: true},
 	})
 }

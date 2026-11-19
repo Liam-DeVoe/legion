@@ -200,39 +200,76 @@ func writeBranchAnswer(t *testing.T, database *store.Store, repo, branch, sha st
 	}
 }
 
-// wordOfLength is one word of length characters, cut from repeats of "results_branch_newest_".
+// wordSeed is the text wordOfLength repeats: letters joined by underscores, which Unicode's
+// default word rules (UAX #29) keep in one word (WB5, WB13a, WB13b).
+const wordSeed = "results_branch_newest_"
+
+// wordOfLength is one word of length characters, cut from repeats of wordSeed.
 func wordOfLength(length int) string {
-	return strings.Repeat("results_branch_newest_", length/22+1)[:length]
+	return strings.Repeat(wordSeed, length/len(wordSeed)+1)[:length]
 }
 
 // longFirstWord is one word of 110 characters, past the 80 a pull-request body line carries of a
 // reading or of a check's words (checkResultReadingRunes), so no word ends inside that budget.
 var longFirstWord = wordOfLength(110)
 
-// scriptReadings are readings in scripts written without spaces between their words, where
-// Unicode's default word rules (UAX #29) put a word boundary beside each ideograph, each Hiragana
-// character and each Thai letter, and none between a letter and its marks. So each is cut inside
-// the budget, and want is what the line carries of it.
-var scriptReadings = []struct{ script, reading, want string }{
+// boundaryReadings are readings in which a word ends inside the budget only where Unicode's
+// default word rules (UAX #29) put a boundary at no space: text in scripts written without spaces
+// between their words, where a boundary falls beside each ideograph, each Hiragana character and
+// each Thai letter and none between a letter and its marks, and runs of emoji, of CJK radicals, of
+// Katakana words joined by a middle dot and of a path's segments, which the same rules part beside
+// each emoji, each radical, each dot and each slash. So each is cut inside the budget, and want is
+// what the line carries of it. None holds "://", since a check's words drop a URL (blockWords).
+var boundaryReadings = []struct{ what, reading, want string }{
 	{
 		// 208 characters, 16 to a sentence: the 80th ends the fifth sentence.
-		script:  "Chinese",
+		what:    "Chinese",
 		reading: strings.Repeat("运行了二十次，每次都打印了列表。", 13),
 		want:    strings.Repeat("运行了二十次，每次都打印了列表。", 5) + "…",
 	},
 	{
 		// 204 characters, 17 to a sentence: the 80th is the ideograph 功, and a Hiragana
 		// character follows it.
-		script:  "Japanese",
+		what:    "Japanese",
 		reading: strings.Repeat("テストは二十回すべて成功しました。", 12),
 		want:    strings.Repeat("テストは二十回すべて成功しました。", 4) + "テストは二十回すべて成功…",
 	},
 	{
 		// 228 characters: the 81st is the vowel mark U+0E35 of the letter ย, the 80th, so the
 		// cut falls before that letter and the line keeps 79.
-		script:  "Thai",
+		what:    "Thai",
 		reading: "ผล: " + strings.Repeat("การทดสอบผ่านครบทั้งยี่สิบรอบ", 8),
 		want:    "ผล: " + strings.Repeat("การทดสอบผ่านครบทั้งยี่สิบรอบ", 2) + "การทดสอบผ่านครบทั้ง…",
+	},
+	{
+		// 100 Hiragana characters, 20 to a sentence: the 80th ends the fourth.
+		what:    "Hiragana alone",
+		reading: strings.Repeat("にじゅっかいのしけんはすべてとおりました", 5),
+		want:    strings.Repeat("にじゅっかいのしけんはすべてとおりました", 4) + "…",
+	},
+	{
+		what:    "81 emoji",
+		reading: strings.Repeat("🛑", 81),
+		want:    strings.Repeat("🛑", 80) + "…",
+	},
+	{
+		what:    "100 CJK radicals",
+		reading: strings.Repeat("⺀", 100),
+		want:    strings.Repeat("⺀", 80) + "…",
+	},
+	{
+		// 105 characters, 7 to a word and its dot: the 77th is the eleventh dot, and the word
+		// after it ends at the 83rd.
+		what:    "Katakana words joined by a middle dot",
+		reading: strings.Repeat("データベース・", 15),
+		want:    strings.Repeat("データベース・", 11) + "…",
+	},
+	{
+		// 106 characters: the 74th is the eighth slash after "data", and the segment after it
+		// ends at the 81st.
+		what:    "a path",
+		reading: "/srv/data/" + strings.Repeat("segment/", 12),
+		want:    "/srv/data/" + strings.Repeat("segment/", 8) + "…",
 	},
 }
 
@@ -240,10 +277,10 @@ var scriptReadings = []struct{ script, reading, want string }{
 // a reader of the pull request cannot see anywhere else: the check's own words are on the
 // issue, and a pass and a fail would carry them alike. A reading over the budget is cut at a
 // word boundary and marked, a short one prints whole, and a result with no reading says so. A
-// word that ends at the budget's last character is kept. A first word longer than the budget is
-// never cut in two, at any length: the line keeps it whole, marked as cut only where more words
-// follow it. A reading in a script written without spaces between its words is cut inside the
-// budget, beside a character.
+// word that ends at the budget's last character is kept, and a reading of exactly the budget
+// prints whole. A first word longer than the budget is never cut in two, at any length: the line
+// keeps it whole, marked as cut only where more words follow it. A reading in which UAX #29 puts
+// a word boundary at no space is cut inside the budget at that boundary.
 func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
@@ -284,6 +321,11 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 			want:     fifteen + "…",
 		},
 		{
+			name:     "a reading of exactly 80 characters prints whole",
+			observed: fifteen + " fives",
+			want:     fifteen + " fives",
+		},
+		{
 			name:     "a result with no reading says so",
 			observed: "",
 			want:     "The role recorded no reading.",
@@ -303,11 +345,11 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 				want:     word,
 			})
 	}
-	for _, script := range scriptReadings {
+	for _, reading := range boundaryReadings {
 		rows = append(rows, lineRow{
-			name:     "a reading in " + script.script + " is cut inside the budget beside a character",
-			observed: script.reading,
-			want:     script.want,
+			name:     "a reading of " + reading.what + " is cut inside the budget at a word boundary",
+			observed: reading.reading,
+			want:     reading.want,
 		})
 	}
 	for _, row := range rows {
@@ -3230,24 +3272,28 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 
 // The pull-request body line of a check CI proves cuts the check's words as a recorded line cuts
 // a reading (TestThePullRequestLineCarriesTheReading): at the last word boundary inside the
-// budget, beside a character in a script written without spaces between its words; a first word
-// longer than the budget is kept whole, marked as cut where more words follow it, and printed
-// whole where it is all the check says.
+// budget, where UAX #29 puts one at no space too, as beside a character in a script written
+// without spaces between its words; words of exactly the budget print whole; a first word longer
+// than the budget is kept whole, marked as cut where more words follow it, and printed whole
+// where it is all the check says.
 func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Check words cut at a word")
+	// exactly is fifteen words of four characters and one of five, 80 characters.
+	exactly := strings.Repeat("word ", 15) + "fives"
 	rows := []struct{ name, words, want string }{
 		{
 			name:  "a sentence over the budget is cut at a word boundary",
 			words: "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case.",
 			want:  "The rig drove the command against a local Dispatch and the refusal named the…",
 		},
+		{name: "words of exactly 80 characters print whole", words: exactly, want: exactly},
 		{name: "a first word over the budget is kept whole and marked when more words follow it", words: longFirstWord + " builds at the head.", want: longFirstWord + "…"},
 		{name: "a first word over the budget that is all the check says prints whole", words: longFirstWord, want: longFirstWord},
 	}
-	for _, script := range scriptReadings {
+	for _, reading := range boundaryReadings {
 		rows = append(rows, struct{ name, words, want string }{
-			name: "words in " + script.script + " are cut inside the budget beside a character", words: script.reading, want: script.want,
+			name: "check words of " + reading.what + " are cut inside the budget at a word boundary", words: reading.reading, want: reading.want,
 		})
 	}
 	var document strings.Builder
