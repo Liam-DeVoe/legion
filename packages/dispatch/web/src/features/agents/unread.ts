@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   AgentMarkV2Input,
   AgentMessageV2,
@@ -79,9 +80,11 @@ export function useUnreadAtOpen(
 }
 
 /** Puts the session's mark a write answered with into the viewer's shared agent-state query, so
- *  every badge and row reads it at once. */
+ *  every badge and row reads it at once, over any read of that query still out: such a read was
+ *  asked before the write answered, and would put back the count the answer cleared
+ *  (`replaceQueryData`). */
 export function storeAgentState(queryClient: QueryClient, sessionId: string, next: MarkV2): void {
-  queryClient.setQueryData<Marks>(userAgentStateQuery().queryKey, (current) => ({
+  replaceQueryData<Marks>(queryClient, userAgentStateQuery().queryKey, (current) => ({
     ...current,
     [sessionId]: next,
   }));

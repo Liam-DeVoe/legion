@@ -425,6 +425,10 @@ var (
 	StepInput      = both(contracts.StepInputCode, http.StatusBadRequest)
 	StepWriter     = both(contracts.StepWriterCode, http.StatusForbidden)
 	StepOtherIssue = both(contracts.StepOtherIssueCode, http.StatusConflict)
+	// The refusals of a write of a plan (plans.go) beside the step write's STEP_WRITER, which the
+	// Legion daemon reads to end a row on.
+	PlanInput      = both(contracts.PlanInputCode, http.StatusBadRequest)
+	PlanOtherIssue = both(contracts.PlanOtherIssueCode, http.StatusConflict)
 
 	// AnswerNotKept answers a repeat of a keyed write whose first answer could not be kept, with
 	// the status that first answer had (request_keys.go): its status is the call's, so only

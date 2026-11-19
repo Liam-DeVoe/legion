@@ -152,7 +152,8 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 // either: its handler's own answer, which a request the gate refused could not carry - /api/v1's
 // architecture read the project's missing source, /api/v2's the project itself (decision 11),
 // /api/v1's steps read NOT_FOUND, as the issue's own read answers it, and /api/v2's the issue
-// itself. A route added to the list adds its answer here.
+// itself, and a project's plans read the project itself in both versions. A route added to the list
+// adds its answer here.
 var readListAnswers = map[string]struct {
 	status int
 	code   string
@@ -161,6 +162,8 @@ var readListAnswers = map[string]struct {
 	"GET /api/v2/projects/{key}/architecture": {http.StatusNotFound, "PROJECT_NOT_FOUND"},
 	"GET /api/v1/issues/{key}/steps":          {http.StatusNotFound, "NOT_FOUND"},
 	"GET /api/v2/issues/{key}/steps":          {http.StatusNotFound, "ISSUE_NOT_FOUND"},
+	"GET /api/v1/projects/{key}/plans":        {http.StatusNotFound, "PROJECT_NOT_FOUND"},
+	"GET /api/v2/projects/{key}/plans":        {http.StatusNotFound, "PROJECT_NOT_FOUND"},
 }
 
 // TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone walks the server register mounted,
@@ -360,6 +363,9 @@ var (
 	sourcesRead = regexp.MustCompile(`(?i)\bfrom\s+architecture_sources\b`)
 	// stepsRead is the steps read's one read, of the tuples that make each run part of its issue.
 	stepsRead = regexp.MustCompile(`(?i)\bfrom\s+workflow_tuples\b`)
+	// plansRead is the plans read's one read of the project's finished issues, joined through
+	// their tuples to their runs and plans.
+	plansRead = regexp.MustCompile(`(?is)\bfrom\s+issues\s+i\b.*\bworkflow_tuples\b`)
 )
 
 // writesOf answers each write statement makes, as "<verb> <table>", and false when it holds a
@@ -405,15 +411,24 @@ var readOnlyStepsReads = []struct{ version, title, run string }{
 	{"v2", "Steps a read-only token lists through the second version", "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0c"},
 }
 
+// readOnlyPlansReads are the plans reads of the read list, each with a project of its own, so each
+// lists its one finished issue alone, the title of that issue, and the id of the plan its daemon
+// writes before the read.
+var readOnlyPlansReads = []struct{ version, project, title, plan string }{
+	{"v1", "RDRPLANS", "A finished issue to list", "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f"},
+	{"v2", "RDRPLANTWO", "Plans a read-only token lists through the second version", "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e70"},
+}
+
 // TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches sends each route the read list names, with
 // a read-only token, and reads every statement the request ran - its handler's and the work it
 // detaches - through a tracer on the one pool the server and the verifier's replay store share.
 // The architecture is read with Dispatch-Trees: 1, a cold display cache and a stale route_roster,
-// and the steps of an issue the daemon wrote a run of. Every insert, update and delete is to
-// dpop_proofs, text_trees or route_roster: the proof's replay row and the two caches Dispatch
-// rebuilds from what it holds. The positive controls are each proof's insert, a tree's insert,
-// the read of architecture_sources and the read of workflow_tuples, so a tracer that saw nothing
-// cannot pass.
+// the steps of an issue the daemon wrote a run of, and the plans of a project once its issue is
+// done, each in both versions. Every insert, update and delete is to dpop_proofs, text_trees or
+// route_roster: the proof's replay row and the two caches Dispatch rebuilds from what it holds.
+// The positive controls are each proof's insert, a tree's insert, the read of architecture_sources,
+// the read of workflow_tuples and the read of the project's finished issues, so a tracer that saw
+// nothing cannot pass.
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	database := storetest.Open(t)
 	marked := &markedStatements{}
@@ -547,6 +562,39 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 				t.Fatalf("the read-only token's read of the steps of %s: status=%d body=%s, want 200 and its one run", issueKey, response.Code, response.Body.String())
 			}
 			requireOnlyProofAndCaches(t, marked.take(), stepsRead)
+		})
+	}
+
+	// The plans of a project, in each version, once its issue is done: the person closes it and the
+	// daemon writes its plan, outside the counted read, and the read-only token lists it.
+	for _, read := range readOnlyPlansReads {
+		t.Run("plans "+read.version, func(t *testing.T) {
+			createTestProject(t, rig.handler, read.project)
+			issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": read.project, "title": read.title})
+			if issue.Code != http.StatusCreated {
+				t.Fatalf("create an issue in %s: status=%d body=%s", read.project, issue.Code, issue.Body.String())
+			}
+			issueKey := decodeBody[struct {
+				Key string `json:"key"`
+			}](t, issue).Key
+			if closed := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+issueKey, map[string]any{"status": "done"}); closed.Code != http.StatusOK {
+				t.Fatalf("close %s: status=%d body=%s", issueKey, closed.Code, closed.Body.String())
+			}
+			putPlanRecordOK(t, rig.handler, issueKey, read.plan, defaultPlanBody(daemonSessionOf(read.project), 1))
+			marked.take()
+			request := caller.presenting(t, http.MethodGet, "/api/"+read.version+"/projects/"+read.project+"/plans", token, nil)
+			request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
+			response := rig.serve(request)
+			var listed []model.FinishedIssue
+			if read.version == "v1" {
+				listed = decodeBody[model.ProjectPlans](t, response).Issues
+			} else {
+				listed = decodeBody[page[model.FinishedIssue]](t, response).Items
+			}
+			if response.Code != http.StatusOK || len(listed) != 1 || listed[0].Plan == nil {
+				t.Fatalf("the read-only token's read of the plans of %s: status=%d body=%s, want 200 and %s with its plan", read.project, response.Code, response.Body.String(), issueKey)
+			}
+			requireOnlyProofAndCaches(t, marked.take(), plansRead)
 		})
 	}
 }

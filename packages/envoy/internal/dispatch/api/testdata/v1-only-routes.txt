@@ -117,6 +117,7 @@ GET /api/v1/issues/{key}/handoffs/{phase}/latest
 GET /api/v1/issues/{key}/messages
 POST /api/v1/issues/{key}/messages
 GET /api/v1/issues/{key}/messages/{id}
+PUT /api/v1/issues/{key}/plans/{id} # #4488, each retro rates the plan its issue ran
 GET /api/v1/issues/{key}/references
 GET /api/v1/issues/{key}/results
 POST /api/v1/issues/{key}/results
@@ -124,6 +125,7 @@ GET /api/v1/issues/{key}/role-holders # #4228, merged after c8a44f97
 PUT /api/v1/issues/{key}/role-holders # #4228, merged after c8a44f97
 GET /api/v1/issues/{key}/steps # #4400, record each phase of an issue as a step
 PUT /api/v1/issues/{key}/steps/{id} # #4400, record each phase of an issue as a step
+PUT /api/v1/issues/{key}/steps/{id}/rating # #4488, each retro rates the plan its issue ran
 GET /api/v1/issues/{key}/subscribers
 DELETE /api/v1/issues/{key}/subscribers/{session_id}
 GET /api/v1/issues/{key}/summary
@@ -181,6 +183,7 @@ POST /api/v1/projects/{key}/artifacts/{slug}/versions
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}
 PUT /api/v1/projects/{key}/default-assignee
 PUT /api/v1/projects/{key}/gated-steps
+GET /api/v1/projects/{key}/plans # #4488, each retro rates the plan its issue ran
 GET /api/v1/projects/{key}/related
 POST /api/v1/projects/{key}/related
 GET /api/v1/reference-targets # #4178, the reads the new issue page needs

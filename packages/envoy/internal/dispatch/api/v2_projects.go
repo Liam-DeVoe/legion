@@ -4,18 +4,18 @@ package api
 // of /api/v2 (R1 of dispatch://INFRA-4071/spec): the projects and the patch of
 // one, which takes the default assignee and the gated steps two PUTs of /api/v1 wrote (the route
 // map's J16); a project's architecture, its sources and the one sync route the three syncs of
-// /api/v1 become (J15); the related-item search; the near-copy gate's records, in the envelope
-// (two rows #4103 added, which no row of the route map names); the repository mappings and the
-// App's installation on one; the priorities and the acts of one (J29); the three deployment
-// settings (J19); and the counts of the
+// /api/v1 become (J15); the finished issues with their plans and ratings, a row #4488 added; the
+// related-item search; the near-copy gate's records, in the envelope (two rows #4103 added, which
+// no row of the route map names); the repository mappings and the App's installation on one; the
+// priorities and the acts of one (J29); the three deployment settings (J19); and the counts of the
 // related-item checks (J30). Every route runs the work its /api/v1 route runs (createProjectFrom,
 // writeProjectDefaultAssignee, writeProjectGatedSteps, getArchitectureTree, querySources,
-// putArchitectureSourceFrom, deleteArchitectureSourceAs, syncProjectSources, answerRelated,
-// readNearCopyCheck, putRepoProjectFrom, deleteRepoProjectAs, getAppInstallation, readPriorities,
-// createPriorityFrom, patchPriorityFrom, deletePriorityAs, priorityActsOf, getNewIssueSettings,
-// getCredentialCapabilities, getGoingCapability, relatedChecksReportOf), each path object checked
-// first and answered with its own 404 (R7); the app-installation read's {owner}/{repo} keeps the
-// answer /api/v1 gives it (R7).
+// putArchitectureSourceFrom, deleteArchitectureSourceAs, syncProjectSources,
+// projectFinishedIssues, answerRelated, readNearCopyCheck, putRepoProjectFrom, deleteRepoProjectAs,
+// getAppInstallation, readPriorities, createPriorityFrom, patchPriorityFrom, deletePriorityAs,
+// priorityActsOf, getNewIssueSettings, getCredentialCapabilities, getGoingCapability,
+// relatedChecksReportOf), each path object checked first and answered with its own 404 (R7); the
+// app-installation read's {owner}/{repo} keeps the answer /api/v1 gives it (R7).
 
 import (
 	"errors"
@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 // The refusals of the objects a project group route's path names (dispatch://INFRA-4071/spec R7).
@@ -55,8 +56,8 @@ const architectureSourceText = "each source {project, repo, branch, enabled, cre
 
 // v2ProjectRows are the project, architecture, repository, priority and settings routes: rows 147
 // and 182; 148; 166 and 167; 149; 150, 152 and 178; 154; 155; 151, 153 and 156; 168 and 169; the
-// two near-copy rows of #4103; 183; 184; 185; 73; 142; 143; 144; 145; 146; 181; 63; 74; and 172 of
-// the route map.
+// plans row of #4488 and the two near-copy rows of #4103; 183; 184; 185; 73; 142; 143; 144; 145;
+// 146; 181; 63; 74; and 172 of the route map.
 func (s *server) v2ProjectRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
 	return []routeRow{
@@ -133,6 +134,26 @@ func (s *server) v2ProjectRows() []routeRow {
 			Resource: "architecture", Kind: kindReport,
 			Shape:    routeShape{Status: http.StatusOK, Response: architectureTreeRead{}},
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal},
+		},
+		{
+			Method: http.MethodGet, Pattern: "/projects/{key}/plans", Auth: authAny, Versions: onlyV2,
+			Description: "Each finished issue of the project, one whose status is done and whose closed_at is set, " +
+				"newest close first, its close within from and to on closed_at, RFC3339, from inclusive and to exclusive " +
+				"(400 INVALID_QUERY when from is not before to): each {issue, title, closed_at, plan, ratings, " +
+				"started_at, ended_at, duration_seconds, failed_steps}. plan is the plan of the issue's newest run as the " +
+				"Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null " +
+				"for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, " +
+				"reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest " +
+				"end and duration_seconds the whole seconds between them, each null where no record holds one, and " +
+				"duration_seconds null too where that end is before that start, a time Dispatch cannot count; " +
+				"failed_steps counts its step records of kind step that failed. It writes nothing, and a read-only token " +
+				"may call it. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 " +
+				"PROJECT_NOT_FOUND for a project that does not exist.",
+			Handler:  s.listProjectPlansV2,
+			Resource: "plans", Kind: kindCollection, TimeFields: []string{"closed_at"},
+			Query:    projectPlansV2Query{},
+			Shape:    routeShape{Status: http.StatusOK, Response: page[model.FinishedIssue]{}},
+			Refusals: listRefusals(projectMissingRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/projects/{key}/architecture-sources", Auth: authAny, Versions: onlyV2,
@@ -656,6 +677,38 @@ func (s *server) getArchitectureTreeV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.getArchitectureTree(w, r)
+}
+
+// projectPlansV2Query is GET /api/v2/projects/{key}/plans's query: one page of the finished
+// issues, their close within [from, to), each bound optional.
+type projectPlansV2Query struct {
+	pageQuery
+	From *time.Time `query:"from"`
+	To   *time.Time `query:"to"`
+}
+
+// listProjectPlansV2 answers GET /api/v2/projects/{key}/plans: one page of the finished issues GET
+// /api/v1/projects/{key}/plans lists (projectFinishedIssues), newest close first, the project held
+// to exist first and its close within from and to, which /api/v1 names since and until.
+func (s *server) listProjectPlansV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	key := r.PathValue("key")
+	if !s.requireProjectV2(w, r, key) {
+		return
+	}
+	query := v2Query[projectPlansV2Query](r)
+	if query.From != nil && query.To != nil && !query.From.Before(*query.To) {
+		writeError(w, r, apicode.InvalidQuery, "from must be before to")
+		return
+	}
+	finished, err := projectFinishedIssues(r.Context(), s.deps.Store.Pool, key, workflowstore.Window{Since: query.From, Until: query.To})
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, pageOf(finished, query.pageQuery))
 }
 
 // architectureSourcesV2Query is GET /api/v2/projects/{key}/architecture-sources's query: one page.

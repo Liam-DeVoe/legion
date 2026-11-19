@@ -285,6 +285,8 @@ LEGION_NOT_CONFIGURED 404 # #2731, a project's Legion board from its daemon's re
 LEGION_SETTING_INPUT 400 # #2731, the Legion daemon a project's state is read from
 NEAR_COPY_CHECK_ID_INPUT 400 # #4103, record every answer of the near-copy gate
 NEAR_COPY_CHECK_NOT_FOUND 404 # #4103, record every answer of the near-copy gate
+PLAN_INPUT 400 # #4488, each retro rates the plan its issue ran
+PLAN_OTHER_ISSUE 409 # #4488, each retro rates the plan its issue ran
 QUEUED_ON_BUS 404 # #4088, a message to a session the listener knows nothing about is queued
 READ_ONLY_TOKEN 403 # #4113, mint a read-only Dispatch token and serve it on the read list alone
 ROLE_HOLDER_FORBIDDEN 403 # #4228, the Legion daemon publishes the session of each role of an issue

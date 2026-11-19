@@ -128,14 +128,18 @@ func TestV2Refusals(t *testing.T) {
 // namesAStoredObject reports whether the wildcard of route's path names a row Dispatch stores,
 // whose absence the route answers with that object's 404 (decision 11): every wildcard but a
 // {session_id} (ruling A), the {owner}/{repo} of the app-installation read (ruling A) and of a PUT
-// that creates the repository row, a mark's {kind}, and the {id} of a deploy run, which is GitHub's
-// run id of the deployment's deploy repository: decision 11 names no deploy run among the objects,
-// and the read keeps /api/v1's 404 NOT_FOUND for a run Dispatch has not mirrored.
+// that creates the repository row, the {id} of a plan's PUT, which creates the plan whatever id it
+// names (a plan write names its whole identity, so no plan is missing to it), a mark's {kind}, and
+// the {id} of a deploy run, which is GitHub's run id of the deployment's deploy repository:
+// decision 11 names no deploy run among the objects, and the read keeps /api/v1's 404 NOT_FOUND
+// for a run Dispatch has not mirrored.
 func namesAStoredObject(route apiRoute, wildcard string) bool {
 	switch {
 	case wildcard == "session_id":
 		return false
 	case (wildcard == "owner" || wildcard == "repo") && (strings.HasSuffix(route.Pattern, "/app-installation") || route.Method == http.MethodPut):
+		return false
+	case wildcard == "id" && route.Method == http.MethodPut && strings.HasSuffix(route.Pattern, "/plans/{id}"):
 		return false
 	case wildcard == "kind" && strings.Contains(route.Pattern, "/marks/{kind}/{id}"):
 		return false

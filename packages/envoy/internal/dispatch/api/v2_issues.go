@@ -6,13 +6,14 @@ package api
 // read of one issue, whose include= gives what GET /api/v1/issues/{key} answered (the route map's
 // J3); the patch, which takes the design gates PUT /api/v1/issues/{key}/design-gates wrote (J16);
 // the claim; and an issue's collaborators, coverage, decisions and the keep of one, references,
-// checks, results and the retraction of one, subscribers, and the steps #4400 added to /api/v1
-// and the write of one. Every route runs the work its /api/v1 route runs (readIssueListing,
-// createIssueFrom, readIssueParts, patchIssueAs, claimIssueAs, releaseIssueClaimAs,
-// issueCollaboratorsOf, issueCoverage, issueDecisionsOf, writeDecisionKeep, refs.Closure,
-// readIssueChecks, recordCheckResultFrom, retractCheckResultAs, subscribersOf, unsubscribeSession,
-// issueStepTasks, putIssueStepFrom), each path object checked first and answered with its own
-// 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
+// checks, results and the retraction of one, subscribers, the steps #4400 added to /api/v1 and the
+// write of one, and the rating of a retro's run and the plan of a run #4488 added. Every route runs
+// the work its /api/v1 route runs (readIssueListing, createIssueFrom, readIssueParts,
+// patchIssueAs, claimIssueAs, releaseIssueClaimAs, issueCollaboratorsOf, issueCoverage,
+// issueDecisionsOf, writeDecisionKeep, refs.Closure, readIssueChecks, recordCheckResultFrom,
+// retractCheckResultAs, subscribersOf, unsubscribeSession, issueStepTasks, putIssueStepFrom,
+// putIssueStepRatingFrom, putIssuePlanFrom), each path object checked first and answered with its
+// own 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
 
 import (
 	"context"
@@ -32,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
@@ -43,10 +45,10 @@ var resultMissingRefusal = apicode.Refusal{Condition: apicode.ResultMissing, Cod
 // not name the run's identity and so cannot make one (dispatch://INFRA-4071/spec R7).
 var stepMissingRefusal = apicode.Refusal{Condition: apicode.StepMissing, Code: apicode.StepNotFound}
 
-// stepRecordText is what both step routes' descriptions say of the record they answer.
+// stepRecordText is what every step route's description says of the record it answers.
 const stepRecordText = "{id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, " +
-	"started_at, ended_at, result, returned_to, report}, attempt its place among the issue's runs of the same " +
-	"task, step and kind from 1"
+	"started_at, ended_at, result, returned_to, report, rating, rating_reason}, attempt its place among the " +
+	"issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone"
 
 // The refusals of a parent or blocked_by write that would make a loop, which /api/v2 answers with
 // one code, 409 ISSUE_CYCLE, where /api/v1 answers PARENT_INPUT and DEPENDENCY_CYCLE (R7).
@@ -457,6 +459,60 @@ func (s *server) v2IssueRows() []routeRow {
 			IDs:      &idRoute{Reason: "a step record id: the uuid the Legion daemon derives for one run of one step"},
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal, stepMissingRefusal},
 		},
+		{
+			Method: http.MethodPut, Pattern: "/issues/{key}/steps/{id}/rating", Auth: authAny, Versions: onlyV2,
+			Description: fmt.Sprintf("Write the rating of a retro's run {rating, rating_reason, task?, step?, kind?, "+
+				"role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, "+
+				"report?}, a bearer naming its session in actor: rating, %d to %d, is how well the plan the issue ran "+
+				"fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and "+
+				"at most %d characters counted as Unicode code points. The Legion daemon writes it under the id of the "+
+				"retro's run, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where "+
+				"the retro's start and end have not landed yet; each field the record does not hold yet is set and "+
+				"every field it holds is left, but returned_to, which only the write that sets the result sets, so the "+
+				"rating is written once and lands before or after the retro's end. The actor must be session "+
+				"legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer "+
+				"caller names its own session, so any caller whose credential proves no session can name that one. A "+
+				"closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands "+
+				"after the write, "+stepRecordText+"; a body every field of which the record holds as sent answers the "+
+				"record and writes nothing. A rating or reason outside its form, and a record that is not a retro's, "+
+				"are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 "+
+				"STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 "+
+				"ISSUE_NOT_FOUND for an issue that does not exist.",
+				contracts.PlanRatingLeast, contracts.PlanRatingMost, contracts.PlanReasonMax),
+			Handler:  s.putIssueStepRatingV2,
+			Resource: "rating", Kind: kindSingleton,
+			Body:  requestBody{Kind: bodyJSON, Type: stepRatingInput{}},
+			Shape: routeShape{Status: http.StatusOK, Response: model.StepRecord{}},
+			Scope: scopeProject, ProjectOf: projectPathIssue,
+			IDs:      &idRoute{Reason: "a step record id: the uuid the Legion daemon derives for the run of a retro"},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal, stepMissingRefusal},
+		},
+		{
+			Method: http.MethodPut, Pattern: "/issues/{key}/plans/{id}", Auth: authAny, Versions: onlyV2,
+			Description: "Write the plan one run of the issue ran from {generation, source, artifact_id?, version?, " +
+				"tasks: [{id, steps}]}, a bearer naming its session in actor: the Legion daemon writes it when the run's " +
+				"work starts, under the uuid it derives for the run's plan. source is owner, with the document " +
+				"artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner " +
+				"gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or " +
+				"role:key, the role one a step record's role takes, since each run of the step is a record of that " +
+				"role. Each field the plan does not hold yet is set and every field it holds is left, so a plan sent " +
+				"again changes nothing, and a body every member of which the plan holds as sent answers the plan and " +
+				"writes nothing. The write makes the plan whatever id it names, so no plan is missing to it. The actor " +
+				"must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the " +
+				"airlock a bearer caller names its own session, so any caller whose credential proves no session can " +
+				"name that one. A closed issue takes it too, and no write appends an issue event. Answers 200 the plan " +
+				"as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}, artifact_id " +
+				"and version null for a default plan. A value outside its form is 400 PLAN_INPUT naming the field, a " +
+				"step whose role a step record refuses naming the step and its role, and an id whose plan is another " +
+				"issue's 409 PLAN_OTHER_ISSUE; 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+			Handler:  s.putIssuePlanV2,
+			Resource: "plans", Kind: kindItem, Key: "{id}",
+			Body:  requestBody{Kind: bodyJSON, Type: planRecordInput{}},
+			Shape: routeShape{Status: http.StatusOK, Response: model.PlanRecord{}},
+			Scope: scopeProject, ProjectOf: projectPathIssue,
+			IDs:      &idRoute{Reason: "a plan id: the uuid the Legion daemon derives for the plan of one run of an issue"},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, issueMissingRefusal},
+		},
 	}
 }
 
@@ -797,7 +853,7 @@ func (s *server) answerIssueListV2(w http.ResponseWriter, r *http.Request, proje
 		labels[index] = strings.ToLower(label)
 	}
 	// Each window is judged as the caller wrote it, before rounding, as GET /api/v1/issues judges
-	// its closed window (microsecondCeiling).
+	// its closed window (store.MicrosecondCeiling).
 	if filters.UpdatedFrom != nil && filters.UpdatedTo != nil && !filters.UpdatedFrom.Before(*filters.UpdatedTo) {
 		writeError(w, r, apicode.InvalidQuery, "updated_from must be before updated_to")
 		return
@@ -821,9 +877,9 @@ func (s *server) answerIssueListV2(w http.ResponseWriter, r *http.Request, proje
 	routeStatus := filters.RouteStatus
 	open := filters.Open || routeStatus != ""
 	arguments := []any{projects, parseStatusFilter(filters.Status), strings.TrimSpace(filters.Parent),
-		microsecondCeiling(filters.UpdatedFrom), labels, open, priorities, unsetPriority,
-		microsecondCeiling(filters.ClosedFrom), microsecondCeiling(filters.ClosedTo), advances, noAdvances, anyAdvances,
-		filters.Moved, microsecondCeiling(filters.UpdatedTo), keys}
+		store.MicrosecondCeiling(filters.UpdatedFrom), labels, open, priorities, unsetPriority,
+		store.MicrosecondCeiling(filters.ClosedFrom), store.MicrosecondCeiling(filters.ClosedTo), advances, noAdvances, anyAdvances,
+		filters.Moved, store.MicrosecondCeiling(filters.UpdatedTo), keys}
 	if filters.Pinned {
 		arguments = append(arguments, login)
 	}
@@ -1407,6 +1463,79 @@ func stepHeld(sent stepRecordInput, stored workflowstore.StepRead) stepRecordInp
 	}
 	if sent.ReturnedTo != nil {
 		held.ReturnedTo = stored.ReturnedTo
+	}
+	return held
+}
+
+// putIssueStepRatingV2 answers PUT /api/v2/issues/{key}/steps/{id}/rating: the write PUT
+// /api/v1/issues/{key}/steps/{id}/rating makes (putIssueStepRatingFrom), the issue held to exist
+// first, once the no-op rule of dispatch://INFRA-4071/spec R8 has found the body is a change; a
+// write that names no identity to an id no record has is 404 STEP_NOT_FOUND (R7), as the step
+// write's is (putIssueStepV2).
+func (s *server) putIssueStepRatingV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) || !s.requireIssueV2(w, r, r.PathValue("key")) {
+		return
+	}
+	body := v2Body[stepRatingInput](r)
+	s.putIssueStepRatingFrom(w, r, body, apicode.StepNotFound, func(stored workflowstore.StepRead) bool {
+		return putChangesNothing(body, ratingHeld(body, stored), noSetterRecorded, "")
+	})
+}
+
+// ratingHeld is the record stored in the rating body's own type, as stepHeld writes a step body:
+// the run's fields as stepHeld holds them, and the rating and its reason, which the body always
+// sends, as the record holds them, none where it holds no rating.
+func ratingHeld(sent stepRatingInput, stored workflowstore.StepRead) stepRatingInput {
+	held := sent
+	held.stepRecordInput = stepHeld(sent.stepRecordInput, stored)
+	held.Rating, held.RatingReason = nil, nil
+	if stored.Rating != nil {
+		held.Rating, held.RatingReason = &stored.Rating.Rating, &stored.Rating.Reason
+	}
+	return held
+}
+
+// putIssuePlanV2 answers PUT /api/v2/issues/{key}/plans/{id}: the write PUT
+// /api/v1/issues/{key}/plans/{id} makes (putIssuePlanFrom), the issue held to exist first, once the
+// no-op rule of dispatch://INFRA-4071/spec R8 has found the body is a change. A plan has one
+// writer, the daemon of its issue's project, which the write holds every caller to, so a body every
+// member of which the plan holds as sent answers the plan and writes nothing (noSetterRecorded).
+func (s *server) putIssuePlanV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) || !s.requireIssueV2(w, r, r.PathValue("key")) {
+		return
+	}
+	body := v2Body[planRecordInput](r)
+	s.putIssuePlanFrom(w, r, body, func(stored workflowstore.Plan) bool {
+		return putChangesNothing(body, planHeld(body, stored), noSetterRecorded, "")
+	})
+}
+
+// planHeld is the plan stored in the body's own type, for the members sent states alone: a
+// document half the body leaves out, or sends null, "" or 0, states nothing (planRecordInput) and
+// stands as sent, and so does its actor, which is no field of the plan.
+func planHeld(sent planRecordInput, stored workflowstore.Plan) planRecordInput {
+	held := sent
+	if sent.Generation != nil {
+		held.Generation = &stored.Generation
+	}
+	if sent.Source != nil {
+		held.Source = &stored.Source
+	}
+	var document workflowstore.PlanDocument
+	if stored.Document != nil {
+		document = *stored.Document
+	}
+	if sent.ArtifactID != nil && *sent.ArtifactID != "" {
+		held.ArtifactID = &document.ArtifactID
+	}
+	if sent.Version != nil && *sent.Version != 0 {
+		held.Version = &document.Version
+	}
+	if sent.Tasks != nil {
+		held.Tasks = make([]planTaskInput, len(stored.Tasks))
+		for index, task := range stored.Tasks {
+			held.Tasks[index] = planTaskInput(task)
+		}
 	}
 	return held
 }

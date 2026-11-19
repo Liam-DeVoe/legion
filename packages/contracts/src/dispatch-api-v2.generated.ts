@@ -1281,6 +1281,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/issues/{key}/plans/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Write the plan one run of the issue ran from {generation, source, artifact_id?, version?, tasks: [{id, steps}]}, a bearer naming its session in actor: the Legion daemon writes it when the run's work starts, under the uuid it derives for the run's plan. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. Each field the plan does not hold yet is set and every field it holds is left, so a plan sent again changes nothing, and a body every member of which the plan holds as sent answers the plan and writes nothing. The write makes the plan whatever id it names, so no plan is missing to it. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it too, and no write appends an issue event. Answers 200 the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}, artifact_id and version null for a default plan. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, and an id whose plan is another issue's 409 PLAN_OTHER_ISSUE; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    put: operations["putApiV2IssuesByKeyPlansById"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/issues/{key}/references": {
     parameters: {
       query?: never;
@@ -1340,7 +1357,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task in the order of each task's first run and each task's runs in the order they ran: each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Every run of every step of the issue's workflow, as the Legion daemon wrote them, task by task in the order of each task's first run and each task's runs in the order they ran: each {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too; an issue no step ran on reads []. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKeySteps"];
     put?: never;
     post?: never;
@@ -1358,8 +1375,25 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, attempt its place among the issue's runs of the same task, step and kind from 1; a body every field of which the record holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Write one run of one step of the issue's workflow {task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone; a body every field of which the record holds as sent answers the record and writes nothing. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     put: operations["putApiV2IssuesByKeyStepsById"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/issues/{key}/steps/{id}/rating": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Write the rating of a retro's run {rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}, a bearer naming its session in actor: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v2/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:<PROJECT> of the issue's project, else 403 STEP_WRITER; before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it too, and no write appends an issue event. Answers 200 the record as it stands after the write, {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone; a body every field of which the record holds as sent answers the record and writes nothing. A rating or reason outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and a write that names no identity to an id no record has 404 STEP_NOT_FOUND; 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    put: operations["putApiV2IssuesByKeyStepsByIdRating"];
     post?: never;
     delete?: never;
     options?: never;
@@ -1965,6 +1999,23 @@ export interface paths {
     };
     /** @description List a project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written, oldest first: those within from and to on created_at, RFC3339, from inclusive and to exclusive (400 INVALID_QUERY when from is not before to). A row written in its create's transaction holds that transaction's start as created_at and is seen only once it commits, so a window should end some time before now. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v2/near-copy-checks/{id} reads one row with it. outcome is refused (nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced, nudged, passed or not_made, and reason bound, failed or unrecorded for not_made and null otherwise; candidates are the issues the gate read at or above nudge_score, at most 5, best first. limit 1 to 1000 (default 1000) and offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV2ProjectsByKeyNearCopyChecks"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/projects/{key}/plans": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within from and to on closed_at, RFC3339, from inclusive and to exclusive (400 INVALID_QUERY when from is not before to): each {issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing, and a read-only token may call it. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    get: operations["getApiV2ProjectsByKeyPlans"];
     put?: never;
     post?: never;
     delete?: never;
@@ -4201,6 +4252,20 @@ export interface components {
       kind?: string;
       url: string;
     };
+    FinishedIssue: {
+      /** Format: date-time */
+      closed_at: string;
+      duration_seconds: null | number;
+      /** Format: date-time */
+      ended_at: null | string;
+      failed_steps: number;
+      issue: string;
+      plan: components["schemas"]["PlanRecord"] | null;
+      ratings: components["schemas"]["PlanRating"][] | null;
+      /** Format: date-time */
+      started_at: null | string;
+      title: string;
+    };
     GoingActionV2: {
       action: string;
       description: string;
@@ -5221,6 +5286,12 @@ export interface components {
       offset: number;
       total: number;
     };
+    PageOfFinishedIssue: {
+      items: components["schemas"]["FinishedIssue"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+    };
     PageOfGoingActionV2: {
       items: components["schemas"]["GoingActionV2"][] | null;
       limit: number;
@@ -5406,6 +5477,41 @@ export interface components {
       machine: string;
       signin_id: string;
       thumbprint: string;
+    };
+    PlanRating: {
+      /** Format: date-time */
+      ended_at: null | string;
+      rating: number;
+      reason: string;
+      step_id: string;
+    };
+    PlanRecord: {
+      artifact_id: null | string;
+      /** Format: int64 */
+      generation: number;
+      id: string;
+      issue: string;
+      /** @enum {string} */
+      source: "default" | "owner";
+      tasks: components["schemas"]["PlanTask"][] | null;
+      version: null | number;
+    };
+    PlanRecordInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      artifact_id?: null | string;
+      generation: null | number;
+      /** @enum {null|string} */
+      source: "default" | "owner" | null;
+      tasks: components["schemas"]["PlanTaskInput"][] | null;
+      version?: null | number;
+    };
+    PlanTask: {
+      id: string;
+      steps: string[] | null;
+    };
+    PlanTaskInput: {
+      id: string;
+      steps: string[] | null;
     };
     PrioritiesV2: {
       empty?: string;
@@ -5905,6 +6011,29 @@ export interface components {
       method: string;
       path: string;
     };
+    StepRatingInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      agent?: null | string;
+      /** Format: date-time */
+      ended_at?: null | string;
+      generation?: null | number;
+      /** @enum {null|string} */
+      kind?: "step" | "retro" | "merge" | null;
+      model?: null | string;
+      rating: null | number;
+      rating_reason: null | string;
+      report?: null | string;
+      /** @enum {null|string} */
+      result?: "passed" | "failed" | "stopped" | null;
+      returned_to?: null | number;
+      role?: null | string;
+      session?: null | string;
+      /** Format: date-time */
+      started_at?: null | string;
+      step?: null | number;
+      task?: null | string;
+      type?: null | string;
+    };
     StepRecord: {
       agent: string;
       attempt: number;
@@ -5917,6 +6046,8 @@ export interface components {
       /** @enum {string} */
       kind: "step" | "retro" | "merge";
       model: string;
+      rating: null | number;
+      rating_reason: null | string;
       report: null | string;
       /** @enum {string} */
       result: "" | "passed" | "failed" | "stopped";
@@ -10625,6 +10756,56 @@ export interface operations {
       };
     };
   };
+  putApiV2IssuesByKeyPlansById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PlanRecordInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlanRecord"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV2IssuesByKeyReferences: {
     parameters: {
       query?: {
@@ -10885,6 +11066,56 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": components["schemas"]["StepRecordInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StepRecord"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV2IssuesByKeyStepsByIdRating: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StepRatingInput"];
       };
     };
     responses: {
@@ -13100,6 +13331,55 @@ export interface operations {
       };
     };
   };
+  getApiV2ProjectsByKeyPlans: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        from?: string;
+        to?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PageOfFinishedIssue"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV2ProjectsByKeyRelatedSearches: {
     parameters: {
       query?: {
@@ -14224,6 +14504,7 @@ export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMi
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type ExternalLink = components["schemas"]["ExternalLink"];
+export type FinishedIssue = components["schemas"]["FinishedIssue"];
 export type GoingActionV2 = components["schemas"]["GoingActionV2"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
@@ -14329,6 +14610,7 @@ export type PageOfBroadcastSummary = components["schemas"]["PageOfBroadcastSumma
 export type PageOfDashboardBuildV2 = components["schemas"]["PageOfDashboardBuildV2"];
 export type PageOfDispatchUser = components["schemas"]["PageOfDispatchUser"];
 export type PageOfEvent = components["schemas"]["PageOfEvent"];
+export type PageOfFinishedIssue = components["schemas"]["PageOfFinishedIssue"];
 export type PageOfGoingActionV2 = components["schemas"]["PageOfGoingActionV2"];
 export type PageOfHandoffV2 = components["schemas"]["PageOfHandoffV2"];
 export type PageOfIssueSummary = components["schemas"]["PageOfIssueSummary"];
@@ -14355,6 +14637,11 @@ export type PatchIssueV2Input = components["schemas"]["PatchIssueV2Input"];
 export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PatchProjectV2Input = components["schemas"]["PatchProjectV2Input"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
+export type PlanRating = components["schemas"]["PlanRating"];
+export type PlanRecord = components["schemas"]["PlanRecord"];
+export type PlanRecordInput = components["schemas"]["PlanRecordInput"];
+export type PlanTask = components["schemas"]["PlanTask"];
+export type PlanTaskInput = components["schemas"]["PlanTaskInput"];
 export type PrioritiesV2 = components["schemas"]["PrioritiesV2"];
 export type Priority = components["schemas"]["Priority"];
 export type PriorityAct = components["schemas"]["PriorityAct"];
@@ -14414,6 +14701,7 @@ export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersV2 = components["schemas"]["SessionAnswersV2"];
 export type SignInRevokedV2 = components["schemas"]["SignInRevokedV2"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
+export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];
 export type StepRecordInput = components["schemas"]["StepRecordInput"];
 export type Subscriber = components["schemas"]["Subscriber"];

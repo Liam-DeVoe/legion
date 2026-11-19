@@ -5,10 +5,10 @@ import { createElement, type ReactNode } from "react";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
-import type { AgentMarkV2Input, MarkV2, Message } from "../../api/types";
+import type { AgentMarkV2Input, Marks, MarkV2, Message } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { markOf, marksOf } from "./marks-fixture";
-import { totalUnreadReplies, useMarkShownRepliesRead } from "./unread";
+import { storeAgentState, totalUnreadReplies, useMarkShownRepliesRead } from "./unread";
 
 // An API older than the unread count answers a session's state with its Clear alone. The badge
 // then counts that session as nothing unread rather than reading "New replies NaN".
@@ -21,6 +21,31 @@ test("the unread total counts a state with no unread count as none", () => {
   Reflect.deleteProperty(old, "unread_replies");
   const states = { ...marksOf("agent", { s1: { unread_replies: 2 } }), old };
   expect(totalUnreadReplies(states)).toBe(2);
+});
+
+// A read of the viewer's agent state that was asked before a mark answered counts the replies as
+// they stood before the mark. When that read answers after the mark, its answer must not put back
+// the count the mark cleared: the header's and the navigation's badge would read "New reply 1"
+// again, after the reader opened the conversation, until some later read answered.
+test("a read asked before a mark answered does not put back the unread count the mark cleared", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { promise: older, resolve: answerOlder } = Promise.withResolvers<Marks>();
+  const read = queryClient
+    .fetchQuery({ queryFn: () => older, queryKey: userAgentStateQuery().queryKey })
+    .catch(() => undefined);
+
+  storeAgentState(
+    queryClient,
+    "planner-session",
+    markOf("agent", "planner-session", { read_through: "2026-09-14T01:05:00Z", unread_replies: 0 })
+  );
+  answerOlder(marksOf("agent", { "planner-session": { unread_replies: 1 } }));
+  await read;
+
+  expect(
+    queryClient.getQueryData<Marks>(userAgentStateQuery().queryKey)?.["planner-session"]
+      ?.unread_replies
+  ).toBe(0);
 });
 
 const SESSION = "planner-session";
