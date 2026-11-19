@@ -127,7 +127,9 @@ export const DOCUMENT_NEWER_CONTENT_CLOSE_REASON = "DOC_NEWER_CONTENT";
  * reconnecting only on 4401, 4403 and 1009 (`HocuspocusProviderWebsocket.ts` `onClose`), so the
  * page reconnects on this code, presents its numbers again and is admitted again: read-only,
  * unless a live process admits it. 412 is HTTP's "Precondition Failed", which the admission the
- * fleet withdrew is. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
+ * fleet withdrew is. The socket closes with it too once the Identity-Aware Proxy assertion its
+ * upgrade carried expires (`DISPATCH_IDENTITY=iap`): the reconnect carries a fresh assertion, which
+ * is judged again. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
  */
 export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
 

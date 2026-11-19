@@ -463,9 +463,10 @@ export const DOCUMENT_SCHEMA_CLOSE_CODE = 4409;
 export const ID_AMBIGUOUS = "ID_AMBIGUOUS";
 
 /** The close code Dispatch ends a live socket with once the socket reaches its age, a random point
- *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS). It is in the private 4000-4999 range, apart
- *  from the 4000 a page closes a silent socket with: the page reopens at once and resumes every
- *  subscription, showing no pill and refreshing nothing. */
+ *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS), or once the Identity-Aware Proxy assertion
+ *  its upgrade carried expires (`DISPATCH_IDENTITY=iap`). It is in the private 4000-4999 range,
+ *  apart from the 4000 a page closes a silent socket with: the page reopens at once and resumes
+ *  every subscription, showing no pill and refreshing nothing. */
 export const LIVE_SOCKET_MAX_AGE_CLOSE = 4001;
 
 /** How a verified service token's subject reads wherever an actor is shown.
