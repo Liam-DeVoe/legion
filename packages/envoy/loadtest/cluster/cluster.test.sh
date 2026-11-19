@@ -164,8 +164,9 @@
 # that lands inside the watcher's read of the volume leaves it without acting at all; (ff) a
 # daemon that outlives its SIGTERM makes stop_daemon fail, naming it and keeping its pidfile, and
 # down go on with its delete and then fail, naming it, while a daemon that ends on its SIGTERM is
-# stopped and its pidfile removed; and (gg) a step shell that a signal ends inside its stop of the
-# disk watcher names that watcher, in its EXIT trap, as not shown gone.
+# stopped and its pidfile removed; (gg) a step shell that a signal ends inside its stop of the
+# disk watcher names that watcher, in its EXIT trap, as not shown gone; and (hh) the start of a
+# pid that has left the table reads as nothing, and a shell under errexit goes on past that read.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -3889,3 +3890,33 @@ grep -qF "the stop of step cutwatch's disk watcher (pid $cutw_pid) was cut short
 ! grep -qF "the stop returned" "$cutw_dir/out" ||
   fail "the stop of the disk watcher returned, so the TERM did not land inside it: $(cat "$cutw_dir/out")"
 pass "a step shell that a signal ends inside its stop of the disk watcher names that watcher, in its EXIT trap, as not shown gone"
+
+# (hh) A child of the watcher's act that ends before the stop reads its start. pg_disk_watch_stop
+# reads the children of a watcher it has to kill and then the start time of each (proc_start), and
+# a child can leave the table between the two reads. proc_start's sed then failed on the missing
+# /proc file, and under cluster.sh's errexit and pipefail the assignment of that status ended the
+# step shell with status 2 and nothing said: this suite's case (dd) ended so once beside a loaded
+# machine. A read of a pid that has left the table now prints nothing and succeeds, and the stop
+# reads that child as ended. The read runs in a bash of its own that sourced cluster.sh: errexit
+# does nothing inside a subshell whose status an || reads, and run_in_runner calls the stop as a
+# statement of its own, where errexit applies.
+gone_out=$fake/gone-start.out
+gone_rc=0
+# shellcheck disable=SC2016 # expanded by the bash that sourced cluster.sh
+bash -c '
+  source "$1"
+  "$2" 30 &
+  gone=$!
+  kill -KILL "$gone"
+  wait "$gone" 2>/dev/null || true
+  started=$(proc_start "$gone")
+  printf "went on, start %s\n" "${started:-none}"
+  ! proc_ended "$gone" "$started" || echo "read as ended"
+' _ "$cluster" "$real_sleep" >"$gone_out" 2>&1 || gone_rc=$?
+((gone_rc == 0)) ||
+  fail "a shell that sourced cluster.sh ended with $gone_rc at proc_start of a pid that has left the table, its errexit ending it with nothing said: $(cat "$gone_out")"
+grep -qx 'went on, start none' "$gone_out" ||
+  fail "proc_start of a pid that has left the table printed a start, or the shell did not go on: $(cat "$gone_out")"
+grep -qx 'read as ended' "$gone_out" ||
+  fail "a child whose start could not be read is not read as ended: $(cat "$gone_out")"
+pass "proc_start of a pid that has left the table prints nothing and lets a shell under errexit go on, and that pid reads as ended"

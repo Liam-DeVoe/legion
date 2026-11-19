@@ -748,8 +748,12 @@ lock_issue() {
 }
 
 # proc_start PID: the process's start time (field 22 of /proc/PID/stat, read after the command name,
-# which may hold spaces), so a pid the kernel reused for another process is told apart.
-proc_start() { sed -E 's/^.*\) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
+# which may hold spaces), so a pid the kernel reused for another process is told apart. For a pid
+# that has left the table it prints nothing and still succeeds: sed exits 2 on the missing file,
+# and under pipefail and errexit an assignment of that status would end the shell with nothing
+# said -- pg_disk_watch_stop reads the start of each child of the watcher's act, and one of those
+# can end between the read of the children and the read of its start.
+proc_start() { sed -E 's/^.*\) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20 || true; }
 
 # proc_ended PID START: the process that PID named when it started at START (proc_start) has
 # ended: PID has left the table, names a process that started at another time, or names a zombie,
