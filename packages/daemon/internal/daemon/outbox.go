@@ -1828,8 +1828,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
-	if releaseRound := r.release.askRound(); releaseRound != "" && payload.Round == releaseRound {
-		return r.publishReleaseAsk(ctx, row, payload, token, topic, fields)
+	if hook := r.release.runningHook(); hook != nil && payload.Round == projectReleaseRound(hook.id) {
+		return r.publishReleaseAsk(ctx, row, payload, *hook, token, topic, fields)
 	}
 	machine, found := r.supervisor.Machine(token)
 	if current := r.supervisedClaim(token).UpdateRound; !found || current != payload.Round {
@@ -1866,7 +1866,7 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 // No claim records that round: the release keeps its asks on its own record and writes no round
 // column and no ask mark of a claim, so no pod update round reads it as its own. So the ask is
 // published without the machine's step: no claim's round is read and no claim is marked asked. A
-// publish that reached a session tells the release so (projectRelease.askHook), which counts the
+// publish that reached a session tells the release so (releaseAskHook.reached), which counts the
 // role as asked only then, and only before its bound. A topic no live session holds is a wait
 // until the release's bound, and the row is published again on its backoff: a role that said
 // ready takes its topic only at its session's first turn or at the first-turn bound
@@ -1875,9 +1875,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 // At or after the bound such a row finishes with its own line, and the release, whose pod's line
 // keeps at the bound only the roles the ask reached and those that answered (passBound), leaves a
 // pod whose line keeps none (takePod). Every other failure keeps the ordinary retry.
-func (r *outbox) publishReleaseAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk, token claim.Token, topic string, fields []any) error {
+func (r *outbox) publishReleaseAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk, asks releaseAskHook, token claim.Token, topic string, fields []any) error {
 	r.log.Info("outbox update ask of the running project release; it is published without the claim's round", fields...)
-	asks := r.release.askHook()
 	waits := r.now().Before(asks.bound)
 	noHolder := "outbox update ask of the running project release finished undelivered: no live session held the role by the release's bound"
 	if waits {

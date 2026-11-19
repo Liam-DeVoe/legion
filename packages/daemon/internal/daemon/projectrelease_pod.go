@@ -261,9 +261,9 @@ func (r *projectReleaser) wait(ctx context.Context, run *releaseRun, pod *releas
 		case <-ctx.Done():
 			return nil
 		case <-bound.C:
-			reached := r.atBound(run, pod)
+			kept := r.atBound(run, pod)
 			r.record(ctx, run)
-			if !reached {
+			if !kept {
 				return errors.New(releaseAskUnreached)
 			}
 			return nil
@@ -305,12 +305,12 @@ func (run *releaseRun) reach(token claim.Token, now time.Time) {
 // line each, and answers whether the line keeps any role: one the ask reached by the bound, or one
 // that answered.
 func (r *projectReleaser) atBound(run *releaseRun, pod *releasePod) bool {
-	dropped, reached := run.passBound(pod)
+	dropped, kept := run.passBound(pod)
 	for _, token := range dropped {
 		r.log.Warn("project release: the ask reached no session of the role by the bound, so the pod's line does not name it asked",
 			"release", run.id, "sandbox", pod.sandbox.Name, "claim", token)
 	}
-	return reached
+	return kept
 }
 
 // passBound passes the bound on pod's line: each asked role whose ask reached no session of it by
@@ -318,7 +318,7 @@ func (r *projectReleaser) atBound(run *releaseRun, pod *releasePod) bool {
 // since no session of it was asked, and each other one that has not answered records the bound.
 // It answers the claims it took off, in the line's order, and whether any asked role is left on
 // the line, which is whether the ask reached any role of the pod or any role answered.
-func (run *releaseRun) passBound(pod *releasePod) (dropped []claim.Token, reached bool) {
+func (run *releaseRun) passBound(pod *releasePod) (dropped []claim.Token, kept bool) {
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	onLine := map[claim.Role]claim.Token{}

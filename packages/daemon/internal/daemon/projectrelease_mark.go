@@ -45,8 +45,9 @@ type projectRelease struct {
 	marked atomic.Bool
 	// hook is the release once its record has committed (recorded), nil before and once unmark
 	// cleared the mark: its record id, which names the release's own ask round (ownRound), and its
-	// side of those asks, which the outbox reads as it publishes one (askHook). One pointer holds
-	// all of it, so a round the mark names always has its hook.
+	// side of those asks, which the outbox reads as it publishes one (runningHook). One pointer
+	// holds all of it, and the outbox reads it once per ask, so the round it matched is the hook it
+	// uses.
 	hook atomic.Pointer[releaseAskHook]
 	// finishedActs is set once the release finished its acts (finish, finished): its round is then
 	// no round the outbox publishes an ask under without the claim-round read (askRound), while
@@ -92,15 +93,15 @@ func (r *projectRelease) recordedHook() *releaseAskHook {
 	return r.hook.Load()
 }
 
-// askHook is the running release's side of its asks (recorded), and the zero hook on a nil mark and
-// on one whose release's record has not committed: its bound is the zero time, long past. The
-// outbox reads a hook only under a round the mark named (askRound), so it never calls the zero
-// hook's reached, which is nil.
-func (r *projectRelease) askHook() releaseAskHook {
-	if hook := r.recordedHook(); hook != nil {
-		return *hook
+// runningHook is the hook of the release this process runs (recorded), nil on a nil mark, before
+// its record committed, once unmark cleared the mark and once the release finished (finish): the
+// one read the outbox makes of the release for an ask, which gives it both the round to match
+// (projectReleaseRound of id) and the bound and reached it then uses.
+func (r *projectRelease) runningHook() *releaseAskHook {
+	if r.finished() || !r.held() {
+		return nil
 	}
-	return releaseAskHook{}
+	return r.recordedHook()
 }
 
 // finish records that the release finished its acts: from then on an ask of its round is
@@ -153,10 +154,10 @@ func (r *projectRelease) ownRound() string {
 // that runs after its finish meets the claim-round read, and since no claim records that round it
 // finishes without a publish.
 func (r *projectRelease) askRound() string {
-	if r.finished() {
-		return ""
+	if hook := r.runningHook(); hook != nil {
+		return projectReleaseRound(hook.id)
 	}
-	return r.ownRound()
+	return ""
 }
 
 // projectReleaseRound is the round a project release's ask rides (record.UpdateAsk.Round), named

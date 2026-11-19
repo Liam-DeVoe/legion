@@ -223,9 +223,10 @@ func printProjectRelease(c *operatorCall, release api.ProjectReleaseResponse, an
 // the outcome carries — the workspace's unpushed commits and whether its working copy held a
 // change at the last read, or at an earlier read where no role process ran at the last one, the
 // shim's refusal, why the Sandbox was left, or the other reasons an issue pod's line gives — then
-// a pod that runs another image than the daemon's own, and each role the release asked, with when
-// it answered or that the bound passed. On a dry run the outcome is the one a release would give
-// now, and the asked roles are the ones it would ask.
+// a pod that runs another image than the daemon's own, and each role on the pod's line — until
+// the bound each role the ask was written to, at it the roles the ask reached or that answered —
+// with when it answered or that the bound passed. On a dry run the outcome is the one a release
+// would give now, and the asked roles are the ones it would ask.
 func releasedSandboxLine(line api.ReleasedSandbox, dryRun bool) string {
 	words := []string{"sandbox", line.Name, string(line.Kind), orNone(line.Issue), string(line.Outcome)}
 	var details []string
