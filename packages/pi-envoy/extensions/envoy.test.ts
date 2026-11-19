@@ -15331,9 +15331,11 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         // A hang guard: what can hang is a command that never starts, which the `until` above waits
-        // for with no deadline of its own, or a reply that never arrives. 20_000. Worst measured
-        // cost: 6 877.67 ms at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
-      }, 20_000);
+        // for with no deadline of its own, or a reply that never arrives. 120_000. This row and the
+        // four other shell rows beside it share the reading: one run of row S2 charged 25 497.91 ms
+        // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, where the
+        // base's 20_000 cut it, so 120_000 is 4.7 times that.
+      }, 120_000);
 
       // The same move, with no session event for it: the host moves its session manager first
       // and emits `session_switch` after its resets, and a move the host makes without an event
@@ -15383,9 +15385,11 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         // A hang guard: what can hang is a command that never starts, which the `until` above waits
-        // for with no deadline of its own, or a reply that never arrives. 20_000. Worst measured
-        // cost: 10 302.74 ms at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
-      }, 20_000);
+        // for with no deadline of its own, or a reply that never arrives. 120_000. This row and the
+        // four other shell rows beside it share the reading: one run of row S2 charged 25 497.91 ms
+        // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, where the
+        // base's 20_000 cut it, so 120_000 is 4.7 times that.
+      }, 120_000);
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
@@ -16086,9 +16090,11 @@ console.log(JSON.stringify(args));
           body: `!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
         // A hang guard: what can hang is a first command that never starts, which the `until` above
-        // waits for with no deadline of its own, or a reply that never arrives. 20_000. Worst
-        // measured cost: 8 798.46 ms at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
-      }, 20_000);
+        // waits for with no deadline of its own, or a reply that never arrives. 120_000. This row
+        // and the four other shell rows beside it share the reading: one run of row S2 charged 25
+        // 497.91 ms at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
+        // where the base's 20_000 cut it, so 120_000 is 4.7 times that.
+      }, 120_000);
 
       // The agent's copy is withheld where the session the command was asked of is not the one
       // open here by the time the report is ready, and the person is told so: the reply and the
@@ -16131,9 +16137,11 @@ console.log(JSON.stringify(args));
         ).toEqual([]);
         expect(movedSessionFrames()).toEqual([]);
         // A hang guard: what can hang is a command that never starts, which the `until` above waits
-        // for with no deadline of its own, or a reply that never arrives. 20_000. Worst measured
-        // cost: 7 392.25 ms at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
-      }, 20_000);
+        // for with no deadline of its own, or a reply that never arrives. 120_000. This row and the
+        // four other shell rows beside it share the reading: one run of row S2 charged 25 497.91 ms
+        // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, where the
+        // base's 20_000 cut it, so 120_000 is 4.7 times that.
+      }, 120_000);
 
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
@@ -16169,9 +16177,11 @@ console.log(JSON.stringify(args));
         });
         // A hang guard: what can hang is a command that never writes its pid, which the `until`
         // above waits for with no deadline of its own, or a shutdown that does not end it, whose
-        // reply then never arrives. 20_000. Worst measured cost: 5 785.05 ms at 30 busy loops (the
-        // 96 rung) on a two-CPU, 8 GiB pod.
-      }, 20_000);
+        // reply then never arrives. 120_000. This row and the four other shell rows beside it share
+        // the reading: one run of row S2 charged 25 497.91 ms at 16 busy loops (the 96 rung) on the
+        // two-CPU, 8 GiB pod of 2026-11-19 18:40Z, where the base's 20_000 cut it, so 120_000 is
+        // 4.7 times that.
+      }, 120_000);
 
       // A session shutting down runs no command: one started now would outlive the session it
       // was asked of. The message is answered saying so rather than left with no answer. The
