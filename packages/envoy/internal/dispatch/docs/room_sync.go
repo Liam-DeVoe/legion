@@ -567,10 +567,7 @@ const announceDocumentRoomsStatement = `select pg_notify('` + documentRoomsChann
 // first text closes its own room of room at that commit, before its writer answers
 // (Ledger.closeJoinedRooms), so the writer's next write is not left to this notice. It is the seam
 // the conversion's transaction sends through, as AnnounceDocumentRemoved is a removal's: a package
-// function taking that transaction, needing no room and no state of this process. A removal of a
-// document of an issue room sends it too, once tx has deleted that document's document_rooms row
-// (api's removeArtifact): the room's layout changed the other way, and its next load reads it
-// without the document.
+// function taking that transaction, needing no room and no state of this process.
 //
 // Inside that transaction, for the reason AnnounceDocumentRemoved gives: Postgres delivers a
 // notification only if the transaction that sent it commits, so a conversion that rolled back

@@ -33,9 +33,9 @@ import (
 //     every load builds though no rendering carries them (marginWatch).
 //   - the actor ids its anchor marks carry, which no rendering carries either (anchorWatch).
 //   - the live state it leaves, whose complete update ygo must still decode within its
-//     1,048,576-struct cap (refuseUndecodable). A new document of a converted issue adds its first
-//     text to the issue's room beside the room's other documents, so SeedText checks the room's
-//     state with it the same way (refuseUndecodableSeed).
+//     1,048,576-struct cap (refuseUndecodable). Only a converted issue's spec, Verification
+//     document and plan share the issue's room, so the first text of each is added beside the
+//     others, and SeedText checks the room's state with it the same way (refuseUndecodableSeed).
 //
 // A write that leaves the document no bigger and no heavier than it was passes, so a document
 // already past the bound - stored before it, or grown by browser edits, which no server write
@@ -366,11 +366,12 @@ func clocksOf(vector crdt.StateVector) uint64 {
 }
 
 // refuseUndecodableSeed is refuseUndecodable for seed, a new document's first text in its own
-// fragment of room, the issue room that holds the issue's other documents beside it (SeedText).
-// Every document of a converted issue is a fragment of the room's one state, which a load decodes
-// as one update, so documents that each fit alone can together leave the room past the structs ygo
-// decodes in one, and every document of the issue unable to load. A seed writes no fork of the
-// room, so the room is read here, in tx, under the room's lock, which tx takes now
+// fragment of room, the issue room that holds its issue's other role documents beside it
+// (SeedText). A converted issue's spec, Verification document and plan are the room's only
+// documents, each a fragment of its one state, which a load decodes as one update, so three
+// documents that each fit alone can together leave the room past the structs ygo decodes in one,
+// and all three unable to load. A seed writes no fork of the room, so the room is read here, in
+// tx, under the room's lock, which tx takes now
 // (lockDocumentRoom) and holds through the seed's append, so no append lands between this read and
 // that one: the room's stored updates through its head, decoded as a load decodes them
 // (documentThrough), beside the seed. A state whose clocks sum to no more than the cap is not

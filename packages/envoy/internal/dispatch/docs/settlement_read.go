@@ -48,23 +48,14 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	// joined document's blocks. So such a room writes nothing: the transaction rolls back and the
 	// room is closed for a load that reads the room's layout, as a room on a replaced history is
 	// (reloadReplacedRoom). A room that is its own document holds no layout and reads none.
-	//
-	// A room some of whose documents left it since it loaded - each removal of an untouched
-	// document of the issue (api's removeArtifact), which also announces the room's close - holds
-	// every fragment the room holds now, and is settled as it stands, over those fragments alone:
-	// the removed documents are no part of it, and the settlement says nothing of them.
 	if st.owner.Kind == "tree" {
 		layout, err := readRoomLayout(ctx, tx, room)
 		if err != nil {
 			return settleDone, st.stoppedShort(err)
 		}
-		switch {
-		case slices.Equal(layout, st.layout):
-		case st.layout.left(layout):
-			st.layout = layout
-		default:
+		if !slices.Equal(layout, st.layout) {
 			_ = tx.Rollback(ctx)
-			refusal := fmt.Errorf("%w: room %s loaded the fragments of %d documents, and its %d documents now are not those less the ones that left it",
+			refusal := fmt.Errorf("%w: room %s loaded the fragments of %d documents, and its %d documents now are not those",
 				errRoomLayoutMoved, room, len(st.layout), len(layout))
 			if parent.Err() != nil {
 				return settleDone, st.stoppedShort(refusal)

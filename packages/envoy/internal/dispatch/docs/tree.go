@@ -396,23 +396,6 @@ func (l roomLayout) documents(room string) []string {
 	return append([]string{room}, l...)
 }
 
-// left reports whether now is this layout with one or more of its documents gone and nothing else
-// changed: every document of now in the order this layout holds them. It is what a removal of a
-// document of the room leaves (api's removeArtifact), which a settlement of a room loaded before
-// it settles as the room stands (settlement.readLocked).
-func (l roomLayout) left(now roomLayout) bool {
-	if len(now) >= len(l) {
-		return false
-	}
-	next := 0
-	for _, document := range l {
-		if next < len(now) && now[next] == document {
-			next++
-		}
-	}
-	return next == len(now)
-}
-
 // blockDocuments is the document that holds each block of tree, a tree of room read over the
 // layout's fragments (treeOfFragments), whose top-level blocks counts parts out fragment by
 // fragment: every block of a fragment's top-level block, by id, with the artifact id of the
@@ -493,8 +476,7 @@ func renderFragment(part *pmdoc.Node) (string, []pmdoc.BlockOffset, error) {
 // the room's joined rendering, where other blocks stand beside it, would: a document that renders
 // as no text holds no block, in an issue room as in a room of its own. Every pass that indexes an
 // issue room takes its blocks through here (indexDocumentInRoom, indexOwedRoom,
-// settlement.commitRoomVersions), so no pass indexes a block another drops; and a document of the
-// room its removal takes leaves no block behind (api's removeArtifact).
+// settlement.commitRoomVersions), so no pass indexes a block another drops.
 func withoutSilentFragments(offsets []pmdoc.BlockOffset, parts []*pmdoc.Node, silent func(index int) bool) []pmdoc.BlockOffset {
 	var dropped map[string]struct{}
 	for index, part := range parts {

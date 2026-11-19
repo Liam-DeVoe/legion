@@ -149,8 +149,7 @@ func (s *Service) forkPoint(room string, live *crdt.Doc, client crdt.ClientID, a
 // decoded and read here, holding no lock (stateTree). The tree is the room's whole tree, every
 // fragment layout names joined as the room renders them (joinFragments), with how many top-level
 // blocks each fragment holds; a room that is its own document has an empty layout and no counts.
-// layout is the settlement's (settlement.layout): the instance's as its load read it
-// (layoutOf), or that layout without the documents that have left the room since (readLocked).
+// layout is the settlement's (settlement.layout): the instance's as its load read it (layoutOf).
 //
 // It arms no settlement for the updates it classified and reports instead whether any is one a
 // settlement follows: the settlement reading them is the one they would arm, and arming another

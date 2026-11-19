@@ -157,11 +157,10 @@ func TestIssueAskEventsKeepDeletedAnchorDocumentReadable(t *testing.T) {
 	ask := decodeBody[struct {
 		ID string `json:"id"`
 	}](t, created)
-	// The document is a fragment of the issue room its issue was born with, so its document_rooms
-	// row and the issue_room_blocks rows of its blocks name it too, and neither key to artifacts
-	// carries a cascade: this hand-written delete takes them with the document. The removal route
-	// takes only a document holding no block, and clears its document_rooms row itself
-	// (artifactRemovalClears).
+	// The document plays no role, so it is a room of its own and no document_rooms or
+	// issue_room_blocks row names it: only the issue's spec, Verification document and plan join
+	// the issue's room. The deletes of those two tables below take nothing here; they stand for a
+	// document of the room, whose keys to artifacts carry no cascade either.
 	for _, table := range []string{"doc_snapshots", "doc_updates", "doc_checkpoints", "artifact_versions", "events", "document_rooms"} {
 		if _, err := database.Pool.Exec(
 			context.Background(),
