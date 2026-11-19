@@ -22,7 +22,8 @@ import (
 // change after a Keep waiting again is TestAReadingIsAChildNodeOfTheDecisionItReads'. The Keep on a
 // decision node is TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects'. This file holds
 // the members the release before reads, the Keep on a heading of a decisions document an earlier
-// release stored, and each person's last read version of a document.
+// release stored, each person's last read version of a document, and the ties a first indexing
+// leaves current.
 
 // holdIt is the spec's second callout, written with its id, hold-it.
 func holdIt(body string) string {
@@ -266,6 +267,80 @@ func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
 			t.Fatalf("a bearer's %s: status=%d body=%s, want 403 %s", probe.method, response.Code, response.Body.String(), codeScopeRequired)
 		}
 	}
+}
+
+// firstIndexingSpec is the spec of TestAFirstIndexingMarksNothingOutOfDate: two requirements, a
+// decision that shapes both and one that shapes the second. The issue the test creates is CORE-1,
+// the first of its project.
+const firstIndexingSpec = ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n\n" +
+	":::decision{#d1 shaped=\"dispatch://CORE-1/spec#b-r1 dispatch://CORE-1/spec#b-r2\"}\nOne transport for both.\n:::\n\n" +
+	":::decision{#d2 shaped=\"dispatch://CORE-1/spec#b-r2\"}\nThe second ships first.\n:::\n"
+
+// A first indexing of a document holding decisions marks no tie out of date, in both cases of a
+// first indexing: the document's first version, written while it has no block rows, and the
+// backfill over a document no block-aware build indexed. The spec's decisions shape its
+// requirements in the version that writes them all, so no requirement's text changed after a
+// tie, and a later version that leaves every requirement and decision alone is one more version
+// the backfill walks. Each link is judged on the change the index recorded for its requirement,
+// so it holds text_changed_at, and reads stale false.
+func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "A first indexing", "actor": sessionActor(), "spec": firstIndexingSpec,
+	})
+	requireAgentWrite(t, "the agent's issue", created, http.StatusCreated)
+	issue := decodeBody[model.Issue](t, created)
+	if issue.Key != "CORE-1" {
+		t.Fatalf("the seeded issue is %s, want CORE-1, which the decisions' shaped links name", issue.Key)
+	}
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	ties := map[string][]string{
+		"d1": {spec.address("r1"), spec.address("r2")},
+		"d2": {spec.address("r2")},
+	}
+	judge := func(when string) {
+		t.Helper()
+		entries := readEntries(t, handler, issue.Key)
+		for _, block := range []string{"d1", "d2"} {
+			entry := requireEntry(t, entries, "the decision "+block, refs.BlockNodeKind+":"+spec.address(block))
+			if targets := shapedTargets(entry); !slices.Equal(targets, ties[block]) {
+				t.Fatalf("%s the decision %s answers the links %v, want %v", when, block, targets, ties[block])
+			}
+			for _, link := range entry.Shaped {
+				if link.TextChangedAt == nil || link.Stale {
+					t.Errorf("%s the link %s of %s reads %s, want its requirement's change recorded and stale false",
+						when, link.To.ID, block, entryJSON(t, link))
+				}
+			}
+		}
+	}
+
+	// The document's first version, written while it had no block rows: the create's own write
+	// indexes it.
+	requireIndexedAt(t, database, spec.id, 1)
+	judge("at the first version,")
+	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "A paragraph no decision shapes."}})
+
+	// The backfill: the state migration 0121 left a document no block-aware build indexed, then
+	// one reconciliation tick, as the block index's own tests run it.
+	for _, statement := range []string{
+		`delete from block_refs where artifact_id = $1`,
+		`delete from document_blocks where artifact_id = $1`,
+		`delete from document_block_texts where artifact_id = $1`,
+		`delete from document_indexed_versions where artifact_id = $1`,
+		`update document_block_versions set version = null where artifact_id = $1`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement, spec.id); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	if _, err := deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+		t.Fatalf("reconcile the block index: %v", err)
+	}
+	requireIndexedAt(t, database, spec.id, 2)
+	judge("after the backfill,")
 }
 
 // The open questions are the issue's open asks whose block is in its spec, oldest first, and an

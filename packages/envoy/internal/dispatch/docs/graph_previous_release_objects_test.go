@@ -104,8 +104,13 @@ func TestARowThePreviousReleaseWritesDuringARollGetsItsNodeFromTheTick(t *testin
 // cursor records the create of a row with no node (graphcensus's EventsOweObjectPass), and the
 // pass writes those rows' nodes.
 //
-// Its control is the tick owing the pass only on the roll's triggers, as before: the five rows stay
-// `missing`.
+// block_index_event_cursors.another_build_seen is an extra trigger of the pass, never the one this
+// cure depends on: the test forces it false on every cursor row before that tick, so the tick owes
+// the pass on its events alone, and the project census then reads zero.
+//
+// Its control is the tick owing the pass only on the roll's triggers, as before (no
+// EventsOweObjectPass): with another_build_seen forced false, the first tick after the release
+// before left writes no node, and the project census names the five rows `missing`.
 func TestARowThePreviousReleaseCreatesWhileItHoldsTheLeaseGetsItsNodeFromTheNextTick(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
@@ -126,6 +131,10 @@ func TestARowThePreviousReleaseCreatesWhileItHoldsTheLeaseGetsItsNodeFromTheNext
 	created := createRowsAsThePreviousRelease(t, database)
 	previousLeaves()
 
+	forced, err := database.Pool.Exec(ctx, `update block_index_event_cursors set another_build_seen = false`)
+	if err != nil || forced.RowsAffected() == 0 {
+		t.Fatalf("force another_build_seen false on every cursor row: %d row(s), %v; want this build's cursor row at least", forced.RowsAffected(), err)
+	}
 	tick := awaitedBlockIndexTick(t, service)
 	if tick.AnotherBuild || tick.ObjectNodes != len(created) {
 		t.Errorf("the first tick after the release before left wrote %d object node(s) and found another build %t, want the %d nodes it left and no other build",

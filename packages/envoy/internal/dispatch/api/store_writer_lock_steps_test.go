@@ -45,8 +45,10 @@ const storeStepWait = 20 * time.Second
 //     event (graphstore.QueueCaused), and an ask's create (createAskFor), whose node write states
 //     the asker's node beside the ask's (graphstore.AskFacts) and which moves both onto the event
 //     it appends;
-//   - an approval request renewed (renewApprovalAsk), once on a retry, which appends no event and
-//     leaves the follow's node and its base attributes at the sentinel, and once handing the
+//   - an approval request renewed (renewApprovalAsk), once on a retry by a session that did not
+//     follow it, which follows it before the ask.follower_added it appends and moves the node
+//     onto that event, as the follower route does, once on a retry by a session that follows it
+//     already, which appends no event and states nothing of its follow, and once handing the
 //     request back, which follows after its event and states the node under it in the follow's
 //     own statement;
 //   - three writes of a document version, each of which runs the block index (refs'
@@ -66,8 +68,8 @@ const storeStepWait = 20 * time.Second
 //   - an accept that finds a suggestion's mark gone (orphanCommentAnchor), which retracts the
 //     comment's anchored_in (T17b of this branch's plan);
 //   - and the record and the retraction of a check's result (writeRecordedResult,
-//     stateResultRetracted), which write the result's node and tuples and its retracted value
-//     (T11 of this branch's plan).
+//     writeCheckResultRetraction), which write the result's node and tuples and its retracted
+//     value (T11 of this branch's plan).
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
@@ -101,7 +103,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.commentCreate("createCommentFor on a project document", "/api/v1/artifacts/"+rig.document+"/comments",
 			ownerLockStep(store.ArtifactOwner(rig.document))),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
-		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalHandBack(),
+		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalFollowerRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
 		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.issuePatchRelations(), rig.issuePatchFiledFrom(), rig.artifactRemoval(),
 		rig.askEditForRun(), rig.commentEditForRun(), rig.architectureSourceRemoval(), rig.commentAnchorOrphaning(),
@@ -601,8 +603,10 @@ func (r *storeWriterRig) issuePatchForRun() storeWriter {
 // dispatch://INFRA-1253 R10), through its route: a PATCH of the issue's needs. It takes the issue's
 // owner lock (lockPatchOwners), updates the issue's row, writes the issue_links rows the new set
 // projects (writeIssueNeeds), writes the issue's node (graphstore.WriteUncaused), so that
-// graph_edges answers the relation out of a node the store holds, appends issue.updated, and then
-// states the needs that event causes in one statement of the store's arms (stateIssueRelations).
+// graph_edges answers the relation out of a node the store holds, appends issue.updated, and then,
+// in the same write phase, appends what that event causes: the facts of the issue's node
+// (graphstore.QueueCaused, the store's tuple append), then the needs in one statement of the
+// store's arms (queueIssueRelations), so the tuple step is first waited at the append.
 // The issue's node exists from its create, so the node step is held as the table it is written to,
 // and so are the rows. Each run names a target no run has named, an issue it creates first, so
 // every run retracts one wait and states another. The event's step takes the issue's project row
@@ -632,7 +636,7 @@ func (r *storeWriterRig) issuePatchRelations() storeWriter {
 			event,
 			{
 				name: "the relations the event causes", order: tupleStep, caused: true,
-				hold: holdTableWrites("graph_tuples"), at: "with graph_relations_appended as (",
+				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
 				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
 			},
 		},
@@ -782,12 +786,14 @@ func (r *storeWriterRig) architectureSourceRemoval() storeWriter {
 				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
 			},
 			{
+				// The source's row is the owner step's, locked `for update` from the start, so its
+				// delete moves no lock this step is read by: the components rows it cascades to are.
 				name: "the source's row and its components rows", order: projectionStep,
 				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
 					holdRow(t, ctx, holder, `select 1 from components where project_key = 'LOCK' and id = $1 for update`, child)
 				},
 				at:    "delete from architecture_sources where project_key = $1 and id = $2",
-				takes: []tableLock{{"architecture_sources", rowExclusiveMode}, {"components", rowExclusiveMode}},
+				takes: []tableLock{{"components", rowExclusiveMode}},
 			},
 			event,
 		},
@@ -1040,23 +1046,20 @@ func (r *storeWriterRig) askCreate() storeWriter {
 }
 
 // approvalRetry is the spec's approval request renewed while it waits on the person
-// (renewApprovalAsk), a retry that appends no event: a session no write has recorded asks for the
-// same approval again. The renewal takes its owner's lock (requireOpenOwner), follows the request
-// for that session with the node marked for its cause, since nothing caused the follow, and
-// appends the node's two base attributes at the sentinel (graphstore.QueueCaused). The path takes
-// no event step, which the written order lets it skip, and its tuples carry no event, so no event
-// orders them.
+// (renewApprovalAsk), a retry that changes the request in nothing: a session no write has recorded
+// asks for the same approval again, which makes it a follower, so the renewal appends
+// ask.follower_added as the follower route does. The renewal takes its owner's lock
+// (requireOpenOwner), follows the request for that session with the node marked for its cause,
+// since the follow is queued before its event, appends the event, and then moves the node onto it
+// and appends the node's two base attributes and the followed_by under it (graphstore.QueueCaused).
 func (r *storeWriterRig) approvalRetry() storeWriter {
 	return storeWriter{
 		name: "renewApprovalAsk on a retry",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
 			followNodeStep("the requester's node"),
-			{
-				name: "the tuple append", order: tupleStep,
-				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
-				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
-			},
+			eventAppendStep(),
+			tupleAppendStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			session := r.fresh("lock-steps-requester")
@@ -1064,11 +1067,49 @@ func (r *storeWriterRig) approvalRetry() storeWriter {
 			return storeWriterRun{
 				made: graphstore.SessionNode(session, actor, time.Now().UTC(), graphstore.NoEvent),
 				write: func() error {
-					// 200 is the request already standing as asked: a 201 would be a renewal that
-					// appended an event, which is the other path.
+					// 200 is the request already standing as asked, its follower_added aside: a 201
+					// would be a renewal that handed it back, which is the other path.
 					return statusOrError(sessionRequest(t, r.call, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 						map[string]any{"actor": map[string]any{"kind": "session", "id": session}}), http.StatusOK)
 				},
+			}
+		},
+	}
+}
+
+// approvalFollowerRetry is the spec's approval request renewed unchanged while it waits on the
+// person by a session that follows it already (renewApprovalAsk), the retry that appends no event
+// and adds no follower: each run first renews the request as a session no write has recorded,
+// through the rig's own server, which makes that session a follower and its node, and then renews
+// it again as that session. The renewal takes its owner's lock (requireOpenOwner), and its follow
+// finds the follower row marked and the session's node there, so it states nothing of either; the
+// facts it holds for the node are appended at the sentinel (graphstore.QueueCaused), for a node
+// this follow made, which is none. The path takes no event step and no node step, and its tuple
+// append carries no event.
+func (r *storeWriterRig) approvalFollowerRetry() storeWriter {
+	return storeWriter{
+		name: "renewApprovalAsk on a retry by a follower",
+		steps: []storeStep{
+			ownerLockStep(store.IssueOwner(r.issue)),
+			{
+				name: "the tuple append", order: tupleStep,
+				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
+		},
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			session := r.fresh("lock-steps-follower-requester")
+			actor := model.Actor{Kind: "session", ID: session}
+			renew := func(handler http.Handler) error {
+				return statusOrError(sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
+					map[string]any{"actor": map[string]any{"kind": "session", "id": session}}), http.StatusOK)
+			}
+			if err := renew(r.handler); err != nil {
+				t.Fatalf("make %s a follower of the approval request: %v", session, err)
+			}
+			return storeWriterRun{
+				made:  graphstore.SessionNode(session, actor, time.Now().UTC(), graphstore.NoEvent),
+				write: func() error { return renew(r.call) },
 			}
 		},
 	}
@@ -1194,17 +1235,20 @@ func (r *storeWriterRig) documentEdit() storeWriter {
 // so the owner it takes first is its project, whose row numbers the issue. It then writes the
 // issue's node and its spec's in one write, then the issue's row and the spec's row, which name
 // them. No live process of the rig lacks the issue room, so each run is born converted (T12b of
-// this branch's plan): after the spec's row it writes the issue's tree (createIssueTree), its
-// issue_trees row and the tree's version 1, whose insert writes the tree's fence row, the fence of
-// the room the spec is indexed in; then the spec's document_rooms row naming that tree, and the
-// decisions query node (createDecisionsQuery), each node before the row naming it. The tree's and
-// the decisions query's nodes, rows and versions are writes of tables an earlier step takes first;
-// the issue_trees and document_rooms rows are each the first write of its own table, held in
-// turn. It then writes the spec's version 1, indexes it in the room as an upload indexes its
-// document, appends issue.created, and appends what the index and the node writes stated under
-// it. The nodes come before the fence for the reason an upload's does. The spec's block nodes are
-// the room's, held by the node of the block the spec names, whose address is the tree's: the
-// issue's key is its project's next number, read before the run, and its tree's slug is `tree`
+// this branch's plan): after the spec's row it queues, at the head of its write phase
+// (createConvertedIssueRoom), the issue's tree (createIssueTree) and its issue_trees row, the
+// spec's document_rooms row naming that tree, and the decisions query node (createDecisionsQuery),
+// each node before the row naming it, ahead of the tree's version 1, whose insert writes the tree's
+// fence row, the fence of the room the spec is indexed in, which the read phase queued
+// (planConvertedIssueRoom); all of them run at the commit. The tree's and the decisions query's
+// nodes, rows and versions are writes of
+// tables an earlier step takes first; the issue_trees and document_rooms rows are each the first
+// write of its own table, held in turn. The commit then writes the spec's version 1, indexes it in
+// the room as an upload indexes its document, appends issue.created, and appends what the index
+// and the node writes stated under it. The nodes come before the fence for the reason an upload's
+// does. The spec's block nodes are the room's, held by the node of the block the spec names, whose
+// address is the tree's: the issue's key is its project's next number, read before the run, and
+// its tree's slug is `tree`
 // (issueTreeName). Each run's create is forced past the near-copy gate, which would otherwise take
 // each run's issue for a copy of the one before it. Its control is the two nodes written after the
 // issue's row, which fails as the upload's controls do.
@@ -1234,12 +1278,12 @@ func (r *storeWriterRig) issueCreate() storeWriter {
 				hold: holdTableWrites("issue_trees"), at: "insert into issue_trees (",
 				takes: []tableLock{{"issue_trees", rowExclusiveMode}},
 			},
-			newFenceStep(),
 			{
 				name: "the spec's document_rooms row", order: projectionStep,
 				hold: holdTableWrites("document_rooms"), at: "insert into document_rooms (",
 				takes: []tableLock{{"document_rooms", rowExclusiveMode}},
 			},
+			newFenceStep(),
 			heldBlockNodesStep(),
 			blockRowsStep(),
 			eventAppendStep(),

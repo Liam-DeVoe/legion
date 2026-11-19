@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -47,12 +48,14 @@ import (
 // artifact row, which cascades the keys that do cascade. The artifact.removed event is appended
 // after them and outlives the document: an issue document's events are the issue's
 // (events_one_owner, ownerForArtifact), so that row carries no artifact id. What the node write
-// states is appended under that event (graphstore.Caused). A document made again under the same
-// title takes the removed one's ref_key, the id of the same node, and so names no run as having
-// changed it but its own, and a run counts no document that has gone, as it lists none.
+// states is appended under that event, in the batch that appends it (appendCausingEvent). A
+// document made again under the same title takes the removed one's ref_key, the id of the same
+// node, and so names no run as having changed it but its own, and a run counts no document that
+// has gone, as it lists none.
 //
 // The document's node is stated gone before its row goes, in the store's order (node, row, event,
-// facts), and the state tuple waits for the artifact.removed event (graphstore.Caused). The node
+// facts), and the state tuple is appended in the batch that appends the artifact.removed event
+// (appendCausingEvent). The node
 // is addressed by the document's ref_key, which a later document of the same issue and slug takes
 // again: that document's create finds the node gone and states it live under its own event,
 // rather than finding a live node that states nothing and keeps this document's cause. A node
@@ -61,8 +64,9 @@ import (
 // node its create would have written - live, made by its creator at its created_at, at the
 // sentinel, as the backfill writes it (graphcensus's backfillObjectNodes) - and only then is it
 // stated gone, by the person who removed it, at the time this transaction reads from the
-// database's clock under the owner lock it holds (graphstore.StatementTime): later than every
-// statement about the address, so a document made there next is dated later still. Where the
+// database's clock under the owner lock it holds, before its first write (graphstore.StatementTime),
+// and past that first node's: later than every statement about the address, so a document made
+// there next is dated later still. Where the
 // store holds a node already, live or gone, no first node is written: a live one is stated gone,
 // and a gone one (an earlier document's, whose address a build before this one took again) is
 // left as it is, rather than moved live at a created_at that may predate its gone statement.
@@ -114,7 +118,10 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// The document's node and its versions' nodes, stated gone, the document's with each
 	// changed_by_run it states now retracted, in the store's order: the node rows before any row of
 	// the document goes, as the erase takes a node's row before the rows that project it, and their
-	// facts under artifact.removed below (removedDocumentNodes, graphstore.Caused).
+	// facts in the batch that appends artifact.removed below (removedDocumentNodes,
+	// appendCausingEvent). What that node write reads is read first, under the locks and before
+	// the transaction's first write, so no read of it runs while the transaction holds an id
+	// (#2468's write phase).
 	goneNodes, err := removedDocumentNodes(r.Context(), tx, artifact, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -143,15 +150,12 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(
+	// The event and the gone statement it causes, in one batch (appendCausingEvent).
+	event, err := s.appendCausingEvent(r.Context(), tx, ownerForArtifact(artifact).event(
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
-	))
+	), goneNodes)
 	if err != nil {
 		s.writeHandlerError(w, err)
-		return
-	}
-	if err := graphstore.Caused(r.Context(), tx, goneNodes, event.ID); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("state the removed document's nodes gone: %w", err))
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -181,17 +185,21 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 // no node at its address yet, first the node its create would have written, live, made by its
 // creator at its created_at, at the sentinel, with the part_of to its issue the backfill writes
 // beside it; then the gone node, by actor, at the time the database's clock reads under the
-// owner's lock (graphstore.StatementTime), with each changed_by_run the node states now retracted
-// by actor at that time, so a document made again at its ref_key names no run as having changed it
-// but its own. Each version's node is written with the supertag and the attributes the store holds
+// owner's lock (graphstore.StatementTime) before that first node is written and past that first
+// node's creation, with each changed_by_run the node states now retracted by actor at that time,
+// so a document made again at its ref_key names no run as having changed it but its own. Each
+// version's node is written with the supertag and the attributes the store holds
 // of it, since a node write moves both, so a version keeps its number and its time, and it is
 // stated gone at the same time. A version whose node the store does not hold, one a build before
 // the version nodes wrote and the backfill has not reached, is no node to end, and no node is made
 // for it: its row goes with the removal, so no backfill reaches it after. The two are one write,
 // held for the removal's event.
 //
-// It is written after the owner's lock and the room lock this removal already holds and before any
-// row of the document is deleted, the order the backfill writes the node of an issue's document in
+// Everything it reads - whether the store holds the node, the time, the changed_by_run tuples and
+// the versions' nodes - it reads before its first write, so no read of it runs while the
+// transaction holds an id (#2468's write phase). It is written after the owner's lock and the
+// room lock this removal already holds and before any row of the document is deleted, the order
+// the backfill writes the node of an issue's document in
 // (graphcensus' writeObjectBatch). A removed document holds no block, so there is no block node to
 // state gone beside it: the removal takes only a document whose one version is empty and which has
 // no unsettled edit (artifactIsUntouched), and an empty version indexes no block (refs.IndexBlocks).
@@ -204,19 +212,14 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	if !held {
-		made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
-		var partOf []graphstore.Tuple
-		if artifact.IssueKey != nil {
-			partOf = []graphstore.Tuple{graphstore.ArtifactPartOf(artifact.RefKey, *artifact.IssueKey, artifact.CreatedBy, artifact.CreatedAt)}
-		}
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{made}, partOf); err != nil {
-			return graphstore.Uncaused{}, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err)
-		}
-	}
 	removedAt, err := graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, artifact.RefKey)
 	if err != nil {
 		return graphstore.Uncaused{}, err
+	}
+	// The first node a missing one is given below is dated at the document's creation, which a row
+	// dated past the database's clock puts past the time just read.
+	if !held && !removedAt.After(artifact.CreatedAt) {
+		removedAt = artifact.CreatedAt.Add(time.Microsecond)
 	}
 	gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
 	gone.State = graphstore.StateGone
@@ -252,6 +255,16 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 		version.SourceEvent, version.Restates = graphstore.NoEvent, true
 		nodes = append(nodes, version)
 	}
+	if !held {
+		made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
+		var partOf []graphstore.Tuple
+		if artifact.IssueKey != nil {
+			partOf = []graphstore.Tuple{graphstore.ArtifactPartOf(artifact.RefKey, *artifact.IssueKey, artifact.CreatedBy, artifact.CreatedAt)}
+		}
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{made}, partOf); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err)
+		}
+	}
 	written, err := graphstore.WriteUncaused(ctx, tx, nodes, retractions)
 	if err != nil {
 		return graphstore.Uncaused{}, fmt.Errorf("state the nodes of the removed document %s gone: %w", artifact.ID, err)
@@ -274,7 +287,7 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 // join the room (documentJoinsIssueRoom), and the role test already refuses each of them, but a
 // role document reads no role once an operator erases its query node (`envoy-dispatch erase`), so
 // this test keeps every document of the room out of the removal. Every writer of a document_rooms
-// row takes the issue's owner lock first (joinIssueRoom, queueIssueRoomJoin), so the row read here
+// row takes the issue's owner lock first (createConvertedIssueRoom, queueIssueRoomJoin), so the row read here
 // stands until the removal commits.
 func artifactRowIsUntouched(artifact model.Artifact) error {
 	switch {
@@ -463,7 +476,7 @@ type artifactClear struct {
 // and it would make "nothing deletes an ask" false where two `for no key update` levels rest on
 // it (lockAskForTransition, docs' loadAskBlocks). document_rooms.artifact_id carries no cascade
 // either, and no row of it can be there: a document it names is refused before the room's lock
-// (artifactRowIsUntouched), and its writers take the issue's owner lock first (joinIssueRoom,
+// (artifactRowIsUntouched), and its writers take the issue's owner lock first (createConvertedIssueRoom,
 // queueIssueRoomJoin).
 func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 	id := []any{artifact.ID}

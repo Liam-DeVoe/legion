@@ -15,8 +15,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// anchorOrphanStatement is orphanCommentAnchor's update of the comment's anchor.
-const anchorOrphanStatement = "update comments c set anchor = $2 where c.id = $1"
+// anchorOrphanStatement is orphanCommentAnchor's update of the comment's anchor, which marks it
+// orphaned in place (jsonb_set).
+const anchorOrphanStatement = "update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1"
 
 // commentAnchorOrphaning is an accept that finds a suggestion's mark gone (orphanCommentAnchor),
 // through its route: the issue's owner lock (lockOwnerOfComment), under which it reads the comment

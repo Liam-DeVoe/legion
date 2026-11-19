@@ -508,7 +508,8 @@ func TestARemovalOfAnIssueRoomsDocumentIsRefusedOnceItsQueryNodeIsErased(t *test
 // dispatch://INFRA-1253's plan): settlement indexes it keyed by the issue's tree, whose room holds
 // the block, and every read of it names the document whose fragment holds the block. The ask read
 // names the spec as its block's document; the spec's text read shows the block as the spec's own
-// ask, as no copy of another document's; and an answer to it leaves no settlement owed under any
+// ask, as no copy of another document's (its asks member, where the text routes answer an ask's
+// state and its copy: agentText); and an answer to it leaves no settlement owed under any
 // document of the room, whose settlement is keyed by, and clears, the room's own row.
 func TestAConvertedDocumentsAskIsItsOwnAndItsAnswerOwesNoCopy(t *testing.T) {
 	ctx := context.Background()
@@ -528,7 +529,7 @@ func TestAConvertedDocumentsAskIsItsOwnAndItsAnswerOwesNoCopy(t *testing.T) {
 	if ask := readBlockAsk(t, handler, askID); ask.BlockArtifact == nil || ask.BlockArtifact.ID != issue.PrimaryArtifactID {
 		t.Fatalf("the ask read names %#v as its block's document, want the spec %s", ask.BlockArtifact, issue.PrimaryArtifactID)
 	}
-	if text := artifactTextOf(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, ":::ask{#ship-it") || strings.Contains(text, "copied_from") {
+	if text := agentText(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, ":::ask{#ship-it") || strings.Contains(text, "copied_from") {
 		t.Fatalf("the spec's text read shows its own ask as a copy, or not at all:\n%s", text)
 	}
 	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{"selected": []string{"Yes"}}, "alice")
@@ -545,7 +546,7 @@ func TestAConvertedDocumentsAskIsItsOwnAndItsAnswerOwesNoCopy(t *testing.T) {
 	if len(owed) != 0 {
 		t.Fatalf("the answer left settlements owed under the documents %v, which the room's settlement never clears", owed)
 	}
-	if text := artifactTextOf(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, `state="answered"`) || strings.Contains(text, "copied_from") {
+	if text := agentText(t, handler, issue.PrimaryArtifactID); !strings.Contains(text, `#ship-it state="answered"`) || strings.Contains(text, "copied_from") {
 		t.Fatalf("the spec's text read after the answer shows no answered ask of its own:\n%s", text)
 	}
 }
@@ -576,9 +577,10 @@ func TestACopyOfASpecUploadedIntoItsConvertedIssueIsARoomOfItsOwnAndOpensNoAsk(t
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact
 	requireOwnRoom(t, copied)
-	// The copy's settlement writes its copied_from, which the text read renders on its block.
+	// The copy's settlement writes its copied_from, which the text read answers in the block's
+	// entry of its asks member (agentText).
 	awaitTextShows(t, handler, copied.ID, "the copy of the spec's open ask", contains(
-		`#rec-open urgency="med" multiple="false" state="open" copied_from="`+source+`"`,
+		`#rec-open state="open" copied_from="`+source+`"`,
 	), nil)
 	asks := decodeBody[[]model.Ask](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks?state=all", nil, "alice"))
 	if len(asks) != 1 || asks[0].ID != source {

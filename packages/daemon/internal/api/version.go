@@ -2383,7 +2383,45 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 170: the `decisions` design-gate step is gone, since a person's
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 176: the `decisions` design-gate step is gone, since a person's
 // decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
 // that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
 // `criteria` or `spec`, and a call naming `decisions` is refused as a step the deployment does not
@@ -2393,17 +2431,19 @@ package api
 // names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
 // and the kept approvals an earlier release wrote of the step stay in the store, which no reader
 // of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of 160 reads that state as before, since it parses the three names, and the boot gate
+// A plugin of 168 reads that state as before, since it parses the three names, and the boot gate
 // and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
 // refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
 // file before it pins an image of this release.
 // (This change took 161 at the forward merge of 2026-11-18, which brought main in at 0b2769e553
-// and 152. At the forward merge of 2026-11-19, which brings main in at e5e4900fe7, main declares
-// 160 (the entry above), and 161 is declared by #4180, #4193 and #4259 beside this change, so it
-// takes 170, the lowest number above main's 160 that no open pull request declares, in a reading
-// of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request that ended at
-// 2026-11-19T10:41:18Z: 161 #4173 (this change), #4180, #4193 and #4259, 162 #3712, 163 #4049,
-// 164 #4017, 165 #4392, 166 #4432, 167 #3831 and #4030, 168 #2230, #3659, #3993, #4175, #4273 and
-// #4488, and 169 #4065, #4485 and #4493. That is a reading and never the rule: read main's own
-// number and every open head again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 170
+// and 152, and 170 at the forward merge of 2026-11-19 that brought main in at e5e4900fe7 and 160.
+// At the forward merge of 2026-11-19 that brings main in at 5f3d552e37, main declares 168 (the
+// entry above), and 170 is declared by #2230, #4030, #4180 and #4193 beside this change, so it
+// takes 176, the lowest number above main's 168 that no open pull request declares, in a reading
+// of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 241 open pull requests, made
+// between 2026-11-19T17:59:02Z and 18:04:40Z: 169 #3831 and #4065, 170 #2230, #4030, #4173 (this
+// change, before this merge), #4180 and #4193, 171 #4115, 172 #3659, 173 #4493, 174 #3993 and
+// #4273, 175 #3712, #4392, #4485 and #4495, and nothing above 175. That is a reading and never the
+// rule: read main's own number and every open head again at the next forward merge rather than
+// from this line.)
+const DaemonAPIVersion = 176

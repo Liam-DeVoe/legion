@@ -1568,12 +1568,10 @@ func createAskBlock(
 	// (graphstore.Created).
 	nodes[0] = graphstore.Created(nodes[0])
 	nodeKind, nodeAddress := graphstore.AskRowNode(id, marked)
-	// The author's follow is planned here, in the read phase, for the ask this transaction creates:
-	// its node is queued before the follow's own statement below (asks.PlanFollowAuthor).
-	follow, err := asks.PlanFollowAuthor(ctx, tx, id, author, createdAt)
-	if err != nil {
-		return model.Ask{}, openedFollow{}, err
-	}
+	// The author's follow of the ask this transaction creates is planned with no read: its node is
+	// queued before the follow's own statement below, and its follower row is new
+	// (asks.PlanFollowNewAsk), dated by the ask's created_at.
+	follow := asks.PlanFollowNewAsk(id, author, createdAt)
 	opening := openedFollow{ask: id, followed: new(graphstore.Uncaused)}
 	node := graphstore.PlanUncaused(nodes, facts)
 	opening.node = &node

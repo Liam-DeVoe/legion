@@ -1225,8 +1225,8 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	// The reply's node goes in before its row; what that write states waits for the
-	// message.answered event below.
+	// The reply's node goes in before its row; what that write states is appended in the batch
+	// that appends the message.answered event below (appendCausingEvent).
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, plan.node) }); err != nil {
 		return model.Message{}, model.Event{}, err
 	}
@@ -1260,7 +1260,7 @@ func (s *server) insertSessionReply(
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
-	event, err := s.appendEvent(ctx, tx, messageEvent(reply, "message.answered", actor, payload))
+	event, err := s.appendCausingEvent(ctx, tx, messageEvent(reply, "message.answered", actor, payload), plan.node)
 	if err != nil {
 		return model.Message{}, model.Event{}, err
 	}
@@ -1268,9 +1268,6 @@ func (s *server) insertSessionReply(
 		if err := refs.Stamp(ctx, tx, "message", reply.ID, event.ID); err != nil {
 			return model.Message{}, model.Event{}, err
 		}
-	}
-	if err := graphstore.Caused(ctx, tx, plan.node, event.ID); err != nil {
-		return model.Message{}, model.Event{}, err
 	}
 	return reply, event, nil
 }

@@ -16,7 +16,7 @@ import (
 )
 
 // seedSupertags writes a supertag node for each of names, the type a test's own kind of node
-// carries: a node write takes a node only of a type the store holds (queueSupertagCheck), and no
+// carries: a node write takes a node only of a type the store holds (missingSupertagsSQL), and no
 // migration seeds a type for a kind that only this package's tests write.
 func seedSupertags(t *testing.T, ctx context.Context, database *store.Store, names ...string) {
 	t.Helper()

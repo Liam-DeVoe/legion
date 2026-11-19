@@ -2438,32 +2438,8 @@ func resolvePointerPairs(ctx context.Context, q Queryer, artifactID string, writ
 	if len(addresses) == 0 {
 		return pairs, nil
 	}
-	rows, err := q.Query(ctx, `
-		select p.address, resolved.node_id
-		from (select distinct unnest($2::text[]) as address) p
-		cross join lateral (
-			select coalesce(`+ResolvedBlockSQL("p.address")+`, (
-				select named.address from (select `+UnheldBlockSQL("p.address")+` as address) named
-				where named.address = any($3::text[]) or exists (select 1 from block_refs held
-					where held.artifact_id = $1::uuid and held.to_kind = '`+BlockNodeKind+`' and held.to_id = named.address)
-			)) as node_id
-		) resolved
-		where resolved.node_id <> p.address
-	`, artifactID, addresses, written)
-	if err != nil {
-		return nil, fmt.Errorf("resolve the far ends of the pointers of %s: %w", artifactID, err)
-	}
-	resolved := make(map[string]string)
-	for rows.Next() {
-		var address, node string
-		if err := rows.Scan(&address, &node); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan a resolved far end of %s: %w", artifactID, err)
-		}
-		resolved[address] = node
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil || len(resolved) == 0 {
+	resolved, err := resolvePassFarEnds(ctx, q, artifactID, addresses, written)
+	if err != nil || len(resolved) == 0 {
 		return pairs, err
 	}
 	for index, pair := range pairs {
@@ -2490,6 +2466,58 @@ func resolvePointerPairs(ctx context.Context, q Queryer, artifactID string, writ
 		return pairs, nil
 	}
 	return unique, nil
+}
+
+// resolvePassFarEnds resolves, through q in one statement, each of addresses, a block far end a
+// pointer of document artifactID names, to the node it resolves to now (ResolvedBlockSQL), and,
+// where that is none, to the address the resolution's two steps name without asking for a row
+// (UnheldBlockSQL) where that address is one of written - a block the same pass writes - or one a
+// block_refs row of artifactID holds (resolvePointerPairs says why). An address of a document the
+// reading transaction creates and joins to an issue room it creates too (Pending.PendingRoomKey),
+// whose artifacts and document_rooms rows no read before its write phase sees, takes that room's
+// step from the transaction: its block in the room, where that is one of written. It answers each
+// address that resolves to another node than itself, by address.
+func resolvePassFarEnds(ctx context.Context, q Queryer, artifactID string, addresses, written []string) (map[string]string, error) {
+	resolved := make(map[string]string)
+	if pending := pendingOf(ctx); pending != nil {
+		var stored []string
+		for _, address := range addresses {
+			document, block, cut := strings.Cut(address, "#")
+			if room, joined := pending.PendingRoomKey(document); cut && joined && slices.Contains(written, room+"#"+block) {
+				resolved[address] = room + "#" + block
+				continue
+			}
+			stored = append(stored, address)
+		}
+		addresses = stored
+	}
+	if len(addresses) == 0 {
+		return resolved, nil
+	}
+	rows, err := q.Query(ctx, `
+		select p.address, resolved.node_id
+		from (select distinct unnest($2::text[]) as address) p
+		cross join lateral (
+			select coalesce(`+ResolvedBlockSQL("p.address")+`, (
+				select named.address from (select `+UnheldBlockSQL("p.address")+` as address) named
+				where named.address = any($3::text[]) or exists (select 1 from block_refs held
+					where held.artifact_id = $1::uuid and held.to_kind = '`+BlockNodeKind+`' and held.to_id = named.address)
+			)) as node_id
+		) resolved
+		where resolved.node_id <> p.address
+	`, artifactID, addresses, written)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the far ends of the pointers of %s: %w", artifactID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var address, node string
+		if err := rows.Scan(&address, &node); err != nil {
+			return nil, fmt.Errorf("scan a resolved far end of %s: %w", artifactID, err)
+		}
+		resolved[address] = node
+	}
+	return resolved, rows.Err()
 }
 
 // BlockLinks lists each link from a block of document fromArtifact to a block of document

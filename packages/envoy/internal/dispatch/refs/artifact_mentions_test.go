@@ -482,10 +482,11 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 
 // TestARebuildOfADocumentsReferencesTakesTheStoreLockOrder holds rebuild-refs' reconcile of a
 // document (refs.RebuildAll, one transaction per source) to the store's lock order, as
-// graphcensus' batches are held to it: the owner row the document stands under, its issue's row,
-// first (the lock an edit of its text takes), then its refs rows, then the mentions tuples of the
-// rows it moved. Those are appended at the sentinel, since no event records a rebuild, which no
-// repeat key holds, so no hold stands on them. The document's row names its node; its latest
+// graphcensus' batches are held to it: the owner lock the document stands under, its issue's
+// (store.LockOwner, the advisory lock an edit of its text takes), first, then its refs rows, then
+// the mentions tuples of the rows it moved. Those are appended at the sentinel, since no event
+// records a rebuild, which no repeat key holds, so no hold stands on them. The document's row
+// names its node; its latest
 // version cites ACME-2, and its refs hold a row to ACME-3, with its tuple, that the text no longer
 // cites, which the test holds so the reconcile's delete waits behind it. After the run the
 // document's node retracts its mention of ACME-3 and states one of ACME-2, dated at the new row's
@@ -513,11 +514,11 @@ func TestARebuildOfADocumentsReferencesTakesTheStoreLockOrder(t *testing.T) {
 		t.Fatalf("seed the document's version and the reference its text no longer cites: %v", err)
 	}
 
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue ACME-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: "ACME-1",
-		Statement: "select true from issues where key = $1 for no key update",
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue ACME-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"refs", "graph_tuples"},
-	}, `select 1 from issues where key = $1 for update`, "ACME-1")
+	}, store.IssueOwner("ACME-1"))
 	row := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "the document's refs row to ACME-3", Step: lockstep.StepProjection, Taken: true,
 		Statement: "delete from refs",

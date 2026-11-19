@@ -64,10 +64,11 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // tells the next why their write is safe, and whoever adds an entry writes the reason the entry
 // above theirs is written in - the lock named, and the caller or helper that takes it.
 //
-// Six entries take no owner lock - four exceptions, since cmd/dispatch-seed's three loaders share
-// one - and each says why. Everything else on the list holds the item's owner, which is what
-// makes the advisory lock at refs.LockItemOwner enough: those that take it in a transaction they
-// open are rows of the lock table, which proves it by holding it (item_row_owner_lock_test.go),
+// Ten entries take no owner lock - five exceptions, since cmd/dispatch-seed's three loaders share
+// one and the migration runners' four writers of their version tables share another - and each
+// says why. Everything else on the list holds the item's owner, which is what makes the advisory
+// lock at refs.LockItemOwner enough: those that take it in a transaction they open are rows of
+// the lock table, which proves it by holding it (item_row_owner_lock_test.go),
 // and those that write inside a transaction their caller opened rest on the lock that caller
 // took, which no test here or there drives; the gap map (itemRowLockNoRow) names each with why,
 // and TestTheLockTablePlacesEveryWriterTheCensusNames keeps every entry in one of the two. That
@@ -81,10 +82,6 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/api/ask_asked_of.go": {
 		"putAskAskedOf": "the ask's owner lock, taken with the read of the owner it guards " +
 			"(requireOpenOwner, store.LockOwnerAndRead)",
-	},
-	"internal/dispatch/api/ask_transitions.go": {
-		"answerTransition": "the ask's owner lock, which transitionAskTx takes before the " +
-			"transition reads the ask (requireOpenOwner)",
 	},
 	"internal/dispatch/api/asks.go": {
 		"createAskFor": "the owner's lock (requireOpenOwnerStatus)",
@@ -118,6 +115,13 @@ var itemRowWriters = map[string]map[string]string{
 		"handBackApprovalAsk": "the document's owner lock (requireOpenOwner)",
 		"openApprovalAsk":     "the document's owner lock (requireOpenOwner)",
 	},
+	"internal/dispatch/asks/settle.go": {
+		"Queue": "the ask's owner lock, which every caller holds before it plans the change " +
+			"(asks.PlanSettle, docs.Ledger.PlanSettle): the answer route (transitionAskTx, " +
+			"requireOpenOwner), an ask's resolution (docs.WriteAskResolution), the reopen's restore " +
+			"(docs.WriteRestoredAsks, under api's lockIssue), and the approval carry and " +
+			"settlement's restore of a retracted ask (lockArtifactOwner)",
+	},
 	"internal/dispatch/docs/anchor_blocks.go": {
 		"backfillAnchorBlock": "the row's owner lock, taken in the row's own transaction before " +
 			"the row is read (refs.LockItemOwner)",
@@ -131,21 +135,9 @@ var itemRowWriters = map[string]map[string]string{
 			"the request, by the reopen that follows a closed issue's versions or by the route " +
 			"that hands it back (lockArtifactOwner, api's lockIssue, requireOpenOwner)",
 	},
-	"internal/dispatch/docs/approval_carry.go": {
-		"answerApprovalAsk": "the document's owner lock, which the version write holds " +
-			"(lockArtifactOwner), or the issue's, which the reopen that follows a closed issue's " +
-			"versions holds (api's lockIssue)",
-	},
 	"internal/dispatch/docs/ask_blocks.go": {
-		"createAskBlock":      "the document's owner lock, which settlement holds (lockArtifactOwner)",
-		"reconcileAskBlocks":  "the document's owner lock, which settlement holds (lockArtifactOwner)",
-		"restoreRetractedAsk": "the document's owner lock, which settlement holds (lockArtifactOwner)",
-	},
-	"internal/dispatch/docs/ask_row.go": {
-		"queueAskResolution": "the ask's owner lock, which every caller holds: the route that " +
-			"resolves it (WriteAskResolution) and settlement (lockArtifactOwner)",
-		"WriteRestoredAsks": "the issue's owner lock, which the reopen holds " +
-			"(api's prepareRestoration, under lockIssue)",
+		"createAskBlock":     "the document's owner lock, which settlement holds (lockArtifactOwner)",
+		"reconcileAskBlocks": "the document's owner lock, which settlement holds (lockArtifactOwner)",
 	},
 	"internal/dispatch/docs/decided_wording.go": {
 		"restoreWordings": "none at boot, which is the boot restoration's exception: " +
@@ -153,6 +145,22 @@ var itemRowWriters = map[string]map[string]string{
 			"owner lock and no ask's row, and refuses the restoration when the rows moved under " +
 			"it (errDecidedWordingsMoved). Settlement's own call holds the document's owner lock " +
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
+	},
+	"internal/dispatch/docs/decision_restore.go": {
+		"moveRows": "the issue's owner lock, which the decisions step's restore takes first in the " +
+			"transaction it opens (restoreIssueDecisions, lockArtifactOwner)",
+	},
+	"internal/dispatch/graphcensus/backfill.go": {
+		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
+			"reads the rows (LockCommentOwners): the backfill's comment batch (writeCommentBatch) and " +
+			"the block-index tick's read of the events after its cursor (docs' readEventsAfterCursor)",
+		"writeAskBatch": "the owner locks of the batch's asks, taken first in the transaction it " +
+			"opens (lockAskOwners, events.LockOwnerRows)",
+	},
+	"internal/dispatch/grapherase/erase.go": {
+		"apply": "the owner lock of every owner the erase writes under, which its transaction takes " +
+			"before the node's row (lockInStoreOrder, events.LockOwnerRows); it writes a table this " +
+			"scan cannot read, which may be a comments row the erase deletes",
 	},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
@@ -180,6 +188,14 @@ var itemRowWriters = map[string]map[string]string{
 		"queueStamp": "the source's owner lock, which every caller holds before its write phase; " +
 			"its tables are refs and the item block-ref tables, no item row",
 	},
+	"internal/pgmigrate/identity.go": {
+		"Record":     versionTableException,
+		"writeFixes": versionTableException,
+	},
+	"internal/pgmigrate/pgmigratetest/identity.go": {
+		"CheckVersionsOfAnEarlierRunner": versionTableException,
+		"RunIdentityChecks":              versionTableException,
+	},
 }
 
 // seedLoaderException is why the seed's three loaders are on the census with no lock, written so
@@ -195,6 +211,17 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 	"there is no other writer for a lock to serialise it against; pointed at a database a " +
 	"server serves it would take the owner lock like every serving writer"
 
+// versionTableException is why the migration runners' writers of their version tables are on the
+// census with no lock. The table is the one each store's runner names at run time, Dispatch's
+// schema_migrations or the broker's broker_schema_migrations, which this scan cannot read
+// (unspelledTableWrites), and it is never an item row. internal/pgmigrate writes it under the
+// store's migration lock, and internal/pgmigrate/pgmigratetest writes it in a test's own
+// database, as an earlier runner would have, before the runner under test boots there.
+const versionTableException = "none, and none to take: the table is a migration runner's " +
+	"version table, which the store's runner names at run time (schema_migrations, " +
+	"broker_schema_migrations), never an item row; the runner writes it under the store's " +
+	"migration lock, and the test helpers in a test's own database"
+
 // TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus holds the names half of the invariant the
 // advisory owner lock rests on: every writer of a comment, a message, an ask or one of their
 // block-state rows takes that item's owner lock (itemOwnerLockRule), and this half is that every
@@ -207,7 +234,7 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 // without taking its owner. No writer a server runs is one: the lock table holds those that open
 // their own transaction behind a held owner lock (item_row_owner_lock_test.go), those that write
 // inside a transaction their caller opened rest on the lock that caller took, which that table
-// does not drive (itemRowLockNoRow names each with why), and the six entries here that take no
+// does not drive (itemRowLockNoRow names each with why), and the ten entries here that take no
 // owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
 // a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
 // on the census with the lock it takes.
@@ -329,16 +356,22 @@ var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
 	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
-	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/ask_blocks.go": {
-		"createAskBlock":      itemRowCallersTransaction,
-		"reconcileAskBlocks":  itemRowCallersTransaction,
-		"restoreRetractedAsk": itemRowCallersTransaction,
+		"createAskBlock":     itemRowCallersTransaction,
+		"reconcileAskBlocks": itemRowCallersTransaction,
 	},
-	"internal/dispatch/docs/ask_row.go": {
-		"queueAskResolution": itemRowCallersTransaction,
-		"WriteRestoredAsks":  itemRowCallersTransaction,
+	"internal/dispatch/docs/decision_restore.go": {
+		"moveRows": "runs in the decisions step's restore of one issue, a background pass no " +
+			"request makes; its lock-step driver holds the restore behind the issue's owner lock " +
+			"(docs' TestTheDecisionsStepsWritersTakeTheStoreLockOrder)",
 	},
+	"internal/dispatch/graphcensus/backfill.go": {
+		"Queue": itemRowCallersTransaction,
+		"writeAskBatch": "a boot pass of graphcensus.Backfill, no request's; its lock-step test " +
+			"holds it behind both owners' locks (graphcensus' " +
+			"TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows)",
+	},
+	"internal/dispatch/grapherase/erase.go": {"apply": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": itemRowCallersTransaction,
 		"markItemBlocksOwed":   itemRowCallersTransaction,
@@ -357,6 +390,14 @@ var itemRowLockNoRow = map[string]map[string]string{
 	},
 	"internal/dispatch/api/broadcasts.go":       {"writeBroadcast": itemRowNoOwnerLock},
 	"internal/dispatch/docs/decided_wording.go": {"restoreWordings": itemRowNoOwnerLock},
+	"internal/pgmigrate/identity.go": {
+		"Record":     itemRowNoOwnerLock,
+		"writeFixes": itemRowNoOwnerLock,
+	},
+	"internal/pgmigrate/pgmigratetest/identity.go": {
+		"CheckVersionsOfAnEarlierRunner": itemRowNoOwnerLock,
+		"RunIdentityChecks":              itemRowNoOwnerLock,
+	},
 	"internal/dispatch/refs/rebuild.go": {
 		"RebuildAll": itemRowNoOwnerLock,
 		// The drain's settle runs under the owner lock the drain took for the row it settles.

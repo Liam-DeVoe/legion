@@ -121,7 +121,7 @@ func (issue *restoreIssue) document(slug, name string, primary bool, role, markd
 		if err != nil {
 			return err
 		}
-		return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
+		return causeInWritePhase(ctx, tx, write, graphstore.NoEvent)
 	}); err != nil {
 		t.Fatalf("write document %s: %v", slug, err)
 	}
@@ -166,7 +166,7 @@ func (issue *restoreIssue) write(document, markdown string, actor model.Actor, m
 			return err
 		}
 		tx, _ := txFromContext(ctx)
-		return graphstore.Caused(ctx, tx, written.Blocks, graphstore.NoEvent)
+		return causeInWritePhase(ctx, tx, written.Blocks, graphstore.NoEvent)
 	}); err != nil {
 		t.Fatalf("replace %s: %v", document, err)
 	}

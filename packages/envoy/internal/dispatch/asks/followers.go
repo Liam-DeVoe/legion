@@ -48,8 +48,8 @@ type Followed struct {
 // a session from, so a follower that never wrote a comment and was never reached by a delivery
 // is still a node of the store, and the ask's followed_by edge to it has a far end every read
 // resolves: refs' loadStoreNodes answers a session from graph_nodes alone. Every server path that
-// adds a follower reaches this insert: FollowAuthor and PlanFollowAuthor at each site that writes
-// an ask or a reply to one, and PUT /api/v1/asks/{id}/followers/{session_id}.
+// adds a follower reaches this insert: FollowAuthor, PlanFollowAuthor and PlanFollowNewAsk at each
+// site that writes an ask or a reply to one, and PUT /api/v1/asks/{id}/followers/{session_id}.
 //
 // The node is made by who, the actor of the write, at at, and caused by event. A caller whose
 // event is appended after the follow passes graphstore.NoEvent and moves the node onto that event
@@ -63,13 +63,14 @@ type Followed struct {
 // row it marked and its `since` - held in Followed for a caller whose event comes later, and
 // otherwise appended at once, in a batch of its own that runs only when the row was marked. A
 // transaction that queues its writes plans the follow in its read phase instead
-// (PlanFollowAuthor), whose plan decides the same from the row it reads.
+// (PlanFollowAuthor, or PlanFollowNewAsk for an ask it creates), whose plan decides the same
+// from the row it reads, or for a new ask from what its caller knows.
 func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.Actor, at time.Time, event int64) (Followed, error) {
 	var followed Followed
 	var result followResult
 	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		var err error
-		followed.Uncaused, err = queueFollow(b, askID, sessionID, who, at, event, func(got followResult) error {
+		followed.Uncaused, err = queueFollow(b, askID, sessionID, who, at, nil, event, func(got followResult) error {
 			result = got
 			return nil
 		})
@@ -103,7 +104,9 @@ type followResult struct {
 
 // queueFollow queues the follow's statement on b and answers the node it holds for the follow's
 // cause; read is handed what the statement answers (followResult) once it has run, and its error
-// stops the batch there.
+// stops the batch there. since is the since the statement writes on a new follower row, where
+// its caller dates the row itself (PlanFollowNewAsk), and nil where the column's default, the
+// transaction's now(), gives it; a row that stands keeps its own either way.
 //
 // The follower row and the node are one statement: the store's node arm (graphstore.WriteArms)
 // spliced into the follower insert, so a follow costs the statement it cost before the store
@@ -130,7 +133,7 @@ type followResult struct {
 // node for the caller to cause under its event (graphstore.WriteArmsUncaused): no tuple may be
 // updated to learn its cause, and graphstore.QueueCaused moves the node row onto that event, so
 // stating them here would leave the row naming one event and its own base tuples naming another.
-func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, at time.Time, event int64, read func(followResult) error) (graphstore.Uncaused, error) {
+func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, at time.Time, since *time.Time, event int64, read func(followResult) error) (graphstore.Uncaused, error) {
 	var nodes []graphstore.Node
 	fits := sessionID != "" && graphstore.AddressFits(sessionID)
 	if fits {
@@ -143,9 +146,9 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 		err    error
 	)
 	if event == graphstore.NoEvent {
-		arms, params, held, err = graphstore.WriteArmsUncaused(5, nodes, nil, nil)
+		arms, params, held, err = graphstore.WriteArmsUncaused(6, nodes, nil, nil)
 	} else {
-		arms, params, err = graphstore.WriteArms(5, nodes, nil, nil)
+		arms, params, err = graphstore.WriteArms(6, nodes, nil, nil)
 	}
 	if err != nil {
 		return graphstore.Uncaused{}, fmt.Errorf("follow ask %q as %q: %w", askID, sessionID, err)
@@ -155,10 +158,11 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 	}
 	b.Queue(fmt.Sprintf("follow ask %q as %q", askID, sessionID), `
 		with followed as (
-			insert into ask_followers (ask_id, session_id, node_kind, node_address)
+			insert into ask_followers (ask_id, session_id, node_kind, node_address, since)
 			values ($1, $2,
 				(select node.kind from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text),
-				(select node.id from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text))
+				(select node.id from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text),
+				coalesce($5::timestamptz, now()))
 			on conflict (ask_id, session_id) do update
 				set node_kind = excluded.node_kind, node_address = excluded.node_address
 				where ask_followers.node_kind is null and excluded.node_kind is not null
@@ -166,14 +170,14 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 		)`+arms+`
 		select coalesce((select added from followed), false), coalesce((select marked from followed), false),
 			(select since from followed)`,
-		append([]any{askID, sessionID, graphstore.KindAsk, fits}, params...)...).QueryRow(func(row pgx.Row) error {
+		append([]any{askID, sessionID, graphstore.KindAsk, fits, since}, params...)...).QueryRow(func(row pgx.Row) error {
 		var result followResult
-		var since *time.Time
-		if err := row.Scan(&result.added, &result.marked, &since); err != nil {
+		var stored *time.Time
+		if err := row.Scan(&result.added, &result.marked, &stored); err != nil {
 			return err
 		}
-		if since != nil {
-			result.since = *since
+		if stored != nil {
+			result.since = *stored
 		} else {
 			result.marked = false
 		}
@@ -201,10 +205,10 @@ func FollowAuthor(ctx context.Context, tx pgx.Tx, askID string, author model.Act
 	return Follow(ctx, tx, askID, author.ID, author, at, event)
 }
 
-// PlannedFollow is the follow of an ask by a session author as PlanFollowAuthor planned it in the
-// read phase of a write that queues its statements, decided before anything is written, which
-// Queue queues in that write's write phase. The zero PlannedFollow, a human author's, queues
-// nothing.
+// PlannedFollow is the follow of an ask by a session author as PlanFollowAuthor or
+// PlanFollowNewAsk planned it in the read phase of a write that queues its statements, decided
+// before anything is written, which Queue queues in that write's write phase. The zero
+// PlannedFollow, a human author's, queues nothing.
 type PlannedFollow struct {
 	askID, sessionID string
 	who              model.Actor
@@ -212,46 +216,67 @@ type PlannedFollow struct {
 	// Added is whether the session did not follow the ask before.
 	Added bool
 	// marks says the follow's statement marks the follower row, and since is the row's since
-	// then: the row's own for a row the release before wrote with no marker, and for a new row
-	// the transaction's now(), which its column's default gives it.
+	// then: the row's own for a row the release before wrote with no marker, the transaction's
+	// now() for a new row of an ask that stood before, which its column's default gives it, and
+	// for an ask this transaction creates the time its caller passed, which the statement writes.
 	marks bool
 	since time.Time
+	// dated says the follow's statement writes since on the new row itself rather than leave it
+	// to the column's default: the follow of an ask this transaction creates (PlanFollowNewAsk).
+	dated bool
 }
 
-// PlanFollowAuthor plans the follow of askID by a session author, as Follow writes it, for a
-// transaction that queues its writes, and plans nothing for a human. It reads, through q, under
-// the owner lock the caller holds over the ask (store.LockOwner), under which no other
-// transaction writes its followers, whether the ask's row and its node stand, the session's
-// follower row - whether it is there, whether it is marked, and its since - and the transaction's
-// now(). It decides from them what queueFollow's statement will do to the row: a new row, or one
-// the release before wrote with no marker, is marked where the ask's node is there to name and
-// the session is a node the store can key, and the follow then states followed_by dated by the
-// row's since; a row marked already is left as it stands, and the follow states nothing of it.
-//
-// An ask no row holds yet is one this transaction creates: its node is written before its row
-// (graphstore.AskNode, written first by every writer of an ask), and the caller queues the follow
-// after both, so its statement finds that node and marks the new row. Queue holds the statement
-// to the plan: a row it did not mark as the plan read, or marked at another since, stops the
-// write phase, since the fact the plan states would not be that row's.
+// PlanFollowNewAsk plans the follow of askID, an ask this transaction creates, by a session
+// author, and plans nothing for a human. It reads nothing: an ask this transaction creates has no
+// follower row yet, so the follow adds one, and the row is marked exactly where the session is a
+// node the store can key, since every writer of an ask queues the ask's node before its row
+// (graphstore.AskFacts, written first) and the caller queues the follow after both, so the
+// follow's statement finds that node. The one value a read would supply is the new row's since,
+// which dates the followed_by the follow states: the follow's statement writes it as at, the time
+// the caller passes - each caller's ask's created_at, the transaction's now(), which is what the
+// column's default would give it - so the relation's date is known here. Queue holds the
+// statement to this plan as it holds PlanFollowAuthor's: a row it did not mark, or marked at
+// another since, stops the write phase.
+func PlanFollowNewAsk(askID string, author model.Actor, at time.Time) PlannedFollow {
+	if author.Kind != "session" || author.ID == "" {
+		return PlannedFollow{}
+	}
+	return PlannedFollow{
+		askID: askID, sessionID: author.ID, who: author, at: at, Added: true,
+		marks: graphstore.AddressFits(author.ID), since: at, dated: true,
+	}
+}
+
+// PlanFollowAuthor plans the follow of askID, an ask that stood before this transaction, by a
+// session author, as Follow writes it, for a transaction that queues its writes, and plans nothing
+// for a human. It reads, through q, under the owner lock the caller holds over the ask
+// (store.LockOwner), under which no other transaction writes its followers, whether the ask's node
+// stands, the session's follower row - whether it is there, whether it is marked, and its since -
+// and the transaction's now(). It decides from them what queueFollow's statement will do to the
+// row: a new row, or one the release before wrote with no marker, is marked where the ask's node
+// is there to name and the session is a node the store can key, and the follow then states
+// followed_by dated by the row's since; a row marked already is left as it stands, and the follow
+// states nothing of it. Queue holds the statement to the plan: a row it did not mark as the plan
+// read, or marked at another since, stops the write phase, since the fact the plan states would
+// not be that row's. An ask this transaction creates is planned by PlanFollowNewAsk, with no read.
 func PlanFollowAuthor(ctx context.Context, q RowQueryer, askID string, author model.Actor, at time.Time) (PlannedFollow, error) {
 	if author.Kind != "session" || author.ID == "" {
 		return PlannedFollow{}, nil
 	}
 	plan := PlannedFollow{askID: askID, sessionID: author.ID, who: author, at: at}
-	var asked, named, held, marked bool
+	var named, held, marked bool
 	var since *time.Time
 	var now time.Time
 	if err := q.QueryRow(ctx, `
-		select exists (select 1 from asks k where k.id = $1::uuid),
-		       exists (select 1 from graph_nodes node where node.kind = $3 and node.id = $1::uuid::text),
+		select exists (select 1 from graph_nodes node where node.kind = $3 and node.id = $1::uuid::text),
 		       f.ask_id is not null, coalesce(f.node_kind is not null, false), f.since, now()
 		from (select 1) one
 		left join ask_followers f on f.ask_id = $1::uuid and f.session_id = $2
-	`, askID, author.ID, graphstore.KindAsk).Scan(&asked, &named, &held, &marked, &since, &now); err != nil {
+	`, askID, author.ID, graphstore.KindAsk).Scan(&named, &held, &marked, &since, &now); err != nil {
 		return PlannedFollow{}, fmt.Errorf("read the follow of ask %q by %q: %w", askID, author.ID, err)
 	}
 	plan.Added = !held
-	if !graphstore.AddressFits(author.ID) || asked && !named {
+	if !graphstore.AddressFits(author.ID) || !named {
 		return plan, nil
 	}
 	switch {
@@ -274,7 +299,11 @@ func (p PlannedFollow) Queue(ctx context.Context, b *store.WriteBatch, event int
 	if p.sessionID == "" {
 		return graphstore.Uncaused{}, nil
 	}
-	held, err := queueFollow(b, p.askID, p.sessionID, p.who, p.at, event, func(got followResult) error {
+	var since *time.Time
+	if p.dated {
+		since = &p.since
+	}
+	held, err := queueFollow(b, p.askID, p.sessionID, p.who, p.at, since, event, func(got followResult) error {
 		if got.marked != p.marks || got.marked && !got.since.Equal(p.since) {
 			return fmt.Errorf("follow ask %q as %q: the statement marked the follower row %t at %s, the plan read %t at %s",
 				p.askID, p.sessionID, got.marked, got.since, p.marks, p.since)

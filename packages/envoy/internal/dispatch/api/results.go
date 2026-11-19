@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -387,7 +388,12 @@ func (s *server) recordResultUnderOwnerLocks(
 	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
-
+	// What the result's node takes beside the result, read here in the read phase: the project of
+	// the check's issue and the transaction's now(), which dates the row and the node alike.
+	project, createdAt, err := resultScope(ctx, tx, check.IssueKey)
+	if err != nil {
+		return recordedCheckResult{}, indexedCheck{}, err
+	}
 	result := model.CheckResult{
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
@@ -396,7 +402,7 @@ func (s *server) recordResultUnderOwnerLocks(
 		CommitSHA: input.Commit, NegativeControl: input.NegativeControl,
 		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
 		Verdict: input.Verdict, Screenshots: nonNilStrings(input.Screenshots),
-		Session: sessionOf(actor), Actor: actor,
+		Session: sessionOf(actor), Actor: actor, CreatedAt: createdAt,
 	}
 	event, err := s.appendEvent(ctx, tx, issueOwner(check.IssueKey).event("result.recorded", actor, model.CheckResultEventPayload{
 		ResultID: result.ID, Issue: issueKey, CheckIssue: check.IssueKey,
@@ -408,7 +414,7 @@ func (s *server) recordResultUnderOwnerLocks(
 	}
 	seq := int64(event.Seq)
 	result.EventSeq = &seq
-	if err := writeRecordedResult(ctx, tx, &result, check.NodeAddress, screenshots, event.ID); err != nil {
+	if err := writeRecordedResult(ctx, tx, &result, project, check.NodeAddress, screenshots, event.ID); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1101,25 +1107,38 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 	return refKeys, nil
 }
 
+// resultScope reads, in the record route's read phase and under its owner locks, what a result's
+// node takes beside the result itself, in one statement: the project of the check's issue, which
+// the node is in, and the transaction's now(), the created_at the row's column default would give
+// it, which dates the row and the node alike.
+func resultScope(ctx context.Context, tx pgx.Tx, checkIssueKey string) (string, time.Time, error) {
+	var project *string
+	var at time.Time
+	if err := tx.QueryRow(ctx, `select (select project_key from issues where key = $1), now()`, checkIssueKey).Scan(&project, &at); err != nil {
+		return "", time.Time{}, fmt.Errorf("read the project of check issue %s: %w", checkIssueKey, err)
+	}
+	if project == nil {
+		return "", at, nil
+	}
+	return *project, at, nil
+}
+
 // writeRecordedResult writes one recorded result in tx, the record route's transaction, after the
-// result.recorded event whose id is event: its check_results row, which fills in the created_at
-// the row takes, then the result's node, its values and its tuples (graphstore.ResultFacts) in one
-// write, caused by that event and dated at that created_at. check is the address of the check
-// block's node, under the artifact the row is keyed by, and screenshots the ref_key of each image
-// the result names (refuseResultScreenshots). The node is in the project of the check's issue. A
-// result whose check's address is past the store's bound keeps its row and states nothing, which
-// the census counts as a class of its own.
+// result.recorded event whose id is event, in one batch (store.RunWrite), its write phase's last:
+// its check_results row, dated at the result's created_at, then the result's node, its values and
+// its tuples (graphstore.ResultFacts), caused by that event and dated at that same time. project
+// is the project of the check's issue, which the node is in, and the time the transaction's now(),
+// both read in the read phase (resultScope). check is the address of the check block's node, under
+// the artifact the row is keyed by, and screenshots the ref_key of each image the result names
+// (refuseResultScreenshots). A result whose check's address is past the store's bound keeps its
+// row and states nothing, which the census counts as a class of its own.
 //
 // It takes no lock of its own. The route holds the owner locks of the recording issue and the
 // check's issue (lockIssueOwners) and appended the event on the check's, so this follows the
 // store's lock order: the owner's lock, the event, the row, then the node and its tuples. The row
-// carries no foreign key into graph_nodes, so it may precede its node, and it does: the node is
-// dated at the row's own created_at, which the insert answers.
-func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult, check string, screenshots []string, event int64) error {
-	if err := insertCheckResult(ctx, tx, result); err != nil {
-		return err
-	}
-	project, _, err := graphstore.ScopeOf(ctx, tx, &result.CheckIssueKey, nil)
+// carries no foreign key into graph_nodes, so it may precede its node, and it does.
+func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult, project, check string, screenshots []string, event int64) error {
+	actorJSON, err := encodeJSON(result.Actor)
 	if err != nil {
 		return err
 	}
@@ -1132,33 +1151,25 @@ func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResu
 		Session: result.Session, Screenshots: screenshots,
 		Recorder: result.Actor, At: result.CreatedAt, Event: event,
 	})
-	if !ok {
-		return nil
-	}
-	return graphstore.Write(ctx, tx, nodes, tuples)
-}
-
-// insertCheckResult writes one result's row and fills in the created_at the row takes, which
-// the record route answers with: the pointer is the caller's own value, not a copy of it.
-func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult) error {
-	actorJSON, err := encodeJSON(result.Actor)
-	if err != nil {
-		return err
-	}
-	return tx.QueryRow(ctx, `
-		insert into check_results (
-			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
-			check_sha256, role, surface, run, observed, commit_sha, negative_control,
-			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("record the result", `
+			insert into check_results (
+				id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+				check_sha256, role, surface, run, observed, commit_sha, negative_control,
+				failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, created_at
+			)
+			values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		`,
+			result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
+			result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
+			result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
+			result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CreatedAt,
 		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
-		returning created_at
-	`,
-		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
-		result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
-		result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
-		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq,
-	).Scan(&result.CreatedAt)
+		if !ok {
+			return nil
+		}
+		return graphstore.QueueWrite(ctx, b, nodes, tuples)
+	})
 }
 
 // loadCheckResults is every result recorded against the checks of one Verification document,

@@ -95,8 +95,9 @@ type BlockIndexTick struct {
 	// tick reads, Marked how many documents an artifact.version, artifact.created or issue.created
 	// event among them named that it marked owed a block index, Comments how many comments a
 	// comment.created or comment.answered event among them named whose rows it gave their nodes,
-	// and AnotherBuild whether a live server process of another build served, which the tick
-	// reports and which decides nothing (readEventsAfterCursor).
+	// and AnotherBuild whether a live server process of another build served, which decides
+	// nothing of which events the tick reads and makes it owe the object pass
+	// (readEventsAfterCursor).
 	Events       int
 	Marked       int
 	Comments     int
@@ -223,8 +224,8 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// comments= the documents it marked owed and the comments it gave their nodes from those
 		// events, object_nodes= and orphans_gone= the rows the object pass gave their nodes and the
 		// orphaned document nodes it stated gone, and another_build= whether a live server process
-		// of another build served, which the tick reports and which decides nothing
-		// (readEventsAfterCursor).
+		// of another build served, which decides nothing of which events the tick reads and makes
+		// it owe the object pass (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
@@ -1158,7 +1159,7 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // stored state has no block to show, so its latest version's markdown is indexed with no blocks.
 //
 // A pair the index inserts takes the version's created_at, and the source_seq of the event that
-// recorded the version (stampVersionEvent).
+// recorded the version (stampVersionEvent), queued in the step that appends the pass's facts.
 //
 // The pass is the reconciliation's (indexRenderedVersion's tick): it runs only on a document owed
 // by either mark, and wherever it wins it also writes the node of each version of the document
@@ -1245,10 +1246,16 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if err != nil {
 		return false, false, err
 	}
-	if err := write(queued, tx, func(b *store.WriteBatch) error { return graphstore.QueueCaused(queued, b, stated, eventID) }); err != nil {
-		return false, false, err
-	}
-	if err := stampVersionEvent(queued, tx, document.id, document.id, version, versionAt, eventID); err != nil {
+	// The stamp goes in the step that appends the pass's facts under the same event: a block_refs
+	// row's source_seq is the legacy_source_seq of the tuple it projects (graphstore.UncausedTuple's
+	// LegacyFromCause), so the row learns it beside the store write that states it.
+	if err := write(queued, tx, func(b *store.WriteBatch) error {
+		if err := graphstore.QueueCaused(queued, b, stated, eventID); err != nil {
+			return err
+		}
+		stampVersionEvent(b, document.id, document.id, version, versionAt, eventID)
+		return nil
+	}); err != nil {
 		return false, false, err
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {
@@ -1295,38 +1302,38 @@ func versionEventID(ctx context.Context, tx pgx.Tx, owner artifactOwner, artifac
 	return eventID, nil
 }
 
-// stampVersionEvent gives the edges a re-index of version of document inserted the source_seq of
-// eventID, the event that recorded that version (versionEventID). A version write stamps its own
-// edges once it appends its event (refs.QueueStamp); this is that stamp for a version a build
-// without the block index wrote, and for each version an issue room's pass covers. It stamps only
-// what the re-index inserted - the block pairs it created at this version, of the blocks of
-// document (refs.BlockDocumentSQL: an issue room's rows are keyed by its tree artifact, artifactID,
-// and carry each document's own version numbers), and the references of artifactID it dated
-// versionAt - so an edge rebuild-refs inserted keeps no source_seq. With no such event the edges
-// keep none. A document that is its own room is its own artifactID. The event is read where it is
-// called, or it is graphstore.LatestEvent, the event the write phase appends right before these
-// stamps (store.LatestEventID): an issue room's settlement queues each document's stamp right
-// after that document's version event (commitRoomVersions). The stamps go through write.
-func stampVersionEvent(ctx context.Context, tx pgx.Tx, artifactID, document string, version int, versionAt time.Time, eventID int64) error {
+// stampVersionEvent queues on b the stamp that gives the edges a re-index of version of document
+// inserted the source_seq of eventID, the event that recorded that version (versionEventID). A
+// version write stamps its own edges once it appends its event (refs.QueueStamp); this is that
+// stamp for a version a build without the block index wrote, and for each version an issue room's
+// pass covers. It stamps only what the re-index inserted - the block pairs it created at this
+// version, of the blocks of document (refs.BlockDocumentSQL: an issue room's rows are keyed by its
+// tree artifact, artifactID, and carry each document's own version numbers), and the references of
+// artifactID it dated versionAt - so an edge rebuild-refs inserted keeps no source_seq. With no
+// such event the edges keep none and nothing is queued. A document that is its own room is its
+// own artifactID. The event is read where it is called, or it is graphstore.LatestEvent, the event
+// the write phase appends right before these stamps (store.LatestEventID): an issue room's
+// settlement queues each document's stamp right after that document's version event
+// (commitRoomVersions). b is the step that appends the pass's facts under the event
+// (indexOwedDocument), or a write step of the caller's beside them (indexOwedRoom,
+// commitRoomVersions).
+func stampVersionEvent(b *store.WriteBatch, artifactID, document string, version int, versionAt time.Time, eventID int64) {
 	if eventID == graphstore.NoEvent {
-		return nil
+		return
 	}
 	source := strconv.FormatInt(eventID, 10)
 	if eventID == graphstore.LatestEvent {
 		source = store.LatestEventID
 	}
-	return write(ctx, tx, func(b *store.WriteBatch) error {
-		b.Queue(fmt.Sprintf("stamp the block mentions of version %d of %s", version, document), `
-			update block_refs r set source_seq = `+source+`
-			where r.artifact_id = $1 and r.created_version = $2 and r.source_seq is null
-			  and ($1 = $3 or `+refs.BlockDocumentSQL("r")+` = $3::uuid)
-		`, artifactID, version, document)
-		b.Queue(fmt.Sprintf("stamp the references of version %d of %s", version, document), `
-			update refs set source_seq = `+source+`
-			where from_kind = 'artifact' and from_id = $1 and source_seq is null and created_at = $2
-		`, artifactID, versionAt)
-		return nil
-	})
+	b.Queue(fmt.Sprintf("stamp the block mentions of version %d of %s", version, document), `
+		update block_refs r set source_seq = `+source+`
+		where r.artifact_id = $1 and r.created_version = $2 and r.source_seq is null
+		  and ($1 = $3 or `+refs.BlockDocumentSQL("r")+` = $3::uuid)
+	`, artifactID, version, document)
+	b.Queue(fmt.Sprintf("stamp the references of version %d of %s", version, document), `
+		update refs set source_seq = `+source+`
+		where from_kind = 'artifact' and from_id = $1 and source_seq is null and created_at = $2
+	`, artifactID, versionAt)
 }
 
 // indexOwed indexes one owed document (indexOwedDocument), or the issue room it is an artifact
@@ -1492,10 +1499,13 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		if err := causeRoomFacts(queued, tx, room, facts, events, slices.Sorted(maps.Keys(facts))); err != nil {
 			return false, false, false, err
 		}
-		for _, indexed := range slices.Sorted(maps.Keys(versions)) {
-			if err := stampVersionEvent(queued, tx, room, indexed, versions[indexed].Number, versions[indexed].At, events[indexed]); err != nil {
-				return false, false, false, err
+		if err := write(queued, tx, func(b *store.WriteBatch) error {
+			for _, indexed := range slices.Sorted(maps.Keys(versions)) {
+				stampVersionEvent(b, room, indexed, versions[indexed].Number, versions[indexed].At, events[indexed])
 			}
+			return nil
+		}); err != nil {
+			return false, false, false, err
 		}
 	}
 	// A document of the room holding no version is no part of the pass's fence, which cleared the
@@ -1544,7 +1554,11 @@ func (s *Service) roomTree(ctx context.Context, room string, layout roomLayout) 
 func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, versions, written refs.Versions, tick bool, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (roomIndex, error) {
 	var refKey string
 	var heldBlocks, heldDocuments []string
-	if err := tx.QueryRow(ctx, `
+	if address, created := pendingArtifact(ctx, room); created {
+		// A tree artifact this transaction creates (an issue born converted's) has no row yet,
+		// and so no issue_room_blocks row names it: its key is its registered address's.
+		refKey = address.RefKey
+	} else if err := tx.QueryRow(ctx, `
 		select a.ref_key,
 		       array(select r.block_id from issue_room_blocks r where r.tree_artifact_id = a.id order by r.block_id),
 		       array(select r.document_id::text from issue_room_blocks r where r.tree_artifact_id = a.id order by r.block_id)

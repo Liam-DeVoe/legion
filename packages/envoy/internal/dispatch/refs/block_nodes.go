@@ -483,13 +483,22 @@ type documentVersion struct {
 
 // versionAuthors answers held with the authors of each version of wanted it does not hold yet,
 // read through q in one statement: each version's authors in the order its row stores them (docs'
-// actorSlice, for a settlement's), and none for a version no row records.
+// actorSlice, for a settlement's), and none for a version no row records. A version the reading
+// transaction has queued and not written, which no row records yet, takes the authors its queued
+// row holds (Pending).
 func versionAuthors(ctx context.Context, q Queryer, held map[documentVersion][]model.Actor, wanted []documentVersion) (map[documentVersion][]model.Actor, error) {
+	pending := pendingOf(ctx)
 	var documents []string
 	var numbers []int32
 	for _, version := range wanted {
 		if _, known := held[version]; known {
 			continue
+		}
+		if pending != nil {
+			if authors, queued := pending.PendingAuthors(version.document, version.number); queued {
+				held[version] = authors
+				continue
+			}
 		}
 		held[version] = nil
 		documents, numbers = append(documents, version.document), append(numbers, int32(version.number))
@@ -802,7 +811,7 @@ func (b *BlockIndexing) planBlockParents(
 			placement.end(index, blockFarEnd{kind: graphstore.KindAsk, id: ask})
 		}
 	}
-	kept, err := placeAuthored(ctx, q, indexed, record, nodes, &placement, parentIDs, authored)
+	kept, err := placeAuthored(ctx, q, b.artifactID, indexed, record, nodes, &placement, parentIDs, authored)
 	if err != nil {
 		return blockPlacement{}, nil, nil, fmt.Errorf("place the authored nodes of %s: %w", b.artifactID, err)
 	}
@@ -1140,12 +1149,14 @@ func resolvedFarEnd(target Target, farEnds map[string]string) blockFarEnd {
 	return blockFarEnd{kind: target.Kind, id: target.ID}
 }
 
-// authoredFarEnds resolves, in one statement (ResolveFarEnds), each block far end the parent
-// attribute and the serves pointer of the authored nodes ids name in sources, as planBlockRefs
-// resolves the far ends of the same pointers when it writes their tuples: so a node is placed
-// under the node its pointer's tuple reaches, and its parent attribute compared with the parent
-// value the store holds in the same terms (placeAuthored).
-func authoredFarEnds(ctx context.Context, q Queryer, ids []string, sources authoredSources) (map[string]string, error) {
+// authoredFarEnds resolves, in one statement, each block far end the parent attribute and the
+// serves pointer of the authored nodes ids name in sources, as planBlockRefs resolves the far ends
+// of the same pointers when it writes their tuples (resolvePassFarEnds, over the blocks written,
+// the addresses of the blocks of document artifactID this pass places): so a node is placed under
+// the node its pointer's tuple reaches - a block of another fragment of the issue room the pass
+// indexes among them, whose node the pass itself writes - and its parent attribute compared with
+// the parent value the store holds in the same terms (placeAuthored).
+func authoredFarEnds(ctx context.Context, q Queryer, artifactID string, written, ids []string, sources authoredSources) (map[string]string, error) {
 	var addresses []string
 	add := func(ref text.Ref) {
 		if target, ok := TargetOf(ref); ok && target.Kind == BlockNodeKind {
@@ -1153,14 +1164,14 @@ func authoredFarEnds(ctx context.Context, q Queryer, ids []string, sources autho
 		}
 	}
 	for _, id := range ids {
-		if ref, written := sources.parent[id]; written {
+		if ref, named := sources.parent[id]; named {
 			add(ref)
 		}
 		for _, ref := range sources.serves[id] {
 			add(ref)
 		}
 	}
-	return ResolveFarEnds(ctx, q, addresses)
+	return resolvePassFarEnds(ctx, q, artifactID, addresses, written)
 }
 
 // placeAuthored places the authored nodes of placement (D4 of dispatch://INFRA-1253's plan),
@@ -1208,7 +1219,7 @@ func authoredFarEnds(ctx context.Context, q Queryer, ids []string, sources autho
 // (BlockIndex.placed) and its parent value, the target of the parent attribute's link its pairs
 // hold (BlockIndex.links). So a second indexing of the document in one transaction keeps a node
 // where the first placed it, as a later transaction would.
-func placeAuthored(ctx context.Context, q Queryer, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement *blockPlacement, parentIDs []*string, sources authoredSources) ([]bool, error) {
+func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed BlockIndex, document IndexedVersion, nodes []model.ArtifactBlock, placement *blockPlacement, parentIDs []*string, sources authoredSources) ([]bool, error) {
 	var authored []int
 	for index, block := range placement.placed {
 		if authoredType(nodes[block].Type) {
@@ -1249,7 +1260,11 @@ func placeAuthored(ctx context.Context, q Queryer, indexed BlockIndex, document 
 			held[at] = read[position]
 		}
 	}
-	farEnds, err := authoredFarEnds(ctx, q, ids, sources)
+	written := make([]string, len(placement.ids))
+	for position, id := range placement.ids {
+		written[position] = blockNodeAddress(document.RefKey, id)
+	}
+	farEnds, err := authoredFarEnds(ctx, q, artifactID, written, ids, sources)
 	if err != nil {
 		return nil, err
 	}
@@ -1957,16 +1972,29 @@ type fragmentDocument struct {
 
 // fragmentDocuments reads, in one statement, each document other than artifactID that a block of
 // nodes names as the document whose fragment holds it: none for a document that is its own room,
-// whose blocks name none.
+// whose blocks name none. A document the reading transaction creates, whose row no read sees
+// before its write phase, is the address that transaction registered for it (Pending).
 func fragmentDocuments(ctx context.Context, q Queryer, artifactID string, nodes []model.ArtifactBlock) (map[string]fragmentDocument, error) {
+	documents := map[string]fragmentDocument{}
+	pending := pendingOf(ctx)
 	var ids []string
 	for _, block := range nodes {
-		if block.Document != "" && block.Document != artifactID && !slices.Contains(ids, block.Document) {
-			ids = append(ids, block.Document)
+		if block.Document == "" || block.Document == artifactID || slices.Contains(ids, block.Document) {
+			continue
 		}
+		if _, held := documents[block.Document]; held {
+			continue
+		}
+		if pending != nil {
+			if address, created := pending.PendingDocument(block.Document); created {
+				documents[block.Document] = fragmentDocument{refKey: address.RefKey, band: address.Band}
+				continue
+			}
+		}
+		ids = append(ids, block.Document)
 	}
 	if len(ids) == 0 {
-		return nil, nil
+		return documents, nil
 	}
 	rows, err := q.Query(ctx, `
 		select a.id::text, a.ref_key, `+DocumentBandSQL("a")+`
@@ -1976,7 +2004,6 @@ func fragmentDocuments(ctx context.Context, q Queryer, artifactID string, nodes 
 		return nil, fmt.Errorf("read the documents whose fragments of %s's room hold its blocks: %w", artifactID, err)
 	}
 	defer rows.Close()
-	documents := make(map[string]fragmentDocument, len(ids))
 	for rows.Next() {
 		var id, band string
 		var document fragmentDocument
@@ -2369,8 +2396,9 @@ type blockParentDifference struct {
 // one the render gives, read the way the store reads a current relation - the newest tuple per
 // far end, kept while it asserts (graphstore.CurrentTupleRead) - but in one statement for every
 // block of the document rather than one per block, which on a document of thousands of blocks
-// would be thousands of round trips. The lateral reads through graph_tuples_current, whose column
-// order is the one the distinct on walks.
+// would be thousands of round trips. The lateral is keyed on the block's address and part_of: it
+// reads through graph_tuples_current under a custom plan, where the bound kind proves that
+// index's predicate, and through graph_tuples_as_of_out under a generic plan, which sees no kind.
 //
 // The probe names the blocks that are nodes of the store, in document order (ids), and beside
 // each the block it sits in (parents), nil for a block at the document's top level, whose parent
@@ -2474,9 +2502,11 @@ var heldLinkKinds = `(t.kind in (` + BlockRefKindsSQL + `) or t.kind in (` + quo
 // retracted nothing, so no row is left to say what the store still holds. The pass's input stays
 // the version's render: this read is what the store would otherwise go on asserting against it,
 // as heldBlockParentDifferences is for the parents. The members come through
-// graph_tuples_inbound in one probe and each member's links through graph_tuples_current in one
-// probe a block, in one statement. The kinds and the value kind are written into the text so the
-// planner can prove each index's partial predicate whatever plan it caches.
+// graph_tuples_as_of_in in one probe and each member's links through graph_tuples_as_of_out in
+// one probe a block, in one statement: the links are every kind but two, which proves nothing of
+// graph_tuples_current's predicate, and that index leaves delivered_to out. The kinds and the
+// value kind are written into the text so the planner can prove each index's partial predicate
+// whatever plan it caches.
 func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
 	rows, err := q.Query(ctx, `
 		select member.id, held.kind, held.to_kind, held.to_id

@@ -53,7 +53,7 @@ type Claim struct {
 // and every tuple after them, because each tuple arm of a write that has nodes reads the node
 // arm before its first row (nodesWrittenFirst).
 //
-// No arm holds its nodes to the types the store holds, as queueNodes does (queueSupertagCheck):
+// No arm holds its nodes to the types the store holds, as queueNodes does (missingSupertagsSQL):
 // the arms are spliced into their caller's one statement - the publisher's record of a batch
 // above all - and a refusal decided before that statement runs has no statement of its own to run
 // in, while one decided inside it would end the record of a batch already sent. Every node an arm
@@ -220,9 +220,11 @@ graph_node_attributes as (
 }
 
 // claimArms append what each claim changed. The far ends a node holds now are read the way
-// CurrentOut reads them (CurrentTupleRead), so the read goes through graph_tuples_current, and
-// the insert states a retraction of every far end the claim is no longer at before the assertion
-// of the one it is at, in the order the caller gave its claims.
+// CurrentOut reads them (CurrentTupleRead), through graph_tuples_as_of_out: the kind each read
+// binds is the claim row's, which proves nothing of graph_tuples_current's predicate, so the read
+// takes the node's tuples of that kind and sorts them. The insert states a retraction of every
+// far end the claim is no longer at before the assertion of the one it is at, in the order the
+// caller gave its claims.
 // A claim with no far end (ToID empty) retracts what the node holds and asserts nothing in its
 // place, which is a role read unclaimed. where is the condition its insert reads its rows under,
 // as tupleInsert takes it.

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -19,28 +18,25 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// versionBytesStatement is statedVersionBytes' read of the node an image's or a file's row names,
-// which takes that row FOR SHARE.
-const versionBytesStatement = "select node_address from artifacts where id = $1 for share"
-
 // TestALaterVersionStatesItsBytesInTheStoreLockOrder holds statedVersionBytes (api/artifacts.go),
 // the write of the bytes of an image's or a file's later version on the node its row names
 // (dispatch://INFRA-1253), to the store's lock order, with the machinery
 // TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the creates with: a second version of an
-// issue's image takes the issue's owner lock, then its own artifacts row FOR SHARE, then appends the
-// artifact.version event, then the bytes under it.
+// issue's image takes the issue's owner lock, then reads its own artifacts row under it, locking
+// no row, then appends the artifact.version event, then the bytes under it.
 //
 // It then races the upload against the real backfill (graphcensus.Backfill) over a row an older
 // build wrote, with no node, no marker and no version node: the backfill names the node on the row,
 // and states no bytes there, since the version the row's newest is has no node of its own and its
 // bytes are the version pass's to state with that node (nameArtifactNodes). It is held at the
 // commit of that object pass, by a deferred trigger waiting on a lock the test holds, while the
-// upload of the second version runs. An issue's image waits for the backfill at its owner lock,
-// the issue's, which the backfill took first; a conversation's file, whose upload takes no owner
-// lock, waits at its artifacts row. Let go, the upload reads the node the backfill named and
+// upload of the second version runs. Each upload waits for the backfill at the document's owner
+// lock, which the backfill took first: an issue's image at the issue's, and a conversation's file,
+// whose upload takes no owner lock of its own conversation, at the file's own, which
+// statedVersionBytes takes before its read. Let go, the upload reads the node the backfill named and
 // states its bytes there, and the version pass, which then finds the first version no longer the
 // newest, states none: the node's bytes are the second version's alone.
-// Without the FOR SHARE the conversation's upload reads no node, states nothing, and the node
+// Without that lock the conversation's upload reads no node, states nothing, and the node
 // holds no bytes for good.
 func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
@@ -76,8 +72,8 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 		owner: "issue", kind: "image", mime: "image/png", waits: store.OwnerLockStatement,
 		first: pngBytes("the older build's picture"), second: pngBytes("the picture uploaded while the backfill ran"),
 	}, {
-		name: "a conversation's file waits at its artifacts row", route: "/api/v1/agents/" + session + "/artifacts",
-		owner: "session", kind: "file", mime: "application/octet-stream", waits: versionBytesStatement,
+		name: "a conversation's file waits at its document's owner lock", route: "/api/v1/agents/" + session + "/artifacts",
+		owner: "session", kind: "file", mime: "application/octet-stream", waits: store.OwnerLockStatement,
 		first: []byte("\x00\x01 the older build's trace"), second: []byte("\x00\x02 the trace uploaded while the backfill ran"),
 	}} {
 		t.Run(race.name, func(t *testing.T) {
@@ -167,24 +163,16 @@ func TestARemovalStatesItsDocumentGoneInTheStoreLockOrder(t *testing.T) {
 	requireEachStepIsWaitedAtInTurn(t, ctx, rig, writer)
 }
 
-// laterImageVersion is the upload of an issue's image's second version: the issue's owner lock, the
-// image's own artifacts row read FOR SHARE (statedVersionBytes), the artifact.version event and the
-// bytes it caused. Each run's image is uploaded afresh, at its first version, before the run.
+// laterImageVersion is the upload of an issue's image's second version: the issue's owner lock,
+// which statedVersionBytes takes again before it reads the image's own artifacts row, which it
+// locks no row of, the artifact.version event and the bytes it caused. Each run's image is
+// uploaded afresh, at its first version, before the run.
 func (r *storeWriterRig) laterImageVersion() storeWriter {
 	route := "/api/v1/issues/" + r.issue + "/artifacts"
-	var image string
 	return storeWriter{
 		name: "statedVersionBytes on an issue's image",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
-			{
-				name: "the image's row", order: projectionStep,
-				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
-					holdRow(t, ctx, holder, `select 1 from artifacts where id = $1::uuid for no key update`, image)
-				},
-				at:    versionBytesStatement,
-				takes: []tableLock{{"artifacts", rowShareMode}},
-			},
 			eventAppendStep(),
 			tupleAppendStep(),
 		},
@@ -195,7 +183,6 @@ func (r *storeWriterRig) laterImageVersion() storeWriter {
 			if first.Code != http.StatusCreated {
 				t.Fatalf("upload the first version of %s: status=%d body=%s", name, first.Code, first.Body.String())
 			}
-			image = decodeBody[artifactUploadResponse](t, first).Artifact.ID
 			return storeWriterRun{write: func() error {
 				return statusOrError(multipartRequest(t, r.call, route, map[string]string{"name": name}, name, "image/png",
 					pngBytes(name+" at its second version"), "alice"), http.StatusCreated)

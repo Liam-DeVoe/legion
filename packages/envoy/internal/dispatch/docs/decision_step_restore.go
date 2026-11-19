@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -121,23 +122,30 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 }
 
 // restoreIssue runs the third phase on one issue in a transaction of its own, which it commits,
-// or, under dryRun, rolls back.
+// or, under dryRun, rolls back. The transaction is that one issue's restore and no more: it begins
+// and ends here, and no other issue's work and no request runs in it. Its writes run at once, in
+// the order the restore makes them (joinAtOnce), since the restore reads what it wrote earlier in
+// the same transaction: the ask rows it pointed at the spec, the versions it wrote before the
+// events that name them, the nodes it stated. It logs how long the transaction stood open, from
+// its begin to its commit, or to its rollback, which bounds how long it held a transaction id.
 func (s *DecisionStep) restoreIssue(ctx context.Context, issue string, work []graphcensus.RestoreWork, convert, dryRun bool) (DecisionIssue, error) {
+	began := time.Now()
 	tx, err := s.database.Pool.Begin(ctx)
 	if err != nil {
 		return DecisionIssue{Issue: issue}, fmt.Errorf("begin the restore of %s: %w", issue, err)
 	}
 	defer tx.Rollback(context.Background())
-	joined, ledger := s.documents.Join(ctx, tx)
+	joined, ledger := s.documents.joinAtOnce(ctx, tx)
 	defer ledger.Discard()
 	result, err := s.documents.restoreIssueDecisions(joined, tx, issue, work, convert)
-	if err != nil || dryRun {
-		return result, err
+	if err == nil && !dryRun {
+		if err = ledger.Commit(ctx); err != nil {
+			err = fmt.Errorf("commit the restore of %s: %w", issue, err)
+		}
 	}
-	if err := ledger.Commit(ctx); err != nil {
-		return result, fmt.Errorf("commit the restore of %s: %w", issue, err)
-	}
-	return result, nil
+	s.logger.Info("dispatch: decisions step ended the transaction of an issue's restore",
+		"issue", issue, "held", time.Since(began), "committed", err == nil && !dryRun, "dry_run", dryRun)
+	return result, err
 }
 
 // rewriteGatedSteps takes `decisions` out of each project's list of gated steps that holds it,

@@ -429,25 +429,76 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 	return assertNoWaitPath(ctx, tx, []refs.IssueHalf{{Key: parent}}, refs.IssueHalf{Key: child})
 }
 
+// heldIssueNeeds is what an issue's waits stand at before a write moves them (readIssueNeeds):
+// the issues its current needs tuples name, in the order the store answers them, and each
+// blocked_by row it holds, by its target. The zero value is an issue this transaction creates,
+// which holds none of either.
+type heldIssueNeeds struct {
+	waiting []string
+	stored  map[string]storedIssueLink
+}
+
+// storedIssueLink is one blocked_by row an issue holds: whether it names its node and when it was
+// written.
+type storedIssueLink struct {
+	marked    bool
+	createdAt time.Time
+}
+
+// readIssueNeeds reads, in the read phase of a write of issue's waits and under the issue's owner
+// lock, under which no other writer moves them, what those waits stand at (heldIssueNeeds): the
+// needs tuples it states now and its blocked_by rows. Read there, the write phase that writes the
+// set (writeIssueNeeds) reads neither again.
+func readIssueNeeds(ctx context.Context, tx pgx.Tx, issue string) (heldIssueNeeds, error) {
+	current, err := graphstore.CurrentOut(ctx, tx, graphstore.KindIssue, issue, []string{graphstore.TupleNeeds})
+	if err != nil {
+		return heldIssueNeeds{}, err
+	}
+	var held heldIssueNeeds
+	for _, tuple := range current {
+		if tuple.ToKind == graphstore.KindIssue {
+			held.waiting = append(held.waiting, tuple.ToID)
+		}
+	}
+	rows, err := tx.Query(ctx, `
+		select target_key, node_kind is not null, created_at from issue_links
+		where issue_key = $1 and kind = 'blocked_by'
+	`, issue)
+	if err != nil {
+		return heldIssueNeeds{}, err
+	}
+	held.stored = map[string]storedIssueLink{}
+	var target string
+	var link storedIssueLink
+	if _, err := pgx.ForEachRow(rows, []any{&target, &link.marked, &link.createdAt}, func() error {
+		held.stored[target] = link
+		return nil
+	}); err != nil {
+		return heldIssueNeeds{}, err
+	}
+	return held, nil
+}
+
 // writeIssueNeeds validates the issues issue waits on and writes the set waits names: the
 // issue_links rows that project it, each naming the issue's node, and the needs tuples the write
 // appends and retracts, which it answers, held for the issue's own event to cause
-// (stateIssueRelations). It writes no row it keeps and states nothing the store holds already: a
-// target the issue waits on now and still names is left as it stands, a target it no longer names
-// loses its row and has its tuple retracted, dated at, and a new target gains both, its row dated
-// at the time its tuple carries. A row a process of the release before wrote, naming no node, is
-// named on its node where the set keeps it, its tuple dated at the row's own created_at, as the
-// backfill of those rows dates it (graphcensus' backfillIssueLinks), so graph_edges answers it as
-// it did. A target may be an issue of another project: an issue that waits on work tracked
-// elsewhere has to be able to record that wait, and the walk below is what refuses a ring, between
-// projects as inside one.
+// (stateIssueRelations). held is what the issue's waits stand at, read in the write's read phase
+// (readIssueNeeds), the zero value for an issue the write creates. It writes no row it keeps and
+// states nothing the store holds already: a target the issue waits on now and still names is left
+// as it stands, a target it no longer names loses its row and has its tuple retracted, dated at,
+// and a new target gains both, its row dated at the time its tuple carries. A row a process of the
+// release before wrote, naming no node, is named on its node where the set keeps it, its tuple
+// dated at the row's own created_at, as the backfill of those rows dates it (graphcensus'
+// backfillIssueLinks), so graph_edges answers it as it did. A target may be an issue of another
+// project: an issue that waits on work tracked elsewhere has to be able to record that wait, and
+// the walk below is what refuses a ring, between projects as inside one.
 //
 // caller is the one project the request's credential may write, empty for a credential that
 // names none (callerProject). A target outside it is refused here, under the locks, which is the
 // authoritative refusal: lockIssueDependencyWrite refuses the same caller before any lock is
 // taken, and both word it through refuseWaitOutsideCallerProject. Every other refusal takes the
 // code of the member the request named its waits by (issueWaits).
-func writeIssueNeeds(ctx context.Context, tx pgx.Tx, issue, project, caller string, waits issueWaits, at time.Time) ([]graphstore.Tuple, error) {
+func writeIssueNeeds(ctx context.Context, tx pgx.Tx, issue, project, caller string, waits issueWaits, held heldIssueNeeds, at time.Time) ([]graphstore.Tuple, error) {
 	if slices.Contains(waits.targets, issue) {
 		return nil, errorf(http.StatusBadRequest, waits.code, "%s names %s itself: an issue cannot wait on itself", waits.member, issue)
 	}
@@ -471,42 +522,10 @@ func writeIssueNeeds(ctx context.Context, tx pgx.Tx, issue, project, caller stri
 	if err := assertNoWaitPath(ctx, tx, from, refs.IssueHalf{Key: issue}); err != nil {
 		return nil, err
 	}
-	held, err := graphstore.CurrentOut(ctx, tx, graphstore.KindIssue, issue, []string{graphstore.TupleNeeds})
-	if err != nil {
-		return nil, err
-	}
-	waiting := map[string]bool{}
-	for _, tuple := range held {
-		if tuple.ToKind == graphstore.KindIssue {
-			waiting[tuple.ToID] = true
-		}
-	}
-	// Each row the issue holds now, by its target: whether it names its node and when it was
-	// written.
-	rows, err := tx.Query(ctx, `
-		select target_key, node_kind is not null, created_at from issue_links
-		where issue_key = $1 and kind = 'blocked_by'
-	`, issue)
-	if err != nil {
-		return nil, err
-	}
-	type storedLink struct {
-		marked    bool
-		createdAt time.Time
-	}
-	stored := map[string]storedLink{}
-	var target string
-	var link storedLink
-	if _, err := pgx.ForEachRow(rows, []any{&target, &link.marked, &link.createdAt}, func() error {
-		stored[target] = link
-		return nil
-	}); err != nil {
-		return nil, err
-	}
 	var tuples []graphstore.Tuple
 	var inserted, marked []string
 	for _, target := range waits.targets {
-		row, standing := stored[target]
+		row, standing := held.stored[target]
 		switch {
 		case !standing:
 			inserted = append(inserted, target)
@@ -514,13 +533,13 @@ func writeIssueNeeds(ctx context.Context, tx pgx.Tx, issue, project, caller stri
 		case !row.marked:
 			marked = append(marked, target)
 		}
-		if !waiting[target] {
+		if !slices.Contains(held.waiting, target) {
 			tuples = append(tuples, graphstore.IssueNeeds(issue, target, true, model.Actor{}, row.createdAt))
 		}
 	}
-	for _, tuple := range held {
-		if tuple.ToKind == graphstore.KindIssue && !slices.Contains(waits.targets, tuple.ToID) {
-			tuples = append(tuples, graphstore.IssueNeeds(issue, tuple.ToID, false, model.Actor{}, at))
+	for _, target := range held.waiting {
+		if !slices.Contains(waits.targets, target) {
+			tuples = append(tuples, graphstore.IssueNeeds(issue, target, false, model.Actor{}, at))
 		}
 	}
 	if _, err := tx.Exec(ctx, `

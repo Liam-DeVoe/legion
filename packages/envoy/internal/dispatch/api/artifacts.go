@@ -472,7 +472,7 @@ func (s *server) queueNewArtifact(
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&artifact.ID); err != nil {
 		return model.Artifact{}, graphstore.Uncaused{}, err
 	}
-	// A new document is its own room until the caller joins it to its issue's (joinIssueRoom).
+	// A new document is its own room until the caller joins it to its issue's (queueIssueRoomJoin).
 	artifact.Room = artifact.ID
 	var queryRole *string
 	if query != "" {
@@ -602,17 +602,23 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 // values are its newest version's (R16 of this branch's spec). It writes no node, so nothing
 // is queued before the event. A row an older build wrote names no node and states nothing here:
 // the backfill gives it its node and its newest version's bytes in the transaction that names the
-// node on the row (graphcensus' writeObjectBatch). The read takes the row FOR SHARE, which
-// conflicts with the backfill's lock of the row, so the two cannot both miss this version: either
-// the backfill named the node first and this read waits for it, sees the node and states these
-// bytes after the backfill's, or this upload holds the row first, the backfill waits for it to
-// commit, and then reads this version as the row's newest. That row lock is the one statement of
-// the upload's read phase that gives its transaction an id, and only an image's or a file's later
-// version takes it.
-func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifactID, mime string, size int, digest string, who model.Actor, at time.Time) (graphstore.Uncaused, error) {
+// node on the row (graphcensus' writeObjectBatch), which holds the document's owner lock to its
+// commit (the issue's, or for a document no issue owns its own: events.LockOwnerRows). The read
+// takes that same lock first, in the statement before it (store.LockOwnerAndRead), so the two
+// cannot both miss this version: either the backfill named the node first and this read waits for
+// it, sees the node and states these bytes after the backfill's, or this upload holds the lock
+// first, the backfill waits for it to commit, and then reads this version as the row's newest. The
+// lock is advisory, so the read, like every other of the upload's read phase, gives the
+// transaction no id: its write phase's batch does (storeArtifact). An issue's upload holds its
+// issue's lock already, and takes it again for nothing.
+func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifact model.Artifact, mime string, size int, digest string, who model.Actor, at time.Time) (graphstore.Uncaused, error) {
+	owner := store.ArtifactOwner(artifact.ID)
+	if artifact.IssueKey != nil {
+		owner = store.IssueOwner(*artifact.IssueKey)
+	}
 	var address *string
-	if err := tx.QueryRow(ctx, `select node_address from artifacts where id = $1 for share`, artifactID).Scan(&address); err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("read the node artifact %s names: %w", artifactID, err)
+	if err := store.LockOwnerAndRead(ctx, tx, owner, `select node_address from artifacts where id = $1`, []any{artifact.ID}, &address); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("read the node artifact %s names: %w", artifact.ID, err)
 	}
 	if address == nil {
 		return graphstore.Uncaused{}, nil
@@ -747,7 +753,7 @@ func (s *server) storeArtifact(
 			return
 		}
 		// A role document of a converted issue - its Verification document or its plan - joins the
-		// issue's room (joinIssueRoom below) and writes no role: the part it plays is the query
+		// issue's room (queueIssueRoomJoin below) and writes no role: the part it plays is the query
 		// value of its node, a query node of that name (decision 2 of this branch's plan), which the
 		// read projects as its role. Every other document keeps a room of its own
 		// (documentJoinsIssueRoom).
@@ -899,7 +905,7 @@ func (s *server) storeArtifact(
 		// A later version moves the node's bytes to its own, held for the event this upload
 		// appends below; a version this upload creates the document with was stated with the node.
 		if !created {
-			documentNode, err = statedVersionBytes(r.Context(), tx, artifact.ID, input.contentType, len(input.content), sha, actor, version.CreatedAt)
+			documentNode, err = statedVersionBytes(r.Context(), tx, artifact, input.contentType, len(input.content), sha, actor, version.CreatedAt)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
@@ -2730,37 +2736,40 @@ const issueTreeName = "tree"
 // written before the row that names it; and the issue's issue_trees row, which holds the issue to
 // one tree. Its version 1, empty, with its version node, as an empty document's create writes its
 // version 1, so a settlement of the room always finds the tree's latest version, is queued in the
-// read phase (planConvertedIssueRoom) and runs at the commit, after this row. It is one of the
-// create's inline writes, in its write phase, and answers what the node write stated, which the
-// caller causes under the event it appends (graphstore.QueueCaused). The caller holds the issue's
-// owner lock and creates the tree once: an issue_trees row standing for the issue already is
-// refused by that row's key, and the transaction with it. Each document_rooms row naming the tree
-// - the spec's, a document's joining the room later - is written under that same owner lock, held
-// to the writing transaction's commit, and announced in it (docs.AnnounceDocumentRooms says why a
-// room's settlement depends on that).
-func (s *server) createIssueTree(ctx context.Context, tx pgx.Tx, id, slug, key, project string, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
+// read phase (planConvertedIssueRoom) and runs at the commit, after this row. It queues all of it
+// on b, the create's write phase (createConvertedIssueRoom), with the node write written plans
+// (issueTreeWrite), whose statements the caller causes under the event it appends
+// (graphstore.QueueCaused). The caller holds the issue's owner lock and creates the tree once: an
+// issue_trees row standing for the issue already is refused by that row's key, and the
+// transaction with it. Each document_rooms row naming the tree - the spec's, a document's joining
+// the room later - is written under that same owner lock, held to the writing transaction's
+// commit, and announced in it (docs.AnnounceDocumentRooms says why a room's settlement depends on
+// that).
+func (s *server) createIssueTree(b *store.WriteBatch, written graphstore.Uncaused, id, slug, key, project string, actor model.Actor) error {
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		return graphstore.Uncaused{}, err
+		return err
 	}
+	if err := graphstore.QueueNodes(b, written); err != nil {
+		return fmt.Errorf("write the issue tree's node: %w", err)
+	}
+	b.Queue("create the issue tree", `
+		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, 'tree', false, $6, $7, $8)
+	`, id, key, project, slug, issueTreeName, actorJSON, graphstore.KindArtifact, graphstore.ArtifactRefKey(key, project, "", slug))
+	b.Queue("record the issue's tree", `insert into issue_trees (issue_key, artifact_id) values ($1, $2)`, key, id)
+	return nil
+}
+
+// issueTreeWrite is the node write of the tree artifact of the issue key in project under slug,
+// planned (graphstore.PlanUncaused) for createIssueTree to queue: the tree's node
+// (graphstore.ArtifactNode), made by actor at at and marked changed, with its part_of the issue
+// (graphstore.ArtifactPartOf).
+func issueTreeWrite(slug, key, project string, actor model.Actor, at time.Time) graphstore.Uncaused {
 	refKey := graphstore.ArtifactRefKey(key, project, "", slug)
 	node := graphstore.ArtifactNode(refKey, project, "", actor, at)
 	node.Changed = true
-	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node},
-		[]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)})
-	if err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("write the issue tree's node: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
-		values ($1, $2, $3, $4, $5, 'tree', false, $6, $7, $8)
-	`, id, key, project, slug, issueTreeName, actorJSON, graphstore.KindArtifact, refKey); err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("create the issue tree: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `insert into issue_trees (issue_key, artifact_id) values ($1, $2)`, key, id); err != nil {
-		return graphstore.Uncaused{}, fmt.Errorf("record the issue's tree: %w", err)
-	}
-	return written, nil
+	return graphstore.PlanUncaused([]graphstore.Node{node}, []graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)})
 }
 
 // quiesceDocuments closes every live document on every process, flushing each through the store,

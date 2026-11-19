@@ -410,14 +410,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// The close's and the reopen's document work (prepareWithdrawal, prepareRestoration): it reads
 	// the asks, which none of the patch's row writes below touches, and queues its writes. It runs
 	// before the advice so the advice knows which asks the patch withdraws or restores; its writes
-	// are queued, not made, so the advice's queries still hold no transaction id. The reopen's
-	// second half runs here too (recordRestoredAsksTx): its follow of the versions a settlement
-	// wrote while the issue was closed reads and renders those versions, document work that must
-	// not run once the issue's update below has given the transaction its id, and it plans the
-	// restored asks' parts before the follow plans the parts of the request it moves. Its writes
-	// and events queue after the document writes and before everything the patch queues below,
-	// which is where its writes run in the write phase.
-	var closingAsks []model.Ask
+	// are queued, not made, so the advice's queries still hold no transaction id. The close plans
+	// each ask's withdrawal here too, reading each ask's row and node before the issue's update
+	// below gives the transaction its id, and queues it after that update (recordWithdrawnAsksTx).
+	// The reopen's second half runs here too (recordRestoredAsksTx): its follow of the versions a
+	// settlement wrote while the issue was closed reads and renders those versions, document work
+	// that must not run once the issue's update below has given the transaction its id, and it
+	// plans the restored asks' parts before the follow plans the parts of the request it moves.
+	// Its writes and events queue after the document writes and before everything the patch
+	// queues below, which is where its writes run in the write phase.
+	var closingAsks withdrawal
 	var reopened restoredAsks
 	var restoredEvents []*model.Event
 	switch {
@@ -449,9 +451,20 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		afterRow.labels = labels
 	}
 	advice := s.writeAdviceBefore(r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, afterStatus, afterRow, adviceAsks{
-		excluded: askIDs(closingAsks),
+		excluded: askIDs(closingAsks.asks),
 		opened:   askIDs(reopened.asks),
 	})
+	// What the issue's waits stand at, read here in the read phase, under the owner lock, for the
+	// write below to move (readIssueNeeds).
+	var heldNeeds heldIssueNeeds
+	if waitsProvided {
+		read, err := readIssueNeeds(r.Context(), tx, key)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		heldNeeds = read
+	}
 	// The write phase: the statements from here on run back to back.
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
@@ -481,7 +494,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		relations.tuples = append(relations.tuples, affects...)
 	}
 	if waitsProvided {
-		needs, err := writeIssueNeeds(r.Context(), tx, key, before.Project, callerProject, waits, relationsAt)
+		needs, err := writeIssueNeeds(r.Context(), tx, key, before.Project, callerProject, waits, heldNeeds, relationsAt)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -618,7 +631,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var withdrawn []model.Ask
 	appended := append([]*model.Event{}, restoredEvents...)
 	if closing {
-		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, key, closingAsks, actor); err != nil {
+		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, ledger, key, closingAsks, actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
