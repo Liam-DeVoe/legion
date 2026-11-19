@@ -19,7 +19,9 @@ import ts from "typescript";
 
 /** One listed use of an opener, in the shape the Go half prints a call: its kind is "end" (a
  *  call), "wrapper" (a call in a wrapper, judged at each call of it), "uncalled" (one in a wrapper
- *  no file read calls), "value" (named and not called) or "load" (a module loaded at run time). */
+ *  no file read calls), "value" (named and not called) or "load" (a module loaded at run time).
+ *  Its callee and its argument are their whole source text with the white space folded, since a
+ *  judgement of the list names the call by them; `short` cuts them only for printing. */
 export interface Listed {
   readonly file: string;
   readonly line: number;
@@ -56,6 +58,12 @@ type Binding =
 const holds = (members: readonly string[] | "every", member: string) =>
   members === "every" || members.includes(member);
 
+/** text cut to 120 characters, for printing. */
+export const short = (text: string) => (text.length > 120 ? `${text.slice(0, 120)}…` : text);
+
+/** text with each run of white space folded to one space, as both halves print a call. */
+export const folded = (text: string) => text.replace(/\s+/g, " ").trim();
+
 /** Every opener use in `files`, each a path relative to the root with its text. */
 export function typescriptOpeners(files: ReadonlyMap<string, string>): Listed[] {
   const listed: Listed[] = [];
@@ -78,10 +86,7 @@ function fileOpeners(file: string, text: string): Listed[] {
   const constants = new Map<string, ts.Expression>();
   const listed: Listed[] = [];
   const at = (node: ts.Node) => source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-  const textOf = (node: ts.Node) => {
-    const t = node.getText(source).replace(/\s+/g, " ");
-    return t.length > 120 ? `${t.slice(0, 120)}…` : t;
-  };
+  const textOf = (node: ts.Node) => folded(node.getText(source));
   const enclosing = (node: ts.Node): string => {
     for (let n: ts.Node | undefined = node.parent; n !== undefined; n = n.parent) {
       if (
@@ -189,7 +194,7 @@ function fileOpeners(file: string, text: string): Listed[] {
       );
       if (parts.every(([ok]) => ok)) return [true, "an object of constants"];
     }
-    return [false, `the value ${textOf(e)}`];
+    return [false, `the value ${short(textOf(e))}`];
   };
 
   const used = new Set<ts.Node>();

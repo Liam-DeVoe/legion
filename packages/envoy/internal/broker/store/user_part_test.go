@@ -42,12 +42,13 @@ func TestOpenNamesNoPartOfTheBrokerDatabaseURLsUserPart(t *testing.T) {
 	}
 }
 
-// A BROKER_DATABASE_URL with an @ before its first / and another in its database name, whose host
-// pgx reads may be a piece of a password that holds a raw @ and then a raw /, is refused by Open by
-// its length and the cause before any connect: pgx names that host in every error of a connect. The
-// control is the same value with no @ after its /, whose failed ping names the host, so the row
-// would see a printed host. The user, the password and its piece are made for this test.
-func TestOpenRefusesABrokerDatabaseURLWithAnAtInItsPasswordAndItsDatabaseName(t *testing.T) {
+// A BROKER_DATABASE_URL with an @ before its first / and another after it, in its database name or
+// its query, whose host pgx reads may be a piece of a password that holds a raw @ and then a raw /
+// (and a ? and an = for the query), is refused by Open by its length and the cause before any
+// connect: pgx names that host in every error of a connect. The control is the same value with no @
+// after its /, whose failed ping names the host, so the row would see a printed host. The user, the
+// password and its piece are made for this test.
+func TestOpenRefusesABrokerDatabaseURLWithAnAtInItsPasswordAndAnotherAfterItsSlash(t *testing.T) {
 	const (
 		user  = "made-up-user-3a1c"
 		first = "not-a-secret-pw3a1c"
@@ -59,15 +60,20 @@ func TestOpenRefusesABrokerDatabaseURLWithAnAtInItsPasswordAndItsDatabaseName(t 
 	if _, err := Open(ctx, control); err == nil || !strings.Contains(err.Error(), piece) {
 		t.Fatalf("UNKNOWN: the control's failed ping names no host, so this row saw nothing: %v", err)
 	}
-	shape := "postgres://" + user + ":" + first + "@" + piece + "/x@127.0.0.1:1/broker?connect_timeout=3"
-	_, err := Open(ctx, shape)
-	named := fmt.Sprintf("BROKER_DATABASE_URL, a value of %d characters, has an @ before its first / and another in its database name", len(shape))
-	if err == nil || !strings.Contains(err.Error(), named) {
-		t.Fatalf("%v, want a failed ping naming %q", err, named)
-	}
-	for _, part := range []string{user, first, piece} {
-		if strings.Contains(err.Error(), part) {
-			t.Errorf("the failed ping names a part of the password as the host or the user: %q", err)
+	for _, shape := range []struct{ value, cause string }{
+		{"postgres://" + user + ":" + first + "@" + piece + "/x@127.0.0.1:1/broker?connect_timeout=3", "another in its database name"},
+		{"postgres://" + user + ":" + first + "@" + piece + "/x?connect_timeout=3&a=b@127.0.0.1:1/broker", "another in its query"},
+	} {
+		_, err := Open(ctx, shape.value)
+		named := fmt.Sprintf("BROKER_DATABASE_URL, a value of %d characters, has an @ before its first / and %s", len(shape.value), shape.cause)
+		if err == nil || !strings.Contains(err.Error(), named) {
+			t.Errorf("%v, want a failed ping naming %q", err, named)
+			continue
+		}
+		for _, part := range []string{user, first, piece} {
+			if strings.Contains(err.Error(), part) {
+				t.Errorf("the failed ping names a part of the password as the host or the user: %q", err)
+			}
 		}
 	}
 }

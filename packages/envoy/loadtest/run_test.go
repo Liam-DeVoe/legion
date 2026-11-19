@@ -218,6 +218,14 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 			want:    recordedPG(redacted),
 			secrets: []string{"not-a-secret-pw-2c8d", "not-a-secret-piece-2c8d"},
 		},
+		{
+			// An @ before the first / and another in the query: the host pgx reads may be a piece
+			// of a password that holds a raw @, /, ? and =, so parsePG refuses it too and it is
+			// recorded redacted whole.
+			args:    foreignPG("postgres://loader:not-a-secret-pw-3d9e@not-a-secret-piece-3d9e/x?connect_timeout=3&a=b@db.example:5432/dispatch"),
+			want:    recordedPG(redacted),
+			secrets: []string{"not-a-secret-pw-3d9e", "not-a-secret-piece-3d9e"},
+		},
 	} {
 		fs := flag.NewFlagSet("run", flag.ContinueOnError)
 		var ef endpointFlags

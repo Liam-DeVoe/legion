@@ -14,11 +14,13 @@
  * It reads every Go module of the repository (each `go.mod` git tracks; a module the workspace's
  * go.work does not name is read with GOWORK=off) with its Go half, `scripts/checks/db-openers/go/`,
  * which lists each call of an opener form of database/sql, pgx, pgconn, pgxpool, pgx's stdlib and
- * lib/pq in the module's non-test files, the forms read from those packages' own signatures, and
- * each call of a wrapper of one, and judges each by its argument. It reads every TypeScript and
- * JavaScript file git tracks, tests included, with its TypeScript half
+ * lib/pq in the module's non-test files, whatever their build constraints (a file only a build tag
+ * or another system builds is read in a build of its own), the forms read from those packages' own
+ * signatures, and each call of a wrapper of one, and judges each by its argument. It reads every
+ * TypeScript and JavaScript file git tracks, tests included, with its TypeScript half
  * (`scripts/checks/db-openers/typescript.ts`), which lists each use of Bun's SQL and of the
- * Postgres client modules.
+ * Postgres client modules. An entry of the list judges a call only when it names the call's file,
+ * function, callee and whole argument text; text is cut only where it is printed.
  *
  * It exits 0 when every call it lists is judged by reading or by an entry of the list, and 1 when a
  * call is neither, when an entry names no call it lists, or when it cannot say: when it listed no
@@ -30,7 +32,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { PLANTED, plantedBlind, plantedName } from "./db-openers/planted";
-import { type Listed, typescriptOpeners } from "./db-openers/typescript";
+import { folded, type Listed, short, typescriptOpeners } from "./db-openers/typescript";
 import { JUDGED, type JudgedOpener } from "./db-openers.judged";
 
 export const root = path.resolve(import.meta.dir, "../..");
@@ -168,10 +170,15 @@ export interface Read {
   readonly typescript: ReadonlyMap<string, string>;
 }
 
-/** The entry of `judged` that judges `call`, if one does: the same file, function and argument. */
+/** The entry of `judged` that judges `call`, if one does: the same file, function, callee and
+ *  whole argument text, each run of white space read as one space. */
 function entryFor(call: Listed, judged: readonly JudgedOpener[]): JudgedOpener | undefined {
   return judged.find(
-    (j) => j.file === call.file && j.function === call.function && j.argument === call.argument
+    (j) =>
+      j.file === call.file &&
+      j.function === call.function &&
+      j.callee === call.callee &&
+      folded(j.argument) === folded(call.argument)
   );
 }
 
@@ -212,7 +219,7 @@ export function run(
   let byList = 0;
   let open = 0;
   for (const call of calls) {
-    const where = `${call.file}:${call.line} ${call.function}: ${call.callee}(${call.argument})`;
+    const where = `${call.file}:${call.line} ${call.function}: ${call.callee}(${short(call.argument)})`;
     if (call.verdict === "judged") {
       byReading += 1;
       if (options.all) print(`judged ${where}: ${call.why}`);
@@ -236,12 +243,13 @@ export function run(
   const stale = judged.filter((j) => !used.has(j));
   for (const j of stale)
     print(
-      `STALE ${j.file} ${j.function}(${j.argument}): the list judges a call the search no longer lists`
+      `STALE ${j.file} ${j.function}: ${j.callee}(${short(j.argument)}): the list judges a call the search no longer lists`
     );
   for (const g of read.go) {
     const s = g.summary ?? {};
+    const builds = Array.isArray(s.builds) ? s.builds.length : 0;
     print(
-      `${g.module}: ${s.files ?? 0} Go files read (${s.skipped ?? 0} left out by build constraints), ${s.forms ?? 0} opener forms, ${g.listed.filter((c) => !plantedFiles.has(c.file)).length} calls`
+      `${g.module}: ${s.files ?? 0} Go files read (${s.constrained ?? 0} that only a build tag or another system builds), in ${builds} builds, ${s.forms ?? 0} opener forms, ${g.listed.filter((c) => !plantedFiles.has(c.file)).length} calls`
     );
   }
   print(

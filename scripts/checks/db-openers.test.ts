@@ -48,10 +48,16 @@ test("a run that did not read its planted shapes is UNKNOWN and exits 1", () => 
   );
 });
 
+const JUDGEMENT = {
+  file: "a.ts",
+  function: "open",
+  callee: "bun SQL",
+  argument: "url",
+  why: "a test's own judgement",
+};
+
 test("the TypeScript half lists each planted shape as marked", () => {
-  const { lines } = searched({ [plantedName]: PLANTED, "a.ts": OPENER }, [
-    { file: "a.ts", function: "open", argument: "url", why: "a test's own judgement" },
-  ]);
+  const { lines } = searched({ [plantedName]: PLANTED, "a.ts": OPENER }, [JUDGEMENT]);
   expect(lines.filter((line) => line.startsWith("UNKNOWN"))).toEqual([]);
 });
 
@@ -68,15 +74,52 @@ test("an opener handed a value no reading judges fails, naming it", () => {
 
 test("a judgement that names no call the search lists fails, naming it", () => {
   const judged = [
-    { file: "a.ts", function: "open", argument: "url", why: "a test's own judgement" },
-    { file: "a.ts", function: "gone", argument: "url", why: "a call since removed" },
+    JUDGEMENT,
+    { ...JUDGEMENT, function: "gone", why: "a call since removed" },
   ];
   expect(searched({ "a.ts": OPENER }, judged)).toEqual({
     exit: 1,
     lines: [
-      "STALE a.ts gone(url): the list judges a call the search no longer lists",
+      "STALE a.ts gone: bun SQL(url): the list judges a call the search no longer lists",
       "TypeScript: 1 files read, 1 uses",
       "FAIL 1 opener calls: 0 judged by what they pass, 0 in wrappers judged at each call, 1 by the list; 0 unjudged, 1 stale entries",
     ],
   });
+});
+
+// A judgement is of one opener: the same call made with another client is a new call to judge,
+// and the old judgement, which names a call no longer there, is stale. The control is the call
+// unchanged, which its judgement still judges.
+test("a judgement names the call's opener: the same call with another client is unjudged", () => {
+  expect(searched({ "a.ts": OPENER }, [JUDGEMENT]).exit).toBe(0);
+  const pg = OPENER.replace('import { SQL } from "bun"', 'import { Client as SQL } from "pg"');
+  expect(searched({ "a.ts": pg }, [JUDGEMENT])).toEqual({
+    exit: 1,
+    lines: [
+      "UNJUDGED a.ts:3 open: pg Client(url): the value url",
+      "STALE a.ts open: bun SQL(url): the list judges a call the search no longer lists",
+      "TypeScript: 1 files read, 1 uses",
+      "FAIL 1 opener calls: 0 judged by what they pass, 0 in wrappers judged at each call, 0 by the list; 1 unjudged, 1 stale entries",
+    ],
+  });
+});
+
+// A judgement names the whole argument, so a change past the 120 characters a line prints is a
+// new call to judge. The control is the long call unchanged, and the same call written over two
+// lines, since only the white space is folded.
+test("a judgement names the call's whole argument: a change past its printed part is unjudged", () => {
+  const head = `{ connectionString: url, application_name: "${"x".repeat(150)}", password: `;
+  const call = (rest: string) =>
+    `import { SQL } from "bun";\nexport function open(url: string) {\n  return new SQL(${head}${rest} });\n}\n`;
+  const judged = [{ ...JUDGEMENT, argument: `${head}"" }` }];
+  expect(searched({ "a.ts": call('""') }, judged).exit).toBe(0);
+  expect(searched({ "a.ts": call('""').replace("password: ", "password:\n    ") }, judged).exit).toBe(
+    0
+  );
+  const changed = searched({ "a.ts": call("process.env.OTHER_PASSWORD") }, judged);
+  expect(changed.exit).toBe(1);
+  expect(changed.lines.filter((line) => /^(UNJUDGED|STALE) /.test(line)).map((l) => l.split(" ")[0])).toEqual(
+    ["UNJUDGED", "STALE"]
+  );
+  expect(changed.lines.every((line) => line.length < 400)).toBe(true);
 });

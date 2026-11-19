@@ -14,10 +14,11 @@ import (
 )
 
 // Each misread form of a Postgres connection string is refused naming its cause, one row per
-// cause, an @ in the database name among them, and each honest form whose other @ is in its query,
-// or in its database name written %40, is read; a value pgx cannot parse is refused by its length
-// too, and a failed connect names no user and no database. No refusal holds a part of the value.
-// The user, the passwords and the token are made for this test.
+// cause: a raw @ anywhere after the first @ among them, in the database name or the query alike.
+// Each honest form with one @, or whose other @ is written %40 in its database name or its query,
+// is read; a value pgx cannot parse is refused by its length too, and a failed connect names no
+// user and no database. No refusal holds a part of the value. The user, the passwords and the
+// token are made for this test.
 func TestEachOpenerReadsItsConnectionStringWithNoPartOfItsUserPartPrinted(t *testing.T) {
 	const (
 		user   = "made-up-user-71ce"
@@ -36,7 +37,11 @@ func TestEachOpenerReadsItsConnectionStringWithNoPartOfItsUserPartPrinted(t *tes
 		{"a ? in the password, which pgx keeps in the user part", "postgres://" + user + ":" + first + "?" + second + "@127.0.0.1:1/x", ""},
 		{"a token with a ? as the user part", "postgres://" + token + "?" + second + "@127.0.0.1:1/x", ""},
 		{"a mistyped option", "postgres://" + user + ":" + first + "@127.0.0.1:1/x?sslmode=bogus", pgsetting.NotParsed},
-		{"an @ in the query", "postgres://" + user + ":" + first + "@127.0.0.1:1/x?application_name=a@b", ""},
+		{"one @, which ends the user part", "postgres://" + user + ":" + first + "@127.0.0.1:1/x?application_name=ab", ""},
+		{"an @ in the query", "postgres://" + user + ":" + first + "@127.0.0.1:1/x?application_name=a@b", pgsetting.AtInQuery},
+		{"an @ in the query of a user with no password", "postgres://" + user + "@127.0.0.1:1/x?application_name=a@b", pgsetting.AtInQuery},
+		{"an @, a /, a ? and an = in the password, read as a host, a database name and an option", "postgres://" + user + ":" + first + "@" + second + "/x?a=b@127.0.0.1:1/x", pgsetting.AtInQuery},
+		{"an @ in the query written %40", "postgres://" + user + ":" + first + "@127.0.0.1:1/x?application_name=a%40b", ""},
 		{"an @ in the database name", "postgres://" + user + ":" + first + "@127.0.0.1:1/dis@patch", pgsetting.AtInDatabaseName},
 		{"an @ and a / in the password, read as a host and a database name", "postgres://" + user + ":" + first + "@" + second + "/x@127.0.0.1:1/x", pgsetting.AtInDatabaseName},
 		{"an @ in the database name written %40", "postgres://" + user + ":" + first + "@127.0.0.1:1/dis%40patch", ""},

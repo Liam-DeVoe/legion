@@ -84,9 +84,10 @@ const (
 	// ControlCharacter: net/url refuses a control character, and a line that showed the value
 	// would carry it; a line ending left from a file is the usual one.
 	ControlCharacter Misreading = "holds a control character (a line ending or a tab, often one left from a file); remove it"
-	// NoScheme: the value has no "://". net/url reads the text before its first colon as the
-	// scheme and the rest as an opaque path, so the @ that ends a user part is left over, or the
-	// value does not parse; the cause is the missing scheme, which the TypeScript check names too.
+	// NoScheme: the value does not start with a scheme and "://" (a "://" later, in its path or
+	// query, is no scheme's). net/url reads the text before its first colon as the scheme and the
+	// rest as an opaque path, so the @ that ends a user part is left over, or the value does not
+	// parse; the cause is the missing scheme, which the TypeScript check names too.
 	NoScheme Misreading = "does not start with http:// or https://, so its user part is read as a scheme and a path; write the scheme first"
 	// Unparsed: net/url cannot parse a value that holds an @, whose error quotes it whole, and a
 	// user part that holds a /, ?, # or \ is the usual cause (its password then reads as a port).
@@ -108,7 +109,7 @@ func Misread(raw string) Misreading {
 	if strings.ContainsFunc(raw, func(r rune) bool { return r < ' ' || r == 0x7f }) {
 		return ControlCharacter
 	}
-	if !strings.Contains(raw, "://") {
+	if !startsWithScheme(raw) {
 		return NoScheme
 	}
 	parsed, err := url.Parse(raw)
@@ -120,6 +121,22 @@ func Misread(raw string) Misreading {
 		return AtOutsideUserPart
 	}
 	return ""
+}
+
+// startsWithScheme reports whether raw starts with a scheme as RFC 3986 writes one (a letter, then
+// letters, digits, +, - and .) and "://".
+func startsWithScheme(raw string) bool {
+	scheme, _, found := strings.Cut(raw, "://")
+	if !found || scheme == "" {
+		return false
+	}
+	for i, c := range scheme {
+		letter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+		if !letter && (i == 0 || !(c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.')) {
+			return false
+		}
+	}
+	return true
 }
 
 // Refusal is the refusal of raw, the value of the setting named, for what its check found (why).

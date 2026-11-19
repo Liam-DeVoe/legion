@@ -61,6 +61,9 @@ from go_build_tags import go_skips_dir, tag_sets
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
 INFRA = "packages/envoy/infra"
+# The research prototype's module, outside the root go.work, and its job's one step.
+PROTOTYPE = "docs/research/temporal-evaluation-2026-11/prototype"
+PROTOTYPE_STEP = "Test the research prototype"
 FIX = "packages/contracts/fixtures"
 GO_TARGETS = ".github/go-release-targets.json"
 CLIENT_TARGETS = ".github/agent-secrets-client-targets.json"
@@ -3285,6 +3288,16 @@ GATES = [
          f"the hosts it faults (the job's FAULT_HOSTS) and the log its refusals are counted from "
          f"are that step's arguments"),
     ) + bun_job("proof-sdk-offline")),
+
+    # The prototype-go job: `go test ./...` of the research prototype's module, which is outside
+    # the repository's go.work. GOWORK=off is a GO* name, outside ENV_ALLOWED, so the step is
+    # pinned whole, and its Run carries the same setting, which makes the closure the module's own
+    # (its go.mod and go.sum, no workspace).
+    gate("prototype_go", "prototype-go", exact=[
+        pinned_step("prototype-go", PROTOTYPE_STEP, PROTOTYPE, "GOWORK=off go test -count=1 ./...", [
+            (PROTOTYPE, ["./..."], "GOWORK=off go test ./...", {"env": {"GOWORK": "off"}}),
+        ]),
+    ], reads=setup_go("prototype-go", f"{PROTOTYPE}/go.mod")),
 
     # The ci-images job: the image copy, the package mode of the image gate, which reads
     # ghcr.io, and the tool copy, which fills the second source of every tool install. These are

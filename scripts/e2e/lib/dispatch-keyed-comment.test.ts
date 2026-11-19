@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { proxyTarget } from "./dispatch-keyed-comment";
+import { forwardingProxy } from "./dispatch-keyed-comment";
 
 const check = join(import.meta.dir, "dispatch-keyed-comment.ts");
 const servers: Server<undefined>[] = [];
@@ -260,15 +261,56 @@ test("a check with no issue is a usage error", async () => {
   expect(stderr).toContain("--issue is required");
 });
 
-// The proxy sends each request it forwards to --url's own origin, with the request's path and query
-// written after it, so a path that begins `//` names no other host, and --url's user part is not
-// sent on. The control is the same path read against --url as a base, which names the other host.
-// The password is made for this test.
-test("the proxy forwards a path that begins // to --url's own origin", () => {
-  const url = new URL("http://made-up-user:not-a-secret-pw-6c1d@127.0.0.1:8766/");
-  const incoming = new URL("http://127.0.0.1:1//another.example/api/v1/issues?project=X");
-  expect(new URL(incoming.pathname + incoming.search, url).host).toBe("another.example");
-  expect(proxyTarget(url, incoming)).toBe(
-    "http://127.0.0.1:8766//another.example/api/v1/issues?project=X"
+// The proxy the --cli check runs the command through sends each request to --url's own origin,
+// with the request's path and query written after it: a request whose path begins `//` reaches
+// --url's own server under that path, and --url's user part is not sent on. The request is written
+// on a socket, since Bun's fetch would send the path with one slash. The control is the same path
+// read against --url as a base, which names the other host. The password is made for this test.
+test("the proxy forwards a path that begins // to --url's own origin", async () => {
+  const seen: { path: string; authorization: string | null }[] = [];
+  const dispatch = Bun.serve({
+    fetch(request) {
+      const asked = new URL(request.url);
+      seen.push({
+        authorization: request.headers.get("authorization"),
+        path: asked.pathname + asked.search,
+      });
+      return new Response("dispatch");
+    },
+    hostname: "127.0.0.1",
+    port: 0,
+  });
+  servers.push(dispatch);
+  const url = new URL(`http://made-up-user:not-a-secret-pw-6c1d@127.0.0.1:${dispatch.port}/`);
+  const path = "//another.example/api/v1/issues?project=X";
+  expect(new URL(path, url).host).toBe("another.example");
+  const asked: string[] = [];
+  const proxy = forwardingProxy(url, async (_request, incoming, response) => {
+    asked.push(incoming.pathname + incoming.search);
+    return response;
+  });
+  servers.push(proxy);
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  const socket = connect(proxy.port, "127.0.0.1", () =>
+    socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`)
   );
+  let answer = "";
+  socket.on("data", (chunk) => {
+    answer += chunk;
+  });
+  socket.on("end", () => resolve(answer));
+  socket.on("error", reject);
+  const written = await promise;
+  expect({
+    answered: written.split("\r\n")[0],
+    asked,
+    body: written.split("\r\n\r\n")[1],
+    // Bun's fetch, which the proxy forwards with, sends a leading `//` as one slash.
+    seen: seen.map((one) => ({ ...one, path: one.path.replace(/^\/+/, "/") })),
+  }).toEqual({
+    answered: "HTTP/1.1 200 OK",
+    asked: [path],
+    body: "dispatch",
+    seen: [{ authorization: null, path: "/another.example/api/v1/issues?project=X" }],
+  });
 });

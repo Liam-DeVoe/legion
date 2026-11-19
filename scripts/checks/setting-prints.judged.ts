@@ -158,8 +158,8 @@ const RESTS = {
     'if err := pgsetting.Refuse("DATABASE_URL", boot.DatabaseURL); err != nil {',
     "cba966fcef60"
   ),
-  misread: basis("packages/envoy/pgsetting/pgsetting.go", "func misread(", "ff6b44be0650"),
-  misreadNet: basis("packages/envoy/internal/redact/url.go", "func Misread(", "5c34564869f4"),
+  misread: basis("packages/envoy/pgsetting/pgsetting.go", "func misread(", "221168d2df5b"),
+  misreadNet: basis("packages/envoy/internal/redact/url.go", "func Misread(", "7a874dfb402f"),
   loopback: basis(`${DISPATCH}main.go`, "func loopbackDatabase(", "654bd6fbf695"),
   mounted: basis(`${DISPATCH}main.go`, "func logDevSignInMounted(", "98a15d292b9a"),
   devOrigin: basis(
@@ -848,7 +848,7 @@ export const JUDGED: readonly Judged[] = [
   {
     file: `${DISPATCH}main.go`,
     text: "serves a loopback database only: DATABASE_URL names host %q",
-    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx reads apart (pgsetting.Refuse: more than one @ before the first /, an @ after the first / with none before it, or an @ before the first / and another in the database name), so pgx ends the user part at its one @ before the first /, before that host, and keeps a ?, # or \\ before that @ in the user part; a password that holds an @ and, after it, a / is refused, since the host pgx would read from it can be a piece of that password",
+    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx reads apart (pgsetting.Refuse: a raw @ anywhere after the first @, that is more than one @ before the first /, an @ after the first / with none before it, or an @ before the first / and another in the database name or the query), so pgx ends the user part at the one @ the value holds, before that host, and keeps a ?, # or \\ before that @ in the user part; a password that holds a raw @ is refused whatever follows it, so the host pgx reads cannot be a piece of a password",
     rests: [RESTS.bootMisread, RESTS.misread, RESTS.loopback],
   },
   {

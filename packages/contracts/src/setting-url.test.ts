@@ -220,6 +220,10 @@ describe("unshownSettingUrl", () => {
     [`https://made-up-user:${secret}@host.example/a\tb`, control],
     [`https://made-up-user:pa/${secret}@host.example`, `${unparsed}; ${userPart}`],
     [`made-up-user:${secret}@host.example`, "it does not start with http:// or https://"],
+    [
+      `made-up-user:${secret}@host.example/?next=http://x.example`,
+      "it does not start with http:// or https://",
+    ],
     [`https://MadeUpTok3n/${secret}@host.example`, atOutside],
     [`https://made-up-user:4821#${secret}@host.example`, atOutside],
     ["https://host.example/?to=a@b", atOutside],

@@ -40,12 +40,13 @@ func TestAPGValueIsReadWithNoPartOfItsUserPartPrinted(t *testing.T) {
 	}
 }
 
-// A -pg value with an @ before its first / and another in its database name, whose host pgx reads
-// may be a piece of a password that holds a raw @ and then a raw /, is refused by connectPG and by
-// connectAs (the rooms probe) alike, by its length and the cause before any connect: pgx names that
-// host in every error of a connect. The control is the same value with no @ after its /, whose
-// failed connect names the host. The user, the password and its piece are made for this test.
-func TestAPGValueWithAnAtInItsPasswordAndItsDatabaseNameIsRefused(t *testing.T) {
+// A -pg value with an @ before its first / and another after it, in its database name or its
+// query, whose host pgx reads may be a piece of a password that holds a raw @ and then a raw / (and
+// a ? and an = for the query), is refused by connectPG and by connectAs (the rooms probe) alike, by
+// its length and the cause before any connect: pgx names that host in every error of a connect. The
+// control is the same value with no @ after its /, whose failed connect names the host. The user,
+// the password and its piece are made for this test.
+func TestAPGValueWithAnAtInItsPasswordAndAnotherAfterItsSlashIsRefused(t *testing.T) {
 	const (
 		user  = "made-up-user-7c3d"
 		first = "not-a-secret-pw7c3d"
@@ -54,8 +55,10 @@ func TestAPGValueWithAnAtInItsPasswordAndItsDatabaseNameIsRefused(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	control := "postgres://" + user + ":" + first + "@" + piece + "/dispatch?connect_timeout=3"
-	shape := "postgres://" + user + ":" + first + "@" + piece + "/x@127.0.0.1:1/dispatch?connect_timeout=3"
-	named := fmt.Sprintf("-pg, a value of %d characters, has an @ before its first / and another in its database name", len(shape))
+	shapes := []struct{ value, cause string }{
+		{"postgres://" + user + ":" + first + "@" + piece + "/x@127.0.0.1:1/dispatch?connect_timeout=3", "another in its database name"},
+		{"postgres://" + user + ":" + first + "@" + piece + "/x?connect_timeout=3&a=b@127.0.0.1:1/dispatch", "another in its query"},
+	}
 	for name, connect := range map[string]func(string) error{
 		"connectPG": func(url string) error { _, err := connectPG(ctx, url); return err },
 		"connectAs": func(url string) error { _, err := connectAs(ctx, url, "loadgen-row"); return err },
@@ -64,13 +67,17 @@ func TestAPGValueWithAnAtInItsPasswordAndItsDatabaseNameIsRefused(t *testing.T) 
 			if err := connect(control); err == nil || !strings.Contains(err.Error(), piece) {
 				t.Fatalf("UNKNOWN: the control's failed connect names no host, so this row saw nothing: %v", err)
 			}
-			err := connect(shape)
-			if err == nil || !strings.Contains(err.Error(), named) {
-				t.Fatalf("%v, want a failed connect naming %q", err, named)
-			}
-			for _, part := range []string{user, first, piece} {
-				if strings.Contains(err.Error(), part) {
-					t.Errorf("the failed connect names a part of the password as the host or the user: %q", err)
+			for _, shape := range shapes {
+				named := fmt.Sprintf("-pg, a value of %d characters, has an @ before its first / and %s", len(shape.value), shape.cause)
+				err := connect(shape.value)
+				if err == nil || !strings.Contains(err.Error(), named) {
+					t.Errorf("%v, want a failed connect naming %q", err, named)
+					continue
+				}
+				for _, part := range []string{user, first, piece} {
+					if strings.Contains(err.Error(), part) {
+						t.Errorf("the failed connect names a part of the password as the host or the user: %q", err)
+					}
 				}
 			}
 		})

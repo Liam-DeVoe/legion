@@ -34,6 +34,7 @@ func TestEachMisreadingIsNamedByItsCause(t *testing.T) {
 		{"an @ in the query and no user part", "http://envoy.example:9020/?via=a@b", AtOutsideUserPart},
 		{"a user part and no scheme, its user read as one", user + ":" + password + "@envoy.example:9020", NoScheme},
 		{"a token and no scheme", token + "@envoy.example:9020", NoScheme},
+		{"a user part and no scheme, with :// in its query", user + ":" + password + "@envoy.example:9020/?next=http://x.example", NoScheme},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Misread(tc.raw)
@@ -71,6 +72,7 @@ func TestEachCauseIsTheOneTheTypeScriptCheckNames(t *testing.T) {
 		{"https://made-up-user:" + secret + "@host.example/a\tb", ControlCharacter},
 		{"https://made-up-user:pa/" + secret + "@host.example", Unparsed},
 		{"made-up-user:" + secret + "@host.example", NoScheme},
+		{"made-up-user:" + secret + "@host.example/?next=http://x.example", NoScheme},
 		{"https://MadeUpTok3n/" + secret + "@host.example", AtOutsideUserPart},
 		{"https://made-up-user:4821#" + secret + "@host.example", AtOutsideUserPart},
 		{"https://host.example/?to=a@b", AtOutsideUserPart},

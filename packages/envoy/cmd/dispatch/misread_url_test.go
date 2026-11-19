@@ -81,19 +81,21 @@ func TestBootRefusesAMisreadDatabaseURLByItsLength(t *testing.T) {
 	}
 }
 
-// A DATABASE_URL whose other @ is in its query, after a ?, is read by pgx and net/url alike, and so
-// is one whose @ in its database name is written %40: it boots, and under the dev sign-in it is
-// admitted on a loopback host. Its control is the same value with its host remote, which the dev
-// sign-in refuses naming that host, so the host the fence read is the one both readers read. The
-// user and the password are made for this test.
-func TestBootAdmitsADatabaseURLWhoseOtherAtIsInItsQueryOrDatabaseName(t *testing.T) {
+// A DATABASE_URL with one @, which ends its user part, boots, and so does one whose other @ is
+// written %40, in its query or in its database name: pgx reads each as net/url does, and decodes
+// the %40 of a query value. Under the dev sign-in each is admitted on a loopback host. Its control
+// is the same value with its host remote, which the dev sign-in refuses naming that host, so the
+// host the fence read is the one both readers read. The user and the password are made for this
+// test.
+func TestBootAdmitsADatabaseURLWithOneAtOrItsOtherAtWrittenPercent40(t *testing.T) {
 	const (
 		user     = "made-up-user-8e2d"
 		password = "not-a-secret-c41f"
 	)
 	for _, rest := range []string{
-		"/dispatch?application_name=dispatch@box",
-		"/dispatch?sslmode=require&application_name=ops@example.com",
+		"/dispatch?application_name=dispatch-box",
+		"/dispatch?application_name=dispatch%40box",
+		"/dispatch?sslmode=require&application_name=ops%40example.com",
 		"/dis%40patch",
 	} {
 		for _, userPart := range []string{user + ":" + password + "@", user + "@"} {
@@ -148,26 +150,25 @@ func TestADatabaseURLWhosePasswordHoldsAnAtNamesNoPartOfIt(t *testing.T) {
 	}
 }
 
-// A DATABASE_URL with an @ before its first / and another in its database name reads two ways: a
-// password that holds a raw @ and then a raw / (postgres://<user>:<p>@<piece>/x@<host>/db) gives
-// pgx the host <piece>, a piece of the password, and an honest host with an @ in its database name
-// (postgres://<user>:<p>@<host>/dis@patch) reads the same. pgx names the host it read in every
-// error of a connect, a later query's included, so no line can be kept from printing the piece once
-// such a value is admitted: it is refused at every boot, under the dev sign-in or not, by the
-// census and by store.Open, by its length and the cause. Each honest form can be written with the
-// @ as %40, in the password or in the database name, and boots. The control is the same value with
-// no @ after its /, whose host each line names, so each line under test is reached. The user, the
-// password and its piece are made for this test.
-func TestADatabaseURLWithAnAtInItsPasswordAndItsDatabaseNameIsRefusedByItsLength(t *testing.T) {
+// A DATABASE_URL with an @ before its first / and another after it, in its database name or its
+// query, reads two ways: a password that holds a raw @ and then a raw / (and, for the query, a ?
+// and an =) gives pgx the host <piece>, a piece of the password
+// (postgres://<user>:<p>@<piece>/x@<host>/db, postgres://<user>:<p>@<piece>/x?a=b@<host>/db),
+// and an honest host with an @ in its database name or a query value reads the same
+// (postgres://<user>:<p>@<host>/dis@patch, …/db?application_name=dispatch@box). pgx names the host
+// it read in every error of a connect, a later query's included, so no line can be kept from
+// printing the piece once such a value is admitted: each is refused at every boot, under the dev
+// sign-in or not, by the census and by store.Open, by its length and the cause. Each honest form
+// can be written with the @ as %40, in the password, the database name or the query, and boots.
+// The control is the same value with no @ after its /, whose host each line names, so each line
+// under test is reached. The user, the password and its piece are made for this test.
+func TestADatabaseURLWithAnAtInItsPasswordAndAnotherAfterItsSlashIsRefusedByItsLength(t *testing.T) {
 	const (
 		user  = "made-up-user-6b0e"
 		first = "not-a-secret-pw6b0e"
 		piece = "not-a-secret-piece-6b0e"
 	)
-	const cause = "has an @ before its first / and another in its database name"
-	shape := "postgres://" + user + ":" + first + "@" + piece + "/x@127.0.0.1:1/dispatch?connect_timeout=3"
 	control := "postgres://" + user + ":" + first + "@" + piece + "/dispatch?connect_timeout=3"
-	named := fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(shape), cause)
 	censusText := func(databaseURL string) string {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -191,36 +192,44 @@ func TestADatabaseURLWithAnAtInItsPasswordAndItsDatabaseNameIsRefusedByItsLength
 			return "(admitted)"
 		}
 	}
-	for _, line := range []struct {
-		name    string
-		text    func(string) string
-		control bool
-	}{
-		{"the boot", boot(bootEnvironment), false},
-		{"the boot under the dev sign-in", boot(devSignInEnvironment), true},
-		{"the census", censusText, true},
-		{"store.Open", open, true},
+	for _, shape := range []struct{ name, value, cause string }{
+		{"in its database name", "postgres://" + user + ":" + first + "@" + piece + "/x@127.0.0.1:1/dispatch?connect_timeout=3", "has an @ before its first / and another in its database name"},
+		{"in its query", "postgres://" + user + ":" + first + "@" + piece + "/x?connect_timeout=3&a=b@127.0.0.1:1/dispatch", "has an @ before its first / and another in its query"},
 	} {
-		t.Run(line.name, func(t *testing.T) {
-			if text := line.text(control); line.control && !strings.Contains(text, piece) {
-				t.Fatalf("UNKNOWN: the control names no host, so this row saw nothing: %q", text)
-			}
-			text := line.text(shape)
-			shown := strings.NewReplacer(user, "<USER>", first, "<P1>", piece, "<PIECE>").Replace(text)
-			if !strings.Contains(text, named) {
-				t.Errorf("%q, want the refusal %q", shown, named)
-			}
-			for _, part := range []string{user, first, piece} {
-				if strings.Contains(text, part) {
-					t.Errorf("the line names a part of the password as the host or the user: %q", shown)
-					break
+		named := fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(shape.value), shape.cause)
+		for _, line := range []struct {
+			name    string
+			text    func(string) string
+			control bool
+		}{
+			{"the boot", boot(bootEnvironment), false},
+			{"the boot under the dev sign-in", boot(devSignInEnvironment), true},
+			{"the census", censusText, true},
+			{"store.Open", open, true},
+		} {
+			t.Run(shape.name+", "+line.name, func(t *testing.T) {
+				if text := line.text(control); line.control && !strings.Contains(text, piece) {
+					t.Fatalf("UNKNOWN: the control names no host, so this row saw nothing: %q", text)
 				}
-			}
-		})
+				text := line.text(shape.value)
+				shown := strings.NewReplacer(user, "<USER>", first, "<P1>", piece, "<PIECE>").Replace(text)
+				if !strings.Contains(text, named) {
+					t.Errorf("%q, want the refusal %q", shown, named)
+				}
+				for _, part := range []string{user, first, piece} {
+					if strings.Contains(text, part) {
+						t.Errorf("the line names a part of the password as the host or the user: %q", shown)
+						break
+					}
+				}
+			})
+		}
 	}
 	for _, encoded := range []string{
 		"postgres://" + user + ":" + first + "%40" + piece + "%2Fx@127.0.0.1:1/dispatch",
+		"postgres://" + user + ":" + first + "%40" + piece + "%2Fx%3Fa%3Db@127.0.0.1:1/dispatch",
 		"postgres://" + user + ":" + first + "@127.0.0.1:1/dis%40patch",
+		"postgres://" + user + ":" + first + "@127.0.0.1:1/dispatch?application_name=dispatch%40box",
 	} {
 		for _, environment := range []func(map[string]string) settingValues{bootEnvironment, devSignInEnvironment} {
 			if _, err := resolveBootConfig(environment(map[string]string{"DATABASE_URL": encoded})); err != nil {
@@ -277,8 +286,10 @@ func TestBootRefusesAServiceURLWithAnAtLeftOverByItsLength(t *testing.T) {
 // (<user>:<password>@host:port) are refused naming the missing scheme, by the value's length: net/url
 // reads the text before the first colon as the scheme and the rest as an opaque path, so the @ that
 // ends the user part is left over, and words that told the reader to write it as %40 would point at
-// the wrong correction. The control is the same value with http:// before it, which boots. The user
-// and the password are made for this test.
+// the wrong correction. A :// later in the value, in its query, is no scheme's, and the refusal is
+// the same. The control is the same value with http:// before it, which boots, or, with that query,
+// is refused for no scheme (DISPATCH_AGENT_SECRETS_URL takes no path). The user and the password are
+// made for this test.
 func TestBootRefusesAServiceURLWithAUserPartAndNoSchemeNamingTheScheme(t *testing.T) {
 	const (
 		user     = "made-up-user-2f8d"
@@ -292,19 +303,24 @@ func TestBootRefusesAServiceURLWithAUserPartAndNoSchemeNamingTheScheme(t *testin
 			}
 			return bootEnvironment(overrides)
 		}
-		t.Run(setting, func(t *testing.T) {
-			value := user + ":" + password + "@host.example"
-			_, err := resolveBootConfig(environment(value))
-			want := fmt.Sprintf("%s, a value of %d characters, does not start with http:// or https://", setting, len(value))
-			if err == nil || !strings.HasPrefix(err.Error(), want) {
-				t.Fatalf("err = %v, want a refusal that begins %q", err, want)
-			}
-			if strings.Contains(err.Error(), user) || strings.Contains(err.Error(), password) {
-				t.Errorf("the refusal holds a part of the user part: %q", err)
-			}
-			if _, err := resolveBootConfig(environment("http://" + value)); err != nil {
-				t.Errorf("the control with http:// before it: %v, want it admitted", err)
-			}
-		})
+		for _, value := range []string{user + ":" + password + "@host.example", user + ":" + password + "@host.example/?next=http://x.example"} {
+			t.Run(fmt.Sprintf("%s, %d characters", setting, len(value)), func(t *testing.T) {
+				_, err := resolveBootConfig(environment(value))
+				want := fmt.Sprintf("%s, a value of %d characters, does not start with http:// or https://", setting, len(value))
+				if err == nil || !strings.HasPrefix(err.Error(), want) {
+					t.Fatalf("err = %v, want a refusal that begins %q", err, want)
+				}
+				if strings.Contains(err.Error(), user) || strings.Contains(err.Error(), password) {
+					t.Errorf("the refusal holds a part of the user part: %q", err)
+				}
+				_, err = resolveBootConfig(environment("http://" + value))
+				switch {
+				case !strings.Contains(value, "?") && err != nil:
+					t.Errorf("the control with http:// before it: %v, want it admitted", err)
+				case err != nil && strings.Contains(err.Error(), "does not start with http"):
+					t.Errorf("the control with http:// before it: %v, want no refusal of its scheme", err)
+				}
+			})
+		}
 	}
 }

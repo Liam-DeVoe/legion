@@ -299,8 +299,8 @@ func (a *analysis) judge(fd *ast.FuncDecl, params map[types.Object]int, e ast.Ex
 	if depth > 8 {
 		return verdict{why: "a value read through more than 8 assignments"}
 	}
-	if line, how := a.readFirst(fd, e, pos); line > 0 {
-		return verdict{judged: true, why: fmt.Sprintf("read by %s first, at line %d", how, line)}
+	if line, how := a.guard(fd, e, pos); line > 0 {
+		return verdict{judged: true, why: fmt.Sprintf("guarded by %s, at line %d", how, line)}
 	}
 	if tv, ok := info.Types[e]; ok && tv.Value != nil {
 		return verdict{judged: true, why: "a constant"}
@@ -353,7 +353,7 @@ func (a *analysis) judge(fd *ast.FuncDecl, params map[types.Object]int, e ast.Ex
 		}
 		fn := calleeOf(x, info)
 		if fn == nil {
-			return verdict{why: "the answer of " + a.text(x.Fun)}
+			return verdict{why: "the answer of " + a.short(x.Fun)}
 		}
 		callee := funcName(fn)
 		switch {
@@ -373,9 +373,9 @@ func (a *analysis) judge(fd *ast.FuncDecl, params map[types.Object]int, e ast.Ex
 		}
 		return verdict{why: "the answer of " + strings.TrimPrefix(callee, a.m.path+"/")}
 	case *ast.SelectorExpr:
-		return verdict{why: "the field " + a.text(x)}
+		return verdict{why: "the field " + a.short(x)}
 	}
-	return verdict{why: "the value " + a.text(e)}
+	return verdict{why: "the value " + a.short(e)}
 }
 
 // combine is the verdict on a value built from two: unjudged when either is, a wrapper's when
@@ -459,26 +459,333 @@ func (a *analysis) assigned(fd *ast.FuncDecl, obj types.Object) ([]ast.Expr, str
 	return values, unknown
 }
 
-// readFirst is the line of a call of the formatter (pgsetting.Refuse, ParseConfig or
-// ParsePoolConfig) in fd, before pos, that reads e, and which call it is; 0 when none does.
-func (a *analysis) readFirst(fd *ast.FuncDecl, e ast.Expr, pos token.Pos) (int, string) {
-	if fd == nil {
+// guard is the line of a call of the formatter (pgsetting.Refuse, ParseConfig or ParsePoolConfig)
+// in fd that guards e at pos, and which call it is; 0 when none does. A call guards e when its
+// error ends the function (refusal), it is a statement of a block that holds pos, before the
+// statement that holds pos, in the same function literal as pos, it read the very variable or
+// field e names (same), and no line can change that value between the two (unwritten). A goto in
+// fd can jump past the call, so fd then has no guard.
+func (a *analysis) guard(fd *ast.FuncDecl, e ast.Expr, pos token.Pos) (int, string) {
+	if fd == nil || hasGoto(fd) {
 		return 0, ""
 	}
-	line, how := 0, ""
-	ast.Inspect(fd.Body, func(n ast.Node) bool {
-		c, ok := n.(*ast.CallExpr)
-		if !ok || line > 0 || c.Pos() >= pos || len(c.Args) < 2 {
-			return line == 0
+	nodes := enclosing(fd.Body, pos)
+	// Only a block after the last function literal that holds pos runs on pos's path each time.
+	first := 0
+	for i, n := range nodes {
+		if _, ok := n.(*ast.FuncLit); ok {
+			first = i + 1
 		}
-		fn := calleeOf(c, a.m.info)
-		if fn == nil || !formatterReads[funcName(fn)] || !a.same(c.Args[1], e) {
+	}
+	for k := first; k < len(nodes)-1; k++ {
+		list := statements(nodes[k])
+		if list == nil {
+			continue
+		}
+		holding := -1
+		for i, s := range list {
+			if s == nodes[k+1] {
+				holding = i
+			}
+		}
+		for i := range max(holding, 0) {
+			var next ast.Stmt
+			if i+1 < holding {
+				next = list[i+1]
+			}
+			c := a.refusal(list[i], next)
+			if c == nil || !a.same(c.Args[1], e) || !a.unwritten(fd, e, list[i].End(), pos, nodes[k+1:]) {
+				continue
+			}
+			fn := calleeOf(c, a.m.info)
+			return a.m.fset.Position(c.Pos()).Line, "pgsetting." + fn.Name()
+		}
+	}
+	return 0, ""
+}
+
+// enclosing is the nodes of root that hold pos, outermost first.
+func enclosing(root ast.Node, pos token.Pos) []ast.Node {
+	var nodes []ast.Node
+	ast.Inspect(root, func(n ast.Node) bool {
+		if n == nil || pos < n.Pos() || pos >= n.End() {
+			return false
+		}
+		nodes = append(nodes, n)
+		return true
+	})
+	return nodes
+}
+
+// statements is the statement list n holds directly: a block's, or a case's.
+func statements(n ast.Node) []ast.Stmt {
+	switch x := n.(type) {
+	case *ast.BlockStmt:
+		return x.List
+	case *ast.CaseClause:
+		return x.Body
+	case *ast.CommClause:
+		return x.Body
+	}
+	return nil
+}
+
+func hasGoto(fd *ast.FuncDecl) bool {
+	found := false
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if b, ok := n.(*ast.BranchStmt); ok && b.Tok == token.GOTO {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// refusal is the formatter's call s makes whose error ends the function: `if <call> != nil {
+// … return }`, `if err := <call>; err != nil { … return }` (or `_, err :=`), or `err := <call>`
+// (or `x, err :=`, or `=`) with next `if err != nil { … return }`; nil otherwise.
+func (a *analysis) refusal(s, next ast.Stmt) *ast.CallExpr {
+	switch x := s.(type) {
+	case *ast.IfStmt:
+		if x.Init == nil {
+			if c := a.formatterCall(nilTested(x)); c != nil && endsFunction(x) {
+				return c
+			}
+			return nil
+		}
+		if c, err := a.errorOf(x.Init); c != nil && a.testsError(x, err) {
+			return c
+		}
+	case *ast.AssignStmt:
+		if c, err := a.errorOf(x); c != nil {
+			if test, ok := next.(*ast.IfStmt); ok && test.Init == nil && a.testsError(test, err) {
+				return c
+			}
+		}
+	}
+	return nil
+}
+
+// errorOf is the formatter's call s assigns and the variable it puts the call's error in, when s
+// is `err := <call>`, `x, err := <call>` or the same with `=`.
+func (a *analysis) errorOf(s ast.Stmt) (*ast.CallExpr, types.Object) {
+	assign, ok := s.(*ast.AssignStmt)
+	if !ok || len(assign.Rhs) != 1 || (assign.Tok != token.DEFINE && assign.Tok != token.ASSIGN) {
+		return nil, nil
+	}
+	c := a.formatterCall(assign.Rhs[0])
+	if c == nil {
+		return nil, nil
+	}
+	results := calleeOf(c, a.m.info).Type().(*types.Signature).Results().Len()
+	if len(assign.Lhs) != results {
+		return nil, nil
+	}
+	id, ok := ast.Unparen(assign.Lhs[results-1]).(*ast.Ident)
+	if !ok {
+		return nil, nil
+	}
+	obj := a.object(id)
+	if obj == nil {
+		return nil, nil
+	}
+	return c, obj
+}
+
+// testsError reports whether the if statement x is `if err != nil { … return }`, with no else.
+func (a *analysis) testsError(x *ast.IfStmt, err types.Object) bool {
+	id, ok := ast.Unparen(nilTested(x)).(*ast.Ident)
+	return ok && a.object(id) == err && endsFunction(x)
+}
+
+// nilTested is what x's condition compares with nil (`<e> != nil` or `nil != <e>`), or nil.
+func nilTested(x *ast.IfStmt) ast.Expr {
+	cond, ok := ast.Unparen(x.Cond).(*ast.BinaryExpr)
+	if !ok || cond.Op != token.NEQ {
+		return nil
+	}
+	isNil := func(e ast.Expr) bool { id, ok := ast.Unparen(e).(*ast.Ident); return ok && id.Name == "nil" }
+	switch {
+	case isNil(cond.Y):
+		return cond.X
+	case isNil(cond.X):
+		return cond.Y
+	}
+	return nil
+}
+
+// endsFunction reports whether the if statement x has no else and its body ends with a return.
+func endsFunction(x *ast.IfStmt) bool {
+	if x.Else != nil || len(x.Body.List) == 0 {
+		return false
+	}
+	_, ok := x.Body.List[len(x.Body.List)-1].(*ast.ReturnStmt)
+	return ok
+}
+
+// formatterCall is e when it is a call of pgsetting.Refuse, ParseConfig or ParsePoolConfig with
+// the value as its second argument, and nil otherwise.
+func (a *analysis) formatterCall(e ast.Expr) *ast.CallExpr {
+	if e == nil {
+		return nil
+	}
+	c, ok := ast.Unparen(e).(*ast.CallExpr)
+	if !ok || len(c.Args) < 2 {
+		return nil
+	}
+	fn := calleeOf(c, a.m.info)
+	if fn == nil || !formatterReads[funcName(fn)] {
+		return nil
+	}
+	return c
+}
+
+// object is what id declares or names.
+func (a *analysis) object(id *ast.Ident) types.Object {
+	if obj := a.m.info.Defs[id]; obj != nil {
+		return obj
+	}
+	return a.m.info.Uses[id]
+}
+
+// fieldPath is e as a variable and the fields selected from it (cfg.DatabaseURL is cfg and
+// [DatabaseURL]), with ok false when e is no such path or a selection in it goes through a
+// pointer, which another name can write.
+func (a *analysis) fieldPath(e ast.Expr) (root types.Object, fields []string, ok bool) {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		obj, isVar := a.object(x).(*types.Var)
+		return obj, nil, isVar
+	case *ast.SelectorExpr:
+		sel := a.m.info.Selections[x]
+		if sel == nil || sel.Kind() != types.FieldVal || sel.Indirect() {
+			return nil, nil, false
+		}
+		root, fields, ok := a.fieldPath(x.X)
+		return root, append(fields, x.Sel.Name), ok
+	}
+	return nil, nil, false
+}
+
+// overlaps reports whether a write of target can change the value e names: target is e, or a field
+// path that holds e, or one e holds. An index or a dereference writes its base.
+func (a *analysis) overlaps(target, e ast.Expr) bool {
+	for {
+		switch x := ast.Unparen(target).(type) {
+		case *ast.IndexExpr:
+			target = x.X
+			continue
+		case *ast.IndexListExpr:
+			target = x.X
+			continue
+		case *ast.StarExpr:
+			target = x.X
+			continue
+		}
+		break
+	}
+	for {
+		root, fields, ok := a.fieldPath(target)
+		if ok {
+			eRoot, eFields, _ := a.fieldPath(e)
+			if root != eRoot {
+				return false
+			}
+			for i := range min(len(fields), len(eFields)) {
+				if fields[i] != eFields[i] {
+					return false
+				}
+			}
 			return true
 		}
-		line, how = a.m.fset.Position(c.Pos()).Line, "pgsetting."+fn.Name()
+		// A selection through a pointer writes what its base's path names, or an alias of it.
+		sel, isSel := ast.Unparen(target).(*ast.SelectorExpr)
+		if !isSel {
+			return false
+		}
+		target = sel.X
+	}
+}
+
+// unwritten reports whether no line of fd can change the value e names between the formatter's
+// statement, which ends at from, and pos: e is a variable of fd's own (or a field path of one) that
+// no pointer reaches (its address, by & or a method with a pointer receiver, is not taken before
+// pos or where a write would count), and no write of it falls after from and before pos, in a
+// function literal, or in a loop of inside (the nodes that hold pos, below the block that holds
+// both), which runs pos again after the write.
+func (a *analysis) unwritten(fd *ast.FuncDecl, e ast.Expr, from, pos token.Pos, inside []ast.Node) bool {
+	root, _, ok := a.fieldPath(e)
+	if !ok || root.Pos() < fd.Pos() || root.Pos() >= fd.End() {
 		return false
+	}
+	var loop ast.Node
+	for _, n := range inside {
+		switch n.(type) {
+		case *ast.ForStmt, *ast.RangeStmt:
+			if loop == nil {
+				loop = n
+			}
+		}
+	}
+	written := false
+	var literals []*ast.FuncLit
+	between := func(at token.Pos) bool {
+		if at >= from && at < pos {
+			return true
+		}
+		if loop != nil && at >= loop.Pos() && at < loop.End() {
+			return true
+		}
+		for _, l := range literals {
+			if at >= l.Pos() && at < l.End() {
+				return true
+			}
+		}
+		return false
+	}
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if l, ok := n.(*ast.FuncLit); ok {
+			literals = append(literals, l)
+		}
+		return true
 	})
-	return line, how
+	write := func(target ast.Expr, at token.Pos) {
+		if target != nil && a.overlaps(target, e) && between(at) {
+			written = true
+		}
+	}
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range x.Lhs {
+				write(lhs, x.Pos())
+			}
+		case *ast.IncDecStmt:
+			write(x.X, x.Pos())
+		case *ast.RangeStmt:
+			if x.Tok == token.ASSIGN {
+				write(x.Key, x.Pos())
+				write(x.Value, x.Pos())
+			}
+		case *ast.UnaryExpr:
+			if x.Op == token.AND && a.overlaps(x.X, e) && (x.Pos() < pos || between(x.Pos())) {
+				written = true
+			}
+		case *ast.SelectorExpr:
+			// A method with a pointer receiver, called on an addressable value, takes its address.
+			if sel := a.m.info.Selections[x]; sel != nil && sel.Kind() == types.MethodVal {
+				if recv := sel.Obj().Type().(*types.Signature).Recv(); recv != nil {
+					_, pointerRecv := recv.Type().(*types.Pointer)
+					_, pointerBase := a.m.info.TypeOf(x.X).(*types.Pointer)
+					if pointerRecv && !pointerBase && a.overlaps(x.X, e) && (x.Pos() < pos || between(x.Pos())) {
+						written = true
+					}
+				}
+			}
+		}
+		return !written
+	})
+	return !written
 }
 
 // same reports whether x and y name the same variable, or the same field path of one.
@@ -560,14 +867,19 @@ func (a *analysis) args(c *ast.CallExpr, positions []int) string {
 	return strings.Join(parts, ", ")
 }
 
-// text is n's source, its white space folded, at most 120 bytes.
+// text is n's source with its white space folded: whole, since a judgement names a call by it.
 func (a *analysis) text(n ast.Node) string {
 	start, end := a.m.fset.Position(n.Pos()), a.m.fset.Position(n.End())
 	src := a.m.sources[start.Filename]
 	if end.Offset > len(src) || start.Offset > end.Offset {
 		return "?"
 	}
-	t := strings.Join(strings.Fields(string(src[start.Offset:end.Offset])), " ")
+	return strings.Join(strings.Fields(string(src[start.Offset:end.Offset])), " ")
+}
+
+// short is text cut to 120 bytes, for the words of a verdict.
+func (a *analysis) short(n ast.Node) string {
+	t := a.text(n)
 	if len(t) > 120 {
 		t = t[:120] + "…"
 	}
@@ -600,23 +912,4 @@ func (a *analysis) record(c *call) record {
 		verdict = "judged"
 	}
 	return record{File: filepath.ToSlash(rel), Line: p.Line, Function: c.function, Callee: c.callee, Argument: c.argument, Kind: c.kind, Verdict: verdict, Why: c.verdict.why}
-}
-
-// summary is what the run read and listed.
-func (a *analysis) summary() map[string]any {
-	counts := map[string]int{}
-	for _, c := range a.calls {
-		counts[a.record(c).Verdict]++
-	}
-	packages := 0
-	for p := range a.m.packages {
-		if p == a.m.path || strings.HasPrefix(p, a.m.path+"/") {
-			packages++
-		}
-	}
-	return map[string]any{
-		"module": a.m.path, "files": len(a.m.files), "packages": packages, "skipped": a.m.skipped,
-		"forms": len(a.forms), "calls": len(a.calls), "judged": counts["judged"], "wrapper": counts["wrapper"],
-		"unjudged": counts["unjudged"], "wrappers": len(a.wrappers), "rounds": a.rounds, "typeErrors": a.m.typeErrors,
-	}
 }
