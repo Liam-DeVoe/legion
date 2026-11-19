@@ -1822,12 +1822,6 @@ destructures them, and the first one it calls while building a failure message t
 what it asked for nor what it found.
 The wrapper binds that context, and `__tests__/jest-dom-messages.test.ts` holds it in place by
 reading the message a failing `toHaveAttribute` throws.
-It cures the six matchers this suite uses — `toBeInTheDocument` and its negation,
-`toHaveAttribute`, `toHaveTextContent`, `toHaveFocus`, `toHaveClass` and `toBeEnabled` — and not
-every matcher jest-dom ships: `toHaveStyle` and `toHaveFormValues` want a `this.utils.diff` that
-Bun's context does not carry at all, and still throw when they fail.
-No row calls either; the first row that wants one supplies that `diff` in
-`__tests__/jest-dom-matchers.ts`.
 An exact `textContent` comparison stays `toBe`, since `toHaveTextContent` matches a substring and
 normalises whitespace.
 
@@ -3384,8 +3378,8 @@ a note.
 
 ## Accessibility and visual review
 
-Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass that runs on
-every pull request and a containerised visual review that runs on the full lane. Each entry of
+Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass and a
+containerised visual review that runs on the full lane. Each entry of
 that table carries the router path it stands for, the URL to open against `e2e/review-seed.ts`'s
 corpus, the locator that says the page is drawn, and which of the two layers reviews it, so the
 count of pages each covers is a program's answer rather than a sentence here.

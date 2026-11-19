@@ -268,10 +268,12 @@ The clock of a unit test:
   product's module exports, not by a literal copy of it, so a change of that delay changes the test
   too. Under the fake clock, user-event comes from `userOnFakeClock` in `web/src/__tests__/user.ts`.
 
-- A row sets no deadline of its own. The deadline of each test is the `--timeout 60000` of
-  `package.json`'s `test:web` and `test:harness` scripts, and `web/src/__tests__/setup.ts` says how
-  it was sized. On Bun 1.4.4, the pin, that deadline fires under a held clock too: a row that held
-  the clock and awaited a promise that nothing resolved ended at 3.04 s under `--timeout 3000`.
+- A `web/src` row sets no deadline of its own. The deadline of each test is the `--timeout 60000`
+  of `package.json`'s `test:web` script, and `web/src/__tests__/setup.ts` says how it was sized.
+  On Bun 1.4.4, the pin, that deadline fires under a held clock too: a row that held the clock and
+  awaited a promise that nothing resolved ended at 3.04 s under `--timeout 3000`. A harness row in
+  `e2e/__tests__` that starts a child states its own limit with `rowLimit` from
+  `e2e/__tests__/bounded-subprocess.ts`: the sum of the bounds of what it waits for, plus 30 s.
 
 - A harness test in `e2e/__tests__` that waits on a real process or a real socket keeps a bounded
   real wait, because only real time moves that peer (`local-instance-support.test.ts`,
@@ -285,18 +287,26 @@ The clock of a unit test:
   runs through `bun run test:web <file>`, which loads the preloads, and never through a bare
   `bun test <file>`.
 
+- `web/src/__tests__/register-dom.ts`, the first preload of `test:web`, registers happy-dom by a
+  hand call, at the origin `http://dispatch.test`. Bun 1.4.4, the pin, has no setting that could
+  do it: its `bunfig.toml` reader reads no `environment` key under `[test]`
+  (`src/bunfig/bunfig.rs` at tag `bun-v1.4.4`), so the call stays until a Bun release reads one.
+
 How a unit test acts on the page and reads it:
 
 - A row acts as a person does, through user-event. A `fireEvent` call carries a comment within
   the five lines above it that says why user-event has no form for it.
 
-- A row reads focus and attributes through jest-dom: `expect(el).toHaveFocus()`, never
-  `expect(document.activeElement).toBe(el)`, and `expect(el).toHaveAttribute(name, value)`, never
-  `expect(el.getAttribute(name))` with `.toBe()`, `.toBeNull()`, `.toContain()` or `.toMatch()`.
-  `expect.stringContaining` and `expect.stringMatching` give `toHaveAttribute` a part of the
-  value. A site that keeps the hand-written form carries its reason the same way.
+- A row reads focus and attributes through jest-dom. Focus is `expect(el).toHaveFocus()`, never
+  `expect(document.activeElement).toBe(el)`, `expect(el).toBe(document.activeElement)` or an
+  `expect` of a comparison with `document.activeElement`. An attribute is
+  `expect(el).toHaveAttribute(name, value)`, never `expect(el.getAttribute(name))` with `.toBe()`,
+  `.toBeNull()`, `.toContain()` or `.toMatch()`, and never `expect(el.hasAttribute(name))` with
+  `.toBe()`. `expect.stringContaining` and `expect.stringMatching` give `toHaveAttribute` a part
+  of the value. A site that keeps the hand-written form carries its reason the same way.
   `.github/scripts/check-fireevent-reasons.sh`, which CI's lint job runs, refuses a call or a read
-  without one.
+  without one. A read of a property of the focused element, such as its `tagName`, is not one of
+  these forms.
 
 Pages under `docs/solutions/` that describe what this layout replaced. They stay as history, and
 no page there is edited:
