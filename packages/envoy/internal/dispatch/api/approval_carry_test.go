@@ -20,8 +20,8 @@ import (
 // with an earlier approval names that approval's version, time and approver in its approval
 // (approval.approved: version, at, by), so the human reads what he is approving since the version
 // he approved rather than from nothing; a first request names none. A person's answer to an
-// ask block is held once, on the ask's node, and changes no byte of the document
-// (dispatch://INFRA-1150 R3), so it writes no version and an approval stands through it; the
+// ask block is held once, on the ask's node, and changes no byte of the document,
+// so it writes no version and an approval stands through it; the
 // carries that remain are those of a version restoring the approved text, of R2's readings
 // (reading_approval_test.go) and of R10's case (docs.carryApproval).
 
@@ -385,7 +385,7 @@ func decodePayload[T any](t *testing.T, event carryEvent) T {
 
 // storedAnswerAttributes are the seven server-owned attributes of an ask block a stored version
 // could hold, as their markdown spells them. A version written on a fleet of one build holds
-// none (dispatch://INFRA-1150 R10).
+// none.
 var storedAnswerAttributes = []string{` state="`, ` answered_by="`, ` answered_at="`, ` selected="`, ` answer="`, ` copied_from="`, ` copied_from_document="`}
 
 // requireNoAnswerAttributes fails t unless markdown, a stored version's, holds none of the seven
@@ -401,7 +401,7 @@ func requireNoAnswerAttributes(t *testing.T, what, markdown string) {
 
 // requireNoVersionPast fails t unless, once the document owes no settlement, its latest version is
 // still number: what the test wrote since - an answer, a resolution - is held on the asks' nodes
-// and rows and changed no byte of the document (dispatch://INFRA-1150 R3).
+// and rows and changed no byte of the document.
 func requireNoVersionPast(t *testing.T, handler http.Handler, database *store.Store, artifactID string, number int) {
 	t.Helper()
 	awaitSettled(t, database, artifactID)
@@ -411,9 +411,9 @@ func requireNoVersionPast(t *testing.T, handler http.Handler, database *store.St
 	}
 }
 
-// A person's answer is held once, on the ask's node, and changes no byte of the document
-// (dispatch://INFRA-1150 R3: "Once the whole fleet runs this build, a person's answer changes no
-// byte of any document, and an approval of that document stands through it"). So his answer to a
+// A person's answer is held once, on the ask's node, and changes no byte of the document: once
+// the whole fleet runs this build, a person's answer changes no byte of any document, and an
+// approval of that document stands through it. So his answer to a
 // block the agent wrote since his approval writes no version and carries nothing: the approval
 // stays where it stood, stale. Once he approves the version holding the block, his change of the
 // answer and the resolution of the other block write no version either, and his approval stands
@@ -632,8 +632,7 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 // browser's socket edit does: a document-socket peer sets them on the block in its own tree, which
 // no route's checks hold, and stays connected for the rest of the test, as an open editor does. No
 // server write puts a block's attributes on it alone any more: an answer is held on the ask's node
-// (dispatch://INFRA-1150 R3), and the roll window's copy is settlement's (docs'
-// rollWindowAskAttributes).
+// alone, and the roll window's copy is settlement's (docs' rollWindowAskAttributes).
 func setLiveBlockAttributes(t *testing.T, handler http.Handler, documents *docs.Service, artifactID, blockID string, attributes map[string]any) {
 	t.Helper()
 	peer := connectBrowserPeer(t, handler, documents, artifactID)
@@ -716,8 +715,8 @@ func TestAParagraphEditBeforeTheAnswerDoesNotCarry(t *testing.T) {
 
 // Approved: answers by humans other than the approver - here alice's answer to one block and bob's
 // own to the other, on a document only bob approved - write no version, so his approval stands
-// at the latest version through both (dispatch://INFRA-1150 R3: "a person's answer changes no
-// byte of any document, and an approval of that document stands through it"), whoever answered.
+// at the latest version through both - a person's answer changes no byte of any document, and an
+// approval of that document stands through it - whoever answered.
 func TestAnswersByHumansOtherThanTheApproverWriteNoVersionAndTheApprovalStands(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved by another", "Context\n\n"+waveAsk+"\n"+regionAsk)
@@ -775,8 +774,8 @@ func TestAnAnswerAfterAnotherHumanRequestedChangesDoesNotCarry(t *testing.T) {
 // his approval (docs.restoresApprovedText). An agent reading the text reads his answer on the
 // block again, rendered from the store, and settlement writes nothing back into the block, so no
 // version follows; the delete's version carried nothing. The agent cannot make the delete
-// itself: no agent takes a person's answered decision out of a document (dispatch://INFRA-1150
-// R6), so its delete is refused and writes no version.
+// itself: no agent takes a person's answered decision out of a document, so its delete is refused
+// and writes no version.
 func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "TEST", "Answered block restored", "Context\n\n"+regionAsk)
@@ -814,7 +813,7 @@ func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(
 		t.Fatalf("the block's ask after the delete and the insert = state %q answer %#v, want alice's answer kept", ask.State, ask.Answer)
 	}
 	awaitTextShows(t, handler, issue.PrimaryArtifactID, "the row's answer on the restored block",
-		contains(`:::ask{#region urgency="low" multiple="false" state="answered" answered_by="alice"`), nil)
+		contains(`:::ask{#region urgency="low" multiple="false"}`, `#region state="answered" answered_by="alice"`), nil)
 	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), nil)
 	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, 3)
 	if carried := documentReviews(t, handler, issue.PrimaryArtifactID); len(carried) != 2 || carried[0].Version != 3 || carried[1].Version != 1 {
@@ -855,6 +854,42 @@ func TestAnAnswerThroughACopysSourceWritesNoVersionOfEitherDocument(t *testing.T
 	requireNoVersionPast(t, handler, database, copied, copyLatest)
 	requireNoCarry(t, handler, issue.PrimaryArtifactID, 1, "approved")
 	requireNoCarry(t, handler, copied, 1, "approved")
+}
+
+// The version write that carries an approval writes one ask's parts twice: it moves the open
+// request to the new version, which rewords its question, and the carry then answers it. The
+// second plan reads the rows the first queued, so each write is a revision of its own: the
+// question moves to revision 2 and the answer arrives at revision 3, and the question's part
+// records the time of the rewording that moved it, not the time of the answer. The version is the
+// agent's undo of its own edit, which holds the approved text (docs.restoresApprovedText): an
+// answer writes no version here, so no answer carries.
+func TestTheCarrysAnswerAndTheRequestsMoveTakeARevisionEach(t *testing.T) {
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	issue := createInteractionIssue(t, handler, "TEST", "Request moved and answered at once", "Context\n")
+	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
+	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)
+	request := requestApproval(t, handler, issue.PrimaryArtifactID)
+	if request.Approval.Version != 2 {
+		t.Fatalf("request = %#v, want one at version 2", request.Approval)
+	}
+	requireAskParts(t, database, request.ID, "the request", "b1@1 b2@1 b3@1", 1)
+
+	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context, revised", "Context", 3)
+	answered := readBlockAsk(t, handler, request.ID)
+	if answered.State != "answered" || answered.Approval == nil || answered.Approval.Version != 3 {
+		t.Fatalf("request after the carry = state %q approval %#v, want it answered at version 3", answered.State, answered.Approval)
+	}
+	requireAskParts(t, database, request.ID, "the carry", "b1@2 b2@1 b3@1 b4@3", 3)
+	if answered.EditedAt == nil {
+		t.Fatal("the request carries no edited_at after the move")
+	}
+	edited, err := time.Parse(time.RFC3339Nano, *answered.EditedAt)
+	if err != nil {
+		t.Fatalf("read the request's edited_at %q: %v", *answered.EditedAt, err)
+	}
+	if changed := askPartChangedAt(t, database, request.ID, "b1"); !changed.Equal(edited) {
+		t.Fatalf("the question part changed at %v, want the rewording's own time %v", changed, edited)
+	}
 }
 
 // requestApprovalWithVerification opens the asking agent's approval request on the document and

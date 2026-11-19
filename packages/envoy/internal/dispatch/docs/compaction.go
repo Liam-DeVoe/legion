@@ -270,7 +270,7 @@ func (p *PgVersioned) writeCompaction(ctx context.Context, pool *pgxpool.Pool, r
 			result = compactResult{outcome: compactNothing}
 			return tx.Commit(ctx)
 		}
-		recovered, err := p.recoverPruneTx(ctx, tx, room)
+		_, recovered, err := p.recoverPruneTx(ctx, tx, room)
 		if err != nil {
 			return err
 		}

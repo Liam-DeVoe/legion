@@ -102,10 +102,11 @@ func seqText(seq *int64) string {
 }
 
 // writeMentionsVersion writes version number of document, citing what markdown cites, as a
-// version write does: the version's row, its references through the version index's writer
-// (refs.ReplaceDocumentCounted), the version's event, the stamp of the references the reconcile
-// inserted with that event, and what the reconcile stated, appended under it. It answers the
-// version's time and its event.
+// version write does: the version's row, its references planned and queued as the version index
+// does (refs.PlanReplace, refs.Replacement.Queue) with the tuples of the document's mentions
+// (refs.Replacement.ArtifactMentions), the version's event, the stamp of the references the
+// reconcile inserted with that event, and what the reconcile stated, appended under it. It
+// answers the version's time and its event.
 func writeMentionsVersion(t *testing.T, database *store.Store, document string, number int, markdown string) (time.Time, int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -119,8 +120,22 @@ func writeMentionsVersion(t *testing.T, database *store.Store, document string, 
 		`, document, number, markdown).Scan(&at); err != nil {
 			return err
 		}
-		_, mentions, err := refs.ReplaceDocumentCounted(ctx, tx, document, number, at, text.Extract(markdown, mentionsServer), nil, nil)
+		replacement, err := refs.PlanReplace(ctx, tx, "artifact", document, text.Extract(markdown, mentionsServer), &at)
 		if err != nil {
+			return err
+		}
+		record, err := refs.ReadIndexedVersion(ctx, tx, document, document, number)
+		if err != nil {
+			return err
+		}
+		mentions, err := replacement.ArtifactMentions(ctx, tx, record)
+		if err != nil {
+			return err
+		}
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			replacement.Queue(b)
+			return nil
+		}); err != nil {
 			return err
 		}
 		if err := tx.QueryRow(ctx, `
@@ -224,7 +239,7 @@ func markedDocument(t *testing.T, database *store.Store, slug string, created ti
 	return document, refKey
 }
 
-// The references a document makes are tuples: its version index (refs.ReplaceDocumentCounted)
+// The references a document makes are tuples: its version index (refs.Replacement.ArtifactMentions)
 // appends a mentions tuple out of the document's node to each far end a refs row it inserts names
 // and a retraction to each a row it deletes named, in the transaction that writes the rows, and
 // graph_edges answers a document's mention from that tuple while the row stands. A version that
@@ -304,8 +319,15 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 		`, remark).Scan(&comment); err != nil {
 			return err
 		}
-		_, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, graphstore.KindComment, comment, mentionsServer), remark)
-		return err
+		reader := refs.NewReader(ctx, tx, graphstore.KindComment, comment, mentionsServer)
+		replacement, err := refs.PlanReplace(ctx, tx, graphstore.KindComment, comment, text.Refs(reader.Mentions(remark)), nil)
+		if err != nil {
+			return err
+		}
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			replacement.Queue(b)
+			return nil
+		})
 	}); err != nil {
 		t.Fatalf("write the comment's reference: %v", err)
 	}

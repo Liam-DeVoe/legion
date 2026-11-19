@@ -99,9 +99,17 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 			continue
 		}
 		s.logger.Info("dispatch: decisions step restored and converted an issue",
-			"issue", issue, "restored", len(result.Restored), "decisions", result.Decisions, "readings", result.Readings,
-			"dropped", result.Dropped, "left", result.Left, "retired", result.Retired,
-			"spec_approval", result.SpecApproval, "superseded", len(result.Superseded), "dry_run", dryRun)
+			"issue", issue, "restored", len(result.Restored), "declined", len(result.Declined), "decisions", result.Decisions,
+			"readings", result.Readings, "dropped", result.Dropped, "removed", result.Removed, "left", result.Left,
+			"retired", result.Retired, "spec_approval", result.SpecApproval, "superseded", len(result.Superseded), "dry_run", dryRun)
+		for _, restored := range result.Restored {
+			s.logger.Info("dispatch: decisions step restored an answered ask",
+				"issue", issue, "ask", restored.Ask, "shape", restored.Shape, "to", restored.To, "read", restored.Read, "dry_run", dryRun)
+		}
+		for _, declined := range result.Declined {
+			s.logger.Info("dispatch: decisions step declined to restore an answered ask a person removed",
+				"issue", issue, "ask", declined.Ask, "person", declined.Person, "version", declined.Version, "dry_run", dryRun)
+		}
 		for _, superseded := range result.Superseded {
 			s.logger.Info("dispatch: decisions step superseded an approval",
 				"issue", issue, "document", superseded.Document, "review", superseded.Approval.ReviewID,

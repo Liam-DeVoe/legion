@@ -270,10 +270,10 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				} else {
 					requirePointerRefused(t, err, refused.message)
 				}
-				// The refused write wrote no node, and a statement that failed would have aborted
-				// the transaction: it commits, and holds no tuple the refused write stated.
-				if err := tx.Commit(ctx); err != nil {
-					t.Fatalf("the transaction of the refused write does not commit: %v", err)
+				// The refusal fails the write's batch, and its caller abandons the transaction
+				// (Write): once it rolls back, the log holds no tuple the refused write stated.
+				if err := tx.Rollback(ctx); err != nil {
+					t.Fatalf("roll back the transaction of the refused write: %v", err)
 				}
 				if after := countTuples(t, ctx, database); after != before {
 					t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
@@ -308,7 +308,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				FromKind: KindRisk, FromID: riskAstray, Kind: TuplePartOf, ToKind: KindLens, ToID: lensPreMortem,
 				At: pointerAt, Who: pointerWho, SourceEvent: NoEvent,
 			}
-			if _, _, err := WriteArmsUncaused(1, nil, nil, []Claim{claim}); !errors.Is(err, errPointerInArms) {
+			if _, _, _, err := WriteArmsUncaused(1, nil, nil, []Claim{claim}); !errors.Is(err, errPointerInArms) {
 				t.Errorf("WriteArmsUncaused of a risk's part_of claim = %v, want errPointerInArms", err)
 			}
 			// A part_of out of any node but a risk is a place no rule holds.

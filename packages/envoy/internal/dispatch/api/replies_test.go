@@ -509,7 +509,7 @@ func TestMarkThreadReadRacingASessionReply(t *testing.T) {
 // holds the row the answer's trigger waits on while waiting for the event lock the answer holds.
 // The answer writes its block's attributes only while another build serves, for that build's
 // pages (docs.KeepAskBlockInStep; on a fleet of one build an answer changes no byte of the
-// document, dispatch://INFRA-1150 R3), so the test registers a process of each of two builds.
+// document), so the test registers a process of each of two builds.
 func TestMarkThreadReadRacingABlockAskAnswerThatRefreshesAnAnchor(t *testing.T) {
 	handler, database := blockAskHandler(t)
 	registerTwoBuilds(t, database)

@@ -78,9 +78,11 @@ func TestCopiedAskQueriesAvoidSequentialScans(t *testing.T) {
 		{"the documents an issue's copy sources are part of", sourcesOfIssue, "artifacts", "artifacts_ref_key_key", []any{blocks, document, issueKey}},
 		{"the documents a project's copy sources are part of", sourcesOfProject, "artifacts", "artifacts_ref_key_key", []any{blocks, document, projectKey}},
 		{"what a copied ask asked and decided", copiedAskHistoryQuery, "events", "events_ask_payload_id", []any{[]string{"ask-id"}}},
-		{"a settlement's decided asks", decidedWordingRestore, "asks", "asks_pkey", []any{[]string{document}}},
-		{"a settlement's decided asks' events", decidedWordingRestore, "events", "events_ask_payload_id", []any{[]string{document}}},
-		{"the boot's decided asks' events", decidedWordingRestore, "events", "events_ask_payload_id", []any{[]string(nil)}},
+		// The restoration guards each ask on the answer its plan read, which it is given beside
+		// the ids (decidedWordingRestore).
+		{"a settlement's decided asks", decidedWordingRestore, "asks", "asks_pkey", []any{[]string{document}, []*string{nil}}},
+		{"a settlement's decided asks' events", decidedWordingRestore, "events", "events_ask_payload_id", []any{[]string{document}, []*string{nil}}},
+		{"the boot's decided asks' events", decidedWordingRestore, "events", "events_ask_payload_id", []any{[]string(nil), []*string(nil)}},
 	}
 	// First as the fixture's writes leave graph_tuples, then once it is analyzed, on this test's
 	// own database.

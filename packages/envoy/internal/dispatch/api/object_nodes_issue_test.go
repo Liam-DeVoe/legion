@@ -66,9 +66,13 @@ func requireObjectNode(t *testing.T, database *store.Store, kind, id, supertag, 
 		t.Errorf("node %s/%s is %+v, want supertag %s, live, project-visible, project %q, parties %v, caused by event %d",
 			kind, id, node, supertag, project, parties, event)
 	}
+	wantParties, err := graphstore.PartiesValue(parties)
+	if err != nil {
+		t.Fatalf("join the parties %v: %v", parties, err)
+	}
 	stated := map[string]string{
 		"visibility": graphstore.VisibilityProject, "state": graphstore.StateLive,
-		"project": project, "parties": graphstore.PartiesValue(parties),
+		"project": project, "parties": wantParties,
 	}
 	for attribute, value := range stated {
 		history, err := graphstore.History(ctx, database.Pool, kind, id, attribute)

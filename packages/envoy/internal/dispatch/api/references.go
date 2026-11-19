@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -24,20 +25,23 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// indexAskParts is refs.IndexAskPartsCounted for a write that holds the ask's parts alone: the
-// parts of the ask this write just wrote - its question, its options and its answer - indexed in
-// the same transaction through a reader of their own (refs.NewReader), written at `at`, with
-// what they moved merged into beside, the counted changes the same write already holds, so the
-// event it appends names them all. A write that reconciles the ask's question as well builds the
-// one reader itself and passes it to both (refs.ReplaceCounted, refs.IndexAskPartsCounted).
-func (s *server) indexAskParts(
+// queueAskParts is docs.Ledger.QueueAskParts bound to this server's URL: the parts of the ask
+// this write just wrote - its question, its options and its answer - planned in the read phase
+// and queued in the transaction's write phase, written at `at`, with what they moved merged
+// into beside, the counted changes the same write already holds, so the event it appends names
+// them all. The parts are read with the whole grammar, through a reader of their own
+// (refs.NewReaderInScope), which the ledger builds. document is the one the parts' `#id`s
+// resolve against for an ask whose insert this transaction has queued
+// (refs.PendingAskDocument), nil for an ask already stored, whose row ScopeOf reads.
+func (s *server) queueAskParts(
 	ctx context.Context,
-	tx pgx.Tx,
+	ledger *docs.Ledger,
 	ask model.Ask,
+	document *refs.PendingDocument,
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, beside)
+	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, at, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
@@ -456,11 +460,14 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 // moved_to tuples first, then the same block id in its document's room, then the address itself),
 // named by its own address and carrying its whole current text: so a citation written before the
 // block moved reads the block where it stands now, and a citation of a block of a document
-// converted into its issue's room, at the document's own address, reads the room's node. Where
-// the address resolves to no block, and where who may not see the block it resolves to, it answers
-// the 404 of a block no current version holds, naming the address asked, so a move says nothing of
-// a block the reader may not see. The edges the read lists beside it are those at the address
-// asked, the citations of that address, and those at the node it reaches (referenceEdges).
+// converted into its issue's room, at the document's own address, reads the room's node. A chain
+// that ends at an ask - the heading of a decisions document's section that cites an answered ask a
+// person removed from its spec - answers that ask's own node, as a reference of the ask's address
+// reads it, which holds its question and the person's answer. Where the address resolves to no
+// block and no ask, and where who may not see the one it resolves to, it answers the 404 of a
+// block no current version holds, naming the address asked, so a move says nothing of a node the
+// reader may not see. The edges the read lists beside it are those at the address asked, the
+// citations of that address, and those at the node it reaches (referenceEdges).
 func (s *server) resolvedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	noBlock := errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
@@ -471,7 +478,17 @@ func (s *server) resolvedBlockNode(ctx context.Context, who model.Actor, address
 	if !moved {
 		return model.GraphNode{}, noBlock
 	}
-	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached, true)
+	if reached.Ask != "" {
+		node, found, err := refs.Node(ctx, pool, who, graphstore.KindAsk, reached.Ask, true)
+		if err != nil {
+			return model.GraphNode{}, err
+		}
+		if !found {
+			return model.GraphNode{}, noBlock
+		}
+		return node, nil
+	}
+	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached.Address, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -497,7 +514,7 @@ func (s *server) movedDocumentNode(ctx context.Context, who model.Actor, refKey 
 	if err != nil || !moved {
 		return model.GraphNode{}, false, err
 	}
-	return refs.Node(ctx, pool, who, graphstore.KindLens, lens, true)
+	return refs.Node(ctx, pool, who, graphstore.KindLens, lens.Address, true)
 }
 
 // documentAtAddress is the document stored at refKey, as a read of its blocks needs it: the node

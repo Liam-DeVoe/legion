@@ -27,42 +27,35 @@ type Member struct {
 
 // documentTarget is true of a refs row r whose target is a document, or a block address that
 // resolves to a block a current version of its document holds (ResolvedBlockSQL: its moved_to
-// tuples first, then its document's room, then the address itself); documentOfTarget is that
-// document's ref_key, which never holds a '#': the document holding the block the target resolved
-// to, so a citation of a block that moved reaches the document it moved into (through the
-// moved_to tuple an earlier branch's restore writes), and a citation of a block of a document
-// converted into its issue's room, at the document's own address, reaches that document, whose
-// fragment of the room holds the block, never the room's tree, whose ref_key the node's own
-// address carries. documentBlockHeld is the join that answers the block a block target resolves
-// to, block_target.node_id, with that document's ref_key,
-// block_target.ref_key, and documentTarget reads its answer rather than an `exists` probe of its
-// own: inside the recursive walk below the probe sits under an OR, which no semijoin can carry, so
-// the planner plans it as a hashed subplan and reads all of document_blocks to build the hash —
-// 800,000 rows and 45,915 buffers of a 122,128-buffer read, once for each place the predicate is
-// spliced into. A lateral whose probe stops at its first row is a nested loop keyed through
-// document_blocks_node_id, the hash index on exactly node_id, and it runs at all only for a block
-// target, because its own to_kind test is a one-time filter the planner re-reads on each loop.
-// Only a target that probe does not answer is resolved through block_moved_to, so a block that
+// tuples first, then its document's room, then the address itself), or a block address whose
+// moved_to tuples reach an ask whose row stands instead; documentOfTarget is that document's
+// ref_key, which never holds a '#': the document holding the block the target resolved to, so a
+// citation of a block that moved reaches the document it moved into (R8), and a citation of a
+// block of a document converted into its issue's room, at the document's own address, reaches
+// that document, whose fragment of the room holds the block, never the room's tree, whose ref_key
+// the node's own address carries; and the document the row of an ask a move ends at names, so a
+// citation of the heading of a section that cites an answered ask a person removed reaches the
+// document that ask was decided in. documentBlockHeld is the join that answers what a block target
+// resolves to (movedTarget), block_target, and documentTarget reads its answer rather than an
+// `exists` probe of its own: inside the recursive walk below the probe sits under an OR, which no
+// semijoin can carry, so the planner plans it as a hashed subplan and reads all of document_blocks
+// to build the hash — 800,000 rows and 45,915 buffers of a 122,128-buffer read, once for each
+// place the predicate is spliced into. A lateral whose probe stops at its first row is a nested
+// loop keyed through document_blocks_node_id, the hash index on exactly node_id, and it runs at
+// all only for a block target, because its own to_kind test is a one-time filter the planner
+// re-reads on each loop. Only a target that probe does not answer is resolved through
+// block_moved_to, and only one that resolves to no block through moved_to_reach, so a block that
 // stands costs the probe alone.
 //
 // documentTarget states the two target kinds the scan must read in a clause of their own as
 // well. The kinds are implied by its disjunction, but that disjunction now reads a column of a
 // join, so the planner can no longer derive the restriction from it and would read refs whole.
-var documentBlockHeld = `left join lateral (
-				select resolved.node_id, coalesce(
-					(select owner.ref_key from document_blocks held
-					 join issue_room_blocks room_block on room_block.tree_artifact_id = held.artifact_id
-					   and block_id_key(room_block.block_id) = block_id_key(held.block_id) and room_block.block_id = held.block_id
-					 join artifacts owner on owner.id = room_block.document_id
-					 where held.node_id = resolved.node_id limit 1),
-					split_part(resolved.node_id, '#', 1)) as ref_key
-				from (select ` + ResolvedBlockSQL("r.to_id") + ` as node_id) resolved
+var (
+	documentBlockHeld = `left join lateral (` + movedTarget(`r.to_id`) + `
 				where r.to_kind = 'block'
 			) block_target on true`
-
-const (
-	documentTarget   = `(r.to_kind in ('artifact', 'block') and (r.to_kind = 'artifact' or block_target.node_id is not null))`
-	documentOfTarget = `case when r.to_kind = 'block' then block_target.ref_key else r.to_id end`
+	documentTarget   = `(r.to_kind in ('artifact', 'block') and (r.to_kind = 'artifact' or block_target.node_id is not null or block_target.ask_document is not null))`
+	documentOfTarget = `case when r.to_kind = 'block' then coalesce(block_target.ref_key, block_target.ask_document) else r.to_id end`
 )
 
 // documentMovedTo is the join that answers, for a refs row r whose target is a document, the lens
@@ -80,6 +73,35 @@ func documentMovedTo(param string) string {
 			) moved_document on true`
 }
 
+// movedTarget is the select list and FROM of what the block address toID resolves to, as
+// (node_id, ref_key, ask_id, ask_document): node_id is the block the address resolves to
+// (ResolvedBlockSQL) and ref_key the document holding it, the one whose fragment of an issue room
+// holds it (issue_room_blocks) else the document its node's address names; where the address
+// resolves to no block and its moved_to tuples reach an ask whose row stands instead
+// (moved_to_reach), ask_id is that ask's id and ask_document the ref_key of the document holding
+// the ask's block (AskBlockDocumentSQL). Each is null where it resolves to none. moved_to_reach
+// runs only where the resolution found no block: its subquery's own test of that is a one-time
+// filter, kept one by `offset 0`, which stops the planner pulling the subquery up into the join.
+func movedTarget(toID string) string {
+	return `
+				select resolved.node_id, coalesce(
+					(select owner.ref_key from document_blocks held
+					 join issue_room_blocks room_block on room_block.tree_artifact_id = held.artifact_id
+					   and block_id_key(room_block.block_id) = block_id_key(held.block_id) and room_block.block_id = held.block_id
+					 join artifacts owner on owner.id = room_block.document_id
+					 where held.node_id = resolved.node_id limit 1),
+					split_part(resolved.node_id, '#', 1)) as ref_key,
+				       case when moved.kind = 'ask' then moved.id end as ask_id,
+				       case when moved.kind = 'ask' then (
+				           select asked_in.ref_key from asks moved_ask
+				           join artifacts asked_in on asked_in.id = ` + AskBlockDocumentSQL("moved_ask") + `
+				           where moved_ask.id = moved.id::uuid) end as ask_document
+				from (select ` + ResolvedBlockSQL(toID) + ` as node_id) resolved
+				left join lateral (
+					select reach.kind, reach.id from moved_to_reach(` + toID + `) reach where resolved.node_id is null offset 0
+				) moved on true`
+}
+
 // closureQuery is the statement Closure runs, held here so that its plan can be read by name. $1
 // is the issue and $2 the acting credential (VisibilityArg). It is rendered at its first use and
 // not as the variable is initialized, because the predicates it binds read the registry, which
@@ -91,8 +113,8 @@ func documentMovedTo(param string) string {
 // document's id turned into the ref_key the store keys it by through artifacts' primary key: the
 // registry's own rewrite compares the uuid as text, which no index serves, and this arm runs once
 // for every link of the issue. Its target is the document the walk reaches, and the block of it
-// the row's target resolves to where the row names one, so a document hidden from them is neither
-// listed nor walked on from.
+// the row's target resolves to where the row names one, or the ask a move of that block ends at,
+// so a document hidden from them is neither listed nor walked on from.
 //
 // A row's lens_id is the lens a cited document's address moved to (documentMovedTo), and its
 // ref_key that document's still: the lens is the member, in the document's place, and the walk
@@ -105,7 +127,8 @@ var closureQuery = sync.OnceValue(func() string {
 		`case when r.from_kind = 'artifact' then (select s.ref_key from artifacts s where s.id = r.from_id::uuid) else r.from_id end`,
 		true, `$2`)
 	visibleTarget := VisibleKind("artifact", documentOfTarget, `$2`) +
-		` and (r.to_kind <> 'block' or ` + VisibleKind("block", `block_target.node_id`, `$2`) + `)`
+		` and (r.to_kind <> 'block' or ` + VisibleKind("block", `block_target.node_id`, `$2`) +
+		` and ` + VisibleKind(string(ItemAsk), `block_target.ask_id`, `$2`) + `)`
 	movedTo := documentMovedTo(`$2`)
 	return `
 		with recursive closure as (
@@ -153,10 +176,11 @@ var closureQuery = sync.OnceValue(func() string {
 // a block reaches the block's document, while a current version of the document holds that
 // block, and a reference to a block that moved reaches the document of the block its moved_to
 // tuples reach (graphstore.MovedTo): a deleted block's links drop out of the closure until a
-// version holds its id again, unless a move records where it went. A reference to a document
-// whose own address moved to a lens - the pre-mortem conversion retires a document into one and
-// moves its address there (api.ConvertPremortem) - reaches that lens, a member of kind lens at
-// the lens's address, and the walk goes no further from it. A
+// version holds its id again, unless a move records where it went. A move that ends at an ask
+// reaches the document the ask's row names, the document it was decided in. A reference to a
+// document whose own address moved to a lens - the pre-mortem conversion retires a document into
+// one and moves its address there (api.ConvertPremortem) - reaches that lens, a member of kind
+// lens at the lens's address, and the walk goes no further from it. A
 // block of a comment or message reaches its item, as a document's block reaches its document: a
 // link one holds is read from its item's own refs row, which every comment and message keeps
 // beside its blocks' mentions, so the member's via is the item. An ask keeps no such row - its

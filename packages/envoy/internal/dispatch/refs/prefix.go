@@ -109,7 +109,8 @@ type Scope struct {
 // viewer it authenticated and, where its route names no owner, the whole kind. ResolvePrefixes
 // is the batched second copy of these queries, which GET /api/v1/reference-targets uses to
 // resolve the short ids of a whole set at once. It shares the selection rule of this function
-// (choosePrefixCandidate), so a short id names the same item through either function.
+// (choosePrefixCandidate) and binds the same predicate of each kind for its reader, so a short
+// id names the same item through either function for the same reader.
 //
 // It answers for who: an item who may not see is no candidate, so a prefix it alone carries
 // matches nothing and one it shares with a visible item names that item, and neither its id nor
@@ -464,9 +465,11 @@ func blockCandidate(blockID, body string, document documentParent) Candidate {
 	return candidate
 }
 
-// queryArgs are the arguments of a query this file builds by concatenation: param appends one
-// and answers the placeholder that reads it, so the text and the arguments of a query whose
-// shape depends on its scope cannot drift apart.
+// queryArgs are the arguments of a query this file or target_prefixes.go builds by
+// concatenation: param appends one and answers the placeholder that reads it, so the text and
+// the arguments of a query whose shape depends on its scope cannot drift apart. A query that
+// binds its fixed arguments as literal placeholders starts with them in values, so the
+// placeholders param and visible answer follow them.
 type queryArgs struct {
 	values []any
 	// seen is the placeholder the acting credential is bound at, once the query binds a

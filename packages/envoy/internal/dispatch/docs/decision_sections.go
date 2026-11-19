@@ -14,7 +14,7 @@ import (
 )
 
 // The section reader of an issue's decisions document, which the decisions step's third phase
-// converts section by section (dispatch://INFRA-1150 R9). It is the step's own: api's reader of
+// converts section by section. It is the step's own: api's reader of
 // the document goes with this release, and this package cannot import api. It cuts the document
 // as that reader cut it - a section is each `##` heading outside `## Replaced`, and each `###`
 // heading under it, with every top-level block after the heading up to the next heading of its

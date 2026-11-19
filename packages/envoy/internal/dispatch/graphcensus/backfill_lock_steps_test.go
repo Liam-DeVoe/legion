@@ -17,12 +17,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of dispatch://INFRA-1149's
-// c-lock-order for the batches backfill_fence_test.go does not prove: writeBlockRefBatch,
-// writeCommentBatch, writeRoleBatch, writeSessionBatch, and the two writers of an older pod's runs,
-// writeRunFrames and writeGoneRun, store write call sites graphstore's
-// TestEveryStoreWriteCallSiteIsListed lists. graphstore's TestEveryStoreWriteTakesOneLockOrder
-// cannot run them, since this package imports graphstore.
+// TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of the check c-lock-order
+// for the batches backfill_fence_test.go and
+// TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow do not prove: writeBlockRefBatch,
+// writeCommentBatch, writeRoleBatch and writeSessionBatch, the two batches of the passes over
+// the project of every node, writeObjectBatch and writeScopeBatch (projects_lock_steps_test.go),
+// and the two writers of an older pod's runs, writeRunFrames and writeGoneRun, each a store write
+// call site graphstore's TestEveryStoreWriteCallSiteIsListed lists. graphstore's
+// TestEveryStoreWriteTakesOneLockOrder cannot run them, since this package imports graphstore.
 //
 // Each subtest seeds the rows one batch writes from, then holds, each in a transaction of its own,
 // a row of every step the batch takes and a row of every step it does not take, and runs the real
@@ -36,11 +38,14 @@ import (
 // then reads what the run wrote, so the run it followed is the one that committed.
 func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeBlockRefBatch takes the owner row, the fence, its block_refs rows, then the tuple append, and no node row", requireTheBlockRefBatchLockOrder)
-	t.Run("writeCommentBatch takes no owner row, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
+	t.Run("writeCommentBatch takes its comments' owner rows, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
 	t.Run("writeRoleBatch takes no owner row, then its node rows ascending and the part_of tuple", requireTheRoleBatchLockOrder)
 	t.Run("writeSessionBatch takes no owner row, then its node rows ascending", requireTheSessionBatchLockOrder)
 	t.Run("writeRunFrames takes no owner row and no run row, then the run's interaction node row and the tuple append", requireTheRunFramesLockOrder)
 	t.Run("writeGoneRun takes no owner row, then the run's interaction node row, which it moves", requireTheGoneRunLockOrder)
+	t.Run("writeObjectBatch takes its documents' owner locks in ascending owner key, then each run's node rows ascending and its tuples, and no event", requireTheObjectBatchLockOrder)
+	t.Run("writeScopeBatch over block nodes takes the owner lock, the fence, then the node rows ascending and the project tuple, and no projection row", requireTheBlockScopeBatchLockOrder)
+	t.Run("writeScopeBatch over a comment node takes no owner lock and no fence, then the node row and the project tuple", requireTheCommentScopeBatchLockOrder)
 }
 
 // requireTheBlockRefBatchLockOrder holds writeBlockRefBatch to its steps. The batch is one of the
@@ -78,11 +83,11 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 		t.Fatalf("write the block's reference to CORE-1: %v", err)
 	}
 
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue CORE-1's row", Step: lockstep.StepOwner, Taken: true,
-		Statement: "select closed_at is null from issues where key = $1 for no key update",
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue CORE-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"document_block_versions", "block_refs", "graph_nodes", "graph_tuples"},
-	}, `select 1 from issues where key = $1 for update`, "CORE-1")
+	}, store.IssueOwner("CORE-1"))
 	fence := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "the document's document_block_versions row", Step: lockstep.StepFence, Taken: true,
 		Statement: "select 1 from document_block_versions where artifact_id = $1 for no key update",
@@ -126,11 +131,15 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 	}
 }
 
-// requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch writes every
-// node it writes - its comments' and their authors' - in one store write, which takes their rows
-// in ascending (kind, id) and then appends every tuple: the facts each comment row projects, and
-// each author's authored_by and aliases (graphstore.AuthorFacts). Only then does it name the
-// nodes on the comments rows. It runs under no owner row and appends no event.
+// requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch first takes the
+// owner lock of its comments' issue, as every writer of a comments row and the erase do
+// (LockCommentOwners), and reads under it which comments still stand unmarked
+// (CommentsNamingNoNode), so a batch read before another run marked a comment and the erase
+// removed it writes nothing for it. It then writes every node it writes - its comments' and their
+// authors' - in one store write, which takes their rows in ascending (kind, id) and then appends
+// every tuple: the facts each comment row projects, and each author's authored_by and aliases
+// (graphstore.AuthorFacts). Only then does it name the nodes on the comments rows. It appends no
+// event.
 //
 // Three comments are written with comment.created events, so every tuple carries a cause other
 // than the sentinel and so a repeat key a hold can stand on. Their ids order them c1, c2, c3, which
@@ -196,12 +205,15 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 	nodeHold := func(name, kind, id string, node graphstore.Node) *lockstep.Hold {
 		return holdWrite(t, database, &lockstep.Hold{
 			Name: name, Step: lockstep.StepNode, Taken: true, Kind: kind, ID: id,
-			Statement: "with incoming as (",
+			Statement: "insert into graph_nodes (",
 		}, []graphstore.Node{node}, nil)
 	}
 
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "issue CENS-1's row", Step: lockstep.StepOwner},
-		`select 1 from issues where key = $1 for update`, "CENS-1")
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue CENS-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
+		Unlocked:  []string{"graph_nodes", "graph_tuples"},
+	}, store.IssueOwner("CENS-1"))
 	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CENS's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "CENS")
 	firstComment := nodeHold("comment c1's node row", graphstore.KindComment, c1.id, commentNode(c1.id))
@@ -214,14 +226,14 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 		graphstore.SessionNode(session.ID, backfillActor, now, graphstore.NoEvent))
 	state := holdWrite(t, database, &lockstep.Hold{
 		Name: "comment c1's state tuple", Step: lockstep.StepTuple, Taken: true,
-		Statement: "insert into graph_tuples (",
+		Statement: "with written as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindComment, FromID: c1.id, Kind: graphstore.AttributeState, ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
 		At: now, Who: c1.by, SourceEvent: c1.event, Asserted: true,
 	}})
 	amyAuthored := holdWrite(t, database, &lockstep.Hold{
 		Name: "comment c3's authored_by tuple", Step: lockstep.StepTuple, Taken: true,
-		Statement: "insert into graph_tuples (",
+		Statement: "with written as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindComment, FromID: c3.id, Kind: graphstore.TupleAuthoredBy, ToKind: graphstore.KindPerson, ToID: "amy",
 		At: now, Who: c3.by, SourceEvent: c3.event, Asserted: true,
@@ -261,8 +273,8 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 // requireTheRoleBatchLockOrder holds writeRoleBatch to its steps. The batch writes a role's node,
 // its page's node and the page's part_of the role as one statement on a pooled connection: the
 // arms graphstore.WriteArms splices in, the node rows in ascending (kind, id) and the claim after
-// them. A role, its page and that part_of have no projection row, and the batch takes no owner row
-// and appends no event. writeRoleBatch lists the role's node before its page's, and a page sorts
+// them. A role, its page and that part_of have no projection row, and the batch takes no owner
+// lock and appends no event. writeRoleBatch lists the role's node before its page's, and a page sorts
 // below a role, so the order the batch lists its nodes in is the reverse of ascending.
 //
 // The role is one an issue's route names, with the issue.updated event that routed it, so its
@@ -283,8 +295,8 @@ func requireTheRoleBatchLockOrder(t *testing.T) {
 	}
 	now := time.Now()
 
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "issue CENS-1's row", Step: lockstep.StepOwner},
-		`select 1 from issues where key = $1 for update`, "CENS-1")
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{Name: "issue CENS-1's owner lock", Step: lockstep.StepOwner},
+		store.IssueOwner("CENS-1"))
 	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CENS's row", Step: lockstep.StepEvent},
 		`select 1 from projects where key = $1 for update`, "CENS")
 	// The batch is one statement, and Postgres takes the table locks of every arm when the statement
@@ -323,12 +335,12 @@ const (
 )
 
 // TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow holds writeBlockBatch over two documents of
-// two issues to the order lockBlockDocuments takes their rows in: both owner rows first, in
-// ascending owner key, the order the erase takes several owner rows in, and only then each
+// two issues to the order lockBlockDocuments takes their locks in: both owner locks first, in
+// ascending owner key, the order the erase takes several owner locks in, and only then each
 // document's document_block_versions row, in document id order. The documents' ids sort the other
-// way round from their issues' keys, so a batch that took one document's owner row and fence row
-// before the next document's owner row, in document id order, would take issue CORE-1's row first
-// and its document's fence row before issue ACME-1's row.
+// way round from their issues' keys, so a batch that took one document's owner lock and fence row
+// before the next document's owner lock, in document id order, would take issue CORE-1's lock
+// first and its document's fence row before issue ACME-1's lock.
 //
 // Each of the four rows is held in a transaction of its own while the real Backfill runs
 // (followTheBackfill), and the order the run queues behind them in is held to the invariants
@@ -344,11 +356,11 @@ func TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow(t *testing.T) {
 	seedPreStoreBlock(t, database, acme, "only")
 
 	ownerHold := func(issue string) *lockstep.Hold {
-		return lockstep.HoldRow(t, database, &lockstep.Hold{
-			Name: "issue " + issue + "'s row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
-			Statement: "select closed_at is null from issues where key = $1 for no key update",
+		return lockstep.HoldOwner(t, database, &lockstep.Hold{
+			Name: "issue " + issue + "'s owner lock", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
+			Statement: lockstep.OwnerLockStatement,
 			Unlocked:  []string{"document_block_versions", "document_blocks", "graph_nodes", "graph_tuples"},
-		}, `select 1 from issues where key = $1 for update`, issue)
+		}, store.IssueOwner(issue))
 	}
 	fenceHold := func(document preStoreDocument) *lockstep.Hold {
 		return lockstep.HoldRow(t, database, &lockstep.Hold{
@@ -390,16 +402,17 @@ const askBatchSession = "session-ask-batch-follower"
 
 // TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows holds writeAskBatch and writeAskFollowerBatch,
 // each over the asks of two issues, to the store's lock order (lockstep.RequireTheStoreLockOrder):
-// both issues' rows first, each once and in ascending owner key, the order lockBlockDocuments takes
-// a block batch's owners in, and only then the batch's asks or ask_followers rows. A writer of an
-// ask's answer or of its followers, and a settlement of an ask's document, takes the ask's owner
-// row before its rows and before the authors' nodes, so a batch that locked its rows first, in id
-// order and across owners, could hold an ask such a writer goes on to take while it waits for a
-// node that writer holds, or hold one ask a settlement waits for while it waits for another that
-// settlement took in its own order. The asks' ids sort the other way round from their issues' keys,
-// so a batch that took its rows first, in id order, would take CORE-1's ask before either owner.
+// both issues' owner locks first, each once and in ascending owner key, the order
+// lockBlockDocuments takes a block batch's owners in, and only then the batch's asks or
+// ask_followers rows. A writer of an ask's answer or of its followers, and a settlement of an
+// ask's document, takes the ask's owner lock before its rows and before the authors' nodes, so a
+// batch that locked its rows first, in id order and across owners, could hold an ask such a
+// writer goes on to take while it waits for a node that writer holds, or hold one ask a
+// settlement waits for while it waits for another that settlement took in its own order. The
+// asks' ids sort the other way round from their issues' keys, so a batch that took its rows
+// first, in id order, would take CORE-1's ask before either owner.
 //
-// Each owner row and each of the batch's rows is held in a transaction of its own while the real
+// Each owner lock and each of the batch's rows is held in a transaction of its own while the real
 // Backfill runs (followTheBackfill), and the run must queue behind both owners, ACME-1's first,
 // before it queues behind any of its rows. Each half then reads that both rows name their node, so
 // the run it followed is the one that committed.
@@ -407,15 +420,15 @@ func TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows(t *testing.T) {
 	ownerHolds := func(t *testing.T, database *store.Store, unlocked ...string) []*lockstep.Hold {
 		var holds []*lockstep.Hold
 		for _, issue := range []string{"ACME-1", "CORE-1"} {
-			holds = append(holds, lockstep.HoldRow(t, database, &lockstep.Hold{
-				Name: "issue " + issue + "'s row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
-				Statement: "select closed_at is null from issues where key = $1 for no key update",
+			holds = append(holds, lockstep.HoldOwner(t, database, &lockstep.Hold{
+				Name: "issue " + issue + "'s owner lock", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
+				Statement: lockstep.OwnerLockStatement,
 				Unlocked:  unlocked,
-			}, `select 1 from issues where key = $1 for update`, issue))
+			}, store.IssueOwner(issue)))
 		}
 		return holds
 	}
-	t.Run("writeAskBatch takes both owner rows ascending, then its asks rows", func(t *testing.T) {
+	t.Run("writeAskBatch takes both owner locks ascending, then its asks rows", func(t *testing.T) {
 		database := storetest.Open(t)
 		seedAskBatchAsks(t, database)
 		holds := ownerHolds(t, database, "asks", "graph_tuples")
@@ -434,7 +447,7 @@ func TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows(t *testing.T) {
 			t.Errorf("the backfill reports %#v for asks, want 2 rows", done)
 		}
 	})
-	t.Run("writeAskFollowerBatch takes both owner rows ascending, then its ask_followers rows", func(t *testing.T) {
+	t.Run("writeAskFollowerBatch takes both owner locks ascending, then its ask_followers rows", func(t *testing.T) {
 		database := storetest.Open(t)
 		seedAskBatchAsks(t, database)
 		// The asks are this release's from the first run on; their followers come after it, as rows
@@ -602,6 +615,7 @@ func followTheRun(t *testing.T, database *store.Store, batch string, run backfil
 			if answer.err != nil {
 				t.Fatalf("the backfill failed after %s queued behind %s: %v", batch, lockstep.HoldNames(queued), answer.err)
 			}
+			storetest.RequireNoMarkedCause(t, database, "the backfill's "+batch)
 			return answer.report
 		default:
 		}

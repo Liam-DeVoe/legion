@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -21,8 +19,8 @@ import (
 const anchorOrphanStatement = "update comments c set anchor = $2 where c.id = $1"
 
 // commentAnchorOrphaning is an accept that finds a suggestion's mark gone (orphanCommentAnchor),
-// through its route: the issue's owner row (lockOwnerOfComment), the comment's row `for update`
-// (loadCommentForUpdate), the update that writes its anchor orphaned, and the retraction of its
+// through its route: the issue's owner lock (lockOwnerOfComment), under which it reads the comment
+// (lockedComment), the update that writes its anchor orphaned, and the retraction of its
 // anchored_in, appended at the sentinel since the orphaning appends no event. Each run anchors a
 // suggestion of its own on a paragraph written for it into the rig's spec, deletes that paragraph
 // through the edit route, and stands the suggestion's anchor and its anchored_in up again as a row
@@ -32,15 +30,7 @@ func (r *storeWriterRig) commentAnchorOrphaning() storeWriter {
 	return storeWriter{
 		name: "orphanCommentAnchor under an accept",
 		steps: []storeStep{
-			r.issueOwnerStep(issueOwnerStatement),
-			{
-				name: "the comment's row", order: projectionStep,
-				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
-					holdRow(t, ctx, holder, `select 1 from comments where id = $1::uuid for update`, run.made.ID)
-				},
-				at:    answeredRowStatement,
-				takes: []tableLock{{"comments", rowShareMode}},
-			},
+			ownerLockStep(store.IssueOwner(r.issue)),
 			{
 				name: "the comment's anchor", order: projectionStep,
 				hold: holdTableWrites("comments"), at: anchorOrphanStatement,
@@ -48,7 +38,7 @@ func (r *storeWriterRig) commentAnchorOrphaning() storeWriter {
 			},
 			{
 				name: "the anchored_in's retraction", order: tupleStep,
-				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
+				hold: holdTableWrites("graph_tuples"), at: tupleOnlyAppendStatement,
 				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
 			},
 		},

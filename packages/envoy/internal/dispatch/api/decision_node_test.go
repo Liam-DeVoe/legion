@@ -402,13 +402,30 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	uploadAs(t, handler, issue.Key, "choices.md", decided+":::decision{#u1}\nBob rewords the upload's decision.\n:::\n", "bob")
 	requireDecidedBy(t, database, "another writer's upload", decisions.address("u1"), "alice")
 
-	// An index pass over the document leaves from_ask and decided_by standing.
+	// An index pass over the document leaves from_ask and decided_by standing. The pass is read by
+	// what it did: it indexes choices.md, the one document owed, at its newest version, so a pass
+	// that indexed nothing cannot stand in for it.
 	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = null where artifact_id = $1`, decisions.id); err != nil {
 		t.Fatalf("leave choices.md owed its block index: %v", err)
 	}
-	if _, err := documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+	var owed int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from document_block_versions where version is null`).Scan(&owed); err != nil || owed != 1 {
+		t.Fatalf("%d documents are owed their block index (%v), want choices.md alone", owed, err)
+	}
+	tick, err := documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil)
+	if err != nil {
 		t.Fatalf("run the block-index reconciliation: %v", err)
 	}
+	newest := latestVersion(t, database, decisions.id).Number
+	var indexed int
+	if err := database.Pool.QueryRow(ctx, `select coalesce(version, 0) from document_block_versions where artifact_id = $1`, decisions.id).Scan(&indexed); err != nil {
+		t.Fatalf("read the version choices.md is indexed at: %v", err)
+	}
+	if tick.Documents != 1 || tick.LiveAhead != 0 || tick.OwedDocuments != 0 || indexed != newest {
+		t.Fatalf("the index pass read %+v and left choices.md indexed at version %d (0 for owed), want it to index that one document at its newest version %d and leave none owed",
+			tick, indexed, newest)
+	}
+	t.Logf("the index pass indexed %d document, choices.md at version %d, and left %d owed", tick.Documents, indexed, tick.OwedDocuments)
 	if held := currentTies(t, database, d1, refs.TupleFromAsk); len(held) != 1 || held[0].ToID != askID {
 		t.Errorf("after an index pass d1 states the from_ask %+v, want the ask %s still standing", held, askID)
 	}

@@ -4,19 +4,18 @@
 
 package main
 
-// Three cost measurements share this file. c-write-cost of dispatch://INFRA-1149 is
-// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go), c-read-cost of
-// dispatch://INFRA-1149 is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), and c-read-cost of dispatch://INFRA-1950 is
-// TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go). What they
+// Three cost measurements share this file. c-write-cost is
+// TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go), c-read-cost is
+// TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go), and the
+// predicate and lens reads' c-read-cost is TestThePredicateAndTheLensReadsGetNoSlower
+// (predicate_lens_read_cost_test.go). What they
 // share is the pair of arms they compare, the corpus writer that seeds each arm through that
 // arm's own API, the clock, the order statistic and the table every reading is printed in.
 //
 // # The two arms, and why each has a database of its own
 //
-// One arm is this working copy's build, the other the build of the base commit (baseBuild): the
-// commit BASELINE_SHA names, or, where it is unset, the commit this branch forked from, `git
-// merge-base origin/main HEAD`. Each serves a database of its own and migrates it at boot, so
+// One arm is this working copy's build, the other the build of the commit BASELINE_SHA names
+// (baseBuild, testbaseline.Commit). Each serves a database of its own and migrates it at boot, so
 // each arm runs its own code over its own schema: the older build lacks migrations this one
 // holds (the merge-base has no graph_nodes and no graph_tuples, over which this build's
 // graph_edges reads the tuple arm). One database cannot be both schemas at once, and an
@@ -121,12 +120,11 @@ func (a *costArm) ready(t *testing.T) {
 }
 
 // startCostArms starts both arms: this working copy's build and the base commit's (baseBuild:
-// the commit BASELINE_SHA names, or, where it is unset, `git merge-base origin/main HEAD`), each
-// on an empty database of its own which that build migrates at boot, and both delivering to one
-// stub Envoy listener, so a delivery costs the same transport on either arm. It answers them in
-// the order they are measured in, this child first. The base arm is named "the base build" and
-// not "the commit before this child": BASELINE_SHA may name a commit that already holds some of
-// this child's own bases.
+// the commit BASELINE_SHA names), each on an empty database of its own which that build migrates
+// at boot, and both delivering to one stub Envoy listener, so a delivery costs the same transport
+// on either arm. It answers them in the order they are measured in, this child first. The base
+// arm is named "the base build" and not "the commit before this child": BASELINE_SHA may name a
+// commit that already holds some of this child's own bases.
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
 	older := baseBuild(t)
@@ -343,11 +341,22 @@ func costShapeName(shape string) string {
 // store_census_test.go's waitForTheBlockIndex takes: on this child's arm a document owed by a null
 // version or by this release's own mark, store_owed_at, which the backfill and its drain set, and
 // on the older build's arm, whose schema holds no such column, one owed by a null version.
+//
+// On this child's arm the wait also holds until the tick has read every event the log holds:
+// until its build's row of block_index_event_cursors exists and its event_id has reached the
+// newest event. Every tick reads the events after its build's cursor, and a process's first one
+// starts that cursor no later than the horizon the backfill recorded, so a tick after the
+// documents drain can still mark the corpus's own documents owed and index them again, which would
+// write a node inside a measured window, or after the run has taken the store off the corpus.
 func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	t.Helper()
 	read := `select count(*) from document_block_versions where version is null`
 	if arm.head {
-		read += ` or store_owed_at is not null`
+		read = `select (select count(*) from document_block_versions where version is null or store_owed_at is not null)
+			+ (select case when exists (select 1 from block_index_event_cursors)
+			               and not exists (select 1 from block_index_event_cursors
+			                               where event_id < (select coalesce(max(id), 0) from events))
+			          then 0 else 1 end)`
 	}
 	deadline := time.Now().Add(within)
 	for {

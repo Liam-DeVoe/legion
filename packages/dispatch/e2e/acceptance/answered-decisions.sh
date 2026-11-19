@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dispatch://INFRA-1150's c-answers-restored: the restore returns every answered ask the release
+# The check c-answers-restored: the restore returns every answered ask the release
 # before let leave its spec, in both shapes, over rows that release wrote, and an agent can no
 # longer take an answered ask's block out of a document.
 #
@@ -7,9 +7,15 @@
 # machine whose name begins infra_1150_), boots the base release on it through lib-baseline.sh
 # (BASELINE_BINARY, default $TMPDIR/base-dispatch, the stamped build of BASELINE_SHA), with the dev
 # sign-in, the pinned agent bearer e2e-token and the hold setting (DISPATCH_TEST_HOOKS=1 and
-# DISPATCH_TEST_HOLD_DECISIONS_STEP=1, through BASELINE_EXTRA_ENV, which reaches every server it
-# boots), and has seed-decisions.sh write the corpus through that server's own API. Through the
-# same server it closes issue D, so one issue the restore owes is closed.
+# DISPATCH_TEST_HOLD_DECISIONS_STEP=1, through BASELINE_EXTRA_ENV), and has seed-decisions.sh
+# write the corpus through that server's own API. Through the same server it closes issue D, so
+# one issue the restore owes is closed.
+#
+# BASELINE_SHA, the commit of the release this branch lands after, is required and has no
+# default: only the caller knows which release that is. Once the base server has booted, the
+# commit it is stamped with (the `commit` of its /healthz, the one it registers in
+# server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
+# naming both, so that a binary built from another commit never stands in for that release.
 #
 # Before this head boots it captures, through the base server: each restored ask's id, question,
 # options, answer and answerer (GET /api/v1/asks/{id}); the spec blocks the base's Decisions read
@@ -43,11 +49,34 @@
 # eight server-owned ask attributes are absent, and a block that took a new id carries it. It runs
 # the restore again and reads the same result for the closed issue, and for every other.
 #
-# Last, on the spec, which still holds the answered ask q-kept, it makes three writes as the agent
+# Then, on the spec, which still holds the answered ask q-kept, it makes three writes as the agent
 # - a delete of that block, a whole-document replacement without it, and a retype of it - and reads
 # each refused 409 ANSWERED_ASK_KEPT, quoting the ask's question and naming its node and its block,
 # the document's version unchanged and the answer still in place; then three such writes as the
 # person, each dropping or retyping an answered ask's block, which are taken.
+#
+# Then the step on its own tick. It stops this head and boots the base release again, which writes
+# a project of its own, PERSON, whose one issue's spec holds an ask the person answers, beside a
+# decisions.md holding one section, which cites that ask; and an issue of SEED whose answered ask
+# an agent's session, with no act of a person, drops from its spec. It stops the base and boots
+# this head held again, runs the step's first phase, and, as the person, puts a paragraph in place
+# of the answered ask's block of the PERSON spec, a write that leaves one removed_by tuple to the
+# person. It restarts this head without the hold setting, so the step runs on its own tick, and
+# waits three tick intervals (docs.BlockIndexReconcileInterval, read from its source) after the
+# first tick's report line. Out of the store and the report lines of every tick it reads the PERSON
+# spec holding no block of that ask, its newest version the person's, and no restore of it in any
+# report - a failure names the ask and the version that wrote its block back; the section deleted
+# by R9's rule for it, its heading address answering the ask through one moved_to tuple, the
+# decisions.md retired, and /healthz's decisions_step_owed zero; and the SEED ask the agent dropped
+# restored in the same run, the version that dropped it read as a session with no act of a person.
+#
+# Last it stops this head and runs the Go test that carries a drop by a broker token the secrets
+# broker scoped to a person, which no shell driver can present, since that token signs a DPoP proof
+# for each request: `go test -tags basebuild -count=1 -v -timeout 30m -run
+# '^TestADropByAPersonScopedBrokerTokenUnderTheBaseStays$' ./cmd/dispatch` in packages/envoy, with
+# BASELINE_SHA and the test database server, DISPATCH_TEST_DATABASE_URL or else LEGION_TEST_PG_DSN,
+# passed through. It requires the test's `--- PASS:` line and fails on any `--- SKIP` line, printing
+# the test's output.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` on stderr and the run exits 1; a missing input exits 2. It
@@ -58,10 +87,15 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DATABASE_URL=${LEGION_TEST_PG_DSN%/*}/infra_1150_answered_decisions?sslmode=disable \
+         BASELINE_SHA=<the commit of the release this branch lands after> \
+         [DISPATCH_TEST_DATABASE_URL=$LEGION_TEST_PG_DSN] \
          [BASELINE_BINARY=$TMPDIR/base-dispatch] [HEAD_BINARY=$TMPDIR/bin/envoy-dispatch] \
          bash e2e/acceptance/answered-decisions.sh
        (run from packages/dispatch; DATABASE_URL names a database on this machine whose name
-       begins infra_1150_, which this run drops and creates again)
+       begins infra_1150_, which this run drops and creates again. BASELINE_SHA is required and
+       has no default; BASELINE_BINARY must be the server built from it and stamped with it.
+       The Go test it runs creates a database of its own on the server DISPATCH_TEST_DATABASE_URL
+       names, or else LEGION_TEST_PG_DSN, one of which is required)
 USAGE
 }
 
@@ -72,8 +106,8 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=seed-decisions.sh
 . "$(dirname "${BASH_SOURCE[0]}")/seed-decisions.sh"
 
-require_env DATABASE_URL TMPDIR
-require_commands cmp curl jq psql sed sort
+require_env DATABASE_URL TMPDIR BASELINE_SHA
+require_commands cmp curl git go jq psql sed sort
 # shellcheck disable=SC2031 # the run's own DATABASE_URL: only a server's subshell sets another
 database_url="$DATABASE_URL"
 if [[ -z "${BASELINE_BINARY:-}" ]]; then
@@ -87,15 +121,43 @@ head_binary="${HEAD_BINARY:-$TMPDIR/bin/envoy-dispatch}"
   exit 2
 }
 readonly head_binary
+# The Go module of this checkout, which the broker-token test is run from.
+envoy_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../envoy" && pwd)"
+readonly envoy_dir
+# The server the broker-token test creates its own database on (storetest's
+# DISPATCH_TEST_DATABASE_URL, which the Verification preamble gives LEGION_TEST_PG_DSN's value).
+test_database_url="${DISPATCH_TEST_DATABASE_URL:-${LEGION_TEST_PG_DSN:-}}"
+[[ -n "$test_database_url" ]] || {
+  printf 'neither DISPATCH_TEST_DATABASE_URL nor LEGION_TEST_PG_DSN is set: the broker-token test needs a database server\n' >&2
+  usage
+  exit 2
+}
+readonly test_database_url
+# The step's tick interval, docs.BlockIndexReconcileInterval, as its source states it.
+tick_seconds="$(sed -nE 's/^[[:space:]]*BlockIndexReconcileInterval[[:space:]]*=[[:space:]]*([0-9]+) \* time\.Second$/\1/p' \
+  "$envoy_dir/internal/dispatch/docs/block_index.go")"
+[[ "$tick_seconds" =~ ^[1-9][0-9]*$ ]] || {
+  printf 'no BlockIndexReconcileInterval of whole seconds in %s\n' "$envoy_dir/internal/dispatch/docs/block_index.go" >&2
+  exit 2
+}
+readonly tick_seconds
+# The commit BASELINE_SHA names, in full: the one the base server booted below must be stamped with.
+base_sha="$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" || {
+  printf 'BASELINE_SHA %s names no commit of this checkout\n' "$BASELINE_SHA" >&2
+  exit 2
+}
+readonly base_sha
 readonly project=SEED
 # The eight server-owned ask attributes R10 takes out of markdown.
 readonly -a server_attributes=(state answered_by answered_at selected answer invalid copied_from copied_from_document)
 
 work_dir
 head_pid=""
+base_pid=""
 cleanup() {
   local code=$?
   baseline_stop_pid "$head_pid"
+  baseline_stop_pid "$base_pid"
   baseline_stop
   rm -rf "$work"
   exit "$code"
@@ -277,17 +339,27 @@ shaped_of() {
 # The base release writes the corpus.
 # ---------------------------------------------------------------------------------------------
 seed_reset_database "$database_url"
-# The pinned agent bearer the e2e harness gives its own server, and the hold setting, which reach
-# every server lib-baseline.sh boots: the base reads neither hook, and this head holds its step.
+# The pinned agent bearer the e2e harness gives its own server, and the hold setting: the base
+# reads neither hook, and this head holds its step.
 DISPATCH_TOKEN=e2e-token
 BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1'
 baseline_start
 unset DISPATCH_TOKEN DATABASE_URL BASELINE_EXTRA_ENV
+printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
+server="$baseline_url"
+# The base server is the release BASELINE_SHA names, as the commit it is stamped with says, before
+# it writes a row.
+send agent GET /healthz
+want_status 200 capture "read the base release's /healthz"
+base_commit="$(jq -r '.commit // ""' "$work/body")"
+readonly base_commit
+[[ "$base_commit" == "$base_sha" ]] ||
+  fail capture "the base release is stamped with the commit BASELINE_SHA names" \
+    "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
+pass capture "the base release serves $base_commit, the commit BASELINE_SHA names"
 # database_url stays writable: lib-baseline.sh's baseline_boot, which boots this head, holds a
 # local of that name.
 seed_decisions
-printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
-server="$baseline_url"
 
 readonly issue_a="${seed_ids[issue_a]}" issue_b="${seed_ids[issue_b]}" issue_d="${seed_ids[issue_d]}"
 readonly spec_a="${seed_ids[spec_a]}" spec_b="${seed_ids[spec_b]}" spec_d="${seed_ids[spec_d]}"
@@ -312,12 +384,6 @@ declare -A collides=([ask_left_store]=1 [ask_doc_collide]=1)
 send agent PATCH "/api/v1/issues/$issue_d" "$(jq -cn --argjson a "$(seed_actor)" '{status: "done", actor: $a}')"
 want_status 200 capture "close issue $issue_d through the base release"
 expect capture "issue $issue_d is closed" '"done"' '.status'
-
-send agent GET /healthz
-want_status 200 capture "read the base release's /healthz"
-base_commit="$(jq -r '.commit // ""' "$work/body")"
-readonly base_commit
-printf 'base release commit: %s\n' "${base_commit:-<none>}"
 
 # Each restored ask, and q-kept, as the base release's ask read answers them.
 for key in "${restored[@]}" ask_kept; do
@@ -352,7 +418,7 @@ done
   fail capture "the section restating ask_left_store links spec blocks" "the base read links none"
 
 # Every version of the spec and the decisions document of each issue the restore owes.
-versions=0
+captured_versions=0
 for document in "$spec_a" "$decisions_a" "$spec_b" "$decisions_b" "$spec_d"; do
   send agent GET "/api/v1/artifacts/$document"
   want_status 200 capture "read document $document"
@@ -360,10 +426,10 @@ for document in "$spec_a" "$decisions_a" "$spec_b" "$decisions_b" "$spec_d"; do
     send agent GET "/api/v1/artifacts/$document/versions/$number"
     want_status 200 capture "read version $number of $document"
     jq -j '.markdown' "$work/body" >"$work/capture/version.$document.$number.md"
-    versions=$((versions + 1))
+    captured_versions=$((captured_versions + 1))
   done
 done
-pass capture "captured $versions versions of the five documents"
+pass capture "captured $captured_versions versions of the five documents"
 
 # What the old addresses of the colliding blocks answer: the second shape's block in the
 # decisions document, and the callout of the spec that holds the main shape's old id.
@@ -563,7 +629,7 @@ for captured in "$work"/capture/version.*.md; do
   cmp -s "$captured" "$work/version.md" ||
     fail history "version $number of $document answers the bytes captured before the upgrade" "it differs"
 done
-pass history "every one of the $versions captured versions answers the bytes captured before the upgrade"
+pass history "every one of the $captured_versions captured versions answers the bytes captured before the upgrade"
 
 # The two documents of the second shape move together.
 for key in ask_doc_plain ask_doc_collide; do
@@ -734,3 +800,368 @@ taken "the person's whole-document replacement without the answered q-left-forma
 send person POST "/api/v1/artifacts/$spec_a/edits" \
   '{"ops":[{"op":"retype","block":"q-doc-plain","type":"callout","attributes":{"kind":"note","title":""}}]}'
 taken "the person's retype of the answered q-doc-plain" q-doc-plain callout
+
+# ---------------------------------------------------------------------------------------------
+# A person's removal stays on the step's own tick, and an agent's drop is restored.
+# ---------------------------------------------------------------------------------------------
+# ask_row SECTION ISSUE DOCUMENT BLOCK: waits, within a minute, for the ask row $server settled the
+# ask block BLOCK of DOCUMENT into, and leaves its id in $value.
+ask_row() {
+  local waited=0
+  while true; do
+    send agent GET "/api/v1/issues/$2/asks"
+    want_status 200 "$1" "read the asks of $2"
+    value="$(jq -r --arg b "$4" --arg d "$3" \
+      '[.[] | select(.block_id == $b and .block_artifact.id == $d) | .id] | if length == 1 then .[0] else "" end' \
+      "$work/body")" || value=""
+    [[ -z "$value" ]] || return 0
+    [[ "$waited" -lt 600 ]] || fail "$1" "the ask of block $4 of $3" "no ask of $2 names it after 60 s"
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+}
+
+# answer_block SECTION ASK DOCUMENT BLOCK TEXT: the person answers ASK at $server in the words TEXT,
+# and it waits, within a minute, until DOCUMENT's text writes the ask block BLOCK answered.
+answer_block() {
+  local waited=0
+  send person POST "/api/v1/asks/$2/answer" "$(jq -cn --arg t "$5" '{text: $t, selected: [], expected_edited_at: null}')"
+  want_status 200 "$1" "the person answers the ask of block $4"
+  while true; do
+    send agent GET "/api/v1/artifacts/$3/text"
+    want_status 200 "$1" "read the text of $3"
+    jq -e --arg open ":::ask{#$4 " \
+      '[.markdown | split("\n")[] | select(startswith($open)) | contains("state=\"answered\"")] == [true]' \
+      "$work/body" >/dev/null && return 0
+    [[ "$waited" -lt 600 ]] || fail "$1" "the answer to block $4 lands in $3" "it does not read answered after 60 s: $(body)"
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+}
+
+# restorer_of SECTION SPEC FROM BLOCK…: the first version of SPEC after version FROM that holds an
+# ask block under one of the ids BLOCK…, and who wrote it, in $restorer, so that a failure names
+# the version that wrote the block back.
+restorer_of() {
+  local section="$1" spec="$2" from="$3" number id
+  shift 3
+  restorer="no version after $from holds its block"
+  send agent GET "/api/v1/artifacts/$spec"
+  want_status 200 "$section" "read document $spec"
+  for number in $(jq -r --argjson from "$from" '[.versions[].number | select(. > $from)] | sort | .[]' "$work/body"); do
+    send agent GET "/api/v1/artifacts/$spec/versions/$number"
+    want_status 200 "$section" "read version $number of $spec"
+    jq -j '.markdown' "$work/body" >"$work/restorer.md"
+    for id in "$@"; do
+      [[ -n "$(ask_block "$id" "$work/restorer.md")" ]] || continue
+      query "$section" "read the authors of version $number of $spec" \
+        "select authors::text from artifact_versions where artifact_id = '$spec' and number = $number"
+      restorer="version $number of $spec, written by $answer, holds its block $id again"
+      return 0
+    done
+  done
+}
+
+# removals_of ASK: the removed_by tuples of ASK's node, `kind:id:asserted` each, oldest first, in
+# $answer.
+removals_of() {
+  query removal "read the removed_by tuples of ask $1" \
+    "select coalesce(string_agg(to_kind || ':' || to_id || ':' || asserted::text, ' ' order by seq), '') from graph_tuples
+     where from_kind = 'ask' and from_id = '$1' and kind = 'removed_by'"
+}
+
+# The base release again, over the same database, writes what the step's tick meets: a project of
+# its own holding the one issue whose answered ask the person removes on this head below, and an
+# issue of SEED whose answered ask an agent's session drops.
+baseline_stop_pid "$head_pid"
+head_pid=""
+baseline_boot base-again "$BASELINE_BINARY" "$baseline_database_url"
+base_pid="$baseline_boot_pid"
+server="$baseline_boot_url"
+send agent GET /healthz
+want_status 200 removal "read /healthz of the base release, booted again"
+[[ "$(jq -r '.commit // ""' "$work/body")" == "$base_commit" ]] ||
+  fail removal "the base release booted again serves $base_commit" "it serves '$(jq -r '.commit // ""' "$work/body")'"
+sign_in removal
+readonly removal_project=PERSON
+send agent POST /api/v1/projects "$(jq -cn --arg k "$removal_project" --arg n "A person's removal" --arg p "$seed_person" \
+  --argjson a "$(seed_actor)" '{key: $k, name: $n, default_assignee: $p, actor: $a}')"
+want_status 201 removal "create the project $removal_project through the base release"
+cat >"$work/spec-person.md" <<'MD'
+# A person's removal
+
+:::requirement{#r-shelf}
+The printed corpus stands on one shelf.
+:::
+
+:::ask{#q-person urgency="med"}
+Which shelf holds the printed corpus?
+:::
+MD
+send agent POST /api/v1/issues "$(jq -cn --arg p "$removal_project" --rawfile s "$work/spec-person.md" \
+  --argjson a "$(seed_actor)" '{project: $p, title: "The ask a person removes", spec: $s, actor: $a}')"
+want_status 201 removal "create the issue of $removal_project through the base release"
+field removal "the key of the issue of $removal_project" .key
+readonly issue_p="$value"
+field removal "the spec of $issue_p" .primary_artifact_id
+readonly spec_p="$value"
+ask_row removal "$issue_p" "$spec_p" q-person
+readonly person_ask="$value"
+cat >"$work/spec-printed.md" <<'MD'
+# An agent's drop
+
+:::requirement{#r-printed}
+The corpus is printed once a week.
+:::
+
+:::ask{#q-printed urgency="med"}
+Which day is the corpus printed?
+:::
+MD
+send agent POST /api/v1/issues "$(jq -cn --arg p "$project" --rawfile s "$work/spec-printed.md" \
+  --argjson a "$(seed_actor)" '{project: $p, title: "The ask an agent drops", spec: $s, actor: $a}')"
+want_status 201 removal "create an issue of $project through the base release"
+field removal "the key of the issue of $project" .key
+readonly issue_e="$value"
+field removal "the spec of $issue_e" .primary_artifact_id
+readonly spec_e="$value"
+ask_row removal "$issue_e" "$spec_e" q-printed
+readonly dropped_ask="$value"
+readonly dropped_answer="Monday, before the first reading."
+answer_block removal "$person_ask" "$spec_p" q-person "The top shelf, beside the census."
+answer_block removal "$dropped_ask" "$spec_e" q-printed "$dropped_answer"
+seed_wait_settled "the answers of $issue_p and $issue_e settle"
+
+# The decisions.md of the person's issue, of the old shape: one section, which cites the ask.
+readonly removal_heading="The printed corpus stands on the top shelf"
+printf '# Decisions\n\n## %s\n\nThe person chose the top shelf, beside the census. Decided in dispatch://%s/ask/%s.\n' \
+  "$removal_heading" "$issue_p" "$person_ask" >"$work/decisions-person.md"
+send agent POST "/api/v1/issues/$issue_p/artifacts" "$(jq -cn --rawfile c "$work/decisions-person.md" \
+  --argjson a "$(seed_actor)" '{name: "decisions.md", content: $c, actor: $a}')"
+want_status 201 removal "upload the decisions.md of $issue_p through the base release"
+field removal "the decisions.md of $issue_p" .artifact.id
+readonly decisions_p="$value"
+
+# An agent's session drops the answered q-printed.
+send agent POST "/api/v1/artifacts/$spec_e/edits" \
+  "$(jq -cn --argjson a "$(seed_actor)" '{ops: [{op: "delete", block: "q-printed"}], actor: $a}')"
+want_status 200 removal "an agent drops the answered q-printed from the spec of $issue_e through the base release"
+seed_wait_settled "the decisions.md of $issue_p and the drop of q-printed settle"
+
+# The heading the base's Decisions read gives that section, which it reads citing the ask.
+send agent GET "/api/v1/issues/$issue_p/decisions"
+want_status 200 removal "read the Decisions of $issue_p through the base release"
+heading_id="$(jq -er --arg h "$removal_heading" --arg a "$person_ask" \
+  '[.decisions[] | select(.heading == $h and (.asks | index($a)))] | if length == 1 then .[0].block_id else error end' \
+  "$work/body" 2>/dev/null)" ||
+  fail removal "the base's Decisions read holds one section of $issue_p citing $person_ask" "$(body)"
+readonly heading_id
+pass removal "the decisions.md of $issue_p holds one section, heading block $heading_id, citing the answered $person_ask"
+
+# The version that dropped q-printed, the first that holds no block of it, names a session with no
+# act of a person.
+query removal "read the version of $spec_e that dropped q-printed" \
+  "select coalesce(min(number)::text, '') from artifact_versions where artifact_id = '$spec_e' and position(':::ask{#q-printed ' in markdown) = 0"
+readonly drop_version="$answer"
+[[ "$drop_version" =~ ^[1-9][0-9]*$ ]] || fail removal "a version of $spec_e drops q-printed" "none does"
+query removal "read the authors of version $drop_version of $spec_e" \
+  "select authors::text from artifact_versions where artifact_id = '$spec_e' and number = $drop_version"
+jq -e --arg s "$seed_session" 'length == 1 and .[0].kind == "session" and .[0].id == $s and .[0].act == null' \
+  <<<"$answer" >/dev/null ||
+  fail removal "the base records the drop of q-printed as a session with no act of a person" "version $drop_version names $answer"
+pass removal "the base recorded version $drop_version of $spec_e, which drops the answered q-printed, as written by $answer: a session with no act of a person"
+baseline_stop_pid "$base_pid"
+base_pid=""
+
+# This head, held, takes the person's removal: the step's first phase states the rows the base
+# wrote, as a boot's would, and the person puts a paragraph in place of the answered q-person.
+baseline_boot head-held "$head_binary" "$baseline_database_url"
+head_pid="$baseline_boot_pid"
+server="$baseline_boot_url"
+send agent GET /healthz
+want_status 200 removal "read /healthz of this head, held"
+[[ "$(jq -r '.commit // ""' "$work/body")" == "$head_commit" ]] ||
+  fail removal "this head booted again serves $head_commit" "it serves '$(jq -r '.commit // ""' "$work/body")'"
+sign_in removal
+dispatch_command backfill-again backfill-graph-store
+[[ "$command_code" == 0 ]] || fail removal "envoy-dispatch backfill-graph-store" "exited $command_code: $(<"$work/backfill-again.out")"
+wait_settled removal
+latest_markdown removal "$spec_p"
+readonly before_removal="$version"
+[[ -n "$(ask_block q-person "$work/latest.md")" ]] ||
+  fail removal "the spec of $issue_p holds q-person before the person's removal" "version $version holds no such block"
+readonly removal_paragraph="The person took this question back: no shelf is decided here."
+send person POST "/api/v1/artifacts/$spec_p/edits" "$(jq -cn --arg m "$removal_paragraph" \
+  '{ops: [{op: "insert", after: "block:q-person", markdown: $m}, {op: "delete", block: "q-person"}]}')"
+want_status 200 removal "the person puts a paragraph in place of the answered q-person"
+wait_settled removal
+latest_markdown removal "$spec_p"
+[[ "$version" -gt "$before_removal" ]] || fail removal "the person's removal writes a version of $spec_p" "it is still at $version"
+readonly person_version="$version"
+[[ -z "$(ask_block q-person "$work/latest.md")" ]] ||
+  fail removal "the person's removal takes q-person out of $spec_p" "version $person_version still holds it"
+grep -Fqx -- "$removal_paragraph" "$work/latest.md" ||
+  fail removal "the person's paragraph stands in place of q-person" "version $person_version holds no such paragraph"
+query removal "read the authors of version $person_version of $spec_p" \
+  "select authors::text from artifact_versions where artifact_id = '$spec_p' and number = $person_version"
+readonly person_authors="$answer"
+jq -e --arg p "$seed_person" 'any(.[]; .kind == "user" and .id == $p)' <<<"$person_authors" >/dev/null ||
+  fail removal "version $person_version of $spec_p is the person's" "it names $person_authors"
+removals_of "$person_ask"
+[[ "$answer" == "person:$seed_person:true" ]] ||
+  fail removal "the person's removal leaves one asserted removed_by from $person_ask to $seed_person" "${answer:-none}"
+readonly person_removals="$answer"
+pass removal "the person's version $person_version of $spec_p puts a paragraph in place of q-person, written by $person_authors, and leaves the removed_by tuple $person_removals"
+baseline_stop_pid "$head_pid"
+head_pid=""
+
+# This head without the hold setting, alone, so its step's first tick runs the restore and the
+# conversion: the window of 15 s is processes.LiveWindow.
+waited=0
+while true; do
+  query step "read the live server processes" \
+    "select count(*) from server_processes where heartbeat_at > now() - interval '15 seconds'"
+  [[ "$answer" != 0 ]] || break
+  [[ "$waited" -lt 300 ]] || fail step "no server process is live before this head boots without the hold" "$answer still are after 30 s"
+  sleep 0.1
+  waited=$((waited + 1))
+done
+baseline_extra_env=(DISPATCH_TEST_HOOKS=1)
+baseline_boot head-unheld "$head_binary" "$baseline_database_url"
+head_pid="$baseline_boot_pid"
+server="$baseline_boot_url"
+readonly step_log="$baseline_log"
+waited=0
+while true; do
+  first_tick="$(grep -m 1 -F 'msg="dispatch: decisions step counted what it owes"' "$step_log" || true)"
+  [[ -z "$first_tick" ]] || break
+  [[ "$waited" -lt 1200 ]] || fail step "the step's first tick reports what it owes" "no such line 120 s after this head listened"
+  sleep 0.1
+  waited=$((waited + 1))
+done
+printf "the step's first tick: %s\n" "$first_tick"
+printf 'waiting three tick intervals of %s s after it, and 10 s more for the third tick to end\n' "$tick_seconds"
+sleep $((3 * tick_seconds + 10))
+grep -F 'msg="dispatch: decisions step ' "$step_log" >"$work/report" || true
+printf 'the report lines of every tick:\n'
+sed 's/^/  /' "$work/report"
+
+# The person's removal stays: the spec holds no block of the ask, its newest version is the
+# person's, and no tick reports a restore of it. Each failure names the version that wrote the
+# block back, where one did.
+send agent GET "/api/v1/asks/$person_ask"
+want_status 200 step "read $person_ask after the ticks"
+field step "the block id the row of $person_ask names" '.ask.block_id // "q-person"'
+readonly person_block="$value"
+latest_markdown step "$spec_p"
+[[ -z "$(ask_block "$person_block" "$work/latest.md")$(ask_block q-person "$work/latest.md")" ]] || {
+  restorer_of step "$spec_p" "$person_version" "$person_block" q-person
+  fail step "the spec of $issue_p holds no block of $person_ask, the answered ask the person removed" "$restorer"
+}
+[[ "$version" == "$person_version" ]] || {
+  restorer_of step "$spec_p" "$person_version" "$person_block" q-person
+  query step "read the authors of version $version of $spec_p" \
+    "select authors::text from artifact_versions where artifact_id = '$spec_p' and number = $version"
+  fail step "the newest version of $spec_p is $person_version, the person's" \
+    "it is $version, written by $answer; of $person_ask: $restorer"
+}
+pass step "after three ticks $spec_p holds no block of $person_ask, and its newest version is $person_version, the person's"
+restores="$(grep -F 'msg="dispatch: decisions step restored an answered ask"' "$work/report" | grep -F " ask=$person_ask " || true)"
+[[ -z "$restores" ]] || {
+  restorer_of step "$spec_p" "$person_version" "$person_block" q-person
+  fail step "no tick reports a restore of $person_ask" "$restores; $restorer"
+}
+issue_lines="$(grep -F 'msg="dispatch: decisions step restored and converted an issue"' "$work/report" | grep -F " issue=$issue_p " || true)"
+[[ -n "$issue_lines" ]] || fail step "a tick reports what it did of $issue_p" "no report line names $issue_p"
+! grep -Eq ' (restored|declined)=[1-9]' <<<"$issue_lines" || {
+  restorer_of step "$spec_p" "$person_version" "$person_block" q-person
+  fail step "no tick restores or declines an ask of $issue_p" "$issue_lines; of $person_ask: $restorer"
+}
+removals_of "$person_ask"
+[[ "$answer" == "$person_removals" ]] ||
+  fail step "the ticks append no removed_by to $person_ask" "it holds $answer, was $person_removals"
+pass step "no tick's report restores $person_ask, and its node holds the one removed_by the person's write left: $person_removals"
+
+# The section that cites it is deleted by R9's rule for an answered ask a person removed: its
+# heading address answers the ask through one moved_to tuple, and the decisions.md retires.
+grep -Fq ' restored=0 declined=0 decisions=0 readings=0 dropped=0 removed=1 left=0 retired=true ' <<<"$issue_lines" ||
+  fail section "a tick deletes the one section of $issue_p by the rule for an ask a person removed, and retires its decisions.md" "$issue_lines"
+pass section "a tick reports the one section of $issue_p deleted by the rule for an ask a person removed (removed=1), and its decisions.md retired"
+query section "read the moved_to tuples of $issue_p/decisions-md#$heading_id" \
+  "select coalesce(string_agg(to_kind || ':' || to_id || ':' || asserted::text, ' ' order by seq), '') from graph_tuples
+   where kind = 'moved_to' and from_kind = 'block' and from_id = '$issue_p/decisions-md#$heading_id'"
+[[ "$answer" == "ask:$person_ask:true" ]] ||
+  fail section "one moved_to tuple from $issue_p/decisions-md#$heading_id to the ask $person_ask" "${answer:-none}"
+send agent GET "/api/v1/references?to=$(q "dispatch://$issue_p/ask/$person_ask")"
+want_status 200 section "resolve dispatch://$issue_p/ask/$person_ask"
+jq -cS '.node' "$work/body" >"$work/ask-node.json"
+send agent GET "/api/v1/references?to=$(q "dispatch://$issue_p/artifact/decisions-md#b-$heading_id")"
+want_status 200 section "resolve the heading address dispatch://$issue_p/artifact/decisions-md#b-$heading_id"
+jq -cS '.node' "$work/body" >"$work/heading-node.json"
+jq -e --arg a "$person_ask" '.kind == "ask" and .id == $a' "$work/heading-node.json" >/dev/null ||
+  fail section "the heading address answers the ask $person_ask" "it answers $(<"$work/heading-node.json")"
+cmp -s "$work/ask-node.json" "$work/heading-node.json" ||
+  fail section "the heading address answers the ask as the ask's own address does" \
+    "got $(<"$work/heading-node.json"), want $(<"$work/ask-node.json")"
+pass section "dispatch://$issue_p/artifact/decisions-md#b-$heading_id answers the ask $person_ask through one moved_to tuple, the node its own address answers: $(jq -c '{kind, id, ref, parent}' "$work/heading-node.json")"
+query section "read the decisions.md of $issue_p" \
+  "select (role is null)::text || ' ' || (retired_at is not null)::text from artifacts where id = '$decisions_p'"
+[[ "$answer" == "true true" ]] || fail section "the decisions.md of $issue_p is retired, with no role" "role null and retired read: $answer"
+pass section "the decisions.md of $issue_p is retired, with no role"
+
+# Nothing is owed: not for that issue, and not on this head's count.
+query owed "read the decisions documents of $issue_p" "select count(*) from decisions_documents() where issue_key = '$issue_p'"
+[[ "$answer" == 0 ]] || fail owed "no decisions document of $issue_p stands" "decisions_documents() lists $answer"
+send agent GET /healthz
+want_status 200 owed "read /healthz of this head"
+step_owed="$(jq -r '.decisions_step_owed // "absent"' "$work/body")"
+[[ "$step_owed" == 0 ]] ||
+  fail owed "/healthz answers decisions_step_owed zero after the ticks" \
+    "it answers $step_owed; the step's last count: $(grep -F 'msg="dispatch: decisions step counted what it owes"' "$step_log" | tail -n 1)"
+pass owed "/healthz answers decisions_step_owed 0 after the ticks, and decisions_documents() lists nothing of $issue_p"
+
+# In the same run the step restores the answered ask an agent's session dropped.
+agent_restores="$(grep -F 'msg="dispatch: decisions step restored an answered ask"' "$work/report" | grep -F " ask=$dropped_ask " || true)"
+[[ -n "$agent_restores" && "$(wc -l <<<"$agent_restores")" == 1 ]] ||
+  fail agent "one tick reports the restore of $dropped_ask" "${agent_restores:-no report line names it}"
+[[ "$agent_restores" == *" issue=$issue_e "* && "$agent_restores" == *" read=no_person "* ]] ||
+  fail agent "the restore of $dropped_ask reads the version that dropped it as no person's" "$agent_restores"
+send agent GET "/api/v1/asks/$dropped_ask"
+want_status 200 agent "read $dropped_ask after the ticks"
+expect agent "$dropped_ask names $spec_e as its block's document" "\"$spec_e\"" '.ask.block_artifact.id'
+expect agent "$dropped_ask keeps its block id q-printed" '"q-printed"' '.ask.block_id'
+expect agent "$dropped_ask keeps its answer" "$(jq -cn --arg t "$dropped_answer" '$t')" '.ask.answer.text'
+latest_markdown agent "$spec_e"
+[[ -n "$(ask_block q-printed "$work/latest.md")" ]] ||
+  fail agent "the spec of $issue_e holds q-printed again" "version $version holds no such block"
+pass agent "the answered q-printed, which version $drop_version dropped as a session with no act of a person, is restored in the same run, at version $version of $spec_e: $agent_restores"
+
+# ---------------------------------------------------------------------------------------------
+# A drop by a broker token the secrets broker scoped to a person stays.
+# ---------------------------------------------------------------------------------------------
+# No shell driver can present that token, which signs a DPoP proof for each request, so a Go test
+# carries the row; this head stops first, so the test's build and servers run alone.
+baseline_stop_pid "$head_pid"
+head_pid=""
+readonly broker_test=TestADropByAPersonScopedBrokerTokenUnderTheBaseStays
+broker_code=0
+(
+  cd -- "$envoy_dir"
+  env DISPATCH_TEST_DATABASE_URL="$test_database_url" BASELINE_SHA="$BASELINE_SHA" \
+    go test -tags basebuild -count=1 -v -timeout 30m -run "^${broker_test}\$" ./cmd/dispatch
+) >"$work/broker.out" 2>&1 || broker_code=$?
+broker_failure=""
+if [[ "$broker_code" != 0 ]]; then
+  broker_failure="it exited $broker_code"
+elif ! grep -q "^--- PASS: $broker_test " "$work/broker.out"; then
+  broker_failure="it printed no --- PASS: line of $broker_test"
+elif grep -q -- '--- SKIP' "$work/broker.out"; then
+  broker_failure="it skipped: $(grep -- '--- SKIP' "$work/broker.out")"
+fi
+[[ -z "$broker_failure" ]] || {
+  printf 'the output of go test -run ^%s$ ./cmd/dispatch:\n' "$broker_test"
+  sed 's/^/  /' "$work/broker.out"
+  fail broker "go test -tags basebuild -run ^$broker_test\$ ./cmd/dispatch passes and skips nothing" "$broker_failure"
+}
+sed -n "/^--- PASS: $broker_test /p" "$work/broker.out"
+pass broker "$broker_test passes and skips nothing: under the base release a broker token scoped to a person drops an answered ask, and this head's step leaves it out, with one removed_by to that person"

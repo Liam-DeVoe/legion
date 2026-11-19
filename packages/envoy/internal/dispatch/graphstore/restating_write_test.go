@@ -14,7 +14,7 @@ import (
 )
 
 // TestARestatingWriteKeepsAStateItDoesNotOwn holds a write that restates a node (Node.Restates)
-// to the rule moveNodes writes it by (dispatch://INFRA-1950/spec#b-r-proposed). A node a plain
+// to the rule the move of queueNodes writes it by. A node a plain
 // write marked proposed, settled or overtaken and reserved for its author keeps both when a
 // restating write writes it live and project-visible again; a restating write that says gone
 // writes it gone and keeps its visibility; a restating write of a node stored gone writes it

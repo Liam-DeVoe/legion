@@ -21,7 +21,7 @@ import (
 // are far above what the work takes.
 const followOrderWait = 20 * time.Second
 
-// TestACommentInAnAskThreadTakesItsAuthorsNodesInAscendingOrder is dispatch://INFRA-1149's R17
+// TestACommentInAnAskThreadTakesItsAuthorsNodesInAscendingOrder is this change's R17
 // over the comment path's two node writes. A comment by a session in an ask's thread makes two
 // nodes of the store: the session that wrote it, and - for a credential the secrets broker
 // scoped to a person - that person, whom the session is an alias of. The author's own write

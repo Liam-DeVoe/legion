@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -32,7 +34,7 @@ const sizingYearDays = 365
 // and the figure that comes out of dividing its size by its rows is tens of times the real one.
 const measurableRows = 10_000
 
-// measuredBytesARow is the bytes a row measured for dispatch://INFRA-1149 on this pod's
+// measuredBytesARow is the bytes a row measured for this change on this pod's
 // PostgreSQL 18.6, used where a store table is too small to measure its own. measuredFrom is
 // where it came from, printed beside every figure that uses it so nobody reads it as this
 // database's own measurement.
@@ -110,8 +112,9 @@ func (b BlockIndexBacklog) Age() time.Duration {
 
 // branchTables are the tables the migrations of this branch touch, each with whether the
 // migration alters a relation that already held rows. graph_nodes, graph_tuples and
-// graph_erasures are created by 20261109013400 and written by 20261109051232, so no existing
-// row is rewritten for them; document_blocks, block_refs and comments are altered by
+// graph_erasures are created by 20261109013400 and written by 20261109051232, and
+// block_index_event_cursors and graph_backfill_horizon are created by 20261118115645, so no
+// existing row is rewritten for them; document_blocks, block_refs and comments are altered by
 // 20261109022248, server_build_announcements by 20261115051200 and document_block_versions by
 // 20261116221539, and a table that large is a migration that needs another shape, which is what
 // the limit refuses.
@@ -122,6 +125,8 @@ var branchTables = []struct {
 	{"graph_nodes", false},
 	{"graph_tuples", false},
 	{"graph_erasures", false},
+	{"block_index_event_cursors", false},
+	{"graph_backfill_horizon", false},
 	{"block_refs", true},
 	{"comments", true},
 	{"document_block_versions", true},
@@ -129,21 +134,21 @@ var branchTables = []struct {
 	{"server_build_announcements", true},
 }
 
-// The five children of dispatch://INFRA-1098 whose writes the sizing sums (R4), each with the kinds
+// The five children of the parent change whose writes the sizing sums (R4), each with the kinds
 // R20 gives it: this one; the one that moves decisions, readings, asks and their answers; the one
 // that moves the inbox, the messages and the read state; the one that moves interactions, lenses,
 // lens kinds, constraints and risks; and the one that moves issues, their documents, a block's
 // text and rank, results and components.
 const (
-	movedHere       = "dispatch://INFRA-1149"
-	movedWithAsks   = "dispatch://INFRA-1150"
-	movedWithInbox  = "dispatch://INFRA-1152"
-	movedWithLenses = "dispatch://INFRA-1950"
-	movedWithBlocks = "dispatch://INFRA-1253"
+	movedHere       = "this-change"
+	movedWithAsks   = "asks-child"
+	movedWithInbox  = "inbox-child"
+	movedWithLenses = "lenses-child"
+	movedWithBlocks = "blocks-child"
 )
 
 // StoreKind is one term of the projection: one kind of write the five children of
-// dispatch://INFRA-1098 move, the child that moves it, how many nodes and how many tuples one such
+// the parent change move, the child that moves it, how many nodes and how many tuples one such
 // write appends, and how many such writes the database's own history holds inside the window.
 // Rows a day is the sum over the terms of writes a day times tuples a write (R4).
 //
@@ -151,14 +156,15 @@ const (
 // the sizing reads the same history on a database the store does not exist in yet, which is the
 // database R4 takes its readings from. Where a writer's tuples vary from one write to the next,
 // each fact is a term of its own, counted over the writes that state it: a comment states its
-// node and two base attributes always, and an authored_by, an anchored_to, an owned_by and its
+// node and three base attributes always - its visibility, its state, and its project or the
+// parties it is between - and an authored_by, an anchored_to, an owned_by and its
 // author's aliases only where its row names each. A person, a session, a role and a role's page
 // are each written once, by the write that first records them, so each is a term counted over
 // the ones the window records for the first time.
 //
 // A kind production writes no row of before its child ships - a decision and a reading of
-// dispatch://INFRA-1150, a criterion of dispatch://INFRA-1253 and every kind of
-// dispatch://INFRA-1950 - has no history to read, so its term carries an assumed rate (Assumed),
+// the asks child, a criterion of the blocks child and every kind of the lenses child - has no
+// history to read, so its term carries an assumed rate (Assumed),
 // which its Driver states with the reason for it and the report marks as assumed, rather than
 // reading zero and leaving the kind out of the sum. A decision, a reading and a criterion are
 // blocks of a document, whose node and placement the block terms count already, so each of their
@@ -194,24 +200,31 @@ const (
 
 // storeKinds are the terms R4 states, each beside the writer or the requirement whose tuples it
 // counts:
-//   - a comment's node and its visibility and state (graphstore.Write), the authored_by and the
-//     aliases of whoever wrote it (graphstore.AuthorFacts), and the artifacts it is anchored to
-//     and owned by (api's commentStored);
-//   - a delivery to a comment's mention, one delivered_to (outbox.deliveredGraph);
+//   - a comment's node and its visibility, state and project or parties (graphstore.Write), the
+//     authored_by and the aliases of whoever wrote it (graphstore.AuthorFacts), and the artifacts
+//     it is anchored to and owned by (api's commentStored);
+//   - a delivery to a comment's mention, one delivered_to (outbox.deliveredGraph), and the same
+//     one tuple for each session or role the bus reached with a comment event
+//     (outbox.deliveredGraph) and for each fallback copy the outbox published
+//     (outbox.fallbackDelivered);
 //   - a version's blocks as refs.IndexBlocks states them: a block it inserts afresh, its node, its
-//     two base attributes, its in_document and its part_of; a block it restores, its state and
-//     its in_document, with at most the retraction and the assertion of a parent the restore
-//     moved; a block it drops, its state gone; a block whose parent moved, the retraction of the
-//     old parent and the assertion of the new; and a block reference, the pair's assertion and,
-//     at most, the retraction that ends it, which no table records once the pair is gone;
-//   - dispatch://INFRA-1253's values of each block a version wrote: the text value of each block
-//     whose text it wrote, the rank and the placement of a block's first row, and the new rank of
-//     a block it moved under another parent (refs' reconcileBlockValues); each version's node with
-//     its base attributes, its part_of and its two values (graphstore.VersionFacts), the mime,
-//     size and sha256 values an image's or a file's version states on its document
+//     three base attributes (its project being its document's), its in_document and its part_of;
+//     a block it restores, its state and its in_document, with at most the retraction and the
+//     assertion of a parent the restore moved; a block it drops, its state gone; a block whose
+//     parent moved, the retraction of the old parent and the assertion of the new; and a block
+//     reference, the pair's assertion and, at most, the retraction that ends it, which no table
+//     records once the pair is gone;
+//   - the node and three base attributes of an issue, an artifact, an ask and a message, and the
+//     gone state a document's removal states of its node, each written by its own create or
+//     removal on this branch;
+//   - the values of each block a version wrote: the text value of each block whose text it wrote,
+//     the rank and the placement of a block's first row, and the new rank of a block it moved
+//     under another parent (refs' reconcileBlockValues); each version's node with its base
+//     attributes, its part_of and its two values (graphstore.VersionFacts), the mime, size and
+//     sha256 values an image's or a file's version states on its document
 //     (graphstore.ArtifactBytes), and the part_of an issue's new document states
 //     (graphstore.ArtifactPartOf);
-//   - dispatch://INFRA-1152's delivered_to of a message, and one tuple for each read mark, clear,
+//   - the inbox child's delivered_to of a message, and one tuple for each read mark, clear,
 //     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
 //     a key and no earlier one, so its term counts every key marked inside the window once;
 //   - the person, session, role and page nodes the first write that records each makes
@@ -219,26 +232,33 @@ const (
 //     attributes: a page's part_of its role, and a session's part_of the role it claimed, with
 //     that role's held_by and the retraction that ends it, or else a page of its own with that
 //     page's base attributes and its part_of the session (R14);
-//   - dispatch://INFRA-1152's message node with its author, its parent and the tuples its target
-//     and its broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
+//   - the inbox child's message's author and parent, and the tuples its target and its
+//     broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
 //     person's part in a thread, the delivered_to of each write to every other participant and of
 //     an ask to the person it waits on, the move of that person, the body blocks of a comment, a
 //     message and an ask with their links, and a delivery attempt's node (its spec's
 //     #b-r-kinds-move, #b-r-delivery-written, #b-r-participation and #b-r-mentions);
-//   - dispatch://INFRA-1253's issue, artifact and document version nodes, an issue's child_of and
-//     needs, a result's node with its values and tuples, its screenshots and its retraction, a
-//     component's node with its part_of, depends_on and affects, and a criterion's authored_by
-//     (#b-r-issue-relations, #b-r-result-node, #b-r-artifacts-in-tree, #b-r-reasoning-tree);
-//   - dispatch://INFRA-1150's ask node and what its events state - an edit, an answer, a
-//     resolution, a follower - a Keep, and an agent's decision and its reading (#b-r-ask-node,
-//     #b-r-decision-node, #b-r-reading);
-//   - dispatch://INFRA-1950's interaction and its frames, a lens and its finding blocks, a lens
+//   - the blocks child's document version node, an artifact's part_of its issue, an issue's
+//     child_of and needs, a result's node with its values and tuples, its screenshots and its
+//     retraction, a component's node with its part_of, depends_on and affects, and a criterion's
+//     authored_by (#b-r-issue-relations, #b-r-result-node, #b-r-artifacts-in-tree,
+//     #b-r-reasoning-tree);
+//   - the asks child's ask's answer_state, question, options, authored_by, anchored_to and
+//     owned_by, and what its other events state - an edit, an answer, a resolution, a follower - a
+//     Keep, and an agent's decision and its reading (#b-r-ask-node, #b-r-decision-node,
+//     #b-r-reading);
+//   - the lenses child's interaction and its frames, a lens and its finding blocks, a lens
 //     kind, a constraint and a risk (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
 //     #b-r-constraint-risk), every one of them assumed.
+//
+// Every node of an issue, a document, an ask, a message, a comment and a block states its project
+// or its parties beside its visibility and state, written by the create that makes it: each of
+// those kinds' terms counts that tuple, and none has a second term for its node, which its own
+// term counts already.
 func storeKinds() []StoreKind {
 	return []StoreKind{{
-		Name: "comment", MovedBy: movedHere, Nodes: 1, Tuples: 2,
-		Driver: "comments.created_at: the comment's node and its visibility and state",
+		Name: "comment", MovedBy: movedHere, Nodes: 1, Tuples: 3,
+		Driver: "comments.created_at: the comment's node and its visibility, state and project or parties",
 		count:  `(select count(*) from sized_comments)`,
 	}, {
 		Name: graphstore.TupleAuthoredBy, MovedBy: movedHere, Tuples: 1,
@@ -262,9 +282,24 @@ func storeKinds() []StoreKind {
 		count: `(select count(*) from comment_deliveries where state in ` + model.DeliveryTakenStatesSQL +
 			` and created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "block", MovedBy: movedHere, Nodes: 1, Tuples: 4,
-		Driver: "document_block_texts of the versions written in the window, a block's first row: its node, its visibility" +
-			" and state, its in_document and its part_of",
+		Name: "bus_delivery", MovedBy: movedHere, Tuples: 1,
+		Driver: "events.published_destinations of the comment events written in the window, each a session's or a role's" +
+			" topic as the outbox reads one: a delivered_to for each destination the bus reached",
+		count: `(select count(*) from events e cross join lateral unnest(e.published_destinations) reached (topic)
+			where e.type like 'comment.%' and e.created_at > ` + sizingWindow + `
+			  and jsonb_typeof(e.payload->'id') = 'string' and e.payload->>'id' <> ''
+			  and octet_length(e.payload->>'id') <= ` + addressBound + `
+			  and ` + reachesANode("reached.topic") + `)`,
+	}, {
+		Name: "fallback_delivery", MovedBy: movedHere, Tuples: 1,
+		Driver: "comment_fallback_copies.settled_at of the copies the outbox published in the window, each to a session's" +
+			" or a role's topic: a delivered_to for each",
+		count: `(select count(*) from comment_fallback_copies f
+			where f.published and f.settled_at > ` + sizingWindow + ` and ` + reachesANode("f.destination") + `)`,
+	}, {
+		Name: "block", MovedBy: movedHere, Nodes: 1, Tuples: 5,
+		Driver: "document_block_texts of the versions written in the window, a block's first row: its node, its visibility," +
+			" state and project, its in_document and its part_of",
 		count: `(select count(*) from sized_texts where written and earlier is null)`,
 	}, {
 		Name: "block_restored", MovedBy: movedHere, Tuples: 4,
@@ -359,9 +394,13 @@ func storeKinds() []StoreKind {
 		count: `(select count(*) from sized_roles
 			where octet_length('` + graphstore.KindRole + `/' || name) <= ` + addressBound + `)`,
 	}, {
-		Name: "message", MovedBy: movedWithInbox, Nodes: 1, Tuples: 4,
-		Driver: "messages.created_at: the message's node, its visibility and state, its authored_by and its part_of the" +
-			" issue it is posted on or the page of the agent it is addressed to",
+		Name: "message", MovedBy: movedHere, Nodes: 1, Tuples: 3,
+		Driver: "messages.created_at: the message's node and its visibility, state and project or parties",
+		count:  `(select count(*) from sized_messages)`,
+	}, {
+		Name: "message_relation", MovedBy: movedWithInbox, Tuples: 2,
+		Driver: "messages.created_at: the message's authored_by and its part_of the issue it is posted on or the page" +
+			" of the agent it is addressed to",
 		count: `(select count(*) from sized_messages)`,
 	}, {
 		Name: "message_pointer", MovedBy: movedWithInbox, Tuples: 1,
@@ -429,8 +468,8 @@ func storeKinds() []StoreKind {
 		count: `((select count(*) from comment_deliveries where created_at > ` + sizingWindow + `)
 			+ (select count(*) from message_deliveries where created_at > ` + sizingWindow + `))`,
 	}, {
-		Name: "issue", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 2,
-		Driver: "issues.created_at: the issue's node and its visibility and state",
+		Name: "issue", MovedBy: movedHere, Nodes: 1, Tuples: 3,
+		Driver: "issues.created_at: the issue's node and its visibility, state and project",
 		count:  `(select count(*) from issues where created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "issue_relation", MovedBy: movedWithBlocks, Tuples: 1,
@@ -438,17 +477,16 @@ func storeKinds() []StoreKind {
 		count: `((select count(*) from issues where created_at > ` + sizingWindow + ` and parent_key is not null)
 			+ (select count(*) from issue_links where created_at > ` + sizingWindow + `))`,
 	}, {
-		Name: "artifact", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 3,
-		Driver: "artifacts.created_at: the artifact's node, its visibility and state, and its part_of its issue",
+		Name: "artifact", MovedBy: movedHere, Nodes: 1, Tuples: 3,
+		Driver: "artifacts.created_at: the artifact's node and its visibility, state and project or parties",
 		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "document_version", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 2,
-		Driver: "artifact_versions.created_at: the document version node each accepted write appends, and its visibility" +
-			" and state",
-		count: `(select count(*) from artifact_versions where created_at > ` + sizingWindow + `)`,
+		Name: "artifact_removed", MovedBy: movedHere, Tuples: 1,
+		Driver: "artifact.removed events in the window: the removed document's node stated gone (api's removeArtifact)",
+		count:  `(select count(*) from events where type = 'artifact.removed' and created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "criterion", MovedBy: movedWithBlocks, Tuples: 1, Assumed: 5 * sizingWindowDays,
-		Driver: "assumed at 5 a day, since the block schema holds no criterion type before dispatch://INFRA-1253 and no" +
+		Driver: "assumed at 5 a day, since the block schema holds no criterion type before the blocks child ships and no" +
 			" row holds one: its authored_by, its node and placement being a block's, which the block terms count",
 	}, {
 		// Counted off graphstore.ResultFacts, which the record route (api's writeRecordedResult) and
@@ -487,9 +525,13 @@ func storeKinds() []StoreKind {
 			+ (select count(*) from issue_component_members m join issue_components i on i.issue_key = m.issue_key
 			   where i.updated_at > ` + sizingWindow + `))`,
 	}, {
-		Name: "ask", MovedBy: movedWithAsks, Nodes: 1, Tuples: 8,
-		Driver: "ask.opened events in the window: the ask's node, its visibility and state, its answer_state, question" +
-			" and options values, its authored_by and, at most, its anchored_to and owned_by",
+		Name: "ask", MovedBy: movedHere, Nodes: 1, Tuples: 3,
+		Driver: "ask.opened events in the window: the ask's node and its visibility, state and project or parties",
+		count:  `(select count(*) from sized_ask_events where type = 'ask.opened')`,
+	}, {
+		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 6,
+		Driver: "ask.opened events in the window: the ask's answer_state, question and options values, its authored_by" +
+			" and, at most, its anchored_to and owned_by",
 		count: `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
 		Name: "ask_edit", MovedBy: movedWithAsks, Tuples: 2,
@@ -515,14 +557,14 @@ func storeKinds() []StoreKind {
 		count:  `(select count(*) from decision_keeps where kept_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "decision", MovedBy: movedWithAsks, Tuples: 5, Assumed: 10 * sizingWindowDays,
-		Driver: "assumed at 10 a day, since production writes no agent's decision before dispatch://INFRA-1150 and a" +
+		Driver: "assumed at 10 a day, since production writes no agent's decision before the asks child ships and a" +
 			" section of an issue's decisions document, the form an earlier release wrote one in, is no row: its" +
 			" uncertainty and uncertainty_reason values, one shaped, its from_ask and its decided_by, its node and" +
 			" placement being a block's, which the block terms count",
 	}, {
 		Name: "reading", MovedBy: movedWithAsks, Tuples: 1, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at one under each assumed decision, 10 a day, since production writes no reading before" +
-			" dispatch://INFRA-1150: its authored_by, its node and its part_of its decision being a block's, which the" +
+			" the asks child ships: its authored_by, its node and its part_of its decision being a block's, which the" +
 			" block terms count",
 	}, {
 		// Counted off graphstore.InteractionFacts, which the going POST (api's recordGoingRequest), the
@@ -532,7 +574,7 @@ func storeKinds() []StoreKind {
 		// makes, the visibility, the state and the project where the run names one; and the
 		// changed_by_run a write made for the run appends out of a node it changed (graphstore.WithRun).
 		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 9, Assumed: 10 * sizingWindowDays,
-		Driver: "assumed at 10 runs a day, since production writes no interaction before dispatch://INFRA-1950 and" +
+		Driver: "assumed at 10 runs a day, since production writes no interaction before the lenses child ships and" +
 			" the release before it deletes a run from going_requests an hour old (contracts.GoingRequestTTL), so no" +
 			" table of the database the sizing reads holds the window's runs: its node, its visibility and state, at" +
 			" most its project, its words and ends_at values, its authored_by, at most two aliases of its author and" +
@@ -550,7 +592,7 @@ func storeKinds() []StoreKind {
 		// made_by, graphstore.AuthorFacts' authored_by and the author's aliases, stated once a write.
 		Name: "lens", MovedBy: movedWithLenses, Nodes: 1, Tuples: 10, Assumed: 2 * sizingWindowDays,
 		Driver: "assumed at 2 a day, a pre-mortem and one other, since production writes no lens before" +
-			" dispatch://INFRA-1950: its node, its visibility, state and project, its part_of the node it analyses," +
+			" the lenses child ships: its node, its visibility, state and project, its part_of the node it analyses," +
 			" its has_kind, at most its verdict value and its triggered_by, its authored_by and at most two aliases" +
 			" of its author",
 	}, {
@@ -578,7 +620,7 @@ func storeKinds() []StoreKind {
 		// graphstore.AuthorFacts' authored_by and aliases; and the constrained_by the requirement's
 		// pointer write appends (POST .../nodes/{id}/pointers).
 		Name: "constraint", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 1 * sizingWindowDays,
-		Driver: "assumed at 1 a day, since production writes no constraint before dispatch://INFRA-1950: its node, its" +
+		Driver: "assumed at 1 a day, since production writes no constraint before the lenses child ships: its node, its" +
 			" visibility, state and project, its part_of its issue, at most three values, a standard and its" +
 			" reference or a measurement, its value and where it was taken, its authored_by, at most two aliases of" +
 			" its author, and the constrained_by of the requirement it forced",
@@ -589,7 +631,7 @@ func storeKinds() []StoreKind {
 		// graphstore.AuthorFacts' authored_by and aliases, with one prevented_by.
 		Name: "risk", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 11 * sizingWindowDays,
 		Driver: "assumed at 11 a day, one pre-mortem's risks a day as the one this tree holds has eleven, since" +
-			" production writes no risk before dispatch://INFRA-1950: its node, its visibility, state and project, its" +
+			" production writes no risk before the lenses child ships: its node, its visibility, state and project, its" +
 			" part_of its lens, its heading, early_warning and prevention values, its authored_by, at most two aliases" +
 			" of its author, and one prevented_by",
 	}}
@@ -604,6 +646,19 @@ func storeKinds() []StoreKind {
 // it, and a decision or a reading is a kind production writes none of yet, whose rate the sizing
 // assumes.
 const sizingAuthors = `(select null::text, null::text, null::timestamptz where false) stored (kind, id, at)`
+
+// reachesANode is true of a topic the outbox reads as a node of the store (outbox's
+// nodeOfSubject): a session's own topic or a role's, with a name after the prefix, and that name
+// inside the store's address bound, since the outbox leaves out a delivered_to whose far end is
+// past it (outbox.deliveredGraph, outbox.fallbackDelivered). topic is the SQL expression that
+// holds the topic. The prefixes are ASCII, so the bytes past the prefix are the name's.
+func reachesANode(topic string) string {
+	names := func(prefix string) string {
+		return `(` + topic + ` like '` + prefix + `_%' and octet_length(` + topic + `) - ` +
+			strconv.Itoa(len(prefix)) + ` <= ` + addressBound + `)`
+	}
+	return `(` + names(contracts.AgentTopicPrefix) + ` or ` + names(contracts.RoleTopicPrefix) + `)`
+}
 
 // sizingWritesWith is the sets of rows several terms count over, each read once for every term
 // that counts it: the comments written inside the window with the facts each one's write states
@@ -1257,7 +1312,7 @@ func bytesARow(size TableSize) (int64, string) {
 	if size.Held && size.Rows >= measurableRows {
 		return size.Bytes / size.Rows, "measured from this database"
 	}
-	return measuredBytesARow, "measured for dispatch://INFRA-1149 (" + measuredFrom +
+	return measuredBytesARow, "measured when the store was built (" + measuredFrom +
 		"), the table here holding too few rows to measure"
 }
 

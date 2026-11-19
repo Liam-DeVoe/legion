@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -38,56 +39,12 @@ type Target struct {
 	ID   string
 }
 
-// ReplaceCounted reconciles one source's references, read with the whole grammar through r, the
-// Reader of the write that holds that source's text (NewReader), and resolves the counted
-// targets the event that source appends has to name. Every write that indexes a body goes
-// through it or one of its variants, so no producer can reconcile the graph without holding what
-// moved: replaceRefs itself is unexported. It names the targets whose edges it inserted or
-// deleted, which is all a first write of a body moves; an edit whose event names what it moved
-// goes through ReplaceCountedEdit (ReplaceCountedItemEdit for a comment), and a document's
-// version through ReplaceDocumentCounted, since a kept edge's excerpt can move too. A comment's
-// or an issue message's first write goes through ReplaceCountedItem, which indexes its blocks as
-// well.
-//
-// The source is r's own: a write that holds another text of the same source - an ask's parts
-// beside its question (IndexAskParts) - passes the one reader to both, so the database answers
-// once per kind for the write rather than once per text.
-func ReplaceCounted(
-	ctx context.Context,
-	tx pgx.Tx,
-	r *Reader,
-	body string,
-) (model.ReferenceChanges, error) {
-	found := text.Refs(r.Mentions(body))
-	moved, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
-	if err != nil {
-		return model.ReferenceChanges{}, err
-	}
-	return CountedChanges(ctx, tx, moved.changed())
-}
-
-// ReplaceCountedEdit is ReplaceCounted for an edit of an ask's question from previous to body. It
-// names the targets whose edges the edit inserted or deleted and those whose excerpt it moved
-// (editedHeadTargets).
-func ReplaceCountedEdit(
-	ctx context.Context,
-	tx pgx.Tx,
-	r *Reader,
-	previous, body string,
-) (model.ReferenceChanges, error) {
-	found := text.Refs(r.Mentions(body))
-	moved, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
-	if err != nil {
-		return model.ReferenceChanges{}, err
-	}
-	return CountedChanges(ctx, tx, append(moved.changed(), editedHeadTargets(previous, body, found)...))
-}
-
-// editedHeadTargets is what an edit of an ask's question or a comment's body from previous to body,
-// which cites found, moves although its edges stay. Every edge such a source writes shows the head
-// of its text as its excerpt (Edges, excerptRunes), so when the edit moves that head, the panel of
-// every target the source still cites changes: each of found is returned then, and none otherwise.
-func editedHeadTargets(previous, body string, found []text.Ref) []Target {
+// EditedTargets is what an edit of an ask's question or a comment's body from previous to body
+// moves beside the edges it inserts or deletes, found being body's references. Every edge such a
+// source writes shows the head of its text as its excerpt (Edges, excerptRunes), so when the edit
+// moves that head, the panel of every target the source still cites changes although its edge
+// stays: those targets are named too. An edit that keeps the head moves none.
+func EditedTargets(previous, body string, found []text.Ref) []Target {
 	if text.HeadRunes(previous, excerptRunes) == text.HeadRunes(body, excerptRunes) {
 		return nil
 	}
@@ -99,228 +56,263 @@ func editedHeadTargets(previous, body string, found []text.Ref) []Target {
 	return targets
 }
 
-// ReplaceDocumentCounted is ReplaceCounted for a document's version, written at versionAt, whose
-// mentions are found (a new edge takes versionAt as its created_at). It also stores the excerpt of
-// each mention the version writes (RecordExcerpts), or, with excerpts nil (a version with no
-// rendering to cut them from), marks them owed (ClearExcerpts). A document mention shows the block
-// holding it as its excerpt, so a target whose kept edge now stores another block is named beside
-// the ones whose edges the version inserted or deleted, and so is each of moved, the targets the
-// same write moved elsewhere - the version's blocks and their mentions (IndexBlocks) - so its event
-// names them all.
-//
-// Its second result is what the reconcile states in the node and tuple store (artifactMentions):
-// the mentions tuple of each edge it inserted and the retraction of each it deleted, dated at
-// versionAt, which the caller appends under the event it goes on to record for the version
-// (graphstore.Caused), in this same transaction, as it appends the version's block index.
-func ReplaceDocumentCounted(
-	ctx context.Context,
-	tx pgx.Tx,
-	artifactID string,
-	version int,
-	versionAt time.Time,
-	found []text.Ref,
-	moved []Target,
-	excerpts map[Target]model.GraphExcerpt,
-) (model.ReferenceChanges, []graphstore.UncausedTuple, error) {
-	reconciled, err := replaceRefs(ctx, tx, graphstore.KindArtifact, artifactID, found, &versionAt)
-	if err != nil {
-		return model.ReferenceChanges{}, nil, err
-	}
-	mentions, err := artifactMentions(ctx, tx, artifactID, reconciled, &versionAt)
-	if err != nil {
-		return model.ReferenceChanges{}, nil, err
-	}
-	changed := append(reconciled.changed(), moved...)
-	if excerpts == nil {
-		if err := ClearExcerpts(ctx, tx, artifactID); err != nil {
-			return model.ReferenceChanges{}, nil, err
-		}
-		changes, err := CountedChanges(ctx, tx, changed)
-		return changes, mentions, err
-	}
-	recorded, err := RecordExcerpts(ctx, tx, artifactID, version, excerpts)
-	if err != nil {
-		return model.ReferenceChanges{}, nil, err
-	}
-	changes, err := CountedChanges(ctx, tx, append(changed, recorded...))
-	return changes, mentions, err
-}
-
 // replaceRefs reconciles the Dispatch references written by one source with found: targets no
 // longer mentioned are deleted, new ones inserted with insertedAt as created_at (nil: now()), and
-// an edge that persists keeps its created_at and source_seq. It answers what moved (reconciled),
-// so ReplaceCounted and its variants can resolve the targets a reader refreshes by name
-// (CountedChanges) and a document's writers can state the edges it moved (artifactMentions). Only
-// targets of a node kind this build knows (nodeKinds) are deleted: during a release a newer build
-// writes the same sources, and an edge to a node kind it added is one this build cannot read out
-// of the body, so it keeps that edge.
+// an edge that persists keeps its created_at and source_seq. It returns the targets whose inbound
+// edges moved — deleted or inserted, oldest state first — so its caller can resolve the ones
+// a reader refreshes by name (CountedChanges). It is PlanReplace and Queue back to back, the
+// queued statements run at once as a batch of their own. Only targets of a node kind this
+// build knows (nodeKinds) are deleted: during a release a newer build writes the same sources, and
+// an edge to a node kind it added is one this build cannot read out of the body, so it keeps that
+// edge.
 //
-// It settles what the source owes the re-index queue (settleOwed): this text has now been read
-// with the whole grammar, so a write this build makes costs the drain nothing and only an older
-// build's write stays owed.
-func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) (reconciled, error) {
+// What it queues settles what the source owes the re-index queue (Replacement.Queue): this text
+// has now been read with the whole grammar, so a write this build makes costs the drain nothing
+// and only an older build's write stays owed.
+func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) ([]Target, error) {
+	replacement, err := PlanReplace(ctx, tx, fromKind, fromID, found, insertedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return replacement.Changed(), nil
+}
+
+// Replacement is one source's references reconciled with found, the references its text now
+// cites, as replaceRefs reconciles them. It is planned against the edges the source holds
+// (PlanReplace, PlanReplaceFrom), so the targets it moves are known before anything is written,
+// and written by Queue, which puts its statements on a write phase's batch: a writer that decides
+// everything first and writes last plans in its read phase and queues in its write phase.
+type Replacement struct {
+	fromKind, fromID string
+	kinds, ids       []string
+	insertedAt       *time.Time
+	changed          []Target
+	held             []Target
+	// owed is the source's id as the re-index queue keys it, "" for a from_id that is no uuid
+	// (a test's synthetic source), which owes nothing: what queueSettleRefsGrammarOwed deletes
+	// the row of.
+	owed string
+}
+
+// PlanReplace plans the reconciliation of fromKind/fromID's references with found against the
+// edges q holds for the source (HeldTargets).
+func PlanReplace(ctx context.Context, q Queryer, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) (Replacement, error) {
+	held, err := HeldTargets(ctx, q, fromKind, fromID)
+	if err != nil {
+		return Replacement{}, err
+	}
+	return PlanReplaceFrom(held, fromKind, fromID, found, insertedAt), nil
+}
+
+// HeldTargets is the targets of the edges q holds for one source, read with the predicate the
+// reconciling delete visits them by: an edge to a node kind this build does not know (nodeKinds)
+// is one that delete keeps, so it is neither held nor moved here (replaceRefs).
+func HeldTargets(ctx context.Context, q Queryer, fromKind, fromID string) ([]Target, error) {
+	held, err := scanTargets(q.Query(ctx, `
+		select to_kind, to_id from refs where from_kind = $1 and from_id = $2 and to_kind = any($3)
+	`, fromKind, fromID, nodeKinds))
+	if err != nil {
+		return nil, fmt.Errorf("read references: %w", err)
+	}
+	return held, nil
+}
+
+// PlanReplaceFrom plans the reconciliation against held, the targets the source holds: those a
+// caller read (HeldTargets), or the Held of its own earlier replacement of the source that is not
+// written yet. The targets it moves are the held ones found no longer names, in held's order, then
+// those found names that held lacks, in found's order: what the delete and the insert return.
+func PlanReplaceFrom(held []Target, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) Replacement {
 	kinds, ids := refTargets(found)
-	dropped, err := scanTargets(tx.Query(ctx, `
+	cited := make(map[Target]struct{}, len(kinds))
+	after := make([]Target, len(kinds))
+	for index := range kinds {
+		after[index] = Target{Kind: kinds[index], ID: ids[index]}
+		cited[after[index]] = struct{}{}
+	}
+	stored := make(map[Target]struct{}, len(held))
+	changed := []Target{}
+	for _, target := range held {
+		stored[target] = struct{}{}
+		if _, kept := cited[target]; !kept {
+			changed = append(changed, target)
+		}
+	}
+	for _, target := range after {
+		if _, kept := stored[target]; !kept {
+			changed = append(changed, target)
+		}
+	}
+	owed, _ := canonicalUUID(fromID)
+	return Replacement{fromKind: fromKind, fromID: fromID, kinds: kinds, ids: ids, insertedAt: insertedAt, changed: changed, held: after, owed: owed}
+}
+
+// Changed is the targets whose inbound edges the replacement moves (PlanReplaceFrom).
+func (r Replacement) Changed() []Target {
+	return r.changed
+}
+
+// Held is the targets the source holds once the replacement is written.
+func (r Replacement) Held() []Target {
+	return r.held
+}
+
+// ArtifactMentions is what r, one reconcile of a document's references, states of them in the node
+// and tuple store, for its caller to append under the cause the write's event gives it
+// (graphstore.Caused, graphstore.QueueCaused), in the transaction that queues r: the mentions tuple
+// out of the document's node (graphstore.ArtifactMentions) to each target whose row r inserts, and
+// its retraction to each target whose row r deletes, both dated at the time r writes the
+// document's references at (its insertedAt, else the transaction's now(), which the insert dates a
+// new row at too). A row that survives states nothing: its tuple stands from the write that
+// inserted it. It reads, in the plan's read phase, only the document row's node columns and the
+// time, so it may be called before r is queued or after.
+//
+// An assertion's legacy_source_seq is its row's source_seq. The insert writes none, and the event
+// that records the version stamps the row with its own id in the same transaction (QueueStamp,
+// Stamp, docs' stampVersionEvent), which is the cause the caller appends the tuple under, so the
+// tuple takes that cause (graphstore.UncausedTuple's LegacyFromCause). A reconcile no event
+// records - rebuild-refs - appends at the sentinel (graphstore.Caused with NoEvent), where the
+// tuple keeps none, as its row does. A retraction's row is gone and it takes none.
+//
+// record is what the version's own row and its document's say of the document (ReadIndexedVersion,
+// or the writer's own record of a version or a document whose row is only queued): its ref_key,
+// which every tuple runs out of, and the first author of its newest version, who signs each fact,
+// or the document's own author where that version names none, as the backfill signs the facts of a
+// document's bytes (graphcensus' nameArtifactNodes). A document whose row names no node, which a
+// process of the release before wrote, states nothing, nor does a far end past
+// graphstore.MaxAddressBytes: each such row is the view's arm over refs to answer
+// (store.ArtifactReferenceRowUnmarked). A document row the transaction has queued and not written
+// is this build's, which names its node. A source of any other kind - a comment, a message, an ask
+// - states nothing here.
+func (r Replacement) ArtifactMentions(ctx context.Context, q Queryer, record IndexedVersion) ([]graphstore.UncausedTuple, error) {
+	id, ok := canonicalUUID(r.fromID)
+	if r.fromKind != graphstore.KindArtifact || !ok || len(r.changed) == 0 || !graphstore.AddressFits(record.RefKey) {
+		return nil, nil
+	}
+	var marked bool
+	var at time.Time
+	var author []byte
+	if err := q.QueryRow(ctx, `
+		select coalesce((select a.node_kind is not null from artifacts a where a.id = $1::uuid), true),
+		       coalesce($2::timestamptz, now()),
+		       (select a.created_by from artifacts a where a.id = $1::uuid)
+	`, id, r.insertedAt).Scan(&marked, &at, &author); err != nil {
+		return nil, fmt.Errorf("read the node of document %s: %w", r.fromID, err)
+	}
+	if !marked {
+		return nil, nil
+	}
+	who := record.Writer
+	if who.ID == "" && author != nil {
+		if err := json.Unmarshal(author, &who); err != nil {
+			return nil, fmt.Errorf("decode the author of document %s: %w", r.fromID, err)
+		}
+	}
+	cited := make(map[Target]struct{}, len(r.held))
+	for _, target := range r.held {
+		cited[target] = struct{}{}
+	}
+	// changed lists the targets r deletes first, then those it inserts (PlanReplaceFrom), so the
+	// retractions come before the assertions, as the two statements run.
+	mentions := make([]graphstore.UncausedTuple, 0, len(r.changed))
+	for _, target := range r.changed {
+		if !graphstore.AddressFits(target.ID) {
+			continue
+		}
+		_, inserted := cited[target]
+		mentions = append(mentions, graphstore.UncausedTuple{
+			Tuple:           graphstore.ArtifactMentions(record.RefKey, target.Kind, target.ID, inserted, who, at),
+			LegacyFromCause: inserted,
+		})
+	}
+	return mentions, nil
+}
+
+// DocumentMentioning is the record a reconcile of document artifactID's references that writes no
+// version of it signs its facts with (Replacement.ArtifactMentions): the document's ref_key and the
+// first author of its newest version, read through q. found is false for a document no row holds.
+func DocumentMentioning(ctx context.Context, q Queryer, artifactID string) (record IndexedVersion, found bool, err error) {
+	id, ok := canonicalUUID(artifactID)
+	if !ok {
+		return IndexedVersion{}, false, nil
+	}
+	var writer []byte
+	switch err := q.QueryRow(ctx, `
+		select a.ref_key, (select v.authors->0 from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1)
+		from artifacts a where a.id = $1::uuid
+	`, id).Scan(&record.RefKey, &writer); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return IndexedVersion{}, false, nil
+	case err != nil:
+		return IndexedVersion{}, false, fmt.Errorf("read the writer of document %s: %w", artifactID, err)
+	}
+	if writer != nil {
+		if err := json.Unmarshal(writer, &record.Writer); err != nil {
+			return IndexedVersion{}, false, fmt.Errorf("decode the writer of document %s: %w", artifactID, err)
+		}
+	}
+	return record, true, nil
+}
+
+// Queue queues the replacement's writes on a write phase's batch: the delete of the edges found no
+// longer names, the insert of the new ones, and the settlement of what the source owes the
+// re-index queue (queueSettleRefsGrammarOwed). A surviving edge keeps its created_at and
+// source_seq.
+func (r Replacement) Queue(b *store.WriteBatch) {
+	b.Queue("clear references", `
 		delete from refs
 		where from_kind = $1 and from_id = $2 and to_kind = any($5)
 		  and not exists (
 		    select 1 from unnest($3::text[], $4::text[]) as target(kind, id)
 		    where target.kind = refs.to_kind and target.id = refs.to_id
 		  )
-		returning to_kind, to_id
-	`, fromKind, fromID, kinds, ids, nodeKinds))
-	if err != nil {
-		return reconciled{}, fmt.Errorf("clear references: %w", err)
-	}
-	moved := reconciled{dropped: dropped}
-	if len(kinds) > 0 {
-		rows, err := tx.Query(ctx, `
+	`, r.fromKind, r.fromID, r.kinds, r.ids, nodeKinds)
+	if len(r.kinds) > 0 {
+		b.Queue("write reference", `
 			insert into refs (from_kind, from_id, to_kind, to_id, created_at)
 			select $1, $2, target.kind, target.id, coalesce($5::timestamptz, now())
 			from unnest($3::text[], $4::text[]) as target(kind, id)
 			on conflict (from_kind, from_id, to_kind, to_id) do nothing
-			returning to_kind, to_id, created_at
-		`, fromKind, fromID, kinds, ids, insertedAt)
-		if err == nil {
-			moved.inserted, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (insertedRef, error) {
-				var inserted insertedRef
-				err := row.Scan(&inserted.target.Kind, &inserted.target.ID, &inserted.createdAt)
-				return inserted, err
-			})
-		}
-		if err != nil {
-			return reconciled{}, fmt.Errorf("write reference: %w", err)
-		}
+		`, r.fromKind, r.fromID, r.kinds, r.ids, r.insertedAt)
 	}
-	if err := settleOwed(ctx, tx, fromKind, fromID); err != nil {
-		return reconciled{}, err
-	}
-	return moved, nil
+	r.queueSettleRefsGrammarOwed(b)
 }
 
-// reconciled is what one source's reconcile moved (replaceRefs): the targets of the rows its
-// delete dropped, and the rows its insert inserted, each with the created_at it was written at.
-type reconciled struct {
-	dropped  []Target
-	inserted []insertedRef
+// queueSettleRefsGrammarOwed queues the delete of the row one source owes the re-index queue
+// (refs_grammar_owed), in the write's own transaction, which holds that source's owner: every
+// write of the text was committed before this transaction read it, so whatever enqueued_at the
+// row holds, the text this write indexed is the text the row is owed for. It is the queue's four
+// source kinds that are settled this way - artifact, ask, comment and message, which are the
+// from_kind of every refs row too, so one delete serves them all. The fifth kind, `scope`, names
+// a document whose sources are owed a re-index, not a source whose refs this writes, and only
+// the scope drain settles it. A from_id that is no uuid owes nothing (owed).
+func (r Replacement) queueSettleRefsGrammarOwed(b *store.WriteBatch) {
+	if r.owed == "" {
+		return
+	}
+	b.Queue(fmt.Sprintf("settle the index owed by %s %s", r.fromKind, r.fromID),
+		`delete from refs_grammar_owed where kind = $1 and id = $2::uuid`, r.fromKind, r.owed)
 }
 
-// insertedRef is one refs row a reconcile inserted: its target and its created_at.
-type insertedRef struct {
-	target    Target
-	createdAt time.Time
-}
-
-// changed is the targets whose inbound edges the reconcile moved, oldest state first: those it
-// deleted, then those it inserted.
-func (r reconciled) changed() []Target {
-	changed := slices.Clone(r.dropped)
-	for _, inserted := range r.inserted {
-		changed = append(changed, inserted.target)
-	}
-	return changed
-}
-
-// artifactMentions is what one reconcile of document artifactID's references (replaceRefs) states
-// of them in the node and tuple store, in the transaction that wrote the rows: the mentions tuple
-// out of the document's node (graphstore.ArtifactMentions) to each target whose row the insert
-// inserted, dated at that row's own created_at, and its retraction to each target whose row the
-// delete dropped, dated at the time the reconcile wrote the document's references at (insertedAt,
-// else the transaction's now(), which a row the same reconcile inserts is dated at too). A row
-// that survives states nothing: its tuple stands from the write that inserted it.
-//
-// An assertion's legacy_source_seq is its row's source_seq. The insert writes none, and the event
-// that records the version stamps the row with its own id in the same transaction (Stamp, docs'
-// stampVersionEvent), which is the cause the caller appends the tuple under, so the tuple takes
-// that cause (graphstore.UncausedTuple's LegacyFromCause). A reconcile no event records -
-// rebuild-refs - appends at the sentinel (graphstore.Caused with NoEvent), where the tuple keeps
-// none, as its row does. A retraction's row is gone and it takes none.
-//
-// A document whose row names no node, which a process of the release before wrote, states
-// nothing, nor does a far end past graphstore.MaxAddressBytes: each such row is the view's arm
-// over refs to answer (store.ArtifactReferenceRowUnmarked). Each fact is signed by the first author
-// of the document's newest version, or by the document's own author where that version names
-// none, as the backfill signs the facts of a document's bytes (graphcensus' nameArtifactNodes).
-// A source of any other kind - a comment, a message, an ask - states nothing here.
-func artifactMentions(ctx context.Context, tx pgx.Tx, artifactID string, moved reconciled, insertedAt *time.Time) ([]graphstore.UncausedTuple, error) {
-	id, ok := canonicalUUID(artifactID)
-	if !ok || len(moved.dropped)+len(moved.inserted) == 0 {
-		return nil, nil
-	}
-	var refKey string
-	var marked bool
-	var retractedAt time.Time
-	var writer []byte
-	switch err := tx.QueryRow(ctx, `
-		select a.ref_key, a.node_kind is not null, coalesce($2::timestamptz, now()),
-		       coalesce((select v.authors->0 from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1), a.created_by)
-		from artifacts a where a.id = $1::uuid
-	`, id, insertedAt).Scan(&refKey, &marked, &retractedAt, &writer); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return nil, nil
-	case err != nil:
-		return nil, fmt.Errorf("read the node of document %s: %w", artifactID, err)
-	}
-	if !marked || !graphstore.AddressFits(refKey) {
-		return nil, nil
-	}
-	var who model.Actor
-	if err := json.Unmarshal(writer, &who); err != nil {
-		return nil, fmt.Errorf("decode the writer of document %s: %w", artifactID, err)
-	}
-	mentions := make([]graphstore.UncausedTuple, 0, len(moved.dropped)+len(moved.inserted))
-	for _, target := range moved.dropped {
-		if graphstore.AddressFits(target.ID) {
-			mentions = append(mentions, graphstore.UncausedTuple{
-				Tuple: graphstore.ArtifactMentions(refKey, target.Kind, target.ID, false, who, retractedAt),
-			})
-		}
-	}
-	for _, inserted := range moved.inserted {
-		if graphstore.AddressFits(inserted.target.ID) {
-			mentions = append(mentions, graphstore.UncausedTuple{
-				Tuple:           graphstore.ArtifactMentions(refKey, inserted.target.Kind, inserted.target.ID, true, who, inserted.createdAt),
-				LegacyFromCause: true,
-			})
-		}
-	}
-	return mentions, nil
-}
-
-// settleOwed deletes the row one source owes the re-index queue (refs_grammar_owed), in the write's
-// own transaction, which holds that source's row: every write of the text was committed before
-// this transaction read it, so whatever enqueued_at the row holds, the text this write indexed is
-// the text the row is owed for. It is the queue's four source kinds that are settled this way -
-// artifact, ask, comment and message, which are the from_kind of every refs row too, so one delete
-// serves them all. The fifth kind, `scope`, names a document whose sources are owed a re-index,
-// not a source whose refs this writes, and only the scope drain settles it. A from_id that is no
-// uuid (a test's synthetic source) owes nothing, since the queue keys its id as one.
-func settleOwed(ctx context.Context, tx pgx.Tx, fromKind, fromID string) error {
-	id, ok := canonicalUUID(fromID)
-	if !ok {
-		return nil
-	}
-	if _, err := tx.Exec(ctx, `delete from refs_grammar_owed where kind = $1 and id = $2::uuid`, fromKind, id); err != nil {
-		return fmt.Errorf("settle the index owed by %s %s: %w", fromKind, fromID, err)
-	}
-	return nil
-}
-
-// SettleOwedDocuments is settleOwed for the documents of an issue room whose text one pass over
-// the room read at their latest versions (docs' indexRenderedVersion and indexDeferredVersion): the
-// room's references are written under its tree artifact (replaceRefs), whose own row that write
-// settles, and each document whose fragment the pass read owes the queue nothing either. Left
-// owed, its row would be drained after the pass by owing the document its block index again,
-// which costs the room a second pass for every version of it. documents is in ascending id, the
-// order every writer of the queue's rows of several documents takes.
-func SettleOwedDocuments(ctx context.Context, tx pgx.Tx, documents []string) error {
+// SettleOwedDocuments queues, on a write phase's batch, what queueSettleRefsGrammarOwed queues for
+// one source, for the documents of an issue room whose text one pass over the room read at their
+// latest versions (docs' indexRenderedVersion and indexDeferredVersion): the room's references are
+// written under its tree artifact (Replacement.Queue), whose own row that write settles, and each
+// document whose fragment the pass read owes the queue nothing either. Left owed, its row would be
+// drained after the pass by owing the document its block index again, which costs the room a
+// second pass for every version of it. documents is in ascending id, the order every writer of the
+// queue's rows of several documents takes.
+func SettleOwedDocuments(b *store.WriteBatch, documents []string) {
 	if len(documents) == 0 {
-		return nil
+		return
 	}
-	if _, err := tx.Exec(ctx, `delete from refs_grammar_owed where kind = 'artifact' and id = any($1::uuid[])`, documents); err != nil {
-		return fmt.Errorf("settle the index owed by the documents %v: %w", documents, err)
-	}
-	return nil
+	b.Queue(fmt.Sprintf("settle the index owed by the documents %v", documents),
+		`delete from refs_grammar_owed where kind = 'artifact' and id = any($1::uuid[])`, documents)
 }
 
 func scanTargets(rows pgx.Rows, err error) ([]Target, error) {
@@ -378,33 +370,50 @@ func refTargets(found []text.Ref) ([]string, []string) {
 // Stamp records eventID as the write that introduced every edge of one source that has no
 // provenance yet: the source's own refs and, for a document, a comment, a message or an ask, the
 // mentions its blocks hold, an ask's parts included. It runs after the source's event is
-// appended, in the same transaction, and leaves edges that survived a reconcile untouched.
+// appended, in the same transaction, and leaves edges that survived a reconcile untouched. Its
+// statements run at once, as a batch of their own.
 func Stamp(ctx context.Context, tx pgx.Tx, fromKind, fromID string, eventID int64) error {
-	if _, err := tx.Exec(ctx, `
-		update refs set source_seq = $3
-		where from_kind = $1 and from_id = $2 and source_seq is null
-	`, fromKind, fromID, eventID); err != nil {
-		return fmt.Errorf("stamp references: %w", err)
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		queueStamp(b, fromKind, fromID, &eventID)
+		return nil
+	})
+}
+
+// QueueStamp queues Stamp on a write phase's batch, right after the source's event, whose id the
+// statements take as store.LatestEventID: the id the event's insert took, which nothing in Go
+// reads before they are sent.
+func QueueStamp(b *store.WriteBatch, fromKind, fromID string) {
+	queueStamp(b, fromKind, fromID, nil)
+}
+
+// queueStamp queues Stamp's statements with eventID, or with store.LatestEventID when it is nil.
+func queueStamp(b *store.WriteBatch, fromKind, fromID string, eventID *int64) {
+	refsID, refsArgs := store.LatestEventID, []any{fromKind, fromID}
+	blocksID, blocksArgs := store.LatestEventID, []any{fromID}
+	if eventID != nil {
+		refsID, refsArgs = "$3", append(refsArgs, *eventID)
+		blocksID, blocksArgs = "$2", append(blocksArgs, *eventID)
 	}
+	b.Queue("stamp references", `
+		update refs set source_seq = `+refsID+`
+		where from_kind = $1 and from_id = $2 and source_seq is null
+	`, refsArgs...)
 	var blockRefs string
 	switch fromKind {
 	case "artifact":
-		blockRefs = `update block_refs set source_seq = $2 where artifact_id = $1 and source_seq is null`
+		blockRefs = `update block_refs set source_seq = ` + blocksID + ` where artifact_id = $1 and source_seq is null`
 	case string(ItemComment), string(ItemMessage), string(ItemAsk):
 		// An item's blocks are keyed by its uuid; an id that is none names no item and holds no
 		// block mention.
 		if uuid.Validate(fromID) != nil {
-			return nil
+			return
 		}
 		tables, _ := ItemKind(fromKind).tables()
-		blockRefs = `update ` + tables.refs + ` set source_seq = $2 where ` + tables.item + ` = $1::uuid and source_seq is null`
+		blockRefs = `update ` + tables.refs + ` set source_seq = ` + blocksID + ` where ` + tables.item + ` = $1::uuid and source_seq is null`
 	default:
-		return nil
+		return
 	}
-	if _, err := tx.Exec(ctx, blockRefs, fromID, eventID); err != nil {
-		return fmt.Errorf("stamp block references: %w", err)
-	}
-	return nil
+	b.Queue("stamp block references", blockRefs, blocksArgs...)
 }
 
 // CountedChangeLimit bounds the targets of one kind (issue, ask, artifact, block) an event names,
@@ -572,6 +581,9 @@ func MergeChanges(first, second model.ReferenceChanges) model.ReferenceChanges {
 	return merged
 }
 
+// resolveIssueTargets is which of keys names an issue: one whose row is stored, and one whose
+// row the reading transaction has queued and not written yet (Pending), which a new issue's
+// spec writing its own key bare names.
 func resolveIssueTargets(ctx context.Context, q Queryer, keys []string) (map[string]struct{}, error) {
 	found := map[string]struct{}{}
 	if len(keys) == 0 {
@@ -589,13 +601,24 @@ func resolveIssueTargets(ctx context.Context, q Queryer, keys []string) (map[str
 		}
 		found[key] = struct{}{}
 	}
-	return found, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	mergePending(ctx, found, keys, func(pending Pending, key string) (struct{}, bool) {
+		return struct{}{}, pending.PendingIssue(key)
+	})
+	return found, nil
 }
 
 // resolveAskTargets skips a citation that is not a uuid rather than casting the column to text:
 // `dispatch://CORE-1/ask/hello` parses and must never fail the write, and a target nothing can
 // address resolves to nothing either way — while `id = any(...)` keeps the asks primary key,
 // which matters because this runs inside the write transaction of every body that cites an ask.
+//
+// An ask whose row the reading transaction has queued and not written yet is named from what
+// that insert writes (Pending), as the stored ones are: settlement opens the ask of every new
+// question block of an edit in one transaction, so a `#id` naming another new block of that
+// same edit is stored as the edge of an ask no read of the table answers for.
 func resolveAskTargets(ctx context.Context, q Queryer, ids []string) (map[string]model.ChangedReference, error) {
 	found := map[string]model.ChangedReference{}
 	addressable := make([]uuid.UUID, 0, len(ids))
@@ -625,13 +648,23 @@ func resolveAskTargets(ctx context.Context, q Queryer, ids []string) (map[string
 		}
 		found[reference.ID] = reference
 	}
-	return found, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	mergePending(ctx, found, ids, func(pending Pending, id string) (model.ChangedReference, bool) {
+		ask, queued := pending.PendingAsk(id)
+		return model.ChangedReference{Kind: "ask", ID: ask.ID, IssueKey: ask.IssueKey, ArtifactID: ask.ArtifactID}, queued
+	})
+	return found, nil
 }
 
 // resolveArtifactTargets resolves cited artifacts by the ref_key `refs` stores for them, the
 // address GET /api/v1/references?to= resolves too, into the entry a Referenced by panel is
 // matched by: the artifact's uuid (its node id in that read) and its dispatch:// address (the
-// reference the dashboard opens the panel on, refs.ArtifactRef). Keyed by ref_key.
+// reference the dashboard opens the panel on, refs.ArtifactRef). Keyed by ref_key. A document
+// whose artifacts row the reading transaction has queued and not written yet is resolved from
+// what that insert writes (Pending): a new issue's spec citing its own address names a row
+// this transaction has only queued.
 func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (map[string]model.ChangedReference, error) {
 	found := map[string]model.ChangedReference{}
 	if len(refKeys) == 0 {
@@ -659,7 +692,43 @@ func resolveArtifactTargets(ctx context.Context, q Queryer, refKeys []string) (m
 			Ref:  ArtifactRef(issueKey, project, session, slug, kind, primary),
 		}
 	}
-	return found, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	mergePending(ctx, found, refKeys, func(pending Pending, refKey string) (model.ChangedReference, bool) {
+		id, ref, queued := pending.PendingArtifact(refKey)
+		return model.ChangedReference{Kind: "artifact", ID: id, Ref: ref}, queued
+	})
+	return found, nil
+}
+
+// mergePending fills the gaps a read of the stored rows leaves. found is what that read
+// answered and keys is what it was asked about: for each key found holds no target for, queued
+// says whether the reading transaction has that row queued and not written yet (Pending), and
+// what it answers goes into found. A stored row wins over a queued one of the same key, since
+// the read already holds what the row says, and a transaction with nothing queued - every read
+// outside a write's two phases - adds nothing.
+//
+// Every resolver that answers for a queued row merges through this one call, so a kind added to
+// Pending is merged the way the kinds before it are.
+func mergePending[Key comparable, Target any](
+	ctx context.Context,
+	found map[Key]Target,
+	keys []Key,
+	queued func(pending Pending, key Key) (Target, bool),
+) {
+	pending := pendingOf(ctx)
+	if pending == nil {
+		return
+	}
+	for _, key := range keys {
+		if _, stored := found[key]; stored {
+			continue
+		}
+		if target, ok := queued(pending, key); ok {
+			found[key] = target
+		}
+	}
 }
 
 // resolveBlockTargets resolves cited blocks, by the far ends `refs` and `block_refs` store for

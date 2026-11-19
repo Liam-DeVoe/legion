@@ -1,10 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -19,7 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The Decisions read's entries (dispatch://INFRA-1150 R4): one entry for each node that holds a
+// The Decisions read's entries: one entry for each node that holds a
 // question the issue asked or a decision of one of its documents, read from the store.
 
 // readEntries is the entries member of GET /api/v1/issues/{key}/decisions, as alice reads it.
@@ -275,23 +281,21 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 		t.Errorf("the answered ask's entry answers the shaped links %s, want one, to %s, from its block a1, with the tuple's event",
 			entryJSON(t, ask.Shaped), spec.address("r1"))
 	}
+	// The options are compared with the ones the fixture wrote into a1's block, never with the
+	// asks row's column, which is where the read itself takes them from.
+	wantOptions := []model.AskOption{{Label: "REST", Description: "Plain HTTP"}, {Label: "gRPC", Description: "Streaming"}}
 	var question string
-	var options []byte
-	if err := database.Pool.QueryRow(ctx, `select question, options from asks where id = $1::uuid`, answered).Scan(&question, &options); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select question from asks where id = $1::uuid`, answered).Scan(&question); err != nil {
 		t.Fatalf("read the answered ask's row: %v", err)
-	}
-	var rowOptions []model.AskOption
-	if err := json.Unmarshal(options, &rowOptions); err != nil {
-		t.Fatalf("read the answered ask's options: %v", err)
 	}
 	storedAnswer, stated, err := graphstore.CurrentValue(ctx, database.Pool, graphstore.KindAsk, answered, graphstore.TupleAnswer)
 	if err != nil || !stated {
 		t.Fatalf("read the answered ask's answer off its node: stated %t, %v", stated, err)
 	}
-	if ask.Question == nil || *ask.Question != question || question != "Which transport?" || !reflect.DeepEqual(ask.Options, rowOptions) ||
+	if ask.Question == nil || *ask.Question != question || question != "Which transport?" || !reflect.DeepEqual(ask.Options, wantOptions) ||
 		ask.Answer == nil || *ask.Answer != storedAnswer || storedAnswer != viewAnswer {
-		t.Errorf("the answered ask's entry = %s, want the question %q, the options %+v and the answer %q as the store holds them",
-			entryJSON(t, ask), question, rowOptions, storedAnswer)
+		t.Errorf("the answered ask's entry = %s, want the question %q as the store holds it, the options %+v the fixture wrote and the answer %q",
+			entryJSON(t, ask), question, wantOptions, storedAnswer)
 	}
 	if held := strings.Count(entryJSON(t, entries), viewAnswer); held != 1 {
 		t.Errorf("the read holds the answer %q %d times, want once, in the answered ask's answer:\n%s", viewAnswer, held, entryJSON(t, entries))
@@ -774,6 +778,99 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 			t.Errorf("the replaced decision names the decision %s through %s", d1, tuple.Kind)
 		}
 	}
+
+	// Through `dispatch doc-edit`, run as this tree's CLI with the agent's bearer against this
+	// test's own server, the agent inserts a reading into a person's answered ask of a spec a person
+	// approved, with the insert whose into names the ask's block. The write is taken, the Decisions
+	// read answers the reading under the ask with the agent as its author, and the spec's approval
+	// still reads approved at the version the write stored.
+	approvedIssue := createSpecIssue(t, handler, "CORE", "An approved spec.\n\n"+
+		":::ask{#s1 urgency=\"med\" multiple=\"false\"}\nWhich store holds the queue?\n\n- Postgres: The one we run\n- Redis: The faster one\n:::\n")
+	settleIssue(t, documents, approvedIssue.Key)
+	storeAsk := blockAskID(t, handler, approvedIssue.Key, "s1")
+	answerDecisionBlock(t, handler, storeAsk, "bob", []string{"Postgres"}, "", nil)
+	spec := readDecisionDocument(t, database, approvedIssue.Key, "spec")
+	approval := reviewDocument(t, handler, spec.id, "alice", "approved", "")
+	insert, err := json.Marshal([]map[string]string{{
+		"op": "insert", "into": "block:s1",
+		"markdown": ":::reading{#g5}\nThe agent reads the answer as Postgres for every queue.\n:::\n",
+	}})
+	if err != nil {
+		t.Fatalf("encode the insert: %v", err)
+	}
+	served := httptest.NewServer(handler)
+	t.Cleanup(served.Close)
+	edited := runDispatchCLI(t, served.URL, "doc-edit", "--issue", approvedIssue.Key, "--ops-json", string(insert))
+	storeAskRef := "dispatch://" + approvedIssue.Key + "/ask/" + storeAsk
+	if written := fmt.Sprintf("Applied 1 ops (version %d)", approval.Version+1); edited.code != 0 || !strings.Contains(edited.stdout, written) {
+		t.Fatalf("dispatch doc-edit of a reading into the answered ask %s, block s1: %s\nwant it taken, printing %q", storeAskRef, edited, written)
+	}
+	t.Logf("dispatch doc-edit, run as this tree's CLI with the agent's bearer, printed:\n%s", edited.stdout)
+	settleIssue(t, documents, approvedIssue.Key)
+	g5 := spec.address("g5")
+	requireTypedNode(t, database, "the reading the CLI inserted into the answered ask", g5, refs.ReadingSupertag, graphstore.KindAsk, storeAsk)
+	underAsk := requireEntry(t, readEntries(t, handler, approvedIssue.Key), "the answered ask of the approved spec", graphstore.KindAsk+":"+storeAsk)
+	if held, want := readingsOf(underAsk), []string{g5 + "<-" + graphstore.KindSession + ":" + decidingSession}; !slices.Equal(held, want) {
+		t.Errorf("the answered ask %s answers the readings %v after the CLI's insert, want %v, by the agent", storeAskRef, held, want)
+	}
+	if got := readApproval(t, handler, spec.id).Approval; got == nil || got.State != "approved" || got.Version == nil ||
+		*got.Version != got.LatestVersion || got.LatestVersion != approval.Version+1 {
+		t.Errorf("GET /api/v1/artifacts/%s answers the approval %s after the CLI's insert, want it approved at version %d, the latest, carried from alice's approval of version %d",
+			spec.id, entryJSON(t, got), approval.Version+1, approval.Version)
+	}
+}
+
+// cliRun is one run of this tree's dispatch command.
+type cliRun struct {
+	code           int
+	stdout, stderr string
+}
+
+func (r cliRun) String() string {
+	return fmt.Sprintf("exit %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
+}
+
+// runDispatchCLI runs this tree's dispatch command, packages/envoy-client/bin/dispatch.ts under
+// bun, as cmd/dispatch/twobuild_cli_test.go runs it: against url, with the agent's bearer, as the
+// session sessionActor names. Its environment is written here, never inherited, so a Legion pane's
+// own Dispatch URL and token never reach it, and its state lives in a directory of its own. A host
+// with no bun fails the test: the case it runs is a check's, and a skip would pass it.
+func runDispatchCLI(t *testing.T, url string, args ...string) cliRun {
+	t.Helper()
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Fatalf("this case runs the dispatch command under bun, which is not on PATH: %v", err)
+	}
+	entry, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "envoy-client", "bin", "dispatch.ts"))
+	if err != nil {
+		t.Fatalf("resolve the dispatch command: %v", err)
+	}
+	home := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bun, append([]string{entry}, args...)...)
+	cmd.Dir = home
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + home,
+		"DISPATCH_STATE_DIR=" + home,
+		"DISPATCH_HOST=omp",
+		"DISPATCH_SESSION_ID=" + decidingSession,
+		"DISPATCH_URL=" + url,
+		"DISPATCH_TOKEN=agent-token",
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	run := cliRun{stdout: stdout.String(), stderr: stderr.String()}
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit):
+		run.code = exit.ExitCode()
+	case err != nil:
+		t.Fatalf("run dispatch %v: %v", args, err)
+	}
+	return run
 }
 
 // withAskReading is markdown with its ask block blockID holding, after its own content, the one
@@ -964,6 +1061,82 @@ func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
 	if left.Document != nil || left.AnswerState == nil || *left.AnswerState != "answered" {
 		t.Errorf("the answered ask whose block left asks.md reads %s, want it answered and naming no document", entryJSON(t, left))
 	}
+}
+
+// Test round 1: the same ask, whose block left, after a block of another type took
+// its block id in the same document. The ask's row still names that document and that id, but no
+// block there holds the ask: the entry names no document, as it does when the id stands nowhere,
+// and never the callout. Measured on a real server of this head: a person's edit of SEED-1's spec
+// that deleted the answered ask q-kept and put a callout with the id q-kept in its place left the
+// entry naming SEED-1/spec#q-kept, the callout, until the next tick restored the ask.
+func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	documents := deps.Docs.(*docs.Service)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	uploadAs(t, handler, issue.Key, "asks.md", ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\nOther.\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
+	asks := readDecisionDocument(t, database, issue.Key, "asks-md")
+	uploadAs(t, handler, issue.Key, "asks.md", ":::callout{#a1 kind=\"note\" title=\"\"}\nThe transport is plain HTTP.\n:::\n\nOther.\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	var rowDocument, rowBlock *string
+	if err := database.Pool.QueryRow(context.Background(), `select block_artifact_id::text, block_id from asks where id = $1::uuid`, askID).Scan(&rowDocument, &rowBlock); err != nil ||
+		rowDocument == nil || *rowDocument != asks.id || rowBlock == nil || *rowBlock != "a1" {
+		t.Fatalf("the ask's row names the document %v and the block %v (%v), want asks.md, %s, and a1, the id the callout took", rowDocument, rowBlock, err, asks.id)
+	}
+	left := requireEntry(t, readEntries(t, handler, issue.Key), "the answered ask", graphstore.KindAsk+":"+askID)
+	if left.Document != nil || left.AnswerState == nil || *left.AnswerState != "answered" {
+		t.Errorf("the answered ask whose block id a callout of asks.md took reads %s, want it answered and naming no document: %s holds the callout, not the ask", entryJSON(t, left), asks.address("a1"))
+	}
+}
+
+// Test round 1, the case Verification v41 gives c-attribute-removal: once the fleet
+// is one build, the text `dispatch doc-read` prints (GET /api/v1/artifacts/{id}/text) holds none
+// of the eight server-owned ask attributes, and that text sent back unchanged is what the store
+// writes: the round trip the CLI's upload check asks answers it byte for byte, and the agent's
+// upload of it is taken. Measured on a real server of this head: doc-read printed state, answered_by,
+// answered_at, selected and answer on an answered ask block the store held as
+// `:::ask{#q-drive urgency="med" multiple="false"}`, and `dispatch artifact --force` refused that
+// text naming the ask's line.
+func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackUnchanged(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	documents := deps.Docs.(*docs.Service)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	uploadAs(t, handler, issue.Key, "asks.md", ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\nOther.\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
+	settleIssue(t, documents, issue.Key)
+	artifactID := readDecisionDocument(t, database, issue.Key, "asks-md").id
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the text of asks.md: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var read struct {
+		Markdown string `json:"markdown"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
+		t.Fatalf("decode the text of asks.md: %v: %s", err, response.Body.String())
+	}
+	for _, attribute := range []string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"} {
+		if strings.Contains(read.Markdown, " "+attribute+"=\"") {
+			t.Errorf("the text a document read prints holds the server-owned ask attribute %s, which the store no longer writes and an upload takes off:\n%s", attribute, read.Markdown)
+		}
+	}
+	stored := dispatchRequest(t, handler, http.MethodPost, "/api/v1/markdown/round-trip", map[string]any{"markdown": read.Markdown}, "alice")
+	var roundTrip struct {
+		Markdown string `json:"markdown"`
+	}
+	if stored.Code != http.StatusOK || json.Unmarshal(stored.Body.Bytes(), &roundTrip) != nil {
+		t.Fatalf("the round trip of the read text: status=%d body=%s", stored.Code, stored.Body.String())
+	}
+	if strings.TrimSuffix(roundTrip.Markdown, "\n") != strings.TrimSuffix(read.Markdown, "\n") {
+		t.Errorf("the store writes the text a document read prints under another spelling, so dispatch artifact refuses it:\nread:\n%s\nstored:\n%s", read.Markdown, roundTrip.Markdown)
+	}
+	agentUploadAs(t, handler, issue.Key, "asks.md", read.Markdown, nil)
 }
 
 // Above the deferral bound no block index runs in the write, and the typed-node pass states each

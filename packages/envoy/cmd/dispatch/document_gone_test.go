@@ -164,7 +164,7 @@ func keepAnswer(t *testing.T, p *dispatchProcess, document, block, sum string) h
 	return p.send(t, http.MethodPost, "/api/v1/artifacts/"+document+"/blocks/"+block+"/keep", string(body), asUser(dispatchTestLogin))
 }
 
-// c-document-gone (dispatch://INFRA-1150 R11): no read answers from an issue's decisions document.
+// c-document-gone: no read answers from an issue's decisions document.
 //
 // Through the base release, the test seeds an issue whose decisions.md holds two `##` sections
 // that cite no ask, one of which links a block of the spec, and no decision node, and publishes
@@ -399,6 +399,14 @@ func TestNoReadReachesTheDecisionsDocument(t *testing.T) {
 			if entry.KeptBy == nil || *entry.KeptBy != dispatchTestLogin || entry.KeptTextSum == nil || entry.Document == nil {
 				t.Fatalf("the decision node of the kept section reads kept_by %v and kept_text_sum %v, want the person's Keep carried onto it", entry.KeptBy, entry.KeptTextSum)
 			}
+			// The Keep is carried because the sum still matches: the kept_text_sum the node holds is
+			// the node's own text sum.
+			if *entry.KeptTextSum != entry.TextSHA256 {
+				t.Fatalf("the decision node of the kept section carries kept_text_sum %s and reads the text sum %s, want them equal: the Keep carries only where the sum still matches",
+					*entry.KeptTextSum, entry.TextSHA256)
+			}
+			t.Logf("the decision node of the kept section carries %s's Keep at kept_text_sum %s, its own text sum (the heading was kept at %s)",
+				*entry.KeptBy, *entry.KeptTextSum, decisionread.TextSum(linkedSection))
 			keptNodeBlock, keptNodeDocument, keptNodeSum = entry.Document.BlockID, entry.Document.ArtifactID, entry.TextSHA256
 		}
 	}

@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -526,18 +524,18 @@ func (r *storeWriterRig) lockResultCheck(t *testing.T, uploaded *bool) {
 }
 
 // resultRecord is the record of a result (recordCheckResult, writeRecordedResult), through its
-// route: the rows of the recording issue and the check's issue, here one row (lockIssueRows), then
-// result.recorded, the check_results row, whose foreign key takes the check's artifact row
-// `for key share`, then the result's node and the recorder's in one node write, and last the
-// tuples that event causes. Each run records a result of its own under an id drawn in the run, so
-// the row, the node and the tuples are held as the tables they are written to. The event is an
-// issue's, so it takes no lock on projects (eventProjectLocks).
+// route: the owner locks of the recording issue and the check's issue, here one
+// (lockIssueOwners), then result.recorded, the check_results row, whose foreign key takes the
+// check's artifact row `for key share`, then the result's node and the recorder's in one node
+// write, and last the tuples that event causes. Each run records a result of its own under an id
+// drawn in the run, so the row, the node and the tuples are held as the tables they are written
+// to. The event is an issue's, so it takes no lock on projects (eventProjectLocks).
 func (r *storeWriterRig) resultRecord() storeWriter {
 	uploaded := false
 	return storeWriter{
 		name: "recordCheckResult",
 		steps: []storeStep{
-			r.issueOwnerStep(patchOwnerStatement),
+			ownerLockStep(store.IssueOwner(r.issue)),
 			eventAppendStep(),
 			{
 				name: "the result's row", order: projectionStep,
@@ -556,8 +554,8 @@ func (r *storeWriterRig) resultRecord() storeWriter {
 			return storeWriterRun{
 				made: graphstore.Node{Kind: resultKind},
 				write: func() error {
-					return createdOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/issues/"+r.issue+"/results",
-						resultBody(resultLockCheck, "fail", headCommit, map[string]any{"failed": 1}), "alice"))
+					return statusOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/issues/"+r.issue+"/results",
+						resultBody(resultLockCheck, "fail", headCommit, map[string]any{"failed": 1}), "alice"), http.StatusCreated)
 				},
 			}
 		},
@@ -565,40 +563,28 @@ func (r *storeWriterRig) resultRecord() storeWriter {
 }
 
 // resultRetraction is the retraction of a result (retractCheckResult, stateResultRetracted),
-// through its route: the result's check_results row `for update` (lockRetractedResult), then the
-// check's issue row the event's append takes, result.retracted, the check_result_retractions row,
-// and last the result's retracted value that event causes. It takes no owner row before the
-// result's row: no writer of a result holds that row, and the record route takes its issue rows
-// before it inserts one, so the two cannot wait on each other. Each run retracts a result its
-// ready recorded; the retraction's row and the value are held as the tables they are written to.
+// through its route: it reads the result's check_results row plainly (readRetractedResult), takes
+// the owner lock of the check's issue (store.LockOwner), then appends result.retracted, writes the
+// check_result_retractions row, and last appends the result's retracted value that event causes,
+// a tuple alone (graphstore.Write). Each run retracts a result its ready recorded; the
+// retraction's row and the value are held as the tables they are written to.
 func (r *storeWriterRig) resultRetraction() storeWriter {
 	uploaded := false
 	return storeWriter{
 		name: "retractCheckResult",
 		steps: []storeStep{
-			{
-				name: "the result's row", order: projectionStep,
-				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
-					holdRow(t, ctx, holder, `select 1 from check_results where id = $1::uuid for update`, run.made.ID)
-				},
-				at:    "select issue_key, check_issue_key, check_block_id, commit_sha, session from check_results where id = $1 for update",
-				takes: []tableLock{{"check_results", rowShareMode}},
-			},
-			{
-				name: "the check's issue row", order: eventStep,
-				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
-					holdRow(t, ctx, holder, `select 1 from issues where key = $1 for no key update`, r.issue)
-				},
-				at:    eventOwnerStatement,
-				takes: []tableLock{{"issues", rowShareMode}},
-			},
+			ownerLockStep(store.IssueOwner(r.issue)),
 			eventAppendStep(),
 			{
 				name: "the retraction's row", order: projectionStep,
 				hold: holdTableWrites("check_result_retractions"), at: "insert into check_result_retractions (",
 				takes: []tableLock{{"check_result_retractions", rowExclusiveMode}},
 			},
-			tupleAppendStep(),
+			{
+				name: "the result's retracted value", order: tupleStep, caused: true,
+				hold: holdTableWrites("graph_tuples"), at: tupleOnlyAppendStatement,
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			r.lockResultCheck(t, &uploaded)
@@ -611,8 +597,8 @@ func (r *storeWriterRig) resultRetraction() storeWriter {
 			return storeWriterRun{
 				made: graphstore.Node{Kind: resultKind, ID: id},
 				write: func() error {
-					return createdOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/results/"+id+"/retract",
-						map[string]any{"reason": "The run measured the wrong build."}, "alice"))
+					return statusOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/results/"+id+"/retract",
+						map[string]any{"reason": "The run measured the wrong build."}, "alice"), http.StatusCreated)
 				},
 			}
 		},

@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// c-reading-approval (dispatch://INFRA-1150 R2): a reading never changes the decision it reads, so
+// c-reading-approval: a reading never changes the decision it reads, so
 // writing, editing or removing one never stales a person's approval of the document that holds
 // the decision, and never clears it. The approval carry's reading case (docs.readingCase) holds
 // that at the version the write stores: the document's current version reads approved through

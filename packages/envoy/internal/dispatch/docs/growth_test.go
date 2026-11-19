@@ -154,13 +154,11 @@ func seedByWriter(t *testing.T, service *Service, artifactID string, client crdt
 // The asks of a document already past what one upload may hold - stored before the bound, or grown
 // by a browser - can still be answered and resolved, and none of it grows the document: an answer,
 // a choice and its words, and a resolution are held on the ask's node and its row alone
-// (asks.Settle), and on a fleet of one build the routes write no byte of any document
-// (dispatch://INFRA-1150 R3, "Once the whole fleet runs this build, a person's answer changes no
-// byte of any document"). An agent reads each ask's state on its block, rendered on read from the
-// ask (TextWithAnswers), and an answered block says who answered and when. What the text routes
-// answer is held to what one upload may hold, and this document has no room for the options chosen
-// or the words, so the block withholds them (answersWithRoom), as the release before wrote such a
-// block, and the ask keeps them whole.
+// (asks.Settle), and on a fleet of one build the routes write no byte of any document: once the
+// whole fleet runs this build, a person's answer changes no byte of any document. An agent reads
+// each ask's state and answer beside the text, in the asks
+// member of the text routes (TextWithAsks), whole: no answer is text of the document's, so none is
+// weighed against what one upload may hold.
 func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.T) {
 	service, _ := newTestService(t)
 	service.settle = time.Hour
@@ -192,18 +190,16 @@ func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.
 	if after, err := service.Text(context.Background(), artifactID); err != nil || after != before {
 		t.Fatalf("answering and resolving left the document %d bytes (%v), want the %d it held: no byte of it holds an answer", len(after), err, len(before))
 	}
-	shown, _, _, err := service.TextWithAnswers(context.Background(), artifactID, false)
+	text, err := service.TextWithAsks(context.Background(), artifactID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		`{#chosen urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z"}`,
-		`{#resolved urgency="med" multiple="false" state="resolved"}`,
-		`{#worded urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z"}`,
-	} {
-		if !strings.Contains(shown, want) {
-			t.Errorf("the %d-byte document as an agent reads it holds no %s", len(shown), want)
-		}
+	requireNoAskServerAttributes(t, artifactID, text.Markdown)
+	const want = `#chosen state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z" selected=["Yes"]` + "\n" +
+		`#resolved state="resolved"` + "\n" +
+		`#worded state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z" selected=["Yes"] answer="Ship it now."` + "\n"
+	if got := askLines(text.Asks); got != want {
+		t.Errorf("the %d-byte document's asks as an agent reads them are\n%s\nwant\n%s", len(text.Markdown), got, want)
 	}
 	wordsOf := func(text *string) string {
 		if text == nil {

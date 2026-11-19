@@ -120,7 +120,7 @@ itself, whose tests import its sources by relative path.
 - Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that
   listener from the moment it binds, so nothing else on the machine can take the port between the
   question and the row that asks it (`stubBroker` in
-  `packages/envoy-client/src/__tests__/broker-credential.test.ts`). Never write a port number into a
+  `packages/envoy-client/src/__tests__/broker-stand-ins.ts`). Never write a port number into a
   test. The Dispatch e2e harness is the same rule at the scale of a run: a port variable left unset
   is port 0, one that is set is used as given, and two variables naming one port are refused where
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
@@ -226,7 +226,7 @@ go test -timeout 20m ./internal/dispatch/api
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
-gives it 30 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
+gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
 steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
 tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone

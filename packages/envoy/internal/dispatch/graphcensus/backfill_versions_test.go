@@ -64,7 +64,7 @@ func TestTheVersionBatchTakesTheStoreLockOrder(t *testing.T) {
 	versionNode, _, _ := graphstore.VersionFacts(nil, graphstore.VersionOwner{RefKey: refKey, Project: "LOCK"}, 1, alice, at)
 	node := holdWrite(t, database, &lockstep.Hold{
 		Name: "the version's node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindVersion,
-		ID: versionNode.ID, Statement: "with incoming as (",
+		ID: versionNode.ID, Statement: "insert into graph_nodes (",
 	}, []graphstore.Node{versionNode}, nil)
 
 	report := followTheBackfill(t, database, "writeVersionBatch", []*lockstep.Hold{owner, project, node})

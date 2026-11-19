@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // An issue's design gates are the documents the Legion deployment's gate records on that issue,
@@ -18,8 +19,7 @@ import (
 // of those steps named on one issue, so Dispatch's `superseded_approval` advice prints a
 // design-gate clause for a document a gate really records and stays quiet about every other
 // document. A row of the retired `decisions` step, which a daemon of the release before wrote,
-// stays until the root's pull request deletes it, and every read of the rows leaves it out
-// (dispatch://INFRA-1150 R11).
+// stays until the root's pull request deletes it, and every read of the rows leaves it out.
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
 // no personal scope — routeScopes names it nowhere (routes_table.go): the daemon presents the
@@ -65,8 +65,8 @@ type issueDesignGatesInput struct {
 // check would raise, a step named twice is refused as the project's own publish refuses it (one
 // record per step is all the gate keeps), and a gate naming no document is refused because the
 // document is the whole of what the row says. A gate of the retired `decisions` step, which a
-// daemon of the release before still publishes, is admitted and dropped (dispatch://INFRA-1150
-// R11, ruling F2), so the delete takes that issue's stored row of the step away.
+// daemon of the release before still publishes, is admitted and dropped, so the delete takes
+// that issue's stored row of the step away.
 func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	var input issueDesignGatesInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -124,23 +124,26 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue is read in the write's own transaction, under a lock that a second publish of the
-	// same issue waits for (`for no key update`, the lock an issue's own writes take), so two
-	// publishes replace the set one after the other and the stored set is always one whole set, the
-	// set of the one that finishes last; with the key-share lock the rows' foreign key takes, both
-	// deletes read the old rows and the two upserts leave a mix. The refusal and the write decide
-	// on the same row. The code is
-	// written here rather than taken from loadIssue, which answers the package's plain
-	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that
-	// does not serve this route at all, and that one answers the router's own
-	// `404 {"code":"NOT_FOUND"}` (routes/router.go), which is the plain code loadIssue would
-	// give here too. The daemon ends a publication on this code alone, so the two must differ:
-	// with loadIssue's code every publication against a Dispatch older than the route would be
-	// dropped as a refusal no retry repairs.
+	// The issue is read in the write's own transaction, under its owner's advisory lock, which
+	// every writer of the issue takes (store.LockOwner): the lock and the read are one batch,
+	// the read is a plain select in the statement after the lock, and the refusal and the write
+	// decide on the same row (INFRA-636: while no earlier build is in the fleet, no row lock of an
+	// owner table, which would give the transaction its id before the reads; beside an earlier
+	// build LockOwnerAndRead also takes the issue's row, as that build's writers do). The lock is
+	// exclusive and held to the commit, so a second publish of the same issue waits for it and the
+	// two replace the set one after the other: the stored set is always one whole set, the set of
+	// the one that finishes last (TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet). The
+	// code is written here rather than taken from loadIssue, which answers the package's plain
+	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that does
+	// not serve this route at all, and that one answers the router's own `404 {"code":"NOT_FOUND"}`
+	// (routes/router.go), which is the plain code loadIssue would give here too. The daemon ends a
+	// publication on this code alone, so the two must differ: with loadIssue's code every
+	// publication against a Dispatch older than the route would be dropped as a refusal no retry
+	// repairs.
 	var issue string
-	if err := tx.QueryRow(r.Context(), `
-		select key from issues where key = $1 for no key update
-	`, r.PathValue("key")).Scan(&issue); err != nil {
+	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(r.PathValue("key")), `
+		select key from issues where key = $1
+	`, []any{r.PathValue("key")}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
 			return

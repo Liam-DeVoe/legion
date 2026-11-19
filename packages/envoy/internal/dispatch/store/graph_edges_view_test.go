@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
 // graphEdgesViewMigrations is every migration that states graph_edges from GraphEdgesView, by its
@@ -94,16 +92,6 @@ func TestEveryGraphEdgesMigrationHoldsTheViewItsSourceGives(t *testing.T) {
 	if stated := read("once GraphEdgesView states it"); stated != migrated {
 		t.Errorf("the database the migrations left holds another graph_edges than GraphEdgesView(%d), the set of %s, states:\n%s",
 			newestArms, newest, firstDifference(migrated, stated))
-	}
-}
-
-// The arm over refs answers a document's mention whose far end is past the store's bound on an
-// address, of which no tuple is stated (ReferenceNotStated), and that bound is
-// graphstore.MaxAddressBytes, which this package writes out as text because graphstore's own
-// tests import it (referenceAddressBound).
-func TestTheArmOverRefsTakesTheStoresAddressBound(t *testing.T) {
-	if want := strconv.Itoa(graphstore.MaxAddressBytes); referenceAddressBound != want {
-		t.Fatalf("the arm over refs bounds a far end at %s bytes, and the store at %s", referenceAddressBound, want)
 	}
 }
 

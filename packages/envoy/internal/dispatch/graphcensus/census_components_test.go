@@ -126,7 +126,7 @@ func TestTheComponentBatchesTakeTheStoreLockOrder(t *testing.T) {
 		owner, project := holdLockSource(t, database)
 		node := &lockstep.Hold{
 			Name: "component LOCK/daemon's node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindComponent, ID: "LOCK/daemon",
-			Statement: "with incoming as (",
+			Statement: "insert into graph_nodes (",
 		}
 		lockstep.Begin(t, database, node)
 		if err := graphstore.Write(ctx, node.Tx, []graphstore.Node{graphstore.ComponentNode("LOCK", "daemon", alice, importedAt)}, nil); err != nil {

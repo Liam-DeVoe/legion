@@ -4,7 +4,7 @@
 
 package main
 
-// dispatch://INFRA-1149's c-read-cost: no read this child changes gets slower, and no event
+// This change's check c-read-cost: no read this child changes gets slower, and no event
 // outruns its node.
 //
 // The test is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode at the end of this

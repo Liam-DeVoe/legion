@@ -78,10 +78,13 @@ func askOfBlock(t *testing.T, ctx context.Context, database *pgx.Conn, document,
 }
 
 // documentState is what the test reads of a document to tell a restore that wrote from one rolled
-// back: how many versions and reviews it holds, and the rows of the asks named.
+// back: how many versions and reviews it holds, its newest version, its approval state - its
+// newest review in docs.ReviewOrder, the order every approval read takes, with that review's state
+// and the version it names - and the rows of the asks named. A rollback that leaves the counts as
+// they were and moves an approval still reads apart.
 type documentState struct {
-	versions, reviews int
-	asks              string
+	versions, latest, reviews int
+	approval, asks            string
 }
 
 // readDocumentState reads document's state, with the block and document each of asks' rows names.
@@ -90,11 +93,14 @@ func readDocumentState(t *testing.T, ctx context.Context, database *pgx.Conn, do
 	var state documentState
 	if err := database.QueryRow(ctx, `
 		select (select count(*) from artifact_versions where artifact_id = $1::uuid),
+		       (select coalesce(max(number), 0) from artifact_versions where artifact_id = $1::uuid),
 		       (select count(*) from artifact_reviews where artifact_id = $1::uuid),
+		       coalesce((select artifact_reviews.id::text || ' ' || artifact_reviews.state || ' of version ' || artifact_reviews.version
+		                 from artifact_reviews where artifact_id = $1::uuid order by `+docs.ReviewOrder+` limit 1), 'no review'),
 		       coalesce((select string_agg(k.id || '@' || k.block_artifact_id || '#' || k.block_id ||
 		                   '/tuples=' || (select count(*) from graph_tuples t where t.from_kind = 'ask' and t.from_id = k.id::text), ',' order by k.id)
 		                 from asks k where k.id::text = any($2::text[])), '')
-	`, document, asks).Scan(&state.versions, &state.reviews, &state.asks); err != nil {
+	`, document, asks).Scan(&state.versions, &state.latest, &state.reviews, &state.approval, &state.asks); err != nil {
 		t.Fatalf("read the state of %s: %v", document, err)
 	}
 	return state
@@ -183,7 +189,7 @@ func readDatabaseWrites(t *testing.T, ctx context.Context, database *pgx.Conn) d
 }
 
 // The restore says what it does to the approval of each document it changes, and carries or
-// supersedes each by one rule (dispatch://INFRA-1150 R7, c-restore-approvals), over rows the base
+// supersedes each by one rule (c-restore-approvals), over rows the base
 // release wrote:
 //
 //   - issue A: a person approved the spec while it held two answered asks and a third it keeps;

@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The kinds of node that record how a piece of work was reasoned about, as the graph addresses
@@ -143,7 +146,7 @@ type pointerRule struct {
 // pointerRules are the type rules of the four pointer tuples and of a risk's place, the one table
 // of them (dispatch://INFRA-1950/spec#b-r-constraint-risk). Every write of this store holds each
 // relation it appends whose kind is here to its rule, in the write's own transaction, before it
-// appends anything (checkPointers, from Write and Caused), so no route keeps a rule of its own
+// appends anything (queuePointerChecks, in QueueWrite and QueueCaused), so no route keeps its own
 // and a move through dispatch://INFRA-1253's `/parent` meets the same one. A kind that is not here
 // is let through to any node.
 //
@@ -299,7 +302,8 @@ var ErrPointerNotHeld = errors.New("the node holds no such pointer to retarget")
 
 // errPointerInArms refuses a relation pointerRules rules handed to WriteArms: an arm spliced into
 // a caller's statement runs with no read of the nodes its rule names, so a ruled tuple is
-// appended only through Write or Caused, which check it in their transaction.
+// appended only through QueueWrite or QueueCaused (Write, Caused), which check it in their
+// transaction.
 var errPointerInArms = errors.New("a pointer tuple is checked against its type rule in the write's own transaction, " +
 	"by the store's Write or Caused, and never in the arms of a caller's statement")
 
@@ -322,10 +326,10 @@ func refusePointersInArms(tuples []Tuple, claims []Claim) error {
 // pointerTarget is one far end of a pointer, as a lens's has_kind tuples hold it.
 type pointerTarget struct{ kind, id string }
 
-// pointerEnds is what checkPointers reads of the nodes a write's ruled tuples name: the block type
-// of each block an end of one is ruled by and the project of the document that holds it, the
-// project of each near end an ownProject rule compares with its far end's, and the kinds each lens
-// holds now.
+// pointerEnds is what queuePointerChecks reads of the nodes a write's ruled tuples name: the
+// block type of each block an end of one is ruled by and the project of the document that holds
+// it, the project of each near end an ownProject rule compares with its far end's, and the kinds
+// each lens holds now.
 type pointerEnds struct {
 	blockTypes    map[string]string
 	blockProjects map[string]string
@@ -333,15 +337,16 @@ type pointerEnds struct {
 	lensKinds     map[string][]pointerTarget
 }
 
-// checkPointers holds every relation of tuples that pointerRules rules to its rule, in the write's
-// transaction, before the write appends a tuple, and answers the first breach: an
+// queuePointerChecks holds every relation of tuples that pointerRules rules to its rule, in the
+// write's transaction, before the write appends a tuple, and refuses the first breach: an
 // InvalidPointerError, or ErrLensKindAsserted or ErrLensKindKept. nodes are the nodes the write
-// writes (Write) or wrote (Caused), whose rows it holds already, and made which of them, by
-// position, the write's own insert made (writeNodes; nil where none, or unknown), which hold no
-// tuple of the store yet, so their kinds are read off this write alone. A write no rule holds a
-// tuple of - every write of this store but those of the reasoning kinds above - sends no
-// statement here and makes nothing. A refusal ends the caller's transaction, which rolls the
-// nodes it wrote back with it, as ErrProjectMoved does.
+// writes (QueueWrite) or wrote (QueueCaused), whose rows it holds already. What the rules ask of
+// the store is read by statements queued here (pointerReads), and the last one's callback checks
+// the tuples once every read has answered, so a breach fails the batch as Send reads it; a write
+// whose rules read nothing is checked at once, before anything more is queued. A write no rule
+// holds a tuple of - every write of this store but those of the reasoning kinds above - queues no
+// statement here and makes nothing. A refusal ends the caller's transaction, which rolls the nodes
+// it wrote back with it, as ErrProjectMoved does.
 //
 // An assertion is held to the kinds of both its ends, and a risk's prevented_by to the project of
 // its risk: the check stands in a document of that project, read off the document that holds it
@@ -358,7 +363,7 @@ type pointerEnds struct {
 // api/inbox_read.go's markInboxReadThreads says. A risk's part_of is read against the kinds its
 // lens holds once the whole write is read, so a write that makes a pre-mortem and its risks
 // together may state them in any order.
-func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tuples []Tuple) error {
+func queuePointerChecks(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
 	var ruled []int
 	for index := range tuples {
 		if tuple := &tuples[index]; tuple.ToKind != KindValue && pointerRuleOf(tuple.Kind, tuple.FromKind) != nil {
@@ -368,20 +373,34 @@ func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tu
 	if len(ruled) == 0 {
 		return nil
 	}
-	ends, err := readPointerEnds(ctx, tx, nodes, made, tuples, ruled)
-	if err != nil {
-		return err
+	ends := &pointerEnds{}
+	reads := pointerReads(ends, nodes, tuples, ruled)
+	check := func() error { return ends.check(tuples, ruled) }
+	if len(reads) == 0 {
+		return check()
 	}
-	return ends.check(tuples, ruled)
+	for index, read := range reads {
+		then := func() error { return nil }
+		if index == len(reads)-1 {
+			then = check
+		}
+		read(b, then)
+	}
+	return nil
 }
 
-// readPointerEnds reads what the ruled tuples' rules ask of their ends: one statement for the
-// type of every block an end is ruled by and the project of its document, one for the project of
-// each near end of an ownProject rule that no node of the write states, the lock of every lens
-// whose has_kind tuples the write states and does not write the node of, and one for the has_kind
-// tuples each named lens holds now, which a lens the write's insert made holds none of and is not
-// read for.
-func readPointerEnds(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tuples []Tuple, ruled []int) (pointerEnds, error) {
+// pointerRead queues one of the reads queuePointerChecks makes, whose callback fills what it read
+// into the ends and then runs then: the check, for the last read, which runs once every read
+// before it has filled its part, since Send reads the results in statement order.
+type pointerRead func(b *store.WriteBatch, then func() error)
+
+// pointerReads are the reads the ruled tuples' rules ask of their ends, in order: one statement
+// for the type of every block an end is ruled by and the project of its document, one for the
+// project of each near end of an ownProject rule that no node of the write states, the lock of
+// every lens whose has_kind tuples the write states and does not write the node of, and one for
+// the has_kind tuples each named lens holds now, which a lens the write's own insert made holds
+// none of. What the write's own nodes state is filled into ends here, with no read.
+func pointerReads(ends *pointerEnds, nodes []Node, tuples []Tuple, ruled []int) []pointerRead {
 	var blocks, lenses, locked []string
 	var placed []pointerTarget
 	for _, index := range ruled {
@@ -406,166 +425,147 @@ func readPointerEnds(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, 
 			lenses = append(lenses, tuple.ToID)
 		}
 	}
-	var ends pointerEnds
+	var reads []pointerRead
 	if len(blocks) > 0 {
-		types, projects, err := readBlocks(ctx, tx, blocks)
-		if err != nil {
-			return pointerEnds{}, err
-		}
-		ends.blockTypes, ends.blockProjects = types, projects
+		reads = append(reads, readBlocks(ends, blocks))
 	}
 	if len(placed) > 0 {
-		projects, err := readNodeProjects(ctx, tx, nodes, placed)
-		if err != nil {
-			return pointerEnds{}, err
+		if read := readNodeProjects(ends, nodes, placed); read != nil {
+			reads = append(reads, read)
 		}
-		ends.nodeProjects = projects
 	}
 	if len(locked) > 0 {
 		slices.Sort(locked)
-		if _, err := tx.Exec(ctx, `
-			select 1 from graph_nodes held
-			where held.kind = $1 and held.id = any($2::text[])
-			order by held.id
-			for no key update of held
-		`, KindLens, slices.Compact(locked)); err != nil {
-			return pointerEnds{}, fmt.Errorf("lock the lenses whose kind the write states: %w", err)
-		}
+		locked = slices.Compact(locked)
+		reads = append(reads, func(b *store.WriteBatch, then func() error) {
+			b.Queue("lock the lenses whose kind the write states", `
+				select 1 from graph_nodes held
+				where held.kind = $1 and held.id = any($2::text[])
+				order by held.id
+				for no key update of held
+			`, KindLens, locked).Exec(func(pgconn.CommandTag) error { return then() })
+		})
 	}
 	if len(lenses) > 0 {
 		slices.Sort(lenses)
-		lenses = slices.Compact(lenses)
-		ends.lensKinds = make(map[string][]pointerTarget, len(lenses))
-		stored := lenses[:0:0]
-		for _, lens := range lenses {
-			at := slices.IndexFunc(nodes, func(node Node) bool { return node.Kind == KindLens && node.ID == lens })
-			if at >= 0 && made != nil && made[at] {
-				continue
+		reads = append(reads, readLensKinds(ends, slices.Compact(lenses)))
+	}
+	return reads
+}
+
+// readLensKinds reads into ends the has_kind tuples each of lenses holds now, in one statement,
+// each lens's in the order CurrentOut answers them (by far end). A lens the write's own insert
+// made holds none, the read being queued after that insert.
+func readLensKinds(ends *pointerEnds, lenses []string) pointerRead {
+	ends.lensKinds = make(map[string][]pointerTarget, len(lenses))
+	return func(b *store.WriteBatch, then func() error) {
+		b.Queue("read the kinds of the lenses a pointer names", `
+			select newest.from_id, newest.to_kind, newest.to_id from (
+				`+CurrentTupleRead(`t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_id, t.to_kind, t.to_id, t.asserted`,
+			`t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = $3 and t.to_kind <> '`+KindValue+`'`)+`
+			) newest
+			where newest.asserted
+			order by newest.from_id, newest.to_kind, newest.to_id
+		`, KindLens, lenses, TupleHasKind).Query(func(rows pgx.Rows) error {
+			for rows.Next() {
+				var lens string
+				var target pointerTarget
+				if err := rows.Scan(&lens, &target.kind, &target.id); err != nil {
+					return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
+				}
+				ends.lensKinds[lens] = append(ends.lensKinds[lens], target)
 			}
-			stored = append(stored, lens)
-		}
-		if len(stored) > 0 {
-			if err := readLensKinds(ctx, tx, stored, ends.lensKinds); err != nil {
-				return pointerEnds{}, err
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
 			}
-		}
+			return then()
+		})
 	}
-	return ends, nil
 }
 
-// readLensKinds reads into kinds the has_kind tuples each of lenses holds now, in one statement,
-// each lens's in the order CurrentOut answers them (by far end).
-func readLensKinds(ctx context.Context, tx pgx.Tx, lenses []string, kinds map[string][]pointerTarget) error {
-	rows, err := tx.Query(ctx, `
-		select newest.from_id, newest.to_kind, newest.to_id from (
-			`+CurrentTupleRead(`t.from_id, t.kind, t.to_kind, t.to_id`, `t.from_id, t.to_kind, t.to_id, t.asserted`,
-		`t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = $3 and t.to_kind <> '`+KindValue+`'`)+`
-		) newest
-		where newest.asserted
-		order by newest.from_id, newest.to_kind, newest.to_id
-	`, KindLens, lenses, TupleHasKind)
-	if err != nil {
-		return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
+// readBlocks reads into ends the type of each block of ids that a document holds now, and the
+// project of that document, read off its document_blocks row by node_id, the block's address that
+// every row carries, through that column's hash index (document_blocks_node_id, migration 0121),
+// and the primary key of the artifacts row it names. It is not read by node_kind and
+// node_address: a row written before the store's backfill, one a pod of the previous release
+// writes during a roll, and one past the store's address bound leave both null, and its block is
+// still the requirement or the check it is. A block no document holds - a finding of a lens, a
+// block a version removed - answers none, and no rule that names a block type lets it through. A
+// document no project holds, an agent conversation's file, answers no project.
+func readBlocks(ends *pointerEnds, ids []string) pointerRead {
+	ends.blockTypes, ends.blockProjects = make(map[string]string, len(ids)), make(map[string]string, len(ids))
+	return func(b *store.WriteBatch, then func() error) {
+		b.Queue("read the types of the blocks a pointer names", `
+			select d.node_id, d.type, a.project_key
+			from document_blocks d join artifacts a on a.id = d.artifact_id
+			where d.node_id = any($1::text[])
+		`, ids).Query(func(rows pgx.Rows) error {
+			for rows.Next() {
+				var id, blockType string
+				var project *string
+				if err := rows.Scan(&id, &blockType, &project); err != nil {
+					return fmt.Errorf("read the types of the blocks a pointer names: %w", err)
+				}
+				ends.blockTypes[id] = blockType
+				if project != nil {
+					ends.blockProjects[id] = *project
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("read the types of the blocks a pointer names: %w", err)
+			}
+			return then()
+		})
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var lens string
-		var target pointerTarget
-		if err := rows.Scan(&lens, &target.kind, &target.id); err != nil {
-			return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
-		}
-		kinds[lens] = append(kinds[lens], target)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the kinds of the lenses a pointer names: %w", err)
-	}
-	return nil
 }
 
-// readBlocks is the type of each block of ids that a document holds now, and the project of that
-// document, read off its document_blocks row by node_id, the block's address that every row
-// carries, through that column's hash index (document_blocks_node_id, migration 0121), and the
-// primary key of the artifacts row it names. It is not read by node_kind and node_address: a row
-// written before the store's backfill, one a pod of the previous release writes during a roll,
-// and one past the store's address bound leave both null, and its block is still the requirement
-// or the check it is. A block no document holds - a finding of a lens, a block a version removed
-// - answers none, and no rule that names a block type lets it through. A document no project
-// holds, an agent conversation's file, answers no project.
-func readBlocks(ctx context.Context, tx pgx.Tx, ids []string) (types, projects map[string]string, err error) {
-	rows, err := tx.Query(ctx, `
-		select d.node_id, d.type, a.project_key
-		from document_blocks d join artifacts a on a.id = d.artifact_id
-		where d.node_id = any($1::text[])
-	`, ids)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the types of the blocks a pointer names: %w", err)
-	}
-	defer rows.Close()
-	types, projects = make(map[string]string, len(ids)), make(map[string]string, len(ids))
-	for rows.Next() {
-		var id, blockType string
-		var project *string
-		if err := rows.Scan(&id, &blockType, &project); err != nil {
-			return nil, nil, fmt.Errorf("read the types of the blocks a pointer names: %w", err)
-		}
-		types[id] = blockType
-		if project != nil {
-			projects[id] = *project
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("read the types of the blocks a pointer names: %w", err)
-	}
-	return types, projects, nil
-}
-
-// readNodeProjects is the project of each of ends, the near ends of the tuples an ownProject rule
-// holds: the one a node of the write states, which its row holds already (a node's project never
-// moves, ErrProjectMoved), and otherwise the one its graph_nodes row holds, read in one
-// statement. A node whose row holds no project answers none.
-func readNodeProjects(ctx context.Context, tx pgx.Tx, nodes []Node, ends []pointerTarget) (map[pointerTarget]string, error) {
-	projects := make(map[pointerTarget]string, len(ends))
+// readNodeProjects fills into ends the project of each of placed, the near ends of the tuples an
+// ownProject rule holds: the one a node of the write states, which its row holds already (a node's
+// project never moves, ErrProjectMoved), and otherwise the one its graph_nodes row holds, read by
+// the one statement it answers, or nil where the write's nodes state every one. A node whose row
+// holds no project answers none.
+func readNodeProjects(ends *pointerEnds, nodes []Node, placed []pointerTarget) pointerRead {
+	ends.nodeProjects = make(map[pointerTarget]string, len(placed))
 	var kinds, ids []string
-	for _, end := range ends {
-		if _, stated := projects[end]; stated {
+	for _, end := range placed {
+		if _, stated := ends.nodeProjects[end]; stated {
 			continue
 		}
 		if at := slices.IndexFunc(nodes, func(node Node) bool {
 			return node.Kind == end.kind && node.ID == end.id && node.Project != ""
 		}); at >= 0 {
-			projects[end] = nodes[at].Project
+			ends.nodeProjects[end] = nodes[at].Project
 			continue
 		}
 		kinds, ids = append(kinds, end.kind), append(ids, end.id)
 	}
 	if len(ids) == 0 {
-		return projects, nil
+		return nil
 	}
-	rows, err := tx.Query(ctx, `
-		select held.kind, held.id, held.project_key from graph_nodes held
-		join unnest($1::text[], $2::text[]) as named(kind, id) on named.kind = held.kind and named.id = held.id
-		where held.project_key is not null
-	`, kinds, ids)
-	if err != nil {
-		return nil, fmt.Errorf("read the projects of the nodes a pointer starts at: %w", err)
+	return func(b *store.WriteBatch, then func() error) {
+		b.Queue("read the projects of the nodes a pointer starts at", `
+			select held.kind, held.id, held.project_key from graph_nodes held
+			join unnest($1::text[], $2::text[]) as named(kind, id) on named.kind = held.kind and named.id = held.id
+			where held.project_key is not null
+		`, kinds, ids).Query(func(rows pgx.Rows) error {
+			for rows.Next() {
+				var end pointerTarget
+				var project string
+				if err := rows.Scan(&end.kind, &end.id, &project); err != nil {
+					return fmt.Errorf("read the projects of the nodes a pointer starts at: %w", err)
+				}
+				ends.nodeProjects[end] = project
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("read the projects of the nodes a pointer starts at: %w", err)
+			}
+			return then()
+		})
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var end pointerTarget
-		var project string
-		if err := rows.Scan(&end.kind, &end.id, &project); err != nil {
-			return nil, fmt.Errorf("read the projects of the nodes a pointer starts at: %w", err)
-		}
-		projects[end] = project
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the projects of the nodes a pointer starts at: %w", err)
-	}
-	return projects, nil
 }
 
 // check holds each ruled tuple to its rule in the write's order, the places of risks last
-// (checkPointers).
+// (queuePointerChecks).
 func (e pointerEnds) check(tuples []Tuple, ruled []int) error {
 	var emptied []string
 	for _, index := range ruled {

@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The conversion's spec of R9 (dispatch://INFRA-1150, spec v42): an answered ask, the person's
+// The spec a decisions document's conversion starts from: an answered ask, the person's
 // answer given before the approval so that the answer's own carry cannot absorb the change; two
 // requirement nodes the ask shaped; and a `## Decisions` part holding its pointer line to the
 // issue's decisions document.

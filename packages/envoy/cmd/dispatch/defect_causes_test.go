@@ -1,6 +1,6 @@
 package main
 
-// The model half of the three defects of the first filing (dispatch://INFRA-1150 R12, the check
+// The model half of the three defects of the first filing (the check
 // c-defect-causes), read over HTTP from a real process. The file carries no build tag: the head's
 // run needs none. The baseline quote runs the same test against the base release, whose binary
 // DISPATCH_DEFECTS_SERVER_BINARY names, as

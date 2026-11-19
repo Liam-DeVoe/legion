@@ -16,7 +16,7 @@ import (
 
 // issueRoleDocuments is what an issue read names by role: its spec, and its document of each
 // role, "" where it holds none. DecisionsArtifactID is the old member a page of the release
-// before reads (dispatch://INFRA-1150 R11).
+// before reads.
 type issueRoleDocuments struct {
 	PrimaryArtifactID      string `json:"primary_artifact_id"`
 	VerificationArtifactID string `json:"verification_artifact_id"`
@@ -100,7 +100,7 @@ func TestIssueDocumentsTakeTheirRoleFromTheirName(t *testing.T) {
 // A decision is a `decision` block of the spec, so a new document named decisions.md, or of any
 // name whose slug is decisions-md, on an issue is refused 409 DECISIONS_ARE_NODES with a message
 // that says to write a `decision` block in the spec: an upload, a create with no content, and a
-// rename of another document to that name (dispatch://INFRA-1150 R11, ruling D12). A document of
+// rename of another document to that name. A document of
 // any other name is taken, with no role, and a project document of that name is no issue's.
 // Where the issue still holds a decisions document an earlier release stored, an upload of its
 // name is that document's next version, as a client of the release before writes it, and the

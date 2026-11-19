@@ -244,8 +244,8 @@ const ReferenceNotStated = `(r.from_kind <> 'artifact' or octet_length(r.to_id) 
         offset 0))`
 
 // referenceAddressBound is graphstore.MaxAddressBytes, the store's bound on one address, written
-// out as text: graphstore's own tests import this package, so it imports no part of the store
-// (TestTheArmOverRefsTakesTheStoresAddressBound).
+// out as text: graphstore imports this package, so it imports no part of the store
+// (graphstore's TestTheArmOverRefsTakesTheStoresAddressBound).
 const referenceAddressBound = "1024"
 
 // artifactRefsArm is GraphEdgesArtifactRefs' arm over refs: the rows the store states no tuple of

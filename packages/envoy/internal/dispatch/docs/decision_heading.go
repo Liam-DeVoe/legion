@@ -10,7 +10,7 @@ import (
 )
 
 // HeadingDecision is a section of an issue's decisions document, read on its heading block for
-// a Keep (dispatch://INFRA-1150 R11, ruling F3). Text is the section's markdown, from its heading
+// a Keep. Text is the section's markdown, from its heading
 // to its last block. TextSHA256 is the sum of that text (decisionread.TextSum): the sum the
 // release before's Decisions read served, and the sum the conversion compares a Keep with
 // (issueRestore.sectionKeeps). ChangedVersion is the greatest version the block index recorded

@@ -291,7 +291,7 @@ type Project struct {
 // GatedStepCriteria and GatedStepSpec are the two design-gate steps Project.GatedSteps names,
 // each one a document of the root issue: its Verification document and its primary document.
 // GatedStepsKnown is the set in the order the gate runs them, which the route checks a published
-// list against. The `decisions` step is gone (dispatch://INFRA-1150 R11): no write of this build
+// list against. The `decisions` step is gone: no write of this build
 // stores it, and a stored list that holds it reads without it (api's gatedStepsWithout).
 const (
 	GatedStepCriteria = "criteria"
@@ -607,7 +607,7 @@ type Issue struct {
 	PlanArtifactID         string `json:"plan_artifact_id"`
 	// DecisionsArtifactID is the id of the issue's decisions document while it stands
 	// (decisions_documents()), "" once it is retired or where the issue holds none. A page of the
-	// release before reads it (dispatch://INFRA-1150 R11).
+	// release before reads it.
 	// kept for one release: compat-objects
 	DecisionsArtifactID string `json:"decisions_artifact_id"`
 	LastSeq             int    `json:"last_seq"`
@@ -1227,7 +1227,7 @@ type Artifact struct {
 	// "" for every other document. It is set from the document's slug when the row is created, as
 	// Primary is, and no request field sets it; the one write that clears it is the document's
 	// retirement. A decisions document an earlier release stored answers its stored role,
-	// `decisions`, until the decisions step retires it (dispatch://INFRA-1150 R11). A document of
+	// `decisions`, until the decisions step retires it. A document of
 	// an issue born converted carries no role in its row: its role is projected from the query
 	// value of its node (graphstore.QueryNode), `verification`, `plan` or `decisions`, the spec's
 	// `spec` projecting none (dispatch://INFRA-1253 R8, decision 2 of its plan).
@@ -1716,6 +1716,29 @@ type ArtifactBlock struct {
 	Document      string                `json:"-"`
 }
 
+// TextAsk is one entry of the asks member the text routes answer (GET
+// /api/v1/artifacts/{id}/text and its issue and project slug variants): an ask block of the
+// markdown they serve, in document order, with its answer as the ask's node holds it. A person's
+// answer is held once, on the ask's node, so that markdown holds none of it; each field carries
+// the name and the value the server-owned attribute of the block carried in the release before.
+// State is the block's ask's state; for a copy of an ask of another document of the same owner,
+// the source's, with CopiedFrom the source's id and CopiedFromDocument its document's dispatch://
+// address; for a block of a closed issue's document that no settlement has indexed, resolved; and
+// absent for any other block no ask indexes yet, a question nobody has opened, which the text
+// routes showed with no state before they took the attributes off. AnsweredBy, AnsweredAt (RFC
+// 3339), Selected (empty where no option was chosen) and Answer (absent where the answer has no
+// words) are present on an answered ask alone.
+type TextAsk struct {
+	BlockID            string    `json:"block_id"`
+	State              string    `json:"state,omitempty" enum:"open,answered,resolved"`
+	AnsweredBy         string    `json:"answered_by,omitempty"`
+	AnsweredAt         string    `json:"answered_at,omitempty"`
+	Selected           *[]string `json:"selected,omitempty"`
+	Answer             *string   `json:"answer,omitempty"`
+	CopiedFrom         string    `json:"copied_from,omitempty"`
+	CopiedFromDocument string    `json:"copied_from_document,omitempty"`
+}
+
 // BlockAttributeValue is one attribute a typed block carries: the name its type declares it
 // under, the value the block holds, as its opening line writes it with no escape and no quotes
 // (pmdoc.TypedBlockAttributes), and the kind the block schema declares that attribute
@@ -2079,9 +2102,10 @@ type AskAnsweredEventPayload struct {
 // issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
-// assignee moved, whose Inbox rows the write can move (api.issueWriteThreadLogins): for a close
-// or a reopen every login with a Replies row on one of the issue's open asks
-// (events.IssueThreadLogins), for an assignee move the assignee the issue was taken from and the
+// assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
+// or a reopen every login with a Replies row on one of the issue's open asks, read by the
+// event's own insert, after the ask writes the transaction queued before it
+// (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the
 // one it was given to, for the two together the sorted union of both, and for any other status
 // move []. Each is absent from an event written before them.
 //
@@ -2113,6 +2137,15 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 		Issue:                   issue,
 		ReferenceChangesPayload: NewReferenceChangesPayload(changes),
 	}
+}
+
+// WithOwnerLastSeq is the payload carrying seq as the issue's last_seq. An issue event's payload
+// holds the issue row as the event leaves it, and the event's own sequence is what that row's
+// last_seq becomes when it is appended, so the append derives both from one expression
+// (events.Broker.QueueAppend) and no writer counts the events queued before its own.
+func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
+	p.LastSeq = seq
+	return p
 }
 
 // AskEditEventPayload is the full edited ask plus its prior mutable content, the actor who made
@@ -2172,7 +2205,7 @@ type BlockInvalidEventPayload struct {
 }
 
 // AskOption is an answer choice. ID is the id of the block this option is stored as - the part
-// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.IndexAskParts) - which every read that shows
+// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.PlanAskParts) - which every read that shows
 // an ask's options carries (api.attachAskPartIDs) and no write accepts: a caller that sends an
 // option back as it read it has its id emptied (api.validateAskOptions). Absent on a write's own
 // response and while the ask's parts are not indexed yet.
@@ -2367,9 +2400,14 @@ const (
 
 // SessionAnswer relations: what an item is to the session Dispatch delivered it to, spelled as
 // SESSION_ANSWER_RELATIONS in packages/contracts/src/dispatch-api.ts spells them.
+// answered_your_ask, declined_your_ask and replied_on_your_ask are for a session that owns the
+// ask: it wrote the ask or follows it (ask_followers). Any other session the same answer or
+// decline reached reads answered_an_ask or declined_an_ask.
 const (
 	SessionAnswerRelationAnsweredYourAsk        = "answered_your_ask"
+	SessionAnswerRelationAnsweredAnAsk          = "answered_an_ask"
 	SessionAnswerRelationDeclinedYourAsk        = "declined_your_ask"
+	SessionAnswerRelationDeclinedAnAsk          = "declined_an_ask"
 	SessionAnswerRelationRepliedOnYourAsk       = "replied_on_your_ask"
 	SessionAnswerRelationRepliedInCommentThread = "replied_in_a_comment_thread"
 	SessionAnswerRelationCommentedOnDocument    = "commented_on_a_document"
@@ -2379,8 +2417,8 @@ const (
 	SessionAnswerRelationRepliedToYourMessage   = "replied_to_your_message"
 )
 
-// SessionAnswerAsk is the ask a session answer item answers or replies in, with the session's
-// whole question.
+// SessionAnswerAsk is the ask a session answer item answers, declines or replies in, with its
+// whole question, whoever asked it. The item's relation says whether the ask is the session's own.
 type SessionAnswerAsk struct {
 	ID       string `json:"id"`
 	Question string `json:"question"`
@@ -2390,12 +2428,13 @@ type SessionAnswerAsk struct {
 // GET /api/v1/agents/{session_id}/answers: an ask's current answer, a comment at its current
 // body, a message, or a person's decline of an ask, each (Kind, ID) once. Author is always a
 // user. Text is the person's own words in full ("" for an answer that chose options only, and for
-// a decline the person wrote no note with). DispatchWords is set on a decline alone: the words
-// Dispatch wrote for the asking agent (DeclineDispatchWords), kept apart from the person's note so
-// no reader has to cut one out of the other. Selected and Replaced are an answer's, each omitted
-// when empty or false; EditedAt is an edited comment's; Ask is set on an answer, on a decline and
-// on a reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue
-// and has no dispatch:// address; Href is then /agents/<session>/live.
+// a decline the person wrote no note with). DispatchWords is set only on a decline of an ask the
+// session wrote or follows: the words Dispatch wrote for the asking agent (DeclineDispatchWords),
+// kept apart from the person's note so no reader has to cut one out of the other. Selected and
+// Replaced are an answer's, each omitted when empty or false; EditedAt is an edited comment's;
+// Ask is set on an answer, on a decline and on a reply in an ask's thread. Owner and Ref are nil
+// for a direct message, which is on no issue and has no dispatch:// address; Href is then
+// /agents/<session>/live.
 type SessionAnswer struct {
 	Kind          string            `json:"kind"`
 	Relation      string            `json:"relation"`
@@ -3000,6 +3039,19 @@ type CommentEventPayload struct {
 	// "waiting on the agent" without re-reading it. Empty when the comment does not
 	// reply to an open ask.
 	AskWaitingOn string `json:"ask_waiting_on,omitempty"`
+	// AskSessions is carried by comment.created alone, on a comment in an ask's thread: the
+	// sessions that own the ask as the comment's write leaves them, read in the comment's own
+	// transaction (api's askSessions). They are the ask's author when a session wrote it, then
+	// each other session that follows it (ask_followers), ordered by its follow time (since) and
+	// then session id, then the comment's own author when a session wrote the comment and neither
+	// of those names it, each once. Every copy of the event carries the same list, the outbox's
+	// stand-in for an event the bus refused among them (it keeps this list whole, whatever its
+	// size: outbox's standInWholeFields), so a reader that knows its own session tells from this
+	// list whether the reply is on that session's own ask, as the comment's write left the owners.
+	// [] when no session owns the ask (a person wrote it and no session follows it). Absent on
+	// every other comment event, on a comment outside an ask's thread, and on an event a server
+	// older than the field wrote.
+	AskSessions []string `json:"ask_sessions,omitzero"`
 	// ThreadRootID is the id of the head of the thread the comment joined, which is also
 	// what Comment.ReplyTo stores for it. Carried by comment.created and by the
 	// comment.answered a delivery callback appends; empty when the comment replies to an
@@ -3247,6 +3299,52 @@ type HandoffRecordedEventPayload struct {
 	HandoffID string `json:"handoff_id"`
 	Phase     string `json:"phase"`
 	Version   int    `json:"version"`
+}
+
+// StepRecord is one run of one step of an issue's workflow, as the Legion daemon wrote it at the
+// run's start and at its end (PUT /api/v1/issues/{key}/steps/{id}) and as the read of the issue
+// lists it. Task is the plan's task, `default` for an issue whose owner gave no plan; Step is the
+// step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
+// "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
+// made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
+// agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
+// Attempt, which no write stores, the place of this run among the issue's runs of the same task,
+// step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
+// ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
+// the merge's place, and Report the handoff its ending role named, each null where the run has
+// none.
+type StepRecord struct {
+	ID         string     `json:"id"`
+	Issue      string     `json:"issue"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind" enum:"step,retro,merge"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Session    string     `json:"session"`
+	Model      string     `json:"model"`
+	Generation int64      `json:"generation"`
+	Attempt    int        `json:"attempt"`
+	StartedAt  *time.Time `json:"started_at"`
+	EndedAt    *time.Time `json:"ended_at"`
+	Result     string     `json:"result" enum:",passed,failed,stopped"`
+	ReturnedTo *int       `json:"returned_to"`
+	Report     *string    `json:"report"`
+}
+
+// StepTask is one task of an issue with every run of its steps, in the order they ran.
+type StepTask struct {
+	Task  string       `json:"task"`
+	Steps []StepRecord `json:"steps"`
+}
+
+// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
+// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
+// issue carries answers 404 NOT_FOUND, and no IssueSteps.
+type IssueSteps struct {
+	Issue string     `json:"issue"`
+	Tasks []StepTask `json:"tasks"`
 }
 
 // ReferencedBy identifies a post or artifact that mentions an artifact.
@@ -3526,8 +3624,8 @@ type DecisionKeep struct {
 // (internal/dispatch/decisionread). FromBlock is the decision's own block, To the node it names,
 // CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it,
 // TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
-// last changed in, and Stale true when that text changed after the tuple was written
-// (dispatch://INFRA-1150 R5). The three are absent where the store holds none.
+// last changed in, and Stale true when that text changed after the tuple was written. The three
+// are absent where the store holds none.
 //
 // kept for one release: compat-objects
 type DecisionLink struct {
@@ -3547,7 +3645,7 @@ type DecisionLink struct {
 // Unsure is true where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the
 // node. ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is
 // the sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
-// old `decisions` member answers it for one release (dispatch://INFRA-1150 R11).
+// old `decisions` member answers it for one release.
 //
 // kept for one release: compat-objects
 type Decision struct {
@@ -3642,6 +3740,10 @@ type EditOp struct {
 	Index      json.RawMessage `json:"index,omitempty"`
 	Type       string          `json:"type,omitempty"`
 	Attributes map[string]any  `json:"attributes,omitempty"`
+	// Into is an insert's third anchor, `block:<id>`: the markdown goes inside that block, after
+	// its last child, read as that block's content (docs.insertInto), where After and Before put
+	// it beside one. An insert names exactly one of the three.
+	Into string `json:"into,omitempty"`
 }
 
 // Route is a validated issue delivery route.

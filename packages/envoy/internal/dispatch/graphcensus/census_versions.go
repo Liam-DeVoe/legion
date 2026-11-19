@@ -193,12 +193,12 @@ func readVersionBatch(ctx context.Context, database *store.Store, after versionK
 }
 
 // writeVersionBatch writes one batch's version nodes in one transaction, in the store's lock order
-// (api/inbox_read.go's markInboxReadThreads): the owner rows the batch's documents stand under first
-// (lockObjectOwners), then it reads the batch's rows again under them, with what each one's node
+// (api/inbox_read.go's markInboxReadThreads): the owner locks the batch's documents stand under
+// first (lockObjectOwners), then it reads the batch's rows again under them, with what each one's node
 // needs of its document (owedVersionNodes), and writes the nodes and facts of the rows
 // still there and still with no present node, and no others (graphstore.Write takes their rows in
 // ascending (kind, id)). A row the removal of its document deleted meanwhile is gone, since the
-// removal takes its issue's row first (api's removeArtifact) and states the node gone in the
+// removal takes its issue's owner lock first (api's removeArtifact) and states the node gone in the
 // transaction that deletes the row, and a row a live write or another run gave its node meanwhile
 // names a present one: neither is written, so no removed version comes back as a live node.
 // A version's row is no projection row naming its node, so no row of the table is written.
@@ -208,7 +208,7 @@ func readVersionBatch(ctx context.Context, database *store.Store, after versionK
 // writes version nodes: a version an older build uploaded, after the document's node was named,
 // leaves the document's values at the version before it, and this is the write that moves them.
 // The object pass leaves such a version to this one (nameArtifactNodes), so one version's bytes are
-// stated once. Under the owner rows a later upload of the document waits for this batch, so the
+// stated once. Under the owner locks a later upload of the document waits for this batch, so the
 // version read as the newest is the newest when the batch commits, and that upload's bytes are
 // stated after these.
 //
@@ -228,7 +228,7 @@ func writeVersionBatch(ctx context.Context, database *store.Store, batch []versi
 	}
 	var written, stated int64
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if err := lockObjectOwners(ctx, tx, graphstore.KindArtifact, refKeys); err != nil {
+		if err := lockObjectOwners(ctx, tx, documentObjectKind, refKeys); err != nil {
 			return err
 		}
 		nodes, tuples, _, err := owedVersionNodes(ctx, tx, `
@@ -251,28 +251,40 @@ func writeVersionBatch(ctx context.Context, database *store.Store, batch []versi
 	return written, stated, nil
 }
 
-// WriteMissingVersionNodes writes, in tx, the node of each version of the documents artifactIDs
-// names that holds no present node, as the version pass writes one (owedVersionNodes): dated at
+// MissingVersionNodes is the node of each version of the documents a block-index pass drains a
+// mark of that holds no present node, as the version pass writes one (owedVersionNodes): dated at
 // its row's created_at, made by its first author or by the run where the row names none, a node
 // held gone at its address restated live, and an image's or a file's newest bytes stated on its
-// document's node. except names, by document, the version whose node the caller writes itself,
-// which is left out; a document it does not name leaves none out. A bound above zero is the most
-// versions it writes: where more than bound hold no node it writes none and answers false,
-// having read bound+1 rows and no more, for a caller that leaves them to a later pass (docs'
-// indexRenderedVersion, which then owes the documents their block index again). A bound of zero
-// writes every one, and it answers true wherever it wrote every node it found missing.
+// document's node. PlanMissingVersionNodes reads them in the pass's read phase, and Queue queues
+// their write in its write phase, so a writer's pass that drains the mark takes no transaction id
+// before its write phase, as every write of the pass's transaction is queued there.
+type MissingVersionNodes struct {
+	nodes  []graphstore.Node
+	tuples []graphstore.Tuple
+}
+
+// PlanMissingVersionNodes reads, through q, the versions of the documents artifactIDs names that
+// hold no present node (MissingVersionNodes). except names, by document, the version whose node
+// the caller writes itself, which is left out; a document it does not name leaves none out. A
+// bound above zero is the most versions the drain writes: where more than bound hold no node it
+// plans none and answers false, having read bound+1 rows and no more, for a caller that leaves
+// them to a later pass (docs' indexRenderedVersion, which then owes the documents their block
+// index again). A bound of zero plans every one, and it answers true wherever it planned every
+// node it found missing.
 //
-// It is the write of a block-index pass that drains a mark of its documents (docs'
+// It is the drain of a block-index pass that drains a mark of its documents (docs'
 // indexRenderedVersion), over that document or, for an issue room, every document of the room the
 // pass covers a version of: the reconciliation's pass over a document or room it listed as owed
 // by either mark, this build's (store_owed_at) or the null version migration 0122's trigger sets,
-// and a request's pass that drains this build's mark (refs.IndexBlocks' marked). The release
+// and a request's pass that drains this build's mark (refs.BlockIndexing.Marked). The release
 // before this one writes no version node, so a version it writes during a roll holds none, and
 // once the marks are cleared no later pass reaches it: the reconciliation's drain writes every
 // such node, so it stands at the next tick and the census needs no second backfill, and a
 // request's version write that drains the mark first writes every such node but its own
 // version's, which it writes after the pass (docs.WriteVersionNode). Its read is the anti-join of
 // those documents' versions alone, through artifact_versions' unique key, and never of the table.
+// The read runs before any write of the pass's transaction, which queues them all: a version this
+// transaction queued is not read, and it is the caller's own, which except leaves out.
 //
 // A version the release before writes reaches this drain only while a mark lists its document. A
 // version that release writes and indexes in one request, of a document this build has already
@@ -282,18 +294,18 @@ func writeVersionBatch(ctx context.Context, database *store.Store, batch []versi
 // the event log, which a sibling branch of this one adds: it marks such a document store_owed_at,
 // a mark this drain fires on.
 //
-// It takes no lock of its own. Its caller holds the owner row the documents stand under (docs'
-// lockArtifactOwner: their issue's row, or the document's own where no issue owns it; for an issue
-// room the tree artifact's issue row, which every document of the room stands under), and every
-// writer of a version node of theirs takes that row before it: a version's insert
-// (docs.WriteVersionNode, under the owner row its write holds), the version pass
-// (writeVersionBatch, through lockObjectOwners, the same row), a removal (api's removeArtifact,
-// the issue's row) and the erase (the owner rows it takes first). So while the caller holds the
-// row no other transaction holds one of these version node rows or waits to take one: a row the
-// read finds with no present node keeps none until the caller commits, and the node rows the
+// It takes no lock of its own. Its caller holds the owner lock the documents stand under (docs'
+// lockArtifactOwner: their issue's, or the document's own where no issue owns it; for an issue
+// room the tree artifact's issue, which every document of the room stands under), from before the
+// read to its commit, and every writer of a version node of theirs takes that lock before it: a
+// version's insert (docs.WriteVersionNode, under the owner lock its write holds), the version pass
+// (writeVersionBatch, through lockObjectOwners, the same lock), a removal (api's removeArtifact,
+// the issue's) and the erase (the owner locks it takes first). So while the caller holds the lock
+// no other transaction holds one of these version node rows or waits to take one: a row the read
+// finds with no present node keeps none until the caller commits, and the node rows the queued
 // write takes after the nodes of the caller's own pass wait on no transaction that waits on the
 // caller.
-func WriteMissingVersionNodes(ctx context.Context, tx pgx.Tx, artifactIDs []string, except refs.Versions, bound int) (bool, error) {
+func PlanMissingVersionNodes(ctx context.Context, q graphstore.Queryer, artifactIDs []string, except refs.Versions, bound int) (MissingVersionNodes, bool, error) {
 	left := make([]int32, len(artifactIDs))
 	for index, id := range artifactIDs {
 		left[index] = int32(except[id].Number)
@@ -303,29 +315,35 @@ func WriteMissingVersionNodes(ctx context.Context, tx pgx.Tx, artifactIDs []stri
 		limit = bound + 1
 	}
 	// Version numbers start at 1, so 0 leaves no version out.
-	nodes, tuples, read, err := owedVersionNodes(ctx, tx, `
+	nodes, tuples, read, err := owedVersionNodes(ctx, q, `
 		join unnest($1::uuid[], $2::int[]) as drained (artifact_id, left_out)
 		  on drained.artifact_id = v.artifact_id and v.number <> drained.left_out`, limit, artifactIDs, left)
 	if err != nil {
-		return false, fmt.Errorf("read the versions of %v with no node under their owner: %w", artifactIDs, err)
+		return MissingVersionNodes{}, false, fmt.Errorf("read the versions of %v with no node under their owner: %w", artifactIDs, err)
 	}
 	if bound > 0 && read > bound {
-		return false, nil
+		return MissingVersionNodes{}, false, nil
 	}
-	if len(nodes) == 0 {
-		return true, nil
-	}
-	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-		return false, fmt.Errorf("write the version nodes of %v: %w", artifactIDs, err)
-	}
-	return true, nil
+	return MissingVersionNodes{nodes: nodes, tuples: tuples}, true, nil
 }
 
-// owedVersionNodes reads, in tx, the artifact_versions rows v the join rows names, bound to args,
-// that still hold no present version node (presentVersionNode), each with what its node needs of
-// its document a (graphstore.VersionOwnerColumns), in the order of the table's unique key, and
-// at most limit of them where limit is above zero, and answers the nodes and the facts the version
-// pass writes of them, and how many rows it read: each node and its facts
+// Queue queues on b the write of the version nodes the drain planned and their facts
+// (graphstore.QueueWrite), for the run ctx carries; a drain that found none queues nothing.
+func (m MissingVersionNodes) Queue(ctx context.Context, b *store.WriteBatch) error {
+	if len(m.nodes) == 0 {
+		return nil
+	}
+	if err := graphstore.QueueWrite(ctx, b, m.nodes, m.tuples); err != nil {
+		return fmt.Errorf("write the missing version nodes: %w", err)
+	}
+	return nil
+}
+
+// owedVersionNodes reads, through q, the artifact_versions rows v the join rows names, bound to
+// args, that still hold no present version node (presentVersionNode), each with what its node
+// needs of its document a (graphstore.VersionOwnerColumns), in the order of the table's unique
+// key, and at most limit of them where limit is above zero, and answers the nodes and the facts
+// the version pass writes of them, and how many rows it read: each node and its facts
 // (graphstore.VersionFacts), dated at the row's own created_at and made by the version's first
 // author, or by the run (backfillActor) where the row names none, and for an image's or a file's
 // newest version its bytes on its document's node (graphstore.ArtifactBytes). A version past the
@@ -333,14 +351,14 @@ func WriteMissingVersionNodes(ctx context.Context, tx pgx.Tx, artifactIDs []stri
 // created_at, first author and those bytes, and never its markdown.
 //
 // It is the one definition of that read and of those nodes, for the version pass's batches
-// (writeVersionBatch) and the block-index drain (WriteMissingVersionNodes). Each caller holds the
-// owner rows the versions stand under before it calls this, and writes what it answers.
-func owedVersionNodes(ctx context.Context, tx pgx.Tx, rows string, limit int, args ...any) ([]graphstore.Node, []graphstore.Tuple, int, error) {
+// (writeVersionBatch) and the block-index drain (PlanMissingVersionNodes). Each caller holds the
+// owner locks the versions stand under before it calls this, and writes what it answers.
+func owedVersionNodes(ctx context.Context, q graphstore.Queryer, rows string, limit int, args ...any) ([]graphstore.Node, []graphstore.Tuple, int, error) {
 	bounded := ""
 	if limit > 0 {
 		bounded = "limit " + strconv.Itoa(limit)
 	}
-	read, err := tx.Query(ctx, `
+	read, err := q.Query(ctx, `
 		select v.number, v.created_at, v.authors->0,
 		       case when a.kind <> 'doc' and v.number = (select max(newest.number) from artifact_versions newest where newest.artifact_id = v.artifact_id)
 		            then v.mime end,

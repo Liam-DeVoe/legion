@@ -4,19 +4,20 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A write made for a run of the command bar names each node it created or changed as changed by
 // that run (dispatch://INFRA-1950/spec#b-r-interaction): one TupleChangedByRun out of the node to
-// the run's interaction, appended by Write and Caused in the write's own transaction and under the
-// write's own cause, beside the write's own tuples. A request names its run in a header, which api
-// reads once, holds to the caller's whole credential and to the run's window, and hands every
-// writer below it through WithRun, so no writer takes the run as an argument. A write on a context
+// the run's interaction, appended by QueueWrite and QueueCaused (and so by Write and Caused) in the
+// write's own transaction and under the write's own cause, after the write's own tuples. A request
+// names its run in a header, which api reads once, holds to the caller's whole credential and to
+// the run's window, and hands every writer below it through WithRun, so no writer takes the run
+// as an argument: each takes the context it writes for. A write on a context
 // holding no run - a background pass, the block-index reconciliation tick, the backfill, a seed -
 // appends none, so no write a request did not make is attributed to a run. Which nodes a write
 // changed is its writer's to say (Node.Changed, Tuple.Changes), never the store's to infer: a block
@@ -88,55 +89,47 @@ func changedByRunMarks(ctx context.Context, nodes []Node, tuples []Tuple) []Tupl
 	return marks
 }
 
-// heldChangedByRun is, of the nodes $2 and $3 name by kind and id, each that already holds an
-// asserted changed_by_run tuple to the interaction of the run $1 names: the newest tuple of each
-// such relation, read as every relation as it stands now is read (CurrentTupleRead), through
-// graph_tuples_inbound, which keys the run's interaction, the kind and then the node.
-var heldChangedByRun = `
+// heldChangedByRun is, of the nodes the text arrays at kinds and ids name by kind and id, each
+// that already holds an asserted changed_by_run tuple to the interaction of the run the parameter
+// at run names: the newest tuple of each such relation, read as every relation as it stands now
+// is read (CurrentTupleRead), through graph_tuples_inbound, which keys the run's interaction, the
+// kind and then the node.
+func heldChangedByRun(run, kinds, ids string) string {
+	return `
 	select from_kind, from_id from (
 		` + CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
-	`t.to_kind = '`+KindInteraction+`' and t.to_id = $1 and t.kind = '`+TupleChangedByRun+`'
-			and (t.from_kind, t.from_id) in (select kind, id from unnest($2::text[], $3::text[]) as marked (kind, id))`) + `
+		`t.to_kind = '`+KindInteraction+`' and t.to_id = `+run+`::text and t.kind = '`+TupleChangedByRun+`'
+			and (t.from_kind, t.from_id) in (select kind, id from unnest(`+kinds+`::text[], `+ids+`::text[]) as marked (kind, id))`) + `
 	) newest
 	where asserted`
+}
 
-// changedByRun is marks less each the store already holds: a node that holds an asserted
-// changed_by_run to the run stands changed by it, so a second write of it for the same run states
-// nothing, and the tuple is appended once for each node and run. It reads them in one statement of
-// the write's own transaction, and none for no marks, so a write on a context with no run sends
-// nothing more. The read takes no lock: what orders two writes of one node for one run is the row
-// each takes before it reads here - the node's own row, which Write's node step and WriteUncaused
-// before Caused hold until the transaction ends, or the owner row a pointer's writer takes first -
-// so the second reads, in a snapshot of its own, the tuple the first committed.
-func changedByRun(ctx context.Context, tx pgx.Tx, marks []Tuple) ([]Tuple, error) {
+// queueChangedByRun queues the append of marks less each the store already holds: a node that
+// holds an asserted changed_by_run to the run stands changed by it, so a second write of it for
+// the same run states nothing, and the tuple is appended once for each node and run. The one
+// statement reads what the store holds and appends the rest, in the order marks names them, in
+// the write's own transaction; it queues none for no marks, so a write on a context with no run
+// sends nothing more. The read takes no lock: what orders two writes of one node for one run is
+// the row each takes before it - the node's own row, which QueueWrite's node write and QueueNodes
+// before QueueCaused hold until the transaction ends, or the owner row a pointer's writer takes
+// first - so the second's statement reads, in a snapshot of its own, the tuple the first
+// committed.
+func queueChangedByRun(b *store.WriteBatch, marks []Tuple) error {
 	if len(marks) == 0 {
-		return nil, nil
+		return nil
 	}
-	kinds, ids := make([]string, len(marks)), make([]string, len(marks))
-	for index, marked := range marks {
-		kinds[index], ids[index] = marked.FromKind, marked.FromID
-	}
-	rows, err := tx.Query(ctx, heldChangedByRun, marks[0].ToID, kinds, ids)
+	params, err := tupleParams(marks)
 	if err != nil {
-		return nil, fmt.Errorf("read the changed_by_run tuples run %s holds: %w", marks[0].ToID, err)
+		return err
 	}
-	defer rows.Close()
-	held := map[[2]string]struct{}{}
-	for rows.Next() {
-		var kind, id string
-		if err := rows.Scan(&kind, &id); err != nil {
-			return nil, fmt.Errorf("scan a changed_by_run tuple of run %s: %w", marks[0].ToID, err)
-		}
-		held[[2]string{kind, id}] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the changed_by_run tuples run %s holds: %w", marks[0].ToID, err)
-	}
-	if len(held) == 0 {
-		return marks, nil
-	}
-	return slices.DeleteFunc(marks, func(marked Tuple) bool {
-		_, stands := held[[2]string{marked.FromKind, marked.FromID}]
-		return stands
-	}), nil
+	run := "$" + strconv.Itoa(len(params)+1)
+	b.Queue(fmt.Sprintf("append the changed_by_run tuples of run %s", marks[0].ToID), `
+		insert into graph_tuples (`+tupleWriteColumns+`)
+		select `+tupleSelect+`
+		from unnest(`+tupleArrays(1)+`) with ordinality as tuple(`+tupleWriteColumns+`, position)
+		where (tuple.from_kind, tuple.from_id) not in (`+heldChangedByRun(run, "$1", "$2")+`)
+		order by position
+		on conflict do nothing
+	`, append(params, marks[0].ToID)...)
+	return nil
 }

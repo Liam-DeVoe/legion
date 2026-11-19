@@ -22,7 +22,7 @@ type indexedBlock struct {
 }
 
 // indexedBlocks is each block row the index holds for document artifactID, by id, read in the
-// caller's transaction, which holds the document's owner row. The rows are read where the block
+// caller's transaction, which holds the document's owner lock. The rows are read where the block
 // index keeps them, in the room the document is edited in (refs.DocumentRoomBlocksSQL): an issue
 // born converted keys its documents' rows under its tree artifact.
 func indexedBlocks(ctx context.Context, tx pgx.Tx, artifactID string) ([]indexedBlock, error) {
@@ -48,7 +48,7 @@ func indexedBlocks(ctx context.Context, tx pgx.Tx, artifactID string) ([]indexed
 // document's live text has moved past its latest version, whatever its issue's status
 // (windowDocument): the version's own stored rendering, with only the blocks the index's rows or
 // the live document also hold (closedVersionBlocks), read in the caller's transaction, which
-// holds the document's owner row. live and liveBlocks are the document as the server serves it
+// holds the document owner's lock. live and liveBlocks are the document as the server serves it
 // (TextWithBlocks).
 //
 // A version this build cannot read back is no reason to leave the document without windows for
@@ -86,7 +86,7 @@ func heldVersionBlocks(
 // gap between two rows aligned in the first step (alignGaps); last, the blocks of each text left
 // on both sides, paired in order where both hold equally many (pairLeftovers). A live block that
 // repeats an earlier block's id - a paste keeps its source's id until a settlement stamps a new
-// one - takes part in no pass: refs.IndexBlocks indexes only the first holder of an id, so a
+// one - takes part in no pass: refs.PlanBlocks indexes only the first holder of an id, so a
 // repeated holder's id would name another block's row.
 //
 // A row whose text the version does not hold - indexed at an older version whose text of that
@@ -174,7 +174,7 @@ func newVersionMatch(markdown string, offsets []pmdoc.BlockOffset, liveBlocks []
 // take gives the version's block at index the id, and reports whether it did. It is the one place
 // a block of the version takes an id, so that each block takes at most one id and each id names at
 // most one block: it refuses a block that has one and an id a block has taken. The index holds one
-// row per id, and refs.WriteDocumentWindows, like refs.IndexBlocks, keeps only the first holder of
+// row per id, and refs.WriteDocumentWindows, like refs.PlanBlocks, keeps only the first holder of
 // a repeated id, so a second taker's text would be left out of what is written from this
 // rendering although the version holds it.
 func (m *versionMatch) take(index int, id string) bool {

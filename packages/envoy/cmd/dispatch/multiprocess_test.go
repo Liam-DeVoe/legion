@@ -6016,7 +6016,13 @@ func openClosingAskIssue(t *testing.T, pair *dispatchPair, project, title string
 		t.Fatalf("the decision's ask reads %s before the close, want open", ask.State)
 	}
 
-	bob := pair.openSyncedEditor(t, pair.b, "bob", artifactID, pair.b.documentText(t, artifactID))
+	// A's settlement wrote the ask's state into its block (docs' rollWindowAskAttributes), so the
+	// live document bob's tab syncs holds it. The text routes serve that document with none of an
+	// ask block's server-owned attributes, whatever its live tree holds (docs' TextWithAsks), so
+	// the copy the tab is held to is the stored document, which every room loads.
+	pair.waitStoredHolds(t, artifactID, `#ship-it urgency="med" multiple="false" state="open"`, 5*time.Second,
+		"A's settlement's write of the ask block open")
+	bob := pair.openSyncedEditor(t, pair.b, "bob", artifactID, storedText(t, pair, artifactID))
 	if scope := authenticateEditor(t, bob); scope != "read-write" {
 		t.Fatalf("bob's tab on B on an open issue was granted %q, want read-write", scope)
 	}
@@ -6059,7 +6065,7 @@ func decodeAuthors(t *testing.T, version int, authors string) []model.Actor {
 // neither undoes the other; its reopen brings both back.
 //
 // A process of another build is registered beside the pair (openClosingAskIssue), so the ask's
-// state is kept in its block as the release before keeps it (dispatch://INFRA-1150 R10). Bob's
+// state is kept in its block as the release before keeps it. Bob's
 // tab on B holds the spec, whose ask block is an open ask, and his keystroke there is
 // stored, which arms B's settlement of it. The issue closes through A, which settles the issue's
 // documents before it closes the issue (settleIssueBeforeClose, in the api package), so the
@@ -6114,7 +6120,8 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 	}
 	requireAskWithdrawn(t, pair.a, issueKey, askID, "once the closed issue's spec settled")
 	requireAskWithdrawn(t, pair.b, issueKey, askID, "once the closed issue's spec settled")
-	requireClosedText("the stored document", pair.a.documentText(t, artifactID))
+	// The stored document, which the text routes serve with no ask block's state (docs' TextWithAsks).
+	requireClosedText("the stored document", storedText(t, pair, artifactID))
 
 	pair.b.patchIssueStatus(t, issueKey, "todo")
 	if ask := pair.a.readAsk(t, askID); ask.State != "open" || ask.Resolution != nil {
@@ -6140,7 +6147,7 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 //
 // A process of another build is registered beside the pair (openClosingAskIssue), since only then
 // does the close write anything into the spec for a settlement to save: on a fleet of one build a
-// close changes no byte of any document (dispatch://INFRA-1150 R3). Bob's keystroke in his tab on
+// close changes no byte of any document. Bob's keystroke in his tab on
 // B is stored, and the issue closes through A. The close settles the spec first, so the keystroke
 // is in the version the close leaves; the close's withdrawal of the decision's ask then writes the
 // block resolved, which leaves the spec owing a settlement, and the close closes B's room. Nothing

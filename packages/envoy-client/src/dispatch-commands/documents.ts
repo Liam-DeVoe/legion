@@ -36,6 +36,7 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
+import { answeredAskLines, liveTextAsks } from "./text-asks";
 
 /**
  * dispatch_doc_read of an uploaded file or image. Dispatch serves a file's content only as the
@@ -247,7 +248,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   const checkLines = decisionBlockLines(edited.advice, {
     project: resolved.artifact.project,
     text: editAskText,
-    configUrl: linkBase,
+    linkBase,
   });
   // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line must
   // stay the result's last line. A project document stands on no issue, and the server sends
@@ -376,10 +377,15 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   if (threadsResult.status === "rejected") throw threadsResult.reason;
   const threads = threadsResult.value;
   const approval = approvalLine(resolved.artifact, typeof resolved.issue?.closed_at === "string");
+  // A live read's markdown holds no ask's state or answer: each answered ask is named beside the
+  // token, from the text's asks (liveTextAsks). A version read prints the stored bytes, which are
+  // the record a person approved, and names none.
+  const answered = version === undefined ? answeredAskLines(liveTextAsks(document)) : [];
   const trailer = [
     ...("token" in document && document.token !== undefined
       ? [`Document token: ${document.token}`]
       : []),
+    ...answered,
     ...("sha256" in document && document.sha256 !== undefined
       ? [`Content: sha256:${document.sha256}`]
       : []),

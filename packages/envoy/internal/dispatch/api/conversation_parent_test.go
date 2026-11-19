@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -32,8 +34,8 @@ func personComment(t *testing.T, handler http.Handler, database *store.Store, is
 }
 
 // agentItem writes a comment or an issue message of issueKey as author, a session, as the write
-// routes store one, indexing its blocks as they do, and returns its id and the reference of its
-// first block.
+// routes store one, indexing its blocks and its references as they plan and queue them
+// (planItemWrite), and returns its id and the reference of its first block.
 func agentItem(t *testing.T, database *store.Store, kind refs.ItemKind, issueKey, author, body string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -48,13 +50,26 @@ func agentItem(t *testing.T, database *store.Store, kind refs.ItemKind, issueKey
 	if err := tx.QueryRow(ctx, `insert into `+table+` (issue_key, author, body) values ($1, $2, $3) returning id::text, created_at`, issueKey, author, body).Scan(&id, &at); err != nil {
 		t.Fatalf("insert the %s: %v", kind, err)
 	}
-	if _, err := refs.ReplaceCountedItem(ctx, tx, kind, id, body, "", at); err != nil {
-		t.Fatalf("index the %s: %v", kind, err)
-	}
+	indexItemAsARouteDoes(t, tx, kind, id, body, at)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the %s: %v", kind, err)
 	}
 	return id, firstItemBlock(t, database, kind, issueKey, id)
+}
+
+// indexItemAsARouteDoes indexes item id of kind, whose row tx holds with body written at at, as a
+// write route does: the blocks and the references it cites planned (planItemWrite) and written as
+// one batch in tx.
+func indexItemAsARouteDoes(t *testing.T, tx pgx.Tx, kind refs.ItemKind, id, body string, at time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	_, write, err := (&server{}).planItemWrite(ctx, tx, kind, id, body, nil, at, true, nil, nil)
+	if err != nil {
+		t.Fatalf("plan the index of the %s: %v", kind, err)
+	}
+	if err := store.RunWrite(ctx, tx, write); err != nil {
+		t.Fatalf("index the %s: %v", kind, err)
+	}
 }
 
 // firstItemBlock is the reference of the first current block of item id of kind on issueKey.
@@ -207,9 +222,7 @@ func TestAParentIsRefusedAtANodeThatIsNoConversation(t *testing.T) {
 	if err := tx.QueryRow(ctx, `insert into comments (issue_key, author, body, reply_to) values ($1, '{"kind":"session","id":"architect-1"}', 'Sized.', $2::uuid) returning id::text, created_at`, issue.Key, said).Scan(&reply, &at); err != nil {
 		t.Fatalf("insert the agent's reply: %v", err)
 	}
-	if _, err := refs.ReplaceCountedItem(ctx, tx, refs.ItemComment, reply, "Sized.", "", at); err != nil {
-		t.Fatalf("index the agent's reply: %v", err)
-	}
+	indexItemAsARouteDoes(t, tx, refs.ItemComment, reply, "Sized.", at)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the agent's reply: %v", err)
 	}

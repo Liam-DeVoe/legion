@@ -16,7 +16,7 @@ import (
 )
 
 // seedSupertags writes a supertag node for each of names, the type a test's own kind of node
-// carries: a node write takes a node only of a type the store holds (checkSupertags), and no
+// carries: a node write takes a node only of a type the store holds (queueSupertagCheck), and no
 // migration seeds a type for a kind that only this package's tests write.
 func seedSupertags(t *testing.T, ctx context.Context, database *store.Store, names ...string) {
 	t.Helper()
@@ -32,10 +32,11 @@ func seedSupertags(t *testing.T, ctx context.Context, database *store.Store, nam
 // TestAWriteTakesANodeOnlyOfATypeTheStoreHolds holds every node write to the types the store
 // holds (dispatch://INFRA-1950/spec#b-r-lens-catalogue): a node whose supertag has no `supertag`
 // row, or one that is gone, refuses the whole write with ErrSupertagNotHeld, a
-// SupertagNotHeldError naming each such type, and stores nothing of it, the node of a held type
-// written beside it included, through Write and WriteUncaused alike. Once the type's row is
-// written, the same write is taken, with nothing restarted and nothing read again but the row:
-// the store holds no copy of its types.
+// SupertagNotHeldError naming each such type, through Write and WriteUncaused alike. The refusal
+// fails the write's batch and its caller abandons the transaction (Write), so once it rolls back
+// nothing of the write is stored, the node of a held type written beside it included. Once the
+// type's row is written, the same write is taken, with nothing restarted and nothing read again
+// but the row: the store holds no copy of its types.
 func TestAWriteTakesANodeOnlyOfATypeTheStoreHolds(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -75,8 +76,8 @@ func TestAWriteTakesANodeOnlyOfATypeTheStoreHolds(t *testing.T) {
 			}
 			err = writer.write(ctx, tx, nodes)
 			requireSupertagNotHeld(t, err, want...)
-			if err := tx.Commit(ctx); err != nil {
-				t.Fatalf("%s: the transaction of the refused write does not commit: %v", writer.name, err)
+			if err := tx.Rollback(ctx); err != nil {
+				t.Fatalf("%s: roll back the transaction of the refused write: %v", writer.name, err)
 			}
 			for _, written := range nodes {
 				requireNoNode(t, ctx, database, written.Kind, written.ID)

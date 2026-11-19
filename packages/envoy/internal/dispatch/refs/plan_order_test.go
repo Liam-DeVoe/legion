@@ -527,7 +527,7 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 				t.Fatalf("parse a plan node needing %s: %v", write.target, err)
 			}
 			err = pmdoc.CheckBlockPointers(tree, nil, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
-				writing, found, err := BlockTargets(ctx, f.tx, f.documents["CORE-1"].artifact, nil, targets)
+				writing, found, err := BlockTargets(ctx, f.tx, f.documents["CORE-1"].artifact, storedAddress(t, f.tx, f.documents["CORE-1"].artifact), nil, targets)
 				writing.Creatable = func() (int, error) { return writable.CreatableSince, nil }
 				return writing, found, err
 			})

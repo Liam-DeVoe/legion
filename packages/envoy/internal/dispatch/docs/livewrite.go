@@ -29,18 +29,23 @@ import (
 // (settleRoom).
 //
 // Locks. A transaction takes a live document's locks in one order and holds each until it
-// commits, the slot until it publishes: the document's owner row (lockArtifactOwner: its
-// issue's row, or a project document's own artifact row), then the writer slot, then the
-// document's advisory lock (lockDocumentRoom, which the transaction's one read of the document
-// takes with the head, forkLive). A joined read,
-// which waits for the slot but writes nothing, takes the owner row alone. Postgres cannot see a
-// wait for the slot, which is in memory. Every transaction that waits for or holds it holds the
-// owner row first, so a transaction waiting for the slot waits only for a committed write's
-// publish, which takes no database lock; and it holds no advisory lock while it waits, so a
-// failed room's eviction, whose compaction takes that lock, is never held up by a waiter.
-// Durable writers outside a transaction (ygo's persistence worker, compaction) take the advisory
-// lock and then only the foreign-key share lock on the owner row, which the owner lock, `for no
-// key update`, does not block.
+// commits, the slot until it publishes: the document owner's advisory lock (lockArtifactOwner,
+// store.LockOwner: its issue's, or a project document's own artifact's; several owners sorted by
+// lock key), the transaction's first lock; then the writer slot; then the copy lock
+// (lockProjectCopies) where a settlement or an answer takes one; then the document's advisory lock
+// (lockDocumentRoom, which the transaction's one read of the document takes with the head,
+// readFork). None of these is a row lock, so none gives the transaction a transaction id. The
+// owner row itself is locked only by a write - the events' lockEventOwner, `for no key update`,
+// when the transaction appends, or an update of the row - always under the owner's advisory lock,
+// so no other Dispatch writer holds it then. A joined read, which waits for the slot but writes
+// nothing, takes the owner lock alone. Postgres cannot see a wait for the slot, which is in
+// memory. Every transaction that waits for or holds it holds the owner lock first, so a
+// transaction waiting for the slot waits only for a committed write's publish, which takes no
+// database lock; and it holds no document lock while it waits, so a failed room's eviction, whose
+// compaction takes that lock, is never held up by a waiter. Durable writers outside a transaction
+// (ygo's persistence worker, compaction) take the document lock and then only the foreign-key
+// share lock on the owner row, which neither the owner's advisory lock nor the append's `for no
+// key update` blocks.
 //
 // A failed room. Its eviction flushes and compacts the document under the advisory lock, so a
 // transaction never waits for it (awaitRoomRecovery): an operation that meets a failed room
@@ -54,12 +59,12 @@ import (
 type liveWrite struct {
 	artifactID string
 	state      *roomState
-	// ownerClosed is whether the document's owner row, which this transaction took and holds
-	// (joinLiveWrite, lockArtifactOwner), said its issue is closed. A comment's anchor on a
-	// closed issue forks cold for it (closedIssueCommentMark, readFork): the room's updates a
-	// warm fork would store ahead of its own are what the append gate refuses on a closed issue
-	// (gateAppend, appendBrowser). A write that never read that row holds the zero value, which
-	// forks as every write does.
+	// ownerClosed is whether the read beside the document owner's lock, which this transaction
+	// took and holds (joinLiveWrite, lockArtifactOwner), said its issue is closed. A comment's
+	// anchor on a closed issue forks cold for it (closedIssueCommentMark, readFork): the room's
+	// updates a warm fork would store ahead of its own are what the append gate refuses on a
+	// closed issue (gateAppend, appendBrowser). A write that never read the owner holds the zero
+	// value, which forks as every write does.
 	ownerClosed bool
 	// clientID authors every item the transaction writes, on fork: the document as the
 	// transaction's one read of it found it, with the transaction's updates applied (forkLive). A
@@ -331,10 +336,10 @@ func (d liveDoc) rewrite(edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) 
 // joinLiveWrite returns the transaction's write to room, a room's own id, which a caller holding a
 // document's id resolves first (targetOf). When the transaction has no write to it yet, it first
 // has every other process holding the room make its updates durable (flushOtherRooms), then takes
-// the room's owner row, refuses a failed room, and then takes the writer slot (see liveWrite). The
-// owner row says whether the room's issue is closed, which the write keeps (liveWrite.ownerClosed)
-// for its fork read: a comment's anchor on a closed issue forks cold (closedIssueCommentMark,
-// readFork).
+// the room's owner lock, refuses a failed room, and then takes the writer slot (see liveWrite). The
+// read beside that lock says whether the room's issue is closed, which the write keeps
+// (liveWrite.ownerClosed) for its fork read: a comment's anchor on a closed issue forks cold
+// (closedIssueCommentMark, readFork).
 func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, room string) (*liveWrite, error) {
 	if write := ledger.liveWriteFor(room); write != nil {
 		return write, nil
@@ -468,6 +473,11 @@ func (s *Service) awaitLiveWriter(ctx context.Context, artifactID string) error 
 // A fork an operation abandoned (applyLive) is built again for the transaction's next operation:
 // read afresh while the transaction has appended nothing of its own, since nothing it stores then
 // was made on the abandoned read; otherwise rebuilt on that read exactly (rebuildFork).
+//
+// afterForkRead runs here, once for each operation that takes the fork, however the fork was come
+// by: the transaction's one read of the room or the store, a rebuild on that read, or the fork
+// the transaction's earlier operations left. A caller that wants the window after the read alone
+// takes the first call (onFirst in the tests).
 func (s *Service) forkLive(ctx context.Context, write *liveWrite) (*crdt.Doc, error) {
 	var fork *crdt.Doc
 	var err error
@@ -483,6 +493,9 @@ func (s *Service) forkLive(ctx context.Context, write *liveWrite) (*crdt.Doc, er
 	}
 	if err != nil {
 		return nil, err
+	}
+	if s.afterForkRead != nil {
+		s.afterForkRead(write.artifactID)
 	}
 	if s.checkRendering != nil {
 		s.checkRendering("fork", write)
@@ -545,15 +558,16 @@ func (s *Service) rebuildFork(ctx context.Context, write *liveWrite) (*crdt.Doc,
 }
 
 // readFork is a transaction's one read of write's document. It first takes the document's
-// advisory lock with the head (lockedHead), which the transaction then holds until it ends, as
-// every durable writer of the document takes it before it appends: no append of this process or
-// another lands between this read and the transaction's commit, so the head read here is the one
-// every append of the transaction meets, and the room's cursor beside it is exact - a writer of
-// this process advances it inside that lock, after the commit that raised the head, and what this
-// transaction stored of the room itself is folded in (roomBehindHead, transactionCursor). The lock
-// assigns the transaction no transaction id (pg_advisory_xact_lock). Only the room's own durable
-// writers wait for it - its persistence, a settlement - never a browser's keystroke, which the
-// room applies without it.
+// advisory lock with the head (headUnderDocumentLock), which the transaction then holds until it
+// ends, as every durable writer of the document takes it before it appends: no append of this
+// process or another lands between this read and the transaction's commit, so the head read here
+// is the one every append of the transaction meets, and the room's cursor beside it is exact - a
+// writer of this process advances it inside that lock, after the commit that raised the head, and
+// what this transaction stored of the room itself is folded in (roomBehindHead,
+// transactionCursor). The lock assigns the transaction no transaction id (pg_advisory_xact_lock),
+// and the head counts the appends the transaction has queued for its write phase, which the table
+// does not hold yet (transactionHead). Only the room's own durable writers wait for the lock -
+// its persistence, a settlement - never a browser's keystroke, which the room applies without it.
 //
 // A document no room holds is forked from the store (coldFork). So is one whose room stands behind
 // the head: the other envoy-dispatch process appended what this room's catch-up has not taken in
@@ -578,7 +592,7 @@ func (s *Service) readFork(ctx context.Context, write *liveWrite) (*crdt.Doc, er
 	if err := s.allowInject(ctx, websocket.InjectInfo{Room: write.artifactID, Op: websocket.OpApply}); err != nil {
 		return nil, fmt.Errorf("%w: %w", websocket.ErrInjectRefused, err)
 	}
-	head, err := lockedHead(ctx, tx, write.artifactID)
+	head, err := headUnderDocumentLock(ctx, tx, write.artifactID)
 	if err != nil {
 		return nil, err
 	}
@@ -588,11 +602,12 @@ func (s *Service) readFork(ctx context.Context, write *liveWrite) (*crdt.Doc, er
 	return s.coldFork(ctx, write, head)
 }
 
-// closedIssueCommentMark is whether write is a comment's anchor on a closed issue: the owner row
-// the transaction took says the issue is closed (joinLiveWrite, liveWrite.ownerClosed), and ctx
-// is one of that comment's anchor operations (commentMarkAnchor, the same test the version and
-// the mark read make, closedIssueCommentAnchor). It is the write that forks cold there (readFork
-// says why), and it needs no read of its own for the issue: the owner row is already in hand.
+// closedIssueCommentMark is whether write is a comment's anchor on a closed issue: the read
+// beside the owner's lock the transaction took says the issue is closed (joinLiveWrite,
+// liveWrite.ownerClosed), and ctx is one of that comment's anchor operations (commentMarkAnchor,
+// the same test the version and the mark read make, closedIssueCommentAnchor). It is the write
+// that forks cold there (readFork says why), and it needs no read of its own for the issue: the
+// owner's answer is already in hand.
 // The other write a closed issue's document takes, the ask states its issue's lifecycle writes
 // (WriteIssueAskStates), forks as every write does: its asks are the room's business, and the
 // close that makes them writes them before it stamps closed_at.
@@ -601,11 +616,11 @@ func closedIssueCommentMark(ctx context.Context, write *liveWrite) bool {
 }
 
 // roomBehindHead reports whether live, the room resident for a document, stands behind head, the
-// document's durable head read under its advisory lock (lockedHead): an update the other process
-// appended that this room's catch-up has not taken in yet. Under that lock no other write of this
-// process sits between its commit and its cursor advance, so a difference from the cursor this
-// transaction sees (below) is the answer, not a reader landing in that window. A room that kept no
-// cursor is not judged behind: nothing says it is.
+// document's durable head read under its advisory lock (headUnderDocumentLock): an update the
+// other process appended that this room's catch-up has not taken in yet. Under that lock no other
+// write of this process sits between its commit and its cursor advance, so a difference from the
+// cursor this transaction sees (below) is the answer, not a reader landing in that window. A room
+// that kept no cursor is not judged behind: nothing says it is.
 //
 // The head counts what this transaction has stored of the room itself and not yet committed: the
 // run an earlier operation of it flushed (Ledger.flushThrough - a version's capture, a snapshot)
@@ -684,9 +699,6 @@ func (s *Service) warmFork(write *liveWrite, live *crdt.Doc) (*crdt.Doc, error) 
 	if len(s.layoutOf(live)) > 0 {
 		write.forkRead, write.forkMarkdown = forkReadMark{}, nil
 	}
-	if s.afterForkRead != nil {
-		s.afterForkRead(write.artifactID)
-	}
 	return fork, nil
 }
 
@@ -747,9 +759,6 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 	// (applyMargin) and its operations' renderings are never published (publishedRendering).
 	write.forkedFrom, write.forkRead, write.forkMarkdown = weak.Pointer[crdt.Doc]{}, forkReadMark{}, nil
 	write.forkHold = &roomHold{loaded: int64(loaded.Version)}
-	if s.afterForkRead != nil {
-		s.afterForkRead(write.artifactID)
-	}
 	return fork, nil
 }
 
@@ -830,7 +839,7 @@ func (w *liveWrite) releaseFork() {
 
 // joinRead joins a read of room, a room's own id, to the calling transaction, as joinLiveWrite
 // joins a write. With a write of its own open it returns the fork holding that write. Otherwise, for
-// a caller in a transaction, it takes the room's owner row and waits until no other transaction's
+// a caller in a transaction, it takes the room's owner lock and waits until no other transaction's
 // write to room is open on this process, then returns nil: what the caller reads next includes
 // every committed write, the head it reads next (readStoredHead) included. Outside a transaction
 // it takes nothing and returns nil. It never waits for a room's catch-up: a read of a room behind

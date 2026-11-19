@@ -19,9 +19,9 @@ import (
 const documentRemovalStatement = "delete from artifacts where id = $1"
 
 // artifactRemoval is the removal of an untouched document of the rig's issue (removeArtifact),
-// through its route. It takes the issue's row as its owner row (beginArtifactWrite), then the
+// through its route. It takes the issue's owner lock (beginArtifactWrite), then the
 // document's room, an advisory lock no table shows; it writes the document's node gone
-// (docs.WriteRemovedNode, graphstore.WriteUncaused), deletes the document's row, appends
+// (removedDocumentNodes, graphstore.WriteUncaused), deletes the document's row, appends
 // artifact.removed and then appends what the node write states under that event
 // (graphstore.Caused). The document's node exists from its create, so the node step is held as
 // the table it is written to; the document's row is deleted under a key the run holds no lock on
@@ -31,7 +31,7 @@ func (r *storeWriterRig) artifactRemoval() storeWriter {
 	return storeWriter{
 		name: "removeArtifact",
 		steps: []storeStep{
-			r.issueOwnerStep(issueOwnerStatement),
+			ownerLockStep(store.IssueOwner(r.issue)),
 			{
 				name: "the document's node", order: nodeStep,
 				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,

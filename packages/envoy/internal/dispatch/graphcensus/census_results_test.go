@@ -84,7 +84,7 @@ func TestTheResultBatchTakesTheStoreLockOrder(t *testing.T) {
 	owner, project := holdLockOwner(t, database)
 	node := holdWrite(t, database, &lockstep.Hold{
 		Name: "the result's node row", Step: lockstep.StepNode, Taken: true, Kind: graphstore.KindResult,
-		ID: id, Statement: "with incoming as (",
+		ID: id, Statement: "insert into graph_nodes (",
 	}, nodes[:1], nil)
 
 	report := followTheBackfill(t, database, "writeResultBatch", []*lockstep.Hold{owner, project, node})
