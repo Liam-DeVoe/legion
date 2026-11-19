@@ -69,7 +69,7 @@ func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
 	if len(nodes) > 0 {
 		mark = nextNodeMark()
 	}
-	if err := queueNodes(b, nodes, mark); err != nil {
+	if err := queueNodes(b, nodes, mark, tuples); err != nil {
 		return err
 	}
 	return queueAppend(b, appending{tuples: tuples, nodes: nodes, mark: mark, own: tuples})
@@ -172,7 +172,11 @@ func PlanUncaused(nodes []Node, stated []Tuple) Uncaused {
 // QueueNodes queues the node write of write (PlanUncaused) on b: every node now, at the sentinel,
 // each it makes or moves left marked for the append QueueCaused queues. It appends nothing.
 func QueueNodes(b *store.WriteBatch, write Uncaused) error {
-	return queueNodes(b, write.Nodes, write.mark)
+	stated := make([]Tuple, len(write.Tuples))
+	for index, held := range write.Tuples {
+		stated[index] = held.Tuple
+	}
+	return queueNodes(b, write.Nodes, write.mark, stated)
 }
 
 // Caused is QueueCaused run at once, as a batch of its own, for a writer with no write phase.
@@ -359,7 +363,7 @@ func markedAttributes(row string) string {
 // is a nested loop that rescans one per row of the other, which measured 3,009 ms against 193 ms
 // over a 1,999-block version, so what the write did to each node rides on the node's own row
 // instead (nodeMark).
-func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) error {
+func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) error {
 	if len(nodes) == 0 {
 		return nil
 	}
@@ -404,12 +408,25 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) error {
 	for index := range nodes {
 		restates[index] = nodes[index].Restates
 	}
+	// A node already there whose base attribute the caller states itself - a document made where
+	// an orphaned node stands states that node gone and then live in tuples of its own - moves
+	// nothing of its own row's base attributes, but is marked all the same (with no attribute), so
+	// the append moves it onto the cause the caller's statements carry.
+	own := statedAttributes(stated)
+	states := make([]bool, len(nodes))
+	for index, node := range nodes {
+		for _, attribute := range baseAttributes {
+			if _, held := own[baseAttribute{node.Kind, node.ID, attribute}]; held {
+				states[index] = true
+			}
+		}
+	}
 	b.Queue("write graph nodes", `
 		with incoming as (
 			select kind, id, supertag, visibility, state, attributes, restates, project_key,
-			       string_to_array(parties, ' ') as parties
-			from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::jsonb[], $7::boolean[], $9::text[], $10::text[])
-				as node(kind, id, supertag, visibility, state, attributes, restates, project_key, parties)
+			       string_to_array(parties, ' ') as parties, states
+			from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::jsonb[], $7::boolean[], $9::text[], $10::text[], $11::boolean[])
+				as node(kind, id, supertag, visibility, state, attributes, restates, project_key, parties, states)
 		)
 		update graph_nodes set
 			supertag = incoming.supertag,
@@ -429,8 +446,9 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) error {
 		       or graph_nodes.state is distinct from `+writtenState+`
 		       or graph_nodes.attributes is distinct from incoming.attributes
 		       or `+fillsProject+`
-		       or `+movesParties+`)
-	`, args[0], args[1], args[2], args[3], args[4], args[5], restates, mark, projects, parties)
+		       or `+movesParties+`
+		       or incoming.states)
+	`, args[0], args[1], args[2], args[3], args[4], args[5], restates, mark, projects, parties, states)
 	return nil
 }
 
@@ -656,8 +674,9 @@ func appendedNodeParams(write appending) ([]any, error) {
 type baseAttribute struct{ kind, id, attribute string }
 
 // statedAttributes are the base attributes the write states itself, read off the tuples it
-// handed in. No writer of this tree states one today - each leaves them to the node write - but
-// a writer that did would keep that statement: one write states one fact once.
+// handed in: a document made where an orphaned node stands, and the backfill's write of such a
+// document, state its node gone and then live themselves. One write states one fact once, so the
+// node write states none of those attributes beside them.
 func statedAttributes(tuples []Tuple) map[baseAttribute]struct{} {
 	stated := make(map[baseAttribute]struct{})
 	for _, tuple := range tuples {
