@@ -154,6 +154,7 @@ func (g *gate) goPackage(c *census, dir, path, pkgDir string, goFiles []string, 
 		Defs:       map[*ast.Ident]types.Object{},
 		Selections: map[*ast.SelectorExpr]*types.Selection{},
 		Types:      map[ast.Expr]types.TypeAndValue{},
+		Instances:  map[*ast.Ident]types.Instance{},
 	}
 	conf := types.Config{Importer: importer.ForCompiler(fset, "gc", func(p string) (io.ReadCloser, error) {
 		if e := exports[p]; e != "" {

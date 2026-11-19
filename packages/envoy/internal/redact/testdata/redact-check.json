@@ -103,20 +103,12 @@
         "test": "print-envoy.RefillingError"
       },
       {
-        "holder": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).lapsedRoleHolder struct{Error redact.RemoteText \"json:\\\"error\\\"\"; Holder redact.RemoteText \"json:\\\"holder\\\"\"; HolderState envoy.holderState \"json:\\\"holder_state\\\"\"}",
-        "test": "print-envoy.Client.lapsedRoleHolder.refusal"
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleRefusalAs[github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/internal/dispatch/envoy.holderState]",
+        "test": "print-envoy.listenerwire.RoleRefusalAs"
       },
       {
-        "holder": "github.com/sjawhar/envoy/internal/dispatch/envoy.unavailableGetStatus struct{Error redact.RemoteText \"json:\\\"error\\\"\"}",
-        "test": "print-envoy.unavailableGetStatus.failure"
-      },
-      {
-        "holder": "github.com/sjawhar/envoy/internal/dispatch/envoy.listenerResponseError struct{Error redact.RemoteText \"json:\\\"error\\\"\"}",
-        "test": "print-envoy.listenerResponseError.body"
-      },
-      {
-        "holder": "github.com/sjawhar/envoy/internal/dispatch/envoy.listFailure struct{Error redact.RemoteText \"json:\\\"error\\\"\"; Code redact.RemoteText \"json:\\\"code\\\"\"}",
-        "test": "print-envoy.listFailure.body"
+        "holder": "github.com/sjawhar/envoy/listenerwire.APIErrorAs[github.com/sjawhar/envoy/internal/redact.RemoteText]",
+        "test": "print-envoy.listenerwire.APIErrorAs"
       },
       {
         "holder": "github.com/sjawhar/envoy/loadtest.seedError",
@@ -1864,32 +1856,18 @@
       "production": "github.com/sjawhar/envoy/internal/dispatch/envoy.RefillingError: every printer at every placement"
     },
     {
-      "id": "print-envoy.Client.lapsedRoleHolder.refusal",
+      "id": "print-envoy.listenerwire.RoleRefusalAs",
       "requirement": "r2-held",
       "package": "./internal/dispatch/envoy",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.Client.lapsedRoleHolder.refusal",
-      "production": "(*github.com/sjawhar/envoy/internal/dispatch/envoy.Client).lapsedRoleHolder struct{Error redact.RemoteText \"json:\\\"error\\\"\"; Holder redact.RemoteText \"json:\\\"holder\\\"\"; HolderState envoy.holderState \"json:\\\"holder_state\\\"\"}: every printer at every placement"
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listenerwire.RoleRefusalAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleRefusalAs[github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/internal/dispatch/envoy.holderState]: every printer at every placement"
     },
     {
-      "id": "print-envoy.unavailableGetStatus.failure",
+      "id": "print-envoy.listenerwire.APIErrorAs",
       "requirement": "r2-held",
       "package": "./internal/dispatch/envoy",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.unavailableGetStatus.failure",
-      "production": "github.com/sjawhar/envoy/internal/dispatch/envoy.unavailableGetStatus struct{Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
-    },
-    {
-      "id": "print-envoy.listenerResponseError.body",
-      "requirement": "r2-held",
-      "package": "./internal/dispatch/envoy",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listenerResponseError.body",
-      "production": "github.com/sjawhar/envoy/internal/dispatch/envoy.listenerResponseError struct{Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
-    },
-    {
-      "id": "print-envoy.listFailure.body",
-      "requirement": "r2-held",
-      "package": "./internal/dispatch/envoy",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listFailure.body",
-      "production": "github.com/sjawhar/envoy/internal/dispatch/envoy.listFailure struct{Error redact.RemoteText \"json:\\\"error\\\"\"; Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listenerwire.APIErrorAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.APIErrorAs[github.com/sjawhar/envoy/internal/redact.RemoteText]: every printer at every placement"
     },
     {
       "id": "print-loadtest.seedError",

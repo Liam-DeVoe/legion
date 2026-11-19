@@ -207,16 +207,17 @@ func controlAlias(words string) string {
 			return c.edit(boxFile, "func (t RemoteText) MarshalJSON() ([]byte, error) { return json.Marshal(t.String()) }",
 				"func (t RemoteText) MarshalJSON() ([]byte, error) { return json.Marshal(t.String() + \"not-a-secret-\" + \"token\") }")
 		}},
-	{id: "6", what: "new holders reached only through a pointer, a slice, a map, an embedded struct and a TypeScript object type, with no print-test row", stage: 2,
+	{id: "6", what: "new holders reached only through a pointer, a slice, a map, an embedded struct, a generic type's instance and a TypeScript object type, with no print-test row", stage: 2,
 		each: [][]string{
 			{"holder census", brokerclientPkg + ".controlViaPointer"},
 			{"holder census", brokerclientPkg + ".controlViaSlice"},
 			{"holder census", brokerclientPkg + ".controlViaMap"},
 			{"holder census", brokerclientPkg + ".controlEmbedded"},
+			{"holder census", brokerclientPkg + ".controlGeneric[*" + brokerclientPkg + ".RefusedError]"},
 			{"holder census", plantTSDir + "control-holder.ts#ControlHolder"},
 		},
 		plant: func(c *controlRun) error {
-			if err := c.write(plantDir+"control_holders.go", "package brokerclient\n\n// Control (6)'s planted holders, each reaching the box only through another type.\ntype controlViaPointer struct{ r *RefusedError }\n\ntype controlViaSlice struct{ r []tokenAnswer }\n\ntype controlViaMap struct{ r map[string]*RefusedError }\n\ntype controlEmbedded struct{ RefusedError }\n"); err != nil {
+			if err := c.write(plantDir+"control_holders.go", "package brokerclient\n\n// Control (6)'s planted holders, each reaching the box only through another type.\ntype controlViaPointer struct{ r *RefusedError }\n\ntype controlViaSlice struct{ r []tokenAnswer }\n\ntype controlViaMap struct{ r map[string]*RefusedError }\n\ntype controlEmbedded struct{ RefusedError }\n\ntype controlGeneric[T any] struct{ r T }\n\nvar controlInstance controlGeneric[*RefusedError]\n"); err != nil {
 				return err
 			}
 			return c.write(plantTSDir+"control-holder.ts", "import type { BrokerRefusedError } from \"./token-client\";\n\n/** Control (6)'s planted holder, reaching the box through an array of refusals. */\nexport interface ControlHolder {\n  readonly refusals: readonly BrokerRefusedError[];\n}\n")

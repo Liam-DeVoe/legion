@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The box print test of this package's holders: each holds the probe in every box field, and its
@@ -29,29 +30,19 @@ type refillingErrorExported struct {
 
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	code, words := redact.NewRemoteText(redacttest.Code), redact.NewRemoteText(redacttest.Words)
-	type errorTwin = struct {
-		Error string `json:"error"`
+	// The refusal Client.lapsedRoleHolder decodes, and its twin, the same type with each word a
+	// string.
+	refusal := listenerwire.RoleRefusalAs[redact.RemoteText, redact.RemoteText, holderState]{
+		Error: words, Reason: code, Holder: code, HolderState: holderStateUnresponsive, ClientInstanceID: words,
 	}
-	type lapsedTwin = struct {
-		Error       string      `json:"error"`
-		Holder      string      `json:"holder"`
-		HolderState holderState `json:"holder_state"`
+	refusalTwin := listenerwire.RoleRefusalAs[string, string, holderState]{
+		Error: redacttest.Words, Reason: redacttest.Code, Holder: redacttest.Code, HolderState: holderStateUnresponsive,
+		ClientInstanceID: redacttest.Words,
 	}
-	type listTwin = struct {
-		Error string `json:"error"`
-		Code  string `json:"code"`
-	}
-	errorBody := func(name string) redacttest.Holder {
-		return redacttest.Holder{
-			Name: name,
-			Kind: "fields",
-			Boxed: struct {
-				Error redact.RemoteText `json:"error"`
-			}{words},
-			Same:     errorTwin{redacttest.Words},
-			Exported: errorTwin{redacttest.Words},
-		}
-	}
+	// The failure unavailableGetStatus, listenerResponseError and listFailure decode, and its twin,
+	// the body as the listener writes it.
+	failure := listenerwire.APIErrorAs[redact.RemoteText]{Code: code, Error: words, Expected: []redact.RemoteText{words}}
+	failureTwin := listenerwire.APIError{Code: redacttest.Code, Error: redacttest.Words, Expected: []string{redacttest.Words}}
 	for _, h := range []redacttest.Holder{
 		{
 			Name:     "envoy.RefillingError",
@@ -61,30 +52,18 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: &refillingErrorExported{"1", "/v1/sessions", redacttest.Words},
 		},
 		{
-			// The refusal Client.lapsedRoleHolder decodes.
-			Name: "envoy.Client.lapsedRoleHolder.refusal",
-			Kind: "fields",
-			Boxed: struct {
-				Error       redact.RemoteText `json:"error"`
-				Holder      redact.RemoteText `json:"holder"`
-				HolderState holderState       `json:"holder_state"`
-			}{Error: words, Holder: code, HolderState: holderStateUnresponsive},
-			Same:     lapsedTwin{redacttest.Words, redacttest.Code, holderStateUnresponsive},
-			Exported: lapsedTwin{redacttest.Words, redacttest.Code, holderStateUnresponsive},
+			Name:     "envoy.listenerwire.RoleRefusalAs",
+			Kind:     "fields",
+			Boxed:    refusal,
+			Same:     refusalTwin,
+			Exported: refusalTwin,
 		},
-		// The failures unavailableGetStatus and listenerResponseError decode.
-		errorBody("envoy.unavailableGetStatus.failure"),
-		errorBody("envoy.listenerResponseError.body"),
 		{
-			// The body listFailure decodes.
-			Name: "envoy.listFailure.body",
-			Kind: "fields",
-			Boxed: struct {
-				Error redact.RemoteText `json:"error"`
-				Code  redact.RemoteText `json:"code"`
-			}{words, code},
-			Same:     listTwin{redacttest.Words, redacttest.Code},
-			Exported: listTwin{redacttest.Words, redacttest.Code},
+			Name:     "envoy.listenerwire.APIErrorAs",
+			Kind:     "fields",
+			Boxed:    failure,
+			Same:     failureTwin,
+			Exported: failureTwin,
 		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { redacttest.PrintTest(t, h) })

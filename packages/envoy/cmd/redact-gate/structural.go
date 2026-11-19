@@ -16,10 +16,12 @@ func (g *gate) structural(c *census, dir, path string, fset *token.FileSet, file
 	box := g.inv.Gate.Box
 	boxPkg, boxName := splitTypeName(box.Type)
 	g.collectValueOf(path, files, info)
+	// The generic instances already listed in this package, each listed once.
+	instances := map[string]bool{}
 	for _, f := range files {
 		rel, _ := filepath.Rel(dir, fset.Position(f.Pos()).Filename)
 		rel = filepath.ToSlash(rel)
-		w := &walker{g: g, c: c, fset: fset, info: info, rel: rel, path: path, boxPkg: boxPkg, boxName: boxName}
+		w := &walker{g: g, c: c, fset: fset, info: info, rel: rel, path: path, boxPkg: boxPkg, boxName: boxName, instances: instances}
 		w.file(f)
 	}
 	_ = pkg
@@ -139,6 +141,7 @@ type walker struct {
 	rel, path       string
 	boxPkg, boxName string
 	writes          int
+	instances       map[string]bool
 }
 
 func (w *walker) at(n ast.Node) (string, int) {
@@ -233,6 +236,8 @@ func (w *walker) file(f *ast.File) {
 		switch n := n.(type) {
 		case *ast.StructType:
 			w.holder(n, parents, function)
+		case *ast.Ident:
+			w.instance(n, function)
 		case *ast.SelectorExpr:
 			w.storage(n, parents, function)
 		case *ast.KeyValueExpr:
@@ -271,6 +276,29 @@ func (w *walker) holder(n *ast.StructType, parents []ast.Node, function string) 
 		// print test in the same package can spell, so the name holds while lines move.
 		name = function + " " + types.TypeString(tv.Type, func(p *types.Package) string { return p.Name() })
 	}
+	w.c.Holders = append(w.c.Holders, finding{File: file, Line: line, Function: function, What: name, Kind: "holder"})
+}
+
+// instance lists an instance of a generic type whose type arguments make it hold the box, such as
+// listenerwire.APIErrorAs[redact.RemoteText]: the generic declaration's struct holds a type
+// parameter where the instance holds the box, so holder, which reads declarations, cannot see it.
+// It is listed once a package, by its full type (pkg/path.Name[pkg/path.Arg, ...]), which a print
+// test can spell however many functions name the instance.
+func (w *walker) instance(id *ast.Ident, function string) {
+	inst, ok := w.info.Instances[id]
+	if !ok {
+		return
+	}
+	named, ok := inst.Type.(*types.Named)
+	if !ok || !w.contains(named, map[types.Type]bool{}) {
+		return
+	}
+	name := types.TypeString(named, nil)
+	if w.instances[name] {
+		return
+	}
+	w.instances[name] = true
+	file, line := w.at(id)
 	w.c.Holders = append(w.c.Holders, finding{File: file, Line: line, Function: function, What: name, Kind: "holder"})
 }
 
