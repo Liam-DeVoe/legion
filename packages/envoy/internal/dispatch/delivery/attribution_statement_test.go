@@ -344,6 +344,29 @@ func TestTheStatementComputesKeysOfAnotherReading(t *testing.T) {
 	wantAnswer(t, ctx, pool, statementRepo, 91, "ACME-92 from branch")
 }
 
+// A reader by issue finds a pull request whose texts row is on another reading, before any remake
+// of its keys: while some texts row is on another reading, every such row is judged for every
+// issue (the last arm of byIssueJudged), since its stored keys say nothing. #91's branch names
+// ACME-91, and its stored keys, of the reading "old", name ACME-92. The readers by issue, of the
+// results and of the timeline, must give #91 to ACME-91 and not to ACME-92. Control in the same
+// test: on the reading that runs now the same stored keys are the answer, so the readers give #91
+// to ACME-92.
+func TestAReaderByIssueFindsARowOfAnotherReading(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	statementIssues(t, ctx, pool, "ACME-91", "ACME-92")
+	storeStatementRow(t, ctx, pool, statementRow{number: 91, branch: "legion/ACME-91", title: "no key", texts: readTexts(""), timeline: &statementTimeline{}})
+	mergeTimelineRow(t, ctx, pool, statementRepo, 91)
+	setStoredReading(t, ctx, pool, 91, "old", []string{"ACME-92"})
+	wantAnswer(t, ctx, pool, statementRepo, 91, "ACME-91 from branch")
+	wantListed(t, ctx, pool, "ACME-91", "#91")
+	wantReaders(t, ctx, pool, "ACME-91", headOf(91), `at head true, newest acme/stmt#91, base "main", window [acme/stmt#91], of issues [acme/stmt#91]`)
+	wantListed(t, ctx, pool, "ACME-92")
+	wantReaders(t, ctx, pool, "ACME-92", headOf(91), `at head false, newest none, base "", window [], of issues []`)
+	setStoredReading(t, ctx, pool, 91, currentReading(t, ctx, pool, readingSchema(t, ctx, pool)), []string{"ACME-92"})
+	wantListed(t, ctx, pool, "ACME-92", "#91")
+	wantReaders(t, ctx, pool, "ACME-92", headOf(91), `at head true, newest acme/stmt#91, base "main", window [acme/stmt#91], of issues [acme/stmt#91]`)
+}
+
 // Texts of another head than the results row's are no facts: the pull request answers its
 // fallback, the results row's stored issue.
 func TestTextsOfAnotherHeadAreNoFacts(t *testing.T) {
