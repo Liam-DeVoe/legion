@@ -2120,7 +2120,7 @@ TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
     "        run: go test -count=1 -run '^(TestData|TestGuard)\$' ./lib"
-  replace "$1/.github/workflows/ci.yaml" "              - 'mod/cmd/app/*'" "              - 'mod/**'"
+  replace "$1/.github/ci-filters.yaml" "  - 'mod/cmd/app/*'" "  - 'mod/**'"
 }
 
 echo "case: a step whose -run one list builds passes while it runs exactly that list"
@@ -2204,8 +2204,8 @@ GATES.append(gate("app_step", "app", step="Test the app", exact=GATES[0].exact,
 PY
   replace "$1/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
     $'      image: ${{ steps.filter.outputs.image }}\n      app_step: ${{ steps.filter.outputs.app_step }}'
-  replace "$1/.github/workflows/ci.yaml" "            image:" \
-    $'            app_step:\n              - \'.github/workflows/ci.yaml\'\n              - *workspace\n              - \'mod/lib/*\'\n              - \'fixtures/**\'\n            image:'
+  replace "$1/.github/ci-filters.yaml" $'\nimage:' \
+    $'\napp_step:\n  - \'.github/workflows/ci.yaml\'\n  - *workspace\n  - \'mod/lib/*\'\n  - \'fixtures/**\'\nimage:'
   replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
     $'      - name: Test the app\n        if: needs.changes.outputs.app_step == \'true\''
 }
