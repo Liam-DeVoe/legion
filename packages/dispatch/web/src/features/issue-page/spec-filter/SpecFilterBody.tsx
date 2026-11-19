@@ -13,7 +13,6 @@ import {
 } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { api } from "../../../api/client";
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { Actor, IssueDetails } from "../../../api/types";
@@ -73,6 +72,7 @@ import { specSummary } from "../spec-summary";
 import { TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
+import { issueAsksQuery } from "../useIssueTree";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import {
   type SpecDecision,
@@ -594,14 +594,6 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
  *  failed. A read of a document the issue does not name is never asked, so it has not failed. */
 function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
   return read.isError && read.data === undefined;
-}
-
-/** The issue's asks, under the key and with the request the page's tree reads them by, so an
- *  observer of it watches the tree's own read. A copy of the read `useIssueTree.ts` writes
- *  inline, as `slots/body.tsx` and `outline-writer.tsx` do: this module imports it in its place
- *  once `api/queries.ts` exports the asks query. */
-function issueAsksQuery(key: string) {
-  return { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key] };
 }
 
 /**

@@ -8,7 +8,6 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
-import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type {
   Actor,
@@ -55,6 +54,7 @@ import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-n
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot, ViewStage } from "../slots/stage";
 import { decisionBehind } from "../tree-keys";
+import { issueAsksQuery, treeDocumentIds } from "../useIssueTree";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -119,21 +119,6 @@ function locationOf(view: RenderResult): string {
   return view.container.querySelector("[data-location]")?.getAttribute("data-location") ?? "";
 }
 
-/** The documents whose blocks the page's tree is built from, as `useIssueTree.ts` finds them:
- *  the spec, and the plan, Verification and decisions documents the issue read names. A copy of
- *  that module's private `treeDocumentIds`, imported in its place once that module exports it. */
-function treeDocuments(issue: IssueDetails): string[] {
-  const documents = [
-    primarySpec(issue),
-    roleDocument(issue, "plan"),
-    roleDocument(issue, "verification"),
-    roleDocument(issue, "decisions"),
-  ];
-  return [
-    ...new Set(documents.flatMap((document) => (document === undefined ? [] : [document.id]))),
-  ];
-}
-
 /** The reads the page's tree fills (`useIssueTree.ts`), each by an observer that fetches as the
  *  tree's own do, under the same keys and with the same requests: the body only watches them,
  *  so this stands in for the tree above it, which no view takes off the page. */
@@ -141,8 +126,8 @@ function TreeReads({ issue }: { issue: IssueDetails }): ReactNode {
   useQuery(issueCoverageQuery(issue.key));
   useQuery(issueDecisionsQuery(issue.key, true));
   useQuery(issueResultsQuery(issue.key));
-  useQuery({ queryFn: () => api.listIssueAsks(issue.key, "all"), queryKey: ["asks", issue.key] });
-  useQueries({ queries: treeDocuments(issue).map((id) => artifactBlocksQuery(id)) });
+  useQuery(issueAsksQuery(issue.key));
+  useQueries({ queries: treeDocumentIds(issue).map((id) => artifactBlocksQuery(id)) });
   return null;
 }
 
@@ -297,7 +282,7 @@ function drawBody(
         : id === issue.decisions_artifact_id
           ? decisionBlocks
           : undefined) ?? blocks;
-  for (const id of treeDocuments(issue)) {
+  for (const id of treeDocumentIds(issue)) {
     if (blocksOf(id) === "answered") client.setQueryData(artifactBlocksQuery(id).queryKey, []);
   }
   spies.blocks.mockImplementation((id) => answerAs(blocksOf(id), []));
