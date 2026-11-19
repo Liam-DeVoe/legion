@@ -104,15 +104,18 @@ type ciRun struct {
 // or failed, the result derived from that run, merged into the results the read loaded for it,
 // newest first (newestResultsFirst). The heads are the head of each open pull request of the issue
 // (ciHeadsOf), each read in the repository of its own row, or where none is open the newest merged
-// one. It answers each check's read at each head, by block id and then by the head's commit, which
-// the comparison gives each subject (comparison.ci). A head whose read did not end within the one
-// ciReadDeadline of the whole read is unread there alone (readCIHeads). A result the read loaded
-// for such a check that no run of the job its ci_check names recorded, a role's or another job's,
-// counts for nothing and says why (notCountedOnCICheck). An issue holding no check CI proves asks
-// nothing of the database or of GitHub. issueKey is the route's issue, whose Verification
-// document holds the checks and whose pull request heads they are read at. Only a failed read of
-// Dispatch's own database is an error; whatever GitHub answers is a case of the answer.
-func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) (map[string]map[string]*model.CheckCI, error) {
+// one. It answers each check's read at each head, by block id and then by the head's repository
+// and commit (ciHeadKey), which the comparison gives each subject (comparison.ci): two
+// repositories at one commit each read their own runs there, and each derives a result of its
+// own, so a fail in one is never hidden by a pass in the other (R8). A head whose read did not end
+// within the one ciReadDeadline of the whole read is unread there alone (readCIHeads). A result
+// the read loaded for such a check that no run of the job its ci_check names recorded, a role's or
+// another job's, counts for nothing and says why (notCountedOnCICheck). An issue holding no check
+// CI proves asks nothing of the database or of GitHub. issueKey is the route's issue, whose
+// Verification document holds the checks and whose pull request heads they are read at. Only a
+// failed read of Dispatch's own database is an error; whatever GitHub answers is a case of the
+// answer.
+func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) (map[string]map[ciHeadKey]*model.CheckCI, error) {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
@@ -132,35 +135,46 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	}
 	if len(heads) == 0 {
 		for _, p := range proved {
-			p.check.CI = ciUnconcluded(*p.check, p.name, model.CIStateNoResult, ciCaseNoHead,
+			p.check.CI = ciUnconcluded(*p.check, p.name, nil, model.CIStateNoResult, ciCaseNoHead,
 				fmt.Sprintf("Dispatch holds no open or merged pull request head of %s.", issueKey))
 		}
 		return nil, nil
 	}
 	reads := s.readCIHeads(ctx, heads, names)
-	answers := make(map[string]map[string]*model.CheckCI, len(proved))
+	answers := make(map[string]map[ciHeadKey]*model.CheckCI, len(proved))
 	for _, p := range proved {
-		atHead := make(map[string]*model.CheckCI, len(heads))
+		atHead := make(map[ciHeadKey]*model.CheckCI, len(heads))
 		for index, head := range heads {
-			if _, read := atHead[head.HeadSHA]; read {
-				continue
-			}
 			if reads[index].err != nil {
-				atHead[head.HeadSHA] = ciUnconcluded(*p.check, p.name, model.CIStateUnread, ciCaseUnreadable,
+				atHead[ciHeadKeyOf(head)] = ciUnconcluded(*p.check, p.name, &head, model.CIStateUnread, ciCaseUnreadable,
 					ciUnreadDetail(head, reads[index].err))
 				continue
 			}
 			answer, result := ciAnswerOf(*p.check, p.name, head, reads[index].runs[p.name])
-			atHead[head.HeadSHA] = answer
+			atHead[ciHeadKeyOf(head)] = answer
 			if result != nil {
 				p.check.Results = append(p.check.Results, *result)
 			}
 		}
 		p.check.Results = newestResultsFirst(p.check.Results)
-		p.check.CI = atHead[heads[0].HeadSHA]
+		p.check.CI = atHead[ciHeadKeyOf(heads[0])]
 		answers[p.check.BlockID] = atHead
 	}
 	return answers, nil
+}
+
+// ciHeadKey is one head a check CI proves is read at: the repository of its pull request, where
+// its check runs are read, and its commit. Two repositories may hold one commit, each with runs of
+// its own there, so every step of the read keys a head by both (deriveCIResults, ciHeadsOf,
+// eachSubjectStands), never by the commit alone.
+type ciHeadKey struct {
+	repo   string
+	commit string
+}
+
+// ciHeadKeyOf is the key of head.
+func ciHeadKeyOf(head delivery.NewestHead) ciHeadKey {
+	return ciHeadKey{repo: head.Repo, commit: head.HeadSHA}
 }
 
 // ciHeadsOf is the heads a check CI proves is read at: the head of each open pull request of
@@ -415,31 +429,26 @@ func ciRunOf(id int64, name string, object map[string]any) *ciRun {
 }
 
 // ciAnswerOf decides one check CI proves from run, the run named name at head, nil where head
-// carries none: the `ci` member, and the derived result for a pass or a fail, nil for every other
-// case.
+// carries none: the `ci` member, which names head and, for a pass or a fail, the id of the result
+// derived from run, and that derived result, nil for every other case.
 func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, run *ciRun) (*model.CheckCI, *model.CheckResult) {
 	at := fmt.Sprintf("%s, the head of %s#%d", head.HeadSHA, head.Repo, head.Number)
 	switch {
 	case run == nil:
-		return ciUnconcluded(check, name, model.CIStateNoResult, ciCaseAbsent,
+		return ciUnconcluded(check, name, &head, model.CIStateNoResult, ciCaseAbsent,
 			fmt.Sprintf("No CI run named %s is on %s.", name, at)), nil
 	case run.status != ciRunCompleted:
-		return ciUnconcluded(check, name, model.CIStateNoResult, ciCaseNotCompleted,
+		return ciUnconcluded(check, name, &head, model.CIStateNoResult, ciCaseNotCompleted,
 			fmt.Sprintf("CI run %s is %s at %s, and has not concluded.", run.name, run.status, at)), nil
 	}
 	switch run.conclusion {
 	case ciConclusionNeutral, ciConclusionSkipped, ciConclusionCancelled:
-		return ciUnconcluded(check, name, model.CIStateNoResult, run.conclusion,
+		return ciUnconcluded(check, name, &head, model.CIStateNoResult, run.conclusion,
 			fmt.Sprintf("CI run %s concluded %s at %s, which proves nothing.", run.name, run.conclusion, at)), nil
 	}
 	verdict := model.CIStateFail
 	if run.conclusion == ciConclusionSuccess {
 		verdict = model.CIStatePass
-	}
-	answer := &model.CheckCI{
-		Run: run.name, State: verdict, Case: run.conclusion,
-		Detail: fmt.Sprintf("CI run %s concluded %s at %s.", run.name, run.conclusion, at),
-		Line:   ciVerdictLine(check, name, verdict, head.HeadSHA),
 	}
 	result := model.CheckResult{
 		ID:       ciResultIDPrefix + strconv.FormatInt(run.id, 10),
@@ -451,16 +460,26 @@ func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, r
 		Screenshots: []string{}, Actor: model.Actor{Kind: ciResultActorKind, ID: run.appSlug},
 		CreatedAt: run.completedAt,
 	}
+	answer := &model.CheckCI{
+		Run: run.name, State: verdict, Case: run.conclusion,
+		Detail: fmt.Sprintf("CI run %s concluded %s at %s.", run.name, run.conclusion, at),
+		Line:   ciVerdictLine(check, name, verdict, head.HeadSHA),
+		Commit: head.HeadSHA, Repo: head.Repo, Result: result.ID,
+	}
 	return answer, &result
 }
 
 // ciUnconcluded is the `ci` member of a check its run, the one named name, did not decide, for
-// the case given.
-func ciUnconcluded(check model.CheckBlock, name, state, ciCase, detail string) *model.CheckCI {
-	return &model.CheckCI{
+// the case given, at head, nil where Dispatch holds no head to read at.
+func ciUnconcluded(check model.CheckBlock, name string, head *delivery.NewestHead, state, ciCase, detail string) *model.CheckCI {
+	ci := &model.CheckCI{
 		Run: name, State: state, Case: ciCase, Detail: detail,
 		Line: fmt.Sprintf("- Check %s (%s): CI run %s has no result (%s)", check.BlockID, check.When, name, ciCase),
 	}
+	if head != nil {
+		ci.Commit, ci.Repo = head.HeadSHA, head.Repo
+	}
+	return ci
 }
 
 // ciVerdictLine is the pull-request body line of a derived result: the recorded line's grammar,

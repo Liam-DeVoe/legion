@@ -140,8 +140,8 @@ func newestResultStands(check model.CheckBlock) model.CheckPassStands {
 // read_failed is the subject's alone.
 func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted map[string]bool) model.CheckPassStands {
 	stands := model.CheckPassStands{Answer: model.PassStandsYes, Subjects: make([]model.PassStandsSubject, 0, len(compared.subjects))}
-	for _, basis := range compared.subjects {
-		subject := subjectState(check, basis, conflicted, compared.ci[basis.Commit])
+	for _, head := range compared.subjects {
+		subject := subjectState(check, head.basis, conflicted, compared.ci[ciHeadKey{repo: head.repo, commit: head.basis.Commit}])
 		stands.Subjects = append(stands.Subjects, subject)
 		switch {
 		case subject.Answer == model.PassStandsNo:
@@ -185,10 +185,13 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 // (R4, passAndFailCommits), with the newest pass and the newest fail there as its results. It
 // walks every result that counts at the commit, newest first, so a yes names each role whose pass
 // counts there and the newest pass of each, and a no for a fail names the newest fail
-// (model.PassStandsSubject). ci is the read of a check CI proves at the subject's head
-// (deriveCIResults), nil for every other check and for a head it was not read at: the subject
-// carries it, and where GitHub could not be read there, the subject's state is unknown
-// (model.PassSubjectReasonReadFailed), since the run it would have read may decide either way.
+// (model.PassStandsSubject). ci is the read of a check CI proves at the subject's head, in the
+// repository of that head (deriveCIResults), nil for every other check and for a head it was not
+// read at: the subject carries it, and where GitHub could not be read there, the subject's state is
+// unknown (model.PassSubjectReasonReadFailed), since the run it would have read may decide either
+// way. The results that count at the commit count whatever repository derived them: a commit
+// holds one answer (R4), so a pass of one repository and a fail of another at one commit make it
+// not known.
 func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map[string]bool, ci *model.CheckCI) model.PassStandsSubject {
 	state := model.PassStandsSubject{Basis: basis, Answer: model.PassStandsNo, Reason: model.PassSubjectReasonNoResult, CI: ci}
 	if conflicted[basis.Commit] {

@@ -276,18 +276,19 @@ func TestTheReasonOfAnUnknownCheckNamesAPassAndAFailAtAnyOfItsHeads(t *testing.T
 	}
 	check := model.CheckBlock{BlockID: "c1", When: docs.CheckWhenBeforeMerge,
 		Results: []model.CheckResult{at("fail", "fail", 2), at("pass", "pass", 1)}}
+	const repo = "acme/widgets"
 	seventy, seventyOne := 70, 71
-	unreadHead := model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: unread, PullRequest: &seventy}
-	bothHead := model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: both, PullRequest: &seventyOne}
-	ci := map[string]*model.CheckCI{unread: {Run: "go-checks", State: model.CIStateUnread}}
-	for _, order := range [][]model.CheckBasis{{unreadHead, bothHead}, {bothHead, unreadHead}} {
-		stands := passStandsOf(check, comparison{bases: order, subjects: order, ci: ci})
-		if len(stands.Subjects) != 2 || stands.Subjects[0].Basis.Commit != order[0].Commit {
-			t.Fatalf("with the head at %s first, the subjects are %+v, want that head first of two", order[0].Commit, stands.Subjects)
+	unreadHead := headSubject{basis: model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: unread, PullRequest: &seventy}, repo: repo}
+	bothHead := headSubject{basis: model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: both, PullRequest: &seventyOne}, repo: repo}
+	ci := map[ciHeadKey]*model.CheckCI{{repo: repo, commit: unread}: {Run: "go-checks", State: model.CIStateUnread}}
+	for _, order := range [][]headSubject{{unreadHead, bothHead}, {bothHead, unreadHead}} {
+		stands := passStandsOf(check, comparison{bases: []model.CheckBasis{order[0].basis, order[1].basis}, subjects: order, ci: ci})
+		if len(stands.Subjects) != 2 || stands.Subjects[0].Basis.Commit != order[0].basis.Commit || stands.Subjects[0].Reason == stands.Subjects[1].Reason {
+			t.Fatalf("with the head at %s first, the subjects are %+v, want that head first of two, one read_failed and one pass_and_fail", order[0].basis.Commit, stands.Subjects)
 		}
 		if stands.Answer != model.PassStandsUnknown || stands.Reason != model.PassStandsReasonPassAndFail {
 			t.Fatalf("with the head at %s first, c1 reads %q (reason %q), want unknown for pass_and_fail: the head at %s holds a pass and a fail",
-				order[0].Commit, stands.Answer, stands.Reason, both)
+				order[0].basis.Commit, stands.Answer, stands.Reason, both)
 		}
 	}
 }

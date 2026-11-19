@@ -36,7 +36,7 @@ func ciEvidenceAt(recorded, conclusion string) (model.CheckBlock, comparison) {
 		result.CommitStands = &model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: &basis}
 	}
 	check.CI, check.Results = ci, []model.CheckResult{job, *derived}
-	return check, comparison{bases: []model.CheckBasis{basis}, subjects: []model.CheckBasis{basis}}
+	return check, comparison{bases: []model.CheckBasis{basis}, subjects: []headSubject{{basis: basis, repo: "example/repo"}}}
 }
 
 // TestEveryCIResultAtOneCommitJoinsTheConflictTest: R7, on the gate's own rule (passStandsOf). The

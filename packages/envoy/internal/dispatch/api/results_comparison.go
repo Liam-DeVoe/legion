@@ -112,8 +112,9 @@ type comparisonReader struct {
 	// (delivery.BranchOfIssue), and whether that read answered (branchOfIssue).
 	branchIssues map[[2]string][2]bool
 	// headCI is the read of each check CI proves at each head it was read at, by the check's block
-	// id and then by the head's commit (deriveCIResults), which answer gives each subject of it.
-	headCI map[string]map[string]*model.CheckCI
+	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
+	// subject of it.
+	headCI map[string]map[ciHeadKey]*model.CheckCI
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -133,13 +134,25 @@ const noCommitNamed = ""
 // the newest, is a basis and no subject.
 //
 // ci is set on one check's copy alone (answer), for a check CI proves: its read at each head, by
-// the head's commit, which each subject at that commit carries (subjectState).
+// the head's repository and commit, which the subject of that repository at that commit carries
+// (subjectState).
 type comparison struct {
 	bases    []model.CheckBasis
 	reason   string
 	unread   string
-	subjects []model.CheckBasis
-	ci       map[string]*model.CheckCI
+	subjects []headSubject
+	ci       map[ciHeadKey]*model.CheckCI
+}
+
+// headSubject is one subject of a check compared with heads (comparison.subjects): its basis, as
+// the answer names it, and repo, the repository it is a head of, the pull request row's own or,
+// for the head of a branch a CI job pushed, the issue's. The basis names a repository only where
+// it is another than the issue's (headBasis), so the read of a check CI proves at the subject is
+// keyed by repo and the commit (ciHeadKey): two repositories at one commit are two subjects, each
+// carrying the read of its own repository.
+type headSubject struct {
+	basis model.CheckBasis
+	repo  string
 }
 
 // noBases is a check comparing with nothing, for the one reason given: the empty list is the

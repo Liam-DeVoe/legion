@@ -65,7 +65,7 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 	bases, subjects := pullRequestBases(heads, issueRepo, open)
 	unread := ""
 	if !open {
-		bases, subjects, unread = c.branchHeadBases(ctx, issueKey, bases, subjects)
+		bases, subjects, unread = c.branchHeadBases(ctx, issueKey, heads, bases, subjects)
 	}
 	switch {
 	case len(bases) > 0:
@@ -77,39 +77,41 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 }
 
 // pullRequestBases is the basis of each of heads, the pull request heads of one issue in the order
-// delivery.HeadsAttributedTo lists them (headBasis), and among them the subjects: where open, some
-// pull request of heads is open, the head of each open one; otherwise the final head of the
-// merged one of the highest number, the first of them where two share it.
-func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open bool) ([]model.CheckBasis, []model.CheckBasis) {
+// delivery.HeadsAttributedTo lists them (headBasis), and among them the subjects, each with the
+// repository of its row: where open, some pull request of heads is open, the head of each open
+// one; otherwise the final head of the merged one of the highest number, the first of them where
+// two share it.
+func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open bool) ([]model.CheckBasis, []headSubject) {
 	bases := make([]model.CheckBasis, 0, len(heads))
-	var subjects []model.CheckBasis
+	var subjects []headSubject
 	newestMerged := -1
 	for index, head := range heads {
 		basis := headBasis(head, issueRepo)
 		bases = append(bases, basis)
 		switch {
 		case open && head.Open:
-			subjects = append(subjects, basis)
+			subjects = append(subjects, headSubject{basis: basis, repo: head.Repo})
 		case !open && (newestMerged < 0 || head.Number > heads[newestMerged].Number):
 			newestMerged = index
 		}
 	}
 	if newestMerged >= 0 {
-		subjects = append(subjects, bases[newestMerged])
+		subjects = append(subjects, headSubject{basis: bases[newestMerged], repo: heads[newestMerged].Repo})
 	}
 	return bases, subjects
 }
 
 // branchHeadBases is bases and subjects, the pull request heads of an issue none of whose pull
-// requests is open (pullRequestBases), with the head of each branch a CI job pushed for issueKey
-// and GitHub holds added (issueBranchHead), in name order, and the reason the first branch
-// Dispatch could not read was unread, "" where it read each. A branch head that a pull request head
-// already names is that head's basis, and is no second basis; each branch head is a subject, once
-// for its commit. An issue resolving to no repository has no branch to read, and a resolve that did
-// not answer leaves every branch unread for model.ReasonReadFailed.
+// requests is open (pullRequestBases of heads), with the head of each branch a CI job pushed for
+// issueKey and GitHub holds added (issueBranchHead), in name order, and the reason the first
+// branch Dispatch could not read was unread, "" where it read each. A branch head that a pull
+// request head already names is that head's basis, of that head's repository, and is no second
+// basis; any other is a head of the issue's repository. Each branch head is a subject, once for its
+// commit. An issue resolving to no repository has no branch to read, and a resolve that did not
+// answer leaves every branch unread for model.ReasonReadFailed.
 func (c *comparisonReader) branchHeadBases(
-	ctx context.Context, issueKey string, bases, subjects []model.CheckBasis,
-) ([]model.CheckBasis, []model.CheckBasis, string) {
+	ctx context.Context, issueKey string, heads []delivery.AttributedHead, bases []model.CheckBasis, subjects []headSubject,
+) ([]model.CheckBasis, []headSubject, string) {
 	branches := c.changeBranches[issueKey]
 	if len(branches) == 0 {
 		return bases, subjects, ""
@@ -134,13 +136,13 @@ func (c *comparisonReader) branchHeadBases(
 		if sha == "" {
 			continue
 		}
-		subject := model.CheckBasis{Kind: model.CheckBasisBranchHead, Branch: branch, Commit: sha}
-		if matched := basisAt(bases[:pullRequestHeads], sha); matched != nil {
-			subject = *matched
+		subject := headSubject{basis: model.CheckBasis{Kind: model.CheckBasisBranchHead, Branch: branch, Commit: sha}, repo: *repo}
+		if matched := slices.IndexFunc(bases[:pullRequestHeads], func(basis model.CheckBasis) bool { return basis.Commit == sha }); matched >= 0 {
+			subject = headSubject{basis: bases[matched], repo: heads[matched].Repo}
 		} else {
-			bases = append(bases, subject)
+			bases = append(bases, subject.basis)
 		}
-		if basisAt(subjects, sha) == nil {
+		if !slices.ContainsFunc(subjects, func(held headSubject) bool { return held.basis.Commit == sha }) {
 			subjects = append(subjects, subject)
 		}
 	}

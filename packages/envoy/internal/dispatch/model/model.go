@@ -1714,12 +1714,23 @@ const (
 // check. Dispatch reads it at the head of each open pull request of the issue, or, where none is
 // open, at the final head of the newest merged one. A check's own `ci` is the read of the open
 // pull request of the highest number; each subject of the check carries the read at its head.
+//
+// Commit and Repo name the head the read is of: its commit, and the repository of the pull
+// request whose head it is, where the check runs were read. Two repositories may hold one commit,
+// each with runs of its own there, so a reader tells the reads of one head apart by both. Neither
+// is set where Dispatch holds no head to read at (the case no_head). Result is the id of the result
+// the read derived from the run (CheckResult.ID, `ci-run:` and the check run's id), set where the
+// run passed or failed and only there: a reader picks the derived result of a head by this id,
+// never by the words of Line.
 type CheckCI struct {
 	Run    string `json:"run"`
 	State  string `json:"state" enum:"pass,fail,no_result,unread"`
 	Case   string `json:"case"`
 	Detail string `json:"detail"`
 	Line   string `json:"line"`
+	Commit string `json:"commit,omitempty"`
+	Repo   string `json:"repo,omitempty"`
+	Result string `json:"result,omitempty"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec
