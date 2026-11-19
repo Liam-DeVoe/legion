@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 )
 
@@ -86,10 +87,17 @@ const (
 // update), so a second send of config could write over a change that the code under test made
 // after the first send landed.
 //
+// An update that takes away a subject the stream holds and leaves no subject overlapping it is
+// refused before it is sent (refuseSubjectsTakenWithNothingInPlace), unless options holds
+// ForTheKeeperToPutBack.
+//
 // The server's own metadata, the keys under "_nats.", is not compared: the server sets those keys
 // itself.
-func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.StreamConfig) *natsgo.StreamInfo {
+func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.StreamConfig, options ...UpdateOption) *natsgo.StreamInfo {
 	t.Helper()
+	if !slices.Contains(options, ForTheKeeperToPutBack) {
+		refuseSubjectsTakenWithNothingInPlace(t, js, config)
+	}
 	type answer struct {
 		info *natsgo.StreamInfo
 		err  error
@@ -144,6 +152,49 @@ func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.Stream
 		}
 		time.Sleep(updateReadInterval)
 	}
+}
+
+// UpdateOption changes what UpdateStream lets a test's update do.
+type UpdateOption int
+
+// ForTheKeeperToPutBack lets a test's update take subjects away with nothing left in their place,
+// for a row of a keeper itself, whose keeper is to put them back
+// (TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject in internal/bus).
+const ForTheKeeperToPutBack UpdateOption = 1
+
+// refuseSubjectsTakenWithNothingInPlace fails t when config takes away a subject that the stream
+// holds and leaves no subject overlapping it (subjectsTakenWithNothingInPlace), before the update
+// is sent. A keeper of the code under test puts back each subject of its own build that no subject
+// the stream holds overlaps (bus's keptSubjects), at every pass, the first 30 s after its client's
+// start. So such a narrowing lasts only until then, and a test whose set-up outlasts it on a loaded
+// machine sends what the narrowing was to refuse into a stream that captures it again: the outbox's
+// own client's keeper had the session route of TestABackedOffEventHoldsBackOnlyItsDestination
+// published, not refused. A narrowing leaves KeptByEveryKeeper's subject in the place of what it
+// takes away. The stream is read once, under updateReadWait. When that read is not answered (a
+// stream that is electing its leader), or the stream does not exist (an update the server then
+// refuses itself), nothing is judged and the update goes as it is.
+func refuseSubjectsTakenWithNothingInPlace(t testing.TB, js natsgo.JetStreamContext, config natsgo.StreamConfig) {
+	t.Helper()
+	held, err := js.StreamInfo(config.Name, natsgo.MaxWait(updateReadWait))
+	if err != nil {
+		return
+	}
+	if taken := subjectsTakenWithNothingInPlace(held.Config.Subjects, config.Subjects); len(taken) > 0 {
+		t.Fatalf("the update of stream %s takes away %s and leaves no subject overlapping it, so a keeper puts it back at its next pass: leave testnats.KeptByEveryKeeper(<its prefix>) in its place, or, in a row whose keeper is to put it back, pass testnats.ForTheKeeperToPutBack",
+			config.Name, strings.Join(taken, ", "))
+	}
+}
+
+// subjectsTakenWithNothingInPlace is each subject of held that no subject of sent overlaps: a
+// subject that sent keeps, or one sent keeps in its place, overlaps it.
+func subjectsTakenWithNothingInPlace(held, sent []string) []string {
+	var taken []string
+	for _, subject := range held {
+		if !slices.ContainsFunc(sent, func(other string) bool { return natsserver.SubjectsCollide(subject, other) }) {
+			taken = append(taken, subject)
+		}
+	}
+	return taken
 }
 
 // settingsNotHeld names each setting of sent that held does not hold, as "<json name>: sent <its

@@ -353,7 +353,7 @@ func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testi
 	lowered.Subjects = append(slices.DeleteFunc(slices.Clone(info.Config.Subjects), func(subject string) bool { return subject == removed }), "operations.foreign.>")
 	lowered.MaxAge = info.Config.MaxAge + time.Hour
 	lowered.Discard = nats.DiscardOld
-	testnats.UpdateStream(t, js, lowered)
+	testnats.UpdateStream(t, js, lowered, testnats.ForTheKeeperToPutBack)
 
 	restored := awaitKept(t, js, Stream, "three copies, the byte limit and an id", keptAtSettings(""))
 	if want := append(slices.Clone(lowered.Subjects), removed); !slices.Equal(restored.Config.Subjects, want) {

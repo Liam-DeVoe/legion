@@ -205,3 +205,47 @@ func TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal(t *testing.T) {
 		t.Fatalf("an update of a stream that does not exist failed after %s with %q, want at once with the server's refusal", took.Round(time.Millisecond), recorder.message)
 	}
 }
+
+// An update that takes away a subject the stream holds, with no subject overlapping it left in its
+// place, is refused before it is sent, naming that subject, and the stream keeps it. The same
+// narrowing with KeptByEveryKeeper's subject in that place is sent, and so is the bare narrowing
+// marked ForTheKeeperToPutBack.
+func TestANarrowingThatLeavesNothingInPlaceOfASubjectIsRefusedBeforeItIsSent(t *testing.T) {
+	const stream = "NARROWED"
+	conn := Connect(t, URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := js.AddStream(&natsgo.StreamConfig{Name: stream, Subjects: []string{"narrowed.kept.>", "narrowed.taken.>"}})
+	if err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	bare := info.Config
+	bare.Subjects = []string{"narrowed.kept.>"}
+	recorder := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		UpdateStream(recorder, js, bare)
+	}()
+	<-done
+	if !strings.Contains(recorder.message, "stream "+stream+" takes away narrowed.taken.> and leaves no subject overlapping it") {
+		t.Fatalf("the bare narrowing failed with %q, want it refused naming narrowed.taken.>", recorder.message)
+	}
+	if held, err := js.StreamInfo(stream); err != nil || !slices.Equal(held.Config.Subjects, info.Config.Subjects) {
+		t.Fatalf("after the refused narrowing the stream reads %v (%v), want %v: it was sent", held, err, info.Config.Subjects)
+	}
+
+	kept := info.Config
+	kept.Subjects = []string{"narrowed.kept.>", KeptByEveryKeeper("narrowed.taken.")}
+	if got := UpdateStream(t, js, kept); !slices.Equal(got.Config.Subjects, kept.Subjects) {
+		t.Fatalf("the narrowing that keeps a subject in place left %v, want %v", got.Config.Subjects, kept.Subjects)
+	}
+	forTheKeeper := kept
+	forTheKeeper.Subjects = []string{"narrowed.kept.>"}
+	if got := UpdateStream(t, js, forTheKeeper, ForTheKeeperToPutBack); !slices.Equal(got.Config.Subjects, forTheKeeper.Subjects) {
+		t.Fatalf("the narrowing marked ForTheKeeperToPutBack left %v, want %v", got.Config.Subjects, forTheKeeper.Subjects)
+	}
+}

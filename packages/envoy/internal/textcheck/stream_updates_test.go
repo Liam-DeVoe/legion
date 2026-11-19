@@ -21,8 +21,12 @@ const (
 	streamUpdateFixture = "internal/testnats/streams.go"
 )
 
-// directStreamUpdate is one call of a method named UpdateStream that a test makes itself: path and
-// line of the call, and the top-level function that holds it.
+// streamUpdateMethods are the methods that send a stream update: the legacy JetStream context's
+// and the jetstream package's UpdateStream, and the jetstream package's CreateOrUpdateStream.
+var streamUpdateMethods = map[string]bool{"UpdateStream": true, "CreateOrUpdateStream": true}
+
+// directStreamUpdate is one call of a stream update method (streamUpdateMethods) that a test makes
+// itself: path and line of the call, and the top-level function that holds it.
 type directStreamUpdate struct {
 	path     string
 	line     int
@@ -36,12 +40,12 @@ func (u directStreamUpdate) String() string {
 }
 
 // directStreamUpdates walks the Go files under root (packages/envoy) and returns every call of a
-// method named UpdateStream, the legacy JetStream context's and the jetstream package's alike, in a
-// test file or in a test helper (a non-test file of a package whose name begins or ends with
-// "test", as testnats and cmdtest do). It lets two kinds of call pass. One is testnats.UpdateStream
-// itself, in streamUpdateFixture, and every call to it. The other is a call in a method named
-// UpdateStream: such a method is a fake JetStream context that a test hands the code under test,
-// and it stands in for the server under that code's own update.
+// stream update method (streamUpdateMethods), the legacy JetStream context's and the jetstream
+// package's alike, in a test file or in a test helper (a non-test file of a package whose name
+// begins or ends with "test", as testnats and cmdtest do). It lets two kinds of call pass. One is
+// testnats.UpdateStream itself, in streamUpdateFixture, and every call to it. The other is a call
+// in a method named UpdateStream: such a method is a fake JetStream context that a test hands the
+// code under test, and it stands in for the server under that code's own update.
 func directStreamUpdates(root string) ([]directStreamUpdate, error) {
 	fileSet := token.NewFileSet()
 	var found []directStreamUpdate
@@ -97,7 +101,7 @@ func directStreamUpdates(root string) ([]directStreamUpdate, error) {
 					return true
 				}
 				selector, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || selector.Sel.Name != "UpdateStream" {
+				if !ok || !streamUpdateMethods[selector.Sel.Name] {
 					return true
 				}
 				if pkg, ok := selector.X.(*ast.Ident); ok && fixtureNames[pkg.Name] {
@@ -180,6 +184,8 @@ func narrow(js nats.JetStreamContext, cfg *nats.StreamConfig) {
 
 func newAPI(js jetstream.JetStream, cfg jetstream.StreamConfig) { js.UpdateStream(context.Background(), cfg) }
 
+func createOrUpdate(js jetstream.JetStream, cfg jetstream.StreamConfig) { js.CreateOrUpdateStream(context.Background(), cfg) }
+
 func throughFixture(js nats.JetStreamContext, cfg nats.StreamConfig) { fixture.UpdateStream(js, cfg) }
 
 func readOnly(js nats.JetStreamContext) { js.StreamInfo("S") }
@@ -212,6 +218,7 @@ func TestTheStreamUpdateCheckFindsEveryShapeItNamesAndNothingElse(t *testing.T) 
 	}
 	slices.Sort(got)
 	want := []string{
+		"internal/demo/demo_test.go createOrUpdate",
 		"internal/demo/demo_test.go narrow",
 		"internal/demo/demo_test.go newAPI",
 		"internal/demo/demo_test.go operator",
