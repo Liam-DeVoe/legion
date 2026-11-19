@@ -260,9 +260,9 @@ jobs:
       # on the real Oh My Pi and staying in this step (TestThePromptReferenceProbeOnTheRealOhMyPi):
       # they run in .github/workflows/ci-job-plugin-pack.yaml, so that their reads — bun.lock and
       # skills/ among them — are that job's inputs and not this suite's. The daemon-live job's
-      # eight whole-daemon live tests, which DAEMON_LIVE_TESTS names: they run in
+      # nine whole-daemon live tests, which DAEMON_LIVE_TESTS names: they run in
       # .github/workflows/ci-job-daemon-live.yaml, so that the bun install and the `dispatch`
-      # CLI two of them run are that job's inputs, and none of them holds this step's package
+      # CLI three of them run are that job's inputs, and none of them holds this step's package
       # time for the minutes each takes. The agent-harness job's five live proofs that drive
       # real Oh My Pi panes, which AGENT_HARNESS_TESTS names, and its Claude Code backend proof on
       # tmux, which AGENT_HARNESS_TMUX_TESTS names: they run in
@@ -276,7 +276,7 @@ jobs:
       # the five lists and holds each step to it, so the skip and the runs cannot come to name
       # different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -v -count=1 -race -timeout 30m -skip '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestHandoffRecordsLive|TestLateCompletionsThroughTheRealLegionToolLive|TestReviewRangeLive|TestTheAgentModelCheckOnTheRealOhMyPi|TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: go test -v -count=1 -race -timeout 30m -skip '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub|TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestHandoffRecordsLive|TestLateCompletionsThroughTheRealLegionToolLive|TestReviewRangeLive|TestStepRecordsLive|TestTheAgentModelCheckOnTheRealOhMyPi|TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
