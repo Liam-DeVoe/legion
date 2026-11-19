@@ -44,14 +44,13 @@ type PullRequestRef struct {
 
 // batchAnswer is what readFactsBatch learned about one PullRequestRef.
 //
-// Facts is what GitHub answered about the pull request. Head is the head row that those facts
-// make, with its texts, under the canonical name: the row the caller writes
-// (upsertHeadUnderCanonicalName). It carries the place and the time of the query that answered it.
-// Absent says that GitHub answered the pull request null with NOT_FOUND on its own alias path,
-// and that its repository resolved. Stored says that the pull request was read and stored by the
-// refresh (RefreshPullRequestHead), so Head is nil and the caller writes nothing.
+// Head is the head row that GitHub's answer makes, with its texts, under the canonical name: the
+// row the caller writes (upsertHeadUnderCanonicalName). It carries the place and the time of the
+// query that answered it. Absent says that GitHub answered the pull request null with NOT_FOUND
+// on its own alias path, and that its repository resolved. Stored says that the pull request was
+// read and stored by the refresh (RefreshPullRequestHead), so Head is nil and the caller writes
+// nothing.
 type batchAnswer struct {
-	Facts          *FetchedFacts
 	Head           *PullRequestHead
 	Absent, Stored bool
 }
@@ -230,12 +229,12 @@ func (f *factsRead) query(ctx context.Context, refs []PullRequestRef) error {
 // stores it (RefreshPullRequestHead). It passes ref.StoredUnder, so the write drops the row under
 // an old name too.
 func (f *factsRead) refresh(ctx context.Context, ref PullRequestRef) error {
-	fetched, refused, err := RefreshPullRequestHead(ctx, f.pool, f.client, f.installations, ref.StoredUnder, ref.Number, f.now)
+	_, refused, err := RefreshPullRequestHead(ctx, f.pool, f.client, f.installations, ref.StoredUnder, ref.Number, f.now)
 	if err != nil {
 		return fmt.Errorf("read %s/%s#%d, whose facts are above the limit of one answer: %w", ref.Owner, ref.Repo, ref.Number, err)
 	}
 	if refused == nil {
-		f.answers[ref] = batchAnswer{Facts: fetched, Stored: true}
+		f.answers[ref] = batchAnswer{Stored: true}
 	}
 	return nil
 }
@@ -426,11 +425,7 @@ func (f *factsRead) answer(ctx context.Context, key factsKey, node factsNode, re
 	}
 	head := headRow(canonical, payload, &f.now, read)
 	head.Texts = texts
-	stored := freeTexts(*texts)
-	return batchAnswer{
-		Facts: &FetchedFacts{Canonical: canonical, Owner: key.owner, Repo: key.repo, Token: f.token, Payload: payload, Texts: &stored},
-		Head:  &head,
-	}, limited
+	return batchAnswer{Head: &head}, limited
 }
 
 // isJSONNull reports whether raw is JSON's null, or absent.

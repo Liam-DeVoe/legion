@@ -487,9 +487,9 @@ func wantBatchHead(repo string, number int, pull batchPull) string {
 }
 
 // One GraphQL query reads the facts of twenty pull requests of three repositories of one
-// installation (Decision E). Each answer holds the facts of its pull request and the head row
-// they make, keyed by the canonical name. A merged one holds its merge commit, and a fork's holds
-// its messages read and empty, as every writer stores them (storePullRequestFacts). Two
+// installation (Decision E). Each answer holds the head row that its pull request's facts make,
+// with its texts, keyed by the canonical name. A merged one holds its merge commit, and a fork's
+// holds its messages read and empty, as every writer stores them (storePullRequestFacts). Two
 // repositories hold a #7, and each answer is its own. The query is sent once, with the token the
 // caller gave, and reads no REST page.
 func TestOneQueryReadsTheFactsOfTwentyPullRequests(t *testing.T) {
@@ -541,8 +541,8 @@ func TestOneQueryReadsTheFactsOfTwentyPullRequests(t *testing.T) {
 			t.Errorf("the answer of %s#%d:\n got %s\nwant %s", repo, ref.Number, got, want)
 			continue
 		}
-		if answer.Stored || answer.Facts == nil || answer.Facts.Canonical != repo || answer.Facts.Token != token || answer.Facts.Payload.Number != ref.Number {
-			t.Errorf("the facts of %s#%d = %+v, stored %v; want the canonical name, the query's token and the number, not stored", repo, ref.Number, answer.Facts, answer.Stored)
+		if answer.Stored {
+			t.Errorf("the answer of %s#%d is stored by the refresh, want a head row to write", repo, ref.Number)
 		}
 		if head := answer.Head; head.GitHubReadOrder == nil || head.GitHubReadAt == nil || head.CheckedAt == nil || head.EventAt == nil || !head.EventAt.Equal(second) {
 			t.Errorf("the head row of %s#%d carries place %v, read at %v, checked at %v, event at %v; want the query's place and time, the read's time and GitHub's updated_at %s",
@@ -596,8 +596,8 @@ func TestAPullRequestStillTooLargeAloneIsReadByTheRefresh(t *testing.T) {
 		for _, ref := range refs {
 			answer := answers[ref]
 			switch {
-			case ref.Number == large && (!answer.Stored || answer.Facts == nil || answer.Facts.Payload.Number != large || answer.Head != nil):
-				t.Errorf("the answer of #%d = %+v, want the facts the refresh stored, with no head row to write", large, answer)
+			case ref.Number == large && (!answer.Stored || answer.Head != nil):
+				t.Errorf("the answer of #%d = %+v, want stored by the refresh, with no head row to write", large, answer)
 			case ref.Number != large && (answer.Stored || answer.Head == nil):
 				t.Errorf("the answer of #%d = %+v, want a head row to write", ref.Number, answer)
 			}
@@ -635,8 +635,8 @@ func TestAPullRequestStillTooLargeAloneIsReadByTheRefresh(t *testing.T) {
 
 		answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, canonical), []PullRequestRef{ref})
 
-		if answer := answers[ref]; !answer.Stored || answer.Facts == nil || answer.Facts.Canonical != canonical {
-			t.Errorf("the answer of %s#%d stored under %s = %+v, want the facts the refresh stored under %s", canonical, number, old, answer, canonical)
+		if answer := answers[ref]; !answer.Stored || answer.Head != nil {
+			t.Errorf("the answer of %s#%d stored under %s = %+v, want stored by the refresh under %s, with no head row to write", canonical, number, old, answer, canonical)
 		}
 		if got, under := github.restReadsOf(canonical, number), github.restReadsOf(old, number); got != 1 || under != 0 {
 			t.Errorf("GET pulls/%d was asked %d times under %s and %d times under %s, want once under the canonical name", number, got, canonical, under, old)
@@ -803,7 +803,7 @@ func TestAPullRequestOfMoreThanAHundredCommitsReadsTheRest(t *testing.T) {
 			answers := readBatchOrFail(t, ctx, pool, client, token, refs)
 
 			longAnswer, shortAnswer := answers[refs[0]], answers[refs[1]]
-			if longAnswer.Head == nil || shortAnswer.Head == nil || longAnswer.Facts == nil {
+			if longAnswer.Head == nil || shortAnswer.Head == nil {
 				t.Fatalf("the answers = %s and %s, want two head rows", describeBatchAnswer(longAnswer, true), describeBatchAnswer(shortAnswer, true))
 			}
 			texts := longAnswer.Head.Texts
@@ -811,8 +811,8 @@ func TestAPullRequestOfMoreThanAHundredCommitsReadsTheRest(t *testing.T) {
 			switch {
 			case failing:
 				wantPages = []int{2}
-				if texts.MessagesRead || texts.CommitMessages != nil || longAnswer.Facts.Texts.MessagesRead || longAnswer.Head.HeadSHA != pull.head {
-					t.Errorf("#%d after a failed read of the rest = %s, facts read %v; want its head with the messages not read", long, describeBatchAnswer(longAnswer, true), longAnswer.Facts.Texts.MessagesRead)
+				if texts.MessagesRead || texts.CommitMessages != nil || longAnswer.Head.HeadSHA != pull.head {
+					t.Errorf("#%d after a failed read of the rest = %s; want its head with the messages not read", long, describeBatchAnswer(longAnswer, true))
 				}
 			case !texts.MessagesRead || !slices.Equal(texts.CommitMessages, pull.messages):
 				t.Errorf("#%d holds %d messages, read %v; want the 250 of GitHub, in order", long, len(texts.CommitMessages), texts.MessagesRead)
@@ -852,14 +852,14 @@ func TestAnAbsentAliasIsAbsent(t *testing.T) {
 
 	answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, "acme/widgets"), refs)
 
-	if answer, found := answers[refs[0]]; !found || !answer.Absent || answer.Facts != nil || answer.Head != nil || answer.Stored {
+	if answer, found := answers[refs[0]]; !found || !answer.Absent || answer.Head != nil || answer.Stored {
 		t.Errorf("the answer of acme/widgets#7 = %s, want absent: GitHub answered its alias null with NOT_FOUND on its own path", describeBatchAnswer(answer, found))
 	}
 	if answer, found := answers[refs[1]]; answer.Head == nil || answer.Head.HeadSHA != fakeSHA("h", 8) {
 		t.Errorf("the answer of acme/widgets#8 = %s, want its head row", describeBatchAnswer(answer, found))
 	}
 	t.Run("control_a_null_repository", func(t *testing.T) {
-		if answer, found := answers[refs[2]]; answer.Absent || answer.Facts != nil || answer.Head != nil || answer.Stored {
+		if answer, found := answers[refs[2]]; answer.Absent || answer.Head != nil || answer.Stored {
 			t.Errorf("the answer of acme/gone#5 = %s, want no answer: its repository answered null", describeBatchAnswer(answer, found))
 		}
 	})
@@ -915,8 +915,8 @@ func TestAQueryOfFewerThanAHundredMessagesReadsEveryPageFromTheFirst(t *testing.
 // (RefreshPullRequestHead). GitHub can refuse that REST read with a 404. Then the ref is out of
 // the answers, as for a null alias: no answer, no error and no stored row. The other pull request
 // of the batch keeps its answer. The control in the same test: where the REST read answers, the
-// ref's answer is the stored facts. A read that gives a refused refresh an answer, or that ends
-// with an error, fails the first case (factsRead.refresh).
+// ref's answer says that the refresh stored it. A read that gives a refused refresh an answer, or
+// that ends with an error, fails the first case (factsRead.refresh).
 func TestARefusedRefreshLeavesAPullRequestTooLargeAloneOutOfTheAnswers(t *testing.T) {
 	second := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	for _, held := range []bool{false, true} {
@@ -938,8 +938,8 @@ func TestARefusedRefreshLeavesAPullRequestTooLargeAloneOutOfTheAnswers(t *testin
 
 			answer, found := answers[refs[0]]
 			switch {
-			case held && (!found || !answer.Stored || answer.Facts == nil || answer.Head != nil):
-				t.Errorf("the answer of #%d = %s, want the facts that the refresh stored", large, describeBatchAnswer(answer, found))
+			case held && (!found || !answer.Stored || answer.Head != nil):
+				t.Errorf("the answer of #%d = %s, want stored by the refresh, with no head row to write", large, describeBatchAnswer(answer, found))
 			case !held && found:
 				t.Errorf("the answer of #%d = %s, want no answer: GitHub refused the refresh with a 404", large, describeBatchAnswer(answer, found))
 			}
