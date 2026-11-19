@@ -288,6 +288,14 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		}, source: "github", fact: intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5", HeadSHA: "head-5"}, leaves: awaiting}},
 		"LingerExpired": {{name: "the linger's close stops a merge that can no longer land", arrange: parked, source: "timer",
 			fact: intake.LingerExpired{Issue: finishedRoot, Generation: lingerOfRoot}, lingerClosed: true}},
+		"ControllerTick": {
+			{name: "applied to the running tree", arrange: none, fact: intake.ControllerTick{}},
+			// A Dispatch child opened under a member in the middle of its phase holds it: the pass
+			// moves it to awaiting_children, which runs no step (dispatch://INFRA-3320 R9).
+			{name: "an open child stops a member in the middle of its phase", arrange: func(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.Handler) {
+				spMirror(t, pool, "LEGION-777", "todo", planning, 1)
+			}, source: "controller", fact: intake.ControllerTick{}, leaves: planning},
+		},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {
@@ -354,7 +362,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
-		intake.Handover{}, intake.CloseRoot{},
+		intake.Handover{}, intake.CloseRoot{}, intake.PendingBasisRead{}, intake.BasisChangesRead{}, intake.ReparentRead{},
 	} {
 		if name := factName(fact); name == kind {
 			return fact

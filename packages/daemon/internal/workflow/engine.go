@@ -2195,18 +2195,20 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
+	// The move names the end of the step the issue stood in, on the issue as it stood, before the
+	// phase write: the result and the return the record does not hold (nameMoveEnd). The start
+	// below ends that run before it begins its own (startStep), and a move that starts nothing
+	// leaves it to the fact's settle (SettleFact). A move the guard holds ends the step as the
+	// move would have, a tester's pass as passed and a fail as failed: the parent's wait in
+	// awaiting_children is what follows the step, not how it ended.
+	if err := e.nameMoveEnd(ctx, issue, trigger, row.To, handoff); err != nil {
+		return err
+	}
 	if len(open) > 0 {
 		return e.holdForChildren(ctx, tx, issue, trigger, row.To, handoff, pr, reason, open)
 	}
 	status := PhaseStatus(row.To)
 	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr, reason)); err != nil {
-		return err
-	}
-	// The move names the end of the step the issue stood in, on the issue as it stood, before the
-	// phase write: the result and the return the record does not hold (nameMoveEnd). The start
-	// below ends that run before it begins its own (startStep), and a move that starts nothing
-	// leaves it to the fact's settle (SettleFact).
-	if err := e.nameMoveEnd(ctx, issue, trigger, row.To, handoff); err != nil {
 		return err
 	}
 	from := issue.Phase

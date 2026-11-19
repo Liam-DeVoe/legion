@@ -68,6 +68,7 @@ func cwSeedWaiting(t *testing.T, pool *pgxpool.Pool, key string, start phase.Pha
 func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, reason string) {
 	t.Helper()
 	ctx, committed := intake.WithCommitHooks(t.Context())
+	ctx = engine.OpenFact(ctx)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil || issue == nil {
@@ -77,7 +78,10 @@ func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 		if err != nil {
 			return err
 		}
-		return engine.transition(ctx, tx, *issue, trigger, target, handoff, pr, reason)
+		if err := engine.transition(ctx, tx, *issue, trigger, target, handoff, pr, reason); err != nil {
+			return err
+		}
+		return engine.SettleFact(ctx, tx)
 	}); err != nil {
 		t.Fatalf("the %s transition of %s: %v", trigger, key, err)
 	}

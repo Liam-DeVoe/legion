@@ -32,14 +32,19 @@ const (
 // its forward-merge comment with.
 const spMergeLine = "`children merged: full test round`"
 
-// spPass runs one admission pass over the stored state in a transaction of its own, whose commit
-// runs the pass's commit hooks, as the pass every fact runs does.
+// spPass runs one admission pass over the stored state in a transaction of its own, which settles
+// the runs its moves end and whose commit runs the pass's commit hooks, as the pass every fact runs
+// does (intake.ApplyFact).
 func spPass(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
 	scoped, committed := intake.WithCommitHooks(context.Background())
+	scoped, settle := intake.OpenSettlers(scoped, admission)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if _, _, err := admission.promote(scoped, tx); err != nil {
 			t.Fatalf("the admission pass: %v", err)
+		}
+		if err := settle(scoped, tx); err != nil {
+			t.Fatalf("settle the admission pass: %v", err)
 		}
 	})
 	committed()
