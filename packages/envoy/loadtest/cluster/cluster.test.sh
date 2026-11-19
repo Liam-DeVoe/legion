@@ -3774,10 +3774,11 @@ pass "a runner pod that stops answering exec bounds the wait past its deadline, 
 # stop fails once its bound has run out, naming the daemon and keeping the pidfile, and down goes
 # on with its delete, then fails, naming the daemon. A daemon that ends on its TERM is stopped and
 # its pidfile removed. Each stand-in writes its own pidfile, as a daemon does, and its command line
-# is a daemon's, which is how daemon_alive knows one.
+# is a daemon's, which is how daemon_alive knows one. The run's root and the output go under the
+# fake directory, which reset_fake has just made.
 reset_fake
-export LOADTEST_CLUSTER_ROOT=$tmp/root-stuck
-stuck_out=$tmp/stuck.out
+export LOADTEST_CLUSTER_ROOT=$fake/root-stuck
+stuck_out=$fake/stuck.out
 (
   # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
   source "$cluster"
