@@ -563,7 +563,7 @@ jobs:
           # the record below is, and the reading at the end of this step takes them from there.
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" sample "$RUNNER_TEMP/dispatch-e2e-record" &
           sampler=$!
-          trap 'kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null || true' EXIT
+          trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
           # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.
@@ -980,7 +980,7 @@ jobs:
           # the record below is, and the reading at the end of this step takes them from there.
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" sample "$RUNNER_TEMP/dispatch-e2e-record" &
           sampler=$!
-          trap 'kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null || true' EXIT
+          trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
           # This image's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.

@@ -1639,6 +1639,8 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/dispatch-browser-samples.test.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
+              # The case on the browser steps' sampler lines cuts each step's trap and stop from it.
+              - '.github/workflows/dispatch-browser.yaml'
             race_memory_test: &race_memory_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'

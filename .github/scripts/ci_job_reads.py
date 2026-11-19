@@ -2261,6 +2261,8 @@ SCRIPT_TEST_GATES = [
     harness("dispatch_browser_samples_test", "Test the browser lane's memory and CPU sampler",
             f"{SCRIPTS}/dispatch-browser-samples.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-samples.sh", "the script under test"),
+        (".github/workflows/dispatch-browser.yaml",
+         "the case on the browser steps' sampler lines cuts each step's trap and stop from it"),
     ]),
     harness("race_memory_test", "Test the race memory sampler", f"{SCRIPTS}/race_memory.test.sh", [
         (f"{SCRIPTS}/race_memory.py", "the module under test"),
