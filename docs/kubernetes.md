@@ -2161,7 +2161,8 @@ The daemon writes each event as an outbox row in the transaction of the write it
 Its migration `20261118164019_state_events` adds the three state kinds to the outbox's kind check (`outbox_kind_check`), the tables `state_publication` and `state_admission_blocks`, three columns on `outbox`, and the commit trigger that gives each state row its sequence.
 That migration writes the whole list, `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so it writes the list last on any database.
 Dispatch's migration `20261118212431_legion_events` adds `kind` and `recorded_at` to `legion_reads`, each with a default, and `reason`, which is null on a row that names no reason.
-It also adds the index `legion_reads_project_recorded_at` and the table `legion_event_cursors`.
+It also adds the index `legion_reads_project_recorded_at` and the tables `legion_event_cursors` and `legion_event_parts`.
+It adds `legion_state_intake` to `server_processes`, with the default 0: a process of this release registers 1, and a process of an earlier release does not name the column, so its row reads 0.
 
 Roll out the three parts in this order:
 
@@ -2180,9 +2181,31 @@ Roll out the three parts in this order:
 
 3. **The Dispatch release.**
    Its intake creates the durable at its first take-over, delivering new messages only, then reads each configured project's daemon whole once, and then applies the events.
+   It takes that first read of a project only when no Dispatch process of an earlier release is in the fleet: no `server_processes` row at `legion_state_intake` 0 has a heartbeat in the last 10 minutes.
+   An earlier release still reads each daemon once a minute, and a row of that read could land after the first read and after the events applied on it.
+   So while a process of the earlier release runs, and for 10 minutes after its last heartbeat, the intake reads no daemon, and a message of a project with no first read writes nothing and is finished.
+   It logs `legion intake: a Dispatch process of an earlier build is in the fleet, so no starting point is taken` at INFO, at most once an hour for each project.
+   The first message, write of a Legion setting or take-over after that time makes the first read.
+   No timer makes it.
    A project whose daemon does not run the daemon release gets one read, recorded as a failed `legion_reads` row whose error names why (`the daemon serves no daemon.stateSeq, so it publishes no state events`), and its board's header shows that failure.
    The read still records that daemon's state, and nothing reads the project again until its daemon publishes an event, a Legion setting is written, or the durable is taken over again.
-   During the roll, a process of the earlier Dispatch release goes on reading each daemon once a minute beside the new intake, and its `legion_reads` rows take the new columns' defaults.
+   During the roll, a process of the earlier Dispatch release goes on reading each daemon once a minute, and its `legion_reads` rows take the new columns' defaults.
+
+After the roll, the intake reads a project's daemon whole again in these cases, and logs each read with its reason:
+
+- **A boot whose schema version moved** (reason `schema`): the boot event's `schemaVersion` is not the `daemon.schemaVersion` the last read found.
+  A migration can change what Dispatch observes and publish no event.
+
+- **A transaction split over messages that does not arrive whole** (reason `gap`): the intake holds each message with `more: true` in `legion_event_parts` and applies nothing of the transaction until its last message arrives.
+  A gap after the held parts, or a message of another run, makes the read, and the read deletes the parts.
+
+- **A message the database refuses for good** (reason `refused`): a Postgres error of SQLSTATE class 22 or 23, which no retry can write.
+  The intake logs `legion intake: the database refuses a state message for good, so it is finished and the project is read whole` at WARN with the project, the sequences and the SQLSTATE.
+  It finishes the message and reads the project whole.
+  It tries every other database error again in place.
+
+- **A message of another store** (reason `store`): the message's `stateId` is not the `daemon.stateId` of the last good read.
+  The intake applies nothing of it and reads at most once a minute, so a daemon whose store was replaced is found again.
 
 The readings of production on 2026-11-18 were these.
 Production Dispatch (commit `4055c4a5`) had no Legion setting, so step 2 covered no project there, and the take-over of step 3 reads no daemon.
@@ -2192,7 +2215,7 @@ The VM hub's `ENVOY_NOTIFICATIONS` stream has no byte limit, so the state lane's
 **Dispatch rolls back alone.**
 Its earlier release reads each daemon once a minute again, and its `legion_reads` rows take the new columns' defaults, so its migration needs no statement.
 The durable stays on the stream, and the hub keeps the grant.
-Once no process of this release is left, delete the event cursors, so that a later roll forward starts each project from a whole read:
+Once no process of this release is left, delete the event cursors, and with them the held parts of split transactions, so that a later roll forward starts each project from a whole read:
 
 ```sql
 delete from legion_event_cursors;

@@ -1580,12 +1580,20 @@ a handler waiting on GitHub holds no connection, so nothing else would keep the 
 
 **The Legion state intake** (`legion.Intake`, `internal/dispatch/legion/intake.go`) takes every Legion daemon's state events from the durable `legion-state-events` on `notifications.legion.*.state`, under a hold as the GitHub intake's is (`delivery.NewHeldDurable`), and runs whenever the process has NATS, with or without the GitHub App.
 A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot or wait, a role's claim, the admission block, or its boot.
-A transaction whose events pass 900 KB goes out as consecutive messages, split between events (`stateMessageBound`, `packages/daemon/internal/daemon/outbox.go`), and the intake applies each of them as a message of its own.
-Messages run under the project their payload names, one at a time per project, and each message applied writes the fields it moved, one `legion_reads` row of kind `events` and the project's cursor (`legion_event_cursors`) in one transaction, whose commit wakes the project's board (`legion.StateChannel`).
+Each message names the store its sequence is counted in (`stateId`, which the state route serves as `daemon.stateId`), and the intake applies no message of another store than the one its starting point read.
+A transaction whose events pass 900 KB goes out as consecutive messages, split between events (`stateMessageBound`, `packages/daemon/internal/daemon/outbox.go`), and each of them but the last carries `more: true`.
+The intake holds those parts in `legion_event_parts` and applies the events of all of them in one batch when the last part arrives, so no row holds a value of a transaction that did not arrive whole.
+Messages run under the project their payload names, one at a time per project, and each transaction applied writes the fields it moved, one `legion_reads` row of kind `events` and the project's cursor (`legion_event_cursors`) in one transaction, whose commit wakes the project's board (`legion.StateChannel`).
 It reads a daemon's `GET /legion/v1/state` whole, on the same project's runner, only where the events cannot carry the state: a project with no starting point, at each take-over and at each write of its Legion setting (`dispatch_legion_settings`, on the shared listener above);
-a boot event that does not follow the cursor or that applied a migration;
-a message past a gap the stream no longer holds;
+a boot event that does not follow the cursor, or whose `schemaVersion` is not the one the cursor holds;
+a message past a gap the stream no longer holds, or a message that does not continue the parts held for it;
+a message of another store, at most once a minute, so a daemon whose store was replaced is found again;
+a message the database refuses for good (a Postgres error of SQLSTATE class 22 or 23), which the intake logs at WARN and finishes, and does not try again;
 and a read owed since one failed, at most once a minute.
+A message whose first sequence is still past the next one after a good read it called for is no event of the daemon read, since the daemon commits each event before it publishes it.
+The intake drops such a message, and a message of another store, and logs the drop at INFO, at most once an hour for each project.
+The intake takes no starting point while a Dispatch process of an earlier build is in the fleet: a `server_processes` row at `legion_state_intake` 0 that heartbeated in the last 10 minutes (`processes.EarlierLegionIntake`), since that build still reads each daemon whole every minute.
+Meanwhile a message of a project with no starting point writes nothing and is finished, and the next message, settings write or take-over after that process has left takes the starting point.
 No timer reads a daemon, and each whole read logs `legion intake: whole read` at INFO with its reason.
 It stops with the two delivery intakes, under the same 15 s from the signal, before the shutdown closes the database pool.
 

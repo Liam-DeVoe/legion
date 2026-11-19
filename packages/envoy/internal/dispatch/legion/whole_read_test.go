@@ -72,15 +72,16 @@ func (d *fakeDaemon) served() int {
 	return d.reads
 }
 
-// stateOf is a one-issue state document of INFRA's daemon at state sequence 1: the issue in
-// phase, with planner or implementer holding the only claim. Its daemon block and the
-// dispatch_url of its settings are what make a whole read of it a good one (fetchWhole).
+// stateOf is a one-issue state document of INFRA's daemon at state sequence 1 of the rig's store
+// (rigStateID): the issue in phase, with planner or implementer holding the only claim. Its daemon
+// block and the dispatch_url of its settings are what make a whole read of it a good one
+// (fetchWhole).
 func stateOf(phase, role string) string {
-	return fmt.Sprintf(`{"daemon":{"project":"INFRA","stateSeq":1},
+	return fmt.Sprintf(`{"daemon":{"project":"INFRA","stateSeq":1,"stateId":%q},
 		"settings":{"dispatch_url":"http://dispatch.internal.example"},
 		"issues":{"INFRA-1":{"key":"INFRA-1","phase":%q,"status":"doing",
 		"slot":{"index":0,"admittedAt":"2026-11-03T10:00:00Z"},
-		"workers":{%q:{"claim":{"session":"s-1","state":"working"},"rounds":1}}}}}`, phase, role)
+		"workers":{%q:{"claim":{"session":"s-1","state":"working"},"rounds":1}}}}}`, rigStateID, phase, role)
 }
 
 // settingsObserved is the observation the settings of every stateOf document write, as
@@ -284,7 +285,7 @@ func TestANULInAStringDoesNotLoseTheRead(t *testing.T) {
 	database, setting := configured(t, daemon.URL)
 	readDaemon(t, database, setting)
 
-	daemon.serves(`{"daemon":{"project":"INFRA","stateSeq":2},
+	daemon.serves(`{"daemon":{"project":"INFRA","stateSeq":2,"stateId":"` + rigStateID + `"},
 		"settings":{"dispatch_url":"http://dispatch.internal.example"},
 		"issues":{"INFRA-1":{"key":"INFRA-1","phase":"awaiting_person",
 		"slot":{"index":0},
@@ -446,7 +447,7 @@ func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testin
 // for the admission block. It reads legion_current, which the trigger keeps equal to the newest
 // row of each field the history holds, `null` rows included.
 func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing.T) {
-	daemon := newFakeDaemon(t, `{"daemon":{"project":"INFRA","stateSeq":1},
+	daemon := newFakeDaemon(t, `{"daemon":{"project":"INFRA","stateSeq":1,"stateId":"`+rigStateID+`"},
 		"settings":{"dispatch_url":"http://dispatch.internal.example"},
 		"issues":{
 		"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1",
@@ -456,7 +457,7 @@ func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing
 	readDaemon(t, database, setting)
 	// The second read moves INFRA-1 on, drops its implementer's claim, no longer carries INFRA-2,
 	// and carries an admission block.
-	daemon.serves(`{"daemon":{"project":"INFRA","stateSeq":2},
+	daemon.serves(`{"daemon":{"project":"INFRA","stateSeq":2,"stateId":"` + rigStateID + `"},
 		"settings":{"dispatch_url":"http://dispatch.internal.example"},
 		"issues":{"INFRA-1":{"key":"INFRA-1","phase":"reviewing","tree":"INFRA-1"}},
 		"admission":{"cap":2}}`)

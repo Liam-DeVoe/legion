@@ -4,14 +4,21 @@ body: |-
   `notifications.legion.*.state` and writes its Legion observations from them, so a change is
   recorded when its message is applied, not at the next read. Dispatch no longer reads a daemon's
   state every minute. It reads a daemon's `GET /legion/v1/state` whole only for a project with no
-  starting point, a boot that does not follow or that applied a migration, a gap the stream no
-  longer holds, and a read owed since one failed, at most once a minute. It logs each whole read
-  with its reason. When Dispatch has NATS, a `PUT` of a project's Legion setting, of the same URL
-  too, makes one whole read. `legion_reads` records each message the intake applies as a row of
-  kind `events` at the daemon's commit time, and `legion_event_cursors` records how far the
-  observations of each project follow its daemon (migration `20261118212431_legion_events`). A
-  call to a daemon waits up to 60 s, not 20 s. Dispatch's NATS grant names the new durable, and on
-  a VM hub the changed grant replaces the hub's instance. The lease pool holds 24 connections, not
-  22, and a server process opens at most 115 connections to Postgres, not 113.
+  starting point, a boot that does not follow or whose schema version moved, a gap the stream no
+  longer holds, a message of another store than the starting point's, a message the database
+  refuses for good, and a read owed since one failed, at most once a minute. It logs each whole
+  read with its reason. It applies no message of another store. It applies a transaction that the
+  daemon split over several messages only when the last message arrives. It finishes a message
+  that the database refuses for good (SQLSTATE class 22 or 23) and does not try it again. It takes
+  no starting point while a Dispatch process of an earlier build is in the fleet. When Dispatch
+  has NATS, a `PUT` of a project's Legion setting, of the same URL too, makes one whole read.
+  `legion_reads` records each transaction the intake applies as a row of kind `events` at the
+  daemon's commit time. `legion_event_cursors` records how far the observations of each project
+  follow its daemon, `legion_event_parts` holds the parts of a split transaction, and
+  `server_processes.legion_state_intake` tells a process of this build from one of an earlier
+  build (migration `20261118212431_legion_events`). A call to a daemon waits up to 60 s, not 20 s.
+  Dispatch's NATS grant names the new durable, and on a VM hub the changed grant replaces the
+  hub's instance. The lease pool holds 24 connections, not 22, and a server process opens at most
+  115 connections to Postgres, not 113.
 custom:
   Issue: pr4432

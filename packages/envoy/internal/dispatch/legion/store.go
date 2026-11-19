@@ -170,8 +170,9 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 }
 
 // settingWritten is what every write of project's setting does in its own transaction: it deletes
-// the project's event cursor, so the intake has no starting point for it, and notifies
-// SettingsChannel, which reaches the intake at the write's commit (Intake.SettingsChanged).
+// the project's event cursor, and with it the parts of a split transaction held for it (their
+// foreign key), so the intake has no starting point for it, and notifies SettingsChannel, which
+// reaches the intake at the write's commit (Intake.SettingsChanged).
 func settingWritten(ctx context.Context, tx pgx.Tx, project string) error {
 	if _, err := tx.Exec(ctx, `
 		with forgotten as (delete from legion_event_cursors where project = $1)

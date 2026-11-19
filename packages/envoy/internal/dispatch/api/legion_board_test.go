@@ -476,11 +476,12 @@ func (d *fakeLegionDaemon) read(t *testing.T, database *store.Store, body string
 }
 
 // legionStateOf is a state document of project's daemon whose issues object holds issues, its
-// members. Its daemon block names the project and the state sequence it reflects, and its settings
-// carry a dispatch_url: a whole read of a state without either is a failed read, the board's
-// header names the failure, and the observations of one without the project are not recorded.
+// members. Its daemon block names the project, the state sequence it reflects and the store that
+// sequence is counted in, and its settings carry a dispatch_url: a whole read of a state without
+// one of these is a failed read, the board's header names the failure, and the observations of one
+// without the project are not recorded.
 func legionStateOf(project, issues string) string {
-	return fmt.Sprintf(`{"daemon":{"project":%q,"stateSeq":1},
+	return fmt.Sprintf(`{"daemon":{"project":%q,"stateSeq":1,"stateId":"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"},
 		"settings":{"dispatch_url":"http://dispatch.internal.example"},
 		"issues":{%s}}`, project, issues)
 }

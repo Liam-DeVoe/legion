@@ -176,6 +176,19 @@ func (r *intakeRig) awaitWholeReads(want int) {
 	}, func() string { return fmt.Sprintf("%d whole reads recorded, want %d", got, want) })
 }
 
+// The store ids of the rig's messages and states (the state route's daemon.stateId, which every
+// state message carries as stateId): rigStateID is the store of every state daemonState builds and
+// of the rig's own run, and otherStateID the store of any other run (publishOf), or of a message a
+// test names another store for (publishIn).
+const (
+	rigStateID   = "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+	otherStateID = "c2a94f17-5e3b-4d08-9b6a-7e1f0d8c5b32"
+)
+
+// stateSchema is the schema version of every state daemonState builds (daemon.schemaVersion), and
+// of a boot event whose store has not moved its schema since.
+const stateSchema = 20261118164019
+
 // publish publishes events as one message of project's state lane, at the wall clock's moment,
 // under the rig's run, and answers that moment.
 func (r *intakeRig) publish(project string, events ...map[string]any) time.Time {
@@ -185,17 +198,34 @@ func (r *intakeRig) publish(project string, events ...map[string]any) time.Time 
 	return at
 }
 
-// publishOf publishes events as the daemon's outbox publishes one committed transaction, through
-// the listener's publish route: an envelope on notifications.legion.<token>.state whose payload is
-// the state message (packages/contracts/fixtures/daemon-api/state-events.json holds such
-// envelopes).
+// publishOf publishes events as the daemon's outbox publishes one committed transaction, under run
+// and its store: the rig's own store for the rig's own run, which is the store of every state
+// daemonState builds, and another store for any other run.
 func (r *intakeRig) publishOf(project, run string, at time.Time, events ...map[string]any) {
 	r.t.Helper()
+	stateID := rigStateID
+	if run != r.run {
+		stateID = otherStateID
+	}
+	r.publishIn(project, run, stateID, at, false, events...)
+}
+
+// publishIn publishes events as the daemon's outbox publishes one message, through the listener's
+// publish route: an envelope on notifications.legion.<token>.state whose payload is the state
+// message (packages/contracts/fixtures/daemon-api/state-events.json holds such envelopes), under
+// run and the store stateID, and with `more: true` where more is set: a part of a transaction the
+// daemon split, with more of it to come.
+func (r *intakeRig) publishIn(project, run, stateID string, at time.Time, more bool, events ...map[string]any) {
+	r.t.Helper()
 	first, last := events[0]["seq"].(int), events[len(events)-1]["seq"].(int)
-	payload, err := json.Marshal(map[string]any{
-		"project": project, "run": run, "firstSeq": first, "seq": last,
+	message := map[string]any{
+		"project": project, "run": run, "stateId": stateID, "firstSeq": first, "seq": last,
 		"at": at.Format("2006-01-02T15:04:05.000000Z"), "events": events,
-	})
+	}
+	if more {
+		message["more"] = true
+	}
+	payload, err := json.Marshal(message)
 	if err != nil {
 		r.t.Fatalf("encode the state message: %v", err)
 	}
@@ -235,20 +265,21 @@ func admissionMoved(seq int, block map[string]any) map[string]any {
 }
 
 // booted is a boot event whose settings are INFRA's: the project, a dispatch_url and admissionCap
-// as admission_cap.
-func booted(seq int, migrated bool, admissionCap int) map[string]any {
-	return map[string]any{"seq": seq, "kind": "boot", "migrated": migrated, "settings": map[string]any{
+// as admission_cap, and whose store's schema version is schemaVersion.
+func booted(seq int, schemaVersion int64, admissionCap int) map[string]any {
+	return map[string]any{"seq": seq, "kind": "boot", "schemaVersion": schemaVersion, "settings": map[string]any{
 		"project": "INFRA", "dispatch_url": "http://dispatch.internal.example", "admission_cap": admissionCap,
 	}}
 }
 
-// daemonState is a state document of project's daemon whose daemon block serves stateSeq, whose
-// settings carry a dispatch_url, and whose issues are the members given.
+// daemonState is a state document of project's daemon whose daemon block serves stateSeq,
+// stateSchema and the rig's store (rigStateID), whose settings carry a dispatch_url, and whose
+// issues are the members given.
 func daemonState(project string, stateSeq int, issues string) string {
-	return fmt.Sprintf(`{"daemon":{"project":%[1]q,"schemaVersion":20261118164019,"stateSeq":%[2]d},
+	return fmt.Sprintf(`{"daemon":{"project":%[1]q,"schemaVersion":%[4]d,"stateSeq":%[2]d,"stateId":%[5]q},
 		"settings":{"project":%[1]q,"dispatch_url":"http://dispatch.internal.example","admission_cap":2},
 		"admission":{"cap":2,"active":["%[1]s-1"],"waiting":[],"trees":["%[1]s-1"],"blocked":[],"held":[]},
-		"issues":{%[3]s}}`, project, stateSeq, issues)
+		"issues":{%[3]s}}`, project, stateSeq, issues, stateSchema, rigStateID)
 }
 
 // planning is issue <project>-1 of a daemonState, planning in slot 0 under its own tree, its
@@ -691,10 +722,12 @@ func TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState(t *testing.T
 }
 
 // TestABootThatDoesNotFollowMakesOneWholeRead: a boot event whose sequence does not follow the
-// cursor, one at or below it under a run the cursor has not followed (a daemon whose counter went
-// back), and one that applied a migration each read the project whole once; a boot that follows
-// reads nothing, and neither does a boot replayed under the run the cursor followed last.
+// cursor, one at or below it under a run the cursor has not followed (a daemon of the same store
+// whose counter went back), and one whose schema version is not the starting point's each read the
+// project whole once; a boot that follows reads nothing, under the cursor's run or another, and
+// neither does a boot replayed under the run the cursor followed last.
 func TestABootThatDoesNotFollowMakesOneWholeRead(t *testing.T) {
+	const otherRun = "a7d1c0e2-6b8f-4c3a-9e51-0f2b8d4c6a19"
 	for _, tc := range []struct {
 		name string
 		// before is published and applied first; boot is the boot's message.
@@ -707,7 +740,7 @@ func TestABootThatDoesNotFollowMakesOneWholeRead(t *testing.T) {
 	}{
 		{
 			name:     "a boot past the next sequence",
-			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(13, false, 2)) },
+			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(13, stateSchema, 2)) },
 			stateSeq: 13, reason: ReadReasonBoot,
 		},
 		{
@@ -716,29 +749,41 @@ func TestABootThatDoesNotFollowMakesOneWholeRead(t *testing.T) {
 				rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
 			},
 			boot: func(rig *intakeRig) {
-				rig.publishOf("INFRA", "a7d1c0e2-6b8f-4c3a-9e51-0f2b8d4c6a19", time.Now().UTC().Truncate(time.Microsecond), booted(4, false, 2))
+				rig.publishIn("INFRA", otherRun, rigStateID, time.Now().UTC().Truncate(time.Microsecond), false, booted(4, stateSchema, 2))
 			},
 			stateSeq: 4, reason: ReadReasonBoot,
 		},
 		{
-			name:     "a boot that applied a migration",
-			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(11, true, 2)) },
-			stateSeq: 11, reason: ReadReasonMigrated,
+			name:     "a boot whose schema version is not the starting point's",
+			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(11, stateSchema+1, 2)) },
+			stateSeq: 11, reason: ReadReasonSchema,
 		},
 		{
 			name:     "a boot that follows",
-			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(11, false, 3)) },
+			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(11, stateSchema, 3)) },
 			stateSeq: 11,
+		},
+		{
+			// The cursor follows the rig's run, and the daemon boots again under another run
+			// of the same store: its boot is the next sequence.
+			name: "a boot that follows under another run than the cursor's",
+			before: func(rig *intakeRig) {
+				rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
+			},
+			boot: func(rig *intakeRig) {
+				rig.publishIn("INFRA", otherRun, rigStateID, time.Now().UTC().Truncate(time.Microsecond), false, booted(12, stateSchema, 3))
+			},
+			stateSeq: 12,
 		},
 		{
 			// The boot and a change after it are applied under the rig's run, and the stream
 			// delivers the boot again: at or below the cursor, under the cursor's own run.
 			name: "a boot replayed under the cursor's own run",
 			before: func(rig *intakeRig) {
-				rig.publish("INFRA", booted(11, false, 3))
+				rig.publish("INFRA", booted(11, stateSchema, 3))
 				rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "implementing")))
 			},
-			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(11, false, 3)) },
+			boot:     func(rig *intakeRig) { rig.publish("INFRA", booted(11, stateSchema, 3)) },
 			stateSeq: 12,
 		},
 	} {
@@ -928,6 +973,11 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 			failure: ErrNoDispatchURL.Error(), observed: true,
 		},
 		{
+			name:    "a state whose daemon block serves no stateId",
+			state:   strings.Replace(daemonState("INFRA", 4, issue), `,"stateId":"`+rigStateID+`"`, ``, 1),
+			failure: ErrNoStateID.Error(), observed: true,
+		},
+		{
 			name:    "a state of another project",
 			state:   strings.Replace(daemonState("INFRA", 4, issue), `"daemon":{"project":"INFRA"`, `"daemon":{"project":"LINUX"`, 1),
 			failure: ErrStateOfAnotherProject.Error(),
@@ -1065,8 +1115,14 @@ func TestAMessageForAProjectWithNoSettingIsDropped(t *testing.T) {
 		t.Errorf("drops logged %v, want %v", counts, want)
 	}
 	rig.intake.mu.Lock()
-	remembered := slices.Sorted(maps.Keys(rig.intake.dropped))
+	var remembered []string
+	for key := range rig.intake.reported {
+		if key.line == droppedLine {
+			remembered = append(remembered, key.project)
+		}
+	}
 	rig.intake.mu.Unlock()
+	slices.Sort(remembered)
 	if !slices.Equal(remembered, []string{"LINUX"}) {
 		t.Errorf("the intake remembers the drops of %v, want LINUX alone: GHOST's entry is older than dropLogEvery", remembered)
 	}
@@ -1473,4 +1529,389 @@ func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
 	if cursors != 0 {
 		t.Errorf("%s has a cursor, want none: the intake never touched it", reads)
 	}
+}
+
+// heldPartCount counts project's held parts of split transactions (legion_event_parts).
+func heldPartCount(t *testing.T, database *store.Store, project string) int {
+	t.Helper()
+	var count int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from legion_event_parts where project = $1`, project).Scan(&count); err != nil {
+		t.Fatalf("count the held parts of %s: %v", project, err)
+	}
+	return count
+}
+
+// wholeReadReasons is the reason of each whole read logged for project, in order, each a good one
+// unless the test fails.
+func (r *intakeRig) wholeReadReasons(project string) []string {
+	r.t.Helper()
+	var reasons []string
+	for _, line := range r.logRecords(wholeReadLine) {
+		if line["project"] != project {
+			continue
+		}
+		if line["ok"] != true {
+			r.t.Fatalf("a whole read of %s failed: %v", project, line)
+		}
+		reasons = append(reasons, fmt.Sprint(line["reason"]))
+	}
+	return reasons
+}
+
+// TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead: R1 applies only a message whose stateId
+// is the starting point's daemon.stateId. A message of another store (a daemon the setting no
+// longer names, or a sender that is no daemon) writes no observation and moves no cursor, though it
+// is at the cursor's next sequence. Past ReadRetryAfter after the last whole read, it makes one
+// whole read (ReadReasonStore), logged with its reason, which finds the store the daemon counts in
+// now. The daemon still serves the starting point's store, so the message is dropped, and the drop
+// is logged once, with both ids and the message's sequences. A second message of that store inside
+// ReadRetryAfter of the read makes no read, and the daemon's own next message is applied.
+func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	rows := observations(t, rig.database, "INFRA")
+
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	rig.publishIn("INFRA", rig.run, otherStateID, at, false, change(11, "INFRA-1", moved("phase", "merging")))
+	rig.publishIn("INFRA", rig.run, otherStateID, at, false, change(12, "INFRA-1", moved("phase", "merging")))
+	rig.settled()
+
+	if after := observations(t, rig.database, "INFRA"); !slices.Equal(after, rows) {
+		t.Errorf("observations = %v, want the starting read's %v alone: a message of another store writes nothing", after, rows)
+	}
+	if current := cursorOf(t, rig.database, "INFRA"); current.readOwed || current.lastSeq == nil || *current.lastSeq != 10 {
+		t.Errorf("the cursor is %+v, want it at the starting read's 10 with no read owed", current)
+	}
+	reads := readRecords(t, rig.database, "INFRA")
+	if len(reads) != 2 {
+		t.Fatalf("legion_reads = %v, want the starting read and the one read of the other store's first message", reads)
+	}
+	requireWholeRead(t, reads[1], ReadReasonStore, true)
+	if served := daemon.served(); served != 2 {
+		t.Errorf("the daemon served %d reads, want the starting one and one for the other store", served)
+	}
+	lines := rig.requireWholeReadLines("INFRA", ReadReasonStart, ReadReasonStore)
+	if lines[1]["stateSeq"] != float64(10) || lines[1]["stateId"] != rigStateID {
+		t.Errorf("the store's read logged %v, want stateSeq 10 and the daemon's store %s", lines[1], rigStateID)
+	}
+	drop := rig.awaitLogRecords(otherStoreLine, 1)[0]
+	if drop["project"] != "INFRA" || drop["stateId"] != otherStateID || drop["cursorStateId"] != rigStateID ||
+		drop["run"] != rig.run || drop["firstSeq"] != float64(11) || drop["seq"] != float64(11) {
+		t.Errorf("the drop's line = %v, want INFRA, both stores and the first message's run and sequences", drop)
+	}
+
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`}) {
+		t.Errorf("the phase's history is %v, want the starting read's planning, then the daemon's own message's implementing", got)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 11)
+	if served := daemon.served(); served != 2 {
+		t.Errorf("the daemon served %d reads, want no more: the second message of the other store came inside ReadRetryAfter", served)
+	}
+	if drops := rig.logRecords(otherStoreLine); len(drops) != 1 {
+		t.Errorf("logged %d drops of the other store %v, want one per dropLogEvery", len(drops), drops)
+	}
+}
+
+// TestAMessagePastTheSequenceOfTheReadItCalledForWritesNothing: R1 applies no message whose
+// sequence is beyond the daemon's own stateSeq, as a whole read finds it, plus what the stream has
+// delivered since. The starting read is at 10, and the stream delivers 11. A message at 13 is a
+// gap, so it makes one whole read (ReadReasonGap), logged with its reason and the sequence it
+// read. The daemon serves 11, and it commits each event before it publishes it, so the message is
+// no event of the daemon: it writes nothing and moves no cursor, and the drop is logged with its
+// run, its sequences and the read's stateSeq. The daemon's next event, 12, is applied.
+func TestAMessagePastTheSequenceOfTheReadItCalledForWritesNothing(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+
+	daemon.serves(daemonState("INFRA", 11, strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)))
+	rig.publish("INFRA", change(13, "INFRA-1", moved("phase", "merging")))
+	rig.settled()
+
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`}) {
+		t.Errorf("the phase's history is %v, want planning and implementing: the message past the read's sequence writes nothing", got)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 11)
+	reads := readRecords(t, rig.database, "INFRA")
+	if len(reads) != 3 {
+		t.Fatalf("legion_reads = %v, want the starting read, 11's batch and the gap's read", reads)
+	}
+	requireWholeRead(t, reads[2], ReadReasonGap, true)
+	lines := rig.requireWholeReadLines("INFRA", ReadReasonStart, ReadReasonGap)
+	if lines[1]["stateSeq"] != float64(11) {
+		t.Errorf("the gap's read logged stateSeq %v, want 11", lines[1]["stateSeq"])
+	}
+	drop := rig.awaitLogRecords(beyondLine, 1)[0]
+	if drop["project"] != "INFRA" || drop["run"] != rig.run || drop["firstSeq"] != float64(13) ||
+		drop["seq"] != float64(13) || drop["stateSeq"] != float64(11) {
+		t.Errorf("the drop's line = %v, want INFRA, the message's run and sequences 13, and the read's stateSeq 11", drop)
+	}
+
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "testing")))
+	rig.settled()
+	if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"testing"` {
+		t.Errorf("the phase is %s, want the daemon's next event's testing", phase)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 12)
+	if served := daemon.served(); served != 2 {
+		t.Errorf("the daemon served %d reads, want the starting one and the gap's", served)
+	}
+}
+
+// TestNoStartingPointIsTakenWhileAnEarlierBuildIsInTheFleet: R3 takes a project's first starting
+// point only once no Dispatch process of an earlier build is in the fleet, since such a build's
+// sampler reads every daemon whole each minute and its rows could land after the starting point. A
+// server_processes row of the build before this one (legion_state_intake at its default, 0) keeps
+// the take-over's starting point from being taken and the next message's too: the message writes
+// nothing, makes no cursor and is finished, and the line is logged once. Once that process has
+// deregistered, the next message takes the starting point and is applied on it.
+func TestNoStartingPointIsTakenWhileAnEarlierBuildIsInTheFleet(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	// A process of the build before this one: it writes the owner lock protocol and no Legion
+	// state intake.
+	var earlier string
+	if err := rig.database.Pool.QueryRow(t.Context(), `
+		insert into server_processes (instance, commit, dashboard_build, signing_keys, owner_lock_protocol)
+		values (gen_random_uuid(), 'c0', 'build-c0', $1, 1)
+		returning instance::text`, []string{"k0"}).Scan(&earlier); err != nil {
+		t.Fatalf("register a process of the build before this one: %v", err)
+	}
+
+	rig.start()
+	rig.awaitLogRecords(earlierBuildLine, 1)
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+	if served := daemon.served(); served != 0 {
+		t.Errorf("the daemon served %d reads while an earlier build is in the fleet, want none", served)
+	}
+	if reads := readRecords(t, rig.database, "INFRA"); len(reads) != 0 {
+		t.Errorf("legion_reads = %v, want none", reads)
+	}
+	if rows := observations(t, rig.database, "INFRA"); len(rows) != 0 {
+		t.Errorf("observations = %v, want none", rows)
+	}
+	var cursors int
+	if err := rig.database.Pool.QueryRow(t.Context(), `select count(*) from legion_event_cursors`).Scan(&cursors); err != nil {
+		t.Fatalf("count the cursors: %v", err)
+	}
+	if cursors != 0 {
+		t.Errorf("%d cursors, want none: no starting point is taken", cursors)
+	}
+	if lines := rig.logRecords(earlierBuildLine); len(lines) != 1 || lines[0]["project"] != "INFRA" {
+		t.Errorf("logged %v, want one line for INFRA per dropLogEvery", lines)
+	}
+
+	if _, err := rig.database.Pool.Exec(t.Context(), `delete from server_processes where instance = $1`, earlier); err != nil {
+		t.Fatalf("deregister the process of the earlier build: %v", err)
+	}
+	daemon.serves(daemonState("INFRA", 11, strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)))
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "testing")))
+	rig.settled()
+	if reasons := rig.wholeReadReasons("INFRA"); !slices.Equal(reasons, []string{ReadReasonStart}) {
+		t.Errorf("whole reads %v, want the starting point the first message after the fleet cleared took", reasons)
+	}
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"implementing"`, `"testing"`}) {
+		t.Errorf("the phase's history is %v, want the starting read's implementing, then the message's testing", got)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 12)
+}
+
+// TestASplitTransactionIsAppliedOnlyWhole: R3 applies a transaction the daemon split over several
+// messages only once every part has arrived. The parts with `more` write no observation, no
+// legion_reads row and no move of the cursor, and a part delivered again is held once. The last
+// part applies every event of the transaction in one batch: all of its rows at once, at the
+// transaction's commit time, one legion_reads row, the cursor at the last part's sequence, and no
+// part held after it.
+func TestASplitTransactionIsAppliedOnlyWhole(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	rows := observations(t, rig.database, "INFRA")
+
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	first := []map[string]any{change(11, "INFRA-1", moved("phase", "implementing")), change(12, "INFRA-1", claimMoved("implementer", "launching"))}
+	rig.publishIn("INFRA", rig.run, rigStateID, at, true, first...)
+	rig.publishIn("INFRA", rig.run, rigStateID, at, true, first...)
+	rig.publishIn("INFRA", rig.run, rigStateID, at, true, change(13, "INFRA-1", moved("slot", nil)))
+	rig.settled()
+	if after := observations(t, rig.database, "INFRA"); !slices.Equal(after, rows) {
+		t.Errorf("observations before the last part = %v, want the starting read's %v alone", after, rows)
+	}
+	if reads := readRecords(t, rig.database, "INFRA"); len(reads) != 1 {
+		t.Errorf("legion_reads before the last part = %v, want the starting read alone", reads)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 10)
+	if held := heldPartCount(t, rig.database, "INFRA"); held != 2 {
+		t.Errorf("%d parts held before the last part, want the two parts, the first one once", held)
+	}
+
+	rig.publishIn("INFRA", rig.run, rigStateID, at, false, change(14, "INFRA-1", claimMoved("planner", nil)))
+	rig.settled()
+	var written []string
+	for _, row := range observedRows(t, rig.database, "INFRA") {
+		if row.at.Equal(at) {
+			written = append(written, row.issue+"/"+row.field+"="+row.value)
+		}
+	}
+	slices.Sort(written)
+	if want := []string{`INFRA-1/claim.implementer="launching"`, `INFRA-1/claim.planner=null`, `INFRA-1/phase="implementing"`, `INFRA-1/slot=null`}; !slices.Equal(written, want) {
+		t.Errorf("the transaction wrote %v at its commit time, want %v", written, want)
+	}
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`}) {
+		t.Errorf("the phase's history is %v, want the read's planning and the transaction's implementing once", got)
+	}
+	reads := readRecords(t, rig.database, "INFRA")
+	if len(reads) != 2 || reads[1].kind != readKindEvents || !reads[1].readAt.Equal(at) || reads[1].bytes == 0 {
+		t.Fatalf("legion_reads = %v, want the starting read and one `events` row at the transaction's commit time", reads)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 14)
+	if held := heldPartCount(t, rig.database, "INFRA"); held != 0 {
+		t.Errorf("%d parts held after the last part, want none", held)
+	}
+	if served := daemon.served(); served != 1 {
+		t.Errorf("the daemon served %d reads, want the starting one alone", served)
+	}
+}
+
+// TestAPartOfASplitTransactionThatIsNotCompletedWritesNothing: the parts of a split transaction
+// the intake holds are a transaction it cannot complete once a message does not continue them: a
+// gap after them, or a part of another run. Either makes one whole read (ReadReasonGap), which
+// deletes the parts, and no row ever holds a value of the parts.
+func TestAPartOfASplitTransactionThatIsNotCompletedWritesNothing(t *testing.T) {
+	const otherRun = "e4b8a2d6-0c7f-4a1e-8d35-9f6b2c1a7e04"
+	for _, tc := range []struct {
+		name string
+		// next is the message after the part, and stateSeq what the daemon serves at its read.
+		next     func(rig *intakeRig, at time.Time)
+		stateSeq int
+	}{
+		{
+			name: "a gap after the part",
+			next: func(rig *intakeRig, at time.Time) {
+				rig.publishIn("INFRA", rig.run, rigStateID, at, false, change(14, "INFRA-1", moved("phase", "testing")))
+			},
+			stateSeq: 14,
+		},
+		{
+			name: "a part of another run",
+			next: func(rig *intakeRig, at time.Time) {
+				rig.publishIn("INFRA", otherRun, rigStateID, at, false, change(13, "INFRA-1", moved("phase", "testing")))
+			},
+			stateSeq: 13,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIntakeRig(t)
+			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+			seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+			rig.start()
+			rig.awaitStartingRead("INFRA")
+
+			at := time.Now().UTC().Truncate(time.Microsecond)
+			rig.publishIn("INFRA", rig.run, rigStateID, at, true,
+				change(11, "INFRA-1", moved("phase", "merging")), change(12, "INFRA-1", claimMoved("implementer", "launching")))
+			rig.settled()
+			daemon.serves(daemonState("INFRA", tc.stateSeq, strings.Replace(planning("INFRA"), `"planning"`, `"testing"`, 1)))
+			tc.next(rig, at.Add(time.Second))
+			rig.settled()
+
+			for _, value := range history(t, rig.database, "INFRA", "INFRA-1", FieldPhase) {
+				if value == `"merging"` {
+					t.Errorf("the phase's history %v holds the part's merging", history(t, rig.database, "INFRA", "INFRA-1", FieldPhase))
+				}
+			}
+			if claim, held := currentValues(t, rig.database, "INFRA")["INFRA-1/claim.implementer"]; held {
+				t.Errorf("the implementer's claim is %s, want none: only the part named it", claim)
+			}
+			if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"testing"` {
+				t.Errorf("the phase is %s, want the read's testing", phase)
+			}
+			reads := readRecords(t, rig.database, "INFRA")
+			if len(reads) != 2 {
+				t.Fatalf("legion_reads = %v, want the starting read and the gap's", reads)
+			}
+			requireWholeRead(t, reads[1], ReadReasonGap, true)
+			rig.requireWholeReadLines("INFRA", ReadReasonStart, ReadReasonGap)
+			requireLastSeq(t, rig.database, "INFRA", int64(tc.stateSeq))
+			if held := heldPartCount(t, rig.database, "INFRA"); held != 0 {
+				t.Errorf("%d parts held after the gap's read, want none", held)
+			}
+		})
+	}
+}
+
+// TestAMessageTheDatabaseRefusesForGoodIsFinishedAndReadsItsProjectWhole: R3 finishes a message
+// the database refuses for good, which no retry can write, rather than trying it again in place.
+// Here it is a wait whose text carries a lone surrogate escape, `\ud800`: Dispatch keeps a wait as
+// the bytes the message carried, and Postgres's jsonb refuses it as no JSON (SQLSTATE 22P02, class
+// 22, a data exception). The refusal is logged with the project, the sequences and the SQLSTATE,
+// the message is finished, and one whole read of the project (ReadReasonRefused) puts its rows at
+// the daemon's state. INFRA's next message is applied after it, and LINUX's message, published
+// behind the refused one, is applied meanwhile.
+func TestAMessageTheDatabaseRefusesForGoodIsFinishedAndReadsItsProjectWhole(t *testing.T) {
+	rig := newIntakeRig(t)
+	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	linux := newFakeDaemon(t, daemonState("LINUX", 20, planning("LINUX")))
+	seedLegionProject(t, rig.database, "INFRA", infra.URL)
+	seedLegionProject(t, rig.database, "LINUX", linux.URL)
+	rig.start()
+	rig.awaitWholeReads(2)
+
+	// The daemon's state once the event committed, as its own encoder writes the wait.
+	infra.serves(daemonState("INFRA", 11, `"INFRA-1":{"key":"INFRA-1","phase":"awaiting_person","tree":"INFRA-1",
+		"waitingOn":{"kind":"ask","detail":"which name"}}`))
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "awaiting_person"),
+		moved("waitingOn", json.RawMessage(`{"kind":"ask","detail":"\ud800"}`))))
+	rig.publish("LINUX", change(21, "LINUX-1", moved("phase", "implementing")))
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+
+	refusal := rig.awaitLogRecords(refusedLine, 1)
+	if len(refusal) != 1 || refusal[0]["level"] != "WARN" || refusal[0]["project"] != "INFRA" || refusal[0]["firstSeq"] != float64(11) ||
+		refusal[0]["seq"] != float64(11) || refusal[0]["sqlstate"] != "22P02" || refusal[0]["error"] == "" {
+		t.Errorf("the refusal's lines = %v, want one WARN naming INFRA, the sequences 11, SQLSTATE 22P02 and its message", refusal)
+	}
+	for _, line := range rig.logRecords("legion intake: a database step failed; trying it again") {
+		if line["project"] == "INFRA" {
+			t.Errorf("the refused message was tried again in place: %v", line)
+		}
+	}
+	if reasons := rig.wholeReadReasons("INFRA"); !slices.Equal(reasons, []string{ReadReasonStart, ReadReasonRefused}) {
+		t.Errorf("INFRA's whole reads %v, want the starting read and the refused message's one", reasons)
+	}
+	reads := readRecords(t, rig.database, "INFRA")
+	if len(reads) != 3 {
+		t.Fatalf("INFRA's legion_reads = %v, want the starting read, the refused message's read and 12's batch", reads)
+	}
+	requireWholeRead(t, reads[1], ReadReasonRefused, true)
+	current := currentValues(t, rig.database, "INFRA")
+	if wait := current["INFRA-1/"+FieldWaitingOn]; wait != `{"kind": "ask", "detail": "which name"}` {
+		t.Errorf("INFRA-1's wait is %s, want the read's", wait)
+	}
+	if phase := current["INFRA-1/phase"]; phase != `"implementing"` {
+		t.Errorf("INFRA-1's phase is %s, want the next message's implementing", phase)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 12)
+	if served := infra.served(); served != 2 {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read and the refused message's", served)
+	}
+	if phase := currentValues(t, rig.database, "LINUX")["LINUX-1/phase"]; phase != `"implementing"` {
+		t.Errorf("LINUX-1's phase is %s, want its message's implementing", phase)
+	}
+	requireLastSeq(t, rig.database, "LINUX", 21)
 }
