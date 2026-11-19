@@ -161,7 +161,10 @@
 # giving no exit status, so a whole step command whose runner pod stops answering exec ends
 # non-zero within that bound and its heartbeat renews the lock no more, while a TERM that lands
 # between the disk watcher's failed act and its next nap leaves it without a second act, and one
-# that lands inside the watcher's read of the volume leaves it without acting at all.
+# that lands inside the watcher's read of the volume leaves it without acting at all; and (ff) a
+# daemon that outlives its SIGTERM makes stop_daemon fail, naming it and keeping its pidfile, and
+# down go on with its delete and then fail, naming it, while a daemon that ends on its SIGTERM is
+# stopped and its pidfile removed.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -1037,11 +1040,12 @@ all_gone() {
 
 # await_gone PID...: wait until none of the pids is a live process. What ends them is their own
 # next poll, whose naps the fake sleep returns from at once, so this waits on the processes, not
-# on a stretch of wall clock; the 300 s is a hang's backstop, never a timing assertion.
+# on a stretch of wall clock; the 300 s is a hang's backstop, never a timing assertion, and it is
+# passed before this gives up, so a caller that says "within 300 s" says what it waited.
 await_gone() {
   local deadline=$((SECONDS + 300))
   while ! all_gone "$@"; do
-    ((SECONDS < deadline)) || return 1
+    ((SECONDS <= deadline)) || return 1
     sleep 0.05
   done
 }
@@ -3763,3 +3767,68 @@ rm -f -- "$unreach_fail"
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
 pass "a runner pod that stops answering exec bounds the wait past its deadline, after its TERM, after the SIGKILL it could not send and after the SIGKILL the pod took before it went, each end naming the runner pod and giving no exit status, so the step command ends and its heartbeat stops renewing the lock, while a TERM between the disk watcher's failed act and its next nap leaves it without a second act, and one inside its read of the volume leaves it without acting at all"
+
+# (ff) A daemon that does not stop. stop_daemon sent TERM to the daemon's process group, polled
+# its pid for 10 s and then removed its pidfile whether or not the daemon had gone, so down said
+# nothing of a daemon it had not stopped and the next down found no pidfile to stop it by. Now the
+# stop fails once its bound has run out, naming the daemon and keeping the pidfile, and down goes
+# on with its delete, then fails, naming the daemon. A daemon that ends on its TERM is stopped and
+# its pidfile removed. Each stand-in writes its own pidfile, as a daemon does, and its command line
+# is a daemon's, which is how daemon_alive knows one.
+reset_fake
+export LOADTEST_CLUSTER_ROOT=$tmp/root-stuck
+stuck_out=$tmp/stuck.out
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  set_run lt-20261119t000000-dead
+  mkdir -p "$RUN_DIR/logs"
+  # stand_in TRAP: a heartbeat of this run, with TRAP as its handling of TERM ("" ignores it).
+  stand_in() {
+    rm -f -- "$RUN_DIR/heartbeat.pid"
+    # shellcheck disable=SC2016 # expanded by the stand-in's own bash
+    TRAP=$1 PIDFILE=$RUN_DIR/heartbeat.pid REAL=$real_sleep setsid bash -c \
+      'trap "$TRAP" TERM; echo "$$" >"$PIDFILE"; "$REAL" 300 & wait' _heartbeat --namespace "$NS" --run "$RUN" </dev/null >/dev/null 2>&1 &
+    local t0=$SECONDS
+    until [ -s "$RUN_DIR/heartbeat.pid" ]; do
+      ((SECONDS - t0 <= 10)) || fail "the stand-in heartbeat wrote no pidfile within 10 s"
+      sleep 0.05
+    done
+    STAND_IN=$(<"$RUN_DIR/heartbeat.pid")
+  }
+  # stand_in_fail MESSAGE: fail, with the stand-in's process group ended first, so nothing of it
+  # outlives the case.
+  stand_in_fail() {
+    # no-wait: the case fails next, and nothing reads the stand-in after it.
+    kill -KILL -- "-$STAND_IN" 2>/dev/null || true
+    fail "$@"
+  }
+  stand_in ""
+  stop_rc=0
+  stop_daemon heartbeat 2>"$stuck_out" || stop_rc=$?
+  ((stop_rc == 1)) ||
+    stand_in_fail "stop_daemon returned $stop_rc, not 1, although the heartbeat daemon (pid $STAND_IN) ignored its SIGTERM and still runs: $(cat "$stuck_out")"
+  grep -qF "the heartbeat daemon (pid $STAND_IN) is still in the process table 10 s after its SIGTERM; $RUN_DIR/heartbeat.pid still names it" "$stuck_out" ||
+    stand_in_fail "stop_daemon did not name the heartbeat daemon (pid $STAND_IN) it could not stop: $(cat "$stuck_out")"
+  [ "$(cat "$RUN_DIR/heartbeat.pid" 2>/dev/null)" = "$STAND_IN" ] ||
+    stand_in_fail "stop_daemon removed the pidfile of the heartbeat daemon (pid $STAND_IN) it did not stop"
+  down_rc=0
+  (down_run) >"$stuck_out" 2>&1 || down_rc=$?
+  ((down_rc != 0)) ||
+    stand_in_fail "down exited 0 although the heartbeat daemon (pid $STAND_IN) of its run did not stop: $(cat "$stuck_out")"
+  grep -qF "\$ kubectl -n $ns get" "$stuck_out" ||
+    stand_in_fail "down did not go on with its delete after the heartbeat daemon that did not stop: $(cat "$stuck_out")"
+  grep -qF "down: the heartbeat daemon of run $RUN did not stop (named above)" "$stuck_out" ||
+    stand_in_fail "down did not say which daemon of run $RUN did not stop: $(cat "$stuck_out")"
+  kill -KILL -- "-$STAND_IN" 2>/dev/null || true
+  await_gone "$STAND_IN" || fail "the stand-in heartbeat (pid $STAND_IN) did not end within 300 s of its SIGKILL"
+  # The control: a daemon that ends on its TERM.
+  stand_in -
+  stop_rc=0
+  stop_daemon heartbeat 2>"$stuck_out" || stop_rc=$?
+  ((stop_rc == 0)) || stand_in_fail "stop_daemon returned $stop_rc for a heartbeat daemon that ended on its SIGTERM: $(cat "$stuck_out")"
+  ! kill -0 "$STAND_IN" 2>/dev/null || stand_in_fail "stop_daemon returned with the heartbeat daemon (pid $STAND_IN) still there"
+  [ ! -e "$RUN_DIR/heartbeat.pid" ] || fail "stop_daemon left the pidfile of the heartbeat daemon it stopped"
+)
+pass "a daemon that outlives its SIGTERM makes stop_daemon fail, naming it and keeping its pidfile, and down go on with its delete and then fail, naming it; a daemon that ends on its SIGTERM is stopped and its pidfile removed"

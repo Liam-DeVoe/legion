@@ -989,6 +989,10 @@ ensure_daemons() {
   done
 }
 
+# stop_daemon NAME: NAME's daemon of this run ended, its process group sent TERM, and its pidfile
+# removed once its pid has left the process table. It returns 1, naming the daemon, and keeps the
+# pidfile, which still names it, when the pid is still there after 100 naps of 0.1 s, each of
+# which lasts at least that long.
 stop_daemon() {
   local name=$1 pid i
   if daemon_alive "$name"; then
@@ -998,6 +1002,10 @@ stop_daemon() {
       kill -0 "$pid" 2>/dev/null || break
       sleep 0.1
     done
+    if kill -0 "$pid" 2>/dev/null; then
+      note "the $name daemon (pid $pid) is still in the process table 10 s after its SIGTERM; $RUN_DIR/$name.pid still names it"
+      return 1
+    fi
   fi
   rm -f -- "$RUN_DIR/$name.pid"
 }
@@ -3345,16 +3353,17 @@ collect_run() {
 # too, when it names this run), and wait until nothing of it is left; then print that listing. A
 # run another PID namespace started has daemons this command cannot see, let alone stop: it says
 # so, and they stop on their own, the heartbeat because the lock is gone and the sampler because
-# the heartbeat is.
+# the heartbeat is. A daemon that did not stop (stop_daemon names it) leaves the delete to go on,
+# and down then fails naming it, its pidfile kept for the next down.
 down_run() {
-  local name deadline listing
+  local name deadline listing left=""
   if [ -d "$RUN_DIR" ]; then
     rm -f -- "$RUN_DIR/hold-until"
     if pid_ns_foreign; then
       note "down: run $RUN was started in PID namespace $PID_NS_RECORDED, not this one ($PID_NS_HERE), so this command can stop no daemon of it: it drops their pidfiles here, and they stop on their own, the heartbeat once the lock below is gone and the sampler once that heartbeat is."
       rm -f -- "$RUN_DIR/heartbeat.pid" "$RUN_DIR/sampler.pid"
     else
-      for name in sampler heartbeat; do stop_daemon "$name"; done
+      for name in sampler heartbeat; do stop_daemon "$name" || left+="${left:+ and }the $name daemon"; done
     fi
   fi
   kube delete "$DELETE_KINDS" -l "$RUN_LABEL=$RUN" --ignore-not-found --wait=false >/dev/null ||
@@ -3368,6 +3377,7 @@ down_run() {
   done
   printf '$ kubectl -n %s get %s -l %s=%s\n' "$NS" "$COPY_KINDS" "$RUN_LABEL" "$RUN"
   kube get "$COPY_KINDS" -l "$RUN_LABEL=$RUN" 2>&1
+  [ -z "$left" ] || die "down: $left of run $RUN did not stop (named above); run down again once it has"
 }
 
 # ---- subcommands ----------------------------------------------------------------------------------
