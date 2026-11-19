@@ -1,24 +1,22 @@
 package agenthistory
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
-	"net/url"
 	"regexp"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/registrywrite"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -45,9 +43,6 @@ const (
 	// longest.
 	failureBackoff = 2 * time.Second
 	failureMax     = time.Minute
-	requestTimeout = 10 * time.Second
-	// refusalBodyLimit bounds how much of a refusal's body a log line carries.
-	refusalBodyLimit = 4096
 	// registryTime is RFC 3339 in UTC at a fixed millisecond width, so two times order as their
 	// strings do.
 	registryTime = "2006-01-02T15:04:05.000Z07:00"
@@ -58,31 +53,14 @@ const (
 var keySafe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // Entry is one registry entry as the listener's write routes take it (dispatch://INFRA-448, "The
-// registry contract"): LegionProject is the Legion project token role tokens carry
-// (claim.ProjectToken), never the Dispatch project; StartedAt is RFC 3339 UTC.
-type Entry struct {
-	SessionID     string `json:"session_id"`
-	LegionProject string `json:"legion_project"`
-	Issue         string `json:"issue"`
-	Role          string `json:"role"`
-	RoleToken     string `json:"role_token"`
-	Title         string `json:"title"`
-	Harness       string `json:"harness"`
-	StartedAt     string `json:"started_at"`
-	// Finished is whether the conversation's issue has left the workflow (Store.FinishedIssues),
-	// so no later holder of its role token is coming. The listener keeps a message to a role
-	// whose newest entry is unfinished for that next holder, and hands one to a finished role's
-	// daemon, which answers it from the stopped agent's own conversation. It is omitted while the
-	// issue runs, which is what a reader takes from an entry that carries none.
-	Finished bool `json:"finished,omitempty"`
-	// Released is whether the conversation's claim is suspended by idle release
-	// (supervise.Claim.Released, Store.ReleasedSessions): the daemon released its idle issue pod and
-	// keeps the session to resume on the next wake for it. The listener hands no message for such
-	// a session to the answer loop, so the message reaches the wake path as it did before the
-	// hand-off existed and the resumed worker answers it. It is omitted otherwise, and a listener
-	// older than the field ignores it (its routes decode an entry leniently).
-	Released bool `json:"released,omitempty"`
-}
+// registry contract"), the listener's wire type (listenerwire.LegionAgentEntry): LegionProject is
+// the Legion project token role tokens carry (claim.ProjectToken), never the Dispatch project;
+// StartedAt is RFC 3339 UTC. The mirror leaves RecordedAt out, which the listener sets. Finished is
+// whether the conversation's issue has left the workflow (Store.FinishedIssues), and Released
+// whether its claim is suspended by idle release (supervise.Claim.Released,
+// Store.ReleasedSessions); each is omitted while false, which is what a reader takes from an entry
+// that carries none.
+type Entry = listenerwire.LegionAgentEntry
 
 // entryOf is the registry entry of row, with finished as its issue's standing and released as
 // its claim's, or why it has none: a session id the registry cannot key, or a row whose token is
@@ -144,7 +122,8 @@ type MirrorConfig struct {
 	Store Store
 	Clock Clock
 	Log   *slog.Logger
-	// Client is the HTTP client; nil is one with a ten-second timeout.
+	// Client is the HTTP client the registry writes go through (registrywrite.New); nil is one
+	// with a ten-second timeout.
 	Client *http.Client
 }
 
@@ -155,10 +134,11 @@ type MirrorConfig struct {
 // released claims each minute too (refresh), and at once when the daemon says a release suspended
 // a claim (StandingsChanged), and writes an issue's conversations again when either changes, so
 // each entry's `finished` and `released` follow the record in both directions. Nothing it does
-// blocks the boot, a registration or a release. A route an older listener answers 404 is logged
-// once and tried again each minute; any other failure is tried again on a backoff. A write the
-// listener refuses (400 or 409: an entry it will never take) is logged and dropped; a refused
-// batch is sent again an entry at a time, so one bad entry costs only itself.
+// blocks the boot, a registration or a release. Its writes go through a registrywrite.Writer: a
+// route an older listener answers 404 is logged once and tried again each minute; any other
+// failure is tried again on a backoff. A write the listener refuses (400 or 409: an entry it will
+// never take) is logged and dropped; a refused batch is sent again an entry at a time, so one bad
+// entry costs only itself.
 type Mirror struct {
 	cfg  MirrorConfig
 	wake chan struct{}
@@ -181,13 +161,13 @@ type Mirror struct {
 	registrations uint64
 	registeredAt  map[string]uint64
 
-	// The rest is Run's own.
+	// The rest is Run's own: the writer, whose log of each route's first 404 is Run's alone too.
+	writer    *registrywrite.Writer
 	booted    bool
 	batches   [][]Entry
 	writes    lane
 	heartbeat lane
 	standings lane
-	logged404 map[string]bool
 }
 
 // lane is one kind of write's schedule: when it is next tried, and how many failures in a row it
@@ -199,12 +179,8 @@ type lane struct {
 
 // NewMirror builds a mirror that writes nothing until Run.
 func NewMirror(cfg MirrorConfig) *Mirror {
-	if cfg.Client == nil {
-		cfg.Client = &http.Client{Timeout: requestTimeout}
-	}
-	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	return &Mirror{cfg: cfg, wake: make(chan struct{}, 1), read: standingRead{finished: map[string]bool{}, released: map[string]string{}},
-		registeredAt: map[string]uint64{}, logged404: map[string]bool{}}
+		registeredAt: map[string]uint64{}, writer: registrywrite.New(cfg.BaseURL, cfg.Token, cfg.Client, cfg.Log)}
 }
 
 // Put queues the registration row for one PUT of its session, never waiting on the listener. A
@@ -354,11 +330,9 @@ func (m *Mirror) pendingWrites() bool {
 
 // beat writes the project's answering key.
 func (m *Mirror) beat(ctx context.Context, now time.Time) {
-	body := struct {
-		Answering bool   `json:"answering"`
-		UpdatedAt string `json:"updated_at"`
-	}{m.cfg.Answering, now.UTC().Format(registryTime)}
-	result := m.send(ctx, "PUT /v1/legion/projects/{project}", "/v1/legion/projects/"+url.PathEscape(m.cfg.Project), body)
+	answering := m.cfg.Answering
+	body := listenerwire.LegionProjectRequest{Answering: &answering, UpdatedAt: now.UTC().Format(registryTime)}
+	result := m.writer.Answering(ctx, m.cfg.Project, body)
 	// The key is the listener's to refuse, and the next minute's is a new write all the same:
 	// schedule puts a refusal back on the heartbeat's own interval, as it does a send.
 	m.heartbeat.schedule(now, result, heartbeatEvery)
@@ -384,7 +358,7 @@ func (m *Mirror) refresh(ctx context.Context, now time.Time) {
 		if ctx.Err() == nil {
 			m.cfg.Log.Warn("legion daemon could not read the standing of its issues for the agent registry; trying again", "error", err)
 		}
-		m.standings.schedule(now, failed, standingsEvery)
+		m.standings.schedule(now, registrywrite.Failed, standingsEvery)
 		return
 	}
 	// A nudge is answered from here: one that came before this point told of a suspension the
@@ -400,7 +374,7 @@ func (m *Mirror) refresh(ctx context.Context, now time.Time) {
 		if ctx.Err() == nil {
 			m.cfg.Log.Warn("legion daemon could not read its released claims for the agent registry; trying again", "error", err)
 		}
-		m.standings.schedule(now, failed, standingsEvery)
+		m.standings.schedule(now, registrywrite.Failed, standingsEvery)
 		return
 	}
 	m.mu.Lock()
@@ -422,7 +396,7 @@ func (m *Mirror) refresh(ctx context.Context, now time.Time) {
 			changed[issue] = true
 		}
 	}
-	result := sent
+	result := registrywrite.Sent
 	if booted {
 		for _, issue := range slices.Sorted(maps.Keys(changed)) {
 			rows, err := m.cfg.Store.IssueConversations(ctx, m.cfg.Project, issue)
@@ -441,7 +415,7 @@ func (m *Mirror) refresh(ctx context.Context, now time.Time) {
 						released[session] = of
 					}
 				}
-				result = failed
+				result = registrywrite.Failed
 				continue
 			}
 			m.queueRead(m.entriesOf(rows, standingRead{finished: finished, released: released}), since)
@@ -460,12 +434,12 @@ func (m *Mirror) write(ctx context.Context, now time.Time) {
 	m.writes.schedule(now, result, 0)
 }
 
-func (m *Mirror) writeAll(ctx context.Context) outcome {
+func (m *Mirror) writeAll(ctx context.Context) registrywrite.Outcome {
 	if !m.booted {
 		rows, err := m.cfg.Store.AgentConversations(ctx, m.cfg.Project)
 		if err != nil {
 			m.cfg.Log.Warn("legion daemon could not read its conversation history for the agent registry; trying again", "error", err)
-			return failed
+			return registrywrite.Failed
 		}
 		batches := m.batchesOf(rows, m.standing())
 		m.mu.Lock()
@@ -480,13 +454,11 @@ func (m *Mirror) writeAll(ctx context.Context) outcome {
 		}
 		batch := m.batches[0]
 		m.mu.Unlock()
-		result := m.send(ctx, "PUT /v1/legion/agents", "/v1/legion/agents", struct {
-			Entries []Entry `json:"entries"`
-		}{batch})
+		result := m.writer.Batch(ctx, listenerwire.LegionAgentBatch{Entries: batch})
 		switch result {
-		case sent:
+		case registrywrite.Sent:
 			m.popBatch(nil)
-		case refused:
+		case registrywrite.Refused:
 			// One bad entry refuses its whole batch: each is sent alone, and only a bad one is
 			// refused again.
 			var singles [][]Entry
@@ -504,12 +476,12 @@ func (m *Mirror) writeAll(ctx context.Context) outcome {
 		m.mu.Lock()
 		if len(m.puts) == 0 {
 			m.mu.Unlock()
-			return sent
+			return registrywrite.Sent
 		}
 		entry := m.puts[0]
 		m.mu.Unlock()
-		result := m.send(ctx, "PUT /v1/legion/agents/sessions/{id}", "/v1/legion/agents/sessions/"+url.PathEscape(entry.SessionID), entry)
-		if result != sent && result != refused {
+		result := m.writer.Entry(ctx, entry)
+		if result != registrywrite.Sent && result != registrywrite.Refused {
 			return result
 		}
 		m.mu.Lock()
@@ -587,80 +559,20 @@ func (m *Mirror) batchesOf(rows []store.AgentConversation, read standingRead) []
 	return batches
 }
 
-// outcome is what one write came to.
-type outcome int
-
-const (
-	sent outcome = iota
-	// notFound is a 404: a listener that predates the route.
-	notFound
-	// refused is a 400 or 409: the listener will never take what was sent.
-	refused
-	// failed is everything else, tried again on a backoff.
-	failed
-)
-
 // schedule sets when the lane is next tried after a write that came to result at now: after every
 // in a success (0 for whenever there is something to write), each minute after a 404, and on a
 // backoff after any other failure.
-func (l *lane) schedule(now time.Time, result outcome, every time.Duration) {
+func (l *lane) schedule(now time.Time, result registrywrite.Outcome, every time.Duration) {
 	switch result {
-	case sent, refused:
+	case registrywrite.Sent, registrywrite.Refused:
 		l.failures, l.next = 0, now.Add(every)
 		if every == 0 {
 			l.next = time.Time{}
 		}
-	case notFound:
+	case registrywrite.NotFound:
 		l.failures, l.next = 0, now.Add(notFoundRetry)
 	default:
 		l.failures++
 		l.next = now.Add(min(backoff.Wait(failureBackoff, l.failures), failureMax))
-	}
-}
-
-// send PUTs body to path, logging what is not a success: a route's first 404, a refusal, and every
-// other failure.
-func (m *Mirror) send(ctx context.Context, route, path string, body any) outcome {
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		m.cfg.Log.Error("legion daemon could not encode an agent registry write", "route", route, "error", err)
-		return refused
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, m.cfg.BaseURL+path, bytes.NewReader(encoded))
-	if err != nil {
-		m.cfg.Log.Error("legion daemon could not build an agent registry write", "route", route, "error", err)
-		return refused
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if m.cfg.Token != "" {
-		request.Header.Set("Authorization", "Bearer "+m.cfg.Token)
-	}
-	response, err := m.cfg.Client.Do(request)
-	if err != nil {
-		if ctx.Err() == nil {
-			m.cfg.Log.Warn("legion daemon could not write to the agent registry; trying again", "route", route, "error", err)
-		}
-		return failed
-	}
-	defer response.Body.Close()
-	answer, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-	switch status := response.StatusCode; {
-	case status >= 200 && status < 300:
-		return sent
-	case status == http.StatusNotFound:
-		if !m.logged404[route] {
-			m.logged404[route] = true
-			m.cfg.Log.Warn("the Envoy listener answers 404 on "+route+": it predates the Legion agent registry; the daemon tries again each minute",
-				"route", route, "answer", strings.TrimSpace(string(answer)))
-		}
-		return notFound
-	case status == http.StatusBadRequest || status == http.StatusConflict:
-		m.cfg.Log.Warn("the Envoy listener refused an agent registry write; it is not sent again", "route", route, "path", path,
-			"status", status, "answer", strings.TrimSpace(string(answer)))
-		return refused
-	default:
-		m.cfg.Log.Warn("the Envoy listener failed an agent registry write; trying again", "route", route, "path", path,
-			"status", status, "answer", strings.TrimSpace(string(answer)))
-		return failed
 	}
 }

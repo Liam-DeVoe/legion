@@ -36,7 +36,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	t.Cleanup(func() { helpTimeout = timeout })
 	ghroutetest.KillRecordedHelper(t, pidFile, helperSeconds)
 
-	_, err := ReadHelp(context.Background(), gh, []string{"pr"})
+	_, err := ReadHelp(context.Background(), gh, os.Environ(), []string{"pr"})
 	if err == nil || !strings.Contains(err.Error(), "did not answer its help within") {
 		t.Fatalf("ReadHelp of a gh that never answers = %v; want it to give up naming the timeout", err)
 	}

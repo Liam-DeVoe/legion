@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/registrywrite"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -66,7 +67,7 @@ func TestTheMirrorsWritesAreTheOnesTheFixtureHolds(t *testing.T) {
 
 	ctx := context.Background()
 	mirror.beat(ctx, time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC))
-	if result := mirror.writeAll(ctx); result != sent {
+	if result := mirror.writeAll(ctx); result != registrywrite.Sent {
 		t.Fatalf("the mirror's writes came to %v, want every one sent", result)
 	}
 

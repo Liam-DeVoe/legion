@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // legionAgentRegistry is the Legion agent registry the /v1/legion/agents routes serve: its store
@@ -206,34 +207,6 @@ func (r *legionAgentRegistry) store() *legionagents.Store { return r.state.Load(
 // legionAgentBodyLimit bounds the body of a Legion agent registry write, one entry or a batch.
 const legionAgentBodyLimit = 1 << 20
 
-// legionAgentAnswer is one Legion agent registry entry as a read answers it: the entry, the session
-// that replaced it within its role token (legionagents.Agent), whether its session is answering
-// now, and whether its project's daemon answers for it. All three are derived at the read and none
-// is stored.
-//
-// Live is the session's own registration state, as every reader of the session registry judges it
-// (session.StateOf through SessionRegistry.Lookup, sessionIsLive): true only while that
-// registration is within the live window, never membership alone, of the session cache or of the
-// registry. So live false does not say the agent has ended: a session past the live window is
-// unresponsive and keeps everything of its own (dispatch://INFRA-392), and only a session the
-// registry calls gone has stopped.
-//
-// Answering is the flag the entry's project last stated in its answering record
-// (legionagents.Project), false while the project has stated none: the condition the hand-off
-// reads on the project (answeringAgent). A reader that sends a message to a stopped agent so that
-// its daemon answers it (Dispatch's registeredAgent) sends it only while this is true, since a
-// send the listener hands to no daemon is stored for a session that will not run again.
-type legionAgentAnswer struct {
-	legionagents.Agent
-	Live      bool `json:"live"`
-	Answering bool `json:"answering"`
-}
-
-// legionAgentList is a listing's answer, `[]` when the registry holds no entry.
-type legionAgentList struct {
-	Entries []legionAgentAnswer `json:"entries"`
-}
-
 // legionAgentBatchFailure is a batch write that failed after some entries may have been written
 // (legionagents.PartialWriteError): written counts those, and every write is idempotent, so the
 // caller sends the batch again once the failure is one to retry.
@@ -242,30 +215,33 @@ type legionAgentBatchFailure struct {
 	Written int    `json:"written"`
 }
 
-// answerLegionAgent is agent as a read answers it, answering being its project's flag
+// answerLegionAgent is one registry entry as a read answers it (listenerwire.LegionAgentAnswer):
+// its live is the session's own registration state, as every reader of the session registry
+// judges it (session.StateOf through SessionRegistry.Lookup, sessionIsLive), never membership of
+// the session cache or of the registry, and its answering is its project's flag
 // (legionProjectAnswers).
-func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent, answering bool) legionAgentAnswer {
+func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent, answering bool) listenerwire.LegionAgentAnswer {
 	_, state := sessions.Lookup(agent.SessionID)
-	return legionAgentAnswer{Agent: agent, Live: sessionIsLive(state), Answering: answering}
+	return listenerwire.LegionAgentAnswer{LegionAgent: agent, Live: sessionIsLive(state), Answering: answering}
 }
 
 // answerLegionAgents is a listing as a read answers it, reading each project's answering record
 // once however many of the listing's entries it holds.
-func answerLegionAgents(ctx context.Context, registry *legionagents.Store, sessions *session.SessionRegistry, agents []legionagents.Agent) (legionAgentList, error) {
-	entries := make([]legionAgentAnswer, len(agents))
+func answerLegionAgents(ctx context.Context, registry *legionagents.Store, sessions *session.SessionRegistry, agents []legionagents.Agent) (listenerwire.LegionAgentList, error) {
+	entries := make([]listenerwire.LegionAgentAnswer, len(agents))
 	projects := map[string]bool{}
 	for i, agent := range agents {
 		answering, read := projects[agent.LegionProject]
 		if !read {
 			var err error
 			if answering, err = legionProjectAnswers(ctx, registry, agent.LegionProject); err != nil {
-				return legionAgentList{}, err
+				return listenerwire.LegionAgentList{}, err
 			}
 			projects[agent.LegionProject] = answering
 		}
 		entries[i] = answerLegionAgent(sessions, agent, answering)
 	}
-	return legionAgentList{Entries: entries}, nil
+	return listenerwire.LegionAgentList{Entries: entries}, nil
 }
 
 // legionProjectAnswers reports whether project last stated that its daemon answers for its
@@ -471,9 +447,7 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 			}
 			writeJSON(w, http.StatusOK, list)
 		case http.MethodPut:
-			var body struct {
-				Entries []legionagents.Entry `json:"entries"`
-			}
+			var body listenerwire.LegionAgentBatch
 			if !decodeLegionAgentBody(w, r, &body) {
 				return
 			}
@@ -490,7 +464,7 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 				writeLegionAgentError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string][]legionagents.Entry{"entries": stored})
+			writeJSON(w, http.StatusOK, listenerwire.LegionAgentBatch{Entries: stored})
 		default:
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -517,10 +491,7 @@ func legionProjectHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
-		var body struct {
-			Answering *bool  `json:"answering"`
-			UpdatedAt string `json:"updated_at"`
-		}
+		var body listenerwire.LegionProjectRequest
 		if !decodeLegionAgentBody(w, r, &body) {
 			return
 		}

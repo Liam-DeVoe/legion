@@ -10,55 +10,29 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// Handoff is one message the listener handed off: the topic it was for (the agent's own,
+// Handoff is one message the listener handed off, the listener's own body for it
+// (listenerwire.LegionHandoff): the topic it was for (the agent's own,
 // notifications.agent.<session> or its form under a project, notifications.agent.<PROJECT or
 // _>.<session>, or its role's, notifications.role.<token>), the agent session it is for (the
 // session addressed, or the role's newest, whichever form the topic took), that session's role
 // token, the Legion project token, and the Envoy envelope exactly as it would have been delivered
 // to the agent.
-type Handoff struct {
-	OriginalTopic string          `json:"original_topic"`
-	TargetSession string          `json:"target_session"`
-	RoleToken     string          `json:"role_token"`
-	Project       string          `json:"project"`
-	Envelope      HandoffEnvelope `json:"envelope"`
-}
+type Handoff = listenerwire.LegionHandoff
 
-// HandoffEnvelope is the Envoy envelope a hand-off carries (EnvelopeSchema, packages/contracts/src/
-// envelope.ts): who sent it (Source, SourceSession, Sender), its identity (EventID, DedupeKey), the
-// topic it was published to, its text (PayloadSummary, and Payload: the whole text of a long
-// message, or the JSON a Dispatch delivery carries, which Dispatch decodes), and its reply
-// correlation (InReplyTo).
-type HandoffEnvelope struct {
-	EventID        string         `json:"event_id"`
-	Source         string         `json:"source"`
-	SourceEventID  string         `json:"source_event_id"`
-	SourceSession  string         `json:"source_session,omitempty"`
-	Topic          string         `json:"topic"`
-	DedupeKey      string         `json:"dedupe_key"`
-	IssuedAt       int64          `json:"issued_at"`
-	ExpiresAt      *int64         `json:"expires_at,omitempty"`
-	PayloadSummary string         `json:"payload_summary"`
-	Payload        string         `json:"payload,omitempty"`
-	PayloadRef     string         `json:"payload_ref,omitempty"`
-	TraceID        string         `json:"trace_id"`
-	Sender         *HandoffSender `json:"sender,omitempty"`
-	InReplyTo      string         `json:"in_reply_to,omitempty"`
-	Supersedes     string         `json:"supersedes,omitempty"`
-	Urgency        string         `json:"urgency,omitempty"`
-	ExpectsReply   string         `json:"expects_reply,omitempty"`
-}
+// HandoffEnvelope is the Envoy envelope a hand-off carries (listenerwire.Envelope, EnvelopeSchema
+// in packages/contracts/src/envelope.ts): who sent it (Source, SourceSession, Sender), its identity
+// (EventID, DedupeKey), the topic it was published to, its text (PayloadSummary, and Payload: the
+// whole text of a long message, or the JSON a Dispatch delivery carries, which Dispatch decodes),
+// and its reply correlation (InReplyTo).
+type HandoffEnvelope = listenerwire.Envelope
 
-// HandoffSender is the listener's stamp of an envelope's sending session.
-type HandoffSender struct {
-	SessionID string   `json:"session_id"`
-	Machine   string   `json:"machine,omitempty"`
-	Cwd       string   `json:"cwd,omitempty"`
-	Title     string   `json:"title,omitempty"`
-	Roles     []string `json:"roles,omitempty"`
-}
+// HandoffSender is the listener's stamp of an envelope's sending session
+// (listenerwire.EnvelopeSender).
+type HandoffSender = listenerwire.EnvelopeSender
 
 // HandoffSubject is the subject the listener hands a message for session off on.
 func HandoffSubject(project, session string) string {
@@ -169,9 +143,9 @@ func (e DispatchEvent) HandsTurnBack() bool {
 // body, which no reply inside the loop's output bound comes near.
 const AnswerMarker = "<!-- legion-answer:"
 
-// Dispatch decodes a Dispatch envelope's payload: a targeted send's {event, delivery} frame, or the
-// bare event Dispatch's outbox publishes.
-func (e HandoffEnvelope) Dispatch() (DispatchEvent, error) {
+// DispatchOf decodes a Dispatch envelope's payload: a targeted send's {event, delivery} frame, or
+// the bare event Dispatch's outbox publishes.
+func DispatchOf(e HandoffEnvelope) (DispatchEvent, error) {
 	if e.Source != "dispatch" {
 		return DispatchEvent{}, fmt.Errorf("an envelope from %q is not Dispatch's", e.Source)
 	}

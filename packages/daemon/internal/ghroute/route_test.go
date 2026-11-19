@@ -131,9 +131,15 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 		{"no usage", prView, "FLAGS\n  --help   Show help for command\n", "names no usage"},
 		{"no --help", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  -w, --web   Open\n", "lists no --help"},
 		{"an option line it cannot read", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w --web   Open\n", "cannot read the options"},
+		{"a line of an options section naming no option", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n           for this command\n", "names no option"},
+		{"an option at the margin of an options section", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n-w, --web   Open\n", "at the margin of its FLAGS"},
+		{"an optional-value marker that names no type", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web [=true|false]   Open\n", "optional-value marker names no type"},
+		{"an option listed twice", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  -w, --web   Open\n\nINHERITED FLAGS\n  --help   Show help\n  --web string   Open\n", "lists --web again"},
+		{"a shorthand listed twice", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web   Open\n  -w, --watch   Watch\n", "already gives --web"},
 		{"an option line marking its option boolean and naming a value", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web[=true|false] string   Open\n", "marks its option boolean and names a value"},
 		{"a parent's help", prView, "USAGE\n  gh pr <command> [flags]\n", "gh has no command"},
 		{"gh co's, pr checkout's, which lists no alias co", []string{"co"}, co, "is a gh alias"},
+		{"a passthrough leaf passing on something it does not know", []string{"repo", "archive"}, "USAGE\n  gh repo archive [<repository>] [-- <git-args>...]\n\nFLAGS\n  --help   Show help\n", `passes "<git-args>" on after ` + "`--`"},
 	} {
 		if _, err := parseGhHelp(tc.path, tc.help); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("parseGhHelp of %s = %v, want an error containing %q", tc.name, err, tc.want)
@@ -144,6 +150,24 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 	}
 	if later, err := parseGhHelp(prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --mirror string   Read the pull request from this repository instead\n  --notes string   Notes\n\nINHERITED FLAGS\n  --help   Show help\n"); err != nil || later.flags["mirror"].selects != "unknown" || later.flags["notes"].selects != "" {
 		t.Errorf("a later gh's options read as %+v, %v; want --mirror, which names a repository, unknown and --notes none of the table's", later.flags, err)
+	}
+	// A later gh that renames `<gitflags>` keeps a clone leaf's passed-on flags judged
+	// (ghCloneLeaves), so round 2's clone route cannot reopen through a new name; the same
+	// rename on a leaf that clones nothing is refused above. Control: today's name is judged.
+	for _, tc := range []struct{ path, help string }{
+		{"repo clone", "USAGE\n  gh repo clone <repository> [<directory>] [-- <git-args>...]\n\nFLAGS\n  --help   Show help\n"},
+		{"repo fork", "USAGE\n  gh repo fork [<repository>] [-- <git-flags>...] [flags]\n\nFLAGS\n  --clone   Clone the fork\n  --help   Show help\n"},
+		{"gist clone", "USAGE\n  gh gist clone <gist> [<directory>] [-- <args>...]\n\nFLAGS\n  --help   Show help\n"},
+		{"repo clone", "USAGE\n  gh repo clone <repository> [<directory>] [-- <gitflags>...]\n\nFLAGS\n  --help   Show help\n"},
+	} {
+		cmd, err := parseGhHelp(strings.Fields(tc.path), tc.help)
+		if err != nil || !cmd.passesGitFlags {
+			t.Errorf("%s's help %q reads as passesGitFlags=%v, %v; want its passed-on arguments judged as git clone's flags", tc.path, tc.help, cmd.passesGitFlags, err)
+			continue
+		}
+		if _, err := cmd.parse([]string{"acme/widgets", "--", "-c", "http.https://github.com/.sslVerify=false"}); err == nil || !strings.Contains(err.Error(), `hands "-c" to git clone`) {
+			t.Errorf("%s under the help %q took -- -c ...: %v, want it refused", tc.path, tc.help, err)
+		}
 	}
 }
 
@@ -357,8 +381,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// `--` (deep 1); `repo set-default` reads every remote's network whatever its argument
 		// names (deep 2, quality 1); project link and unlink read no repository of their own
 		// with --team (quality 2); a pr command reads OWNER/REPO#N and a URL other than a pull
-		// request's as a branch of its own repository, and only agent-task view reads OWNER/REPO#N
-		// (final F1).
+		// request's as a branch of its own repository (final F1).
 		{argv: []string{"repo", "fork", "--", "sjawhar/legion"}, remotes: remotes(acmeClone), owner: "sjawhar"},
 		{argv: []string{"repo", "clone", "--", "sjawhar/legion"}, remotes: remotes(acmeClone), owner: "sjawhar"},
 		{argv: []string{"repo", "set-default", "sjawhar/legion"}, remotes: remotes(acmeClone), err: "more than one owner"},
@@ -371,10 +394,9 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr", "view", "https://github.com/sjawhar/legion/tree/x"}, remotes: remotes(sjawharClone), owner: "sjawhar"},
 		{argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/2/files"}, remotes: remotes(acmeClone), owner: "sjawhar"},
 		{argv: []string{"issue", "edit", "https://github.com/sjawhar/legion/issues/5", "--title", "x"}, remotes: remotes(acmeClone), owner: "sjawhar"},
-		// agent-task view reads a URL through gh's pr finder: only a pull request's names its
-		// repository.
-		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/pull/1"}, remotes: remotes(acmeClone), owner: "sjawhar"},
-		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/issues/1"}, remotes: remotes(acmeClone), err: "more than one owner"},
+		// `gh agent-task` sends the token to the Copilot API host GitHub names, so it is refused
+		// whatever it names, a pull request's URL among them, before any repository is read.
+		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/pull/1"}, remotes: remotes(acmeClone), err: "`gh agent-task` sends the token"},
 	} {
 		target, err := TargetOf(tc.argv, tc.env, savedGhHelp, tc.remotes, ghroutetest.OwnersOwnDirectories)
 		switch {
@@ -390,16 +412,15 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 
 // Beside the owner, TargetOf reads the repository a command names, which is the repository the
 // leak guard is told the call acts on (leakguard.GhRequest.Repo): a `<repository>` argument, -R,
-// a pull request's URL, OWNER/REPO#N where the leaf reads it, a search repo: qualifier, `gh
-// api`'s repos/<owner>/<repo>/… endpoint, GH_REPO and the working directory's remotes each name
-// one. The name is keyed as gh reads a name of it (ghconfig.RepositoryName), so `Legion` and
-// `widgets.git` are `legion` and `widgets`, and two spellings of one repository are one. They
-// must all name the one repository: a command naming none, one naming two of the one owner, and
-// one where a selector named the owner alone — an `<owner>` argument, orgs/<owner>/ or
-// users/<owner>/, an owner:/org:/user: qualifier, a team, an owner option — name none, and the
-// command runs with the owner's directory all the same. The rows that read no git remote are
-// ghroutetest.OneRepositoryCalls, which `legion gh`'s tests also resolve through its keep of gh's
-// help; the rows below read the working directory's.
+// a pull request's URL, a search repo: qualifier, `gh api`'s repos/<owner>/<repo>/… endpoint,
+// GH_REPO and the working directory's remotes each name one. The name is keyed as gh reads a name
+// of it (ghconfig.RepositoryName), so `Legion` and `widgets.git` are `legion` and `widgets`, and
+// two spellings of one repository are one. They must all name the one repository: a command
+// naming none, one naming two of the one owner, and one where a selector named the owner alone —
+// an `<owner>` argument, orgs/<owner>/ or users/<owner>/, an owner:/org:/user: qualifier, a
+// team, an owner option — name none, and the command runs with the owner's directory all the
+// same. The rows that read no git remote are ghroutetest.OneRepositoryCalls, which `legion gh`'s
+// tests also resolve through its keep of gh's help; the rows below read the working directory's.
 func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 	for _, tc := range ghroutetest.OneRepositoryCalls {
 		target, err := TargetOf(tc.Argv, tc.Env, tc.Help(savedGhHelp), noGitRepository, ghroutetest.OwnersOwnDirectories)
@@ -484,7 +505,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	repository := t.TempDir()
 	t.Chdir(repository)
-	if remotes, err := ReadGitRemotes(); err != nil || remotes != nil {
+	if remotes, err := ReadGitRemotes(os.Environ()); err != nil || remotes != nil {
 		t.Errorf("ReadGitRemotes outside a git repository = %v, %v; want none", remotes, err)
 	}
 	// One home for every fixture of this test: each command reads the repository it is given and
@@ -508,7 +529,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 		// credential a GIT_ variable planted back after the guard could name.
 		fixture.Run(repository, append([]string{"git"}, args...)...)
 	}
-	remotes, err := ReadGitRemotes()
+	remotes, err := ReadGitRemotes(os.Environ())
 	want := []Remote{
 		{name: "origin", url: "https://github.com/acme/widgets.git"},
 		{name: "origin", url: "https://github.com/acme/pushed.git"},
@@ -551,7 +572,7 @@ func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 				// environment is its own too, for the reason the test above gives.
 				fixture.Run(repository, append([]string{"git"}, args...)...)
 			}
-			if remotes, err := ReadGitRemotes(); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
+			if remotes, err := ReadGitRemotes(os.Environ()); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
 				t.Errorf("ReadGitRemotes = %+v, %v; want the line naming evilown refused", remotes, err)
 			}
 		})
@@ -581,11 +602,12 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 
 // gh 2.104.0's --attach uploads the file it names to GitHub, an SVG's text among what it takes,
 // and the leak guard reads no such file, so TargetOf refuses a call giving one, naming the
-// option, before anything runs, on each of the six issue and pr leaves whose help lists it. The
-// same calls without it read as they did, so the option alone is what is refused; and at gh
-// 2.98.0, which has no --attach, each is refused already, as an option its help does not list.
-// The seventh leaf listing it, `gh issue artifact create`, which also uploads the files its
-// arguments name, is refused whole with or without it, for an argument this does not know.
+// option, before anything runs, on each of the eight leaves whose help lists it. On the six issue
+// and pr leaves the same calls without it read as they did, so the option alone is what is
+// refused; and at gh 2.98.0, which has no --attach, each is refused already, as an option its help
+// does not list. On `gh issue artifact create` and `edit` --attach is refused by name too; a
+// create that names a file by argument, which it also uploads, is refused for an argument this
+// does not know.
 func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 	latest := savedGhHelpOf(t, "2.104.0")
 	rows := 0
@@ -620,12 +642,76 @@ func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 	if rows != 6 {
 		t.Errorf("%d rows ran, want 6", rows)
 	}
-	for _, argv := range [][]string{
-		{"issue", "artifact", "create", "5", "-R", "acme/widgets", "--attach", "notes.svg"},
-		{"issue", "artifact", "create", "5", "plan.md", "-R", "acme/widgets"},
+	for _, tc := range []struct {
+		argv   []string
+		refuse string
+	}{
+		{[]string{"issue", "artifact", "create", "5", "-R", "acme/widgets", "--attach", "notes.svg"}, `"--attach" uploads the file it names to GitHub, which the leak guard does not read`},
+		{[]string{"issue", "artifact", "edit", "142", "2", "-R", "acme/widgets", "--attach", "./flow.png"}, `"--attach" uploads the file it names to GitHub, which the leak guard does not read`},
+		{[]string{"issue", "artifact", "create", "5", "plan.md", "-R", "acme/widgets"}, "an argument this does not know"},
 	} {
-		if _, err := TargetOf(argv, nil, latest, noGitRepository, ghroutetest.OwnersOwnDirectories); err == nil {
-			t.Errorf("TargetOf(%q) at gh 2.104.0 = nil, want a refusal", argv)
+		if _, err := TargetOf(tc.argv, nil, latest, noGitRepository, ghroutetest.OwnersOwnDirectories); err == nil || !strings.Contains(err.Error(), tc.refuse) {
+			t.Errorf("TargetOf(%q) at gh 2.104.0 = %v, want a refusal containing %q", tc.argv, err, tc.refuse)
+		}
+	}
+}
+
+// TargetOf refuses, before gh runs, what has gh's git recurse into a submodule or take
+// configuration from the call: `pr checkout --recurse-submodules`, and any git flag a clone leaf
+// (repo clone, repo fork, gist clone) passes on that cloneGitFlagTakes does not hold, spelled in
+// full, abbreviated, joined, with `=`, or after a second `--`. It reads every flag passed on, not
+// the first alone: the second review's `-- --depth 1 -c ...` is refused at its `-c`. The flags it
+// holds, a directory first, pass, scripts/e2e's fixture clone among them, at gh 2.104.0 and 2.98.0.
+func TestGhTargetOfRefusesRecursionAndUnreadCloneFlags(t *testing.T) {
+	off, proxy := "http.https://github.com/.sslVerify=false", "http.https://github.com/.proxy=http://127.0.0.1:1"
+	for _, version := range []string{"2.104.0", "2.98.0"} {
+		help := savedGhHelpOf(t, version)
+		for _, tc := range []struct {
+			argv   []string
+			refuse string // "" for a call that passes
+		}{
+			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--recurse-submodules"}, `"--recurse-submodules" runs`},
+			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--recurse-submodules=false"}, `"--recurse-submodules=false" runs`},
+			{[]string{"repo", "clone", "acme/widgets", "w2", "--", "-c", off, "-c", proxy}, `hands "-c" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--depth", "1", "-c", off}, `hands "-c" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--config", off}, `hands "--config" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--config=" + off}, `hands "--config=` + off + `" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--conf", off}, `hands "--conf" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--recurse-submodules"}, `hands "--recurse-submodules" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--recurse-submodules=lib"}, `hands "--recurse-submodules=lib" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--recursive"}, `hands "--recursive" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--template", "/tmp/example-template"}, `hands "--template" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--template=/tmp/example-template"}, `hands "--template=/tmp/example-template" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "-u", "/tmp/example-upload-pack"}, `hands "-u" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--upload-pack", "/tmp/example-upload-pack"}, `hands "--upload-pack" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--reference", "/tmp/example-reference"}, `hands "--reference" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--reference-if-able", "/tmp/example-reference"}, `hands "--reference-if-able" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--separate-git-dir", "/tmp/example-git-dir"}, `hands "--separate-git-dir" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "-qn"}, `hands "-qn" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "-bmain"}, `hands "-bmain" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "-b=main"}, `hands "-b=main" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--quiet=true"}, `hands "--quiet=true" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--depth"}, `hands "--depth" to git clone with no value`},
+			{[]string{"repo", "clone", "acme/widgets", "widgets", "extra"}, `hands "extra" to git clone`},
+			{[]string{"repo", "clone", "acme/widgets", "--", "widgets", "--", "--recursive"}, `hands "--" to git clone`},
+			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "--recursive"}, `hands "--recursive" to git clone`},
+			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "-c", off}, `hands "-c" to git clone`},
+			{[]string{"gist", "clone", "0123456789abcdef", "--", "-c", "core.hooksPath=/tmp/example-hooks"}, `hands "-c" to git clone`},
+			{[]string{"pr", "checkout", "1", "-R", "acme/widgets"}, ""},
+			{[]string{"repo", "clone", "acme/widgets", "widgets", "--", "--quiet", "--depth", "1", "--branch", "main"}, ""},
+			{[]string{"repo", "clone", "acme/widgets", "--", "--depth=1", "--filter=blob:none", "--single-branch", "-b", "main", "--no-tags", "--origin", "up"}, ""},
+			{[]string{"repo", "clone", "--", "acme/widgets", "widgets", "--bare", "-q", "--branch", "--recursive"}, ""},
+			{[]string{"repo", "fork", "acme/widgets", "--clone", "--", "--depth", "1"}, ""},
+			{[]string{"gist", "clone", "0123456789abcdef", "notes", "--", "--quiet"}, ""},
+			{[]string{"pr", "checkout", "1", "-R", "acme/widgets", "--worktree", "/tmp/example-worktree"}, ""},
+		} {
+			_, err := TargetOf(tc.argv, nil, help, noGitRepository, ghroutetest.OwnersOwnDirectories)
+			switch {
+			case tc.refuse == "" && err != nil:
+				t.Errorf("TargetOf(%q) at gh %s = %v, want no refusal", tc.argv, version, err)
+			case tc.refuse != "" && (err == nil || !strings.Contains(err.Error(), tc.refuse)):
+				t.Errorf("TargetOf(%q) at gh %s = %v, want a refusal containing %q", tc.argv, version, err, tc.refuse)
+			}
 		}
 	}
 }

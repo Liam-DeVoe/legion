@@ -75,6 +75,28 @@ func legionCommand(t *testing.T, dir string, env map[string]string, args ...stri
 	return cmd
 }
 
+// testGhChildEnviron is what this package's test binary, run as `legion`, hands gh beside the
+// allowlist (ghChildTestEnviron): testMainEnv, so the `gh` wrapper gh's git runs as its credential
+// helper runs this binary as `legion` again; every variable of environ the stand-in real gh of
+// these tests reads (GH_STANDIN_*); and the pairs testGhChildEnv names. None of these is one
+// ghChildEnviron keeps, which is the point of naming them here and nowhere in the binary. The
+// stand-ins tell the guard's visibility read by its argv, as the real gh would have to
+// (ghStandInPrefix), so no Legion variable naming that read is handed on.
+func testGhChildEnviron(environ []string) []string {
+	out := []string{testMainEnv + "=1"}
+	for _, pair := range environ {
+		if name, _, _ := strings.Cut(pair, "="); strings.HasPrefix(name, "GH_STANDIN_") {
+			out = append(out, pair)
+		}
+	}
+	for _, line := range strings.Split(os.Getenv(testGhChildEnv), "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // legionGhCommand is the command legionGhIn runs: legionCommand's `legion gh args…`.
 func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
 	t.Helper()
@@ -124,7 +146,10 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"printf '%s|%s|%s\\n' \"$0\" \"$GH_CONFIG_DIR\" \"$*\"\n" +
-		"printf 'env %s|%s|%s=%s|%s|%s\\n' \"$GH_PATH\" \"$GIT_CONFIG_COUNT\" \"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\"\n"
+		"printf 'env %s|%s|%s=%s|%s=%s|%s=%s|%s=%s|%s=%s|%s|%s|%s|%s|%s|%s\\n' \"$GH_PATH\" \"$GIT_CONFIG_COUNT\" " +
+		"\"$GIT_CONFIG_KEY_0\" \"$GIT_CONFIG_VALUE_0\" \"$GIT_CONFIG_KEY_1\" \"$GIT_CONFIG_VALUE_1\" \"$GIT_CONFIG_KEY_2\" \"$GIT_CONFIG_VALUE_2\" " +
+		"\"$GIT_CONFIG_KEY_3\" \"$GIT_CONFIG_VALUE_3\" \"$GIT_CONFIG_KEY_4\" \"$GIT_CONFIG_VALUE_4\" " +
+		"\"$GH_NO_UPDATE_NOTIFIER\" \"$GH_PROMPT_DISABLED\" \"$GH_EDITOR\" \"$GH_TELEMETRY\" \"$GIT_CONFIG_GLOBAL\" \"$GIT_CONFIG_NOSYSTEM\"\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +162,10 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 		"PATH": wrappers + ":" + os.Getenv("PATH"), "PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
 	}
-	wantEnv := "env " + filepath.Join(wrappers, "gh") + "|1|credential.https://github.com.useHttpPath=true|1|1\n"
+	// gh's git gets http.sslVerify on, submodule recursion off and useHttpPath for github.com,
+	// reads no global or system file, and gh gets an editor that fails and its telemetry off
+	// (ghChildForced, ghForcedGitConfig).
+	wantEnv := "env " + filepath.Join(wrappers, "gh") + "|5|http.sslVerify=true|submodule.recurse=false|fetch.recurseSubmodules=false|push.recurseSubmodules=no|credential.https://github.com.useHttpPath=true|1|1|" + ghNoEditor + "|0|/dev/null|1\n"
 	for _, tc := range []struct {
 		args []string
 		dir  string
@@ -511,20 +539,30 @@ func TestWithGitHubUseHTTPPathAddsToGitsConfiguration(t *testing.T) {
 // ghStandInPrefix is what a stand-in real gh of this package answers with first, and what every
 // one of them carries after any line of its own that records its run (loggingGh). It answers
 // `[<command>] --help` with the saved help of that command, gh's own for none, which is the help
-// the command resolver reads; and it answers the shared public leak check's own visibility read
-// — the one call `legion gh` hands gh without checking it — with a visibility, the word
-// GH_STANDIN_VISIBILITY names or public, recording it in GH_STANDIN_RECORD where the test names
-// one. Without that second answer the guard's read of a destination's visibility would get a
-// stand-in's ordinary output and refuse every call it cleared, since a visibility it cannot read
+// the command resolver reads; and it answers the leak guard's own visibility reads — `gh api
+// --hostname github.com repos/<slug> [--include] --jq .visibility`, and the GraphQL read `gh api
+// --hostname github.com graphql --include -f query=… -f owner=… -f name=…` — with a visibility,
+// the word GH_STANDIN_VISIBILITY names or public, recording it in GH_STANDIN_RECORD where the test
+// names one. It tells those reads by their argv, as the real gh would have to: `legion gh` runs gh
+// from an allowlist of its environment, which holds no Legion variable naming the read
+// (ghChildEnviron). Without that answer the guard's read of a destination's visibility would get
+// a stand-in's ordinary output and refuse every call it cleared, since a visibility it cannot read
 // is a setup failure.
 func ghStandInPrefix(help string) string {
 	return ghStandInHelp(help) +
-		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n" +
+		"case \" $* \" in\n" +
+		ghVisibilityReadArgv + ")\n" +
 		"  printf 'visibility %s\\n' \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
 		"  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n" +
-		"  exit 0\n" +
-		"fi\n"
+		"  exit 0;;\n" +
+		"esac\n"
 }
+
+// ghVisibilityReadArgv is the shell `case` pattern that matches the leak guard's own visibility
+// reads by their argv, as a stand-in gh must tell them: the REST read, `gh api --hostname
+// github.com repos/<slug> [--include] --jq .visibility`, and the GraphQL read, `gh api --hostname
+// github.com graphql --include -f query=… -f owner=… -f name=…`, each matched against " $* ".
+const ghVisibilityReadArgv = "\\ api\\ --hostname\\ github.com\\ *\\ --jq\\ .visibility\\ |\\ api\\ --hostname\\ github.com\\ graphql\\ --include\\ -f\\ query=*\\ -f\\ owner=*\\ -f\\ name=*\\ "
 
 // ghStandInHelp is the start of every stand-in gh of this package: a shell script that answers
 // `[<command>] --help` with the saved help of that command, gh's own for none, and falls through
@@ -1314,7 +1352,10 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 		fixture.Run(repository, append([]string{"git"}, args...)...)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	script := strings.Replace(ghStandInPrefix(help), "  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n  exit 0\n", "  echo unavailable >&2\n  exit 1\n", 1) + "exit 0\n"
+	script := strings.Replace(ghStandInPrefix(help), "  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n  exit 0;;\n", "  echo unavailable >&2\n  exit 1;;\n", 1) + "exit 0\n"
+	if !strings.Contains(script, "echo unavailable") {
+		t.Fatal("the stand-in's visibility answer was not replaced, so this test would read a visibility")
+	}
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1630,24 +1671,62 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 
 // A gh directory whose hosts.yml or config.yml sends gh's requests elsewhere is refused, naming
 // the file and the key and never the value: api_host in a host's block, http_unix_socket at the
-// top of config.yml or in a host's block, at any depth gh might read it. The files the daemon
-// renders, a config.yml holding aliases, and a directory holding neither file pass; one that does
-// not parse is refused.
-func TestGhRoutingKeyRefusesADirectoryThatSendsElsewhere(t *testing.T) {
+// top of config.yml or in a host's block, at any depth and in any shape gh might read it as a key,
+// a list's even-indexed items among them (go-gh's FindEntry reads a list as pairs). So is a
+// config.yml holding any other hosts block or an alias named `help`, and a file that is no regular
+// file (a named pipe, a symbolic link, a directory) or is larger than any the daemon writes, which
+// is refused without being read, so a named pipe stalls nothing. The files the daemon renders, a
+// config.yml holding aliases, one naming an alias after a command `legion gh` refuses (which gh
+// never expands), a routing key's name as a value, and a directory holding neither file pass; one
+// that does not parse is refused.
+func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 	hosts := ghconfig.Hosts("ghs_acme_write")
+	fifo := func(dir, name string) error { return syscall.Mkfifo(filepath.Join(dir, name), 0o600) }
+	link := func(text string) func(dir, name string) error {
+		return func(dir, name string) error {
+			target := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(target, []byte(text), 0o600); err != nil {
+				return err
+			}
+			return os.Symlink(target, filepath.Join(dir, name))
+		}
+	}
+	directory := func(dir, name string) error { return os.Mkdir(filepath.Join(dir, name), 0o700) }
+	large := func(dir, name string) error {
+		return os.WriteFile(filepath.Join(dir, name), []byte(strings.Repeat("#", ghconfig.MaxFileBytes+1)), 0o600)
+	}
+	at := func(plant func(dir, name string) error, name string) func(dir string) error {
+		return func(dir string) error { return plant(dir, name) }
+	}
 	for _, tc := range []struct {
 		name          string
 		hosts, config string // "" writes no such file
+		plant         func(dir string) error
 		want          string // "" for a directory that passes
 	}{
 		{name: "the files the daemon renders", hosts: hosts, config: ghconfig.Config},
 		{name: "a config.yml holding aliases", hosts: hosts, config: ghconfig.Config + "aliases:\n    co: pr checkout\n"},
+		{name: "an alias named after a refused command", hosts: hosts, config: ghconfig.Config + "aliases:\n    agent-task: pr view\n"},
+		{name: "api_host as a list's value", hosts: "github.com: [user, api_host]\n", config: ghconfig.Config},
 		{name: "neither file"},
 		{name: "api_host in hosts.yml's github.com block", hosts: hosts + "    api_host: api.example.invalid\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
 		{name: "api_host under the account", hosts: strings.Replace(hosts, "            oauth_token: ghs_acme_write\n", "            oauth_token: ghs_acme_write\n            api_host: api.example.invalid\n", 1), config: ghconfig.Config, want: "hosts.yml sets api_host"},
 		{name: "http_unix_socket at the top of config.yml", hosts: hosts, config: ghconfig.Config + "http_unix_socket: /tmp/example.sock\n", want: "config.yml sets http_unix_socket"},
+		{name: "api_host in a flow list of hosts.yml", hosts: "github.com: [oauth_token, ghs_acme_write, user, x-access-token, api_host, api.example.invalid]\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
+		{name: "api_host in a block list of hosts.yml", hosts: "github.com:\n    - api_host\n    - api.example.invalid\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
+		{name: "config.yml as a list", hosts: hosts, config: "[http_unix_socket, /tmp/example.sock]\n", want: "config.yml sets http_unix_socket"},
 		{name: "http_unix_socket in a host's block of config.yml", hosts: hosts, config: ghconfig.Config + "hosts:\n    github.com:\n        http_unix_socket: /tmp/example.sock\n", want: "config.yml sets http_unix_socket"},
+		{name: "any other hosts block in config.yml", hosts: hosts, config: ghconfig.Config + "hosts:\n    github.com:\n        editor: vi\n", want: "config.yml holds a hosts block"},
+		{name: "an alias named help", hosts: hosts, config: ghconfig.Config + "aliases:\n    help: api repos/sjawhar/legion\n", want: "config.yml names an alias `help`"},
 		{name: "a hosts.yml that does not parse", hosts: "github.com: [\n", config: ghconfig.Config, want: "hosts.yml does not parse as YAML"},
+		{name: "a named pipe at hosts.yml", config: ghconfig.Config, plant: at(fifo, ghconfig.HostsFile), want: "hosts.yml is no regular file"},
+		{name: "a named pipe at config.yml", hosts: hosts, plant: at(fifo, ghconfig.ConfigFile), want: "config.yml is no regular file"},
+		{name: "a symbolic link at hosts.yml", config: ghconfig.Config, plant: at(link(hosts), ghconfig.HostsFile), want: "hosts.yml is no regular file"},
+		{name: "a symbolic link at config.yml", hosts: hosts, plant: at(link(ghconfig.Config), ghconfig.ConfigFile), want: "config.yml is no regular file"},
+		{name: "a directory at hosts.yml", config: ghconfig.Config, plant: at(directory, ghconfig.HostsFile), want: "hosts.yml is no regular file"},
+		{name: "a directory at config.yml", hosts: hosts, plant: at(directory, ghconfig.ConfigFile), want: "config.yml is no regular file"},
+		{name: "a hosts.yml larger than any the daemon writes", config: ghconfig.Config, plant: at(large, ghconfig.HostsFile), want: "hosts.yml is larger than any file the daemon writes"},
+		{name: "a config.yml larger than any the daemon writes", hosts: hosts, plant: at(large, ghconfig.ConfigFile), want: "config.yml is larger than any file the daemon writes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -1658,14 +1737,27 @@ func TestGhRoutingKeyRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 					}
 				}
 			}
-			err := ghRoutingKey(dir)
+			if tc.plant != nil {
+				if err := tc.plant(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A check that opened a named pipe would wait on it, so each runs with a bound.
+			done := make(chan error, 1)
+			go func() { done <- ghConfigShape(dir) }()
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("ghConfigShape did not return within 5 s")
+			}
 			switch {
 			case tc.want == "" && err != nil:
-				t.Fatalf("ghRoutingKey = %v, want none", err)
+				t.Fatalf("ghConfigShape = %v, want none", err)
 			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
-				t.Fatalf("ghRoutingKey = %v, want a refusal containing %q", err, tc.want)
-			case err != nil && (strings.Contains(err.Error(), "example.invalid") || strings.Contains(err.Error(), "example.sock")):
-				t.Fatalf("ghRoutingKey's refusal %q quotes the value", err)
+				t.Fatalf("ghConfigShape = %v, want a refusal containing %q", err, tc.want)
+			case err != nil && (strings.Contains(err.Error(), "example.invalid") || strings.Contains(err.Error(), "example.sock") || strings.Contains(err.Error(), "vi\n")):
+				t.Fatalf("ghConfigShape's refusal %q quotes the value", err)
 			}
 		})
 	}

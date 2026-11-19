@@ -26,8 +26,3 @@ var ghProvenCheckSHA256 = ghroute.ReadsProvenCheckSHA256
 func ghRateLimitRead(argv []string) bool {
 	return slices.Equal(argv, []string{"api", "rate_limit"})
 }
-
-// ghUnguardedUnset are the variables a call no private-name pass reads runs gh without: the
-// browser programs gh would hand a page to (go-gh's browser.New reads GH_BROWSER, then gh's
-// config `browser`, then BROWSER).
-var ghUnguardedUnset = map[string]bool{"GH_BROWSER": true, "BROWSER": true}

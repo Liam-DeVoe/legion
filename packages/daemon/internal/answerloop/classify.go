@@ -147,7 +147,7 @@ func Classify(ctx context.Context, h intake.Handoff, conv store.AgentConversatio
 }
 
 func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentConversation, asks AskReader) (Verdict, error) {
-	event, err := h.Envelope.Dispatch()
+	event, err := intake.DispatchOf(h.Envelope)
 	if err != nil {
 		return Verdict{Because: err.Error()}, nil
 	}
@@ -314,7 +314,7 @@ func ReadOrigin(h intake.Handoff) (Origin, error) {
 			Sender: env.SourceSession, EventID: env.EventID,
 		}, nil
 	}
-	event, err := env.Dispatch()
+	event, err := intake.DispatchOf(env)
 	if err != nil {
 		return Origin{}, err
 	}

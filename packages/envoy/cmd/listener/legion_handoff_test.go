@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const (
@@ -243,7 +244,7 @@ func TestHandOffToLegionKeysOnTheLastStatedAnsweringFlag(t *testing.T) {
 	rig := newHandoffRig(t, 0)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
 
-	hand := func(key string) *legionHandoffMessage {
+	hand := func(key string) *listenerwire.LegionHandoff {
 		t.Helper()
 		item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+key, "agent")
 		handed, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: handoffAgent})

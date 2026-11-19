@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // legionHandoffPrefix and legionHandoffAgents frame the subject a hand-off is published on,
@@ -37,18 +38,6 @@ func isLegionHandoffSubject(subject string) bool {
 	rest, ok := strings.CutPrefix(subject, legionHandoffPrefix)
 	project, sessionID, agents := strings.Cut(rest, legionHandoffAgents)
 	return ok && agents && project != "" && sessionID != "" && !strings.Contains(project, ".") && !strings.Contains(sessionID, ".")
-}
-
-// legionHandoffMessage is what a hand-off publishes: the topic the message was for, the agent
-// session it is for, that session's role token and Legion project token, and the envelope exactly as
-// it would have been delivered to the agent. It is LegionAgentHandoffSchema
-// (packages/contracts/src/legion-handoff.ts), which the daemon decodes as intake.Handoff.
-type legionHandoffMessage struct {
-	OriginalTopic string             `json:"original_topic"`
-	TargetSession string             `json:"target_session"`
-	RoleToken     string             `json:"role_token"`
-	Project       string             `json:"project"`
-	Envelope      contracts.Envelope `json:"envelope"`
 }
 
 // legionHandoffTarget is one message no session took, which handOffToLegion may hand off: its
@@ -98,12 +87,13 @@ type legionHandoff struct {
 //     messages and may answer in a moment, so the message stays the agent's rather than being
 //     answered in its name from a conversation it has moved past.
 //
-// It answers the hand-off it published, or nil when one of those does not hold, in which case the
-// caller answers as it did before hand-off. A registry it cannot read is logged and answered nil
-// the same way. The error is a publish that failed. The publish carries a MsgId built from the
-// envelope's dedupe key, so the copies every listener's durable hands off for one bus message, and
-// a send repeated under one idempotency key, are stored once.
-func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandoffTarget) (*legionHandoffMessage, error) {
+// It answers the hand-off it published (listenerwire.LegionHandoff, the body the daemon's hand-off
+// reader decodes), or nil when one of those does not hold, in which case the caller answers as it
+// did before hand-off. A registry it cannot read is logged and answered nil the same way. The error
+// is a publish that failed. The publish carries a MsgId built from the envelope's dedupe key, so
+// the copies every listener's durable hands off for one bus message, and a send repeated under one
+// idempotency key, are stored once.
+func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandoffTarget) (*listenerwire.LegionHandoff, error) {
 	if h == nil || target.optedOut || target.envelope.Source == "envoy" {
 		return nil, nil
 	}
@@ -126,7 +116,7 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 	default:
 		return nil, nil
 	}
-	handoff := legionHandoffMessage{
+	handoff := listenerwire.LegionHandoff{
 		OriginalTopic: target.envelope.Topic,
 		TargetSession: agent.SessionID,
 		RoleToken:     agent.RoleToken,
@@ -186,10 +176,10 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 		if err != nil {
 			return nil, err
 		}
-		if len(held) == 0 || !held[0].Entry.Finished {
+		if len(held) == 0 || !held[0].Finished {
 			return nil, nil
 		}
-		entry = held[0].Entry
+		entry = held[0].LegionAgentEntry
 	} else {
 		agent, err := agents.Get(ctx, target.session)
 		if errors.Is(err, legionagents.ErrNotFound) || errors.Is(err, legionagents.ErrInvalid) {
@@ -198,7 +188,7 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 		if err != nil {
 			return nil, err
 		}
-		entry = agent.Entry
+		entry = agent.LegionAgentEntry
 	}
 	if entry.Released {
 		return nil, nil

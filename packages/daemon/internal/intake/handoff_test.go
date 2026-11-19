@@ -1,6 +1,7 @@
 package intake
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // fakeDelivery is one JetStream delivery as ConsumeHandoff settles it, recording how.
@@ -93,12 +96,57 @@ func TestAHandoffTheDaemonCannotTrustIsTerminated(t *testing.T) {
 	}
 }
 
+// The listener writes an envelope's expects_reply as the JSON literal false for a sender that
+// wants no reply and as its word for one that wants one (listenerwire.ExpectsReply), and a
+// hand-off carries that envelope whole. Each decodes and reaches the loop's handler, acknowledged,
+// with the value it carried. This reader once decoded expects_reply as a string of its own, so a
+// hand-off carrying false did not decode and was terminated as poison, its message never answered.
+func TestAHandoffReachesTheLoopWhateverItsExpectsReply(t *testing.T) {
+	spec := HandoffSpec{Project: "legion"}
+	for _, tc := range []struct {
+		expects listenerwire.ExpectsReply
+		wire    string
+	}{
+		{listenerwire.ExpectsReplyNone, `"expects_reply":false`},
+		{listenerwire.ExpectsReplyRequired, `"expects_reply":"required"`},
+		{listenerwire.ExpectsReplyOptional, `"expects_reply":"optional"`},
+	} {
+		// The bytes the listener publishes: its own hand-off body, marshalled as handOffToLegion does.
+		data, err := json.Marshal(listenerwire.LegionHandoff{
+			OriginalTopic: "notifications.agent.ses_tester", TargetSession: "ses_tester", RoleToken: "legion-legion-legion-9-tester", Project: "legion",
+			Envelope: listenerwire.Envelope{EventID: "evt-1", Source: "agent", SourceEventID: "src-1", SourceSession: "ses_asker",
+				Topic: "notifications.agent.ses_tester", DedupeKey: "agent.ses_tester.0123456789abcdef0123456789abcdef",
+				PayloadSummary: "Which fruit?", TraceID: "trace-1", ExpectsReply: tc.expects},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(data, []byte(tc.wire)) {
+			t.Fatalf("the listener's hand-off is %s, want it to carry %s", data, tc.wire)
+		}
+		var got Handoff
+		reached := false
+		delivery := &fakeDelivery{subject: HandoffSubject("legion", "ses_tester"), data: data}
+		ConsumeHandoff(context.Background(), delivery, spec, func(_ context.Context, h Handoff, _ []byte) error {
+			got, reached = h, true
+			return nil
+		})
+		if !reached || delivery.settled != "ack" {
+			t.Errorf("a hand-off carrying %s reached the loop %v and settled %q, want it handed to the loop and acknowledged", tc.wire, reached, delivery.settled)
+			continue
+		}
+		if string(got.Envelope.ExpectsReply) != string(tc.expects) {
+			t.Errorf("a hand-off carrying %s reached the loop with expects_reply %q, want %q", tc.wire, got.Envelope.ExpectsReply, tc.expects)
+		}
+	}
+}
+
 // A Dispatch envelope's payload reads as the targeted send's frame, with its delivery attempt, or
 // as the bare event a follower route carries.
 func TestADispatchEnvelopeReadsAsItsFrameOrItsBareEvent(t *testing.T) {
 	frame := HandoffEnvelope{EventID: "e1", Source: "dispatch", Payload: `{"event":{"type":"comment.created","actor":{"kind":"user","id":"p@example.com"},` +
 		`"issue_key":"LEGION-9","payload":{"id":"c1","body":"@tester why?","ask_id":null}},"delivery":{"attempt":2,"mode":"btw","comment_id":"c1","target":"role:tester"}}`}
-	event, err := frame.Dispatch()
+	event, err := DispatchOf(frame)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,14 +155,14 @@ func TestADispatchEnvelopeReadsAsItsFrameOrItsBareEvent(t *testing.T) {
 	}
 	bare := HandoffEnvelope{EventID: "e2", Source: "dispatch", Payload: `{"type":"comment.created","actor":{"kind":"user","id":"p@example.com"},` +
 		`"issue_key":"LEGION-9","payload":{"id":"c2","body":"and?","ask_id":"a1"}}`}
-	event, err = bare.Dispatch()
+	event, err = DispatchOf(bare)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if event.Delivery != nil || event.Payload.AskID == nil || *event.Payload.AskID != "a1" {
 		t.Fatalf("bare event = %+v, want the ask reply with no delivery", event)
 	}
-	if _, err := (HandoffEnvelope{EventID: "e3", Source: "agent", Payload: "{}"}).Dispatch(); err == nil {
+	if _, err := DispatchOf(HandoffEnvelope{EventID: "e3", Source: "agent", Payload: "{}"}); err == nil {
 		t.Fatal("an agent's envelope decoded as Dispatch's")
 	}
 }
@@ -130,7 +178,7 @@ func readHandoffFixture(t *testing.T, name string) DispatchEvent {
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := h.Envelope.Dispatch()
+	event, err := DispatchOf(h.Envelope)
 	if err != nil {
 		t.Fatal(err)
 	}

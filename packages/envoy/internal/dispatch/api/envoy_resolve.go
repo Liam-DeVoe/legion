@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // Dispatch's Envoy listener client is a cross-service HTTP call bounded only by its five
@@ -26,14 +27,20 @@ import (
 // deploy, is enough to trigger it.
 //
 // So no listener call runs with a transaction or a pooled connection held, and this file is
-// the one place the shape is spelled:
+// the one place the shape is spelled, for that call and for any other slow read a write
+// decides on:
 //
-//  1. resolve - the listener call, with nothing held;
+//  1. resolve - the slow read (the listener call, or the results write's read of the live
+//               Verification document), with nothing held;
 //  2. lock    - open the transaction and take the locks the write needs;
 //  3. verify  - re-read under those locks whatever the resolution depended on, and decide
 //               with the resolution only while the locked rows still agree with it;
 //  4. redo    - a resolution the lock contradicts is taken once more, bounded, before the
 //               write answers with its own conflict.
+//
+// The results write (recordResultWithFreshWords, results.go) takes this shape for its read of
+// the check's words: a cold read bounded by a minute, which held under the two issues' owner
+// locks would make every writer of either issue wait it out.
 //
 // An outbound listener call (Envoy.Send) never runs inside a transaction at all, and this file
 // spells that half too:
@@ -58,9 +65,11 @@ import (
 // than opening a second one. That attempt keeps the resolution those routes were decided on, for
 // whichever sender finishes it (deliverResolvedCommentMention).
 
-// errStaleResolution is how a locked write reports that a row the pre-transaction listener
-// resolution depended on had changed by the time it held the lock. It never reaches a client:
-// resolveThenLock either redoes the pair or answers with the caller's conflict.
+// errStaleResolution is how a locked write reports that a row the resolution it was handed
+// depended on had changed by the time it held the lock. That resolution is the pre-transaction
+// listener call for a delivery, and the check's words read out of the live document for the
+// results write (recordResultWithFreshWords). It never reaches a client: resolveThenLock
+// either redoes the pair or answers with the caller's conflict.
 var errStaleResolution = errors.New("listener resolution is stale")
 
 // resolutionAttempts is how many times resolveThenLock resolves before it gives up: the
@@ -74,8 +83,8 @@ const resolutionAttempts = 2
 // write owns its own transaction, and owes two things beyond opening it. It MUST re-read,
 // under the locks it takes, every row the resolution depended on, and compare: a write that
 // merely uses R without checking it against what the lock found is the bug this shape exists
-// to prevent, because the interesting case is precisely the row that moved while the listener
-// was answering. And it MUST have rolled back before it reports errStaleResolution, since
+// to prevent, because the interesting case is precisely the row that moved while the resolve
+// ran. And it MUST have rolled back before it reports errStaleResolution, since
 // resolveThenLock calls it again.
 func resolveThenLock[R, T any](
 	ctx context.Context,
@@ -139,7 +148,7 @@ func resolveThenLock[R, T any](
 // keeps the answer the listener gave.
 //
 // The registry names such a session only while its project last said it answers
-// (dispatchenvoy.LegionAgent.Answering), the condition the listener's hand-off reads too. A
+// (listenerwire.LegionAgentAnswer.Answering), the condition the listener's hand-off reads too. A
 // project whose daemon runs without `answers`, or that never stated anything, has no daemon the
 // listener hands the send to, so a redirect gains nothing over the listener's own answer: the
 // route keeps it - a role's no-holder failure, a session's "no live session", which a targeted
@@ -257,32 +266,33 @@ func (s *server) unheldRoleTarget(ctx context.Context, route model.Route, answer
 // issue still runs names none: nobody holds it for a while between two of its workers, and the
 // message is the next worker's, which Envoy keeps for it.
 //
-// Neither a session nor a role names an entry that is released (dispatchenvoy.LegionAgent.Released):
-// the daemon released that session's idle issue pod and resumes it on the wake the message raises,
-// so the listener hands it to no daemon. A session route then records the listener's answer; a
-// role route with no live holder is kept for the role's next holder instead (unheldRoleTarget).
+// Neither a session nor a role names an entry that is released
+// (listenerwire.LegionAgentEntry.Released): the daemon released that session's idle issue pod and
+// resumes it on the wake the message raises, so the listener hands it to no daemon. A session
+// route then records the listener's answer; a role route with no live holder is kept for the
+// role's next holder instead (unheldRoleTarget).
 //
 // Nor does either name an entry whose project does not answer (answersForAgent): the listener
 // hands that session's messages to no daemon, so the route records the listener's answer.
-func (s *server) registeredAgent(ctx context.Context, route model.Route) (dispatchenvoy.LegionAgent, bool) {
+func (s *server) registeredAgent(ctx context.Context, route model.Route) (listenerwire.LegionAgentAnswer, bool) {
 	if route.Kind == "role" {
 		newest, ok := s.newestRoleAgent(ctx, route.ID)
 		if !ok || !answersForRole(newest) {
-			return dispatchenvoy.LegionAgent{}, false
+			return listenerwire.LegionAgentAnswer{}, false
 		}
 		return newest, true
 	}
 	agent, err := s.deps.Envoy.Agent(ctx, route.ID)
 	if errors.Is(err, dispatchenvoy.ErrNotFound) {
-		return dispatchenvoy.LegionAgent{}, false
+		return listenerwire.LegionAgentAnswer{}, false
 	}
 	if err != nil {
 		slog.Warn("dispatch: read the Legion agent registry for a session with no live record",
 			"session", route.ID, "error", err)
-		return dispatchenvoy.LegionAgent{}, false
+		return listenerwire.LegionAgentAnswer{}, false
 	}
 	if !answersForAgent(agent) {
-		return dispatchenvoy.LegionAgent{}, false
+		return listenerwire.LegionAgentAnswer{}, false
 	}
 	return agent, true
 }
@@ -290,15 +300,15 @@ func (s *server) registeredAgent(ctx context.Context, route model.Route) (dispat
 // newestRoleAgent is the Legion agent registry's newest entry for a role token, the role's
 // current holder; false when the registry holds none, and when its read did not answer, which is
 // logged.
-func (s *server) newestRoleAgent(ctx context.Context, roleToken string) (dispatchenvoy.LegionAgent, bool) {
+func (s *server) newestRoleAgent(ctx context.Context, roleToken string) (listenerwire.LegionAgentAnswer, bool) {
 	agents, err := s.deps.Envoy.RoleAgents(ctx, roleToken)
 	if err != nil {
 		slog.Warn("dispatch: read the Legion agent registry for a role with no live holder",
 			"role", roleToken, "error", err)
-		return dispatchenvoy.LegionAgent{}, false
+		return listenerwire.LegionAgentAnswer{}, false
 	}
 	if len(agents) == 0 {
-		return dispatchenvoy.LegionAgent{}, false
+		return listenerwire.LegionAgentAnswer{}, false
 	}
 	return agents[0], true
 }
@@ -306,17 +316,17 @@ func (s *server) newestRoleAgent(ctx context.Context, roleToken string) (dispatc
 // answersForRole reports whether a role's newest registry entry is the session its messages go to
 // while no live session holds the role: its issue has finished, and its daemon answers for it
 // (answersForAgent).
-func answersForRole(newest dispatchenvoy.LegionAgent) bool {
+func answersForRole(newest listenerwire.LegionAgentAnswer) bool {
 	return newest.Finished && answersForAgent(newest)
 }
 
 // answersForAgent reports whether the listener hands a message for agent's stopped session to the
 // daemon of agent's project, by the rule its hand-off applies to the entry (answeringAgent in
 // cmd/listener/legion_handoff.go): the entry is not released, and its project last said it answers
-// (dispatchenvoy.LegionAgent.Answering). Only then is the session a delivery's target in place of
-// the listener's own answer: the listener stores a send to any other session it still knows, and a
-// stopped agent's session does not run again to read it.
-func answersForAgent(agent dispatchenvoy.LegionAgent) bool {
+// (listenerwire.LegionAgentAnswer.Answering). Only then is the session a delivery's target in
+// place of the listener's own answer: the listener stores a send to any other session it still
+// knows, and a stopped agent's session does not run again to read it.
+func answersForAgent(agent listenerwire.LegionAgentAnswer) bool {
 	return !agent.Released && agent.Answering
 }
 

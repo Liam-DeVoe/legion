@@ -20,66 +20,19 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// Entry is one Legion session as the registry stores it. Readers ignore fields they do not know,
-// so a later writer may add some.
-type Entry struct {
-	// SessionID is the Oh My Pi or Claude Code session id.
-	SessionID string `json:"session_id"`
-	// LegionProject is the Legion project token the daemon's role tokens carry (claim.ProjectToken,
-	// legionProjectToken in packages/contracts): legion.yaml's project lowercased with every
-	// non-alphanumeric dropped. It is not the Dispatch project.
-	LegionProject string `json:"legion_project"`
-	// Issue is the Dispatch issue key the session works, upper case.
-	Issue string `json:"issue"`
-	// Role is one of Roles.
-	Role string `json:"role"`
-	// RoleToken is legion-<legion_project>-<issue lower-cased>-<role>, byte for byte what
-	// claim.NewToken and roleToken build.
-	RoleToken string `json:"role_token"`
-	// Title is the session's title as stamped (`Legion tester · INFRA-71`).
-	Title string `json:"title"`
-	// Harness is omp or claude.
-	Harness string `json:"harness"`
-	// StartedAt is when the session started, RFC 3339 UTC.
-	StartedAt string `json:"started_at"`
-	// RecordedAt is when the listener first recorded the session, RFC 3339 UTC. The listener sets
-	// it; a writer's value is ignored.
-	RecordedAt string `json:"recorded_at"`
-	// Finished is whether the session's issue has left the workflow, so no later holder of its
-	// role token will come: the issue is closed or done, parked, or its tree retired or lingering
-	// after its close. The daemon's mirror sets it from the issue's state it records, and writes
-	// the entry again whenever that changes, in either direction. It is false by default, and a
-	// writer that never states it leaves every entry of its project unfinished.
-	//
-	// A message to a role nobody holds reads it (handOffToLegion): an unfinished role's message
-	// is kept on the role's kept lane for the next worker of that phase, while a finished role's
-	// is handed to the daemon, because no holder is coming for it.
-	Finished bool `json:"finished,omitempty"`
-	// Released is whether the session's claim is suspended by idle release: the daemon released
-	// its idle issue pod (dispatch://INFRA-945) and kept the session, its phase and its pending
-	// task, so the next message to the session or its role is a wake that brings the pod back and
-	// resumes that very session, not a question for the daemon's answer loop. The daemon's mirror
-	// sets it from the claim's state each minute, and writes the entry again whenever that changes,
-	// in either direction. It is false by default.
-	//
-	// Every hand-off reads it (answeringAgent): a released session is never handed off, on the
-	// session path or the role path, so its message gets exactly what it got before the hand-off
-	// existed - the send route's 404 beside its wake, and the give-up's no_holder notice beside its
-	// wake, on the interest path too - and the wake reaches the worker. The routes decode an
-	// entry leniently (decodeLegionAgentBody), so a listener older than this field ignores it and
-	// hands such a session off as it did before.
-	Released bool `json:"released,omitempty"`
-}
+// Entry is one Legion session as the registry stores it, which the listener's wire package
+// declares (listenerwire.LegionAgentEntry), its finished and released flags among it. Readers
+// ignore fields they do not know, so a later writer may add some.
+type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
 // started_at: the session that replaced it and when, both nil for the newest. Neither is stored.
-type Agent struct {
-	Entry
-	ReplacedBy *string `json:"replaced_by"`
-	ReplacedAt *string `json:"replaced_at"`
-}
+// It is the listener's wire type (listenerwire.LegionAgent).
+type Agent = listenerwire.LegionAgent
 
 // Roles are the six Legion roles, in the order the workflow reaches them (claim.Roles,
 // LEGION_ROLES in packages/contracts). An issue's agents are listed in this order.
@@ -247,7 +200,7 @@ func sameSession(stored, next Entry) bool {
 
 // startedAt is the entry's start, the order a role token's sessions replace each other in. A stored
 // entry was validated, so it parses; one that does not sorts first.
-func (e Entry) startedAt() time.Time {
+func startedAt(e Entry) time.Time {
 	at, _ := time.Parse(time.RFC3339, e.StartedAt)
 	return at
 }
@@ -255,7 +208,7 @@ func (e Entry) startedAt() time.Time {
 // oldestFirst orders one role token's sessions by when they started, then by when they were
 // recorded, then by id, so two reads order the same sessions the same way.
 func oldestFirst(a, b Entry) int {
-	return cmp.Or(a.startedAt().Compare(b.startedAt()), cmp.Compare(a.RecordedAt, b.RecordedAt), cmp.Compare(a.SessionID, b.SessionID))
+	return cmp.Or(startedAt(a).Compare(startedAt(b)), cmp.Compare(a.RecordedAt, b.RecordedAt), cmp.Compare(a.SessionID, b.SessionID))
 }
 
 // succession derives each session's replacement among entries, every one of one role token: the
@@ -265,7 +218,7 @@ func succession(entries []Entry) []Agent {
 	slices.SortFunc(entries, oldestFirst)
 	agents := make([]Agent, len(entries))
 	for i, entry := range entries {
-		agents[i] = Agent{Entry: entry}
+		agents[i] = Agent{LegionAgentEntry: entry}
 		if i+1 < len(entries) {
 			next := entries[i+1]
 			agents[i].ReplacedBy, agents[i].ReplacedAt = &next.SessionID, &next.StartedAt
@@ -290,7 +243,7 @@ func issueOrder(entries []Entry) []Agent {
 		return cmp.Or(
 			cmp.Compare(slices.Index(Roles, a.Role), slices.Index(Roles, b.Role)),
 			cmp.Compare(a.RoleToken, b.RoleToken),
-			-oldestFirst(a.Entry, b.Entry),
+			-oldestFirst(a.LegionAgentEntry, b.LegionAgentEntry),
 		)
 	})
 	return agents

@@ -91,7 +91,11 @@ var FailsClosedCalls = []TargetCall{
 	// (quality 2).
 	{Argv: []string{"repo", "fork", "--org", "acme", "--", "sjawhar/legion"}, Err: "more than one owner"},
 	{Argv: []string{"repo", "fork", "--", "sjawhar/legion", "--depth=1"}, Owner: "sjawhar"},
-	{Argv: []string{"repo", "clone", "--", "sjawhar/legion", "--depth=1", "-R", "acme/w"}, Owner: "sjawhar"},
+	// What a clone leaf hands git clone after its repository is git's, not gh's: a value naming
+	// another owner's repository there routes nothing. Only the git clone flags ghroute's
+	// cloneGitFlagTakes holds pass, so a -R there, which git clone has no use for, is refused.
+	{Argv: []string{"repo", "clone", "--", "sjawhar/legion", "--depth=1", "--branch", "acme/w"}, Owner: "sjawhar"},
+	{Argv: []string{"repo", "clone", "--", "sjawhar/legion", "--depth=1", "-R", "acme/w"}, Err: `hands "-R" to git clone`},
 	{Argv: []string{"project", "unlink", "1", "--team", "sjawhar/core"}, Env: ghRepoAcme, Owner: "sjawhar"},
 	// --version is gh's alone; before anything, gh reads the next word as a command, an
 	// alias's or an extension's among them.
@@ -121,9 +125,18 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"api", "repos/:owner/:repo/pulls"}, Env: map[string]string{"GH_REPO": "sjawhar/legion"}, Owner: "sjawhar"},
 	{Argv: []string{"api", "graphql", "-f", "o=:owner", "-f", "query=q"}, Env: map[string]string{"GH_REPO": "sjawhar/legion"}},
 	{Argv: []string{"api", "repos/{owner}/{repo}/commits/{branch}"}, Env: map[string]string{"GH_REPO": "sjawhar/legion"}, Owner: "sjawhar"},
-	// agent-task view reads OWNER/REPO#N as that repository; a pr command reads OWNER/REPO#N as a
-	// branch of its own repository.
-	{Argv: []string{"agent-task", "view", "sjawhar/legion#1"}, Owner: "sjawhar"},
+	// A pr command reads OWNER/REPO#N as a branch of its own repository. `gh agent-task` sends
+	// the token to the Copilot API host GitHub names, so it is refused whatever it names, an
+	// issue URL and a pull request's alike; and `--editor` runs an editor after the guard has
+	// read the call. Each is refused before any repository is read. (`gh gist edit` and `gh auth
+	// login`, `logout`, `refresh` and `switch`, whose help these saved files do not hold, are
+	// refused in cmd/legion's TestRealGhAndGitSendTheTargetOwnersToken, with the real gh.)
+	{Argv: []string{"agent-task", "view", "sjawhar/legion#1"}, Err: "`gh agent-task` sends the token to the Copilot API host"},
+	{Argv: []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, Err: `"-e" runs an editor program`},
+	{Argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--editor"}, Err: `"--editor" runs an editor program`},
+	// -e is refused where it is --editor, and taken where the leaf's help gives it another
+	// option: `gh secret set`'s -e is --env.
+	{Argv: []string{"secret", "set", "TOKEN", "-R", "acme/widgets", "-e", "production", "--body", "x"}, Owner: "acme"},
 	{Argv: []string{"pr", "view", "sjawhar/legion#1", "-R", "acme/widgets"}, Owner: "acme"},
 	// The first re-review's reproductions.
 	{Argv: []string{"-R", "sjawhar/legion", "pr", "view", "1", "--json", "title"}, Owner: "sjawhar"},
@@ -236,7 +249,7 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"api", "-X", "GET", "https://api.github.com/orgs/Acme/teams"}, Owner: "acme"},
 	{Argv: []string{"pr", "-R", "sjawhar/legion", "view", "1"}, Owner: "sjawhar"},
 	{Argv: []string{"pr", "create", "--fill", "-R", "github.com/Acme/widgets"}, Owner: "acme"},
-	{Argv: []string{"repo", "clone", "sjawhar/legion", "--", "--depth=1", "-R", "acme/w"}, Owner: "sjawhar"},
+	{Argv: []string{"repo", "clone", "sjawhar/legion", "--", "--depth=1", "--branch", "acme/w"}, Owner: "sjawhar"},
 	{Argv: []string{"repo", "create", "sjawhar/new", "--private"}, Owner: "sjawhar"},
 	{Argv: []string{"repo", "create", "newrepo", "--private"}},
 	{Argv: []string{"repo", "list", "Sjawhar"}, Owner: "sjawhar"},
@@ -288,7 +301,6 @@ var OneRepositoryCalls = []TargetCall{
 	{Argv: []string{"repo", "clone", "sjawhar/legion"}, Owner: "sjawhar", Repo: "legion"},
 	{Argv: []string{"repo", "clone", "github.com/sjawhar/legion"}, Owner: "sjawhar", Repo: "legion"},
 	{Argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/2/files"}, Owner: "sjawhar", Repo: "legion"},
-	{Argv: []string{"agent-task", "view", "sjawhar/legion#1"}, Owner: "sjawhar", Repo: "legion"},
 	{Argv: []string{"search", "issues", "repo:sjawhar/legion", "is:open"}, Owner: "sjawhar", Repo: "legion"},
 	{Argv: []string{"api", "repos/sjawhar/legion/pulls/1/files"}, Owner: "sjawhar", Repo: "legion"},
 	{Argv: []string{"api", "REPOS/sjawhar/Legion"}, Owner: "sjawhar", Repo: "legion"},

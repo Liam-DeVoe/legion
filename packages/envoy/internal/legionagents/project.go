@@ -7,22 +7,21 @@ import (
 	"fmt"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// Project is a Legion project's answering record, the key project.<legion_project>: whether the
-// project's daemon answers for its stopped agents, and when it last said so (RFC 3339 UTC). The
-// daemon writes it at boot and every minute while its loop is configured
-// (PUT /v1/legion/projects/<project>), and the listener hands the project's messages to the
-// daemon while Answering is true, whether or not the daemon runs now: only the flag it last
-// stated counts, never the record's age, so a daemon that stated true and stopped still gets its
-// agents' messages, which JetStream holds until it reads them (cmd/listener,
-// legion_handoff.go; spec v21, section 2.12 of dispatch://INFRA-204's plan). UpdatedAt is for an
-// operator's reading. No agent read reaches the key: those read a session key or an issue or role
-// prefix.
-type Project struct {
-	Answering bool   `json:"answering"`
-	UpdatedAt string `json:"updated_at"`
-}
+// Project is a Legion project's answering record, the key project.<legion_project>, which the
+// listener's wire package declares (listenerwire.LegionProject): whether the project's daemon
+// answers for its stopped agents, and when it last said so (RFC 3339 UTC). The daemon writes it at
+// boot and every minute while its loop is configured (PUT /v1/legion/projects/<project>), and the
+// listener hands the project's messages to the daemon while Answering is true, whether or not the
+// daemon runs now: only the flag it last stated counts, never the record's age, so a daemon that
+// stated true and stopped still gets its agents' messages, which JetStream holds until it reads
+// them (cmd/listener, legion_handoff.go; spec v21, section 2.12 of dispatch://INFRA-204's plan).
+// UpdatedAt is for an operator's reading. No agent read reaches the key: those read a session key
+// or an issue or role prefix.
+type Project = listenerwire.LegionProject
 
 func projectKey(project string) string { return "project." + project }
 
