@@ -255,14 +255,16 @@
 #      does not have (the job that runs the untagged tests may be in any of those files, since
 #      it keeps its caller in ci.yaml), a
 #      step that job does not have, or a step whose run: holds no -run is a failure of its own.
-#  16. a `go test -race` build of .github/workflows/ci-caches.yaml whose packages are not
-#      ci_job_reads.py's DAEMON_RACE_PACKAGES, in that order. That build fills the cache
-#      ci.yaml's race step restores, so a package it names that the lane does not is a race
-#      binary no job of ci.yaml restores, and one the lane names that it does not is a binary
-#      that step links from nothing on every run - in either direction nothing fails, which is
-#      how ./internal/record/ stayed in the fill after the lane dropped it. It fails naming the
-#      package, the job and both lists, and a ci-caches.yaml with no race build at all fails
-#      too, since the lane would then be filled by nobody.
+#  16. a `go test -race` build of .github/workflows/ci-caches.yaml's job ci_job_reads.py's
+#      DAEMON_RACE_FILL_JOB names whose packages are not ci_job_reads.py's
+#      DAEMON_RACE_PACKAGES, in that order. That build fills the cache ci.yaml's race step
+#      restores, so a package it names that the lane does not is a race binary no job of
+#      ci.yaml restores, and one the lane names that it does not is a binary that step links
+#      from nothing on every run - in either direction nothing fails, which is how
+#      ./internal/record/ stayed in the fill after the lane dropped it. It fails naming the
+#      package, the job and both lists; that job with no race build at all fails too, and so
+#      does a ci-caches.yaml with no such job, since the lane would then be filled by nobody. A
+#      race build of another job fills another family and is not this rule's.
 #  17. a gate's filter whose generated block is not exactly the `!` patterns that keep it off
 #      every Go test file it would select and its job does not read, naming the filter, the
 #      first pattern that differs and the command that writes the block; and a `!` pattern of
