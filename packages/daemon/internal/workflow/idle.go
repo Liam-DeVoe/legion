@@ -73,8 +73,11 @@ const (
 	// IdleHoldBundleTooLarge: the save of the issue's last release found the workspace's unpushed
 	// work over the bound a release carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept
 	// and the work with it until something changes what the next save finds. This is the one
-	// statement of when that hold ends: the layers that carry the refusal, from the shim to the
-	// store, point here rather than restate it, so the rule changes in one place.
+	// statement of when that hold ends in the code's comments: the layers that carry the refusal,
+	// from the shim to the store, point here rather than restate it. Three texts a person reads
+	// restate it in their own words and change with it: the message the save sends the worker
+	// (the daemon's bundleTooLargeMessage), docs/kubernetes.md, and the daemon's changelog
+	// fragment of the refused bundle (pr3712-a-refused-bundle-waits-for-a-push-or-a-turn.yaml).
 	//
 	// The store keeps the refusal (pods.BundleRefusal): the moment the refused release was marked,
 	// and the head of the issue's pull request as the daemon recorded it then, "" with no pull
