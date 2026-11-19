@@ -78,7 +78,7 @@ func TestASubArchitectsStalledReleaseIsToldOnItsOwnIssue(t *testing.T) {
 			child:  {Key: child, ResolvedRepo: "acme/widgets", Title: child, Status: "todo", Parent: new(parent), LastSeq: 5},
 		}
 		sub := newLiveClaimIn(t, h, root, own, claim.RoleArchitect)
-		assertFailure(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": sub.grant(t), "issues": []string{child}}, nil),
+		refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": sub.grant(t), "issues": []string{child}}, nil),
 			http.StatusConflict, "CHILD_RELEASE_STALLED")
 		if got, want := stalledOn(t, h, own), stalledFact(texts.StallAttemptsSpent, child, parent, "", "", "", "", maxChildReleaseAttempts); len(got) != 1 || got[0] != want {
 			t.Fatalf("stalled notices on %s = %q, want [%s]", own, got, want)

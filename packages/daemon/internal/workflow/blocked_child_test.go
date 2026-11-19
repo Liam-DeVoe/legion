@@ -122,7 +122,7 @@ func TestAChildReleasedWhileABlockerIsUnfinishedStaysAdmitted(t *testing.T) {
 	// and before its planner's (Engine.gateOpened). The second notice is the child-status that
 	// every child the line starts tells the architect above it (ChildStartedNotice), whether a
 	// blocker held it or its tree's gate did.
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
 }
 
 // The close of the last issue a held child waited on starts it: its branch row, its own
@@ -152,7 +152,7 @@ func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
 		t.Fatalf("the child = %s once every issue it waited on is done, want planning", got)
 	}
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
 	assertBranchRow(t, pool, "LEGION-209", 4)
 	assertPlannerStart(t, pool, "LEGION-209")
 	want := "LEGION-209 started tree=LEGION-208 waited_on=LEGION-300,LEGION-301"
@@ -247,7 +247,7 @@ func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Planning {
 		t.Fatalf("the child that waits on nothing = %s once the line reached it, want planning", got)
 	}
-	assertOutboxKinds(t, pool, []string{"role_message", "role_message", "notice", "issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"role_message", "role_message", "notice", "issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
 }
 
 // An unblocked child whose tree would not start it now is in no line either: the tree's gate is
