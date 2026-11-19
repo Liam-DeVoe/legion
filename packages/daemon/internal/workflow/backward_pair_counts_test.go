@@ -85,7 +85,7 @@ func reviewerRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, r
 func architectMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, to phase.Phase) {
 	t.Helper()
 	standsIn(t, pool, phase.Accepting, "needs_review")
-	applyRefusingNothing(t, pool, engine, rootsMoveBack(t, pool, "LEGION-208", to, "the work does not stand"))
+	applyRefusingNothing(t, pool, engine, rootsMoveBack(t, pool, engine, "LEGION-208", to, "the work does not stand"))
 }
 
 // mergerMovesBack is the merger's own move of the issue out of merging, the one phase it holds,

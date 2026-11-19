@@ -510,12 +510,12 @@ func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testin
 func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf(headOne)
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
-		pool, _, apply := reviewRoundOne(t)
+		pool, engine, apply := reviewRoundOne(t)
 		apply("approve", reviewAt(t, pool, 1, "approved", headOne, reviewTestedAt))
 		if got := issuePhase(t, pool); got != phase.Accepting {
 			t.Fatalf("after the approval the issue is in %s, want accepting", got)
 		}
-		if result := apply("move-back", rootsMoveBack(t, pool, "LEGION-208", phase.Implementing, "the API needs another shape")); result.Refusal != nil {
+		if result := apply("move-back", rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the API needs another shape")); result.Refusal != nil {
 			t.Fatalf("the architect's move back was refused: %+v", result.Refusal)
 		}
 		backToReviewing(t, apply, 2)

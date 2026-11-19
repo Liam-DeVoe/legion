@@ -739,11 +739,12 @@ func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 				role := phase.RoleFor(from)
 				seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: from, Generation: 1, Status: "in_progress", Rank: "U"})
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: "claim"})
+				engine := testEngine(config.DesignGateRootIssues, nil)
 				move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: to, Reason: "correct"}
 				if role == claim.RoleArchitect {
-					move = rootsMoveBack(t, pool, "LEGION-208", to, "correct")
+					move = rootsMoveBack(t, pool, engine, "LEGION-208", to, "correct")
 				}
-				if _, err := intake.ApplyFact(context.Background(), pool, "api", string(from)+"-"+string(to), move, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				if _, err := intake.ApplyFact(context.Background(), pool, "api", string(from)+"-"+string(to), move, engine, admissionStub{}); err != nil {
 					t.Fatalf("ApplyFact backward: %v", err)
 				}
 				if got, pass, rounds := issuePhase(t, pool), implementerPass(t, pool), implementerRounds(t, pool); got != to || pass != 1 || rounds != 0 {

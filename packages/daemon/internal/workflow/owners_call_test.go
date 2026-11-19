@@ -17,9 +17,13 @@ import (
 
 // treeArchitectsRead is what an architect route reads of key for the architect of key's tree root
 // (api's architectForIssue and openStep): that architect's claim, the issue's generation and the
-// run of the step it stands in.
-func treeArchitectsRead(t *testing.T, pool *pgxpool.Pool, key string) (claim.Token, uint64, record.StepEntry) {
+// run of the step it stands in. The daemon serves its routes only once it has booted, so the read
+// comes after the boot's open of each run no start counted, by engine, the scenario's daemon
+// (bootBefore): a run the release before started is read as the boot opened it, as its fact reads
+// it.
+func treeArchitectsRead(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) (claim.Token, uint64, record.StepEntry) {
 	t.Helper()
+	bootBefore(t, pool, engine)
 	records := record.NewStore()
 	var issue *record.Issue
 	var entry record.StepEntry
@@ -44,18 +48,19 @@ func treeArchitectsRead(t *testing.T, pool *pgxpool.Pool, key string) (claim.Tok
 	return claim.Token(treeRoleToken(t, issue.Tree, claim.RoleArchitect)), issue.Generation, entry
 }
 
-// rootsSignOff is the sign_off of key by its tree root's architect, as the route builds it.
-func rootsSignOff(t *testing.T, pool *pgxpool.Pool, key string) intake.SignOff {
+// rootsSignOff is the sign_off of key by its tree root's architect, as the route of engine's daemon
+// builds it.
+func rootsSignOff(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) intake.SignOff {
 	t.Helper()
-	by, generation, entry := treeArchitectsRead(t, pool, key)
+	by, generation, entry := treeArchitectsRead(t, pool, engine, key)
 	return intake.SignOff{Issue: key, By: by, Generation: generation, Entry: entry}
 }
 
 // rootsMoveBack is the request_backward_move of key to to by its tree root's architect, as the
-// route builds it.
-func rootsMoveBack(t *testing.T, pool *pgxpool.Pool, key string, to phase.Phase, reason string) intake.BackwardMove {
+// route of engine's daemon builds it.
+func rootsMoveBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, to phase.Phase, reason string) intake.BackwardMove {
 	t.Helper()
-	by, generation, entry := treeArchitectsRead(t, pool, key)
+	by, generation, entry := treeArchitectsRead(t, pool, engine, key)
 	return intake.BackwardMove{Issue: key, Requester: claim.RoleArchitect, To: to, Reason: reason, By: by, Generation: generation, Entry: entry}
 }
 

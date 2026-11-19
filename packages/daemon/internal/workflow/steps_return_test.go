@@ -248,7 +248,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		assertWalksAt(t, pool, engine, root.Key, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 		entry := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry
 
-		moveBack := rootsMoveBack(t, pool, root.Key, phase.Testing, "the widget does not render")
+		moveBack := rootsMoveBack(t, pool, engine, root.Key, phase.Testing, "the widget does not render")
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			result, err := engine.Apply(ctx, tx, moveBack)
 			if err == nil && result.Refusal != nil {
