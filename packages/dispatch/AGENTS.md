@@ -14,7 +14,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 
 ## Layout
 
-- `web/src/app.tsx` owns authentication, the React Router shell, and the responsive sidebar, main-content, and margin shell. The sidebar provides Inbox, Pinned issues, Projects, Agents, Delivery, Pipeline, and Settings without loading the full issue list, and its Inbox entry carries one count (`useInboxCount()`, below). `/replies` is gone: the router answers it with a `Navigate` to `/?type=reply`, the Inbox under its Type filter, so a link anyone wrote still lands on those rows. The `/agents` route groups live sessions by Dispatch activity and freshness, with targeted exchanges and the shared Send/Aside/BTW composer. Issue pages have Spec, Verification, Plan, Steps, Conversation, Children, Artifacts, Activity, Decisions, and Collaborators tabs. The Steps tab (`/issues/<key>/steps`, chord `t e`, `features/steps/StepsTab.tsx`) reads `GET /issues/{key}/steps` under `["issue", <key>, "steps"]` and draws one table per task, in the server's order, with one row per run of a step (`stepTasks` in `features/steps/steps-model.ts`): its step (`Retro` or `Merge` for those two kinds), role, type, agent, model, the attempt the server counts, start, end and result. A run with no end reads `running`, a failed or stopped run that sent its task back names the step it returned to, a field the record does not hold reads `—`, and a result or kind this build has no word for keeps the server's word rather than losing the row; an issue with no record shows the `No step of this issue has run in Legion.` empty state, and a failed read names the issue and the reason the read gave. The step write appends no event, so `changesSteps` in `api/event-refresh.ts` refreshes the read on the issue's events that come with a phase moving: a claim, a release, a handoff, a close, and an issue write that moved the status or the route. The Decisions tab (`/issues/<key>/decisions`, chord `t d`, `features/issue/DecisionsPanel.tsx`) reads `GET /issues/{key}/decisions` under `["decisions", <key>]` and lists, in order, Open questions (each linking its ask block in the spec), Waiting for your review (each agent decision nobody has kept at its current version, with Keep, which calls the keep route, and Change, which opens a comment on `decisions.md` quoting the decision's first paragraph), Your decisions (each linking its ask) and Replaced; each decision shows its `Unsure:` paragraph in `decisionUnsureAccent` and links every spec block it shaped at `#b-<id>`. Its page is a view of the issue's `decisions.md`, so every reader of a dashboard URL (this SPA, `packages/envoy-client`, the server's `text`) reads `/issues/<key>/decisions` as `dispatch://<key>/artifact/decisions-md`. The Collaborators tab (`/issues/<key>/collaborators`, chord `t o`, `features/issue/CollaboratorsTab.tsx`) reads `GET /issues/{key}/collaborators` under `["issue", <key>, "collaborators"]` and lists, in order, Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest session first and a superseded session naming the session that replaced it (`legion.replaced_by`); then Other agents, every session holding no Legion role, by its last activity; then People, each with why they are a collaborator and when they last worked the issue. Every agent row is an `AgentName` link to its conversation and carries its running state, so a stopped or replaced session is one click from what it said; a `legion_registry` of `unavailable` says Legion's record of this issue's agents could not be read in place of a list it cannot fill, and an issue nobody has worked shows the `No one has worked this issue yet.` empty state. Issue margins show Comments (anchored threads beside the document, Proof's model) and Pinned; standalone project-document margins show Comments only. At `xl` the sidebar and margin are independently collapsible rails; compact widths use their respective sheets. A margin is a property of a document surface, so on a desktop route that has none - the Inbox, a project, Settings, Agents - `features/margin/Margin.tsx` renders nothing at all rather than a 384 px column holding a placeholder sentence; it keys on the route (an issue path, or a project-document path) rather than on `useMarginOwner`, whose document owner only resolves once the artifact query lands, and the reader's own collapse preference is untouched, so the margin returns as they left it on the next issue or document. The desktop sidebar is a `sticky top-0` viewport-tall flex column inside its full-height `<aside>`: the navigation stays reachable on a long issue, and the signed-in name and `Sign out` sit in an `mt-auto` footer beneath the links rather than above them, because identity is read once and the navigation on every visit. Per-user sidebar visibility, margin visibility, and margin width persist in browser storage.
+- `web/src/app.tsx` owns authentication, the React Router shell, and the responsive sidebar, main-content, and margin shell. The sidebar provides Inbox, Pinned issues, Projects, Agents, Delivery, Pipeline, and Settings without loading the full issue list, and its Inbox entry carries one count (`useInboxCount()`, below). `/replies` is gone: the router answers it with a `Navigate` to `/?type=reply`, the Inbox under its Type filter, so a link anyone wrote still lands on those rows. The `/agents` route groups live sessions by Dispatch activity and freshness, with targeted exchanges and the shared Send/Aside/BTW composer. Issue pages have Spec, Verification, Plan, Steps, Conversation, Children, Artifacts, Activity, Decisions, and Collaborators tabs. The Steps tab (`/issues/<key>/steps`, chord `t e`, `features/steps/StepsTab.tsx`) reads `GET /issues/{key}/steps` under `["issue", <key>, "steps"]` and draws one table per task, in the server's order, with one row per run of a step (`stepTasks` in `features/steps/steps-model.ts`): its step (`Retro` or `Merge` for those two kinds), role, type, agent, model, the attempt the server counts, start, end and result. Where the page is narrower than a table's columns (a phone) the table scrolls sideways inside its card, and its scroll box wears `scrollFadeTrailing` through `hooks/useScrollFadeTrailing.ts` while columns lie past the card's edge (not where the table fits, and not at the end of the scroll). A run with no end reads `running`, a failed or stopped run that sent its task back names where it sent it (`returned to step 2`, or `returned to the retro` for place 0, which is no step), a field the record does not hold reads `—`, and a result or kind this build has no word for keeps the server's word rather than losing the row; an issue with no record shows the `No step of this issue has run in Legion.` empty state, and a failed read names the issue and the reason the read gave. The step write appends no event, so `changesSteps` in `api/event-refresh.ts` refreshes the read on the issue's events that come with a phase moving: a claim, a release, a handoff, a close, and an issue write that moved the status or the route. Such an event can reach the page before its record, so each one, any other refresh that reaches the read (of every `["issue"]` read, or of the whole cache), the tab being shown and the page shown again start a catch-up (`useCatchUp`, which holds the read through `ownQuery` in `api/query-refresh.ts`: it hears each refresh that reaches the read, and asks each of its reads of the refresh scheduler, so none cancels a request and the tab reads at most once a second): the shown tab reads at once and 2, 5, 15, 45, 120 and 300 seconds later (`CATCH_UP_READS_MS`, past the record lane's 64-second retry wait), a new start replaces the running list, and a tab not shown or a hidden page reads nothing and holds no timer. The read never fetches on its own and retries nothing, so a failed read is asked again by the list's next read or by Retry. The Decisions tab (`/issues/<key>/decisions`, chord `t d`, `features/issue/DecisionsPanel.tsx`) reads `GET /issues/{key}/decisions` under `["decisions", <key>]` and lists, in order, Open questions (each linking its ask block in the spec), Waiting for your review (each agent decision nobody has kept at its current version, with Keep, which calls the keep route, and Change, which opens a comment on `decisions.md` quoting the decision's first paragraph), Your decisions (each linking its ask) and Replaced; each decision shows its `Unsure:` paragraph in `decisionUnsureAccent` and links every spec block it shaped at `#b-<id>`. Its page is a view of the issue's `decisions.md`, so every reader of a dashboard URL (this SPA, `packages/envoy-client`, the server's `text`) reads `/issues/<key>/decisions` as `dispatch://<key>/artifact/decisions-md`. The Collaborators tab (`/issues/<key>/collaborators`, chord `t o`, `features/issue/CollaboratorsTab.tsx`) reads `GET /issues/{key}/collaborators` under `["issue", <key>, "collaborators"]` and lists, in order, Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest session first and a superseded session naming the session that replaced it (`legion.replaced_by`); then Other agents, every session holding no Legion role, by its last activity; then People, each with why they are a collaborator and when they last worked the issue. Every agent row is an `AgentName` link to its conversation and carries its running state, so a stopped or replaced session is one click from what it said; a `legion_registry` of `unavailable` says Legion's record of this issue's agents could not be read in place of a list it cannot fill, and an issue nobody has worked shows the `No one has worked this issue yet.` empty state. Issue margins show Comments (anchored threads beside the document, Proof's model) and Pinned; standalone project-document margins show Comments only. At `xl` the sidebar and margin are independently collapsible rails; compact widths use their respective sheets. A margin is a property of a document surface, so on a desktop route that has none - the Inbox, a project, Settings, Agents - `features/margin/Margin.tsx` renders nothing at all rather than a 384 px column holding a placeholder sentence; it keys on the route (an issue path, or a project-document path) rather than on `useMarginOwner`, whose document owner only resolves once the artifact query lands, and the reader's own collapse preference is untouched, so the margin returns as they left it on the next issue or document. The desktop sidebar is a `sticky top-0` viewport-tall flex column inside its full-height `<aside>`: the navigation stays reachable on a long issue, and the signed-in name and `Sign out` sit in an `mt-auto` footer beneath the links rather than above them, because identity is read once and the navigation on every visit. Per-user sidebar visibility, margin visibility, and margin width persist in browser storage.
 - `web/src/api/types.ts` re-exports the Dispatch JSON entities from `@legion/contracts`, which generates them from the Go route table (`packages/contracts/schemas/dispatch-openapi.json` → `src/dispatch-api.generated.ts`). It declares a shape of its own only for something no route of that table answers, and `web/src/api/hand-written-shapes.md` names each one with the reason it is not generated.
 - `web/src/lib/timestamps.ts`'s `compareTimestamps` is how the SPA orders two server timestamps.
   The server writes RFC 3339 with trailing fractional zeros dropped (`…00.12Z`, `…00.123456Z`), so
@@ -210,7 +210,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 - Where a write's refusal shows: at the control itself (`inline`, the surface showing it and the store letting the refused write go) when the reader is in front of what they wrote - every composer, an ask's answer, clarification and reply, uploads, a new issue, project, document or document version, a document rebuild, the architecture-source save, delivery settings, repository mappings and their removal, the default-assignee pick, credential decisions and the machine-login lookup, grant and machine-login revokes (`RevocableList`), session groups, comment actions, snoozes, board moves, every issue-header field (`useIssueFieldWrite`, `useIssueComponents`), claim release and unsubscribes, and the live view's model and thinking switch; and in the shell's indicator, as a control that rolls back, for every other write, pins among them. Read marks (`useSendMarkOnce`, `useMarkThreadRead`, `features/agents/unread.ts`) are quiet writes: tried and kept like any write, never shown.
 - `web/src/features/activity/` is the Activity tab (`/issues/<key>/activity`, reference `dispatch://KEY/activity`, chord `t v`), the issue's whole event history: every event one line, newest first, in `ol[aria-label="Issue activity"]`, broken by day and by the reader's unread watermark (`New since you last read`), with `Load older` beneath it paging `GET /issues/{key}/events` 200 at a time and each line's own `Pin`. That list is wrapped in a `ViewportAnchor` over `data-event-seq`: it reads `["events", <key>]`, the query the stream prepends each published event to (`prependEventToLog`), and renders newest first, so without it every arrival would push a reader down in the history by one row. `activity-model.ts` holds `activityDescription` - the one place an event becomes words, read here and by the margin's `EventBody` fallback - and `buildActivityItems`, which reads the lines in sequence order so `issue.updated` can say what status it reopened from. `ActivityLine.tsx` renders a description's artifact name as a link to that artifact. The tab writes no read mark (the Conversation is `last_read_seq`'s one writer) and offers no composer and no filters: this is the record, not a place to write. `dispatch://KEY/log` and `/issues/<key>/conversation` still open the Conversation, which is why `buildDispatchReference` keeps the `log` spelling for it.
 - `web/src/features/issue/pin-write.ts` is the one pin write both the Conversation and the Activity tab draw their `Pin` through (`writePin`): applied to `["user-state"]` at once, then one write of the store per pin, ordered on its issue (`pin:<KEY>`), shown in the shell's indicator as `Pin on <KEY>` / `Unpin on <KEY>` and kept across a reload. Each attempt writes the issue's state as the last pin's answer left it, or read afresh, under the next sequence; Dispatch answers a write another tab got in first with `STATE_STALE` and its current row, which the pin is put on once more. Once the issue's last pin lands, the state Dispatch answered replaces what the page showed; a refused or discarded one has the page read its state again. Pin buttons are never disabled.
-- `features/issue/IssueHeader.tsx` keeps issue identity, state controls, and metadata in one dense header, top-down: the key, title, and pin; then the Status pill select, the priority editor (`PriorityEditor`, the editor body the shared `PriorityControl` also renders, driven by the write `IssuePage` owns), the `AssigneeControl` (below), the approval area — the primary document's single approval chip once approval was requested, unless a drawn design-gate step reviews that very document, and after it one line per design-gate step on a root issue whose project gates them (`ApprovalSteps.tsx`), both described under "A document's approval" below — and Close; then the details — the whose-turn indicator, creator when recorded, labels, owner, subscribers, parent, repository, and external links — on one line (`issue-metadata-rail`) that never wraps and never widens the page: it scrolls sideways inside the card (`overflow-x: auto`, `min-w-0` up the flex ancestors), wearing `scrollFadeTrailing` - a 32 px mask, not a colour - while it has somewhere left to scroll, since at a phone width the cut lands inside a control (the Labels button alone is wider than the rail) and looked like clipped text. The repository is `RepoControl`: `Repository:` and the repository the issue resolves to as a badge, muted when inherited and `No repository` when none resolves, with a native `<select>` laid over it in `AssigneeControl`'s way, labelled `Repository of <KEY>` (`Inherit` first, then the repositories mapped to the issue's project), writing the issue's own `repo` through `useIssueRepo`. The badge is hidden from assistive technology, so the select's description (`aria-describedby`, an `sr-only` span) says what it shows: the repository, `, inherited or the project's default` after it when it is not the issue's own, or `No repository`; with Inherit as the select's value, that is how a screen reader hears the target. An issue that resolves to a repository reads the mappings on first reach; one that resolves to none reads them at once and shows nothing until they answer, then shows the item only when its project maps a repository, so a project with no mapping (nothing to pick) adds nothing to the rail. A failed read is never taken for an empty one: it shows `Repository:` with the failure and a Retry (beside the picker when a repository resolves). Every `settings.repo_project.updated` event refreshes the loaded issue details (`api/event-refresh.ts`), so an open issue follows a new, removed or moved default. It sits in the rail rather than the state row because a repository name can be long and the state row keeps every control on one row at 390 px, and its control is 28 px from `md` like the rail's others. A rail scrolled to its end drops the fade, which would otherwise hide the last item; the header measures `scrollWidth - clientWidth - scrollLeft` on scroll and through a `ResizeObserver` over the rail and its children, so labels and a GitHub title arriving late re-arm it. Below `2xl` the title always has its own row (`basis-full`) and the state controls and the details line share the row beneath it (below `md` the state row is full-width and the details line follows on its own); from `2xl` the title slot is content-sized (`2xl:basis-auto`, growing into the free space) so the state controls, and after them the details line, join the title's row when they fit beside the whole title. The slot has exactly one flex-basis whether it shows the heading or the title editor: a basis that changed on edit would move every other control on the blur a mousedown causes, and the browser would then deliver the click to a different element, swallowing the first click after a title edit. Editing the owner opens its form under the rows. The title wraps across as many lines as it needs rather than clamping, so a long title reads whole instead of cut off mid-word (LEGION-559); desktop state controls are compact, and phone controls remain touch-sized. `GitHubLink.tsx` shows a GitHub issue or pull request as `#N` plus its truncated title (the repository while the title is unknown, including when this sign-in has no GitHub App credentials), never the raw address. Its `Subscribers: N` control opens `features/issue/SubscribedAgents.tsx`, whose list shows the persisted subscriptions, each session an `AgentName` (its running state from the agent registry; "How an agent is shown", below), and offers a human `Unsubscribe` action that notifies the removed session. The creator is an `AgentName` too, named by its current registry title first like every agent; historical issues with no creator render no creator entry.
+- `features/issue/IssueHeader.tsx` keeps issue identity, state controls, and metadata in one dense header, top-down: the key, title, and pin; then the Status pill select, the priority editor (`PriorityEditor`, the editor body the shared `PriorityControl` also renders, driven by the write `IssuePage` owns), the `AssigneeControl` (below), the approval area — the primary document's single approval chip once approval was requested, unless a drawn design-gate step reviews that very document, and after it one line per design-gate step on a root issue whose project gates them (`ApprovalSteps.tsx`), both described under "A document's approval" below — and Close; then the details — the whose-turn indicator, creator when recorded, labels, owner, subscribers, parent, repository, and external links — on one line (`issue-metadata-rail`) that never wraps and never widens the page: it scrolls sideways inside the card (`overflow-x: auto`, `min-w-0` up the flex ancestors), wearing `scrollFadeTrailing` - a 32 px mask, not a colour - while it has somewhere left to scroll, since at a phone width the cut lands inside a control (the Labels button alone is wider than the rail) and looked like clipped text. The repository is `RepoControl`: `Repository:` and the repository the issue resolves to as a badge, muted when inherited and `No repository` when none resolves, with a native `<select>` laid over it in `AssigneeControl`'s way, labelled `Repository of <KEY>` (`Inherit` first, then the repositories mapped to the issue's project), writing the issue's own `repo` through `useIssueRepo`. The badge is hidden from assistive technology, so the select's description (`aria-describedby`, an `sr-only` span) says what it shows: the repository, `, inherited or the project's default` after it when it is not the issue's own, or `No repository`; with Inherit as the select's value, that is how a screen reader hears the target. An issue that resolves to a repository reads the mappings on first reach; one that resolves to none reads them at once and shows nothing until they answer, then shows the item only when its project maps a repository, so a project with no mapping (nothing to pick) adds nothing to the rail. A failed read is never taken for an empty one: it shows `Repository:` with the failure and a Retry (beside the picker when a repository resolves). Every `settings.repo_project.updated` event refreshes the loaded issue details (`api/event-refresh.ts`), so an open issue follows a new, removed or moved default. It sits in the rail rather than the state row because a repository name can be long and the state row keeps every control on one row at 390 px, and its control is 28 px from `md` like the rail's others. A rail scrolled to its end drops the fade, which would otherwise hide the last item; `hooks/useScrollFadeTrailing.ts`, which the tablist of `components/Tabs.tsx` wears too, measures `scrollWidth - clientWidth - scrollLeft` on scroll, through a `ResizeObserver` over the strip and its children, and through a `MutationObserver` over its content, so labels and a GitHub title arriving late re-arm it. Below `2xl` the title always has its own row (`basis-full`) and the state controls and the details line share the row beneath it (below `md` the state row is full-width and the details line follows on its own); from `2xl` the title slot is content-sized (`2xl:basis-auto`, growing into the free space) so the state controls, and after them the details line, join the title's row when they fit beside the whole title. The slot has exactly one flex-basis whether it shows the heading or the title editor: a basis that changed on edit would move every other control on the blur a mousedown causes, and the browser would then deliver the click to a different element, swallowing the first click after a title edit. Editing the owner opens its form under the rows. The title wraps across as many lines as it needs rather than clamping, so a long title reads whole instead of cut off mid-word (LEGION-559); desktop state controls are compact, and phone controls remain touch-sized. `GitHubLink.tsx` shows a GitHub issue or pull request as `#N` plus its truncated title (the repository while the title is unknown, including when this sign-in has no GitHub App credentials), never the raw address. Its `Subscribers: N` control opens `features/issue/SubscribedAgents.tsx`, whose list shows the persisted subscriptions, each session an `AgentName` (its running state from the agent registry; "How an agent is shown", below), and offers a human `Unsubscribe` action that notifies the removed session. The creator is an `AgentName` too, named by its current registry title first like every agent; historical issues with no creator render no creator entry.
   While the subscriber read has not answered (it failed, or Envoy's agent list is refilling) that control reads `Subscribers` with no count, since a count is a claim about who is subscribed. A routed issue whose route status is `unknown` says why in the state row: `Route reach unknown: The agent list is refilling. Try again in a moment.` (`issue-route-refilling`) for `route_status_reason: "refilling"`, `Route reach unknown` (`issue-route-unknown`) for an unreachable listener; the issue list and board render nothing for an `unknown` route, never the `no_holder` marker.
 - `features/issue/IssueLabels.tsx` edits issue-header labels through the shared `components/MultiSelect.tsx` (its `onCreate` row): it combines the issue's labels with labels used anywhere in the project, stages changes locally while the popover is open, and saves the final draft when the popover closes. Both Board and List require every selected `?label=`, compared case-insensitively.
 - `features/issue-page/` is the new issue page of dispatch://INFRA-1196, which a reader gets in place of the tabbed page only after turning on "New issue page" under "Preview" on the Settings page; `useIssuePageChoice` (`choice.ts`) keeps that choice in the browser for each login, the server holds nothing of it, and a browser row turns it on with `withIssuePage` (`e2e/issue-page-option.ts`).
@@ -749,7 +749,7 @@ The `Children` tab (`features/issue/ChildrenTab.tsx`) lists the issue's direct c
 
 An issue's own progress (`features/issue/ProgressChips.tsx`) is the `progress` object every issue read and list row carries (LEGION-542): `tasks`, the task-list items (`- [ ]` / `- [x]`, nested lists and callouts included) of its primary document's latest version, read from its markdown for the checkboxes alone (`pmdoc.CountTasksMarkdown`), so a spec holding a table the Proof schema refuses is still counted; stored on the issue with the version it was counted from by every version write (`docs.RecordTaskProgress`) and counted again once when the server starts, for every row whose stored version is not the document's latest - the rows the migration found, a version a build predating LEGION-542 wrote, and a row another writer held, retried briefly (`docs.Service.RunTaskProgressReconciliation`); and `children`, its direct children, every status, done being `status = 'done'`, computed from the children's statuses on each read. Each is `null` when the issue has none, and the component renders nothing for a null, or for a response with no `progress` at all (an older server during a deploy's overlap), so a list of plain issues stays quiet. The issue header shows each as a thin bar filled to done/total beside `3/7 tasks` (the `bar` prop; a count of one reads `1/1 task`, `0/1 child`), in the wrapping state row with the status, priority and claim, since the metadata rail below clips; a List row and a Board card show each as a `label` pill beside the claim chip. The bar's fill is `progressBarFill` in `theme/classes.ts`. The Children tab's per-child `D/N done` is a different count — that child's whole subtree — and stays.
 
-The `Artifacts` tab carries the number of rows it lists as a `Pill` after the label (accessible name `Artifacts 2`, the words the tab shows, so a voice user can say them; plain `Artifacts` at zero), computed in `IssuePage.tsx` from the issue's `artifacts` - all of them, the issue's own primary document included, since that document is one of the rows. Counting only the uploads beside it put `1` above a list of two. `components/Tabs.tsx` owns the shape: a `TabDefinition.count` renders the pill; every label stays on one line (`whitespace-nowrap`); compact tabs sit tighter on phones (`px-1.5`, no gap), and the issue's ten tabs, one of them carrying a count pill, no longer fit a 390 px viewport: there the tablist scrolls sideways, as it already did at 360 px (a default Android width), and `revealTab` scrolls a tab focused from the keyboard or selected fully into view rather than leaving it clipped, so every tab stays reachable and keeps its 44 px touch target. No label is shortened to buy the room. In the Activity tab, an upload is a line (`<author> added <name>` for `artifact.created`, `<author> saved <name> vN` for `artifact.version`, text from `features/activity/activity-model.ts`'s `activityDescription`) whose artifact name `features/activity/ActivityLine.tsx` renders as a link to the artifact (the saved version's link pins `?v=N`; the `artifact.version` payload has no slug, so the line resolves it from the issue query and stays plain text until that loads). `features/issue/event-description.ts` names the artifact the same way (`Added <name>`, `Saved <name> vN`, `Approved <name> vN`, `Changes requested on <name> vN`) for the `EventBody` fallback.
+The `Artifacts` tab carries the number of rows it lists as a `Pill` after the label (accessible name `Artifacts 2`, the words the tab shows, so a voice user can say them; plain `Artifacts` at zero), computed in `IssuePage.tsx` from the issue's `artifacts` - all of them, the issue's own primary document included, since that document is one of the rows. Counting only the uploads beside it put `1` above a list of two. `components/Tabs.tsx` owns the shape: a `TabDefinition.count` renders the pill; every label stays on one line (`whitespace-nowrap`); compact tabs sit tighter on phones (`px-1.5`, no gap), and the issue's ten tabs, one of them carrying a count pill, no longer fit a 390 px viewport, nor the issue page at 1440 px beside its open comment margin: there the tablist scrolls sideways, as it already did at 360 px (a default Android width), wears the details rail's `scrollFadeTrailing` through the same hook while tabs lie past its trailing edge (not where the tabs fit, and not at the end of the scroll), and `revealTab` scrolls a tab focused from the keyboard or selected - the selected tab again whenever the tablist's box changes, as when the comment margin opens - fully into view and `scrollFadeTrailingPx` clear of that fade rather than leaving it clipped or faded, so every tab stays reachable and keeps its 44 px touch target. No label is shortened to buy the room. In the Activity tab, an upload is a line (`<author> added <name>` for `artifact.created`, `<author> saved <name> vN` for `artifact.version`, text from `features/activity/activity-model.ts`'s `activityDescription`) whose artifact name `features/activity/ActivityLine.tsx` renders as a link to the artifact (the saved version's link pins `?v=N`; the `artifact.version` payload has no slug, so the line resolves it from the issue query and stays plain text until that loads). `features/issue/event-description.ts` names the artifact the same way (`Added <name>`, `Saved <name> vN`, `Approved <name> vN`, `Changes requested on <name> vN`) for the `EventBody` fallback.
 
 Project pages keep their name, linked project key, project tabs, and, on issue routes, the keyboard-reachable List/Board control in a dense responsive header. At `md` and above these controls form one strip; on smaller screens the name, key, and blocker pill form the first row, with tabs and the view control below. When an open ask waits on the viewer, the header's `Blocked on you · N` pill links to the Inbox; it is absent when no asks are waiting.
 
@@ -1381,6 +1381,27 @@ composite to `classes.ts`, not inventing a shade inline. The document editor
 (`@legion/proof-editor`) themes itself through CSS variables scoped to `.proof-editor`;
 `styles.css` maps them to palette swatches under `.dispatch-doc .proof-editor` for both schemes,
 and those literals are what `styles-css-pin.test.ts` pins.
+
+The new issue page (dispatch://INFRA-1196, drawn only for a reader who turned it on; its
+outermost element carries `data-issue-page`) has a typeface, colours and words of its own, which
+no other page reads. Its typeface is Inter 4.1, shipped as
+`web/src/fonts/inter/InterVariable-subset.woff2` (cut by `subset.sh` beside it, which
+`subset.test.ts` holds the file and its `unicode-range` to) under the family name
+`Dispatch Inter`, which no component names. One rule of `styles.css`,
+`html:has([data-issue-page])`, sets that family and `--font-sans` (which Tailwind's `font-sans`
+reads) for the whole document while the new page is drawn, so `main`'s `:root` rule and the
+`--font-sans` of Tailwind's theme stay as they are, every other page keeps them, and no other
+page requests the file. Keep it that way: name no `@font-face` `Inter`, set no
+`--font-sans` in `@theme`, and write a rule the new page needs in another form (a floor, a font,
+a padding) as a new rule under `html:has([data-issue-page])`, never as a change to the rule the
+other pages use. Its colours are the `--color-page-*` and `--color-icon-rail*` tokens of the
+`@theme` block of `styles.css`, with their dark values in a `@media (prefers-color-scheme: dark)`
+block of their own; `classes.ts` names them in `PAGE_COLORS`, and `page-colours.test.ts` holds
+each token, and each swatch `PAGE_COLORS` names, to the value of the approved design. Its words
+are the tables of `features/issue-page/page-words.ts` and `page-structure.ts` that
+`UNASKED_SOURCES` and `ANSWER_SOURCES` hold: a component of the page takes its words from there
+and keeps no copy of its own, and one test of `page-words.test.ts` reads every phrase for an
+internal word.
 
 ## Document editor
 
@@ -2106,20 +2127,144 @@ Playwright listings first, to prove it scanned the files the suite runs: the
 default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
 `DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
 projects, whose rows a listing naming no project holds none of. The four
-collect at once, and the readings the timing comment above
-`listingTimeout` carries (`e2e/__tests__/no-browser-rows.test.ts`) are of
-the whole file: 13.72, 17.11 and 23.22 seconds in three runs of it, with
-the default listing 3.59 seconds on its own and the wall-clock one 1.25.
-The file allows three minutes,
-which is a ceiling for something being wrong rather than a budget for a
-listing. A row may stand all the same as a named exemption
-with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
-the check refuses a stale exemption too — one naming a row the suite no longer
-holds, or one that drives a browser now — so the rule cannot come to lie in the
-other direction either.
+collect at once, and each is a bounded child, so the row states its limit as
+`rowLimit` over the four (`e2e/__tests__/no-browser-rows.test.ts`) and the file
+holds no number of its own. The four listings start when the file's module loads,
+and the process that runs the file prints each one's cost line on its own stderr
+as that listing ends. A row may stand all the same as a named
+exemption with its reason, written in `e2e/no-browser-rows.ts`, whose list
+ships empty; the check refuses a stale exemption too — one naming a row the
+suite no longer holds, or one that drives a browser now — so the rule cannot
+come to lie in the other direction either.
 INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
 agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
 two-build rollout row.
+
+Every one-shot subprocess a row or hook waits for, but the two stated edges
+below, starts through `runBounded`
+(`e2e/__tests__/bounded-subprocess.ts`): it bounds the child, kills the child
+and every process it started when the bound passes (its descendants by parent
+pid, and on Linux every process whose environment carries the child's token),
+fails with a message naming the file that started the child, its command and
+how long it waited, and prints one line per child, with what that child cost,
+on the stderr of the run that started it. Two subprocesses are stated edges
+rather than bounded: the psql of `e2e/psql.ts` (the rows and hooks of
+`e2e/__tests__/psql-session.test.ts`, and the scratch databases of
+`e2e/__tests__/replace-blocks-guard.test.ts`), whose `sqlAt`
+`e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so a bound on it
+would reach past
+`e2e/__tests__/`; and, on a machine with no `/proc`, the `ps` with which
+`bounded-subprocess.ts` and its test read the process table, which runs with no
+bound. Linux lists its processes under `/proc` and never runs that `ps`.
+The child stays in the process group of the run that started it, so an
+interrupted `bun test --parallel` takes it along
+(`e2e/__tests__/bounded-subprocess.test.ts`).
+The bounds are `short` (60 000 ms, a command that
+starts nothing), `listing` (360 000 ms,
+one `playwright test --list`), `generation` (390 000 ms,
+`bun e2e/tools/row-map.ts`, which starts two listings of its own) and
+`twoStackBuild` (1 800 000 ms, the child that builds two stacks). One rule
+derives a row's limit from them: `rowLimit(...)` sums the bounds of what the
+row waits for one after another - each child, and each wait the row ends at a
+bound itself, such as `whether` or `eventually` of `bounded-subprocess.ts`,
+which read a state another process reaches until it holds; once the short
+bound has passed, `whether` answers false and `eventually` fails naming that
+state - counts a group written `{ atOnce: [...] }` as the
+largest bound in it, and adds 30 000 ms for the row's own work. Each argument
+is a bound name and never a number, so a name that is not a bound is a compiler
+error rather than a red run. A row or hook that drives a process rather than
+waiting for one states `rowLimit` too where every wait it makes ends at a bound:
+the interrupted-runner row of `e2e/__tests__/bounded-subprocess.test.ts` drives a
+`bun test` runner and states `rowLimit("short", "short", "short")` for its three
+polls, the rows of `e2e/__tests__/local-instance-support.test.ts` that wait
+for its `Supervisor`'s processes state one for each `eventually`, and the seven
+rows of `e2e/__tests__/delivery-live-probe.test.ts` that read the probe's lines
+and stop it with SIGINT state `rowLimit("short", "short")`, one for the wait for
+a line and one for the wait for the exit. Otherwise it keeps a number, with the
+reason it is that long on the line directly above it: the two hooks of
+`e2e/__tests__/psql-session.test.ts`.
+`e2e/row-limits.ts`, which
+`e2e/__tests__/row-limits.test.ts` runs over every file under that directory, at
+any depth, that the lane's `bun test` collects there - a name ending `.test`,
+`_test`, `.spec` or `_spec`, in any case, under `.ts`, `.tsx`, `.js`, `.jsx`,
+`.mjs`, `.cjs`, `.mts` or `.cts`, in every directory but `node_modules` and one
+whose name begins with a dot -
+refuses every other limit: a limit is a call of that shared
+`rowLimit`, or it carries a reason of at least eight words on the line directly
+above it.
+It reads a limit in a row's second or third argument, the second argument of
+`beforeAll`, `afterAll`, `afterEach` or `onTestFinished`, and the argument of
+`setDefaultTimeout` and `jest.setTimeout`: the argument itself, or, for a row
+or a hook, the `timeout` of an options object under a plain key
+(`{ timeout: n }`).
+It reads those calls under the name a file imports them by, a `const` bound to
+that name, a name destructured off `await import("bun:test")` or
+`require("bun:test")`, or a member of a name bound to either, and a row
+declared by a callee reached from one of those through dotted members and
+calls (`test.skip`, `test.each(t)`).
+It also
+refuses a row or hook that waits for `runBounded`, `listing`,
+`whether` or `eventually` itself, and a row that waits for one through a
+function declaration of its own file or by referring to a name the file
+binds or assigns to such a call (`const lane = retained(listing(...))` at module
+load, or `lane = retained(listing(...))` in a hook, then `await lane` in the
+row), unless it states its limit as a `rowLimit`
+call, its own, or the file's `setDefaultTimeout` or `jest.setTimeout`, which
+Bun applies to the rows and hooks registered after the call: without one the
+lane's `--timeout 60000` stops it, which ties with the `short` bound.
+It reads those
+exports from a named import, from a name bound to or destructured off an
+`import()` of their module, or from a name destructured off a `require` of it
+under another name.
+Where it reads the bound of what a row waits for
+(a `listing` call, a `runBounded` whose `bound:` is a string literal, a
+`whether` or `eventually` call, which is the `short` bound, a name
+bound to any of those), it refuses a `rowLimit` whose total, computed from its
+arguments as written, falls below `rowLimit` of the largest such bound; a bound
+or a total it cannot read (a computed `bound:`, a spread argument) is not
+checked.
+The header of `e2e/row-limits.ts` lists the shapes the guard reads, each beside
+the plant or the row of `e2e/__tests__/row-limits.test.ts` that fails if the
+guard stops reading it.
+A shape not in that list is not promised: the guard either does not read it, or
+reads it in code no row holds, so a limit or a wait written another way may go
+unchecked.
+A row that waits another way still states `rowLimit`.
+The guard refuses these shapes for a fault they do not have, and no test file
+under `e2e/__tests__/` writes any of them:
+`const code = (await runBounded(...)).code` is read as a waiting name, since
+only an outermost `await` (`const options = await helpOptions()`) makes a name
+no wait, so a row that refers to `code` and states no `rowLimit` is refused
+although `code` is a
+number; a call is matched to a waiting function of the file by its bare name, so
+a row that declares a name of its own that a waiting function of the file also
+bears (`const helper = ...`) and calls it is refused the same way; a row
+body that is neither inline nor a function the file declares is read as the
+row's limit, and refused as a limit with no reason; and the guard reads no
+`timeout` under a quoted or computed key or in a spread (`{ "timeout": n }`,
+`{ ["timeout"]: n }`, `{ ...{ timeout: n } }`), and no file limit called
+through a member in brackets (`bun["setDefaultTimeout"](n)`), though Bun
+honours each.
+So a row that waits and states its limit so, its own or the file's, is refused
+as a row that states no limit and that the lane's `--timeout` stops.
+Bun stops it at the limit it wrote.
+No refusal names such a limit itself, even one with no reason.
+The guard does these things with a limit it reads, where Bun does otherwise:
+it reads no order between a file limit and a row, so a `setDefaultTimeout` or
+`jest.setTimeout` written after a top-level row or hook is read as that row's
+limit, though Bun applies it only to what is registered after the call; it
+reads a `setDefaultTimeout` called inside a hook or a row body as the file's
+limit, though Bun 1.4.4 applies it to none of the file's rows; where a file
+writes several file limits, it reads the largest `rowLimit` among them, or names
+every one where none is a `rowLimit`, though Bun applies to each row the last
+one called before it; and it reads a 0 written `0.0`, `0x0` or `0e0` as a limit
+that stops a row, and a refusal of such a limit says that it stops the row,
+though Bun 1.4.4 reads each as `0`, which sets no clock.
+No test file under `e2e/__tests__/` writes
+`setDefaultTimeout` or `jest.setTimeout`, or a 0 written any of those ways.
+`e2e/__tests__/fixtures/row-limits.fixture.ts` and
+`e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
+controls.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
@@ -2752,8 +2897,9 @@ assertion, so the command has to start on a server without that fix for the spec
 against it. What it runs on lives in `e2e/local-instance-support.ts`, which runs nothing on
 import: `Supervisor`, which starts each process and stops them all (Ctrl-C, a SIGTERM, a failure
 at any step), signalling every process group, SIGKILLing whatever still runs after 10 s, aborting
-the signal its psql calls carry, and returning once every leader has exited, and which
-`e2e/harness-start.ts` starts the harness's processes on, their output piped to it;
+the signal its psql calls carry, and returning once every leader has exited with whether it had
+to SIGKILL, and which `e2e/harness-start.ts` starts the harness's processes on, their output piped
+to it;
 `databaseUrlRefusal`, its own `DATABASE_URL` check; and `shellQuote`, for the commands it prints.
 `e2e/__tests__/local-instance-support.test.ts` (`bun run test`) drives them with real processes
 and no server. That check reads the URL with `new URL`, as libpq would only in part; the order
@@ -2763,26 +2909,40 @@ of the reset.
 
 `e2e/delivery-live-probe.ts` is an agent's client for a delivery subscription on `GET /ws/live`,
 run with `bun` against any Dispatch under a bearer (`--url`, `--token-file`, `--view <json>`,
-`--minutes`): it writes one JSON line per frame, applies each with the page's own `applyDelta` and
-`applyRevs`, and reconnects and resumes as `api/live-socket.ts` does. `POST
-/api/v1/live/_test/disconnect` closes its socket as a restart would, and `POST
-/api/v1/live/_test/rotate` exercises a 4001 rotation. With `--compare`, the probe reads the GET
-routes for the last window it applied and writes whether the pull request ids, run ids and every
-measure are equal, exiting 1 when one does not. `docs/site/src/content/docs/dispatch/delivery.md`
+`--minutes`, counted from the first open; `--open-within <seconds>` bounds the first connection's
+wait to open, `LIVE_SOCKET_SILENT_MS` unless given, and that first connection, when it does not
+open by then or is refused, ends the probe with exit 1, while a later one is dialled again): it
+writes one JSON line per frame, applies each with the page's own `applyDelta` and `applyRevs`,
+and reconnects and resumes as `api/live-socket.ts` does.
+It writes an `end` line, `{ at, type: "end" }`, when `--minutes` is up, and none when a signal, a
+refusal or a failure ends the watch.
+`POST /api/v1/live/_test/disconnect`
+closes its socket as a restart would, and `POST /api/v1/live/_test/rotate` exercises a 4001
+rotation. With `--compare`, the probe reads the GET routes for the last window it applied and
+writes whether the pull request ids, run ids and every measure are equal, exiting 1 when one does
+not, when no snapshot arrived to compare, or when a read receives nothing for
+`--read-within <seconds>` (`REQUEST_DEADLINE_MS` unless given; it starts over as the headers and
+each piece of the body arrive). Each read goes through `readUntilSilent` of `e2e/silence-read.ts`,
+a module of its own so a test can import it. `docs/site/src/content/docs/dispatch/delivery.md`
 ("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
 runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
 and holds the body it applies to `after.json`.
 It also checks that the probe reopens after a 4001 and after a 1012 and resumes each time with the
 change and revisions it holds.
-Neither row reads a clock; each reads the `wait_ms` its close line carries, and the two catch
-different things.
+Each of those two rows reads the `wait_ms` its close line carries, and the two catch different
+things.
+Each waits for that second subscribe through `lineBy` and then for the probe's exit after SIGINT
+through `exitAfter`, as every row that drives the probe waits for its line and its exit: each of
+those waits reads its state as `whether` of `e2e/__tests__/bounded-subprocess.ts` does and, once
+the short bound has passed, fails naming what it waited for, so the row states
+`rowLimit("short", "short")`.
 The 4001 row sends a rotation, which the probe answers at once, so the close line's `wait_ms` is
 null; a probe that answered it on the reconnect timer and reports that wait fails the row's line
-assertion whenever it reopens inside the row.
-The row also pins `--reconnect-spread-ms` a day, far above its own per-test limit, so a probe that
-reports null but still reopens on a timer drawn from that spread is cut off by the runner's limit on
-all but about one draw in 2,880; that rate is that probe's alone, and one that reports its wait
-fails on every draw.
+assertion whenever it reopens inside the short bound.
+The row also pins `--reconnect-spread-ms` at 2147483647 ms, the largest spread the probe takes and
+far above the short bound, so a probe that reports null but still reopens on a timer drawn from
+that spread fails at the bound, naming the second subscribe, on all but at most about one draw in
+35 800; that rate is that probe's alone, and one that reports its wait fails on every draw.
 The 1012 row pins `--reconnect-spread-ms` 50 ms, so the probe's own wait is a draw from [0, 50 ms),
 and the row holds that the close line's `wait_ms` is a number in that window: a reopen at once,
 which writes null, or on a later attempt's backoff, at least a second, fails it on every run.
@@ -2791,6 +2951,11 @@ resume's content and order by the row's own assertions.
 A third row reads the wait each close line reports (`wait_ms`): at `--reconnect-spread-ms 0`, two
 1012 closes report 0 ms each only while the parsed option reaches the probe's `reconnectWaitMs`
 and a restart close sets the attempt counter back to 0.
+It waits for its second close line through `lineBy` too.
+`e2e/__tests__/silence-read.test.ts` (`bun run test`) holds the read's deadline on Bun's fake
+timers, which it moves with `jest.advanceTimersByTime`: the deadline starts over on the headers and
+on each piece of the body, and a read whose headers never come, or whose body falls silent, fails
+at the deadline, naming its route.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,
@@ -3090,10 +3255,9 @@ every file whose rows stayed, each with the server behaviour those rows depend o
 committed file and a fresh generation differ. The generation reads two listings and takes the
 rows of both, because one listing is no longer the suite: a listing that names no project holds
 no wall-clock row, so a second names the three `-alone` projects, and `heavy-bodies.e2e.ts` and
-`nested-directive.e2e.ts` reach the map from it alone. The two cost about four seconds together
-on a two-core pod, the reading the comment above that tool's own `defaultListing` and
-`clockListing` carries (`e2e/tools/row-map.ts`: the default listing about three and a half
-seconds on its own and the wall-clock one about one).
+`nested-directive.e2e.ts` reach the map from it alone. Both listings are bounded children, so
+what each one cost is in the line the generation prints on its own stderr
+(`e2e/__tests__/bounded-subprocess.ts`).
 The map carries no count and names no `@pr` row, deliberately: both are read from those
 listings, which hold the whole suite, so a map that held them would be red on every pull
 request of every tree that adds or removes a row here. A **new spec file** still moves it,

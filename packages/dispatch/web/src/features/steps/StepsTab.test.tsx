@@ -1,44 +1,20 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+// biome-ignore lint/style/noRestrictedImports: the table's own scroll events below, which user-event has no form for
+import { fireEvent, screen, within } from "@testing-library/react";
 
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
+import { renderWithQueries } from "../../__tests__/query-provider";
+import { installResizeObserver, layOutScrollBox } from "../../__tests__/scroll-box";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { IssueSteps, StepRecord } from "../../api/types";
+import type { IssueSteps } from "../../api/types";
+import { scrollFadeTrailing } from "../../theme/classes";
 import { StepsTab } from "./StepsTab";
-
-function record(fields: Partial<StepRecord> & Pick<StepRecord, "id">): StepRecord {
-  return {
-    agent: "legion-leg-leg-1-implementer",
-    attempt: 1,
-    ended_at: "2026-11-16T09:40:00Z",
-    generation: 1,
-    issue: "CORE-1",
-    kind: "step",
-    model: "anthropic/claude-opus-5",
-    rating: null,
-    rating_reason: null,
-    report: null,
-    result: "passed",
-    returned_to: null,
-    role: "implementer",
-    session: "",
-    started_at: "2026-11-16T09:00:00Z",
-    step: 2,
-    task: "default",
-    type: "implementation",
-    ...fields,
-  };
-}
+import { stepRecord as record } from "./step-record-fixture";
 
 function renderTab(read: () => Promise<IssueSteps>) {
   const listSteps = spyOn(api, "listSteps").mockImplementation(read);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <QueryClientProvider client={client}>
-      <StepsTab issueKey="CORE-1" />
-    </QueryClientProvider>
-  );
+  const view = renderWithQueries(<StepsTab active issueKey="CORE-1" />);
   return {
     listSteps,
     restore: () => {
@@ -138,6 +114,91 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
   }
 });
 
+// Two tasks are two tables under two headings, in the server's order (which here is not the
+// order of their names), and each table holds its own task's runs and none of the other's.
+test("the Steps tab draws each of two tasks as its own table, with its own runs", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({ id: "docs-implement-1", task: "docs" }),
+          record({
+            attempt: 2,
+            id: "docs-review-1",
+            result: "stopped",
+            role: "reviewer",
+            step: 3,
+            task: "docs",
+            type: "review",
+          }),
+        ],
+        task: "docs",
+      },
+      {
+        steps: [record({ id: "default-plan-1", role: "planner", step: 1, type: "plan" })],
+        task: "default",
+      },
+    ],
+  }));
+
+  try {
+    const tables = await screen.findAllByRole("table");
+    expect(tables.map((table) => table.getAttribute("aria-label"))).toEqual([
+      "Steps of task docs",
+      "Steps of task default",
+    ]);
+    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
+      "Task docs",
+      "Task default",
+    ]);
+    // Each table's step, role, type, attempt and result, the table of docs first.
+    expect(
+      tables.map((table) =>
+        bodyRows(table).map((cells) => [cells[0], cells[1], cells[2], cells[5], cells[8]])
+      )
+    ).toEqual([
+      [
+        ["2", "implementer", "implementation", "1", "passed"],
+        ["3", "reviewer", "review", "2", "stopped"],
+      ],
+      [["1", "planner", "plan", "1", "passed"]],
+    ]);
+  } finally {
+    tab.restore();
+  }
+});
+
+// A run's start and end are what a person reads off the row, so the cells show the clock time
+// and day of each instant, not only carry it in `datetime`. The instants are built from local
+// components, so the hour and minute each cell must show hold in any time zone, and differ in day
+// and time, so a cell that shows one fixed instant, or the other cell's, cannot pass.
+test("the Steps tab shows each run's own start and end, as a clock and calendar read them", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({
+            ended_at: new Date(2026, 10, 17, 14, 40).toISOString(),
+            id: "implement-1",
+            started_at: new Date(2026, 10, 16, 9, 5).toISOString(),
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task default" });
+    const [cells] = bodyRows(table);
+    expect(cells?.[6]).toMatch(/\b16\b.*\b0?9:05\b/u);
+    expect(cells?.[7]).toMatch(/\b17\b.*\b(?:14|0?2):40\b/u);
+  } finally {
+    tab.restore();
+  }
+});
+
 // "step 1" is one phrase. A narrow Result column (a phone) wraps "stopped, returned to step 1"
 // between its words, and the last break must not fall inside the phrase: at 390 px it left the
 // number alone on the last line.
@@ -194,6 +255,51 @@ test("the Steps tab never leaves a number or a single letter of an id on a line 
   }
 });
 
+// At 390 px the table is twice as wide as its card and scrolls sideways inside it, and the column
+// cut at the card's edge read as clipped text. The table wears the trailing fade the tablist and
+// the details rail wear, on the same terms: while columns lie past the edge, not where the table
+// fits, and not at the end of the scroll.
+test("a Steps table wider than its box wears the trailing fade, and one that fits or is scrolled to its end does not", async () => {
+  const sizes = installResizeObserver();
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+  }));
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task default" });
+    const scroller = table.parentElement;
+    if (scroller === null) {
+      throw new Error("the Steps table has no box around it");
+    }
+    // A desktop width: the table fits its 688 px box.
+    const box = { client: 688, scroll: 688 };
+    layOutScrollBox(scroller, box);
+    sizes.resize();
+    expect(scroller).not.toHaveClass(scrollFadeTrailing);
+
+    // A phone: the table's 683 px of columns in a 340 px box.
+    box.client = 340;
+    box.scroll = 683;
+    sizes.resize();
+    expect(scroller).toHaveClass(scrollFadeTrailing);
+
+    // At the end of the scroll the last column is all there is to see; a fade there would hide it.
+    // The reader's scroll is the box's own scroll event, which user-event has no form for.
+    scroller.scrollLeft = 343;
+    fireEvent.scroll(scroller);
+    expect(scroller).not.toHaveClass(scrollFadeTrailing);
+
+    // The reader scrolls back to the start, and the columns past the edge are cued again: a
+    // scroll event, which user-event has no form for.
+    scroller.scrollLeft = 0;
+    fireEvent.scroll(scroller);
+    expect(scroller).toHaveClass(scrollFadeTrailing);
+  } finally {
+    tab.restore();
+    sizes.restore();
+  }
+});
+
 // An issue Legion never ran - or ran before the release that records steps - has no task.
 test("the Steps tab says so when no step of the issue has run in Legion", async () => {
   const tab = renderTab(async () => ({ issue: "CORE-1", tasks: [] }));
@@ -207,26 +313,33 @@ test("the Steps tab says so when no step of the issue has run in Legion", async 
 });
 
 // A failed read names what it could not read and why, in the server's words, and offers the
-// read again; it never reads as an issue with no steps.
+// read again; it never reads as an issue with no steps. The clock stands still, so the read after
+// the failed one is Retry's and not a later read of the tab's catch-up.
 test("the Steps tab says what failed when the read fails, and reads again on Retry", async () => {
-  const user = userEvent.setup();
-  let answer: () => Promise<IssueSteps> = async () => {
-    throw new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
-  };
-  const tab = renderTab(() => answer());
-  try {
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Couldn't load the steps of CORE-1: the database is busy");
-    expect(screen.queryByRole("region", { name: "Steps empty state" })).toBeNull();
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    let answer: () => Promise<IssueSteps> = async () => {
+      throw new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
+    };
+    const tab = renderTab(() => answer());
+    try {
+      await tick(0);
+      const alert = screen.getByRole("alert");
+      expect(alert.textContent).toContain(
+        "Couldn't load the steps of CORE-1: the database is busy"
+      );
+      expect(screen.queryByRole("region", { name: "Steps empty state" })).toBeNull();
 
-    answer = async () => ({
-      issue: "CORE-1",
-      tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
-    });
-    await user.click(within(alert).getByRole("button", { name: "Retry" }));
-    await screen.findByRole("table", { name: "Steps of task default" });
-    await waitFor(() => expect(tab.listSteps).toHaveBeenCalledTimes(2));
-  } finally {
-    tab.restore();
-  }
+      answer = async () => ({
+        issue: "CORE-1",
+        tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
+      });
+      await user.click(within(alert).getByRole("button", { name: "Retry" }));
+      await tick(0);
+      expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();
+      expect(tab.listSteps).toHaveBeenCalledTimes(2);
+    } finally {
+      tab.restore();
+    }
+  });
 });

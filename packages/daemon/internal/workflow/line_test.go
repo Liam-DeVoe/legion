@@ -23,7 +23,7 @@ var ownersLine = []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro,
 func seedOwnersPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint64) {
 	t.Helper()
 	v := record.PlanVersion{Issue: key, Generation: generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-		GivenBy: claim.Token(token(t, key, claim.RoleArchitect)), GivenAt: stepClock}
+		GivenBy: claim.Token(treeRoleToken(t, key, claim.RoleArchitect)), GivenAt: stepClock}
 	task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
 	steps := []record.PlanStep{
 		{Issue: key, Generation: generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
@@ -51,7 +51,7 @@ func walkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) Walk {
 
 // An issue whose run has no plan rows walks today's line, phase.Order, and the table of that line
 // is today's (TestTableOfTodaysOrderIsTodaysTable): what an issue that ran before this release
-// walks (R20). Plan rows of another run of the issue are not its run's. Once its run has rows, the
+// walks. Plan rows of another run of the issue are not its run's. Once its run has rows, the
 // walk is theirs: the task, its steps, its line, and where the task stands.
 func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 	pool := migratedPool(t)
@@ -107,13 +107,13 @@ func leaveAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status strin
 }
 
 // The task's place and issues.phase move in one write: after each move of an issue with plan rows,
-// the phase the store holds is the one the task's place derives (B-12, A-8, C2-6). A root and a
+// the phase the store holds is the one the task's place derives. A root and a
 // child with the plan `implementer reviewer` each walk it from admitted to their merge, and then
 // leave as done: the root through its linger (beginLinger), the child through its own write
 // (leave). A root and a child parked at backlog in the middle of their first step leave before
 // their task is done: the task is left at that step, and the phase it derives is done, the phase of
-// an issue out of the workflow. The control writes the phase alone, as the old path did, and the
-// check fails.
+// an issue out of the workflow. The control writes issues.phase done and leaves the task's row
+// running at its merge, and the check fails.
 func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 	moves := []struct {
 		trigger TriggerKind
@@ -202,13 +202,16 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		}
 	})
 
-	// The same park of a child whose run has no plan rows writes its phase done, as today, and no
-	// task row (R20).
-	t.Run("a child with no plan rows parked at backlog stands done, as today", func(t *testing.T) {
+	// The same park of a child that started its work before Legion took plans, whose run has no
+	// plan rows, writes its phase done and no task row.
+	t.Run("a child with no plan rows parked at backlog stands done with no task row", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)
+		// The child stands in planning with no plan rows, as a child whose planning started before
+		// Legion took plans stands: every first step of this release writes them (planFirstStep).
 		issue := child(t, pool)
-		move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+		issue.Phase = phase.Planning
+		seedIssue(t, pool, issue)
 		leaveAs(t, pool, engine, issue.Key, "backlog")
 		var got string
 		var tasks int

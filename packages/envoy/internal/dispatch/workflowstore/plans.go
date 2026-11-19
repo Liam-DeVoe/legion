@@ -39,8 +39,10 @@ var planFact = []string{AttributeSource, AttributeArtifactID, AttributeVersion, 
 //
 // Every write names the plan's generation, its source and its tasks, and an owner's plan its
 // document and version, or it is refused ErrPlanInput and writes nothing; so a write that replaces
-// the fact states all four of it. The write that makes the node states its `part_of` relation to
-// the issue; an id whose node is part of another issue is refused ErrPlanOtherIssue.
+// the fact states all four of it. A default plan holds its document and version empty, so a write
+// at or below its version 0 gives it neither, and an owner's write, whose version is 1 or more,
+// replaces the default's fact whole. The write that makes the node states its `part_of` relation
+// to the issue; an id whose node is part of another issue is refused ErrPlanOtherIssue.
 func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor, at time.Time) (Plan, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
@@ -51,8 +53,8 @@ func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor,
 		return Plan{}, fmt.Errorf("encode the writer of plan %s: %w", id, err)
 	}
 	version := 0
-	if write.Version != nil {
-		version = *write.Version
+	if write.Document != nil {
+		version = write.Document.Version
 	}
 	written, err := putNode(ctx, tx, nodeWrite{
 		kind: KindPlan, id: id, issue: write.Issue, stated: stated, makes: true, writer: writer, at: at,
@@ -112,34 +114,42 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 	}
 	stated = append(stated, attribute{AttributeSource, source, source})
 
-	document := write.ArtifactID != nil && *write.ArtifactID != ""
-	versioned := write.Version != nil && *write.Version != 0
+	// A document's half that is "" or 0 states nothing, as a write's empty field does.
+	var document PlanDocument
+	if write.Document != nil {
+		document = *write.Document
+	}
 	switch source {
 	case PlanSourceDefault:
-		if document {
+		if document.ArtifactID != "" {
 			return "", nil, planInputError("artifact_id names the document an owner gave, and a plan of source %s has none", source)
 		}
-		if versioned {
+		if document.Version != 0 {
 			return "", nil, planInputError("version names the version of the document an owner gave, and a plan of source %s has none", source)
 		}
+		// A default plan holds its document and version empty, so a later write of the same id
+		// that names a document finds both held and sets neither.
+		stated = append(stated,
+			attribute{AttributeArtifactID, "", ""},
+			attribute{AttributeVersion, int64(0), "0"})
 	case PlanSourceOwner:
-		if !document {
+		if document.ArtifactID == "" {
 			return "", nil, planInputError("artifact_id is required of a plan of source %s: the document its owner gave", source)
 		}
-		artifact, err := uuid.Parse(*write.ArtifactID)
+		artifact, err := uuid.Parse(document.ArtifactID)
 		if err != nil {
-			return "", nil, planInputError("artifact_id %q is not a uuid: it is the id of the document the owner gave", *write.ArtifactID)
+			return "", nil, planInputError("artifact_id %q is not a uuid: it is the id of the document the owner gave", document.ArtifactID)
 		}
-		if !versioned {
+		if document.Version == 0 {
 			return "", nil, planInputError("version is required of a plan of source %s: the version of the document Legion took", source)
 		}
-		if version := *write.Version; version < 1 {
-			return "", nil, planInputError("version %d is no version of a document: versions count from 1", version)
+		if document.Version < 1 {
+			return "", nil, planInputError("version %d is no version of a document: versions count from 1", document.Version)
 		}
 		canonical := artifact.String()
 		stated = append(stated,
 			attribute{AttributeArtifactID, canonical, canonical},
-			attribute{AttributeVersion, int64(*write.Version), strconv.Itoa(*write.Version)})
+			attribute{AttributeVersion, int64(document.Version), strconv.Itoa(document.Version)})
 	}
 
 	if write.Tasks == nil {
@@ -189,14 +199,20 @@ type planAttributes struct {
 	Tasks      []PlanTask `json:"tasks"`
 }
 
-// planFrom reads one node row's attributes as the plan they hold.
+// planFrom reads one node row's attributes as the plan they hold. An artifact id of "" is a plan
+// that holds no document, the source default's, since a write sets the document and its version
+// together or neither.
 func planFrom(id string, attributes []byte) (Plan, error) {
 	var held planAttributes
 	if err := json.Unmarshal(attributes, &held); err != nil {
 		return Plan{}, fmt.Errorf("decode the attributes of plan %s: %w", id, err)
 	}
-	return Plan{
-		ID: id, Issue: held.Issue, Project: held.Project, Source: held.Source, ArtifactID: held.ArtifactID,
-		Generation: held.Generation, Version: held.Version, Tasks: held.Tasks,
-	}, nil
+	plan := Plan{
+		ID: id, Issue: held.Issue, Project: held.Project, Source: held.Source,
+		Generation: held.Generation, Tasks: held.Tasks,
+	}
+	if held.ArtifactID != "" {
+		plan.Document = &PlanDocument{ArtifactID: held.ArtifactID, Version: held.Version}
+	}
+	return plan, nil
 }

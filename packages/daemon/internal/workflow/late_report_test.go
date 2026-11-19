@@ -41,7 +41,7 @@ func reportedOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, ro
 
 // assertLateReport fails unless result is the 409 code whose message is want, and the issue, its
 // task and the outbox stand as before, and the role's row as before but for LastHandoff, which
-// holds handoff where the report named one (open point 3).
+// holds handoff where the report named one, so the next run of the step cannot complete on it.
 func assertLateReport(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, result intake.Result, code, want, handoff string, before reported) {
 	t.Helper()
 	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != code || result.Refusal.Message != want {
@@ -60,16 +60,17 @@ func assertLateReport(t *testing.T, pool *pgxpool.Pool, engine *Engine, role cla
 const usedTail = " Its handoff record counts as used, so the next run of this step writes a handoff of its own."
 
 // For an issue with plan rows, a report of a step whose run Legion already ended is refused, and
-// the answer says why and what to do (R7): the task stands at another step (STEP_ENDED), or the
+// the answer says why and what to do: the task stands at another step (STEP_ENDED), or the
 // task was stopped (TASK_STOPPED, by its owner or because a failed step had no step to return to).
 // Each refusal moves nothing and writes only the report's handoff record as the role's last one,
 // so the next run of the step cannot complete on it (HANDOFF_NOT_NEW). Neither text names how the
 // run ended: the step record Dispatch holds does (dispatch steps). A report of a task whose issue
-// left the workflow and a report of another run keep main's answers. An issue with no plan rows
-// keeps today's answers (R20): a late reviewer's report is taken and moves nothing, and a held
-// issue's tester is told it runs no phase.
+// left the workflow is refused HANDOFF_NOT_CURRENT_PHASE, and a report of another run
+// HANDOFF_STALE_GENERATION. An issue with no plan rows keeps today's answers: a late
+// reviewer's report is taken and moves nothing, and a held issue's tester is told it runs no
+// phase.
 func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
-	t.Run("a: a review that requested changes ended the reviewer's step", func(t *testing.T) {
+	t.Run("a review that requested changes ended the reviewer's step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -105,7 +106,7 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 		}
 	})
 
-	t.Run("b: the owner's stop ended the tester's step", func(t *testing.T) {
+	t.Run("the owner's stop ended the tester's step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		tester := seedPhaseWorker(t, pool, "LEGION-208", claim.RoleTester, "")
@@ -119,7 +120,7 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 			"test-1", before)
 	})
 
-	t.Run("b: a failed step with no step to return to stopped the task", func(t *testing.T) {
+	t.Run("a failed step with no step to return to stopped the task", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -127,6 +128,9 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+		// The type is forged: no plan of this release writes it. Each failed step a plan can hold
+		// comes after its implementer (plan.Supported), so only a stored type that no plan gives
+		// stops the task here (returnTarget).
 		if _, err := pool.Exec(t.Context(), "update plan_steps set type = 'review' where issue = $1 and task = 'a' and position = 1", root.Key); err != nil {
 			t.Fatalf("store the implementer step's type as review: %v", err)
 		}
@@ -144,9 +148,10 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 			"review-1", before)
 	})
 
-	// Main's answers, kept for an issue with plan rows: a report of a task whose issue left the
-	// workflow is a report of a phase no role works, and a report of another run is stale.
-	t.Run("a task whose issue left the workflow, and another run, keep main's answers", func(t *testing.T) {
+	// An issue with plan rows refuses a report of a task whose issue left the workflow as a report
+	// of a phase no role works (HANDOFF_NOT_CURRENT_PHASE), and a report of another run as stale
+	// (HANDOFF_STALE_GENERATION).
+	t.Run("a task whose issue left the workflow is not current, and another run is stale", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -177,7 +182,7 @@ func TestALateReportIsRefusedAndSaysWhy(t *testing.T) {
 			"the tester does not run phase done of LEGION-208; this completion changed nothing", "", before)
 	})
 
-	t.Run("c: the twins with no plan rows answer as today", func(t *testing.T) {
+	t.Run("the twins with no plan rows answer as today", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Reviewing)

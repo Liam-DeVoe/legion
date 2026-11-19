@@ -27,6 +27,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 	payloads := []OutboxPayload{
 		OrdinaryStatusWrite("testing", "in_progress", ""),
 		OrdinaryStatusWrite("done", "in_progress", "Closed by its architect: no change is needed."),
+		// The workflow's own move that no worker's act explains, a head that conflicts with its base,
+		// carries its reason to post on the issue before the status (workflow's moveReason).
+		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."),
 		PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusWrite("in_progress", "done"),
 		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
@@ -56,6 +59,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		WorkspaceRemove{Linger: 3},
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}}},
+		RoleHoldersPublish{Issue: "LEGION-208"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
@@ -217,14 +221,22 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 
 // Every kind the outbox stores runs on exactly one lane, and LaneOf names the lane whose kinds
 // list it: a kind on neither lane would be queued and never run, one on both would run twice over.
+// The kinds and the lanes named here are this test's own, the oracle, and the kinds are read from
+// the outbox's own lanes (OutboxLanes): a lane added there with its kinds and not named here fails
+// both the count of lanes and the count of kinds.
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindStepRecord, OutboxKindPlanRecord}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
+		OutboxKindPlanRecord}
+	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
+	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
+		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
+	}
 	lanes := map[OutboxKind][]OutboxLane{}
-	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim, LaneRecord} {
+	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
 			lanes[kind] = append(lanes[kind], lane)
 		}
@@ -267,8 +279,8 @@ func TestTheRecordLaneRunsTheStepAndThePlanRecordsAlone(t *testing.T) {
 const stepRecordID = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
 
 // Dispatch writes each field of a record once and keeps every field the write leaves out (the step
-// write of Dispatch's route), so an omitted field and a field written empty are two different
-// writes: a start that sent the model as "" would keep the end's model off the record for good.
+// write of Dispatch's route), so an omitted time and a zero one are two different writes: a zero
+// started_at would stand on the record for good, and a returned_to of 0 is a return to the retro.
 // The row has to carry that difference through Postgres: a start with no session, no model and no
 // end decodes with each of them still absent, and a retro's type, which is "", and its place, 0,
 // are still written. Only the write that rates a retro carries a rating and its reason, which every
@@ -277,7 +289,7 @@ func TestAStepRecordKeepsWhatItOmitsApartFromWhatItWritesEmpty(t *testing.T) {
 	started := time.Date(2026, 11, 16, 23, 0, 0, 123456789, time.UTC)
 	ended := started.Add(time.Hour)
 	session, model, result, report := "ses-1", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
-	returnedTo, rating, reason := 2, 4, "The plan fit the work."
+	returnedTo, retro := 2, 0
 	for _, tc := range []struct {
 		name    string
 		record  StepRecord
@@ -309,9 +321,17 @@ func TestAStepRecordKeepsWhatItOmitsApartFromWhatItWritesEmpty(t *testing.T) {
 		{
 			name: "the rating of a retro, which knows no moment and no result",
 			record: StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-				Agent: "legion-leg-leg-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason},
+				Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan fit the work."}},
 			absent:  []string{"session", "model", "started_at", "ended_at", "result", "returned_to", "report"},
 			present: map[string]string{"rating": "4", "rating_reason": `"The plan fit the work."`, "type": `""`, "step": "0"},
+		},
+		{
+			name: "the end of a merge that moved back to the retro, whose place it returned to is 0",
+			record: StepRecord{ID: stepRecordID, Task: "default", Kind: "merge", Role: "merger",
+				Agent: "legion-leg-leg-1-merger", Generation: 1, Session: &session, Model: &model, EndedAt: &ended,
+				Result: &result, ReturnedTo: &retro},
+			absent:  []string{"started_at", "report", "rating", "rating_reason"},
+			present: map[string]string{"step": "0", "returned_to": "0"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -384,9 +404,13 @@ func stepRecordFields(r StepRecord) string {
 		}
 		return fmt.Sprint(*value)
 	}
-	return fmt.Sprintf("{id %s task %q step %d kind %q role %q type %q agent %q generation %d session %s model %s started %s ended %s result %s returned_to %s report %s rating %s rating_reason %s}",
+	rating := "<absent>"
+	if r.PlanRating != nil {
+		rating = fmt.Sprintf("%d %q", r.PlanRating.Rating, r.PlanRating.Reason)
+	}
+	return fmt.Sprintf("{id %s task %q step %d kind %q role %q type %q agent %q generation %d session %s model %s started %s ended %s result %s returned_to %s report %s rating %s}",
 		r.ID, r.Task, r.Step, r.Kind, r.Role, r.Type, r.Agent, r.Generation, text(r.Session), text(r.Model),
-		at(r.StartedAt), at(r.EndedAt), text(r.Result), number(r.ReturnedTo), text(r.Report), number(r.Rating), text(r.RatingReason))
+		at(r.StartedAt), at(r.EndedAt), text(r.Result), number(r.ReturnedTo), text(r.Report), rating)
 }
 
 // A record the workflow builds without its id or its identity is a defect of the daemon, refused
@@ -420,37 +444,103 @@ func TestAStepRecordWithoutItsIDOrIdentityIsRefusedWhereItIsQueued(t *testing.T)
 	}
 }
 
+// The rating of the plan is written by the retro (workflow's rateRetro), onto the retro's record:
+// its kind retro, its place 0, its role the implementer and its type empty. A rating without its
+// reason, or a reason without its rating, is refused where the record is queued and where a stored
+// row is read (TestDecodeOutboxPayloadRefusesInvalidRows); validateOutboxPayload says why the
+// daemon refuses the two apart rather than leaving them to Dispatch. A retro's write with no rating
+// is taken, and so is one with both; each is queued as the payload the stored rows already hold,
+// and that payload, read back, is the record.
+func TestARetrosRatingIsTakenWithItsReasonOrNotAtAll(t *testing.T) {
+	retro := StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
+		Agent: "legion-leg-leg-1-implementer", Generation: 1}
+	identity := `{"id":"` + stepRecordID + `","task":"default","step":0,"kind":"retro","role":"implementer","type":"",` +
+		`"agent":"legion-leg-leg-1-implementer","generation":1`
+	rated := retro
+	rated.PlanRating = &PlanRating{Rating: 3, Reason: "The plan put the tests after the review."}
+	for _, tc := range []struct {
+		name   string
+		record StepRecord
+		stored string
+	}{
+		{name: "a write of the retro that carries no rating", record: retro, stored: identity + `}`},
+		{name: "the retro's rating with its reason", record: rated,
+			stored: identity + `,"rating":3,"rating_reason":"The plan put the tests after the review."}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, err := NewOutboxRow("LEG-1", tc.record, time.Now())
+			if err != nil {
+				t.Fatalf("the record was refused: %v", err)
+			}
+			if string(row.Payload) != tc.stored {
+				t.Fatalf("the record is queued as %s, want %s", row.Payload, tc.stored)
+			}
+			decoded, err := DecodeOutboxPayload(OutboxRow{ID: 70, Kind: OutboxKindStepRecord, Payload: json.RawMessage(tc.stored)})
+			if err != nil {
+				t.Fatalf("the stored payload was refused: %v", err)
+			}
+			got, ok := decoded.(StepRecord)
+			if !ok || stepRecordFields(got) != stepRecordFields(tc.record) {
+				t.Fatalf("the stored payload reads as %T %+v, want %s", decoded, decoded, stepRecordFields(tc.record))
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*StepRecord)
+	}{
+		{name: "a reason without its rating", change: func(r *StepRecord) { r.PlanRating = &PlanRating{Reason: "The plan put the tests after the review."} }},
+		{name: "a rating without its reason", change: func(r *StepRecord) { r.PlanRating = &PlanRating{Rating: 3} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := retro
+			tc.change(&record)
+			if _, err := NewOutboxRow("LEG-1", record, time.Now()); err == nil || !strings.Contains(err.Error(), "its reason or neither") {
+				t.Fatalf("NewOutboxRow = %v, want a refusal naming %q", err, "its reason or neither")
+			}
+		})
+	}
+}
+
 // planRecordID is a version 5 id of the form the workflow names a plan by.
 const planRecordID = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
 
 // A plan record is the plan one run of an issue carries out, written once when its work starts. A
 // plan of the source default names no document and no version, which the row leaves out, since
 // Dispatch refuses either on such a plan; its tasks and their steps survive Postgres in order. A
-// plan of the source owner carries both.
+// plan of the source owner carries both. The owner's tasks stand out of the order of their ids,
+// ui before api, and each one's steps out of sorted order, so a sort of either list on the way in
+// or out changes what is compared; and each case builds its plan afresh for the comparison, so a
+// sort of the queued value in place does not change the value it is held to.
 func TestAPlanRecordKeepsItsTasksInOrderThroughTheOutbox(t *testing.T) {
-	steps := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
 	for _, tc := range []struct {
 		name    string
-		plan    PlanRecord
+		plan    func() PlanRecord
 		absent  []string
 		present map[string]string
 	}{
 		{
-			name:    "the default plan",
-			plan:    PlanRecord{ID: planRecordID, Generation: 2, Source: "default", Tasks: []PlanRecordTask{{ID: "default", Steps: steps}}},
+			name: "the default plan",
+			plan: func() PlanRecord {
+				return PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
+					Tasks: []PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+			},
 			absent:  []string{"artifact_id", "version"},
 			present: map[string]string{"generation": "2", "source": `"default"`, "tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`},
 		},
 		{
 			name: "an owner's plan of two tasks",
-			plan: PlanRecord{ID: planRecordID, Generation: 1, Source: "owner", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 3,
-				Tasks: []PlanRecordTask{{ID: "api", Steps: []string{"implementer", "reviewer"}}, {ID: "ui", Steps: []string{"implementer:ui", "tester"}}}},
-			present: map[string]string{"artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`, "version": "3"},
+			plan: func() PlanRecord {
+				return PlanRecord{ID: planRecordID, Generation: 1, Source: "owner", PlanDocument: &PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 3},
+					Tasks: []PlanRecordTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}}
+			},
+			present: map[string]string{"artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`, "version": "3",
+				"tasks": `[{"id":"ui","steps":["tester","implementer:ui"]},{"id":"api","steps":["reviewer","implementer"]}]`},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Date(2026, 11, 17, 4, 0, 0, 0, time.UTC)
-			row, err := NewOutboxRow("LEG-1", tc.plan, now)
+			row, err := NewOutboxRow("LEG-1", tc.plan(), now)
 			if err != nil {
 				t.Fatalf("queue the plan: %v", err)
 			}
@@ -487,8 +577,8 @@ func TestAPlanRecordKeepsItsTasksInOrderThroughTheOutbox(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decode the stored plan: %v", err)
 			}
-			if !reflect.DeepEqual(decoded, tc.plan) {
-				t.Fatalf("decoded %#v, want %#v", decoded, tc.plan)
+			if want := tc.plan(); !reflect.DeepEqual(decoded, want) {
+				t.Fatalf("decoded %#v, want %#v", decoded, want)
 			}
 		})
 	}
@@ -523,6 +613,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a status write of no kind", payload: StatusWrite{Status: "testing", ObservedStatus: "in_progress"}, reason: `unknown kind ""`},
 		{name: "a status write of a kind nobody gave a rule", payload: StatusWrite{Kind: "escalation", Status: "testing", ObservedStatus: "in_progress"}, reason: `unknown kind "escalation"`},
 		{name: "empty status", payload: StatusWrite{Kind: OrdinaryStatusRow}, reason: "empty status"},
+		{name: "a reason on a re-assertion", payload: StatusWrite{Kind: ReassertStatusRow, Status: "in_progress", ObservedStatus: "done", Reason: "set back"}, reason: "only a done write or the workflow's own move does"},
+		{name: "a reason on a hand-over", payload: StatusWrite{Kind: HandOverStatusRow, Status: "todo", ObservedStatus: "in_progress", HandOverTree: "LEGION-200", HandOverLinger: 3, Reason: "handed over"}, reason: "only a done write or the workflow's own move does"},
 		{name: "unknown notice", payload: Notice{Kind: "unknown"}, reason: "unknown notice kind"},
 		{name: "a triage notice for an architect", payload: Notice{Kind: TriageNotice}, reason: "unknown notice kind"},
 		{name: "a slot-free notice for an architect", payload: Notice{Kind: SlotFreeNotice}, reason: "unknown notice kind"},
@@ -700,6 +792,12 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal naming a role", row: OutboxRow{ID: 61, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"role":"merger","number":42,"head":"c0de"}`)}, reason: "unknown field"},
 		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
+		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
+			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
+			reason: "its reason or neither"},
+		{name: "a retro's stored rating without its reason", row: OutboxRow{ID: 63, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
+			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating":3}`)},
+			reason: "its reason or neither"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DecodeOutboxPayload(tc.row)

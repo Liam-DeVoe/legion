@@ -19,7 +19,7 @@ import (
 
 // stepWork is the role whose step works phase p, as a step of a plan names it (the part before a
 // step's `:key`), and the type of that work; ok is false for a phase no step of a plan works.
-func stepWork(p phase.Phase) (role, typ string, ok bool) {
+func stepWork(p phase.Phase) (role stepRole, typ stepType, ok bool) {
 	switch p {
 	case phase.Planning:
 		return "planner", "planning", true
@@ -36,29 +36,29 @@ func stepWork(p phase.Phase) (role, typ string, ok bool) {
 }
 
 // stepIn is the step phase p runs as a step of the task default whose steps are steps: the place
-// its count of starts is kept under, its place in the task (from 1 for a step, 0 for a retro or a
-// merge, which no plan names, so the kind tells those two apart), its role and its type ("" for a
-// retro or a merge, whose role stepOfWalk names for every task). A working phase's step is the
-// first step of steps whose role works it, at one plus its index. A phase no step of steps works,
-// and a phase that runs no step — admitted, awaiting a person, held, done — answers ok false.
-func stepIn(steps []plan.Step, p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
+// its count of starts is kept under, whose Place is its place in the task (from 1 for a step, 0 for
+// a retro or a merge, which no plan names, so the kind tells those two apart), its role and its
+// type ("" for a retro or a merge, whose role stepOfWalk names for every task). A working phase's
+// step is the first step of steps whose role works it, at one plus its index. A phase no step of
+// steps works, and a phase that runs no step — admitted, awaiting a person, held, done — answers
+// ok false.
+func stepIn(steps []plan.Step, p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
 	switch p {
 	case phase.Retro, phase.Merging:
 		act, _ := Walk{}.PlaceOf(p)
-		var kind string
-		step, kind, role, typ, ok = stepOfWalk(Walk{}, act)
-		return record.StepPlace{Task: defaultTask, Kind: kind}, step, role, typ, ok
+		role, typ, ok = stepOfWalk(Walk{}, act)
+		return record.StepPlace{Task: defaultTask, Kind: act.Kind}, role, typ, ok
 	}
 	role, typ, ok = stepWork(p)
 	if !ok {
-		return record.StepPlace{}, 0, "", "", false
+		return record.StepPlace{}, "", "", false
 	}
 	for i, named := range steps {
-		if named.Role == role {
-			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, i + 1, role, typ, true
+		if stepRole(named.Role) == role {
+			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, role, typ, true
 		}
 	}
-	return record.StepPlace{}, 0, "", "", false
+	return record.StepPlace{}, "", "", false
 }
 
 // planRecordNamespace is the namespace of every plan record's id.
@@ -71,7 +71,7 @@ func PlanID(issue string, generation uint64) string {
 	return uuid.NewSHA1(planRecordNamespace, []byte(fmt.Sprintf("%s/%d", issue, generation))).String()
 }
 
-// planNode is the plan node of issue's run (C9): the plan w walks, as Dispatch records it under
+// planNode is the plan node of issue's run: the plan w walks, as Dispatch records it under
 // the run's one id (PlanID). Its source is the version in force's (record.PlanVersion.Source):
 // owner, with the document and the version of it Legion took, or default, the project's default
 // steps, with neither. Its task is the run's one task, with its steps in order, each a role or
@@ -86,7 +86,7 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 		return node
 	}
 	if w.Version.Source == record.PlanSourceOwner {
-		node.Source, node.ArtifactID, node.Version = record.PlanSourceOwner, w.Version.ArtifactID, w.Version.Version
+		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
 	steps := make([]plan.Step, len(w.Steps))
 	for i, step := range w.Steps {
@@ -106,7 +106,7 @@ func stepWords(steps []plan.Step) []string {
 }
 
 // passOverEarlierOwners deletes each plan of issue that an earlier owner gave, before its first
-// step reads its plan, so the walk never takes one (C3-3, C4-2), and answers the versions it
+// step reads its plan, so the walk never takes one, and answers the versions it
 // passed over. An earlier owner's plan is the version in force of a generation whose giver is no
 // architect of the issue's tree now (record.Store's PlansOfEarlierOwners, record.ArchitectOfTree,
 // the rule the routes hold every architect's call to): the owner of an issue changes where an
@@ -129,7 +129,7 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 
 // planFirstStep settles the plan the first step of issue's run walks, in the transaction that
 // starts it (gateOpened) and before the transition reads it (walk), so each run that starts its
-// work in this release has plan rows (R5). A plan an earlier owner gave is passed over first
+// work in this release has plan rows. A plan an earlier owner gave is passed over first
 // (passOverEarlierOwners), so nothing below carries one. A run whose generation then holds plan
 // rows, the owner's own or a hand-over's carried plan, keeps them. One whose generation holds none
 // takes the newest plan its owner gave, of any generation, generation 0 among them, which holds a
@@ -137,8 +137,7 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // its start (CarryPlan without carried): each task waits at no act, and the transition starts the
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
-// telling names (tellPassedOver). A pull request the record already holds, which an earlier run of
-// another plan can have opened, names the task the run walks (nameTaskOnPullRequest).
+// telling names (tellPassedOver).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
@@ -165,17 +164,10 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	if err := e.nameTaskOnPullRequest(ctx, tx, issue.Key, w); err != nil {
-		return err
-	}
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
 }
 
-// defaultRows is the plan of issue's run whose owner gave none (R5): version 0 of the source
+// defaultRows is the plan of issue's run whose owner gave none: version 0 of the source
 // default, given now, with no document and no giver, and one task, default, whose block names no
 // steps and so runs the project's default steps (Config.DefaultSteps), waiting at no act.
 func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
@@ -235,7 +227,7 @@ func describeVersion(version record.PlanVersion) string {
 // landed yet, and the rating and its reason. It carries no moment and no result, which are the
 // end's. Dispatch sets each field once, so the end and the rating merge in either order. A record
 // key that is no issue key writes nothing (recordsSteps).
-func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating int, reason string) error {
+func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating intake.PlanRating) error {
 	if !recordsSteps(issue) {
 		return nil
 	}
@@ -243,13 +235,13 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	if err != nil {
 		return err
 	}
-	place, step, role, typ, _ := stepAt(w, phase.Retro)
+	place, role, typ, _ := stepAt(w, phase.Retro)
 	start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, place, step, role, typ, start.Agent, start.Starts)
-	write.Rating, write.RatingReason = new(rating), new(reason)
+	write := stepWrite(issue, place, role, typ, start.Agent, start.Starts)
+	write.PlanRating = &record.PlanRating{Rating: rating.Score, Reason: rating.Reason}
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
 
@@ -258,7 +250,7 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 // the issues beneath it in place of its retro (record.HoldForChildren). No path that resumes the
 // work of a held issue resumes such a hold: a later version of the plan or a person's todo on a
 // root starts a stopped task again (restartTask), and the last issue beneath the parent to leave
-// starts its retro. An issue with no plan rows is never held so (R20).
+// starts its retro. An issue with no plan rows is never held so.
 func planHold(issue record.Issue) bool {
 	return issue.Phase == phase.Held && issue.Hold != nil &&
 		(issue.Hold.Reason == record.HoldTaskStopped || issue.Hold.Reason == record.HoldForChildren)
@@ -288,37 +280,68 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 	return intake.RetryOfStoppedTask(issue.Key, w.Task), nil
 }
 
+// pastReport is the run that a completion of a phase its issue no longer stands in reports, which
+// pastReportOf decides once: a run of a phase the daemon moved the issue on from, the run of the
+// step that the stop of its task ended, or no run that handoff answers.
+type pastReport int
+
+const (
+	// noRunReported is a completion of no run: handoff refuses it as one of a phase the issue
+	// does not stand in (NotCurrentPhase), unless a late report refuses it first.
+	noRunReported pastReport = iota
+	// leftPhaseReported is the run of a phase the daemon moved the issue on from without it
+	// (leftItsPhase), which handoff records.
+	leftPhaseReported
+	// stoppedStepReported is a completion of the phase the issue is held from because its task
+	// was stopped there (record.HoldTaskStopped).
+	stoppedStepReported
+)
+
+// pastReportOf is the run that role's completion of reported, a phase issue no longer stands in,
+// reports. A held issue stands where no role works, so no role has left its phase there
+// (leftItsPhase), and a run of a left phase is never also the run a stop ended.
+func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
+	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
+	switch {
+	case err != nil:
+		return noRunReported, err
+	case left:
+		return leftPhaseReported, nil
+	case planHold(issue) && issue.Hold.Reason == record.HoldTaskStopped && issue.Hold.From == reported:
+		return stoppedStepReported, nil
+	}
+	return noRunReported, nil
+}
+
 // lateReport is the refusal of fact, role's report of reported, a phase issue no longer stands in,
 // where issue's run has plan rows and reported is the phase of a step of its task whose run Legion
-// ended (R7). left says whether the report is one handoff would record (leftItsPhase): the task
-// went on to the step issue stands at now, and a task runs one step at a time, so the reported
-// step's run is over (LateReportOfEndedStep). A report it would not record is late where issue is
-// held because its task was stopped at reported (record.HoldTaskStopped), and the report is of
-// the run the stop ended (ranUnreported); its first sentence is the reason the task stores
-// (LateReportOfStoppedTask). Every other report gets nil and keeps today's answer: one of an
-// issue with no plan rows (R20), one of the retro or the merge, one while the task stands at its
-// retro or its merge, one of a task whose issue left the workflow (HANDOFF_NOT_CURRENT_PHASE),
-// and one of a step other than the one the stop ended. The refusal writes nothing itself: the
-// caller answers it after the lingering tree's and keeps the report's handoff record
-// (spendLateHandoff).
-func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, left bool) (*intake.Refusal, error) {
-	stopped := planHold(issue) && issue.Hold.Reason == record.HoldTaskStopped && issue.Hold.From == reported
-	if !left && !stopped {
+// ended. past is the run the report is of (pastReportOf). A run of a phase the issue moved on
+// from is over: the task went on to the step issue stands at now, and a task runs one step at a
+// time (LateReportOfEndedStep). The report of the phase a stop holds the issue from is late where
+// it is of the run the stop ended (ranUnreported); its first sentence is the reason the task
+// stores (LateReportOfStoppedTask). Every other report gets nil and keeps today's answer: one of
+// no run, one of an issue with no plan rows, one of the retro or the merge, one while the task
+// stands at its retro or its merge, one of a task whose issue left the workflow
+// (HANDOFF_NOT_CURRENT_PHASE), and one of a step other than the one the stop ended. The refusal
+// writes nothing itself: the caller answers it after the lingering tree's and keeps the report's
+// handoff record (spendLateHandoff).
+func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, past pastReport) (*intake.Refusal, error) {
+	if past == noRunReported {
 		return nil, nil
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil || !w.Stored {
 		return nil, err
 	}
-	at, ok := w.PlaceOf(reported)
-	if !ok || at.Kind != record.PlaceStep {
+	at, _ := w.PlaceOf(reported)
+	if at.Kind != record.PlaceStep {
 		return nil, nil
 	}
 	ended := w.Steps[at.Position-1].Role
 	named := fact.HandoffRecord != ""
-	if left {
-		now, ok := w.PlaceOf(issue.Phase)
-		if !ok || now.Kind != record.PlaceStep {
+	if past == leftPhaseReported {
+		now, _ := w.PlaceOf(issue.Phase)
+		if now.Kind != record.PlaceStep {
 			return nil, nil
 		}
 		return intake.LateReportOfEndedStep(issue.Key, w.Task, at.Position, ended, now.Position, w.Steps[now.Position-1].Role, named), nil
@@ -358,7 +381,7 @@ func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, fact intake.Ha
 	return e.store.PutPhase(ctx, tx, row)
 }
 
-// stopTask stops w's task of issue where it stands, in the caller's transaction (R16; C2-1): the
+// stopTask stops w's task of issue where it stands, in the caller's transaction: the
 // step the issue stands in ends as end says (endStep), the task keeps its place and becomes
 // stopped with why (record.Store.StopTask), and the issue is held from the phase that place
 // derives for the stopped task (record.HoldTaskStopped), as a failed claim's hold is written
@@ -378,7 +401,7 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return err
 	}
 	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from, Reason: record.HoldTaskStopped}
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return err
 	}
 	// The stop takes the issue into held, which is a phase change and so a movement (the rule in
@@ -395,7 +418,7 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 }
 
 // stopUnreturned stops w's task of issue, whose step standing in issue.Phase failed with no step
-// before it of the type implementation to take its work back (R7, returnTarget), as stop_task
+// before it of the type implementation to take its work back (returnTarget), as stop_task
 // stops it (stopTask), its step ending as end says; and tells the task's owner once, in a notice
 // of kind task-stopped whose reason names the task and the step. No return happened, so no pass,
 // pair, round or hook is counted.
@@ -409,7 +432,7 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.Role(w.Steps[place.Position-1].Role), Phase: issue.Phase, Reason: said})
 }
 
-// taskStopped is the owner's stop_task of one task of a recorded issue (R16; C2-1): the task
+// taskStopped is the owner's stop_task of one task of a recorded issue: the task
 // stops where it stands, in the fact's own transaction, as stopTask stops it, its running step
 // ending stopped, with the reason that its owner stopped it. The architect the issue's notices
 // reach is told in a task-stopped notice that names the architect that made the call
@@ -418,7 +441,7 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 //
 // An issue the record does not hold, or one with no plan rows, has no task to stop, and a task
 // the plan does not hold is none either (TaskNotFound, which lists the plan's tasks only where it
-// has some): an issue with no plan rows changes nothing (R20). A stop of a task already stopped
+// has some): an issue with no plan rows changes nothing. A stop of a task already stopped
 // changes nothing and is no refusal, so a retry of a stop already applied finds it stopped. A
 // task that is done, or left the workflow with its issue before it was done, has nothing left to
 // stop (TaskDone, TaskLeft): each is refused here, before the store's stop, which refuses both
@@ -465,7 +488,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 		StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)})
 }
 
-// restartTask starts w's task of issue again at its first step (R16; C2-1, C2-2), in the
+// restartTask starts w's task of issue again at its first step, in the
 // caller's transaction, for reason, which that step's worker is told. It runs on a person's todo
 // on a root held for the stopped task (releaseHeldRoot), and for a later version of the plan that
 // changes the stopped task or replaces it with a task of another id. issue is the record the
@@ -482,8 +505,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // raises its pass, so that a completion of this run takes a key of its own (the completion key
 // names the task and its pass), and no pair, round or hook is counted, since no step failed; a
 // new task keeps its counts of zero. The act is task_restarted, which the log line names: no row
-// of the table moves a held issue. The issue's pull request names the task that starts
-// (nameTaskOnPullRequest), since the new task of a later version has an id of its own.
+// of the table moves a held issue.
 //
 // A task that is done, or left the workflow with its issue, has nothing left to start, and the
 // store's move refuses neither state: each is refused here, before anything is written
@@ -511,7 +533,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	from, first := record.StandsAt(issue), steps[0]
 	status := PhaseStatus(first)
-	if status != "" && status != issue.DispatchStatus {
+	if status != issue.DispatchStatus {
 		if err := e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.DispatchStatus, "")); err != nil {
 			return nil, err
 		}
@@ -519,11 +541,8 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.moveTask(ctx, tx, &issue, &w, first, record.TaskRunning); err != nil {
 		return nil, err
 	}
-	issue.Hold = nil
-	if status != "" {
-		issue.Status = status
-	}
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	issue.Hold, issue.Status = nil, status
+	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return nil, err
 	}
 	// The restart takes the issue out of held into a phase, which is a movement (the rule in
@@ -537,9 +556,6 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return nil, err
 	}
-	if err := e.nameTaskOnPullRequest(ctx, tx, issue.Key, w); err != nil {
-		return nil, err
-	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return nil, err
@@ -549,13 +565,13 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}, true)
 }
 
-// planGiven is the plan an owner gave with register_plan (R5, R16; C2-1, C2-2), stored at the
+// planGiven is the plan an owner gave with register_plan, stored at the
 // generation the route gave it at: the issue's own, or 0 for an issue the daemon had not recorded,
 // whose plan waits there for the issue's first step. A generation's first plan is taken where its
 // task has not started: an issue the daemon has not recorded, and one standing before its first
 // step (beforeItsWork). Each task waits at no act, and the opening of the gate starts the first
 // step of its line (walk). An issue recorded with no plan rows whose work started ran before
-// Legion took plans, and walks today's line to its end (R20): its plan is refused.
+// Legion took plans, and walks today's line to its end: its plan is refused.
 //
 // A later version is compared, task by task, with the version in force as its owner gave it
 // (heldPlan, plan.ChangedTasks). A version of another document than the one in force is refused,
@@ -566,7 +582,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // each task it changes takes the steps its block now names, and each task it removes is deleted.
 // Where it changes the stopped task of an issue held for that task, the task the plan now holds
 // starts again at its first step (restartTask), and its worker is told which version did it. A
-// version taken after the work started writes the run's plan node again, whole (planNode, C9): the
+// version taken after the work started writes the run's plan node again, whole (planNode): the
 // start wrote it at the version then in force, and the node names the plan the run walks now. A
 // version taken before the work starts writes none, since the start writes the version in force.
 //
@@ -714,7 +730,6 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 			for _, step := range stored.Steps[task.Task] {
 				block.Steps = append(block.Steps, plan.Step{Role: step.Role, Key: step.AgentKey})
 			}
-			block.HasSteps = len(block.Steps) > 0
 		}
 		held.Tasks = append(held.Tasks, block)
 	}
@@ -736,7 +751,7 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 	for _, given := range fact.Plan.Tasks {
 		tasks = append(tasks, record.PlanTask{Issue: fact.Issue, Generation: fact.Generation, Task: given.ID, PlanVersion: fact.Plan.Version,
 			BlockText: given.Text, Needs: given.Needs, PartOf: given.PartOf, OwnerRole: given.Owner, Merges: given.Merges,
-			StepsByDefault: !given.HasSteps && given.Owner == "", State: record.TaskWaiting})
+			StepsByDefault: !given.NamesSteps() && given.Owner == "", State: record.TaskWaiting})
 		if stored != nil && !slices.Contains(changed, given.ID) {
 			steps = append(steps, stored.Steps[given.ID]...)
 			continue

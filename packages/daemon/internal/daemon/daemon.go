@@ -211,6 +211,20 @@ type overrides struct {
 	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
 	// own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// streamWaitBegan runs, naming the claim, once an agent's request has queued its mark on the
+	// worker stream and begins to wait for the claim's machine to handle what the stream read
+	// before it (supervision.awaitStreamWithin); nil, in production, is nothing. It is the seam a
+	// test learns at that the request has reached that wait, which nothing outside the daemon can
+	// read: the wait writes nothing and answers nothing until the machine lets it go or its bound
+	// runs out.
+	streamWaitBegan func(claim.Token)
+	// beforeDecision runs on a claim's feed before its machine decides each event the feed took
+	// (supervisor.add), naming the claim and the event, with no lock of the machine's held; nil, in
+	// production, is nothing. It is the seam a test holds an event at while the stream has read it
+	// and the machine has not decided it, with the machine free for every reader: a hold inside
+	// the decision would hold the machine's lock, which an agent's request waits on at its grant
+	// check (supervise.Machine.Claim).
+	beforeDecision func(claim.Token, supervise.Event)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -377,6 +391,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		// From here on, a claim write that changes a role holder queues its issue's publication in
+		// its own transaction, and the store tells the issue once that commits, so its lane is woken
+		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
+		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
+		// on before supervision restores a claim, so no claim write of this boot is left out.
+		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The memory guards' kill holder is filled here, once the workflow is open
 		// (memoryGuardKills).
@@ -777,6 +797,9 @@ type plan struct {
 	// secretsEnroller is the daemon's agent-secrets token login as the machines' Enroller
 	// (newSecretsLogin); nil when the deployment enrolls no pod.
 	secretsEnroller supervise.Enroller
+	// secretsRegistrar is the same login as the machines' Registrar (newRegistrar); nil when the
+	// deployment names no exchange_audience, and then no pod session is ever registered.
+	secretsRegistrar supervise.Registrar
 	// pluginRelaunchable is supervise.Deps.PluginRelaunchable: whether this daemon can relaunch a
 	// stale-plugin claim onto a plugin at all. True under tmux always; under Kubernetes, true iff
 	// a plugin pair to install is known — plugins below, resolved by ResolvedPlugins from the
@@ -800,6 +823,10 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
+	streamWaitBegan func(claim.Token)
+	// beforeDecision is overrides.beforeDecision; nil runs nothing.
+	beforeDecision func(claim.Token, supervise.Event)
 }
 
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
@@ -870,7 +897,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if stop == 0 {
 		stop = stopBudget
 	}
-	secretsEnroller, secretsLogin := newSecretsLogin(cfg, log)
+	secretsEnroller, secretsRegistrar, secretsLogin := newSecretsLogin(cfg, log)
 	plugins, pluginsSource := ResolvedPlugins(cfg)
 	pluginRelaunchable := cfg.Runtime.Name == "tmux" || plugins != nil
 	if o.pluginRelaunchable != nil {
@@ -881,9 +908,10 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
-		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
+		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1022,8 +1050,8 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 
 // launchVariants is the one reader a launch's arms come from: the experiments the project
 // declares, resolved against the answers the daemon's own store recorded for the launch's unit
-// (experiment.Launch, which decides which keys to read and which arms the rows put the launch
-// in). Everything here is the transaction that reads those rows.
+// and against the launch's role (experiment.Launch, which decides which keys to read and which
+// arms the rows put the launch in). Everything here is the transaction that reads those rows.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
 // supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
@@ -1031,10 +1059,10 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 // read that draw back would run the unit against an arm the daemon had already recorded for it.
 // A declaration no launch could use names no key to read, so such a deployment opens no
 // transaction per worker spawn at all (experiment.Launch.Keys).
-func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, tree, issue string) (experiment.Arms, error) {
+func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
 	launch := experiment.ForLaunch(declared, stateDir)
 	records := record.NewStore()
-	return func(ctx context.Context, tree, issue string) (experiment.Arms, error) {
+	return func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
 		keys := launch.Keys(tree, issue)
 		if len(keys) == 0 {
 			return experiment.Arms{}, nil
@@ -1047,7 +1075,7 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 		}); err != nil {
 			return experiment.Arms{}, err
 		}
-		return launch.Arms(recorded, tree, issue), nil
+		return launch.Arms(recorded, tree, issue, role), nil
 	}
 }
 
@@ -1419,6 +1447,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
+	sup.beforeDecision = p.beforeDecision
 	listener, err := stream.Listen(draining, p.stream,
 		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
 	if err != nil {
@@ -1455,6 +1484,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
 		Secrets:                 p.secretsEnroller,
+		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
@@ -1674,14 +1704,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 	}()
 	go func() {
 		defer s.wg.Done()
-		for ev := range s.stream.Events() {
-			mapped, err := superviseEvent(ev)
-			if err != nil {
-				s.log.Error("worker stream: an event no machine can take", "error", err)
-				continue
-			}
-			s.supervisor.post(claimOf(mapped), mapped)
-		}
+		s.pump()
 	}()
 	go func() {
 		defer s.wg.Done()
@@ -2278,6 +2301,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
 	var handoffCompleted func(string)
+	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
 	var await func(repo, tree, child, parent string)
@@ -2288,6 +2312,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.tokens, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
+		roleHoldersChanged = workflow.roleHoldersChanged
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
 		architectStalls = workflow.admission.ArchitectStallArms
@@ -2331,6 +2356,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		CallerPod:          callerPodOf(s.runtime),
 		Ready:              ready.serving,
 		Supervisor:         s.supervisor,
+		AwaitStream:        s.awaitStream,
 		PodUpdateRounds:    s.podUpdateRoundsView,
 		BootTokens:         s.tokens,
 		Project:            p.project,
@@ -2367,6 +2393,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,
+		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 	})

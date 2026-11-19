@@ -39,10 +39,10 @@ type Client interface {
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
-	// PlanDocument is one version of a document with its typed blocks and the issue carrying it:
-	// what register_plan reads a plan from at the version its owner gave. A Dispatch that
-	// predates the read with blocks answers ErrNoBlocks.
-	PlanDocument(ctx context.Context, artifactID string, version int) (PlanDocument, error)
+	// PlanDocument reads one version of a document with its typed blocks and the issue carrying
+	// it (DocumentVersion): what register_plan reads a plan from at the version its owner gave. A
+	// Dispatch that predates the read with blocks answers ErrNoBlocks.
+	PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
 	ListRepoProjects(ctx context.Context) ([]RepoProject, error)
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
@@ -52,6 +52,10 @@ type Client interface {
 	// the issue's Dispatch row, replacing whatever set it holds; an empty list is an issue whose
 	// gates record none.
 	PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error
+	// PutRoleHolders publishes the session that holds each Legion role of the issue onto the
+	// issue's Dispatch row, replacing whatever set it holds; an empty list is an issue where no
+	// session holds a role.
+	PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error
 	// PutStep writes one start or one end of a step onto Dispatch's record id of the issue's
 	// steps, or the rating a retro gave the plan onto the retro's record, where the write names
 	// one. Dispatch writes each field once and keeps every field the write leaves out.
@@ -84,43 +88,69 @@ type DesignGateDocument struct {
 	ArtifactID string `json:"artifact_id"`
 }
 
+// RoleHolder is one entry of an issue's role-holder publication, as Dispatch's route takes it: Role
+// is one of the six Legion roles and Session the session that holds it on the issue. The role is a
+// string here rather than claim.Role, because this package names Dispatch's wire shapes.
+type RoleHolder struct {
+	Role    string `json:"role"`
+	Session string `json:"session"`
+}
+
 // StepWrite is the body of a step record's write, as Dispatch's route takes it, the actor aside:
 // every identity field of the step, written whatever its value, and each field the write may not
 // know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
-// leaves out, so an empty value written where nil was meant would stand for good. It mirrors the
-// record's own StepRecord, because this package imports no record of the daemon's. Rating and
-// RatingReason are the rating a retro gave the plan, which only the record's rating route takes
-// (HTTPClient.PutStep sends a write naming a rating there) and every other write leaves out.
+// leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
+// because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
+// StepRecord, because this package imports no record of the daemon's. PlanRating is the rating a
+// retro gave the plan, which only the record's rating route takes (HTTPClient.PutStep sends a
+// write naming a rating there) and every other write leaves out.
 type StepWrite struct {
-	Task         string     `json:"task"`
-	Step         int        `json:"step"`
-	Kind         string     `json:"kind"`
-	Role         string     `json:"role"`
-	Type         string     `json:"type"`
-	Agent        string     `json:"agent"`
-	Generation   uint64     `json:"generation"`
-	Session      *string    `json:"session,omitempty"`
-	Model        *string    `json:"model,omitempty"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	EndedAt      *time.Time `json:"ended_at,omitempty"`
-	Result       *string    `json:"result,omitempty"`
-	ReturnedTo   *int       `json:"returned_to,omitempty"`
-	Report       *string    `json:"report,omitempty"`
-	Rating       *int       `json:"rating,omitempty"`
-	RatingReason *string    `json:"rating_reason,omitempty"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Generation uint64     `json:"generation"`
+	Session    *string    `json:"session,omitempty"`
+	Model      *string    `json:"model,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Result     *string    `json:"result,omitempty"`
+	ReturnedTo *int       `json:"returned_to,omitempty"`
+	Report     *string    `json:"report,omitempty"`
+	*PlanRating
+}
+
+// PlanRating is a retro's rating of the plan, from 1 to 5, and its reason, as the record's rating
+// route takes them: embedded in StepWrite, its members are members of the body, both written or
+// neither. It mirrors the record's own PlanRating, which publishStepRecord converts to it, because
+// this package imports no record of the daemon's; internal/daemon's
+// TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
 }
 
 // PlanWrite is the body of a plan's write, as Dispatch's route takes it, the actor aside: the run
-// the plan is of, its source (default or owner), the owner's document and its version, which a
+// the plan is of, its source (default or owner), the owner's document with its version, which a
 // plan of the source default leaves out because Dispatch refuses either on one, and each task with
 // its steps in order. It mirrors the record's own PlanRecord, because this package imports no
 // record of the daemon's.
 type PlanWrite struct {
-	Generation uint64     `json:"generation"`
-	Source     string     `json:"source"`
-	ArtifactID string     `json:"artifact_id,omitempty"`
-	Version    int        `json:"version,omitempty"`
-	Tasks      []PlanTask `json:"tasks"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	*PlanDocument
+	Tasks []PlanTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from, as the plan
+// route takes it: embedded in PlanWrite, its artifact_id and version are members of the body, both
+// written or neither. It mirrors the record's own PlanDocument, which publishPlanRecord converts
+// to it, because this package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // PlanTask is one task of a plan's write: its id and its steps in order, each a role or
@@ -324,12 +354,12 @@ func (a Approval) LatestReviewer() Actor {
 	return a.By
 }
 
-// PlanDocument is one version of a document as the daemon reads a plan from it (PlanDocument on
+// DocumentVersion is one version of a document as the daemon reads a plan from it (PlanDocument on
 // HTTPClient): the document, the issue carrying it (empty for a project document), the version
 // read, and that version's typed blocks in document order. The blocks are the version's own, read
 // from its stored text by Dispatch, never the live document's, so the same version reads the same
 // blocks whenever it is read.
-type PlanDocument struct {
+type DocumentVersion struct {
 	ArtifactID string
 	IssueKey   string
 	Version    int
@@ -433,6 +463,25 @@ const (
 // one of them. No mechanism shares a value between this module and Dispatch's, so the spellings
 // change together.
 const IssueNotFound = "ISSUE_NOT_FOUND"
+
+// NoRoute is whether err is a Dispatch process's answer that it has no route for the request: its
+// router's 404 under the code NOT_FOUND whose message starts "no route for "
+// (packages/envoy/internal/dispatch/routes/router.go, staticHandler; the TypeScript clients'
+// NO_ROUTE_MESSAGE_PREFIX). A Dispatch older than a route answers it this way, and so does the
+// older build while a release rolls out, so no handler ran and the request is taken once the
+// release that serves the route is live. A handler's own 404 NOT_FOUND, for a resource it does not
+// know, says "not found" instead, and is not this answer. No mechanism shares a value between
+// this module and Dispatch's, so the spellings change together.
+func NoRoute(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&
+		strings.HasPrefix(refusal.Message, noRouteMessagePrefix)
+}
+
+const (
+	noRouteCode          = "NOT_FOUND"
+	noRouteMessagePrefix = "no route for "
+)
 
 // StepInput, StepWriter and StepOtherIssue are Dispatch's own spellings of three refusals of a step
 // record's write, each final: a value outside what the route takes (400), a writer that is not the

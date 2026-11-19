@@ -22,8 +22,8 @@ import (
 const changesBody = "Name the rollback path."
 
 // returnEngine is stepEngine with the hook a deployment that writes no `hooks:` key runs
-// (config.DefaultHooks), as the daemon hands it over (its runningHooks), so a return fires it as
-// it would in production.
+// (config.DefaultHooks), as the daemon hands it over (engineHooks in the daemon package), so a
+// return fires it as it would in production.
 func returnEngine() *Engine {
 	engine := stepEngine(nil)
 	for _, hook := range config.DefaultHooks() {
@@ -39,7 +39,7 @@ func returnEngine() *Engine {
 func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, words ...string) {
 	t.Helper()
 	v := record.PlanVersion{Issue: key, Generation: generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-		GivenBy: claim.Token(token(t, key, claim.RoleArchitect)), GivenAt: stepClock}
+		GivenBy: claim.Token(treeRoleToken(t, key, claim.RoleArchitect)), GivenAt: stepClock}
 	task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
 	roles := plan.BuiltinRoles()
 	steps := make([]record.PlanStep, 0, len(words))
@@ -157,12 +157,12 @@ func assertWalksAt(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string,
 	}
 }
 
-// A failed step returns the task's work to the step of the type implementation before it (R7),
-// read from the type the plan's rows record for each step (record.PlanStep.Type), and no count
-// stops a task: each return counts and tells as today, on the task (the first, third and fourth
-// task of the check v-return, each as an issue of one task; the check is whole in slice 9).
+// A failed step returns the task's work to the step of the type implementation before it, read
+// from the type the plan's rows record for each step (record.PlanStep.Type), and no count stops a
+// task: each return counts and tells as today, on the task. A plan whose one step is the tester is
+// refused, since it has no implementer.
 func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
-	t.Run("I-1: a review that requests changes returns to the implementer, the same agents on", func(t *testing.T) {
+	t.Run("a review that requests changes returns to the implementer, the same agents on", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -179,7 +179,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		if len(starts) != implementerBefore+1 {
 			t.Fatalf("the return wrote %d starts of the implementer, want one", len(starts)-implementerBefore)
 		}
-		// B-24: the return goes to the agent the step ran before, in its session, and the
+		// The return goes to the agent the step ran before, in its session, and the
 		// reviewer keeps its own: no start of the return asks for a fresh session, and the
 		// reviewer is started nothing.
 		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Implementing || !strings.Contains(start.Task, "Reason: "+changesBody) {
@@ -198,8 +198,8 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 	})
 
-	t.Run("I-2: a plan whose one step is the tester is refused, so it waits for slice 6", func(t *testing.T) {
-		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", HasSteps: true, Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
+	t.Run("a plan whose one step is the tester is refused: it has no implementer", func(t *testing.T) {
+		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
 		refusals := append(plan.Validate(given, builtinDeployment), plan.Supported(given)...)
 		want := []plan.Refusal{
 			{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."},
@@ -210,7 +210,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		}
 	})
 
-	t.Run("I-3: three rejected reviews, then two failed tests, and the task runs on", func(t *testing.T) {
+	t.Run("three rejected reviews, then two failed tests, and the task runs on", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -241,7 +241,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
 	})
 
-	t.Run("I-4: the owner's failed acceptance returns to the tester and counts no round", func(t *testing.T) {
+	t.Run("the owner's failed acceptance returns to the tester and counts no round", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -271,13 +271,13 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 	})
 }
 
-// The control of TestAFailedStepReturnsAndNoCountStopsATask: I-1 again, with its implementer
-// step's stored type set to review before the review rejects. No step before the reviewer is of
-// the type implementation, so nothing can take the work back, and the task stops as stop_task
-// stops it (R7): the task stopped with why, the issue held from reviewing for the stopped task,
-// the reviewer's step ended failed and returned nowhere, its process stopped (step_stop) and its
-// session kept, and the owner told once (task-stopped). The first test's I-1 assertion, that the
-// issue stands in implementing, fails on it.
+// The control of TestAFailedStepReturnsAndNoCountStopsATask: its review that requests changes
+// again, with its implementer step's stored type set to review before the review rejects. No step
+// before the reviewer is of the type implementation, so nothing can take the work back, and the
+// task stops as stop_task stops it: the task stopped with why, the issue held from reviewing for
+// the stopped task, the reviewer's step ended failed and returned nowhere, its process stopped
+// (step_stop) and its session kept, and the owner told once (task-stopped). The first test's
+// assertion of that review, that the issue stands in implementing, fails on it.
 func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -286,6 +286,9 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+	// The type is forged: no plan of this release writes it. Each failed step a plan can hold comes
+	// after its implementer (plan.Supported), so only a stored type that no plan gives reaches the
+	// stop this test asserts (returnTarget).
 	if _, err := pool.Exec(t.Context(), "update plan_steps set type = 'review' where issue = $1 and task = 'a' and position = 1", root.Key); err != nil {
 		t.Fatalf("store the implementer step's type as review: %v", err)
 	}
@@ -295,7 +298,7 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 
 	issue := issueOf(t, pool, engine, root.Key)
 	if issue.Phase == phase.Implementing {
-		t.Fatalf("%s stands in implementing: the first test's I-1 assertion would pass on a task that no step can take back", root.Key)
+		t.Fatalf("%s stands in implementing: the first test's assertion of a review that requests changes would pass on a task that no step can take back", root.Key)
 	}
 	if issue.Phase != phase.Held || issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Reviewing, Reason: record.HoldTaskStopped}) {
 		t.Fatalf("%s stands in %s with hold %+v, want held from reviewing for the stopped task", root.Key, issue.Phase, issue.Hold)
@@ -368,13 +371,13 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 	}
 }
 
-// A failed step's report can name the step of its task that the task returns to (R7, returnTo):
+// A failed step's report can name the step of its task that the task returns to (returnTo):
 // any earlier step of the same task, not only the step of the type implementation that the
 // steps' types give, and the agent of that step gets the report. A report that names the failed
 // step itself or a later one, or a place no step of the task holds, is refused and changes
 // nothing, so the agent reports again (RETURN_REFUSED), as a backward move that no row serves is
 // refused today. An issue with no plan rows has no step to name: a report naming one is refused,
-// and the same report naming none returns to implementing as today (R20).
+// and the same report naming none returns to implementing as today.
 func TestReturnToNamesAnEarlierStep(t *testing.T) {
 	// planned is LEGION-208 walking the steps planner implementer tester, standing in testing at
 	// step 3, its implementer started once.

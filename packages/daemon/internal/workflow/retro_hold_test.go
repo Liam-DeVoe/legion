@@ -94,7 +94,7 @@ func lastStepEnd(t *testing.T, pool *pgxpool.Pool, key, role string) string {
 }
 
 // A parent whose plan has no acceptance step passes its last step while an issue beneath it is in
-// the workflow (B-8, C2-1). Its head proves its children's merged work, so Legion holds it before
+// the workflow. Its head proves its children's merged work, so Legion holds it before
 // its retro: issues.phase held, from retro for its children, at the retro's place, with no slot
 // and no retro started, its owner told once in a retro-held notice naming the child. The child's
 // leave is the last one, so the hold ends, the parent stands in retro, its Dispatch status is
@@ -231,7 +231,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		assertWalksAt(t, pool, engine, "LEGION-208", phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 	})
 
-	// R20: an issue with no plan rows walks today's line, whose review approval goes to accepting
+	// An issue with no plan rows walks today's line, whose review approval goes to accepting
 	// with an issue beneath it in the workflow, as today; the child's leave starts nothing of it.
 	t.Run("an issue with no plan rows goes to accepting, and the child's leave starts nothing", func(t *testing.T) {
 		pool := migratedPool(t)

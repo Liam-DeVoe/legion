@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -301,7 +302,7 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 	// The owner's stop of a task stops the process of the step it ran and keeps the session, in
 	// one op of its own, step_stop, so it is told from the suspend of an issue the workflow takes
 	// out: the issue stays in the workflow, held from the step's phase for the stopped task. An
-	// issue with no plan rows has no task to stop, so the same stop writes nothing (R20).
+	// issue with no plan rows has no task to stop, so the same stop writes nothing.
 	for _, planned := range []bool{true, false} {
 		name := "a stopped task"
 		if !planned {
@@ -385,10 +386,9 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 			t.Fatalf("the rig's issue is %q, want one still in the workflow", rig.issue.Status)
 		}
 
-		rig.w.releaseIdlePods(ctx)
-
-		if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", got)
+		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
+		if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", queued)
 		}
 		rig.drain(t)
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {

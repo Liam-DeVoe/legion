@@ -80,16 +80,16 @@ func compareRuns(left, right Step) int {
 }
 
 // ProjectPlans answers each finished issue of project, an issue whose status is done and whose
-// closed_at is set, newest close first: since and until, each nil for no bound, bound the close
-// to [since, until). Each issue carries its plan (the node of its newest generation, nil where it
-// has none), the rating of each retro in the order the retros ran, the earliest start and the
-// latest end its runs hold (nil where none holds one), and its count of runs of kind step that
-// failed. A finished issue Legion never ran is listed with none of these.
+// closed_at is set, newest close first, its close within window ([Since, Until), each nil for no
+// bound, each rounded up to the microsecond). Each issue carries its plan (the node of its newest
+// generation, nil where it has none), the rating of each retro in the order the retros ran, the
+// earliest start and the latest end its runs hold (nil where none holds one), and its count of
+// runs of kind step that failed. A finished issue Legion never ran is listed with none of these.
 //
 // It is one statement for the whole project, whatever the number of issues: the project's
 // finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,
 // whose predicate the literal to_kind implies) to the node rows of its runs and plans.
-func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *time.Time) ([]IssuePlan, error) {
+func ProjectPlans(ctx context.Context, q Queryer, project string, window Window) ([]IssuePlan, error) {
 	rows, err := q.Query(ctx, `
 		select i.key, i.title, i.closed_at, n.kind, n.id, n.attributes, n.made_at
 		from issues i
@@ -100,15 +100,21 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 			and ($2::timestamptz is null or i.closed_at >= $2)
 			and ($3::timestamptz is null or i.closed_at < $3)
 		order by i.closed_at desc, i.key
-	`, project, since, until)
+	`, project, microsecondCeiling(window.Since), microsecondCeiling(window.Until))
 	if err != nil {
 		return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 	}
 	defer rows.Close()
 
-	var finished []IssuePlan
-	var runs [][]Step
-	var planMade []time.Time
+	// gathering is one finished issue as its rows build it: its answer, its runs, folded into the
+	// answer once every row is read, and the moment the plan it holds was made, which picks between
+	// two plans of one generation.
+	type gathering struct {
+		issue    IssuePlan
+		runs     []Step
+		planMade time.Time
+	}
+	var issues []gathering
 	for rows.Next() {
 		var key, title string
 		var closed time.Time
@@ -118,12 +124,10 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 		if err := rows.Scan(&key, &title, &closed, &kind, &id, &attributes, &made); err != nil {
 			return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 		}
-		if len(finished) == 0 || finished[len(finished)-1].Issue != key {
-			finished = append(finished, IssuePlan{Issue: key, Title: title, ClosedAt: closed.UTC(), Ratings: []Rating{}})
-			runs = append(runs, nil)
-			planMade = append(planMade, time.Time{})
+		if len(issues) == 0 || issues[len(issues)-1].issue.Issue != key {
+			issues = append(issues, gathering{issue: IssuePlan{Issue: key, Title: title, ClosedAt: closed.UTC()}})
 		}
-		last := len(finished) - 1
+		last := &issues[len(issues)-1]
 		switch {
 		case kind == nil:
 		case *kind == KindStep:
@@ -131,14 +135,14 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 			if err != nil {
 				return nil, err
 			}
-			runs[last] = append(runs[last], step)
+			last.runs = append(last.runs, step)
 		case *kind == KindPlan:
 			plan, err := planFrom(*id, attributes)
 			if err != nil {
 				return nil, err
 			}
-			if newerPlan(plan, *made, finished[last].Plan, planMade[last]) {
-				finished[last].Plan, planMade[last] = &plan, *made
+			if newerPlan(plan, *made, last.issue.Plan, last.planMade) {
+				last.issue.Plan, last.planMade = &plan, *made
 			}
 		}
 	}
@@ -146,10 +150,11 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 		return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 	}
 
-	for index := range finished {
-		issue := &finished[index]
-		slices.SortFunc(runs[index], compareRuns)
-		for _, step := range runs[index] {
+	finished := make([]IssuePlan, 0, len(issues))
+	for _, gathered := range issues {
+		issue := gathered.issue
+		slices.SortFunc(gathered.runs, compareRuns)
+		for _, step := range gathered.runs {
 			if step.StartedAt != nil && (issue.StartedAt == nil || step.StartedAt.Before(*issue.StartedAt)) {
 				issue.StartedAt = step.StartedAt
 			}
@@ -159,12 +164,30 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 			if step.Kind == StepKindStep && step.Result == ResultFailed {
 				issue.FailedSteps++
 			}
-			if step.Kind == StepKindRetro && step.Rating != 0 {
-				issue.Ratings = append(issue.Ratings, Rating{Rating: step.Rating, Reason: step.RatingReason, StepID: step.ID, EndedAt: step.EndedAt})
+			if step.Kind == StepKindRetro && step.Rating != nil {
+				issue.Ratings = append(issue.Ratings, Rating{Rating: step.Rating.Rating, Reason: step.Rating.Reason, StepID: step.ID, EndedAt: step.EndedAt})
 			}
 		}
+		finished = append(finished, issue)
 	}
 	return finished, nil
+}
+
+// microsecondCeiling is a bound of a window as the statement compares it. PostgreSQL holds a close
+// to the microsecond, and pgx encodes a bound by truncating its nanoseconds, which lowers it: a
+// close at the truncated microsecond, before the bound the caller named, would be kept by
+// `>= since` and dropped by `< until`. Every close is a whole microsecond, so it is at or after a
+// bound exactly when it is at or after the bound rounded up to the next microsecond, and before the
+// bound exactly when it is before that: rounding up keeps both meanings. nil is no bound.
+func microsecondCeiling(bound *time.Time) *time.Time {
+	if bound == nil {
+		return nil
+	}
+	ceiling := bound.Truncate(time.Microsecond)
+	if ceiling.Before(*bound) {
+		ceiling = ceiling.Add(time.Microsecond)
+	}
+	return &ceiling
 }
 
 // newerPlan answers whether plan, its node made at made, is newer than held, made at heldMade: of

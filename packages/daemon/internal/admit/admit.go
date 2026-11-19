@@ -365,7 +365,7 @@ func (a *Admission) applyReread(ctx context.Context, tx pgx.Tx, reread map[strin
 			continue
 		}
 		stored.Ancestry = ancestry
-		if err := a.store.PutIssue(ctx, tx, *stored); err != nil {
+		if err := a.engine.WriteIssue(ctx, tx, *stored); err != nil {
 			return fmt.Errorf("record the Dispatch chain of %s: %w", key, err)
 		}
 	}
@@ -961,7 +961,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 	if issue.Ancestry, err = a.engine.Ancestry(ctx, tx, issue, observation.Ancestry); err != nil {
 		return fmt.Errorf("read whether %s ran as a tree of its own: %w", observation.Key, err)
 	}
-	if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 		return fmt.Errorf("record admitted root %s: %w", observation.Key, err)
 	}
 	if err := a.drawExperiments(ctx, tx, issue.Key, config.ExperimentIssue); err != nil {
@@ -1267,7 +1267,7 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	stored.HandedOver = o.HandedOver
 	stored.LastDispatchSeq = o.Seq
 	stored.Ancestry = ancestry
-	if err := a.store.PutIssue(ctx, tx, stored); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
 		return fmt.Errorf("record observation of %s: %w", stored.Key, err)
 	}
 	return nil
@@ -1354,7 +1354,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	stored.Rank = o.Rank
 	stored.LingerUntil = nil
 	stored.LastDispatchSeq = o.Seq
-	if err := a.store.PutIssue(ctx, tx, stored); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
 		return fmt.Errorf("record re-admission %s: %w", stored.Key, err)
 	}
 	// The re-admission is a new generation of the tree: this write changes the generation, the
@@ -1931,7 +1931,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					issue.Status = "in_progress"
 				}
 				issue.Ancestry = nil
-				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+				if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
 				if writeInProgress {
@@ -1969,7 +1969,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// hand-over row of its generation, which the re-admission that carried it wrote
 				// (workflow.ArchitectStartOf says why the two agree here).
 				issue.HandedOverFrom = ""
-				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+				if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
 				// The promotion opens the tree's lifecycle, writes the root in_progress and

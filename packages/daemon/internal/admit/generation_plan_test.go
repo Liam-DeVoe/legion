@@ -165,7 +165,7 @@ func assertTakesOwnersPlan(t *testing.T, pool *pgxpool.Pool, key, root string, g
 }
 
 // assertTakesDefaultSteps fails unless key's run at generation stands at planning on the project's
-// default steps, stored at its first step (R5), and the one worker start queued is the planner's
+// default steps, stored at its first step, and the one worker start queued is the planner's
 // of that generation: today's line.
 func assertTakesDefaultSteps(t *testing.T, pool *pgxpool.Pool, key string, generation uint64) {
 	t.Helper()
@@ -328,7 +328,7 @@ func carriedPlan(stored *record.StoredPlan) *record.StoredPlan {
 	return carried
 }
 
-// Each path that opens a generation of an issue says what happens to its plan (B-21), and each
+// Each path that opens a generation of an issue says what happens to its plan, and each
 // subtest asserts the first step that starts. A rerun of a child (rerun_child), a person's move
 // of a done child to todo and the re-admission of a root that carries no run open a run whose
 // first step takes the newest plan its owner gave, of any generation, from its start: generation
@@ -339,7 +339,7 @@ func carriedPlan(stored *record.StoredPlan) *record.StoredPlan {
 // with its run, goes on at the step it stood at: generation 2 stands at reviewing with the task
 // at the same place and counts (CarryPlan with carried, in readmit), and the reviewer is the step
 // that starts; its control is a carried orphan held for its stopped task, which stays held with
-// its task stopped and starts no step. The twin (R20): an issue that ran before the release has no
+// its task stopped and starts no step. The twin: an issue that ran before the release has no
 // plan rows, and each path goes on as today: a new run starts planning, and a carried orphan
 // carries no plan rows and goes on at its phase.
 func TestEachPathThatOpensAGenerationSaysItsPlan(t *testing.T) {
@@ -479,7 +479,7 @@ func TestEachPathThatOpensAGenerationSaysItsPlan(t *testing.T) {
 }
 
 // A plan given at generation 0 for an issue the daemon never recorded waits through its giver's
-// tree leaving the workflow (C4-3): the root closes, its linger ends, and a person sets it todo
+// tree leaving the workflow: the root closes, its linger ends, and a person sets it todo
 // again. The rows at generation 0 are still there, because the token of a tree's architect comes
 // from the key of its root and a re-admitted root has the same one, and the re-admitted root's
 // release of the issue starts it at implementing, the first step of that plan, with no notice of

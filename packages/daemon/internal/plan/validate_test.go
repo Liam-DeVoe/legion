@@ -8,11 +8,12 @@ import (
 // yet ends each refusal of something a later release carries out.
 const yet = " This release of Legion does not carry it out yet."
 
-// R14 in this release: a step that names a role neither the deployment nor the plan defines is
-// refused, naming the step, its task and the role (B-11). Legion refuses no plan for a step that
-// it lacks, so each plan of Legion's own roles is taken whatever steps it leaves out. The control
-// is in the second half: a validator that also required a reviewer step would refuse
-// `implementer tester`, and one that required a tester would refuse `implementer reviewer`.
+// What no release carries out, as this release checks it: a step that names a role neither the
+// deployment nor the plan defines is refused, naming the step, its task and the role. Legion
+// refuses no plan for a step that it lacks, so each plan of Legion's own roles is taken whatever
+// steps it leaves out. The control is in the second half: a validator that also required a
+// reviewer step would refuse `implementer tester`, and one that required a tester would refuse
+// `implementer reviewer`.
 func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	r := Validate(oneTask("a", "implementer prober"), d)
@@ -25,7 +26,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 			t.Fatalf("%v refused: %+v", taken, r)
 		}
 	}
-	// architect, merger and controller are no roles of a step (the lead's ruling on open point 1).
+	// architect, merger and controller are no roles of a step: the step roles are Legion's five.
 	for _, role := range []string{"architect", "merger", "controller"} {
 		r := Validate(oneTask("a", "implementer "+role), d)
 		want := Refusal{Task: "a", Reason: "step 2 of task a names the role " + role + ", which neither the deployment nor the plan defines."}
@@ -75,9 +76,9 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	}
 }
 
-// C6: each row of "What slice 4 refuses", with its exact text and its task. Each cause gets one
-// reason, so a plan with two causes gets two. The taken plans are the subsets of today's line
-// that keep the implementer, with the owner's acceptance.
+// Each cause this release does not carry out yet (Supported), with its exact text and its task.
+// Each cause gets one reason, so a plan with two causes gets two. The taken plans are the subsets
+// of today's line that keep the implementer, with the owner's acceptance.
 func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	implementer, _ := ParseSteps("implementer")
 	withTask := func(task Task) Plan { return Plan{Tasks: []Task{task}} }
@@ -87,9 +88,9 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 		want []Refusal
 	}{
 		{name: "more than one task", plan: Plan{Tasks: []Task{
-			{ID: "a", HasSteps: true, Steps: implementer}, {ID: "b", HasSteps: true, Steps: implementer}, {ID: "c"},
+			{ID: "a", Steps: implementer}, {ID: "b", Steps: implementer}, {ID: "c"},
 		}}, want: []Refusal{{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet}}},
-		{name: "needs", plan: withTask(Task{ID: "a", Needs: []string{"b", "dispatch://ACME-2/artifact/plan-md#b-c"}, HasSteps: true, Steps: implementer}),
+		{name: "needs", plan: withTask(Task{ID: "a", Needs: []string{"b", "dispatch://ACME-2/artifact/plan-md#b-c"}, Steps: implementer}),
 			want: []Refusal{{Task: "a", Reason: "task a needs b, dispatch://ACME-2/artifact/plan-md#b-c." + yet}}},
 		{name: "a step that reads a pull request before the implementer", plan: oneTask("a", "reviewer implementer"),
 			want: []Refusal{{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet}}},
@@ -110,11 +111,11 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "a", Reason: "step 2 of task a names the key r." + yet}}},
 		{name: "a role block", plan: func() Plan { p := oneTask("a", "implementer"); p.RoleBlocks = []string{"prober"}; return p }(),
 			want: []Refusal{{Task: "", Reason: "the plan defines the role prober." + yet}}},
-		{name: "merges", plan: withTask(Task{ID: "a", Merges: true, HasSteps: true, Steps: implementer}),
+		{name: "merges", plan: withTask(Task{ID: "a", Merges: true, Steps: implementer}),
 			want: []Refusal{{Task: "a", Reason: "task a names merges." + yet}}},
 		{name: "owner", plan: withTask(Task{ID: "f", Owner: "architect"}),
 			want: []Refusal{{Task: "f", Reason: "task f names owner." + yet}}},
-		{name: "part_of", plan: withTask(Task{ID: "f1", PartOf: "f", HasSteps: true, Steps: implementer}),
+		{name: "part_of", plan: withTask(Task{ID: "f1", PartOf: "f", Steps: implementer}),
 			want: []Refusal{{Task: "f1", Reason: "task f1 names part_of." + yet}}},
 		{name: "two causes in one task", plan: oneTask("a", "reviewer implementer reviewer"), want: []Refusal{
 			{Task: "a", Reason: "task a names the role reviewer at steps 1 and 3." + yet},
@@ -136,7 +137,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 
 	// Both checks run, so a plan with a cause of each gets two reasons, one from each.
 	twoTasks := oneTask("a", "implementer prober")
-	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", HasSteps: true, Steps: implementer})
+	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", Steps: implementer})
 	got := append(Supported(twoTasks), Validate(twoTasks, Deployment{Roles: BuiltinRoles()})...)
 	want := []Refusal{
 		{Task: "", Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue." + yet},

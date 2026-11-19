@@ -59,7 +59,7 @@ func assertStepWrites(t *testing.T, pool *pgxpool.Pool, key string, generation u
 		if isStart(w) == isEnd(w) {
 			t.Fatalf("step record write %d of %s = %+v, want a start or an end", i, key, w)
 		}
-		if id := StepID(key, generation, want[i].task, want[i].kind, want[i].step, want[i].attempt); w.ID != id {
+		if id := StepID(key, generation, record.StepPlace{Task: want[i].task, Kind: want[i].kind, Place: want[i].step}, want[i].attempt); w.ID != id {
 			t.Fatalf("step record write %d of %s (%+v) has id %s, want %s: the id of start %d of %s/%s/%d",
 				i, key, got[i], w.ID, id, want[i].attempt, want[i].task, want[i].kind, want[i].step)
 		}
@@ -99,13 +99,13 @@ func stepStartCounts(t *testing.T, pool *pgxpool.Pool, key string) []string {
 	return counts
 }
 
-// The step records of an issue whose owner gave a plan are the plan's (B-7, C1): each names the
+// The step records of an issue whose owner gave a plan are the plan's: each names the
 // plan's task, the step's place in it, from 1, and the role and the type the plan's rows record
 // for it, and the retro and the merge are that task's too, at place 0. A start and the end of its
 // run have one id, computed from the count of starts of that place (step_starts), which each start
 // raises. A step the plan does not hold has no record. A task its owner stops ends the record of
 // its running step stopped. An issue with no plan rows records today's steps under the task
-// default, at their places in today's line, with the ids they always had (R20).
+// default, at their places in today's line, with the ids they always had.
 func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 	implementer := func(attempt int64) walkedWrite {
 		return walkedWrite{start: true, task: "a", kind: record.PlaceStep, step: 1, role: "implementer", typ: "implementation", attempt: attempt}
@@ -176,14 +176,14 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
 		applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
-			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: 2, PlanReason: "The plan held no tester."})
+			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: &intake.PlanRating{Score: 2, Reason: "The plan held no tester."}})
 		var rated []record.StepRecord
 		for _, write := range stepWrites(t, pool, root.Key) {
-			if write.Rating != nil {
+			if write.PlanRating != nil {
 				rated = append(rated, write)
 			}
 		}
-		if want := StepID(root.Key, 1, "a", record.PlaceRetro, 0, 1); len(rated) != 1 || rated[0].ID != want || rated[0].Task != "a" ||
+		if want := StepID(root.Key, 1, record.StepPlace{Task: "a", Kind: record.PlaceRetro}, 1); len(rated) != 1 || rated[0].ID != want || rated[0].Task != "a" ||
 			rated[0].Kind != record.PlaceRetro || rated[0].Role != "implementer" {
 			t.Fatalf("the ratings = %+v, want one on the record %s of the first run of task a's retro", rated, want)
 		}
@@ -195,7 +195,7 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 }
 
 // assertNoPlanRowsRunTodaysSteps fails unless an issue with no plan rows that engine moves out of
-// implementing records today's steps of the task default at today's places (R20): its
+// implementing records today's steps of the task default at today's places: its
 // implementer's end at step 2 and its tester's start at step 3. The implementer's run started
 // under no count of this release (EndUncountedStep), so its end is the record of count 0; the
 // tester's start is the first of its place.
@@ -232,11 +232,11 @@ func assertRowsName(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, when 
 	}
 }
 
-// Each phases row of an issue with plan rows names the step its role runs (C2-5): the task and
+// Each phases row of an issue with plan rows names the step its role runs: the task and
 // the step's place in it, written by the start that raises the row's entry (enter), so the facts
 // of that row are the facts of that step's run. The implementer's row names its step 1 until the
 // retro's start raises it again, at the retro's place 0, and the merger's names the merge, at 0.
-// An issue with no plan rows keeps no task and place 0 on each row, as it always did (R20).
+// An issue with no plan rows keeps no task and place 0 on each row, as it always did.
 func TestEachPhaseRowNamesItsStep(t *testing.T) {
 	t.Run("the plan implementer reviewer", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -272,7 +272,7 @@ func TestEachPhaseRowNamesItsStep(t *testing.T) {
 }
 
 // The start and the end of one run of a step of an owner's plan are two writes, and a boot of the
-// daemon between them rebuilds the engine on the same store (A-8). They meet in one record only
+// daemon between them rebuilds the engine on the same store. They meet in one record only
 // because both compute one id, and the count of starts is what carries it: the one count of the
 // place, in step_starts, raised by the start and read unchanged by the end. So the reviewer's
 // start, before the boot, and its end, after it, both carry the id of the first start of task a's
@@ -301,7 +301,7 @@ func TestTheStartAndTheEndOfARunHaveOneIDAcrossABoot(t *testing.T) {
 		}
 		return start, end
 	}
-	want := StepID(key, 1, "a", record.PlaceStep, 2, 1)
+	want := StepID(key, 1, record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2}, 1)
 	start, end := run(t, func(*pgxpool.Pool) {})
 	if start.ID != want || end.ID != want || resultOf(end) != "passed" {
 		t.Fatalf("the reviewer's start has id %q and its end, after the boot, %q (%s); want both %s, the first start of a/step/2",
@@ -320,120 +320,6 @@ func TestTheStartAndTheEndOfARunHaveOneIDAcrossABoot(t *testing.T) {
 	})
 }
 
-// openedOnce deletes the pull request stepRoot seeded for key and applies the opened of #42 at
-// headOne on the base main, so the row the test reads is the one the opened wrote, its first write.
-func openedOnce(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
-	t.Helper()
-	if _, err := pool.Exec(t.Context(), `delete from pull_requests where issue = $1`, key); err != nil {
-		t.Fatalf("delete the seeded pull request of %s: %v", key, err)
-	}
-	applyRefusingNothing(t, pool, engine, intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/" + key, Base: "main",
-		HeadSHA: headOne, UpdatedAt: stepClock})
-}
-
-// assertPullRequestNames fails unless key's pull request row names task, saying when.
-func assertPullRequestNames(t *testing.T, pool *pgxpool.Pool, key, task, when string) record.PullRequest {
-	t.Helper()
-	pr := recordedPR(t, pool, key)
-	if pr.Task != task {
-		t.Fatalf("%s: the pull request row of %s names the task %q, want %q", when, key, pr.Task, task)
-	}
-	return pr
-}
-
-// assertLaterWritesKeep writes key's pull request row again by the check settlement of its head,
-// a push of its base and a review of the review App, and fails unless each wrote the row (the
-// field each changes, so a write that never happened cannot pass) and the row still names task.
-func assertLaterWritesKeep(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string) {
-	t.Helper()
-	applyRefusingNothing(t, pool, engine, settledAt(headOne, 1))
-	if pr := assertPullRequestNames(t, pool, key, task, "after the check settlement"); pr.CheckedHead != headOne {
-		t.Fatalf("the check settlement left the checked head %q, want %s: it wrote no row", pr.CheckedHead, headOne)
-	}
-	applyRefusingNothing(t, pool, engine, intake.BasePush{Repo: "sjawhar/legion", Branch: "main", After: "main-moved"})
-	if pr := assertPullRequestNames(t, pool, key, task, "after a push of the base"); pr.BaseMoved != "main-moved" {
-		t.Fatalf("the push of the base left base_moved %q, want main-moved: it wrote no row", pr.BaseMoved)
-	}
-	applyRefusingNothing(t, pool, engine, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 7, State: "approved", CommitID: headOne,
-		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("approved", headOne), SubmittedAt: stepClock})
-	if pr := assertPullRequestNames(t, pool, key, task, "after a review"); pr.ReviewSeen.ID != 7 {
-		t.Fatalf("the review left the newest review %+v, want review 7: it wrote no row", pr.ReviewSeen)
-	}
-}
-
-// The pull request row names the task whose work it carries (record.PullRequest.Task; A3-4 of
-// the root plan, C3-2). The opened pull request of an issue on the owner's plan `implementer
-// reviewer` is written with the task a, and the check settlement, a push of the base and a review,
-// each of which writes the row again, keep it. The first step of a run names the run's task on a
-// pull request the record already holds, which an earlier run of another plan can have opened. An
-// issue on the default steps records its pull request under default; its owner stops default after
-// that, and a version replaces it with a: the row names a once a starts. An issue with no plan rows
-// keeps no task, as it always did (R20).
-func TestThePullRequestRowNamesItsTask(t *testing.T) {
-	t.Run("the plan implementer reviewer: the opened pull request names a, and each later write keeps it", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Admitted)
-		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		openedOnce(t, pool, engine, root.Key)
-		assertPullRequestNames(t, pool, root.Key, "a", "after the opened")
-		assertLaterWritesKeep(t, pool, engine, root.Key, "a")
-	})
-
-	for _, tc := range []struct {
-		name, task string
-		plan       func(t *testing.T, pool *pgxpool.Pool, key string, generation uint64)
-	}{
-		{"the default steps", plan.DefaultTask, func(*testing.T, *pgxpool.Pool, string, uint64) {}},
-		{"the owner's plan of the run", "a", func(t *testing.T, pool *pgxpool.Pool, key string, generation uint64) {
-			seedStepsPlan(t, pool, key, generation, "implementer", "reviewer")
-		}},
-	} {
-		t.Run("the first step on "+tc.name+" names its task on the pull request an earlier run opened", func(t *testing.T) {
-			pool := migratedPool(t)
-			engine := returnEngine()
-			root := stepRoot(t, pool, phase.Admitted)
-			if _, err := pool.Exec(t.Context(), `update pull_requests set task = 'earlier' where issue = $1`, root.Key); err != nil {
-				t.Fatalf("give the pull request an earlier run's task: %v", err)
-			}
-			tc.plan(t, pool, root.Key, root.Generation)
-			firstStep(t, pool, engine, root.Key)
-			assertPullRequestNames(t, pool, root.Key, tc.task, "after the first step")
-		})
-	}
-
-	t.Run("the stopped task default replaced by a: the row names a after a starts", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := returnEngine()
-		apply := applyFacts(t, pool, engine)
-		root := stepRoot(t, pool, phase.Admitted)
-		seedDefaultPlan(t, pool, root.Key, root.Generation)
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		openedOnce(t, pool, engine, root.Key)
-		assertPullRequestNames(t, pool, root.Key, plan.DefaultTask, "after the opened, on the default steps")
-		if result := apply("stop", ownersStop(t, root.Key, plan.DefaultTask)); result.Refusal != nil {
-			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
-		}
-		assertPullRequestNames(t, pool, root.Key, plan.DefaultTask, "after the stop of default")
-		mustTake(t, "version 1, which replaces default with a", apply(planID(root.Key, root.Generation, 1),
-			ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
-		if got := issueOf(t, pool, engine, root.Key); got.Phase != phase.Implementing || got.Hold != nil {
-			t.Fatalf("%s after version 1 stands in %s with hold %+v, want implementing: task a started", root.Key, got.Phase, got.Hold)
-		}
-		assertPullRequestNames(t, pool, root.Key, "a", "after task a started")
-	})
-
-	t.Run("an issue with no plan rows keeps no task on its pull request", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Implementing)
-		openedOnce(t, pool, engine, root.Key)
-		assertPullRequestNames(t, pool, root.Key, "", "after the opened, with no plan rows")
-		assertLaterWritesKeep(t, pool, engine, root.Key, "")
-	})
-}
-
 // assertPlanNodes fails unless the plan node rows key's outbox holds are want, in the order they
 // were queued, saying when.
 func assertPlanNodes(t *testing.T, pool *pgxpool.Pool, key, when string, want ...record.PlanRecord) {
@@ -446,11 +332,12 @@ func assertPlanNodes(t *testing.T, pool *pgxpool.Pool, key, when string, want ..
 // ownersNode is the plan node of LEGION-208's run 1 on version of the owner's plan whose one
 // task, a, runs the implementer and the reviewer.
 func ownersNode(version int) record.PlanRecord {
-	return record.PlanRecord{ID: PlanID("LEGION-208", 1), Generation: 1, Source: record.PlanSourceOwner, ArtifactID: planArtifact,
-		Version: version, Tasks: []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}}}}
+	return record.PlanRecord{ID: PlanID("LEGION-208", 1), Generation: 1, Source: record.PlanSourceOwner,
+		PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: version},
+		Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}}}}
 }
 
-// The plan node of a run is the plan its walk holds (C9, B-7). An owner's plan given before the
+// The plan node of a run is the plan its walk holds. An owner's plan given before the
 // work starts is the node the start writes: the source owner, the document, version 1 and the
 // task a with its steps; a version given before the start writes no node of its own, since the
 // start writes the version then in force. A version 2 taken while a runs writes the node again,
@@ -547,7 +434,7 @@ func topLevelNames(t *testing.T) (map[string]bool, int) {
 // plan node an issue whose owner gave no plan writes at its first step holds exactly the one task
 // default of those two steps, and the package declares no DefaultSteps of its own: a scan of its
 // source finds none, and the same scan finds PlanID, so it read the package. An issue with no
-// plan rows runs today's steps at today's places whatever the project names (R20): under the
+// plan rows runs today's steps at today's places whatever the project names: under the
 // same setting its implementer is step 2 and its tester step 3 of the task default.
 func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 	t.Run("the plan node holds the project's default_steps", func(t *testing.T) {

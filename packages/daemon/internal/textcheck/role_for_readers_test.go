@@ -86,7 +86,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}:         {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}:   {calls: 2, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}:            {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
-	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}:         {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
+	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}:         {calls: 2, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "endOfTransition"}:              {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/stranded.go", fn: "Stranded"}:                  {calls: 1, test: "TestStrandedNamesTheClaimsNothingWillWake"},
 	{file: "internal/workflow/wake.go", fn: "OpenPhaseRole"}:                 {calls: 1, test: "TestAnArchitectGetsNoBackstop"},

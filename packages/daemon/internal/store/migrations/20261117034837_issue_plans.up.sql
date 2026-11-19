@@ -1,5 +1,5 @@
--- 20261117034837_issue_plans.up.sql — the plan of an issue as rows, the step a phases row runs, and
--- the task a pull request carries (record's plan.go).
+-- 20261117034837_issue_plans.up.sql — the plan of an issue as rows, and the step a phases row runs
+-- (record's plan.go).
 --
 -- issue_plans holds each version given for an issue at a generation: the owner's version of its
 -- plan document (source owner, given_by the claim token of the owner that gave it), or the
@@ -14,9 +14,9 @@
 -- issue, which is written at generation 0.
 --
 -- phases.step_task and phases.step_place are record.PhaseRow.StepTask and StepPlace, the step a
--- role's row runs for an issue with plan rows, and pull_requests.task is record.PullRequest.Task.
--- Every row the upgrade finds is the row of an issue with no plan rows, since no release before
--- this one ran a plan, and takes the defaults, which read as no step and no task.
+-- role's row runs for an issue with plan rows. Every row the upgrade finds is the row of an issue
+-- with no plan rows, since no release before this one ran a plan, and takes the defaults, which
+-- read as no step.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned:
@@ -27,15 +27,14 @@
 --   drop table if exists plan_tasks;
 --   drop table if exists issue_plans;
 --   alter table phases drop column if exists step_task, drop column if exists step_place;
---   alter table pull_requests drop column if exists task;
 --   delete from schema_version where version = 20261117034837;
 --   commit;
 --   SQL
 --
--- The release before this one boots without the statements: its phases and pull request reads and
--- writes name each column they touch, and it names none of the three tables. They are owed to the
--- roll forward. Left in place, a task's place goes stale while the earlier release moves its issue
--- along today's fixed line, and after the roll forward the walk would start from that stale place.
+-- The release before this one boots without the statements: its phases reads and writes name each
+-- column they touch, and it names none of the three tables. They are owed to the roll forward.
+-- Left in place, a task's place goes stale while the earlier release moves its issue along today's
+-- fixed line, and after the roll forward the walk would start from that stale place.
 -- With the tables and columns dropped and the row deleted, store.apply runs this file again, and
 -- each issue the earlier release moved has no plan rows and goes on as it did. What the way back
 -- costs is every plan given before the rollback, which its owner gives again.
@@ -90,4 +89,3 @@ create table plan_steps (
 );
 
 alter table phases add column step_task text not null default '', add column step_place integer not null default 0;
-alter table pull_requests add column task text not null default '';

@@ -385,6 +385,31 @@ Each item below names a script, then what it proves.
   a read that lists no record, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
+- `plan-ratings.sh`
+
+  each retro of an issue rates the plan the issue ran, and a person lists the finished issues of a project with the real `dispatch plans` command, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with four issues of one project:
+  three walk planning to done, the first with one failed review, and their retros rate the plan 3, 4 and 5;
+  `dispatch plans --project <PROJECT>`, run as a person with their personal token, prints the three, newest close first, each with the default plan, its one rating with its reason, its time and `failed steps` 1, 0 and 0, and reports the first issue's `failed steps 0` once the failed review's record is deleted from Dispatch's database;
+  [`plan-ratings-read.sh`](#plan-ratings-readsh) passes on the first issue over the same command's output and fails on the fourth, which is not finished;
+  the fourth issue's retro, completed with no rating from a claim at the contract that added the rating, is refused `400 PLAN_RATING_REQUIRED`, and the same completion with a rating is taken.
+  No GitHub, no cluster
+
+- `plan-ratings-read.sh`
+
+  the read, after the merge, of the plan and the ratings of one issue a deployed Legion ran to done: `dispatch plans --project <PROJECT>` run once in the operator's own shell with the operator's own credential, and the line of `<ISSUE>` judged.
+  It passes only when the issue is listed with a plan and at least one rating, each with a reason, and prints the issue's time as `unknown` where Dispatch knows none;
+  a read that lists no finished issue, or that fails, is `UNKNOWN` and never a pass.
+  A deployed Dispatch and the operator's credential; it starts nothing
+
+- `owner-steps.sh`
+
+  the plan the owner of an issue gives picks which of today's steps run, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with four issues of one project:
+  the owner writes `plan.md` with one task `a` whose steps are `implementer reviewer` through the real `dispatch artifact` command and gives it with `register_plan` before the gate opens, and the issue walks implementing, reviewing, retro and merging to done with no planner and no tester launched;
+  `dispatch steps --issue <KEY>`, run as a person, prints task `a`'s two steps, then the retro and the merge;
+  an issue given no plan walks the project's default steps and holds their rows;
+  its controls delete an issue's plan rows, during its planner's work and before its gate opens, and give a plan with a role nobody defines, which is refused `409 PLAN_REFUSED`.
+  No GitHub, no cluster
+
 - `plan-pointer-drive.sh`
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
@@ -655,7 +680,7 @@ What it stands up, all of it the run's own:
   — tmpfs rather than the image's anonymous volume, which a box whose docker volume subsystem stalls would hang on.
 
 - **NATS and the Envoy listener** on the host:
-  a `nats:2.10 -js` container (`legion-e2e2-nats-<pid>`), and `packages/envoy`'s `cmd/listener` built into the work directory and started with a fresh API bearer, which reaches every pane as the 0600 file `envoy_token_file` names, on a socket [`lib/held-port.py`](#libheld-portpy) opened on a port the kernel chose (`ENVOY_LISTEN_FD`).
+  a JetStream container of the hub's nats-server (`legion-e2e2-nats-<pid>`; [`lib/nats-image.sh`](#libnats-imagesh) names the image), and `packages/envoy`'s `cmd/listener` built into the work directory and started with a fresh API bearer, which reaches every pane as the 0600 file `envoy_token_file` names, on a socket [`lib/held-port.py`](#libheld-portpy) opened on a port the kernel chose (`ENVOY_LISTEN_FD`).
 
 - **The plugins**: this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`, each packed as the release packs it, installed into the OMP profile `legion-e2e2-<pid>-<epoch>` by `lib/install-plugin-profile.sh` (`--package pi-envoy`, then `--package pi-legion`), under the run's own Oh My Pi home `<work>/omp-home` ([`lib/omp-home.sh`](#libomp-homesh)).
   The daemons run with that `HOME` and with `OMP_PROFILE` naming the profile, so the gate and every pane load both, and the operator's `~/.omp/profiles` holds none of the run;
@@ -3346,7 +3371,7 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
   psql is libpq, and Dispatch reads that rebuilt string with pgx (`pgxpool.ParseConfig`), which reads the keyword/value form as libpq does: the pinned `github.com/jackc/pgx/v5 v5.11.0` carries a port of libpq's parser, and `lib/loopback-dsn.sh` says what a raise of that pin moves.
   In a pod, start one without root as `docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md` says.
 
-- **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.10.22, which the rig installs once with `go install`.
+- **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.15.1, which the rig installs once with `go install`.
   In an issue pod it installs into `/legion/scratch/bin`, on the issue's volume, and otherwise into the run's own directory.
   The server starts with JetStream on a port the kernel picks, as `child-adoption.sh` starts it.
 
@@ -3379,7 +3404,7 @@ Each item below names an input and its default, then what it means.
 
   a loopback PostgreSQL with pgvector; the run makes and drops its own database there, and takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it
 
-- `LEGION_E2E_NATS_BIN` — the pinned `nats-server` v2.10.22, installed as above
+- `LEGION_E2E_NATS_BIN` — the pinned `nats-server` v2.15.1, installed as above
 
   another `nats-server`
 
@@ -3588,7 +3613,7 @@ What the run touches, and nothing else:
 - `/tmp/verifiers-e2e` — the two built binaries, the boot logs, the refusal logs, the last response body, and the scratch `HOME` the binaries run under, so Dispatch's signing key never lands in the box's `~/.local/share/dispatch`.
   Recreated from empty each run.
 
-- the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (`nats:2.10 -js`), both on ephemeral loopback ports.
+- the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (the hub's nats-server with `-js`, [`lib/nats-image.sh`](#libnats-imagesh)), both on ephemeral loopback ports.
 
 - two ports the kernel chose, one for `dispatch` and one for the listener, each held by [`lib/held-port.py`](#libheld-portpy) from that choice until its binary serves on it (`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`).
   The boot refusals exit before any bind and get none.
@@ -4234,7 +4259,7 @@ Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot r
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none, so CI's service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback address.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
 | check | what it holds |
@@ -4287,7 +4312,7 @@ Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot r
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A run takes about a minute.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
 
@@ -4340,7 +4365,7 @@ Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot r
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A measured run of the eight steps took 73 s, 2 s of it the proof itself and the rest building the driver.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
@@ -4446,7 +4471,7 @@ Runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot r
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.15.1` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A measured run took 88 s, 47 s of it building the driver: the proof itself waits out one paced launch, one outbox retry backoff and one entry sweep.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
@@ -4927,7 +4952,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 ```
 
 The live proof that each phase of an issue leaves a step record on its Dispatch issue and that a person reads the records back with `dispatch steps`, run before the change merges.
-It runs on any Linux host with `go`, `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
 The script starts no database, and the broker is the run's own.
 A run takes two to five minutes: most of it builds Dispatch and the driver, and up to a minute and a half waits for the daemon's outbox after the outage.
@@ -4981,6 +5006,127 @@ It reads an issue that is done, so every step of it has ended.
 | 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the issue (no header, a line that is no run, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr |
 
 `scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes, the merge record missing fails, an empty read is `UNKNOWN`, and each fault above has its row.
+
+## plan-ratings.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/plan-ratings.sh     # → "plan ratings e2e: PASS in <n>s", exit 0
+```
+
+The live proof that each retro of an issue rates the plan the issue ran and that a person lists the finished issues of a project with `dispatch plans`, each with its plan, its ratings with their reasons, its time and its count of failed steps, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`step-records.sh`](#step-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run takes two to five minutes, most of it building Dispatch and the driver; one took 53 s measured on a loaded host with a warm Go build cache, 17 s of it building the driver and 33 s the proof, which builds Dispatch first.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI and the read script out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestPlanRatingsLive` (`internal/daemon/plan_ratings_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+Nothing of the record path is stood in for.
+The driver is [`step-records.sh`](#step-recordssh)'s, over four issues of one project of the run's own (`SR<6 hex>`) instead of one, each seeded and booted as that driver seeds and boots its issue, so each plan and each rating goes through the daemon's outbox and its Dispatch client to the real `PUT /api/v1/issues/{key}/plans/{id}` and `PUT /api/v1/issues/{key}/steps/{id}/rating`.
+The first three issues walk side by side, one step of each in turn, as the package's whole-daemon test of the read by project walks them (`walkThreeRated`, `internal/daemon/plan_ratings_test.go`).
+The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts plans --project <PROJECT>`), run as `step-records.sh`'s driver runs it, as the person who set the project up, with their personal token.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `three-finished-issues-each-rated` | three issues walked planning to done, the first with a person's review requesting changes once; their retros' completions rating the plan 3, 4 and 5, each with a reason; the merges of the second, the third and the first, in that order, each once the close before it has reached Dispatch, so the newest close first is neither the keys' order nor its reverse; `dispatch plans --project <PROJECT>` as the person, once the read by project holds all of it; then [`plan-ratings-read.sh`](#plan-ratings-readsh) on the first issue and on the fourth, in the person's shell with a `dispatch` on PATH that runs the same CLI | the header `<PROJECT>: 3 finished issues` and three lines, the first, the third and the second issue in that order (newest close first), each with `plan default (1 tasks: planner implementer tester reviewer acceptance:owner)`, its one rating `<n>/5 "<reason>"`, its time from the earliest start to the latest end of its step records, and `failed steps` 1, 0 and 0; the read script exits 0 on the first issue with a `PASS` line that names its rating and reason, and 1 on the fourth, which is not finished (`no line of <ISSUE>`); control: the failed review's record deleted from Dispatch's database (its `workflow_nodes` row and every `workflow_tuples` row naming it), the same parse reports the first issue's `failed steps 0` where 1 is wanted |
+| `a-retro-with-no-rating-is-refused` | the fourth issue walked to its retro; the retro's completion with no rating, from the implementer's claim at the plugin contract that added the rating (`api.PlanRatingContract`) or later; then the same completion with `planRating` 4 and a reason | `400 PLAN_RATING_REQUIRED` and the issue still in `retro`; control: `200` and the issue in `merging`, so the refusal is the rating's and no refusal of every retro; the fourth issue goes no further, so the read by project lists the three alone |
+
+The times print as `0h0m`: the walks take seconds, and `dispatch plans` prints whole minutes.
+A plugin of the release before that contract is no step here: the package's whole-daemon test `TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy` (`internal/daemon/plan_ratings_test.go`) holds that its retro, in its turn when the daemon is upgraded, completes with no rating and that the daemon writes none.
+What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
+`PLAN_RATINGS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## plan-ratings-read.sh
+
+```sh
+scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>     # → "PASS: <ISSUE>: plan …, ratings …, time …, failed steps <n>", exit 0
+```
+
+The check after the merge: once the release that rates each plan reaches a deployment, one real issue of the project runs to done there, and this script reads it among the project's finished issues.
+It runs `dispatch plans --project <PROJECT>` once and prints what the command printed, then one verdict on the line of `<ISSUE>`, an issue of `<PROJECT>`.
+It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
+It sets none of those, reads no credential of its own, writes nothing and starts nothing.
+It judges no other issue: a finished issue Legion never ran lists `plan none`, `ratings none` and `time -`, and one it ran before the release that rates each plan lists `plan none` and `ratings none`, with the span of the step records the release that records each step wrote of it, or `time -` where there are none, which is true of what Dispatch holds of each.
+The issue's own `time -` is no fault either: it is Dispatch knowing no span of the issue's step records (no record has a start, none has an end, or the latest end is before the earliest start), which says nothing of its plan or its ratings, so the verdict prints that time as `unknown` and judges the rest.
+
+| exit | printed | when |
+| :--- | :--- | :--- |
+| 0 | `PASS: <ISSUE>: plan <plan>, ratings <ratings>, time <time>, failed steps <n>` | the read lists the issue with a plan and at least one rating, each rating with a reason; the line names each rating with its reason as the command printed them, and the time as printed, or `unknown` for `-` |
+| 1 | one `FAIL: …` line per fault | the read lists finished issues and the issue's line does not hold: no plan, no rating, a rating with an empty reason; or the read lists no line of the issue (`the read lists <n> finished issues of <PROJECT> and no line of <ISSUE>`), or lists it twice; each line names the issue's line as the command printed it |
+| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no finished issue of the project (`dispatch plans lists no finished issue of <PROJECT>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the project (no header, a line that is no finished issue, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr: a project key and the key of an issue of that project |
+
+`scripts/e2e/lib/plan-ratings-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints an answer the real command rendered: envoy-client's `dispatch plans` code prints typed finished issues, so a line it prints that this script cannot read fails the test.
+Among its cases: a whole answer passes, an issue rated twice passes, an issue its owner planned passes, an answer holding a plan whose first task has no steps (`(1 tasks: -)`) is read, an empty read is `UNKNOWN`, and each fault above has its row.
+[`plan-ratings.sh`](#plan-ratingssh)'s first step runs it on the output of the real `dispatch plans` over the Dispatch this checkout builds, so it also reads finished issues a real Dispatch served rather than ones the test typed.
+
+## owner-steps.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/owner-steps.sh     # → "owner steps e2e: PASS in <n>s", exit 0
+```
+
+The live proof that the plan the owner of an issue gives picks which of today's steps run, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`step-records.sh`](#step-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run takes two to five minutes, most of it building Dispatch and the driver; two runs measured on a loaded host with a warm Go build cache took 44 s and 36 s, 7 to 17 s of it building the driver.
+The four checks of the run are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestOwnerStepsLive` (`internal/daemon/owner_steps_live_test.go`, `-tags e2e`) |
+| `proof` | the checks below, each printing what it drove and what it read back between its own `== <name>` and one line `ok <name>` or `FAIL <name>` |
+
+Nothing of the plan's path is stood in for.
+Dispatch is the real server this checkout builds, the daemon is the whole daemon with `dispatch_url` at it, and `register_plan` reads the plan's version from Dispatch with the daemon's own client.
+The rig is the package's rig of an owner's plan (`ownerStepsRig`, `internal/daemon/owner_steps_rig_test.go`), over four issues of one project of the run's own (`OS<6 hex>`), each created with a spec and seeded at admitted with no design gate and no pull request, so nothing of an issue starts before a person approves its spec and its architect registers it.
+Its walk takes the plan the owner gives and the answer of each step's agent (`walkSteps`), so a later check walks another plan or a failed step with the same rig.
+Each fact of GitHub reaches the daemon through its own reads and its own intake, never through a write to its store: the fake GitHub API lists the issue's pull request from the implementer's completion on, so the completion's own read of the branch applies the opened; a review is a person's on the run's broker; the merge is GitHub's envelope there.
+The owner writes with the real `dispatch` CLI under bun in the architect's session, and the reader of the steps is the same CLI as the person who set the project up, with their personal token.
+
+| check | driven by | read back as | the fault it catches |
+| :--- | :--- | :--- | :--- |
+| `plan-written` | the owner's session writes `plan.md` on the first issue with one block `:::plan_task{#a steps="implementer reviewer"}` through `dispatch artifact` | the daemon's own client reads version 1 with one `plan_task` block `a` whose `steps` is `implementer reviewer` | Dispatch drops the `steps` attribute of a block, or keeps no blocks for a version |
+| `plan-registered` | `POST /legion/v1/plans/register` with the architect's grant and version 1, while the issue stands at admitted | `200` with the plan at version 1 and one task `a` naming `implementer` and `reviewer` | the route refuses an owner's plan this release carries out, or reads another version |
+| `walk-implementer-reviewer` | the spec approved and registered; the walk of the plan: the implementer's completion, a person's approving review, the retro, GitHub's merge | the issue stands in implementing, reviewing, retro, merging and done in turn, and no planner and no tester was ever launched | the walk runs today's line, or a step the plan does not name |
+| `steps-read` | `dispatch steps --issue <KEY>` as the person | the header `<KEY>: 4 steps in 1 tasks`, task `a`'s step 1 implementer and step 2 reviewer, then the retro and the merge, each ended `passed` with an agent | a step record names the task `default` or the place of today's line |
+| `walk-default-steps` | the second issue, given no plan, walked from planning to done, the architect signing off its acceptance | the eight phases in turn; `issue_plans` version 0 of the source `default`, `plan_tasks` task `default` ending `done`, `plan_steps` at places 1 to 5, one start of each step in `step_starts`, and the seven records of task `default` in `dispatch steps` | an issue with no plan gets no rows of the default steps, or its walk drops one |
+| `control-default-rows-deleted` | the third issue, given no plan, with its rows deleted from `plan_steps`, `plan_tasks` and `issue_plans` while its planner works; it walks today's line to done | the check of `walk-default-steps`' rows fails on it, saying its `issue_plans` rows are `[]` | that check passes whatever the store holds |
+| `control-refused` | `register_plan` of a plan whose task `a` names `implementer checker` | `409 PLAN_REFUSED` with the reason `step 2 of task a names the role checker, which neither the deployment nor the plan defines.`, and no plan rows | the route takes a role nobody defines |
+| `control-no-plan-rows` | the fourth issue given the plan `implementer reviewer`, with its rows deleted before its spec is registered | it starts a planner, and the check of `walk-implementer-reviewer` fails on it, naming planning as its first step | that check passes on an issue that walks today's line |
+
+The control a person can run makes `walk-implementer-reviewer` fail with the code changed.
+In `packages/daemon/internal/workflow/line.go`, make `walk` read no stored plan, so an issue with plan rows walks today's line, by changing its first test to:
+
+```go
+	if err != nil || stored == nil || true {
+```
+
+One run with that change printed, after `ok plan-written` and `ok plan-registered`:
+
+```text
+== walk-implementer-reviewer
+    owner_steps_live_test.go:75: OSACB644-1's gate opened and its first step is planning, want implementing, the first step of its owner's plan (planner launched [])
+FAIL walk-implementer-reviewer (0s)
+owner steps e2e: FAIL at proof after 47s (evidence: <dir>)
+```
+
+The planner's launch follows the move into planning, so the list the line names can still be empty when the check reads it.
+
+What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
+`OWNER_STEPS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## plan-pointer-drive.sh
 
@@ -5933,6 +6079,8 @@ transcript_to "$evidence/transcript.log"
 
 `transcript_to FILE` sends the calling shell's stdout and stderr to `FILE` as well as to whatever read stdout before.
 It does this through a `tee` that ignores the signals a driver traps and SIGPIPE.
+It opens `FILE` for append in the calling shell first, and returns that open's failure, which names `FILE`, before it moves either stream:
+the `tee` opens `FILE` in a process of its own, whose failure no caller sees, so a run under `set -e` that could not open its transcript would otherwise go on to its PASS with none.
 
 - A signal to the process group, a reader that goes first (a supervised launcher's own `tee`, stopped with the run), or a full disk under `FILE` each cost `tee` at most the outputs they break.
   The driver and its cleanup never fail on a write.
@@ -5947,6 +6095,9 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 
 - The `tee` is one of the run's processes: its argv names `FILE`, and its working directory is the caller's at the call.
   [`lib/rig.sh`](#librigsh)'s `run_processes` matches `$work` in either, so a caller keeps both outside `$work`, or opens `FILE` on a descriptor and passes `/dev/fd/N`, as Stage 2 and `stage3-4b13b-acceptance.sh` do with their transcript under `$work`.
+
+`lib/transcript.test.ts` (`bun test scripts/e2e/lib`) sources the helper under `set -euo pipefail` and runs one line after it:
+a file it can open takes that line, which still reaches the reader, and a file whose directory does not exist, or a directory in its place, ends the run before that line, naming the file.
 
 ## lib/rig.sh
 
@@ -6108,6 +6259,17 @@ Each item below names a function, then what it does.
 
 Running the two proofs at once takes a database each: both reset their own `DATABASE_URL`'s `public` schema, so one database given to both leaves each build migrating a schema the other emptied.
 Their ports differ, so nothing else collides.
+
+## lib/nats-image.sh
+
+Sets `nats_image` to the NATS server image every live proof that starts its own server runs: `testnats.HubImage`, the constant `packages/envoy/internal/testnats/nats.go` declares, which is the hub's `nats:2.15.1-alpine` (`.github/ci-images.yaml`).
+The listener and the Legion daemon refuse a nats-server below the floor `packages/envoy/natsversion` holds, every 2.10 among them, so a proof on any older image never brings its stack up; reading the Go tests' own constant keeps the two from drifting.
+Needs `$root`; ends the script when it cannot read the constant, and says so on stderr under `set -e` too.
+Stage 2, Stage 3, both Claude backend proofs, the controller-start, user-turns, parked-decision and verifiers proofs, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it.
+`lib/nats-image.test.ts` scans every tracked shell script, and holds each one with a `docker run` line that passes `-js` to starting `"$nats_image"` and sourcing this helper; the drivers above are a floor under that scan.
+It also scans every tracked text file but dated plans and changelogs for the nats-server module's path followed by `@` and a version, in any command (`go install`, `go run`, `go get`), a literal version or `@$name` with a literal `name=<version>` in the same file, and fails on any version the floor refuses.
+It holds no copy of the floor: it builds `packages/envoy/natsversion/cmd/natsfloor` once and asks it, so the verdict is `natsversion.Refusal`'s, the rule the listener and the daemon refuse a server by, and so it needs `go` on `PATH`.
+It does not see a `docker run` continued over lines, `podman` or a launcher that is not a shell script, an `export name=` or `${name:-<version>}` assignment, or a version set in another file the script sources; none is used in the tree.
 
 ## lib/omp-home.sh
 

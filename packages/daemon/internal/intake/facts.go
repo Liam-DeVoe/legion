@@ -886,14 +886,13 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
-	// PlanRating and PlanReason are the rating of the plan the issue ran, from 1 to 5, and why,
-	// which the completion that ends the retro carries (api.PlanRatingContract): the route took
-	// them only on that completion and held them to the scale and to coming together. 0 and ""
-	// on every other completion, and on a retro's from a plugin before that contract.
-	PlanRating int
-	PlanReason string
+	// PlanRating is the rating of the plan the issue ran, which the completion that ends the retro
+	// carries (api.PlanRatingContract): the route took it only on that completion and held it to
+	// the scale and to a reason. nil on every other completion, and on a retro's from a plugin
+	// before that contract.
+	PlanRating *PlanRating
 	// ReturnTo is the step of the issue's running task that a failed step names as the one the
-	// task returns to (R7): the place of that step in the task, 1 for its first. The route takes
+	// task returns to: the place of that step in the task, 1 for its first. The route takes
 	// it only on a completion whose verdict is fail, and holds it to 1 or above; which step it may
 	// name is the workflow's to judge against the task's steps. 0 on every other completion, which
 	// returns to the step the workflow reads from the steps' types.
@@ -901,6 +900,17 @@ type HandoffComplete struct {
 }
 
 func (HandoffComplete) isFact() {}
+
+// PlanRating is a retro's rating of the plan its issue ran: Score, from 1 (the plan cost the work)
+// to 5 (the plan fit the work), and Reason, why. The type holds the pair, so a fact carries the
+// rating with its reason or none; it keeps no rule of either. That Score is 1 to 5 and Reason is
+// not blank and at most api's planReasonMax code points is the completion route's rule (api's
+// planRatingOf), and that route, which builds the value only where the rule has held, is its one
+// producer.
+type PlanRating struct {
+	Score  int
+	Reason string
+}
 
 // BackwardMove asks the workflow to return to an earlier phase.
 type BackwardMove struct {
@@ -1002,12 +1012,12 @@ func (GateRegistered) isFact() {}
 // Dispatch at that version and held them to plan.Supported and plan.Validate, so a plan either
 // check refuses never reaches the workflow. Generation is the issue's generation the route read,
 // and 0 for an issue the daemon has not recorded, whose plan waits at generation 0 until the
-// issue's first step takes the newest plan its owner gave (C2-2). GivenBy is the claim of the
+// issue's first step takes the newest plan its owner gave. GivenBy is the claim of the
 // architect whose grant gave it, which is how the first step tells its owner's plan from an
 // earlier owner's.
 //
 // The workflow stores it (workflow's planGiven) where its task has not started, and applies the
-// rules of a later version (R16). It answers PLAN_REFUSED (RunningTaskChanged, or
+// rules of a later version. It answers PLAN_REFUSED (RunningTaskChanged, or
 // StartedBeforePlans for an issue that ran before Legion took plans), PLAN_VERSION_OLD,
 // PLAN_DOCUMENT_CHANGED, TASK_DONE (PlanOfDoneTask, PlanOfLeftTask), PLAN_STALE_GENERATION and
 // TREE_LINGERING, and it leaves each of those refusals unspent (Result.Unspent). The route names
@@ -1105,16 +1115,20 @@ type SessionStoreFault struct {
 func (SessionStoreFault) isFact() {}
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
-// was near its memory limit, as the pod's launcher reported it on the connection of the role
-// whose process it was (shimwire.LauncherMemoryKill). It is never decoded from an event: the
-// launcher's frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per
-// report under the id `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a
-// report the launcher sent twice is applied once (INFRA-3557).
+// was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
+// the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
+// launcher reported it on the connection of the role whose process it was
+// (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
+// the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
+// `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
+// twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
+// guest watch (memoryguard.Guest).
 //
 // Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
 // the role the connection authenticated for, and that pod), never anything the report says.
-// The workflow tells that role, on its own role topic, which of its processes was ended and why
-// (workflow's memoryGuardKill).
+// The workflow tells that role, on its own role topic, which of its processes was ended and why,
+// in the note the report's Cause chooses (workflow's memoryGuardKill).
 type MemoryGuardKill struct {
 	Issue  string
 	Token  claim.Token
@@ -1435,7 +1449,7 @@ func PlanRefused(reasons []plan.Refusal) *Refusal {
 }
 
 // RunningTaskChanged is the reason a later version of the plan is refused when it changes or
-// removes task, which is running: the owner stops it first (R16, B-3).
+// removes task, which is running: the owner stops it first.
 func RunningTaskChanged(task string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
 }
@@ -1471,7 +1485,7 @@ func PlanOfLeftTask(issue, task string) *Refusal {
 
 // StartedBeforePlans is the reason a plan is refused for issue, which the daemon recorded with no
 // plan rows at its generation and whose work has started: it ran before Legion took plans, and it
-// walks today's line to its end (R20). It names no task, and it does not end with "This release
+// walks today's line to its end. It names no task, and it does not end with "This release
 // of Legion does not carry it out yet.", since no later release gives such a run a plan.
 func StartedBeforePlans(issue string) plan.Refusal {
 	return plan.Refusal{Reason: fmt.Sprintf(
@@ -1570,7 +1584,7 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 
 // LateReportOfEndedStep is the 409 STEP_ENDED refusal of a report of step ended, run by endedRole,
 // of task of issue, whose run Legion ended when the task went on to step now, run by nowRole, which
-// it runs now (R7): the report moves nothing (workflow's lateReport). It names no result and no
+// it runs now: the report moves nothing (workflow's lateReport). It names no result and no
 // cause, because the daemon holds no record of how that run ended: the step record in Dispatch does
 // (dispatch steps). named says whether the report names a handoff record, which then counts as
 // used (lateEnd).

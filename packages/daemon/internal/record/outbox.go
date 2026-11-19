@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -54,6 +55,9 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
+	// row (RoleHoldersPublish).
+	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
 	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
 	// record of that step, or the rating a retro gave the plan onto the retro's record
 	// (StepRecord).
@@ -108,7 +112,7 @@ const (
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -127,6 +131,13 @@ func LaneOf(kind OutboxKind) OutboxLane {
 // LaneKinds is the kinds lane runs, in a fixed order; nil for a lane that is not one.
 func LaneKinds(lane OutboxLane) []OutboxKind {
 	return slices.Clone(laneKinds[lane])
+}
+
+// OutboxLanes is every lane an issue's rows run on, in name order: the lanes laneKinds holds, so
+// a reader that needs every lane, or every kind, takes them from here rather than from a list of
+// its own, which a new lane would leave short.
+func OutboxLanes() []OutboxLane {
+	return slices.Sorted(maps.Keys(laneKinds))
 }
 
 // LaneKey names one lane of one issue.
@@ -1072,18 +1083,34 @@ type DesignGateDocument struct {
 
 func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
 
-// StepRecord is one write of an issue's record of one step onto Dispatch (PUT
-// /api/v1/issues/{key}/steps/{id}): the start of the step, or its end. ID is the record's id, a
-// uuid the start and the end of one run of the step both compute, and the row's issue column is the
-// issue. Each other field is a field of the route's body under the same name.
+// RoleHoldersPublish writes the session of each live Legion role of Issue onto the issue's
+// Dispatch row (PUT /api/v1/issues/{key}/role-holders), which Dispatch reads to take the role of a
+// result from the session that wrote it. The payload names the issue alone: the executor reads the
+// live set from the claims when the row runs (publishRoleHolders), so a row queued before a claim
+// ended sends the set without it, and two events of one issue never publish a stale set.
 //
-// Dispatch writes each field once and keeps every field a write leaves out, so the start and the
-// end merge in either order and a write that runs again changes nothing. That makes a field left
-// out and a field written empty two different writes: a start that wrote the model as "" would
-// keep the end's model off the record for good. So every write carries the identity of the step
-// (task, step, kind, role, type, agent and generation), the empty type of a retro or a merge and
-// the place 0 of either included, and each field a write may not know yet is a pointer, nil for
-// one the write leaves to the other.
+// The row waits on its issue's board lane among the issue's other Dispatch writes. The write
+// replaces the issue's whole set and tells nobody, so a set Dispatch already holds costs nothing.
+type RoleHoldersPublish struct {
+	Issue string `json:"issue"`
+}
+
+func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
+
+// StepRecord is one write of an issue's record of one step onto Dispatch (PUT
+// /api/v1/issues/{key}/steps/{id}): the start of the step, its end, or the report alone of a
+// completion that landed after that end (workflow's reportEndedStep). ID is the record's id, a
+// uuid every write of one run of the step computes, and the row's issue column is the issue. Each
+// other field is a field of the route's body under the same name.
+//
+// Dispatch writes each field once and keeps every field a write leaves out, so the writes of one
+// run merge in any order and a write that runs again changes nothing. Every write carries the
+// identity of the step (task, step, kind, role, type, agent and generation), the empty type of a
+// retro or a merge and the place 0 of either included, and each field a write may not know yet is
+// a pointer, nil for one the write leaves to another. The route takes a text field sent as "" as
+// left out, so for a text field the pointer only says what the write knows; for a time and for
+// ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
+// Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
 type StepRecord struct {
 	ID         string     `json:"id"`
 	Task       string     `json:"task"`
@@ -1100,11 +1127,23 @@ type StepRecord struct {
 	Result     *string    `json:"result,omitempty"`
 	ReturnedTo *int       `json:"returned_to,omitempty"`
 	Report     *string    `json:"report,omitempty"`
-	// Rating and RatingReason are the rating the retro gave the plan, from 1 to 5, and why: the
-	// one write that carries them is the retro's rating, which Dispatch takes on the record's
-	// rating route (dispatch.HTTPClient.PutStep), and every other write leaves both out.
-	Rating       *int    `json:"rating,omitempty"`
-	RatingReason *string `json:"rating_reason,omitempty"`
+	// PlanRating is the rating the retro gave the plan, with its reason: the one write that carries
+	// it is the retro's rating, which Dispatch takes on the record's rating route
+	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
+	// members are members of the payload itself, written together and left out together when it is
+	// nil; a stored row naming one of them alone reads as a rating whose other member is zero.
+	*PlanRating
+}
+
+// PlanRating is a retro's rating of the plan its issue ran: Rating, from 1 (the plan cost the
+// work) to 5 (the plan fit the work), and Reason, why. The two are one value, so a step record
+// carries a rating with its reason or no rating. It mirrors dispatch.PlanRating, which the
+// publication converts it to (publishStepRecord), because the dispatch package imports no record
+// of the daemon's; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to
+// the same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
 }
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
@@ -1115,18 +1154,28 @@ func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
 // issue and its run, one for each run, and the row's issue column is the issue. Each other field
 // is a field of the route's body under the same name: the run (record.Issue.Generation), where the
 // plan came from (default, the steps Legion runs when the owner gave none, or owner), the owner's
-// document and its version, which a plan of the source default leaves out, and each task with its
+// document with its version, which a plan of the source default leaves out, and each task with its
 // steps in order. The source, the document, the version and the tasks are one fact, so each write
 // carries all four: a write whose version is above the version Dispatch holds replaces all four,
 // and a write at or below it changes nothing, a version left out (the source default) counting as
 // 0. So a write that arrives late or twice does no harm.
 type PlanRecord struct {
-	ID         string           `json:"id"`
-	Generation uint64           `json:"generation"`
-	Source     string           `json:"source"`
-	ArtifactID string           `json:"artifact_id,omitempty"`
-	Version    int              `json:"version,omitempty"`
-	Tasks      []PlanRecordTask `json:"tasks"`
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	// PlanDocument is embedded, so its two members are members of the payload itself, written
+	// together and left out together when it is nil.
+	*PlanDocument
+	Tasks []PlanRecordTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from: the artifact and
+// the version of it Legion took. The two are one value, so a plan names its document with its
+// version or no document. It mirrors dispatch.PlanDocument, which the publication converts it to
+// (publishPlanRecord), because the dispatch package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
@@ -1509,6 +1558,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindRoleHoldersPublish:
+		value := RoleHoldersPublish{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1616,8 +1671,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Status == "" {
 			return fmt.Errorf("outbox status write has empty status")
 		}
-		if value.Reason != "" && value.Status != "done" {
-			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
+		// A reason is posted on the issue before the status lands: a done write's, and an ordinary
+		// move's that nothing else on Dispatch explains (workflow's moveReason, a head that
+		// conflicts with its base). A hand-over, a re-assertion or a person's handover repeats or
+		// carries out a move whose cause is already on the issue, so it posts none.
+		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
+			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}
 	case MessagePost:
 		// Each is a refusal Dispatch would make of the upload on every run, or a link that would
@@ -1784,6 +1843,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			}
 			named[gate.Step] = true
 		}
+	case RoleHoldersPublish:
+		if value.Issue == "" {
+			return fmt.Errorf("a role-holders publish requires the issue whose role sessions it writes")
+		}
 	case CheckWakeDue:
 		if value.Look <= 0 {
 			return fmt.Errorf("check wake requires the look it was named at")
@@ -1840,11 +1903,21 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a merge-queue read names the pull request it reads and the head that left the queue; it names #%d at %q", value.Number, value.Head)
 		}
+	case MergeQueueRemoval:
+		if value.Number < 1 || value.Head == "" {
+			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
+		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
-	// with a warning (the outbox's permanentRefusal). These two it would not end: an empty id
-	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND, the one answer
-	// the row retries for ever, and a write without the step's identity is refused only when it is
-	// the record's first, so the same defect would make a record on one run and none on another.
+	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id
+	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND "no route for
+	// …", the one answer the row waits on for ever; and a write without the step's identity is
+	// refused only when it is the record's first, so the same defect would make a record on one
+	// run and none on another.
+	// A rating is held whole here too, though Dispatch's rating route would refuse half of one: the
+	// workflow (rateRetro) writes the rating and its reason as one value, so a rating of 0 or an
+	// empty reason, which is what a stored row naming only one of the two reads as, is a defect of
+	// the daemon, refused where it is queued rather than found by a warning after the completion
+	// that carried it committed.
 	case StepRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
@@ -1852,15 +1925,15 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Task == "" || value.Kind == "" || value.Role == "" {
 			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
 		}
+		if value.PlanRating != nil && (value.PlanRating.Rating == 0 || value.PlanRating.Reason == "") {
+			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
+				value.PlanRating.Rating, value.PlanRating.Reason)
+		}
 	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
 	// same reason a step record's is.
 	case PlanRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a plan record names no uuid as its id; it names %q", value.ID)
-		}
-	case MergeQueueRemoval:
-		if value.Number < 1 || value.Head == "" {
-			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)

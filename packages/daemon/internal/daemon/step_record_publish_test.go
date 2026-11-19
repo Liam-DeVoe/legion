@@ -2,10 +2,11 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"sync"
@@ -93,7 +94,9 @@ func (d *stepRecordDispatch) statusWrites() []string {
 	return slices.Clone(d.statuses)
 }
 
-// stepRecordOf is the end of a review that asked for changes, the record with every field set.
+// stepRecordOf is the end of a review that asked for changes, with every field the end of a step
+// carries set: all but the rating and its reason, which only the retro's rating carries
+// (ratingRecordOf).
 func stepRecordOf() record.StepRecord {
 	started := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC)
 	ended := started.Add(time.Hour)
@@ -117,13 +120,19 @@ type stepRecordRig struct {
 
 func newStepRecordRig(t *testing.T, answer func(int) error) *stepRecordRig {
 	t.Helper()
+	return newStepRecordRigOf(t, stepRecordOf(), answer)
+}
+
+// newStepRecordRigOf is the rig with rec queued as the issue's step record row.
+func newStepRecordRigOf(t *testing.T, rec record.StepRecord, answer func(int) error) *stepRecordRig {
+	t.Helper()
 	pool := isolatedOutboxPool(t)
 	logs := &syncBuffer{}
 	client := &stepRecordDispatch{outboxDispatch: &outboxDispatch{}, answer: answer}
 	rig := &stepRecordRig{t: t, pool: pool, client: client, clock: microClock(), logs: logs}
 	rig.runner = &outbox{pool: pool, dispatchProject: "LEGION", records: record.NewStore(), dispatch: client,
 		log: slog.New(slog.NewJSONHandler(logs, nil)), now: rig.clock.Now}
-	enqueueOutbox(t, pool, record.NewStore(), mustOutboxRow(t, stepIssue, stepRecordOf(), rig.clock.Now()))
+	enqueueOutbox(t, pool, record.NewStore(), mustOutboxRow(t, stepIssue, rec, rig.clock.Now()))
 	return rig
 }
 
@@ -140,54 +149,277 @@ func (r *stepRecordRig) run() {
 // left is how many rows the issue has left.
 func (r *stepRecordRig) left() int { return outboxRowsOf(r.t, r.pool, stepIssue) }
 
-// A Dispatch older than the route answers its router's 404 under the code NOT_FOUND, which is no
-// refusal of the record: the row retries on its backoff until the upgraded Dispatch takes it, which
-// is what lets the daemon and Dispatch deploy in either order. Each failed attempt is the outbox's
-// own Error line, and nothing says the record was dropped, because it was not. The write that lands
-// is the whole record, under its issue and its id.
-func TestAStepRecordRetriesUntilDispatchHasTheRoute(t *testing.T) {
-	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route"}
-	rig := newStepRecordRig(t, answersInTurn(notFound, notFound))
-	for attempt := 1; attempt <= 2; attempt++ {
-		rig.run()
-		if left := rig.left(); left != 1 {
-			t.Fatalf("rows left after attempt %d = %d, want the record retried", attempt, left)
+// retriedThenLanded drains the rig's one row refused times, each run keeping it for its retry,
+// then once more, which lands it: refused+1 PUTs of the same record under the same id, one failed
+// attempt logged for each refusal and no warning, since nothing was dropped. It answers the PUTs.
+func (r *stepRecordRig) retriedThenLanded(refused int) []stepPut {
+	t := r.t
+	t.Helper()
+	for attempt := 1; attempt <= refused; attempt++ {
+		r.run()
+		if left := r.left(); left != 1 {
+			t.Fatalf("rows left after attempt %d = %d, want the record kept for its retry", attempt, left)
+		}
+		if puts := r.client.received(); len(puts) != attempt {
+			t.Fatalf("PUTs of the record after attempt %d = %d, want one for each attempt", attempt, len(puts))
 		}
 	}
+	r.run()
+	if left := r.left(); left != 0 {
+		t.Fatalf("rows left after Dispatch took the record = %d, want none", left)
+	}
+	puts := r.client.received()
+	if len(puts) != refused+1 {
+		t.Fatalf("PUTs of the record = %d, want %d: %d Dispatch refused and one it stored", len(puts), refused+1, refused)
+	}
+	for i, put := range puts[1:] {
+		if !reflect.DeepEqual(put, puts[0]) {
+			t.Fatalf("PUT %d wrote %+v, want the same record under the same id as the first, %+v", i+1, put, puts[0])
+		}
+	}
+	logs := r.logs.String()
+	if failed := loggedLines(t, logs, "outbox row failed"); len(failed) != refused {
+		t.Fatalf("logged %d failed attempts, want the %d Dispatch refused: %s", len(failed), refused, logs)
+	}
+	if warned := loggedLines(t, logs, `"level":"WARN"`); len(warned) != 0 {
+		t.Fatalf("logged %d warnings, want none for a record that landed: %s", len(warned), logs)
+	}
+	return puts
+}
+
+// A Dispatch older than the route answers each write with its router's 404 NOT_FOUND "no route
+// for …" (routes/router.go, staticHandler), and the daemon and Dispatch deploy in either order.
+// So the row waits rather than fails, as the role holders' publication does
+// (TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt): it logs `outbox row waits` and
+// no ERROR line, at INFO on its first run, DEBUG on the next six, and WARN from its seventh retry,
+// when its backoff has reached its cap of about a minute (waitWarnAttempts); each run keeps the row,
+// and nothing says the record was dropped, because it was not. Once Dispatch serves the route, the
+// next run writes the whole record, under its issue and its id, and ends the row. The stand-in
+// answers as the router does, through the daemon's real HTTP client, so the client's reading of
+// that body is what decides.
+func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
+	rig := newStepRecordRig(t, nil)
+	rig.runner.log = slog.New(slog.NewJSONHandler(rig.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	route := "/api/v1/issues/" + stepIssue + "/steps/" + stepRecordID
+
+	var mu sync.Mutex
+	routed, asked := false, 0
+	var landed []stepPut
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		asked++
+		w.Header().Set("Content-Type", "application/json")
+		if !routed || req.Method != http.MethodPut || req.URL.Path != route {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"code": "NOT_FOUND", "error": "no route for " + req.Method + " " + req.URL.Path, "hint": "GET /api/v1 lists every route",
+			})
+			return
+		}
+		var write dispatch.StepWrite
+		if err := json.NewDecoder(req.Body).Decode(&write); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		landed = append(landed, stepPut{Issue: stepIssue, ID: stepRecordID, Write: write})
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": stepRecordID})
+	}))
+	t.Cleanup(server.Close)
+	rig.runner.dispatch = dispatch.New(server.URL, "agent-token")
+
+	const tries = waitWarnAttempts + 1
+	for try := 1; try <= tries; try++ {
+		rig.run()
+		var attempts int
+		if err := rig.pool.QueryRow(context.Background(), `select attempts from outbox where kind = $1 and issue = $2`,
+			string(record.OutboxKindStepRecord), stepIssue).Scan(&attempts); err != nil {
+			t.Fatalf("after try %d, read the row: %v", try, err)
+		}
+		if attempts != try {
+			t.Fatalf("after try %d the row has %d attempts, want %d: the record kept for its next run", try, attempts, try)
+		}
+		mu.Lock()
+		reached := asked
+		mu.Unlock()
+		if reached != try {
+			t.Fatalf("after try %d the stand-in was asked %d times, want once a try", try, reached)
+		}
+	}
+
+	mu.Lock()
+	routed = true
+	mu.Unlock()
+	rig.run()
+	started, ended := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC), time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
+	session, model, result, report := "ses-reviewer", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	returnedTo := 2
+	want := []stepPut{{Issue: stepIssue, ID: stepRecordID, Write: dispatch.StepWrite{Task: "default", Step: 4, Kind: "step",
+		Role: "reviewer", Type: "review", Agent: "legion-legion-legion-1-reviewer", Generation: 1, Session: &session,
+		Model: &model, StartedAt: &started, EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}}}
+	if !reflect.DeepEqual(landed, want) {
+		t.Fatalf("once the route was served the stand-in took %+v, want %+v", landed, want)
+	}
+	if left := rig.left(); left != 0 {
+		t.Fatalf("after the record landed the issue has %d rows left, want none", left)
+	}
+
+	logs := rig.logs.String()
+	if errored := loggedLines(t, logs, `"level":"ERROR"`); len(errored) != 0 {
+		t.Errorf("logged %d ERROR lines while Dispatch had no route, want none: %s", len(errored), logs)
+	}
+	if dropped := loggedLines(t, logs, stepRefusedLine); len(dropped) != 0 {
+		t.Errorf("logged the record dropped %d times, want never: %s", len(dropped), logs)
+	}
+	var levels []string
+	for _, line := range loggedLines(t, logs, `"msg":"outbox row waits"`) {
+		level, _ := line["level"].(string)
+		levels = append(levels, level)
+	}
+	if want := []string{"INFO", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "DEBUG", "WARN"}; !slices.Equal(levels, want) {
+		t.Fatalf("the waits logged at %v, want %v:\n%s", levels, want, logs)
+	}
+}
+
+// A step record and the write Dispatch gets are the same fields, the record's id aside, and the
+// publication copies them one by one (publishStepRecord), since the dispatch package imports no
+// record of the daemon's. A field added to both types and left out of the copy compiles and drops
+// that field from every write. So the two types are held to one set of fields, each of the same
+// type under the same JSON name, but for a struct of the record's that the write holds as its
+// mirror in dispatch (record.PlanRating and dispatch.PlanRating), which the copy converts: the two
+// structs have the same fields, each of the same type under the same JSON name, so a field added
+// to one alone fails here or stops the build; the fixtures, the two writes production makes, to a
+// value in every field between them, which a new field must get in the write that carries it: the
+// end of a step carries every field but the rating and its reason, and the retro's rating
+// (workflow's rateRetro) carries the step's identity, the rating and its reason; and each write to
+// its own record's value of each field, a mirrored struct's converted to the write's type.
+func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
+	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
+	recordFields := map[string]reflect.StructField{}
+	for i := range recordType.NumField() {
+		field := recordType.Field(i)
+		if field.Name != "ID" {
+			recordFields[field.Name] = field
+		}
+	}
+	if len(recordFields) != writeType.NumField() {
+		t.Errorf("record.StepRecord has %d fields beside its ID, dispatch.StepWrite %d: a field of one is not a field of the other",
+			len(recordFields), writeType.NumField())
+	}
+	recordPackage, writePackage := recordType.PkgPath(), writeType.PkgPath()
+	// mirrored is whether the write's field of type write mirrors the record's of type rec: the
+	// same struct name in the two packages, or pointers to such, with the same fields, each of the
+	// same type under the same JSON name, so the record's converts to the write's.
+	mirrored := func(write, rec reflect.Type) bool {
+		if write.Kind() == reflect.Pointer && rec.Kind() == reflect.Pointer {
+			write, rec = write.Elem(), rec.Elem()
+		}
+		if write.Kind() != reflect.Struct || rec.Kind() != reflect.Struct || write.PkgPath() != writePackage ||
+			rec.PkgPath() != recordPackage || write.Name() != rec.Name() || write.NumField() != rec.NumField() {
+			return false
+		}
+		for i := range write.NumField() {
+			w, r := write.Field(i), rec.Field(i)
+			if w.Name != r.Name || w.Type != r.Type || w.Tag.Get("json") != r.Tag.Get("json") {
+				return false
+			}
+		}
+		return true
+	}
+	for i := range writeType.NumField() {
+		field := writeType.Field(i)
+		mirror, ok := recordFields[field.Name]
+		sameType := ok && (mirror.Type == field.Type || mirrored(field.Type, mirror.Type) && mirror.Type.ConvertibleTo(field.Type))
+		if !sameType || mirror.Tag.Get("json") != field.Tag.Get("json") {
+			t.Errorf("dispatch.StepWrite's %s is %s %q; record.StepRecord's is %s %q (present: %t)", field.Name,
+				field.Type, field.Tag.Get("json"), mirror.Type, mirror.Tag.Get("json"), ok)
+		}
+	}
+	fixtures := []struct {
+		name string
+		rec  record.StepRecord
+	}{
+		{"the end of a review that asked for changes", stepRecordOf()},
+		{"the rating of a retro", ratingRecordOf()},
+	}
+	for i := range recordType.NumField() {
+		set := false
+		for _, fixture := range fixtures {
+			set = set || !reflect.ValueOf(fixture.rec).Field(i).IsZero()
+		}
+		if !set {
+			t.Errorf("no fixture sets %s, so a write that dropped it would pass", recordType.Field(i).Name)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	// shown reads a pointer through, so a failure prints the value rather than an address.
+	shown := func(v reflect.Value) any {
+		if v.Kind() == reflect.Pointer && !v.IsNil() {
+			return v.Elem().Interface()
+		}
+		return v.Interface()
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			rec := fixture.rec
+			client := &stepRecordDispatch{outboxDispatch: &outboxDispatch{}}
+			runner := &outbox{dispatch: client, log: quietLogger()}
+			if err := runner.publishStepRecord(context.Background(), mustOutboxRow(t, stepIssue, rec, time.Now()), rec); err != nil {
+				t.Fatalf("publish the record: %v", err)
+			}
+			puts := client.received()
+			if len(puts) != 1 || puts[0].Issue != stepIssue || puts[0].ID != rec.ID {
+				t.Fatalf("PUTs = %+v, want the one of record %s under %s", puts, rec.ID, stepIssue)
+			}
+			written, value := reflect.ValueOf(puts[0].Write), reflect.ValueOf(rec)
+			for i := range writeType.NumField() {
+				field := writeType.Field(i)
+				got, want := written.Field(i), value.FieldByName(field.Name)
+				if want.Type() != got.Type() {
+					want = want.Convert(got.Type())
+				}
+				if !reflect.DeepEqual(got.Interface(), want.Interface()) {
+					t.Errorf("the write's %s = %v, want the record's %v", field.Name, shown(got), shown(want))
+				}
+			}
+		})
+	}
+}
+
+// A merge that moves back to the retro returns its task to place 0, the retro's: the row carries
+// that 0 through the store, and the write Dispatch gets names it, where a nil would read as a
+// failed merge that returned nowhere.
+func TestAReturnToTheRetroReachesDispatchAsPlaceZero(t *testing.T) {
+	ended := time.Date(2026, 11, 17, 2, 0, 0, 0, time.UTC)
+	session, model, result, retro := "ses-merger", "anthropic/claude-opus-5", "failed", 0
+	rig := newStepRecordRigOf(t, record.StepRecord{ID: stepRecordID, Task: "default", Kind: "merge", Role: "merger",
+		Agent: "legion-legion-legion-1-merger", Generation: 1, Session: &session, Model: &model, EndedAt: &ended,
+		Result: &result, ReturnedTo: &retro}, nil)
 	rig.run()
 	if left := rig.left(); left != 0 {
 		t.Fatalf("rows left after Dispatch took the record = %d, want none", left)
 	}
 	puts := rig.client.received()
-	if len(puts) != 3 {
-		t.Fatalf("PUTs of the record = %d, want three: two the old router refused, one stored", len(puts))
+	if len(puts) != 1 {
+		t.Fatalf("PUTs of the record = %d, want one", len(puts))
 	}
-	started, ended := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC), time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
-	session, model, result, report := "ses-reviewer", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
-	returnedTo := 2
-	want := stepPut{Issue: stepIssue, ID: stepRecordID, Write: dispatch.StepWrite{Task: "default", Step: 4, Kind: "step",
-		Role: "reviewer", Type: "review", Agent: "legion-legion-legion-1-reviewer", Generation: 1, Session: &session,
-		Model: &model, StartedAt: &started, EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}}
-	for i, put := range puts {
-		if !reflect.DeepEqual(put, want) {
-			t.Fatalf("PUT %d = %+v, want %+v", i, put, want)
-		}
-	}
-	logs := rig.logs.String()
-	if failed := loggedLines(t, logs, "outbox row failed"); len(failed) != 2 {
-		t.Fatalf("logged %d failed attempts, want the 2 the old router answered: %s", len(failed), logs)
-	}
-	if warned := loggedLines(t, logs, `"level":"WARN"`); len(warned) != 0 {
-		t.Fatalf("logged %d warnings, want none for a record that landed: %s", len(warned), logs)
+	if got := puts[0].Write.ReturnedTo; got == nil || *got != 0 {
+		t.Fatalf("the write's returned_to = %v, want a pointer to 0, the retro's place", got)
 	}
 }
 
 // What a retry can change is retried: an outage, "come back later", a codeless answer from a
 // proxy, and a credential an operator restores, as the shared rule rides each of them out
-// (dispatch.PermanentRefusal). So is the old router's NOT_FOUND, and an older Dispatch's refusal of
-// a field this daemon added. None of them ends the row.
+// (dispatch.PermanentRefusal). So is a handler's 404 NOT_FOUND "not found", which is not the
+// router's "no route for …" that a Dispatch older than the route answers (a wait, as
+// TestAStepRecordWaitsForADispatchThatHasNoRouteForIt shows), and an older Dispatch's refusal of
+// a field this daemon added. Each is the answer to a real PUT of the queued row: the row stays,
+// its failed attempt is the outbox's own Error line and nothing says the record was dropped, and
+// once Dispatch answers again the next run writes the same record under the same id and ends it.
 func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
-	row := mustOutboxRow(t, stepIssue, stepRecordOf(), time.Now())
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -196,7 +428,7 @@ func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
 		{name: "a transport failure", err: &dispatch.TransientError{Err: errors.New("dial tcp: connection refused")}},
 		{name: "401", err: &dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED", Message: "token expired"}},
 		{name: "403 ACTOR_SESSION_MISMATCH", err: &dispatch.Error{Status: http.StatusForbidden, Code: "ACTOR_SESSION_MISMATCH", Message: "the bearer names another session"}},
-		{name: "404 NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route"}},
+		{name: "a handler's 404 NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}},
 		{name: "408", err: &dispatch.Error{Status: http.StatusRequestTimeout, Code: "TIMEOUT", Message: "slow"}},
 		{name: "429", err: &dispatch.Error{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "later"}},
 		{name: "a codeless 400", err: &dispatch.Error{Status: http.StatusBadRequest, Message: "Bad Request"}},
@@ -204,10 +436,7 @@ func TestAStepRecordRetriesAnOutageAndACredential(t *testing.T) {
 			Message: `invalid JSON body: json: unknown field "labels_add"`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			wrapped := fmt.Errorf("write the step record %s of %s: %w", stepRecordID, stepIssue, tc.err)
-			if permanentRefusal(row, wrapped) {
-				t.Fatalf("permanentRefusal(%v) = true, want the row retried", tc.err)
-			}
+			newStepRecordRig(t, answersInTurn(tc.err)).retriedThenLanded(1)
 		})
 	}
 }

@@ -32,7 +32,7 @@ var testLines = [][]phase.Phase{
 
 // todaysTable is the table the workflow walked before an issue's plan picked its line, written
 // out row by row as it stood: the control that TableOf(phase.Order) changes nothing for an issue
-// with no plan rows (R20).
+// with no plan rows.
 func todaysTable() []Row {
 	rows := []Row{
 		{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: phase.Planning, Effects: []EffectKind{EffectStart, EffectNotice}},

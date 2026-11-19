@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { goBlankPattern } from "./go-blank";
 import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
 
 /**
@@ -696,9 +697,9 @@ const legionIssue = z.object({
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
-   * the controller; and from contract 156 `task-stopped` once its owner stopped its task with
+   * the controller; and from contract 162 `task-stopped` once its owner stopped its task with
    * stop_task, and `children` while a parent whose plan has no acceptance step waits, before its
-   * retro, for the issues beneath it. A caller in a pod whose plugin declares a contract below 156
+   * retro, for the issues beneath it. A caller in a pod whose plugin declares a contract below 162
    * is served an issue held for either of those two with no `holdReason` (the daemon's
    * `withoutNewHoldReasons`). `heldFrom` beside it is the phase the hold took the issue out of,
    * and is absent for an issue that is not held. The linger suppression is `holdReason`'s alone:
@@ -893,7 +894,7 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the words of `admission.held`, in `record.HeldReasons`' order.
- * `children_before_retro` and `task_stopped` came with contract 156; a caller below it is served
+ * `children_before_retro` and `task_stopped` came with contract 162; a caller below it is served
  * each such row as `unclassified` with no `heldBy` (the daemon's `withoutNewHoldReasons`).
  * `at_work` names an issue past its review, which keeps no admission slot; `record.HeldAtWork`
  * says which issues read it.
@@ -1596,7 +1597,7 @@ export const LegionWaveReleaseResponse = z.object({
   held: z.array(legionBlockedIssue),
 });
 
-/** `api.PlanRegisterResponse`, the plan register_plan took (contract 156): the version given and
+/** `api.PlanRegisterResponse`, the plan register_plan took (contract 162): the version given and
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
  * reads when the task's work starts, so it is answered with no step: an empty list, never null. A
@@ -1625,17 +1626,27 @@ export const LegionControllerGrantRequest = z.strictObject({
   secret: nonEmptyString,
 });
 
-/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
- * daemon counts them (api's planReasonMax): Dispatch's record of the retro takes one to 2,000. */
-const PLAN_REASON_MAX = 2000;
+/** The scale of a plan's rating, `planRating`: the whole numbers from 1 (the plan cost the work)
+ * to 5 (the plan fit the work), as the daemon holds it (api's planRatingLeast and planRatingMost).
+ * The plugin's `plan_rating` reads these, and the contract test holds them to the daemon's own,
+ * which its golden test writes to `fixtures/daemon-api/plan-rating.json`. */
+export const LEGION_PLAN_RATING_LEAST = 1;
+export const LEGION_PLAN_RATING_MOST = 5;
 
-/** `planReason`: why the retro rated the plan as it did, one to `PLAN_REASON_MAX` characters that
- * are not all blank. A string's `length` counts UTF-16 units, so the bound counts code points. */
+/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
+ * daemon counts them (api's planReasonMax, held to it the same way): Dispatch's record of the
+ * retro takes one to 2,000. */
+export const LEGION_PLAN_REASON_MAX = 2000;
+
+/** `planReason`: why the retro rated the plan as it did, one to `LEGION_PLAN_REASON_MAX`
+ * characters that are not all blank, blank as the daemon's strings.TrimSpace reads it
+ * (`goBlankPattern`), which is not JavaScript's trim. A string's `length` counts UTF-16 units, so
+ * the bound counts code points. */
 const legionPlanReason = z
   .string()
-  .refine((reason) => reason.trim() !== "", { message: "planReason says why" })
-  .refine((reason) => [...reason].length <= PLAN_REASON_MAX, {
-    message: `planReason holds at most ${PLAN_REASON_MAX} characters`,
+  .refine((reason) => !goBlankPattern.test(reason), { message: "planReason says why" })
+  .refine((reason) => [...reason].length <= LEGION_PLAN_REASON_MAX, {
+    message: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
   });
 
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
@@ -1664,11 +1675,11 @@ const legionPlanReason = z
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
  * the daemon's decode of it refuses a time with no seconds, and so does this. `planRating` and
- * `planReason` are the rating of the plan the issue ran (contract 155), which the completion that
+ * `planReason` are the rating of the plan the issue ran (contract 161), which the completion that
  * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
  * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
- * (`PLAN_RATING_INPUT`). A plugin at contract 155 or later must send both on its retro
- * (`PLAN_RATING_REQUIRED`). `returnTo` (contract 156) is the step a step that failed names for its
+ * (`PLAN_RATING_INPUT`). A plugin at contract 161 or later must send both on its retro
+ * (`PLAN_RATING_REQUIRED`). `returnTo` (contract 162) is the step a step that failed names for its
  * task to return to, by its place in the issue's running task, 1 for its first: a whole number of
  * 1 or more (`INVALID_RETURN_TO`), carried only by a completion with the verdict `fail`
  * (`RETURN_TO_NEEDS_FAIL`, which the daemon also answers a production check's report that names
@@ -1682,7 +1693,12 @@ export const LegionHandoffCompleteRequest = z
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
     wakeAt: LegionInstant.optional(),
-    planRating: z.number().int().min(1).max(5).optional(),
+    planRating: z
+      .number()
+      .int()
+      .min(LEGION_PLAN_RATING_LEAST)
+      .max(LEGION_PLAN_RATING_MOST)
+      .optional(),
     planReason: legionPlanReason.optional(),
     returnTo: z.number().int().positive().optional(),
   })
@@ -1774,7 +1790,7 @@ export const LegionChildRequest = z.strictObject({
   issue: nonEmptyString,
 });
 
-/** `api.PlanRegisterRequest`, register_plan (contract 156): the owner of an issue, an architect of
+/** `api.PlanRegisterRequest`, register_plan (contract 162): the owner of an issue, an architect of
  * the issue's tree, gives Legion the plan in version `version` of the document
  * `artifactId` of the issue, which the daemon reads from Dispatch at that version. The issue may be
  * one the daemon has not recorded yet while Dispatch shows it triage, backlog, icebox or todo
@@ -1786,7 +1802,7 @@ export const LegionPlanRegisterRequest = z.strictObject({
   version: z.number().int().positive(),
 });
 
-/** `api.TaskStopRequest`, stop_task (contract 156): the owner of a recorded issue stops one task of
+/** `api.TaskStopRequest`, stop_task (contract 162): the owner of a recorded issue stops one task of
  * the plan Legion runs for it, so that a later version of the plan may change that task; the issue
  * is then held with `holdReason` `task-stopped`. A task the plan does not hold is refused
  * (`TASK_NOT_FOUND`), and so is one that is done (`TASK_DONE`). */

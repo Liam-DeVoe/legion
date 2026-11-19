@@ -4,8 +4,11 @@ import path from "node:path";
 import { LEGION_PHASE_BACKWARD_TARGETS } from "@legion/contracts/legion-api";
 import { z } from "zod";
 import { createLegionDaemonClient } from "./daemon-client";
+import type { HandoffReport } from "./handoff-record";
 import {
   type ClaimCapability,
+  type DeclaredNumber,
+  declaredNumber,
   executePhaseOp,
   legionToolDescription,
   PHASE_OP_SENTENCES,
@@ -40,11 +43,19 @@ const REPORT = {
   handoffVersion: 2,
 };
 
+/** A daemon refusal as its route answers it: the status, the code and the sentence. */
+type DaemonRefusal = { readonly status: number; readonly code: string; readonly error: string };
+
 /** A runtime over a stub daemon answering the golden fixtures, recording each route it is sent
- * and each body it is posted. `state` is what `GET /legion/v1/state` answers. */
+ * and each body it is posted. `state` is what `GET /legion/v1/state` answers, `ratingRefusal`,
+ * when given, what the daemon answers a completion that carries `planRating`, and `report` what
+ * the pane reports for the phase it finds: `REPORT`, or the commit alone that a phase with no
+ * handoff record reports (handoff-record's standingReport). */
 function runtime(
   claim: ClaimCapability = implementer,
-  state: Record<string, unknown> = daemonFixture("state.json")
+  state: Record<string, unknown> = daemonFixture("state.json"),
+  ratingRefusal?: DaemonRefusal,
+  report: HandoffReport = REPORT
 ) {
   const routes: string[] = [];
   const posted: Record<string, unknown>[] = [];
@@ -57,7 +68,20 @@ function runtime(
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
     routes.push(route);
-    if (typeof init?.body === "string") posted.push(JSON.parse(init.body));
+    const body: Record<string, unknown> | undefined =
+      typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    if (body !== undefined) posted.push(body);
+    if (
+      route === "/legion/v1/handoff/complete" &&
+      ratingRefusal !== undefined &&
+      body !== undefined &&
+      "planRating" in body
+    ) {
+      return Response.json(
+        { code: ratingRefusal.code, error: ratingRefusal.error },
+        { status: ratingRefusal.status }
+      );
+    }
     return Response.json(answers[route] ?? {});
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
@@ -65,7 +89,7 @@ function runtime(
     claim,
     handoffReport: async (phase, role) => {
       lookups.push(`${phase} ${role}`);
-      return REPORT;
+      return report;
     },
     branchHead: async () => {
       throw new Error("no branch-head lookup expected");
@@ -99,6 +123,35 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       .filter((f) => f !== "op")
   );
   expect(Object.keys(phaseOpParameters(z)).sort()).toEqual([...fields].sort());
+});
+
+// A number field is declared to the host with the bounds its own checks give, in whatever order
+// they were written, and with none on a side it bounds nowhere; the test above holds plan_rating's
+// declaration to 1 and 5. zod's `int()` writes the safe integer range into a schema's `_zod.bag`
+// as it attaches, over a bound written before it, so a reading of the bag declares that range for
+// a side with no bound, and in place of a `min()` written before `int()`. An exclusive bound,
+// which the host's number takes no form of, throws, and so does a check this does not map.
+test("a phase op's number field declares the bounds its checks give, in any order, and none on a side with none", () => {
+  const cases: readonly (readonly [z.ZodNumber, DeclaredNumber])[] = [
+    [z.number(), { int: false }],
+    [z.number().int(), { int: true }],
+    [z.number().min(1).int(), { int: true, min: 1 }],
+    [z.number().max(5).int(), { int: true, max: 5 }],
+    [z.number().int().min(1).max(5), { int: true, min: 1, max: 5 }],
+    [z.number().max(5).int().min(1), { int: true, min: 1, max: 5 }],
+    [z.number().min(1).min(3).max(9).max(5), { int: false, min: 3, max: 5 }],
+  ];
+  for (const [field, declared] of cases) {
+    expect(declaredNumber("n", field)).toStrictEqual(declared);
+  }
+  for (const field of [z.number().gt(0), z.number().int().lt(5), z.number().positive().int()]) {
+    expect(() => declaredNumber("n", field)).toThrow(
+      "phase op field n has an exclusive bound, which phaseOpParameters does not map"
+    );
+  }
+  expect(() => declaredNumber("n", z.number().int().multipleOf(2))).toThrow(
+    "phase op field n has a multiple_of check, which phaseOpParameters does not map"
+  );
 });
 
 test("the description sets the host's sentences before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
@@ -221,6 +274,11 @@ test("each op refuses its arguments whole before any daemon request, naming ever
           "handoff_complete names return_to without the verdict fail: only the completion of a step that failed, with the verdict fail, names the step its task returns to; send it again without return_to",
         ] as const
     ),
+    // The pair is the schema's own rule, so it is named with the call's other problems at once.
+    [
+      { op: "handoff_complete", summary: " ", plan_rating: 4 },
+      "handoff_complete requires summary; handoff_complete names plan_rating without plan_reason",
+    ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
       'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"',
@@ -327,6 +385,124 @@ test("the retro's completion sends plan_rating and plan_reason as planRating and
   }
 });
 
+// Which completion ends the retro is the daemon's to say from phase.Of, never from the issue's
+// phase: the implementer's late completion of retro, once the issue has moved on to merging, still
+// ends the retro and takes its rating, and a completion of implementing that carries one is the
+// daemon's to refuse (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any
+// phase, since a filter on the record's phase would drop a rating the agent believes it gave.
+test("a rating is sent on a completion at any phase: the late retro's at merging, and one at implementing that the daemon refuses PLAN_RATING_UNEXPECTED", async () => {
+  // A retro writes no handoff record, so the pane reports the commit alone for it.
+  const lateHead = "b".repeat(40);
+  const late = runtime(implementer, stateAtPhase("merging"), undefined, { commit: lateHead });
+  const lateReason = "The reviewer's two rounds were the test step the plan had left out.";
+  await expect(
+    executePhaseOp(late.ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      plan_rating: 2,
+      plan_reason: lateReason,
+    })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(late.lookups).toEqual(["merging implementer"]);
+  expect(late.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Retro done.",
+    verdict: "",
+    commit: lateHead,
+    planRating: 2,
+    planReason: lateReason,
+  });
+
+  const early = runtime(implementer, stateAtPhase("implementing"), {
+    status: 400,
+    code: "PLAN_RATING_UNEXPECTED",
+    error:
+      "this completion of phase implementing of LEGION-208 names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded",
+  });
+  const earlyReason = "The plan named every file this round changed.";
+  await expect(
+    executePhaseOp(early.ops, {
+      op: "handoff_complete",
+      summary: "Implemented.",
+      plan_rating: 3,
+      plan_reason: earlyReason,
+    })
+  ).rejects.toThrow("400 PLAN_RATING_UNEXPECTED");
+  expect(early.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Implemented.",
+    verdict: "",
+    ...REPORT,
+    planRating: 3,
+    planReason: earlyReason,
+  });
+  // The same completion with no rating is taken, so the refusal above is the rating's.
+  await expect(
+    executePhaseOp(early.ops, { op: "handoff_complete", summary: "Implemented." })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(early.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Implemented.",
+    verdict: "",
+    ...REPORT,
+  });
+});
+
+// A rating's rule is the daemon's, and this tool states it again so that it refuses a rating by
+// the field's name before any request. Every case the daemon's golden test answered
+// (`plan-rating-cases.json`, internal/api's TestPlanRatingCasesGolden) goes through the executor
+// as the retro's completion: the tool takes exactly the cases the daemon accepted and posts each
+// rating and reason as it was given, and refuses every other case naming a rating field, with no
+// request sent. Blank is Go's strings.TrimSpace on the daemon's side, where JavaScript's trim
+// keeps U+0085 and strips U+FEFF (`@legion/contracts/go-blank`).
+test("the tool takes exactly the ratings the daemon takes, and sends a refused one nowhere", async () => {
+  const { cases } = daemonFixture("plan-rating-cases.json") as {
+    readonly cases: readonly {
+      readonly name: string;
+      readonly planRating?: number;
+      readonly planReason?: string;
+      readonly verdict: string;
+    }[];
+  };
+  expect(cases.some((c) => c.verdict === "accepted")).toBe(true);
+  expect(cases.some((c) => c.verdict !== "accepted")).toBe(true);
+  expect(cases.map((c) => c.planReason)).toEqual(expect.arrayContaining(["\u0085", "\uFEFF"]));
+  const parted: string[] = [];
+  for (const c of cases) {
+    const { ops, routes, posted } = runtime(implementer, stateAtPhase("retro"));
+    const rating = {
+      ...(c.planRating === undefined ? {} : { plan_rating: c.planRating }),
+      ...(c.planReason === undefined ? {} : { plan_reason: c.planReason }),
+    };
+    const refusal = await executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      ...rating,
+    }).then(
+      () => undefined,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+    const told = `${c.name}: the daemon answers ${c.verdict}, the tool`;
+    if (refusal === undefined) {
+      const sent = posted.at(-1);
+      const want = {
+        grantId: "grant-for-one-command",
+        summary: "Retro done.",
+        verdict: "",
+        ...REPORT,
+        planRating: c.planRating,
+        planReason: c.planReason,
+      };
+      if (c.verdict !== "accepted") parted.push(`${told} took it`);
+      else if (!Bun.deepEquals(sent, want)) parted.push(`${told} sent ${JSON.stringify(sent)}`);
+    } else if (c.verdict === "accepted") parted.push(`${told} refused it: ${refusal}`);
+    else if (routes.length > 0 || !/plan_rating|plan_reason/.test(refusal)) {
+      parted.push(`${told} refused it after ${routes.join(", ") || "no request"}: ${refusal}`);
+    }
+  }
+  expect(parted).toEqual([]);
+});
+
 // The description is where every host's agent reads what the completion that ends the retro
 // carries: the two fields, the scale, and the daemon's refusals of a rating.
 test("the description tells the agent that does the retro to rate the plan in its completion, and names the daemon's refusals of a rating", () => {
@@ -343,7 +519,7 @@ test("the description tells the agent that does the retro to rate the plan in it
   }
 });
 
-// Contract 156: a tester's fail names the step its task returns to, `return_to`, which goes on the
+// Contract 162: a tester's fail names the step its task returns to, `return_to`, which goes on the
 // wire as the daemon's `returnTo`; a completion that names none sends none.
 test("a tester's fail sends return_to as returnTo", async () => {
   const tester = { ...implementer, role: "tester" as const };
@@ -561,7 +737,7 @@ const NEXT_LOOK = "2026-09-29T09:00:00Z";
 function closedRuntime(
   claim: ClaimCapability,
   record: Record<string, unknown>,
-  refusal?: { readonly status: number; readonly code: string; readonly error: string }
+  refusal?: DaemonRefusal
 ) {
   const posted: Record<string, unknown>[] = [];
   const stub = (async (input, init) => {
