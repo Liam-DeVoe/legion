@@ -387,6 +387,56 @@ describe("createCodexDelivery", () => {
     await frames
   })
 
+  test("a line that lands once the turn ended and stop() ran is withdrawn, and no sweep takes it", async () => {
+    const directory = inbox()
+    const { delivery, queued } = harness(directory)
+    delivery.turnStarted()
+    let stopping: Promise<void> | undefined
+    // Every sweep after stop() is one stop() cannot see: it would queue a line stop() then finds
+    // taken, and answer its write by a codex queue stop() never waited for.
+    const sweptAfterStop: string[] = []
+    spyOn(codexInbox, "takeInbox").mockImplementation(async (...args) => {
+      if (stopping !== undefined && args[1] === "server") sweptAfterStop.push(args[0])
+      return realTakeInbox(...args)
+    })
+    const ran = duringPut(false, async () => {
+      await delivery.turnEnded()
+      stopping = delivery.stop()
+    })
+    const outcomes: string[] = []
+    const frames = twoFrames(delivery, outcomes)
+    await ran
+    await stopping
+    await settled()
+    expect(sweptAfterStop).toEqual([])
+    expect(outcomes).toEqual([
+      "first refused: Error: the Codex session's delivery stopped before the message was taken",
+      "next refused: Error: the Codex session's delivery has stopped",
+    ])
+    expect(queued).toEqual([])
+    expect(waitingLines(directory)).toBe(0)
+    await frames
+  })
+
+  test("a stop while a write's line cannot be written leaves the write its own failure, and stop() ends", async () => {
+    const directory = inbox()
+    const { delivery } = harness(directory)
+    delivery.turnStarted()
+    // A file where the inbox's waiting directory goes: the line cannot be written.
+    await Bun.write(join(directory, "waiting"), "not a directory")
+    let stopping: Promise<void> | undefined
+    duringPut(false, () => {
+      stopping = delivery.stop()
+    })
+    const failure = await delivery.deliver({ content: "lost" }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect((failure as NodeJS.ErrnoException).code).toBe("EEXIST")
+    // stop() waited for the write to fail, then had nothing of it to withdraw.
+    await stopping
+  })
+
   test("a session that ends while a line lands keeps the line until the session runs again", async () => {
     const directory = inbox()
     const { delivery, queued } = harness(directory)
