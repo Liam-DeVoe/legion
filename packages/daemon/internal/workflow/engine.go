@@ -989,22 +989,20 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return intake.Result{}, err
 	}
 	// The route judged the entry this completion is of on its own read of the role's row, before
-	// this lock (api's entryFence). An entry raised between that read and this transaction — the
-	// daemon's conflict move and the implementer's completion entering the phase again, or a
-	// re-admission's promotion — would otherwise take the old turn's verdict as the new entry's:
-	// the transition below acts on the row as it stands now, and a step, a retro and a merge end
-	// with no record that says which entry's work a completion is (HANDOFF_NOT_NEW holds only the
-	// phases with one). So the route's one rule is judged again here, on the row this transaction
-	// read, before anything is written: a current completion of an entry behind the row's is
-	// refused unless intake.BehindEntryClause takes it. The refusal is left unspent, as the route's
-	// writes nothing, so the same report applies once it is the work of the entry that stands. An
-	// entry above the row's cannot appear here, since a row's entry only rises.
-	word, _, recordBacked := phase.Handoff(reported)
-	if current && fact.Entry != 0 && fact.Entry < row.Entry {
-		if clause := intake.BehindEntryClause(recordBacked, fact.Commit, pr, row.EntryMovedBack); clause != "" {
-			return intake.Result{Refusal: intake.StaleEntry(issue.Key, fact.Role, reported, row.Entry, fact.Entry, nil, clause), Unspent: true}, nil
-		}
+	// this lock (api's answerCompletion). An entry raised between that read and this transaction —
+	// the daemon's conflict move and the implementer's completion entering the phase again, or a
+	// re-admission's promotion — would otherwise take the old turn's report as the new entry's:
+	// the transition below acts on the row as it stands now, a step, a retro and a merge end with
+	// no record that says which entry's work a completion is (HANDOFF_NOT_NEW holds only the
+	// phases with one), and a completion of a phase the role has left since would be recorded on
+	// the row over the run it stands on (leftItsPhase). So the route's one rule
+	// (intake.EntryFence) is judged again here, on the row and the pull request this transaction
+	// read, before anything is written, and its refusal is left unspent, as the route's writes
+	// nothing, so the same report applies once it is the work of the entry that stands.
+	if refusal := intake.EntryFence(*issue, fact.Role, fact.Entry, row.Entry, row.EntryMovedBack, fact.Commit, pr, nil); refusal != nil {
+		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
+	word, _, recordBacked := phase.Handoff(reported)
 	if recordBacked {
 		// A phase with a handoff ends with a Dispatch handoff record, which the route read back
 		// and held to this issue, the phase's word, the reported version and the claim's session:

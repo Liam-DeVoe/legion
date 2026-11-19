@@ -901,7 +901,7 @@ type HandoffComplete struct {
 	// Entry is the entry of the role's phase the completing claim serves (the claim's
 	// ServingEntry, or the held task's on the route's fallback): the one value the route's entry
 	// fence reads. The workflow judges it again on the role's phases row under the fact's lock,
-	// with the same rule (BehindEntryClause), and holds a review step's commit to it (R11): only a
+	// with the same rule (EntryFence), and holds a review step's commit to it (R11): only a
 	// completion of the entry that stands, on a row that holds that entry's task, moves the step's
 	// reviewed commit. 0 where the claim serves no entry, which is judged by neither and moves no
 	// commit.
@@ -1590,9 +1590,94 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
 }
 
+// EntryFence is the one rule a phase completion's entry is held to, and the refusal it answers,
+// nil when the completion goes on. Two judges ask it, each on its own read of the role's phases
+// row: the completion route on its read, before the fact (api's answerCompletion), which is the
+// early refusal, and the workflow's handoff on the row the fact's own transaction reads (workflow's
+// Engine.handoff), which refuses a completion of an entry raised between the two reads. entry is
+// the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
+// row names (record.PhaseRow.Entry), and movedBack whether the move that raised it was a move back
+// (record.PhaseRow.EntryMovedBack); issue is the record as the same read holds it, pr the pull
+// request it holds, and pending the claim's queued task, which only the route reads.
+//
+// Like a completion of a run that is over (HANDOFF_STALE_GENERATION), a completion of a phase
+// entry the issue's phase has moved past is refused, and for the reason the run alone cannot
+// carry: every phase entry of one run carries that run, so a turn that outlived its phase — the
+// daemon ends no turn when a phase ends — would otherwise complete the next entry of the same
+// phase with the work of the entry before. The two numbers differ exactly while the worker is
+// still on the earlier entry, because a second delivery is refused while one is pending, so the
+// claim serves the first entry while the row already names the second. Every refusal is written
+// before anything is recorded under the completion's key.
+//
+// Either number zero is nothing to compare, as an empty assignment was before the entry replaced
+// it: a daemon upgraded in place has roles no start has stamped, whose row answers 0, and workers
+// that confirmed no task carrying an entry, whose claim answers 0 (supervise.Claim.ServingEntry).
+// A completion level with its row's entry is not this rule's: the workflow decides it, and records
+// one that arrives after the daemon moved the issue on by an event (workflow's leftItsPhase), or,
+// for a task with plan rows, refuses it as the report of a step whose run ended (workflow's
+// lateReport).
+//
+// Where the two differ, the rule first asks whether the role works the phase the issue stands in,
+// because the entry it compares is the role's own row's, which stays where the role's last phase
+// left it. A claim can still serve an earlier entry after the issue has left the role's phase: a
+// taken completion always moves the phase on, so a behind completion taken here leaves its claim
+// serving the entry it was behind on, and an issue can leave the phase again before a turn that
+// outlived an earlier entry reports. A completion from such a claim — the taken one sent again
+// after a dropped connection, as pi-shared's retryWhileDaemonRestarts sends it, one naming a newer
+// record, or one of an entry before the one the role was handed and left unreported — meets this
+// rule in another role's phase, where StaleEntry's words would tell the worker that the task of
+// the entry the phase is on is owed to it and comes by itself. That task is queued for the phase
+// the issue has left, and is dropped rather than sent (supervise's phaseHolds), so a worker that
+// obeyed would wait for a task nobody sends. Such a completion is answered
+// HANDOFF_NOT_CURRENT_PHASE instead (NotCurrentPhase), the code every worker's prompt names for a
+// completion of a phase it no longer works, and is recorded nowhere: the row keeps the run it
+// stands on.
+//
+// A completion at admitted is answered so too, whichever role sends it. Admitted is the
+// architect's own phase (phase.RoleFor), and the architect completes nothing (workflow's handoff
+// refuses it ACCEPTANCE_IS_SIGN_OFF), so the guard keeps the answer a completion at admitted had
+// while no role was named for that phase (dispatch://INFRA-2614, R2), now that a root's architect
+// holds an entry there.
+//
+// An entry above the row's is refused with the entry below it (unraisedEntry), though the record
+// should never produce it: the transition raises the row's entry in the transaction that composes
+// that entry's task, so no delivery can carry an entry the row does not already name, and a row's
+// entry only rises. An entry behind the row's is refused (StaleEntry) unless BehindEntryClause
+// takes it.
+func EntryFence(issue record.Issue, role claim.Role, entry, current int64, movedBack bool, commit string, pr *record.PullRequest, pending *supervise.Delivery) *Refusal {
+	if entry == 0 || current == 0 || entry == current {
+		return nil
+	}
+	p := issue.Phase
+	if p == phase.Admitted || issue.RoleAt(p) != role {
+		return NotCurrentPhase(role, p, issue.Key)
+	}
+	if entry > current {
+		return &Refusal{Status: 409, Code: StaleEntryCode, Message: unraisedEntry(issue.Key, role, p, current, entry)}
+	}
+	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
+	_, _, recordBacked := phase.Handoff(p)
+	if clause := BehindEntryClause(recordBacked, commit, pr, movedBack); clause != "" {
+		return StaleEntry(issue.Key, role, p, current, entry, pending, clause)
+	}
+	return nil
+}
+
+// unraisedEntry is the refusal of a completion of a phase entry above the one the role's phases
+// row names, the other side of StaleEntry: the record should never produce it, since the
+// transition raises the row's entry in the transaction that composes that entry's task, so no
+// task the daemon hands out carries an entry the row does not already name. It is said rather
+// than taken, because a daemon that recorded it would be recording a completion of work no
+// transition ever wrote. It names neither a queued task nor an owed one, as StaleEntry does:
+// there is no later entry for the worker to wait for, and what the worker does is tell the
+// architect.
+func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, serving int64) string {
+	return fmt.Sprintf("this completion is of entry %d of phase %s of %s, and the %s's phases row is on entry %d: the daemon raises that entry in the transaction that composes the entry's task, so no task it hands out carries an entry above it. Nothing was recorded; end this turn without completing and tell the architect",
+		serving, p, issue, role, current)
+}
+
 // StaleEntryCode is the code of a completion refused for its phase entry: one of an entry behind
-// the one the role's phases row names (StaleEntry), and one of an entry above it (api's
-// unraisedEntry).
+// the one the role's phases row names (StaleEntry), and one of an entry above it (unraisedEntry).
 const StaleEntryCode = "HANDOFF_STALE_ENTRY"
 
 // StaleEntryInstruction is what StaleEntry tells the worker to do, after the clause that names the
@@ -1604,11 +1689,9 @@ const StaleEntryCode = "HANDOFF_STALE_ENTRY"
 const StaleEntryInstruction = "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's record, commit or verdict"
 
 // BehindEntryClause decides a completion of a phase entry the issue has moved past, one found
-// behind the role's phases row, and says what decided it: it answers "" where the completion is
-// taken, and otherwise the clause StaleEntry carries of what decided the refusal, the one place
-// that wording lives. Two judges ask it, with one rule: the completion route's entry fence on its
-// own read, before the fact (api's entryFence), and the workflow's handoff on the row the fact's
-// own transaction reads (workflow's Engine.handoff), since an entry can be raised between the two.
+// behind the role's phases row (EntryFence), and says what decided it: it answers "" where the
+// completion is taken, and otherwise the clause StaleEntry carries of what decided the refusal,
+// the one place that wording lives.
 //
 // recordBacked says the phase ends with a Dispatch handoff record this role writes
 // (phase.Handoff), which is what makes the completion readable as this phase's own answer: the

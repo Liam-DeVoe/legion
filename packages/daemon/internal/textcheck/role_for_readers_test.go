@@ -41,8 +41,9 @@ type roleForReader struct {
 // caller that calls it. Four of them have a guard of their own for admitted, the phase RoleFor
 // answers the architect for: Engine.transition reads the role whose step a move ends, which
 // noticeFor leaves out of the notice of the move out of admitted (R2); Engine.leftItsPhase records
-// no worker's completion while the issue stands at admitted; the completion route's entryFence
-// answers a completion at admitted as one of a phase its role does not work; and the stalled-tree
+// no worker's completion while the issue stands at admitted; the completion's entry fence
+// (intake.EntryFence, which the completion route and the workflow's handoff both ask) answers a
+// completion at admitted as one of a phase its role does not work; and the stalled-tree
 // notice's reason tells an issue at admitted as standing in a phase no role works, the words it
 // wrote before RoleFor named the architect there. Every other site reaches its answer through a
 // guard that starts, resumes or reports no architect as a phase worker (OpenRoleOf, the worker of
@@ -71,12 +72,13 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestReadmissionStartsTheTreesMidPhaseChildren", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}: {calls: 1, tests: []string{
 		"TestAWaitByDesignIsNeverToldAsAStall", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
-	{file: "internal/api/handoff.go", fn: "entryFence"}: {calls: 1, tests: []string{
-		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
 	{file: "internal/api/handoff.go", fn: "server.answerCompletion"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
 	{file: "internal/api/operator.go", fn: "server.restartWorkedPhase"}: {calls: 1, tests: []string{
 		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
+	{file: "internal/intake/facts.go", fn: "EntryFence"}: {calls: 1, tests: []string{
+		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit",
+		"TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused"}},
 	{file: "internal/phase/phase.go", fn: "Of"}: {calls: 1, tests: []string{"TestArchitectUnchangedByItsCompletionAtAdmitted"}},
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 1, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},

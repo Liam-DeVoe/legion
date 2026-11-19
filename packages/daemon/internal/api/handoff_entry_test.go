@@ -636,7 +636,7 @@ func TestAFurtherCompletionAfterATakenBehindCompletionIsAnsweredAsNoLongerTheRol
 // R2: a root architect's completion at admitted is answered as it was while phase.RoleFor named
 // no role for that phase, though admitted is now the architect's and its row carries an entry
 // there. Behind that entry the entry fence answers HANDOFF_NOT_CURRENT_PHASE, as it answers any
-// role at a phase it does not work (entryFence's guard for admitted). Level with it the
+// role at a phase it does not work (intake.EntryFence's guard for admitted). Level with it the
 // completion goes on to the workflow, which refuses the architect before it reads the phase the
 // completion is of (phase.Of, which answers admitted for the architect where the route took the
 // issue's phase for its empty answer). The control is the same behind completion at accepting,
