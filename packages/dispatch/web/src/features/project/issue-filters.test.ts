@@ -6,8 +6,9 @@ import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { projectIssuesQueryKey } from "../../api/queries";
 import type { Agent, IssueClaim, IssueSummary } from "../../api/types";
-import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { useIssueFilters } from "./issue-filters";
 
 function agent(sessionID: string): Agent {
   return {

@@ -11,7 +11,6 @@ import {
 
 import { credentialPendingQuery } from "../features/credentials/pending";
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
-import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import type { AdvancesListing } from "../features/project/issues-table-data";
 import { agentsQuery } from "../features/refs/agent-registry";
 import { parseIssuePath, parseProjectPath } from "../features/refs/routes";
@@ -563,6 +562,22 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
   "board-move",
   project,
 ];
+
+/** The one query key for a project's issue list: the plain list, or the server-filtered list
+ *  when labels are active. List and Board build their keys here, so one set of labels is one
+ *  key in both; `projectIssuesQuery` then forks on `open`, so the open-only read of a view that
+ *  hides closed issues is a key of its own under the same prefix. It is declared here, beside
+ *  the query that reads it, and not in `features/project/issue-filters.ts` where it was: the
+ *  entry imports this file, and a key taken from the filters' module brought that module, the
+ *  issue page's claim chip and what the chip draws into the entry with it. */
+export function projectIssuesQueryKey(
+  project: string,
+  labels: readonly string[]
+): readonly unknown[] {
+  return labels.length === 0
+    ? ["issues", "project", project]
+    : ["issues", "project", project, "labels", labels];
+}
 
 /**
  * A project's issue list - plain, or server-filtered by labels - shared by the Board, the List,
