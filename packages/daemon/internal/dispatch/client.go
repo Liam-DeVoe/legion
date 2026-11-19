@@ -270,11 +270,14 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 	return slugs, nil
 }
 
-// UploadArtifact writes a markdown document on the issue through POST
+// UploadArtifact makes a markdown document on the issue through POST
 // /api/v1/issues/{key}/artifacts, as the daemon's own session, and returns the slug Dispatch filed
 // it under, which a link to it names (dispatch://<key>/artifact/<slug>). The body holds only
-// fields Dispatch's JSON upload reads (its jsonArtifactUpload), since its decoder refuses any
-// other. A name the issue already holds is that document's next version.
+// fields Dispatch's JSON upload reads (its jsonArtifactUpload), and asks for a create alone
+// (create_only): where the issue already holds an artifact of that name or slug, whoever made it
+// or renamed another to it, Dispatch refuses it with 409 ARTIFACT_NAME_TAKEN and writes no
+// version, where a plain upload would write that document's next version. A Dispatch older than
+// create_only ignores the member and writes that version, as every upload did.
 func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
 	var response struct {
 		Artifact struct {
@@ -282,9 +285,10 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 		} `json:"artifact"`
 	}
 	if err := c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", artifactUpload{
-		Name:    name,
-		Content: content,
-		Actor:   daemonActor(key),
+		Name:       name,
+		Content:    content,
+		CreateOnly: true,
+		Actor:      daemonActor(key),
 	}, &response); err != nil {
 		return "", err
 	}
@@ -701,12 +705,13 @@ type daemonWrite struct {
 	Actor            actor    `json:"actor"`
 }
 
-// artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,
-// all fields Dispatch's JSON upload reads.
+// artifactUpload is the body of a document create: its name, its markdown, the create-only ask
+// and the daemon's actor, all fields Dispatch's JSON upload reads.
 type artifactUpload struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Actor   actor  `json:"actor"`
+	Name       string `json:"name"`
+	Content    string `json:"content"`
+	CreateOnly bool   `json:"create_only"`
+	Actor      actor  `json:"actor"`
 }
 
 // gatedStepsWrite is the body of the gated-steps publish: the list, never omitted, and the

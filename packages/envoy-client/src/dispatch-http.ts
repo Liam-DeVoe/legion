@@ -2122,6 +2122,7 @@ export class DispatchClient {
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
     if (input.actor !== undefined) form.set("actor", JSON.stringify(input.actor));
+    if (input.create_only !== undefined) form.set("create_only", String(input.create_only));
     form.set("file", input.file, input.name);
     return this.#form("POST", path, form, key);
   }

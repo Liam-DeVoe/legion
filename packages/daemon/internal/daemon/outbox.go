@@ -1574,7 +1574,12 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 
 // messageArtifact puts on the issue the document a message links. It reads the issue's artifacts
 // and uploads only when none has the document's name, so a row that runs again after its upload
-// writes no second version. A read or an upload Dispatch refuses the same way on every run
+// writes no second version. The upload is a create alone (dispatch.Client.UploadArtifact): it
+// never writes a version into a document the issue already holds. Where a person renamed another
+// document to the name, which keeps that document's own slug, or another writer's document landed
+// between the read and the upload, Dispatch refuses it with 409 ARTIFACT_NAME_TAKEN, which the
+// message names as it names any refusal below. A read or an upload Dispatch refuses the same way
+// on every run
 // (dispatch.PermanentRefusal) is logged and answered, and the message is posted all the same with
 // a sentence that says so: the message is the issue's one word on what it carries, and a document
 // it could not hold must not cost it that (dispatch://INFRA-2704). Any other failure fails the

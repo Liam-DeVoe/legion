@@ -12,7 +12,6 @@ import {
   pathKeepsBytesOf,
   typedBlockIdAttribute,
 } from "@legion/contracts";
-import { actorText } from "../actor-text";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import {
@@ -46,6 +45,7 @@ import {
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
 import { dispatchAnswered } from "./failures";
+import { artifactNameExistsProblem, artifactUnderName } from "./held-names";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -678,30 +678,6 @@ export async function planApproveCommand(context: CommandContext): Promise<Dispa
   };
 }
 
-/** The document an upload under `name` would write the next version of: the owner's artifact
- *  whose slug or filename that name is, as the upload itself resolves one (`$2 in (name, slug)`,
- *  the slug first). Undefined where the owner holds no such document. */
-function artifactUnderName(artifacts: readonly Artifact[], name: string): Artifact | undefined {
-  const written = name.trim();
-  return (
-    artifacts.find((held) => held.slug === written) ??
-    artifacts.find((held) => held.name === written)
-  );
-}
-
-/** The refusal of an upload under a name its owner already holds: the document found, its kind,
- *  its newest version and who wrote that version, then the rule that names --force. */
-function artifactNameExistsProblem(held: Artifact, owner: string): string {
-  const versions = held.versions ?? [];
-  const newest = versions[versions.length - 1];
-  if (newest === undefined) {
-    return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}), which has no version yet and which ${actorText(held.created_by)} created. ${ARTIFACT_NAME_EXISTS_RULE}`;
-  }
-  const authors = (newest.authors ?? []).map(actorText);
-  const wroteIt = authors.length === 0 ? actorText(held.created_by) : authors.join(" and ");
-  return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${ARTIFACT_NAME_EXISTS_RULE}`;
-}
-
 /**
  * How much of one line a refusal quotes whole. A line of a document is bounded by the document
  * itself, so one differing line can be as long as the whole text, and a quote nobody can read
@@ -873,6 +849,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // What every create carries, whatever it stores under the name.
   const options = { name, ...(summary === undefined ? {} : { summary }), actor };
   const artifactOwner = documentOwner();
+  const ownerText =
+    artifactOwner.kind === "project" ? `project ${artifactOwner.project}` : `issue ${issue()}`;
   // The server's own `blank`: a body carrying no content, or content Go's
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
   // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
@@ -888,8 +866,13 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // force says, and that refusal names the rule which applies to it. Refusing it here would
   // answer it with --force, which writes nothing for a create that stores nothing, so it goes
   // through and reads the server's own answer.
-  if ((path !== undefined || !blank) && optionalBoolean(args, "force") !== true) {
-    const held = artifactUnderName(
+  // The read cannot see a document another writer makes between it and the upload, so the
+  // upload itself asks for a create alone (create_only): Dispatch refuses it under a name the
+  // owner holds by then, writes nothing, and the refusal below names that document as the
+  // read's own refusal does.
+  const createOnly = (path !== undefined || !blank) && optionalBoolean(args, "force") !== true;
+  const heldUnderName = async (): Promise<Artifact | undefined> =>
+    artifactUnderName(
       artifactOwner.kind === "project"
         ? // unlinked, as every other read of a project's own documents is: without it the
           // answer carries every issue-attached document of the project too, and an upload
@@ -898,13 +881,10 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
         : await client.listIssueArtifacts(issue()),
       name
     );
+  if (createOnly) {
+    const held = await heldUnderName();
     if (held !== undefined) {
-      throw new ToolInputError(input.tool, [
-        artifactNameExistsProblem(
-          held,
-          artifactOwner.kind === "project" ? `project ${artifactOwner.project}` : `issue ${issue()}`
-        ),
-      ]);
+      throw new ToolInputError(input.tool, [artifactNameExistsProblem(held, ownerText)]);
     }
   }
   // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
@@ -937,10 +917,11 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   }
   // A call with a path uploads that file, one with content stores that text, and one with
   // neither makes an empty document the writer fills in afterwards with dispatch doc-edit.
+  const createOptions = createOnly ? { ...options, create_only: true } : options;
   const artifactInput =
     path !== undefined
       ? {
-          ...options,
+          ...createOptions,
           // The bytes AskGate's check read, when it read them, typed as Bun types the path.
           file:
             input.uploadBytes === undefined
@@ -951,12 +932,29 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
                 }),
         }
       : content !== undefined
-        ? { ...options, content }
-        : options;
-  const result =
+        ? { ...createOptions, content }
+        : createOptions;
+  const upload =
     artifactOwner.kind === "project"
-      ? await client.projectArtifact(artifactOwner.project, artifactInput)
-      : await client.artifact(issue(), artifactInput);
+      ? client.projectArtifact(artifactOwner.project, artifactInput)
+      : client.artifact(issue(), artifactInput);
+  let result: Awaited<typeof upload>;
+  try {
+    result = await upload;
+  } catch (error) {
+    // A document under the name landed after the read above: Dispatch refused the create and
+    // wrote nothing. The refusal is the read's own, naming the document that holds the name
+    // now, or Dispatch's words where no read finds it any more.
+    if (createOnly && dispatchAnswered(error, 409) && error.code === "ARTIFACT_NAME_TAKEN") {
+      const held = await heldUnderName();
+      throw new ToolInputError(input.tool, [
+        held === undefined
+          ? `${ownerText} already holds ${name}: Dispatch refused the upload with 409 ARTIFACT_NAME_TAKEN (${error.message}). ${ARTIFACT_NAME_EXISTS_RULE}`
+          : artifactNameExistsProblem(held, ownerText),
+      ]);
+    }
+    throw error;
+  }
   const artifactRef = dispatchDocumentRef(
     artifactOwner.kind === "project" ? artifactOwner.project : issue(),
     result.artifact.slug

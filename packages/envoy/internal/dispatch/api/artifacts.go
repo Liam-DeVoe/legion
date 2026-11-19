@@ -82,6 +82,11 @@ type artifactUploadInput struct {
 	// already names a document or gives the slug of one Dispatch makes itself. A multipart
 	// upload always carries its bytes, so it never sets this.
 	blank bool
+	// createOnly reports an upload that asks for a new artifact and nothing else
+	// (jsonArtifactUpload.CreateOnly, or the multipart field of that name): storeArtifact refuses
+	// it where the name already names an artifact of the owner, and refuseUploadBeforeItsObject
+	// refuses a file's before its object is stored.
+	createOnly bool
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -124,6 +129,13 @@ type jsonArtifactUpload struct {
 	Primary json.RawMessage `json:"primary"`
 	Summary string          `json:"summary"`
 	Actor   *model.Actor    `json:"actor"`
+	// CreateOnly makes the upload a create and nothing else: where the name is the name or the
+	// slug of an artifact the owner already holds, a renamed one's name included, the upload is
+	// refused with 409 ARTIFACT_NAME_TAKEN and writes no version. A multipart upload carries it
+	// as the field `create_only`, true or false. A caller that names its own new document sends
+	// it, since its own read of what the owner holds cannot see a write that lands between that
+	// read and this upload.
+	CreateOnly bool `json:"create_only"`
 }
 
 func (s *server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
@@ -310,6 +322,7 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		summary:     strings.TrimSpace(body.Summary),
 		supplied:    body.Actor,
 		blank:       blank,
+		createOnly:  body.CreateOnly,
 	}, true
 }
 
@@ -365,6 +378,17 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
 		return artifactUploadInput{}, false
 	}
+	// create_only is the JSON member's field (jsonArtifactUpload.CreateOnly), spelled true or
+	// false; any other spelling is refused rather than read as either.
+	var createOnly bool
+	switch raw := r.FormValue("create_only"); raw {
+	case "", "false":
+	case "true":
+		createOnly = true
+	default:
+		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, fmt.Sprintf("create_only is %q; send true or false", raw))
+		return artifactUploadInput{}, false
+	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	file, header, err := r.FormFile("file")
 	if len(r.MultipartForm.Value["content"]) > 0 {
@@ -397,6 +421,7 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		contentType: contentType,
 		summary:     strings.TrimSpace(r.FormValue("summary")),
 		supplied:    supplied,
+		createOnly:  createOnly,
 	}, true
 }
 
@@ -597,6 +622,9 @@ func (s *server) storeArtifact(
 		}
 	} else if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	} else if input.createOnly {
+		s.writeHandlerError(w, artifactNameTakenRefusal(input.name, artifact))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))

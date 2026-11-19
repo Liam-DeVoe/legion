@@ -31,6 +31,10 @@ interface CreateArtifactOptions {
   readonly name: string;
   readonly summary?: string;
   readonly actor?: Actor;
+  /** A create alone: Dispatch refuses it with 409 ARTIFACT_NAME_TAKEN where the name is the
+   *  name or the slug of an artifact the owner holds, and writes no version, where an upload
+   *  without it writes that artifact's next version. */
+  readonly create_only?: boolean;
 }
 
 /** What a create carries: a file, inline content, or neither. A create carrying a name alone

@@ -11311,6 +11311,95 @@ describe("executeDispatchTool", () => {
     expect(requests.every((request) => request.method === "GET")).toBe(true);
   });
 
+  // A document another writer makes between the command's read of what the issue holds and its
+  // upload is one that read cannot see. The upload asks for a create alone (create_only), so
+  // Dispatch refuses it and writes nothing, and the command names that document as its own read
+  // does. With --force the upload asks for no create alone and writes the next version. The fake
+  // answers as Dispatch's upload does (storeArtifact): create_only under a held name is 409
+  // ARTIFACT_NAME_TAKEN, and any other upload under that name writes the next version.
+  test.each([
+    ["inline content, sent as JSON", { content: "# Plan\n" }],
+    ["a file by its path, sent as multipart", { path: "plan.md" }],
+  ])("refuses an upload whose name another writer took after its read, with %s", async (_what, source) => {
+    const cwd = makeDirectory();
+    writeFileSync(path.join(cwd, "plan.md"), "# Plan\n");
+    const made = {
+      id: "artifact-plan",
+      issue_key: "DSP-42",
+      name: "plan.md",
+      slug: "plan-md",
+      kind: "doc",
+      created_by: { kind: "session", id: "session-other" },
+      versions: [{ number: 1, authors: [{ kind: "session", id: "session-other" }] }],
+    };
+    let landed = false;
+    const uploads: Array<{ createOnly: string | undefined; wrote: number | undefined }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ markdown: JSON.parse(String(init?.body)).markdown });
+      }
+      if (pathname !== "/api/v1/issues/DSP-42/artifacts") {
+        throw new Error(`unexpected request: ${pathname}`);
+      }
+      if ((init?.method ?? "GET") === "GET") {
+        // The first read finds nothing; the other writer's document lands right after it.
+        const held = landed ? [made] : [];
+        landed = true;
+        return response(held);
+      }
+      const sent = new Response(init?.body, { headers: init?.headers });
+      const createOnly = (sent.headers.get("Content-Type") ?? "").startsWith("multipart/")
+        ? (await sent.formData()).get("create_only")?.toString()
+        : JSON.parse(await sent.text()).create_only?.toString();
+      if (landed && createOnly === "true") {
+        uploads.push({ createOnly, wrote: undefined });
+        return response(
+          {
+            code: "ARTIFACT_NAME_TAKEN",
+            error: `"plan.md" names artifact plan-md (plan.md) of this owner; a document's name is its own here: give it another name`,
+          },
+          409
+        );
+      }
+      const number = made.versions.length + 1;
+      made.versions.push({ number, authors: [{ kind: "session", id: "session-42" }] });
+      uploads.push({ createOnly, wrote: number });
+      return response({ artifact: made, version: { number } });
+    };
+    const upload = (force: boolean) =>
+      executeDispatchTool({
+        tool: "dispatch_artifact",
+        args: { issue: "DSP-42", name: "plan.md", ...source, ...(force ? { force: true } : {}) },
+        cwd,
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    const failure = await upload(false).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(uploads).toEqual([{ createOnly: "true", wrote: undefined }]);
+    expect(made.versions).toHaveLength(1);
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems).toHaveLength(1);
+    expect(failure.problems[0]).toStartWith(
+      "issue DSP-42 already holds plan.md (slug plan-md, kind doc) at version 1, which "
+    );
+    expect(failure.problems[0]).toEndWith(ARTIFACT_NAME_EXISTS_RULE);
+
+    // The control: --force asks for the version, so the same upload writes it.
+    const forced = await upload(true);
+    expect(forced.text).toContain("Uploaded plan.md as version 2");
+    expect(uploads[1]).toEqual({ createOnly: undefined, wrote: 2 });
+  });
+
   // INFRA-1334 R10: the command's held-name refusal answers a create that would write the held
   // document's next version, and a create whose content is blank writes none. The guard is the
   // server's own `blank` (the `blank :=` line of jsonArtifactUpload,

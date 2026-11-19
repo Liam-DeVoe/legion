@@ -31,9 +31,10 @@ type Client interface {
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
 	// ArtifactSlugs is the slug of every document and file the issue holds.
 	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
-	// UploadArtifact writes a markdown document on the issue under name, as the next version of
-	// the document of that name when the issue holds one, and answers the slug Dispatch filed it
-	// under.
+	// UploadArtifact makes a new markdown document on the issue under name and answers the slug
+	// Dispatch filed it under. It asks Dispatch for a create alone, which Dispatch refuses (409
+	// ARTIFACT_NAME_TAKEN) where the issue already holds an artifact of that name or slug, so it
+	// never writes a version into a document the issue holds.
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
 	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
