@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -405,7 +406,7 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		if unreached := ghStoppedByItsBound(ctx, err, printed, slug); unreached != nil {
 			return "", unreached
 		}
-		return "", err
+		return "", procgroup.Said(err, printed)
 	}
 	if limited := rateLimitFrom(printed); limited != nil {
 		return "", limited
@@ -441,7 +442,7 @@ func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility,
 		stderr: &stderr,
 	})
 	if err != nil {
-		return "", err
+		return "", procgroup.Said(err, visibilityBody(printed)+"\n"+stderr.String())
 	}
 	return graphQLAnswer(status, printed, stderr.String(), slug)
 }
@@ -661,15 +662,16 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 		env:       append([]string{"HOME=" + home, "LC_ALL=C"}, readsNoConfigFile...),
 		stderr:    &stderr,
 	})
+	masked := maskPath(slug)
+	said := strings.ReplaceAll(stderr.String()+listed, slug, masked)
 	if err != nil {
-		return "", err
+		return "", procgroup.Said(err, withoutUserinfo(said))
 	}
 	if status == 0 && listsARef(listed) {
 		return Public, nil
 	}
-	masked := maskPath(slug)
 	if status != 0 {
-		return "", gitExited("git ls-remote of "+masked, status, strings.ReplaceAll(stderr.String()+listed, slug, masked))
+		return "", gitExited("git ls-remote of "+masked, status, said)
 	}
 	return "", fmt.Errorf("git ls-remote of %s exited 0 and listed no ref", masked)
 }
