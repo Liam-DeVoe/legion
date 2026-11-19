@@ -247,9 +247,30 @@ func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 // confirm reads).
 type sentences struct{ abandoned, ended bool }
 
+// GateNote is the design gate's state a merger's delivery carries at its send (Deps.GateNote,
+// dispatch://INFRA-2040 R7): Text is the sentence the prompt opens with, empty for no note, and
+// State ("closed" or "open"), Step and Version are what the send's line names of it — the closed
+// step and its document's version, or the step whose approval stands newest under an open gate.
+// It is built at each send from the gate as it stands then and never stored, so a task queued
+// before the gate moved and sent after it says what the gate is when the merger reads it.
+type GateNote struct {
+	Text, State, Step string
+	Version           int
+}
+
+// InFrontOf is text as the merger reads it behind the note: the note, a blank line, and text. A
+// note with no text leaves text as it is.
+func (n GateNote) InFrontOf(text string) string {
+	if n.Text == "" {
+		return text
+	}
+	return n.Text + "\n\n" + text
+}
+
 // message is the prompt a delivery is sent as, and which of the claim's two untold records it
 // tells (sentences): its task, behind the sentences the claim's state gives it that say what
-// became of the agent's earlier work, and then the provider's. In order:
+// became of the agent's earlier work, and then the provider's, all behind the design gate's note
+// a merger's send carries (note). In order:
 //
 //   - The first task the agent that replaced an abandoned session is given names that session
 //     (abandonedTask), and says that everything of the old session is gone. A record that still
@@ -295,6 +316,11 @@ type sentences struct{ abandoned, ended bool }
 // since there is no task to continue (abandonedTask); the record's sentence does not, because it
 // is the text.
 //
+// A merger's prompt opens with the design gate's state at this send (note, Deps.GateNote), in
+// front of everything else here, since it is the last of the send's rewrites: whatever the
+// prompt goes on to say, the merger reads first whether the gate holds the merge. The relaunch's
+// record carries it too, because the merger takes up its phase once it has read that record.
+//
 // A task of the reviewer ends with the daemon's two sentences of its review round, the last two
 // of each task the reviewer is sent (reviewround.Sentences), and this is the one place each
 // prompt of a delivery is composed, so it is where the rule holds for every task, whatever queued
@@ -310,7 +336,7 @@ type sentences struct{ abandoned, ended bool }
 // One case still sends a stale note: the previous release's upsert carries no out_of_memory
 // column, so if an image rollback takes a marked task back again for another end, the row keeps
 // the mark, and a roll-forward sends the note for that end.
-func (d Delivery) message(c Claim) (string, sentences) {
+func (d Delivery) message(c Claim, note GateNote) (string, sentences) {
 	text, carried := d.Task, sentences{}
 	relaunch := d.Relaunch()
 	if relaunch && c.EndedWork.Tells() {
@@ -343,7 +369,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
 	}
-	return prefix + text, carried
+	return note.InFrontOf(prefix + text), carried
 }
 
 // HashBootToken is the one hash a boot token is stored and looked up by. A launch mints the token
@@ -847,7 +873,8 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		if !sends {
 			return m.relaunchAfterDrop(ctx)
 		}
-		m.startSend(conn, *m.claim.Pending)
+		// A root architect's task carries no design gate's note: only a merger's does (gateNote).
+		m.startSend(conn, *m.claim.Pending, GateNote{})
 		return nil
 	}
 	// The question a restart left — whether the turn the agent may be in is the pending
@@ -904,7 +931,13 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return nil
 		}
 	}
-	m.startSend(conn, *p)
+	// A merger's task goes with the design gate's state in front of it, read now, at its send
+	// (gateNote), and never stored with the delivery.
+	note, err := m.gateNote(ctx, *p)
+	if err != nil {
+		return err
+	}
+	m.startSend(conn, *p, note)
 	return nil
 }
 
@@ -1117,6 +1150,21 @@ func (m *Machine) waitHolds(ctx context.Context, d Delivery) (string, error) {
 // heldByWait is a delivery and the wait that held it back (Machine.waitHeld).
 type heldByWait struct{ delivery, wait string }
 
+// gateNote asks the design gate's state d carries at this send (Deps.GateNote, dispatch://INFRA-2040
+// R7). Only a merger's delivery is put to the answer, since the gate holds only the merger's work;
+// every other claim, and every claim of a daemon with no workflow, which supplies none, carries no
+// note.
+func (m *Machine) gateNote(ctx context.Context, d Delivery) (GateNote, error) {
+	if m.deps.GateNote == nil || m.claim.Role != claim.RoleMerger {
+		return GateNote{}, nil
+	}
+	note, err := m.deps.GateNote(ctx, m.claim, d)
+	if err != nil {
+		return GateNote{}, fmt.Errorf("read the design gate's state for the task of %s: %w", m.claim.Token, err)
+	}
+	return note, nil
+}
+
 // retirePending drops the pending delivery, and is the one place a delivery ends: settle calls
 // it for a delivery whose life is over, sendPending for a task the issue's phase has left
 // behind and for an older daemon's ask of an update round, dropUpdateTask for the ask of a
@@ -1263,11 +1311,18 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // records, this marks which the prompt carries the sentence of, as message composed it
 // (Machine.carried), and tells neither, as confirm states. Whether the send adopts the working
 // copy first is decided here, under the machine's lock, so the goroutine acts on the claim the
-// hold in sendPending was decided against.
-func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
+// hold in sendPending was decided against. note is the design gate's state a merger's prompt
+// opens with (gateNote), and the send of a prompt that carries one says so on a line of its own,
+// naming the state, the step and the version, which is what a reading of the log matches against
+// the gate's moves.
+func (m *Machine) startSend(conn runtime.Conn, d Delivery, note GateNote) {
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
 	adopting := m.adopts(d)
-	prompt, carried := d.message(m.claim)
+	prompt, carried := d.message(m.claim, note)
+	if note.Text != "" {
+		m.log.Info("supervise: the merger's task carries the design gate's state", "issue", m.claim.Issue, "delivery", d.ID,
+			"state", note.State, "step", note.Step, "version", note.Version)
+	}
 	m.carried.abandoned = m.carried.abandoned || carried.abandoned
 	m.carried.ended = m.carried.ended || carried.ended
 	if p := m.claim.Pending; p != nil && p.ID == d.ID {

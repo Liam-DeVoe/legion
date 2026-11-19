@@ -141,10 +141,11 @@ func newWaitDeliveryRigOf(t *testing.T, issue record.Issue, role claim.Role, ste
 // supervise wires sup as the daemon wires its supervisor (daemon.go's plan, the workflow's
 // claimDurableState), over the rig's store, which the operator's routes read a claim's step from
 // (supervisor.Step), gives the tester's next process a connection of its own, and points the
-// outbox and the API at sup.
+// outbox and the API at sup. The machine asks the daemon's own answers before every send: the
+// phase, the wait, and the design gate's note a merger's task carries.
 func (r *waitDeliveryRig) supervise(sup *supervisor) {
 	sup.store, sup.deps.Store, sup.deps.Log = r.st, r.st, r.log
-	sup.deps.PhaseHolds, sup.deps.WaitHolds = r.w.phaseHolds, r.w.waitHolds
+	sup.deps.PhaseHolds, sup.deps.WaitHolds, sup.deps.GateNote = r.w.phaseHolds, r.w.waitHolds, r.w.gateNote
 	sup.OnDurableState(r.w.terminal)
 	conn := fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(r.token, conn)

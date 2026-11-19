@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // gatesStep says whether the deployment gates step, so a person must approve that step's document
@@ -1002,9 +1003,9 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			"and every gated step that someone registered now stands open, so the design you are working to is the approved one. "+
 			"A merge the closed gate held is released.", root.Tree, version, step, document)
 	} else {
-		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
-			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-			"that someone registered stands open again.", root.Tree, version, step, document)
+		body = gateClosedWords(root.Tree, step, document, version) +
+			", so the design you are working to may change. Your phase goes on; the merge waits until every gated step " +
+			"that someone registered stands open again."
 	}
 	for _, to := range told {
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
@@ -1095,6 +1096,53 @@ func HeldByDesignGate(issue record.Issue, role claim.Role, gate record.TreeGate)
 		return record.DesignGate{}, false
 	}
 	return classify.StandingGate(gate.Steps, gate.Rows)
+}
+
+// gateClosedWords are the words every text that tells of a closed design gate opens with: the
+// tree, the gated step whose document moved, that document and its version, and that a reviewer
+// holds that version. The closing message (tellGateMoved) and the note a held merger's task
+// carries (MergerGateNote) both open with them, and so does the form the merger prompt quotes
+// (roles/merger.md, "A closed design gate"), so a merger reads the two texts as one state.
+func gateClosedWords(tree string, step record.DesignStep, document string, version int) string {
+	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer",
+		tree, version, step, document)
+}
+
+// MergerGateNote is the design gate's state that role's task on issue carries at its send
+// (dispatch://INFRA-2040 R7, D15 of its plan), built from gate as it stands at that send and
+// from the one hold rule (HeldByDesignGate). The merger of an issue in merging the gate holds
+// reads that the gate closed, which document version is with its reviewer, and what it must do
+// until the gate opens: the closing message's words, then its own. The merger of an issue in
+// merging on a tree that has a registered row of a gated step, none of them held, reads that the
+// gate stands open, which says the gate's state and nothing more, so it is true of a gate that
+// never closed. Every other task carries no note: another role's, another phase's, and a
+// merger's whose tree has no registered row of a gated step or whose deployment gates no step,
+// since no gate holds it and no document could be named.
+//
+// For the open note, the step and version the send's line names are those of the registered
+// gated step whose approval stands newest (record.EventMark.After, the later step in the
+// deployment's order where the marks cannot say).
+func MergerGateNote(issue record.Issue, role claim.Role, gate record.TreeGate) supervise.GateNote {
+	if closed, held := HeldByDesignGate(issue, role, gate); held {
+		step := closed.Step.OrSpec()
+		return supervise.GateNote{Text: gateClosedWords(issue.Tree, step, closed.ArtifactID, closed.LatestVersion) +
+			". Merge nothing, enqueue nothing, and take a pull request you queued back out of the merge queue.",
+			State: "closed", Step: string(step), Version: closed.LatestVersion}
+	}
+	if role != claim.RoleMerger || issue.Phase != phase.Merging || len(gate.Steps) == 0 {
+		return supervise.GateNote{}
+	}
+	var newest *record.DesignGate
+	for _, step := range record.RequiredSteps(gate.Steps) {
+		if row, registered := gate.Rows[step]; registered && (newest == nil || row.ApprovedMark.After(newest.ApprovedMark)) {
+			newest = &row
+		}
+	}
+	if newest == nil {
+		return supervise.GateNote{}
+	}
+	return supervise.GateNote{Text: fmt.Sprintf("The design gate of %s stands open: every gated step that someone registered is approved.", issue.Tree),
+		State: "open", Step: string(newest.Step.OrSpec()), Version: newest.LatestVersion}
 }
 
 // tellChangesOnce tells fact's changes request to its issue's architect once, by a notice or by the

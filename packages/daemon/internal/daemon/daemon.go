@@ -387,11 +387,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
 		// from here: the operator's spawn draws a tree's experiments with no workflow
 		// configured, and the launch that follows it must honour the draw it made.
-		// Only a daemon with the workflow configured has issue records to read a phase, a wait or a
-		// tree from; Stage 2's supervision runs on claims alone, where every delivery holds, no wait
-		// holds one back, and every tree closes.
+		// Only a daemon with the workflow configured has issue records to read a phase, a wait, a
+		// gate or a tree from; Stage 2's supervision runs on claims alone, where every delivery
+		// holds, no wait holds one back, no task carries a design gate's note, and every tree
+		// closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
-		plan.waitHolds = workflow.waitHolds
+		plan.waitHolds, plan.gateNote = workflow.waitHolds, workflow.gateNote
 		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
@@ -768,11 +769,13 @@ type plan struct {
 	// could not reach. The configured renames that rule also reads are the mapping's own
 	// (repositories.renames, which is cfg.RepositoryRenames). Never nil, as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, waitHolds, rootHears, rootTask and treeClosable are the workflow's answers to
-	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
-	// queued, no wait holds one back, and every tree closes.
+	// phaseHolds, waitHolds, gateNote, rootHears, rootTask and treeClosable are the workflow's
+	// answers to the supervisor's predicates; nil without a workflow, where every delivery is sent
+	// as it was queued, no wait holds one back, no task carries a design gate's note, and every
+	// tree closes.
 	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
 	waitHolds    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, error)
+	gateNote     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (supervise.GateNote, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
@@ -1616,6 +1619,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
 		WaitHolds:               p.waitHolds,
+		GateNote:                p.gateNote,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		TreeClosable:            p.treeClosable,

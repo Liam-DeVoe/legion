@@ -885,6 +885,42 @@ func (w *workflowRuntime) waitHolds(ctx context.Context, c supervise.Claim, d su
 	return wait, nil
 }
 
+// gateNote answers supervise's Deps.GateNote: the design gate's state that a task of c's merger
+// carries at its send (dispatch://INFRA-2040 R7), built by the workflow's one rule
+// (workflow.MergerGateNote) from the merger's issue and its tree's gate rows as the record holds
+// them at that moment. The machine asks it holding its own lock, as it asks phaseHolds, so the
+// read is a read-only transaction of its own and takes no lock of the daemon's.
+func (w *workflowRuntime) gateNote(ctx context.Context, c supervise.Claim, _ supervise.Delivery) (supervise.GateNote, error) {
+	return readMergerGateNote(ctx, w.pool, w.records, w.gatedSteps, c.Issue, c.Role)
+}
+
+// readMergerGateNote is the design gate's state that a task or the update ask of role on the issue
+// key carries now (workflow.MergerGateNote): the issue and its tree's gate rows under steps, the
+// steps the deployment gates, read in a read-only transaction of its own. Only a merger's carries
+// one, so no other role's reads anything, and an issue the record does not hold carries none.
+func readMergerGateNote(ctx context.Context, pool *store.Pool, records record.Store, steps []record.DesignStep,
+	key string, role claim.Role) (supervise.GateNote, error) {
+	var note supervise.GateNote
+	if role != claim.RoleMerger {
+		return note, nil
+	}
+	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		issue, err := records.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return err
+		}
+		rows, err := records.GatesOf(ctx, tx, issue.Tree)
+		if err != nil {
+			return err
+		}
+		note = workflow.MergerGateNote(*issue, role, record.TreeGate{Steps: steps, Rows: rows})
+		return nil
+	}); err != nil {
+		return supervise.GateNote{}, fmt.Errorf("read the design gate of the tree of %s for its %s: %w", key, role, err)
+	}
+	return note, nil
+}
+
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
 // run names no phase, so no phase ever drops it, and it waits on the claim until that claim next
 // runs — which a park, a hand back to `todo` or a linger can put generations later. The decisions

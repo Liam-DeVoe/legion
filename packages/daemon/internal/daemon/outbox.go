@@ -1934,6 +1934,12 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // dispatch://INFRA-2040 D9). A retry of one ask publishes under one key — the row's next attempt,
 // and the row the sweep enqueues again for the same round opening after an ask that reached no
 // session — so the listener and each host drop a repeat of it as the one message it is.
+//
+// A merger's ask opens with the design gate's state, as each of its tasks does at its send
+// (dispatch://INFRA-2040 R7; supervise's Deps.GateNote): the gate is read here, in a read-only
+// transaction of its own, before the machine's lock is taken, so the publish under that lock
+// waits on no read of the record. The ask's key does not change with the note: the ask is one
+// message of one round opening, whatever the gate said when it went.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -1951,10 +1957,17 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.updateAskLeftRound(row, payload, token, current)
 		return nil
 	}
+	note, err := readMergerGateNote(ctx, r.pool, r.records, r.gatedSteps, row.Issue, payload.Role)
+	if err != nil {
+		return err
+	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
+	if note.Text != "" {
+		fields = append(fields, "gateState", note.State, "gateStep", note.Step, "gateVersion", note.Version)
+	}
 	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
-		return r.publishToRole(ctx, topic, payload.Message(row.Issue), record.UpdateAskKey(token, payload.Round, held.UpdateOpenedAt),
+		return r.publishToRole(ctx, topic, note.InFrontOf(payload.Message(row.Issue)), record.UpdateAskKey(token, payload.Round, held.UpdateOpenedAt),
 			"outbox update ask finished undelivered: no live session holds the role", fields...)
 	})
 	switch {

@@ -198,9 +198,10 @@ func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload r
 }
 
 // enqueueID is enqueue answering the id of the row it wrote, for a row the log names: a wake's
-// start (wakeRow) and the task of a wait's time (waitDue).
+// start (wakeRow) and the task of a wait's time (waitDue). Its row is built where every row of
+// this package is (queuedRow), so a woken reviewer's task ends naming its review round.
 func (e *Engine) enqueueID(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) (int64, error) {
-	row, err := record.NewOutboxRow(issue, payload, e.now())
+	row, err := queuedRow(ctx, tx, e.store, issue, payload, e.now())
 	if err != nil {
 		return 0, err
 	}

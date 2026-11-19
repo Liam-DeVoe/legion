@@ -1482,9 +1482,10 @@ type UpdateAsk struct {
 
 func (UpdateAsk) OutboxKind() OutboxKind { return OutboxKindUpdateAsk }
 
-// Message is what the runner publishes for issue: the text the sweep built, unchanged. Nothing is
-// put in front of it, since the text names the round and the topic it goes to is the role's own
-// claim on issue.
+// Message is what the runner publishes for issue: the text the sweep built, unchanged. Nothing of
+// the round is put in front of it, since the text names the round and the topic it goes to is the
+// role's own claim on issue; a merger's ask alone opens with the design gate's state, which the
+// daemon's updateAsk reads at the publish (dispatch://INFRA-2040 R7).
 func (p UpdateAsk) Message(string) string { return p.Text }
 
 const (

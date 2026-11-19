@@ -123,8 +123,11 @@ func WakeTask(kind, detail string) string {
 			") while your pod was gone. A message that Envoy or Dispatch stored for your session reaches you in this session. " +
 			"A direct Envoy message that Envoy refused reaches you when its sender sends it again."
 	case pods.WakeBackstop:
+		// "As it stands" and not "where you left it": a merger's backstop wake can reach it behind
+		// the note of a closed design gate (MergerGateNote), and its phase as it stands then is to
+		// merge nothing, which a call to take up its work where it left it would contradict.
 		return preamble + "The wake is the release's backstop running out: " + detail +
-			". Nothing else asked for you, so take up your phase where you left it."
+			". Nothing else asked for you, so go on with your phase as it stands."
 	case pods.WakeWaitTime:
 		// The detail is the wait's own task (waitTimeTask), which says what the wake is.
 		return preamble + detail
