@@ -370,8 +370,10 @@ function decisions(made: readonly Decision[]): IssueDecisions {
   };
 }
 
+type DecisionLink = NonNullable<Decision["links"]>[number];
+
 /** A link of decision `d1`'s to `ref`, which is a chip of the decision's and places nothing. */
-function linkTo(ref: string, kind: string): NonNullable<Decision["links"]>[number] {
+function linkTo(ref: string, kind: DecisionLink["to"]["kind"]): DecisionLink {
   return {
     created_at: "2026-11-05T00:00:00Z",
     created_version: 1,
