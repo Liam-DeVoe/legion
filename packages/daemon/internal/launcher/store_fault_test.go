@@ -187,9 +187,9 @@ func TestAClaudeKeeperThatCannotReachTheTableIsAStoreFaultAndTheNextStartRestore
 // A start whose session store is configured wrong is the start's own failure, which the daemon
 // charges, and its refusal names the cause: the store answered, or was never asked. A credential
 // that is not there, an environment that names no URL file, a URL file that is not there, a
-// password the server refuses: each is refused plainly, having started nothing, on both
-// harnesses, fresh or resumed. The control is a URL file whose store refuses the dial, which is
-// the store's fault.
+// password the server refuses, a database that takes no writes (an address that names a replica):
+// each is refused plainly, having started nothing, on both harnesses, fresh or resumed. The
+// control is a URL file whose store refuses the dial, which is the store's fault.
 func TestAStartWhoseSessionStoreIsConfiguredWrongIsChargedNamingItsCause(t *testing.T) {
 	dsn := testdb.Database(t, "legion_launcher_config_fault_test")
 	createSessionTables(t, dsn)
@@ -203,6 +203,7 @@ func TestAStartWhoseSessionStoreIsConfiguredWrongIsChargedNamingItsCause(t *test
 	if err := replaceURLFile(refusing, refusingURL(t)); err != nil {
 		t.Fatal(err)
 	}
+	readOnly := readOnlyURLFile(t)
 	sessionFile := filepath.Join(t.TempDir(), "sessions", "2026-10-08T12-00-00-000Z_0009.jsonl")
 	importSession(t, dsn, sessionFile)
 	omp := func(dsnFile string) func(t *testing.T) (shimwire.LauncherStartResult, string) {
@@ -249,6 +250,7 @@ func TestAStartWhoseSessionStoreIsConfiguredWrongIsChargedNamingItsCause(t *test
 		"a Claude Code resume whose environment names no URL file": {names: ompsessions.DSNFileVariable + " names no file",
 			start: claude("", true)},
 		"a fresh Claude Code start whose server refuses the password": {names: "password authentication failed", start: claude(wrongPassword, false)},
+		"a fresh Claude Code start whose database takes no writes":    {names: "read-only transaction", start: claude(readOnly, false)},
 		"control: an Oh My Pi resume whose store refuses the dial": {names: "the session store could not be asked", storeFault: true,
 			start: omp(refusing)},
 		"control: a fresh Claude Code start whose store refuses the dial": {names: "the session store could not be asked", storeFault: true,
@@ -436,6 +438,31 @@ func withPassword(t *testing.T, dsn, password string) string {
 	}
 	parsed.User = url.UserPassword(parsed.User.Username(), password)
 	return parsed.String()
+}
+
+// readOnlyURLFile is a URL file naming a new database that takes no writes, as a replica does:
+// every session on it starts read-only, so a write is refused with SQLSTATE 25006.
+func readOnlyURLFile(t *testing.T) string {
+	t.Helper()
+	dsn := testdb.Database(t, "legion_launcher_read_only_test")
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := ompsessions.ConnectURL(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(context.Background())
+	name := strings.TrimPrefix(parsed.Path, "/")
+	if _, err := conn.Exec(context.Background(), `ALTER DATABASE "`+name+`" SET default_transaction_read_only = on`); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "read-only-dsn")
+	if err := replaceURLFile(file, dsn); err != nil {
+		t.Fatal(err)
+	}
+	return file
 }
 
 // testdbFile is a URL file naming dsn, for a rig that reads the session table through one.
