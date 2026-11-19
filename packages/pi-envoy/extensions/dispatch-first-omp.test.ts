@@ -13,6 +13,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The dispatch-first skill's insertion on the real Oh My Pi (src/dispatch-first.ts): Oh My Pi keeps
 // nothing a `context` handler returns, so what reaches the model can only be read off the requests
@@ -26,6 +27,10 @@ type Step = { readonly prompt: string } | { readonly compact: true };
 
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
+
+/** Where each case's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("dispatch-first-omp");
 
 /** How many times a Messages request carries the injected skill. */
 function markers(request: Request): number {
@@ -43,7 +48,7 @@ async function runSession(
   steps: readonly Step[],
   options: { readonly dispatch: boolean; readonly summary?: string }
 ): Promise<{ readonly turns: Request[]; readonly summaries: Request[] }> {
-  const { home, workspace, sessions } = await ompRoot(binary, "dispatch-first-omp-", cleanup);
+  const { home, workspace, sessions } = await ompRoot(binary, scratch, "dispatch-first-omp-");
 
   let answered = 0;
   const { requests, base } = serveStandin(cleanup, (url, body) => {

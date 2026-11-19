@@ -18,6 +18,7 @@ import {
   runLegionPane,
   type StandinProvider,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The model fallback on the real Oh My Pi (src/model-fallback.ts, on the cooldown machine and the
 // chain resolver of @legion/pi-shared): only the real binary shows which model each request went
@@ -88,6 +89,10 @@ const RESUME_COOLDOWN_MS = 12_000;
 const cleanup: Cleanup = [];
 // Two omps: the relaunch case runs a second life of its pane (`resume`) on the same list.
 cleanupHook(afterEach, [cleanup], 2);
+
+/** Where each pane's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("legion-model-fallback-omp");
 
 /** A shell sleep the model asks for, which keeps one turn running while a cooldown runs out: the
  * requests of that same turn are the ones the `context` hook restores on. */
@@ -166,6 +171,7 @@ async function fallbackPane(options: {
     [],
     {
       name: "fallback",
+      scratch,
       role: "architect",
       tree: "FALL-1",
       issue: "FALL-1",

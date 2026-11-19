@@ -20,6 +20,7 @@ import {
   startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // On the real Oh My Pi: a Legion role pane dispatches `deep-worker`, gets its
 // `task` call back while the subagent is still running, reads a message that arrives in the
@@ -75,6 +76,10 @@ const MESSAGE_BOUND_MS = 30_000;
 
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
+
+/** Where each case's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("legion-background-subagent-omp");
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {
@@ -361,7 +366,7 @@ async function startRolePane(): Promise<RolePane> {
       "utf8"
     )
   );
-  const { home, workspace, sessions } = await ompRoot(binary, "legion-bgsub-", cleanup);
+  const { home, workspace, sessions } = await ompRoot(binary, scratch, "legion-bgsub-");
 
   const held: Held[] = [];
   let sides = 0;

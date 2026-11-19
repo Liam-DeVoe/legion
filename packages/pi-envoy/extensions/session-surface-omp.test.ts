@@ -18,6 +18,7 @@ import {
   startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCodec } from "nats";
 import { z } from "zod";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
@@ -89,6 +90,11 @@ const SHELL_LIMIT_MS = 2_000;
  *  one session's end, not for the sum of them. */
 const sessionCleanups: Cleanup[] = [];
 cleanupHook(afterAll, sessionCleanups);
+
+/** Where each session's scratch root is made (`ompRoot`): reserved below the `cleanupHook`
+ *  above, so the fixture's `afterAll` runs after that one and removes it once every session has
+ *  ended. */
+const scratch = temporaryDirectory("session-surface-omp");
 
 function text(reply: string): Block {
   return { type: "text", text: reply };
@@ -219,7 +225,7 @@ async function startSession(
   const { binary, nats } = setup();
   const cleanup: Cleanup = [];
   sessionCleanups.push(cleanup);
-  const { home, workspace, sessions } = await ompRoot(binary, "session-surface-omp-", cleanup);
+  const { home, workspace, sessions } = await ompRoot(binary, scratch, "session-surface-omp-");
   await prepare?.({ home, workspace });
 
   const turns: Turn[] = [];

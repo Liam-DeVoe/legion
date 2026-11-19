@@ -31,6 +31,10 @@ const onActions = process.env.GITHUB_ACTIONS === "true";
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
 
+/** Where each case's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("askgate-omp");
+
 /** The system prompt of a request the charter check sends: its own frame heads it. */
 const isGateRequest = (request: Request): boolean =>
   JSON.stringify(request.body.system ?? "").includes("You are AskGate.");
@@ -109,7 +113,7 @@ async function runSession(options: {
   mode?: "warn" | "block";
 }): Promise<{ requests: Request[]; sessions: string }> {
   if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  const { root, home, workspace, sessions } = await ompRoot(omp, "askgate-omp-", cleanup);
+  const { root, home, workspace, sessions } = await ompRoot(omp, scratch, "askgate-omp-");
 
   // The `dispatch` the session calls by its literal path.
   const dispatch = path.join(root, "bin", "dispatch");

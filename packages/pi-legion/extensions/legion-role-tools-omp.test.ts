@@ -13,6 +13,7 @@ import {
   type ToolResult,
   toolResultsIn,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // Acceptance 1 of LEGION-630, and LEGION-631's deletion of the tool_call hook, on the real Oh My
 // Pi: no Legion role is refused a tool, and nothing a pane runs is refused. A root architect runs
@@ -38,6 +39,10 @@ type Role = "architect" | "reviewer" | "merger";
 
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
+
+/** Where each pane's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("legion-role-tools-omp");
 
 /** Runs `jj` with a test identity, so it commits in CI too, failing loudly on a non-zero exit. */
 async function runJj(jj: string, args: readonly string[]): Promise<void> {
@@ -68,6 +73,7 @@ async function toolsPane(
     replies,
     {
       name: "tools",
+      scratch,
       nats: run.nats,
       role,
       tree: TREE,

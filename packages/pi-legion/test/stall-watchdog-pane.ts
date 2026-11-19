@@ -302,6 +302,9 @@ export default function steer(pi) {
 export interface PaneOptions {
   /** The scratch root's prefix. */
   readonly name: string;
+  /** The directory the scratch root is made in: the case file's `temporaryDirectory`, reserved
+   * after its `cleanupHook` (`ompRoot`). */
+  readonly scratch: string;
   /** `LEGION_STATE_DIR`: where this claim's stall exit count lives, shared by its launches. */
   readonly stateDir: string;
   /** Answers turn `index` (1 for the first) of the pane's own conversation. */
@@ -373,8 +376,8 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
   );
   const { root, home, workspace, sessions } = await ompRoot(
     binary,
-    `legion-${options.name}-`,
-    cleanup
+    options.scratch,
+    `legion-${options.name}-`
   );
 
   const turns: Request[] = [];
@@ -557,8 +560,8 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     running: () => running,
     settled: () => awaitSettled(sessions, SETTLED_MS),
     async until(what, probe) {
-      // A wait that may span the pane's startup, the host's own cost, gets until the startup's
-      // deadline from the spawn (startupDeadline); every later wait is its own DEADLINE_MS.
+      // A wait may span the pane's startup, the host's own cost, so each gets the later of the
+      // startup's deadline from the spawn and its own DEADLINE_MS from now (startupDeadline).
       const deadline = startupDeadline(spawnedAt, DEADLINE_MS);
       for (;;) {
         const value = await probe();

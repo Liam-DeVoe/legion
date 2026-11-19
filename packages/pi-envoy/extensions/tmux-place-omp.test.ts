@@ -16,6 +16,7 @@ import {
   startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // Where a session sits in tmux, as the real Oh My Pi reports it (envoy-client's `readTmuxPlace`,
 // the cached reading extensions/envoy.ts takes a registration's place from without waiting on it,
@@ -65,6 +66,10 @@ const PANE_INDEX = 1;
 
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
+
+/** Where each case's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("tmux-place-omp");
 
 /** `value` as one word of the shell tmux runs a pane's command through. */
 function quote(value: string): string {
@@ -265,7 +270,7 @@ test.skipIf(skip)(
   "a session in a tmux pane registers the pane it sits in, and the split that follows it",
   async () => {
     const { binary, nats, tmux } = setup();
-    const { root, home, workspace, sessions } = await ompRoot(binary, "tmux-place-omp-", cleanup);
+    const { root, home, workspace, sessions } = await ompRoot(binary, scratch, "tmux-place-omp-");
     const { requests, base } = await standin(home, workspace);
 
     const socket = path.join(root, "tmux.sock");
@@ -382,7 +387,7 @@ test.skipIf(skip)(
   "a session outside tmux registers no place at all",
   async () => {
     const { binary, nats } = setup();
-    const { home, workspace, sessions } = await ompRoot(binary, "tmux-place-outside-omp-", cleanup);
+    const { home, workspace, sessions } = await ompRoot(binary, scratch, "tmux-place-outside-omp-");
     const { requests, base } = await standin(home, workspace);
 
     const closed: { error?: unknown } = {};

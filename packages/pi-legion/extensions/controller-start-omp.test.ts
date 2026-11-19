@@ -27,6 +27,7 @@ import {
   startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   completeLines,
   endsWhole,
@@ -169,6 +170,10 @@ const COLUMNS = 200;
 
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
+
+/** Where each case's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("controller-start-omp");
 
 /** One Messages request the stand-in holds until the case answers it. */
 interface Turn {
@@ -387,8 +392,8 @@ async function serveController(
   const { binary, nats } = setup();
   const { root, home, workspace, sessions } = await ompRoot(
     binary,
-    "controller-start-omp-",
-    cleanup
+    scratch,
+    "controller-start-omp-"
   );
   const fixtures = path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api");
   // The daemon's golden answers (packages/daemon/internal/api): its state, whose project is

@@ -14,6 +14,7 @@ import {
   type Request,
   runLegionPane,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -168,6 +169,10 @@ const STALL_STATE = {
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
 
+/** Where each pane's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("legion-phase-stall-omp");
+
 /** The text of every user message in a Messages request, joined. */
 function userText(request: Request): string {
   const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
@@ -235,6 +240,7 @@ async function stallPane(
     replies,
     {
       name: "stall",
+      scratch,
       nats: run.nats,
       role: "implementer",
       tree: "STALL-1",

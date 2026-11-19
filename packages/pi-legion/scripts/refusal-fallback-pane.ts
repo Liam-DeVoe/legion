@@ -36,7 +36,8 @@
 // on stderr. Unlike a stage proof, a failed expectation does not stop the run: the twelve minutes
 // are spent, and every other expectation's measurement is evidence about the same run. The exit
 // status is 1 when any failed, naming the first, and 2 when the run could not be made at all.
-import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import {
   type FallbackCooldownState,
@@ -424,7 +425,7 @@ async function keepEvidence(
  * Runs one pane and answers what it recorded. A pane that cannot be run to the end answers what it
  * recorded until then, with its trouble, so the other panes' measurements are still reported.
  */
-async function drivePane(run: Run, cleanup: Cleanup): Promise<Pane> {
+async function drivePane(run: Run, scratch: string, cleanup: Cleanup): Promise<Pane> {
   const pane: Pane = {
     startedAt: 0,
     fellBackAt: undefined,
@@ -434,22 +435,22 @@ async function drivePane(run: Run, cleanup: Cleanup): Promise<Pane> {
     trouble: undefined,
   };
   try {
-    await runPane(run, pane, cleanup);
+    await runPane(run, pane, scratch, cleanup);
   } catch (error) {
     pane.trouble = error instanceof Error ? error.message : String(error);
   }
   return pane;
 }
 
-/** One pane's whole life: its scratch root, its stand-in, its omp child and its two assignments,
- * the lot held to one budget: the driving span, the longest a return may take past it
- * (`pacing`), and the slack. */
-async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
+/** One pane's whole life: its scratch root (made in `scratch`), its stand-in, its omp child and
+ * its two assignments, the lot held to one budget: the driving span, the longest a return may
+ * take past it (`pacing`), and the slack. */
+async function runPane(run: Run, pane: Pane, scratch: string, cleanup: Cleanup): Promise<void> {
   const deadlineAt = Date.now() + driveMs + RETURN_SLACK_MS + SETTLE_SLACK_MS;
   const { root, home, workspace, sessions } = await ompRoot(
     binary,
-    `refusal-${run.label}-`,
-    cleanup
+    scratch,
+    `refusal-${run.label}-`
   );
   const state = path.join(root, "state");
   await mkdir(state, { recursive: true, mode: 0o700 });
@@ -697,6 +698,18 @@ function verdictsFor(run: Run, pane: Pane): Verdict[] {
 }
 
 const cleanup: Cleanup = [];
+/** The directory every pane's scratch root is made in (`ompRoot`). The run removes it itself at
+ * its end, once `cleanup` has ended every process that writes into it: this is a script, not a
+ * Bun test, so no fixture's hook does. */
+const scratch = await mkdtemp(path.join(os.tmpdir(), "refusal-fallback-pane-"));
+/** Ends what the panes started, then removes their scratch roots. */
+async function tearDown(): Promise<void> {
+  try {
+    for (const step of cleanup.splice(0).reverse()) await step();
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
 let panes: Pane[] = [];
 try {
   await mkdir(evidence, { recursive: true });
@@ -705,14 +718,14 @@ try {
   note(
     `each pane: cooldown ${Math.round(cooldownMs / 1000)}s, driven for ${Math.round(driveMs / 1000)}s, a request about every ${sleepSeconds}s`
   );
-  panes = await Promise.all(runs.map((run) => drivePane(run, cleanup)));
+  panes = await Promise.all(runs.map((run) => drivePane(run, scratch, cleanup)));
   say("ok drive");
 } catch (error) {
   process.stderr.write(`FAIL drive: ${error instanceof Error ? error.message : String(error)}\n`);
-  for (const step of cleanup.splice(0).reverse()) await step();
+  await tearDown();
   process.exit(2);
 }
-for (const step of cleanup.splice(0).reverse()) await step();
+await tearDown();
 
 const failed: string[] = [];
 for (const [index, run] of runs.entries()) {

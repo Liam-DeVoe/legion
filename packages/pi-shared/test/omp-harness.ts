@@ -9,13 +9,13 @@
 //
 // A case's teardown (`runCleanup`) waits only for what the next case needs: every process of the
 // case ended, each omp with every process of its own group under OMP_END_MS and then OMP_KILL_MS,
-// and one that did not end named in the error; and the stand-in stopped. It does not wait for the
-// case's scratch root to be removed, which nothing after the case reads (`ompRoot`). A file runs
-// its teardown in the hook `cleanupHook` installs, whose bound is the harness's own, so a group
-// that does not end fails naming each of its processes, not on bun's unnamed hook timeout.
+// and one that did not end named in the error; and the stand-in stopped. It leaves the case's
+// scratch root, which nothing after the case reads: the root is made in the file's own fixture
+// directory, which the fixture removes after the file's last case (`ompRoot`). A file runs its
+// teardown in the hook `cleanupHook` installs, whose bound is the harness's own, so a group that
+// does not end fails naming each of its processes, not on bun's unnamed hook timeout.
 import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import {
   deliverSubject,
@@ -50,9 +50,9 @@ export type Cleanup = (() => Promise<void>)[];
 
 /**
  * Runs each list's steps last first, the lists side by side, and every step even when one before
- * it threw: a step that names a process that did not end still leaves the stand-in stopped and the
- * scratch root's removal started. Then throws what the steps threw, the one error or all of them
- * in one AggregateError. Each list is emptied, so a step runs once.
+ * it threw: a step that names a process that did not end still leaves the stand-in stopped. Then
+ * throws what the steps threw, the one error or all of them in one AggregateError. Each list is
+ * emptied, so a step runs once.
  */
 export async function runCleanup(...lists: Cleanup[]): Promise<void> {
   const errors = (
@@ -80,37 +80,31 @@ export async function runCleanup(...lists: Cleanup[]): Promise<void> {
 }
 
 /**
- * A scratch root with the profile's home, the session's workspace and its transcript directory.
- * The home's Oh My Pi natives are hardlinks to `binary`'s one cached copy (omp-natives.ts), so
- * a case writes none of them.
+ * A scratch root with the profile's home, the session's workspace and its transcript directory,
+ * made in `scratch`. The home's Oh My Pi natives are hardlinks to `binary`'s one cached copy
+ * (omp-natives.ts), so a case writes none of them.
  *
- * The case's cleanup starts the root's removal and does not wait for it: nothing after the case
- * reads the root, and removing it (some 240 files: omp's databases, its extension cache, the
- * natives' links) is the disk's work, whose time on a loaded machine ran from milliseconds to
- * seconds and failed hooks that waited on it. The steps that end the case's processes are pushed
- * after this one, so they run before it and nothing of the case writes into the root as it goes.
+ * `scratch` is the calling file's own directory from `temporaryDirectory`
+ * (`@legion/test-fixtures/temporary-directories`), reserved at the file's module scope after its
+ * `cleanupHook`, as docs/testing.md asks of every temporary directory. No case removes its root:
+ * removing one (some 240 files: omp's databases, its extension cache, the natives' links) is the
+ * disk's work, whose time on a loaded machine ran from milliseconds to seconds, and a case's hook
+ * that waited on it failed. The fixture's `afterAll` removes every root of the file once, after
+ * the last case, with no bound on its hook; Bun runs a scope's hooks in the order they were
+ * registered, so it runs after the hook that ends the file's omps, and nothing of a case writes
+ * into a root as it is removed.
  */
 export async function ompRoot(
   binary: string,
-  prefix: string,
-  cleanup: Cleanup
+  scratch: string,
+  prefix: string
 ): Promise<{
   readonly home: string;
   readonly workspace: string;
   readonly sessions: string;
   readonly root: string;
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
-  // An `rm` of its own that nobody waits on: in a session of its own and unref'd, so it finishes
-  // after this process has exited, and it writes any error it meets to this process's stderr.
-  cleanup.push(async () => {
-    Bun.spawn(["rm", "-rf", "--", root], {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "inherit",
-      detached: true,
-    }).unref();
-  });
+  const root = await mkdtemp(path.join(scratch, prefix));
   const home = path.join(root, "home");
   const workspace = path.join(root, "workspace");
   const sessions = path.join(root, "sessions");
@@ -160,8 +154,8 @@ export const OMP_KILL_MS = 5_000;
 export const OMP_TEARDOWN_MS = OMP_END_MS + OMP_KILL_MS;
 
 /** What a cleanup hook gives the steps that end no process (a stand-in's stop, a NATS
- *  connection's close, a held request's release, the scratch root's removal started): bun's own
- *  default hook bound, which was all a hook had before an omp's end waited here. */
+ *  connection's close, a held request's release): bun's own default hook bound, which was all a
+ *  hook had before an omp's end waited here. */
 const CLEANUP_STEPS_MS = 5_000;
 
 /** The steps `spawnRpc` and `spawnInteractive` push onto a cleanup list, each of which ends one
@@ -400,13 +394,19 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. */
-export interface RelayConnection {
-  request(
+/**
+ * What a relay frame needs of a NATS connection that takes header sets of type `H`: `nats`'s
+ * `NatsConnection` is one, for the `MsgHdrs` its `headers()` makes. The header type is the
+ * connection's own, so a connection whose `request` takes only its own header sets is one too.
+ * `request` is a property, not a method, so its options are checked strictly: a connection that
+ * needs more of a header set than the frame's `newHeaders` makes is refused here, not at run time.
+ */
+export interface RelayConnection<H extends RelayFrameHeaders = RelayFrameHeaders> {
+  readonly request: (
     subject: string,
     payload: Uint8Array,
-    options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
-  ): Promise<{ readonly data: Uint8Array }>;
+    options: { readonly timeout: number; readonly headers: H }
+  ) => Promise<{ readonly data: Uint8Array }>;
 }
 
 /** What a relay frame needs of a NATS header set; `nats`'s `headers()` makes one. */
@@ -414,11 +414,12 @@ export interface RelayFrameHeaders {
   set(name: string, value: string): void;
 }
 
-/** One frame of the stand-in stream, as `sendRelayFrame` sends it. */
-export interface RelayFrame {
-  readonly connection: RelayConnection;
+/** One frame of the stand-in stream, as `sendRelayFrame` sends it: `connection` takes the header
+ *  sets `newHeaders` makes, whose type is read from `newHeaders` alone. */
+export interface RelayFrame<H extends RelayFrameHeaders = RelayFrameHeaders> {
+  readonly connection: RelayConnection<NoInfer<H>>;
   /** Makes an empty header set; `nats`'s `headers` is one. */
-  readonly newHeaders: () => RelayFrameHeaders;
+  readonly newHeaders: () => H;
   /** The session the listener relays to, which the deliver subject names. */
   readonly sessionID: string;
   /** The subject the stream stored the message on, which the frame carries. */
@@ -511,7 +512,9 @@ const RELAY_SEND_DEFAULT_MS = 30_000;
  * the answer through it: a caller that awaits a send would otherwise read a frame the session
  * dropped, or one it refused, as a frame it took.
  */
-export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
+export async function sendRelayFrame<H extends RelayFrameHeaders>(
+  frame: RelayFrame<H>
+): Promise<RelayTake> {
   // Read once, so the refusal below names the bound this send actually kept.
   const within = frame.withinMs ?? RELAY_SEND_DEFAULT_MS;
   const deadline = Date.now() + within;
@@ -1114,6 +1117,9 @@ export interface LegionPaneOptions {
    * lower-cased.
    */
   readonly name: string;
+  /** The directory the pane's scratch root is made in: the calling file's `temporaryDirectory`,
+   * reserved after its `cleanupHook` (`ompRoot`). */
+  readonly scratch: string;
   /**
    * The NATS server the pane runs against, as `ENVOY_NATS_URL`: a real one (the caller's
    * `LEGION_TEST_NATS_URL`), since the session's relay subject lives on it and a session without
@@ -1221,7 +1227,11 @@ export async function runLegionPane(
       "utf8"
     )
   );
-  const { root, home, workspace, sessions } = await ompRoot(binary, `legion-${name}-`, cleanup);
+  const { root, home, workspace, sessions } = await ompRoot(
+    binary,
+    options.scratch,
+    `legion-${name}-`
+  );
   const state = path.join(root, "state");
   const bin = path.join(root, "bin");
   await mkdir(bin, { recursive: true });

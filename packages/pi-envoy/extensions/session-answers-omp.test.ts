@@ -23,6 +23,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // What people wrote to a session, on every request of the real Oh My Pi's main loop
 // (src/session-answers-context.ts), and on none of the other requests its
@@ -95,6 +96,10 @@ const ASSIGNMENT = "SUBAGENT-ASSIGNMENT: report what you were told.";
 
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
+
+/** Where each case's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("session-answers-omp");
 
 /** Whether a Messages request is one of a compaction's summary calls, sent under their own system prompt. */
 function isSummarization(request: Request): boolean {
@@ -221,6 +226,20 @@ function answer(id: string, text: string, minutesAgo: number): SessionAnswer {
   };
 }
 
+/**
+ * The list `renderSessionAnswers` places for `items` now, with `cached`'s header when a cached list
+ * stands in for a failed read. Every case here renders answers inside the 72-hour window, so an
+ * empty render fails the case here, naming it, not as a comparison with `undefined`.
+ */
+function rendered(
+  items: readonly SessionAnswer[],
+  cached?: { readonly readAt: string; readonly reason: string }
+): string {
+  const list = renderSessionAnswers(items, { now: Date.now(), cached });
+  if (list === undefined) throw new Error(`no list renders for ${items.length} answer(s) now`);
+  return list;
+}
+
 /** The answers request whose read a Messages request waited on: the last one before it. */
 function answersBefore(seen: readonly Seen[], request: Seen): Seen {
   const before = seen.filter((other) => other.path.endsWith("/answers") && other.at <= request.at);
@@ -263,8 +282,8 @@ async function runSession(
 }> {
   const { home, workspace, sessions, root } = await ompRoot(
     binary,
-    "session-answers-omp-",
-    cleanup
+    scratch,
+    "session-answers-omp-"
   );
   const summary = "SUMMARY-OF-THE-EARLIER-TURNS";
   let route: Route = { kind: "list", items: [] };
@@ -521,7 +540,7 @@ test.skipIf(skipped)(
     expect(carriesList(first as Seen)).toBe(false);
     // Compared after JSON parsing: the text the model reads, not its escaped bytes.
     const list = lastListOf(second as Seen);
-    expect(list).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(list).toBe(rendered([item]));
     expect(list).toContain(item.text);
   },
   180_000
@@ -547,7 +566,7 @@ test.skipIf(skipped)(
     const third_ = JSON.stringify(messagesOf(third as Seen));
     expect(third_).not.toContain("First question.");
     expect(third_).toContain(session.summary);
-    expect(listOf(third as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(third as Seen)).toBe(rendered([item]));
   },
   180_000
 );
@@ -571,7 +590,7 @@ test.skipIf(skipped)(
     expect(parentID).toBeString();
     const first = session.turns.find(isSubagentTurn);
     if (first === undefined) throw new Error("the subagent sent no Messages request");
-    expect(listOf(first)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first)).toBe(rendered([item]));
     // Every read, the subagent's included, asked for the parent's list.
     expect(new Set(session.answers.map((request) => request.path))).toEqual(
       new Set([`/api/v1/agents/${parentID}/answers`])
@@ -628,7 +647,7 @@ test.skipIf(skipped)(
     const [first, ...rest] = session.turns;
     expect(rest).toEqual([]);
     const list = listOf(first as Seen);
-    expect(list).toBe(renderSessionAnswers(items, { now: Date.now() }));
+    expect(list).toBe(rendered(items));
     for (const item of items) expect(list).toContain(item.text);
   },
   180_000
@@ -663,7 +682,7 @@ test.skipIf(skipped)(
         `\n\n${leftOut} older items left out to stay under 8,000 UTF-16 code units: run \`dispatch answers\` to read every one in full.`
       )
     ).toBe(true);
-    expect(list).toBe(renderSessionAnswers(items, { now: Date.now() }));
+    expect(list).toBe(rendered(items));
   },
   180_000
 );
@@ -757,7 +776,7 @@ test.skipIf(skipped)(
       const [cachedFirst, cachedSecond] = cached.turns;
       if (cachedFirst === undefined || cachedSecond === undefined) throw new Error("no turn 2");
       const placed = listOf(cachedFirst);
-      expect(placed).toBe(renderSessionAnswers([item], { now: Date.now() }));
+      expect(placed).toBe(rendered([item]));
       expect(listOf(cachedSecond)).toBe(placed);
       expect(textOf(messagesOf(cachedSecond).at(-1))).toBe("Second question.");
       return waitOf(cached, cachedSecond);
@@ -782,7 +801,7 @@ test.skipIf(skipped)(
       const carried = listOf(subFirst);
       const carriedCache = cachedOf(carried);
       expect(carriedCache.reason).toBe(deadline);
-      expect(carried).toBe(renderSessionAnswers([item], { now: Date.now(), cached: carriedCache }));
+      expect(carried).toBe(rendered([item], carriedCache));
       return waitOf(sub, subFirst);
     });
   },
@@ -830,8 +849,8 @@ test.skipIf(skipped)(
     expect(rest).toEqual([]);
     // Each list shows a new item, so each is the last message, with no cache_control, and they
     // differ.
-    expect(lastListOf(n)).toBe(renderSessionAnswers([older], { now: Date.now() }));
-    expect(lastListOf(next)).toBe(renderSessionAnswers([newer, older], { now: Date.now() }));
+    expect(lastListOf(n)).toBe(rendered([older]));
+    expect(lastListOf(next)).toBe(rendered([newer, older]));
     // N's messages through its last cache_control-bearing one are N+1's first, byte for byte.
     const messages = messagesOf(n);
     const anchor = messages.findLastIndex((message) =>
@@ -868,7 +887,7 @@ test.skipIf(skipped)(
       throw new Error("want three turns");
     }
     expect(rest).toEqual([]);
-    const expected = renderSessionAnswers([item], { now: Date.now() });
+    const expected = rendered([item]);
     expect(lastListOf(first)).toBe(expected);
     const listAt = (request: Request) =>
       messagesOf(request).findIndex((message) => isSessionAnswersText(textOf(message)));
@@ -963,8 +982,8 @@ test.skipIf(skipped)(
     // The main loop's turns on both sides carry the list, read fresh: no read was left hanging.
     const [first, second, ...rest] = session.turns;
     expect(rest).toEqual([]);
-    expect(listOf(first as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(second as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first as Seen)).toBe(rendered([item]));
+    expect(listOf(second as Seen)).toBe(rendered([item]));
   },
   180_000
 );
@@ -998,8 +1017,8 @@ test.skipIf(skipped)(
 
     const [first, second, ...rest] = session.turns;
     expect(rest).toEqual([]);
-    expect(listOf(first as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(second as Seen)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first as Seen)).toBe(rendered([item]));
+    expect(listOf(second as Seen)).toBe(rendered([item]));
   },
   180_000
 );
@@ -1047,8 +1066,8 @@ test.skipIf(skipped)(
     expect(textOf(compacted.at(-1))).toBe("Third question.");
     expect(shapeOf(compacted)).toEqual(shapeOf(withoutList(third)));
     expect(carriesList(compaction)).toBe(false);
-    expect(listOf(third)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(fourth)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(third)).toBe(rendered([item]));
+    expect(listOf(fourth)).toBe(rendered([item]));
   },
   180_000
 );
@@ -1090,8 +1109,8 @@ test.skipIf(skipped)(
     expect(textOf(compacted.at(-1))).toContain("ENVOY-DELIVERY: CI finished.");
     expect(shapeOf(compacted)).toEqual(shapeOf(withoutList(delivered)));
     expect(carriesList(compaction)).toBe(false);
-    expect(listOf(delivered)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(fourth)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(delivered)).toBe(rendered([item]));
+    expect(listOf(fourth)).toBe(rendered([item]));
   },
   180_000
 );
@@ -1134,8 +1153,8 @@ test.skipIf(skipped)(
     expect(JSON.stringify(compacted)).toContain("QUIET-ONE: a notice.");
     expect(JSON.stringify(compacted)).toContain("First question.");
     expect(carriesList(compaction)).toBe(false);
-    expect(listOf(first)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    expect(listOf(second)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+    expect(listOf(first)).toBe(rendered([item]));
+    expect(listOf(second)).toBe(rendered([item]));
   },
   180_000
 );

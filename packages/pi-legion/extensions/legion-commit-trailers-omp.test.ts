@@ -21,6 +21,7 @@ import {
   toolResultsIn,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // On the real Oh My Pi: the `task` subagent of a Legion role pane makes a jj commit, and the
 // commit carries the two trailers of the pane: `Omp-Session` with the session of the pane, and
@@ -80,6 +81,10 @@ const DEADLINE_MS = 60_000;
 
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
+
+/** Where each case's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("legion-commit-trailers-omp");
 
 /** Whether a Messages request is the subagent's own: only its system prompt is deep-worker's. */
 function isSubagentRequest(request: Request): boolean {
@@ -152,7 +157,7 @@ async function startRolePane(role: Role): Promise<RolePane> {
       "utf8"
     )
   );
-  const { root, home, workspace, sessions } = await ompRoot(binary, "legion-trailers-", cleanup);
+  const { root, home, workspace, sessions } = await ompRoot(binary, scratch, "legion-trailers-");
   const state = path.join(root, "state");
   const bin = path.join(root, "bin");
   await mkdir(bin, { recursive: true });
@@ -286,8 +291,9 @@ async function startRolePane(role: Role): Promise<RolePane> {
     home,
     jj,
     async next(what) {
-      // The first request waited for spans the pane's startup, the host's own cost: a wait gets
-      // until the startup's deadline from the spawn (startupDeadline), and each later one its own.
+      // The first request waited for spans the pane's startup, the host's own cost, so each wait
+      // gets the later of the startup's deadline from the spawn and its own bound from now
+      // (startupDeadline).
       const request = await until(
         what,
         () => held[taken],

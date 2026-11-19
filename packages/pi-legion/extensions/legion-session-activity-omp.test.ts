@@ -23,6 +23,7 @@ import {
   startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
@@ -93,6 +94,10 @@ const QUIET_WATCH_MS = 3 * REPORT_PERIOD_MS + 2_000;
 
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
+
+/** Where each case's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("legion-session-activity-omp");
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {
@@ -179,7 +184,7 @@ async function startRolePane(): Promise<RolePane> {
       "utf8"
     )
   );
-  const { home, workspace, sessions } = await ompRoot(binary, "legion-activity-", cleanup);
+  const { home, workspace, sessions } = await ompRoot(binary, scratch, "legion-activity-");
 
   const held: Held[] = [];
   const reports: LegionSessionActivityBody[] = [];

@@ -132,6 +132,12 @@ third argument, 1 by default) and 5 s for the steps that end no process, so an o
 not end fails naming each of its processes, never on bun's unnamed hook timeout, and a list that
 ends more omps than the hook is bounded for fails naming the number to pass. An omp the case did
 not spawn itself, a tmux pane's, is ended the same way by `cleanupEndsGroup(<its pid>, cleanup)`.
+A case's scratch root (`ompRoot`, and `runLegionPane`'s `scratch`) is made in the file's own
+`temporaryDirectory("<file>-omp")` (`@legion/test-fixtures/temporary-directories`), reserved at
+module scope below the file's `cleanupHook`: no case removes its root, and the fixture's `afterAll`
+removes them all after the last case, after the hook that ends the omps, since Bun runs a scope's
+hooks in the order they were registered. `scripts/refusal-fallback-pane.ts` in pi-legion is a
+script, not a test: it makes its own directory and removes it at its end.
 
 ## Where to look
 

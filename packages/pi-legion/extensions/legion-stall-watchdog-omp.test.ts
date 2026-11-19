@@ -3,7 +3,10 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdog";
 import { call, cleanupHook, OMP_STARTUP_MS } from "@legion/pi-shared/test/omp-harness";
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
 import {
   ARCHITECT_TOPIC,
   BOUND_MS,
@@ -92,6 +95,10 @@ import {
 // each is a step of the pane's one cleanup list, whose steps run one after another (`cleanupHook`).
 cleanupHook(afterEach, [cleanup], 3);
 
+/** Where each pane's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("legion-stall-watchdog-omp");
+
 /** A directory of one case's own: the claim's state directory, or where a cell writes the pid of
  * the child it started. The maker is made here rather than in `stall-watchdog-pane.ts`, because
  * it registers its own `afterEach` where it is called and Bun evaluates an imported module once
@@ -105,6 +112,7 @@ test.skipIf(skip)(
     const pidFile = path.join(scratchDir("child-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-child",
+      scratch,
       stateDir: state,
       reply: warmedWedge(pidFile, { goOn: false }, "The call came back."),
     });
@@ -184,6 +192,7 @@ test.skipIf(skip)(
     const pidFile = path.join(scratchDir("abort-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-abort",
+      scratch,
       stateDir: state,
       reply: warmedWedge(pidFile, { goOn: true }, "Noted; I will do something else."),
     });
@@ -253,6 +262,7 @@ test.skipIf(skip)(
       const pidFile = path.join(scratchDir(`${name}-pid`), "child.pid");
       const pane = await startPane({
         name,
+        scratch,
         stateDir: state,
         denyAbort: true,
         // Warmed, as every case whose cell must outlive the first step is: a kernel this call
@@ -337,6 +347,7 @@ test.skipIf(skip)(
     const pidFile = path.join(scratchDir("unreadable-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-unreadable",
+      scratch,
       stateDir: state,
       denyAbort: true,
       reply: warmedWedge(pidFile, { goOn: true }, "Noted."),
@@ -367,6 +378,7 @@ test.skipIf(skip)(
     const pidFile = path.join(scratchDir("control-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-control",
+      scratch,
       stateDir: state,
       reply: (index) =>
         index === 1
@@ -414,6 +426,7 @@ test.skipIf(skip)(
     const state = scratchDir("runner-state");
     const pane = await startPane({
       name: "stall-runner",
+      scratch,
       stateDir: state,
       // The first cell starts the kernel and returns, so the second cell's runner is older than
       // the call that wedges: the one process rule 3 of `src/stall-recovery.ts` may end, and the
@@ -472,6 +485,7 @@ test.skipIf(skip)(
     const pidFile = path.join(scratchDir("steer-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-steer",
+      scratch,
       stateDir: state,
       // The delivery lands as the wedging cell begins, which is where a message from this
       // worker's architect lands while its turn is parked in a call (steerExtension).
@@ -534,6 +548,7 @@ test.skipIf(skip)(
     const pidFile = path.join(scratchDir("background-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-background",
+      scratch,
       stateDir: state,
       // Three things make this case able to fail, and each is here for that alone. **The
       // steer**, because a plain shell call is backgrounded on its own only after about a

@@ -21,6 +21,7 @@ import {
   startupDeadline,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { readCardLines } from "../test/card-entries";
@@ -55,6 +56,10 @@ const RELAY_STREAM = "card-delivery-stream";
 
 const cleanup: Cleanup = [];
 cleanupHook(afterEach, [cleanup]);
+
+/** Where each case's scratch root is made (`ompRoot`): reserved below the `cleanupHook` above,
+ *  so the fixture's `afterAll` removes it after every omp of the file has ended. */
+const scratch = temporaryDirectory("card-delivery-omp");
 
 /** A Messages request's conversation, as one string to find texts and their order in. */
 function conversation(request: Request): string {
@@ -230,7 +235,7 @@ async function startSession(
 ): Promise<CardSession> {
   const { config = [], holdStartup = false, holdSetup = false } = options;
   const { binary, nats } = setup();
-  const { root, home, workspace, sessions } = await ompRoot(binary, "card-delivery-omp-", cleanup);
+  const { root, home, workspace, sessions } = await ompRoot(binary, scratch, "card-delivery-omp-");
 
   let startupHold = holdStartup ? Promise.withResolvers<void>() : undefined;
   const releaseStartup = startupHold?.resolve ?? (() => undefined);
