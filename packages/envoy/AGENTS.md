@@ -713,7 +713,7 @@ A history that does not decode there, a log served merged among them, fails the 
 the room is not published, and its next access loads it afresh.
 Compaction (`compactRoom`) folds a document's rows at or below its fold point into that row, which then holds their state, and deletes the rows below it.
 The fold point is the newest row at or below the head older than two minutes on the database's clock (`compactTail`), so a row younger than that is left as written, byte for byte.
-It reads on its own two-connection pool (`store.Pool.Compaction`, `application_name` `dispatch-compaction <identity>`) in one repeatable-read transaction, folds with no document lock held - from memory once that transaction ends when the rows total at most 32 MiB, streaming inside it otherwise - and then takes the document's lock on a connection of the same pool (`lockRoom`) for a short write.
+It reads on its own two-connection pool (`store.Pool.Compaction`, `application_name=dispatch-compaction`) in one repeatable-read transaction, folds with no document lock held - from memory once that transaction ends when the rows total at most 32 MiB, streaming inside it otherwise - and then takes the document's lock on a connection of the same pool (`lockRoom`) for a short write.
 That write checks the rows at or below the fold point are the ones it folded, version for version and xmin for xmin, and drops the fold when a prune, a rebuild, a delete or another compaction changed them, or when it had to finish a stranded prune first.
 The folded row's `content_changed` says whether any row it folded past the latest version's cursor, read inside that write, changed content.
 Three paths compact, all under that tail rule and none on a request goroutine:
@@ -1032,7 +1032,6 @@ every edit is appended under the document's advisory lock, Yjs updates commute, 
 Each process holds its own room for a document, and `docs/room_sync.go` with `docs/room_catch_up.go` is how the rooms follow each other.
 Room sync holds two connections of its own beside the pools: the process's shared LISTEN connection (`pglisten.Hub`, which `cmd/dispatch` names `dispatch-listener
 <ProcessID>`), and a NOTIFY sender (`roomSyncSender`), which a request inside a transaction of the shared pool sends through without a second pooled connection (`store.ErrNestedAcquire`).
-`cmd/dispatch` makes `ProcessID` the process's identity (`store.Pool.Identity`, `docs.Deps.ProcessID`), which every other connection of the process carries at the end of its `application_name` too, so a standby that takes the publisher hold over from a frozen process ends these two connections with the rest.
 The members are the processes whose listener connection carries that name in `pg_stat_activity` (`roomSyncMembers`).
 A process that stops loses its connection and leaves, so membership needs no heartbeat and nothing to collect.
 
