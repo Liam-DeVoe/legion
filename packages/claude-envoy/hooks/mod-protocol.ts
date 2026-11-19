@@ -570,7 +570,7 @@ function quotedUnread(message: ModUnreadMessage, fence: string): string {
  * card opens or closes. The messages before a card in this prompt hold other authors' words too,
  * so each card's blocks take their tags again against everything in front of them
  * (`TextInFront`, which gives each card the text `inFront` of all in front of it gives, and scans
- * each message once for the names of the blocks rather than the whole prompt again at each card):
+ * each message once for the tags it holds rather than the whole prompt again at each card):
  * a person's message holding `<answer by='…'>` then opens no element of the tag of the answer
  * block of a card after it. Where nothing in front holds such a tag, the card is quoted exactly
  * as it came.

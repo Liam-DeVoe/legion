@@ -1187,23 +1187,38 @@ export function inboundTimestamp(milliseconds: number | undefined): string {
 /** A value that starts as an RFC 3339 time does. */
 const TIME = /^\d{4}-\d{2}-\d{2}T/;
 
-/** One key of a payload path such as `catch_up.kept.decisions[1].answer`: a field's name, or the
- *  index of a list's item in brackets. */
+/** A segment of a words path (`WORDS_PATH`): a field's name that holds no `.`, `[`, `]`, white
+ *  space, control character, `<`, `>`, `"`, `'` or `&`. */
+const PATH_SEGMENT = /^[^.[\]\s\p{Cc}<>"'&]+$/u;
+
+/** A key of a daemon payload's `words` object: the path of a field in the payload, its segments
+ *  (`PATH_SEGMENT`) joined by `.`, each followed by the index of a list's item in brackets for
+ *  each list the path enters there, as `summary` or `catch_up.kept.decisions[1].answer`. */
+const WORDS_PATH =
+  /^[^.[\]\s\p{Cc}<>"'&]+(?:\[(?:0|[1-9][0-9]*)\])*(?:\.[^.[\]\s\p{Cc}<>"'&]+(?:\[(?:0|[1-9][0-9]*)\])*)*$/u;
+
+/** One key of a words path (`WORDS_PATH`): a field's name, or the index of a list's item in
+ *  brackets. */
 const PATH_KEY = /([^.[\]]+)|\[(\d+)\]/g;
 
 /**
  * What a card shows of a notice or a role message of the Legion daemon published as an object:
  * its fields in the payload's key order, and a block for each field that holds another author's
- * words. The payload's `words` object names those fields by their path in the payload (`summary`,
- * `catch_up.kept.decisions[1].answer`) with their author and time (`texts.WordsPaths`,
- * packages/daemon/internal/texts/words.go). Each such field leaves the fields for a block of its
- * own, in the payload's order, and `words` itself is not shown. A path whose field the payload
- * leaves out, as a stand-in the bus took with its long fields dropped leaves out an answer, draws
- * a block with no words after those, with its entry's mark that more follows. A block names the
- * author and the time only where no field of the objects that hold the words names them. A `role`
- * that names the reader (the card's topic ends in `-<role>`) is not shown: the reader knows its
- * own role. A payload with no `words` object, as a daemon before that object writes, shows every
- * field.
+ * words. The payload's `words` object names those fields by their path in the payload
+ * (`WORDS_PATH`: `summary`, `catch_up.kept.decisions[1].answer`) with their author and time
+ * (`texts.WordsPaths`, packages/daemon/internal/texts/words.go). Each such field, a string,
+ * leaves the fields for a block of its own, in the payload's order, and `words` itself is not
+ * shown. The block's name is the field's name with each character a tag's name cannot hold
+ * written as `_` (`blockName`), so a block takes a tag of its own, and its `field` attribute gives
+ * the path where that name is not the path. A path whose field the payload leaves out, as a
+ * stand-in the bus took with its long fields dropped leaves out an answer, draws a block with no
+ * words after those, with its entry's mark that more follows. A block names the author and the
+ * time only where no field of the objects that hold the words names them. A `role` that names the
+ * reader (the card's topic ends in `-<role>`) is not shown: the reader knows its own role. A
+ * payload with no `words` object, as a daemon before that object writes, shows every field, and
+ * so does a payload whose `words` object has a key that is no path, or whose path names a list's
+ * item or a field that holds no string: the daemon writes no such key, and its words have no
+ * block to go in.
  */
 function daemonFields(
   payload: Readonly<Record<string, unknown>>,
@@ -1213,10 +1228,9 @@ function daemonFields(
   const paths = isObject(named) && !Array.isArray(named) ? named : undefined;
   // `Object.fromEntries` defines each key as an own field, `__proto__` too: JSON.parse makes it an
   // own key, and an assignment would take it as the object's prototype.
-  const root = Object.fromEntries(
+  const visible = Object.fromEntries(
     Object.entries(payload).filter(
       ([key, value]) =>
-        !(key === "words" && paths !== undefined) &&
         !(
           key === "role" &&
           typeof value === "string" &&
@@ -1224,13 +1238,24 @@ function daemonFields(
         )
     )
   );
-  if (paths === undefined) return { fields: root, words: [] };
+  const every = { fields: visible, words: [] };
+  if (paths === undefined) return every;
+  const keyed: (readonly [string, readonly (string | number)[]])[] = [];
+  for (const path of Object.keys(paths)) {
+    if (!WORDS_PATH.test(path)) return every;
+    keyed.push([
+      path,
+      Array.from(path.matchAll(PATH_KEY), ([, key, index]) => key ?? Number(index)),
+    ]);
+  }
+  const root = Object.fromEntries(Object.entries(visible).filter(([key]) => key !== "words"));
   const taken: TakenWords[] = [];
   const fields = withoutWords(root, "", paths, [], taken);
-  for (const path of Object.keys(paths)) {
-    const keys = Array.from(path.matchAll(PATH_KEY), ([, key, index]) => key ?? Number(index));
+  const found = new Set(taken.map(({ path }) => path));
+  for (const [path, keys] of keyed) {
+    if (found.has(path)) continue;
     const name = keys.at(-1);
-    if (typeof name !== "string" || fieldAt(root, keys).found !== undefined) continue;
+    if (typeof name !== "string" || fieldAt(root, keys).found !== undefined) return every;
     taken.push({ path, name, text: "", holders: fieldAt(fields, keys).holders });
   }
   const words = taken.map(({ path, name, text, holders }): NamedWords => {
@@ -1247,19 +1272,29 @@ function daemonFields(
           !Number.isNaN(time) &&
           Date.parse(value) === time)
     );
+    const block = blockName(name);
     return {
-      name,
+      name: block,
       words: {
         text,
         by: typeof by === "string" && !shown.includes(by) ? by : undefined,
         at: typeof at === "string" && !timeShown ? at : undefined,
-        field: path === name ? undefined : path,
+        field: path === block ? undefined : path,
         rest: typeof rest === "number" && Number.isInteger(rest) ? rest : undefined,
         more: more === true,
       },
     };
   });
   return { fields, words };
+}
+
+/** The name of the block of the field `name`, a segment of a words path (`PATH_SEGMENT`): `name`
+ *  with each character that is no ASCII letter, digit or `_` written as `_`, and a `_` before a
+ *  leading digit. That is a name a tag can have (`wordsBlocks`), and it holds no `-`, which joins
+ *  a tag's suffix to its name, so no block's name is another block's tag with a suffix. */
+function blockName(name: string): string {
+  const written = name.replace(/[^A-Za-z0-9_]/gu, "_");
+  return /^[0-9]/.test(written) ? `_${written}` : written;
 }
 
 /** The objects along `keys` in `value`, from `value` to the object of the last key, and the value
@@ -1278,7 +1313,8 @@ function fieldAt(
   return { holders, found: at };
 }
 
-/** A field that holds another author's words, taken out of a daemon payload's fields. */
+/** A field that holds another author's words, taken out of a daemon payload's fields: its path,
+ *  its name (the path's last segment), and its words. */
 interface TakenWords {
   readonly path: string;
   readonly name: string;
@@ -1288,25 +1324,34 @@ interface TakenWords {
 }
 
 /** `value`, whose path in the payload is `path`, less each string field that `paths` names,
- *  each of which goes to `taken`. `holders` are the objects that hold `value`. */
+ *  each of which goes to `taken`. `path` is undefined where no words path reaches `value`, as
+ *  below a field whose name is no segment of one (`PATH_SEGMENT`). `holders` are the objects
+ *  that hold `value`. */
 function withoutWords(
   value: unknown,
-  path: string,
+  path: string | undefined,
   paths: Readonly<Record<string, unknown>>,
   holders: readonly Readonly<Record<string, unknown>>[],
   taken: TakenWords[]
 ): unknown {
   if (Array.isArray(value)) {
     return value.map((item, index) =>
-      withoutWords(item, `${path}[${index}]`, paths, holders, taken)
+      withoutWords(
+        item,
+        path === undefined ? undefined : `${path}[${index}]`,
+        paths,
+        holders,
+        taken
+      )
     );
   }
   if (!isObject(value)) return value;
   const kept: Record<string, unknown> = {};
   const chain = [...holders, kept];
   for (const [key, item] of Object.entries(value)) {
-    const at = path === "" ? key : `${path}.${key}`;
-    if (typeof item === "string" && Object.hasOwn(paths, at)) {
+    let at: string | undefined;
+    if (path !== undefined && PATH_SEGMENT.test(key)) at = path === "" ? key : `${path}.${key}`;
+    if (typeof item === "string" && at !== undefined && Object.hasOwn(paths, at)) {
       taken.push({ path: at, name: key, text: item, holders: chain });
     } else {
       // Defined, not assigned: an assignment of `__proto__` would set the prototype of `kept`.

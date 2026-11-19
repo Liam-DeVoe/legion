@@ -4,5 +4,7 @@ body: |-
   roles each appear once, and a direct card reads `to: you`. Another author's words (a person's, a
   session's, a worker's summary, a suggested replacement) come in a block of their own after the
   card's fields, which those words can neither open nor close, and which nothing before them, the
-  card's own fields included, opens or closes. A Dispatch card keeps its reply command. Each plugin
-  notice states the fields of its kind.
+  card's own fields included, opens or closes. A notice's `words` key draws a block only where it is
+  the path of a field the notice holds, under a tag of its own; a notice whose keys break that
+  shows its fields with no block. A Dispatch card keeps its reply command. Each plugin notice
+  states the fields of its kind.

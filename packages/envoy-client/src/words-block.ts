@@ -43,6 +43,7 @@ export interface Words {
 
 /** One block of a text: the name of the field that holds the words, and the words. */
 export interface NamedWords {
+  /** A name a tag can have (`TAG_NAME`): a letter or `_`, then letters, digits and `_`. */
   readonly name: string;
   readonly words: Words;
 }
@@ -69,8 +70,14 @@ export interface SplitText {
 /** The blocks of one text, in their order, each joined to the next by one new line, that follow
  *  `before`: the whole of the text ahead of them, such as a card's fields, which the caller joins
  *  to the first block with one new line. Each block takes the tag the rule gives it against
- *  `before` and the words of every block (`blockTags`). */
+ *  `before` and the words of every block (`blockTags`). A block whose name no tag can have
+ *  (`TAG_NAME`) throws, since what a text holds of tags is read as the runs of the characters of
+ *  a tag's name (`HeldTags`). */
 export function wordsBlocks(before: string, blocks: readonly NamedWords[]): string {
+  for (const { name } of blocks) {
+    if (!TAG_NAME.test(name))
+      throw new Error(`a block's name is no tag name: ${JSON.stringify(name)}`);
+  }
   const tags = blockTags(
     new HeldTags([before]),
     [],
@@ -123,11 +130,11 @@ export function inFront(parts: readonly string[], text: string): string {
  * card as it was drawn there included, so the text is byte for byte the one that joining each
  * part and taking `inFront([text so far], card)` for each card gives.
  *
- * What that draw scans the text before a card for is the tags of the names the card's blocks
- * have, and all that a part or a card adds to it is its own text. So the text keeps, for each
- * name a block has had, the tags of that name it holds: a name is scanned for over the text once,
- * when a block first has it, and each part and card after that is scanned for it on its own. The
- * whole is drawn in time linear in its length for each name its cards' blocks have, where taking
+ * What that draw scans the text before a card for is the tags the card's blocks could take, and
+ * all that a part or a card adds to it is its own text. So the text keeps what it holds of tags
+ * (`HeldTags`): each part and card is scanned once, when it is joined, whatever the names of the
+ * blocks after it, and each block's tag is a lookup of its name in what was kept. The whole is
+ * drawn in time linear in its length however many names its cards' blocks have, where taking
  * `inFront` of the text so far for each card scans all of it again at every card, every earlier
  * card's words included.
  */
@@ -228,64 +235,141 @@ function drawBlock(tag: string, attributes: string, text: string): string {
 }
 
 /**
- * A text in pieces, and for each name it was asked of, the suffixes whose tags it holds
- * (`holdSuffixes`) and the least suffix it may not hold: it holds every suffix below that one. A
- * name is scanned for over every piece when it is first asked of, and each piece added after that
- * is scanned for every name asked of so far, so no piece is scanned twice for one name. A piece is
- * scanned on its own, which finds what the joined text holds, since a tag holds no new line.
+ * A text in pieces, and what it holds of tags: for each name, whether it holds `<name` or
+ * `</name`, and each n for which it holds `<name-n` or `</name-n`. A tag's name is a run of the
+ * characters [A-Za-z0-9_], so the text holds `<name` or `</name` where the name starts the
+ * longest run of them that follows a `<` or a `</`, and `<name-n` or `</name-n` where that run is
+ * the name and no more and is followed by `-` and digits that start with the digits of n, with no
+ * leading zero: `<answer-12` holds the tags of `a`, `an` and on to `answer`, and `answer-1` and
+ * `answer-12`. The runs are kept in a trie of their characters (`HeldName`), so each piece is
+ * scanned once, when it is added, whatever the names asked of after, and what the text holds of
+ * the tags of a name is a walk of the name's characters. A piece is scanned on its own, which
+ * finds what the joined text holds, since a tag holds no new line.
  */
 class HeldTags {
-  readonly texts: string[];
-  readonly #names = new Map<string, { readonly suffixes: Set<number>; least: number }>();
+  readonly texts: string[] = [];
+  readonly #runs: HeldName = { next: undefined, suffixes: undefined, least: 0 };
 
   constructor(texts: readonly string[]) {
-    this.texts = [...texts];
+    for (const text of texts) this.add(text);
   }
 
-  /** Adds `text` after the pieces, scanned for every name asked of so far. */
+  /** Adds `text` after the pieces, and what it holds of tags. One pass over `text`. */
   add(text: string): void {
     this.texts.push(text);
-    for (const [name, held] of this.#names) holdSuffixes(held.suffixes, name, text);
+    for (let at = text.indexOf("<"); at !== -1; at = text.indexOf("<", at)) {
+      at++;
+      if (text.charCodeAt(at) === SLASH) at++;
+      let held = this.#runs;
+      for (; at < text.length && isNameUnit(text.charCodeAt(at)); at++) {
+        const unit = text.charCodeAt(at);
+        held.next ??= new Map();
+        let next = held.next.get(unit);
+        if (next === undefined) {
+          next = { next: undefined, suffixes: undefined, least: 1 };
+          held.next.set(unit, next);
+        }
+        held = next;
+      }
+      if (held === this.#runs || text.charCodeAt(at) !== DASH) continue;
+      let suffix = 0;
+      for (let index = at + 1; index < text.length; index++) {
+        const digit = text.charCodeAt(index) - 48;
+        // A tag's suffix has no leading zero, so `-0` holds none.
+        if (digit < 0 || digit > 9 || (suffix === 0 && digit === 0)) break;
+        suffix = suffix * 10 + digit;
+        if (suffix > SUFFIX_CAP) break;
+        held.suffixes ??= new Set();
+        held.suffixes.add(suffix);
+      }
+    }
   }
 
-  /** What the text holds of the tags of `name`. */
-  of(name: string): { readonly suffixes: ReadonlySet<number>; readonly least: number } {
-    let held = this.#names.get(name);
-    if (held === undefined) {
-      held = { suffixes: new Set(), least: 0 };
-      for (const text of this.texts) holdSuffixes(held.suffixes, name, text);
-      this.#names.set(name, held);
+  /** What the text holds of the tags of `name`: undefined where it holds none. */
+  of(name: string): HeldName | undefined {
+    let held: HeldName | undefined = this.#runs;
+    for (let index = 0; held !== undefined && index < name.length; index++) {
+      held = held.next?.get(name.charCodeAt(index));
     }
-    while (held.suffixes.has(held.least)) held.least++;
-    return held;
+    return held === this.#runs ? undefined : held;
   }
+}
+
+/** A node of the trie of `HeldTags`: the name that a run the text holds starts with, whose own
+ *  tag, suffix 0, the text therefore holds. */
+interface HeldName {
+  /** The node of each character that follows the name in a run the text holds. */
+  next: Map<number, HeldName> | undefined;
+  /** Each n of a `-n` that follows a run that is the name and no more. */
+  suffixes: Set<number> | undefined;
+  /** A suffix every one below which the text holds: one at least, since it holds suffix 0. */
+  least: number;
+}
+
+/** `/`, which a closing tag's `</` holds. */
+const SLASH = 0x2f;
+/** `-`, which joins a tag's suffix to its name. */
+const DASH = 0x2d;
+
+/** Whether `unit` is a character a tag's name holds: [A-Za-z0-9_]. */
+function isNameUnit(unit: number): boolean {
+  return (
+    (unit >= 0x30 && unit <= 0x39) ||
+    (unit >= 0x41 && unit <= 0x5a) ||
+    (unit >= 0x61 && unit <= 0x7a) ||
+    unit === 0x5f
+  );
+}
+
+/** Whether `held`, what a text holds of the tags of one name, holds the tag of `suffix`. */
+function holds(held: HeldName | undefined, suffix: number): boolean {
+  return held !== undefined && (suffix === 0 || held.suffixes?.has(suffix) === true);
+}
+
+/** The least suffix whose tag `held`, what a text holds of the tags of one name, may not hold:
+ *  it holds the tag of every suffix below this one. */
+function leastFree(held: HeldName | undefined): number {
+  if (held === undefined) return 0;
+  while (held.suffixes?.has(held.least) === true) held.least++;
+  return held.least;
 }
 
 /** The tag of each of `blocks`, the blocks of one text in their order, behind `front`, the text
  *  in front of that one, where `beside` is the rest of that text: the first of `name`, `name-1`,
  *  `name-2` and on whose `<tag` and `</tag` neither `front`, nor a text of `beside`, nor the
- *  words of any block hold, and that no earlier block took. A text is scanned on its own, which
- *  finds what the joined text holds, since a tag holds no new line. */
+ *  words of any block hold, and that no earlier block took. Each text here is scanned once, and
+ *  each block's tag is a lookup of its name in what `front` and these texts hold. */
 function blockTags(
   front: HeldTags,
   beside: readonly string[],
   blocks: readonly { readonly name: string; readonly text: string }[]
 ): string[] {
-  const texts = [...beside, ...blocks.map(({ text }) => text)];
-  // For each name, the suffixes these texts hold or a block took, and the least that may be
-  // free: every suffix below it is held, in front or here, or taken.
-  const named = new Map<string, { readonly suffixes: Set<number>; next: number }>();
+  const here = new HeldTags([...beside, ...blocks.map(({ text }) => text)]);
+  // For each name, what the text in front and the texts here hold of its tags, the suffixes a
+  // block took, and the least that may be free: every suffix below it is held, in front or here,
+  // or taken.
+  const named = new Map<
+    string,
+    {
+      readonly ahead: HeldName | undefined;
+      readonly held: HeldName | undefined;
+      readonly taken: Set<number>;
+      next: number;
+    }
+  >();
   return blocks.map(({ name }) => {
-    const held = front.of(name);
     let own = named.get(name);
     if (own === undefined) {
-      own = { suffixes: new Set(), next: held.least };
-      for (const text of texts) holdSuffixes(own.suffixes, name, text);
+      const ahead = front.of(name);
+      const held = here.of(name);
+      own = { ahead, held, taken: new Set(), next: Math.max(leastFree(ahead), leastFree(held)) };
       named.set(name, own);
     }
-    while (held.suffixes.has(own.next) || own.suffixes.has(own.next)) own.next++;
+    while (holds(own.ahead, own.next) || holds(own.held, own.next) || own.taken.has(own.next)) {
+      own.next++;
+    }
     const suffix = own.next;
-    own.suffixes.add(suffix);
+    own.taken.add(suffix);
     return suffix === 0 ? name : `${name}-${suffix}`;
   });
 }
@@ -295,28 +379,6 @@ function blockTags(
  *  unit of the text and each one taken a block. No text comes near this many units, so no suffix
  *  a block could take lies past it, and stopping here keeps every number exact. */
 const SUFFIX_CAP = Number.MAX_SAFE_INTEGER;
-
-/** Adds to `held` the suffixes of `name` whose tags `text` holds: 0 where it holds `<name` or
- *  `</name`, and n where it holds `<name-n` or `</name-n`, so `<answer-12` holds 0, 1 and 12. One
- *  scan of `text` for each of the two marks, so the time is linear in its length. */
-function holdSuffixes(held: Set<number>, name: string, text: string): void {
-  for (const mark of [`<${name}`, `</${name}`]) {
-    for (let at = text.indexOf(mark); at !== -1; at = text.indexOf(mark, at + mark.length)) {
-      held.add(0);
-      const dash = at + mark.length;
-      if (text[dash] !== "-") continue;
-      let suffix = 0;
-      for (let index = dash + 1; index < text.length; index++) {
-        const digit = text.charCodeAt(index) - 48;
-        // A tag's suffix has no leading zero, so `-0` holds none.
-        if (digit < 0 || digit > 9 || (suffix === 0 && digit === 0)) break;
-        suffix = suffix * 10 + digit;
-        if (suffix > SUFFIX_CAP) break;
-        held.add(suffix);
-      }
-    }
-  }
-}
 
 /** One attribute of an opening tag, with its value escaped. */
 function attribute(key: string, value: string): string {
@@ -343,6 +405,8 @@ function attribute(key: string, value: string): string {
   return ` ${key}="${escaped}"`;
 }
 
+/** A name a tag can have, which the tag of an opening line (`OPENING`) starts with. */
+const TAG_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const OPENING = /^<([A-Za-z_][A-Za-z0-9_]*)(?:-([1-9][0-9]*))?((?: [a-z]+="[^"<>]*")*)>$/;
 const ATTRIBUTE = / ([a-z]+)="([^"<>]*)"/g;
 const ATTRIBUTE_ORDER = ["by", "at", "field", "rest", "more"] as const;

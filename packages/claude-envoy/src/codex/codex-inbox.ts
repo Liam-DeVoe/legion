@@ -192,8 +192,8 @@ export async function takeInbox(
  *  theirs, since Codex frames hook text as an instruction rather than as something a person
  *  typed. The messages before a card hold other authors' words, so the card's blocks take their
  *  tags again against everything in front of them (`TextInFront`, which gives each card the text
- *  `inFront` of all in front of it gives, and scans each message once for the names of the
- *  blocks rather than the whole text again at each card): nothing ahead of a block opens or
+ *  `inFront` of all in front of it gives, and scans each message once for the tags it holds
+ *  rather than the whole text again at each card): nothing ahead of a block opens or
  *  closes its tag. Where nothing ahead holds such a tag, the card is quoted exactly as it came. */
 export function inboxContext(items: readonly CodexInboxItem[]): string {
   const context = new TextInFront(

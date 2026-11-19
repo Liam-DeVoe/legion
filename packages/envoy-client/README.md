@@ -41,14 +41,20 @@ message's words follow the fields whole in a `<message>` block, JSON text too, s
 message reads as a field of the card. A notice or role message of the Legion daemon
 (`from: agent`) keeps its `<kind> on <KEY>` summary and shows its payload's fields as lines under
 `message`, in the payload's order. It leaves out a `role` that names the reader, whose topic ends
-in `-<role>`. Each field that the payload's `words` object names, by its path in the payload, is
-drawn in a block with the author and the time `words` gives, and `words` itself is not shown. A
-path whose field the payload leaves out (a stand-in the bus took with its long fields dropped)
-draws a block with no words and the entry's `more` or `rest`. A payload with no `words` shows
-every field. A role message the daemon publishes as text (the hook prompt) follows the fields in a
-`<message>` block. A card that is not the daemon's notes `body names session <id>` for a session
-that its summary or payload names and its fields do not, other than the sender, the reader and
-the author of an ask. Unknown sources or fields are marked with `unrecognised`.
+in `-<role>`. Each field that the payload's `words` object names, by its path in the payload
+(`summary`, or `kept[1].answer` for a field inside a list), is drawn in a block with the author
+and the time `words` gives, and `words` itself is not shown. The block's name is the field's name
+with each character other than an ASCII letter, a digit or `_` written as `_`, and `_` before a
+leading digit, and its `field` attribute gives the path where that name is not the path. A path
+whose field the payload leaves out (a stand-in the bus took with its long fields dropped) draws a
+block with no words and the entry's `more` or `rest`. A payload with no `words` shows every
+field, and so does one whose `words` has a key that is no path (a segment holds `.`, `[`, `]`,
+white space, a control character, `<`, `>`, `"`, `'` or `&`) or whose path names a list's item or
+a field that holds no string. A role message the daemon publishes as text (the hook prompt)
+follows the fields in a `<message>` block. A card that is not the daemon's notes
+`body names session <id>` for a session that its summary or payload names and its fields do not,
+other than the sender, the reader and the author of an ask. Unknown sources or fields are marked
+with `unrecognised`.
 
 A block (`@legion/envoy-client/words-block`) applies the rule of the daemon's texts (`texts.Render`
 and `texts.InFront`, `packages/daemon/internal/texts`): an opening tag, the words exactly as
@@ -59,19 +65,22 @@ words of any block of the card hold, and that no earlier block of the card took.
 other authors' words too (an ask's question, an issue's title in a catch-up), so nothing in the
 card opens or closes an element of a block's tag but that block, and two blocks never share a tag.
 `wordsBlocks(before, blocks)` draws all the blocks that follow `before` by that rule in one pass,
-in time linear in the text's length. `inFront(parts, text)` is what a host hands on when it puts
-lines or other messages in front of a card (the Codex inbox's hook text, claude-envoy's prompt at
-the rows a turn never read): the parts and the card joined by blank lines, with the card's blocks
-drawn again, attributes and words unchanged, under the tags the rule gives them against everything
-in front of them as well. Where nothing in front holds such a tag, and for a text with no block,
-that is the two joined as they are. A host that joins many cards one after another builds the
-text with `TextInFront` (`part` for a text it joins as it is, `card` for a card), which gives the
-same text as `inFront` called on each card with everything before it, and keeps the tags already
-held from one card to the next, so the whole text is drawn in time linear in its length (the
-Go daemon's `texts.InFront` reads a drawn block by the same rule, which
-`packages/daemon/internal/texts/testdata/in-front.json` holds both to). The opening tag carries
-`by`, `at`, `field`, `rest` and `more`, in that order and escaped, each only where it is set; a
-card sets `by` and `at` only where its own fields do not name the author and the time.
+in time linear in the text's length however many names the blocks have; a block's name is one a
+tag can have (`[A-Za-z_][A-Za-z0-9_]*`), and any other throws. Each text is scanned once for the
+run of those characters after each `<` and `</`, and each block's tag is a lookup of its name in
+what was found. `inFront(parts, text)` is what a host hands on when it puts lines or other
+messages in front of a card (the Codex inbox's hook text, claude-envoy's prompt at the rows a turn
+never read): the parts and the card joined by blank lines, with the card's blocks drawn again,
+attributes and words unchanged, under the tags the rule gives them against everything in front of
+them as well. Where nothing in front holds such a tag, and for a text with no block, that is the
+two joined as they are. A host that joins many cards one after another builds the text with
+`TextInFront` (`part` for a text it joins as it is, `card` for a card), which gives the same text
+as `inFront` called on each card with everything before it, and keeps the tags already held from
+one card to the next, so the whole text is drawn in time linear in its length however many names
+its cards' blocks have (the Go daemon's `texts.InFront` reads a drawn block by the same rule,
+which `packages/daemon/internal/texts/testdata/in-front.json` holds both to). The opening tag
+carries `by`, `at`, `field`, `rest` and `more`, in that order and escaped, each only where it is
+set; a card sets `by` and `at` only where its own fields do not name the author and the time.
 `splitWordsBlocks` splits a card, or a daemon text, into the part before its blocks, which TOON's
 `decode` reads, and the blocks, and checks each tag against the rule.
 
