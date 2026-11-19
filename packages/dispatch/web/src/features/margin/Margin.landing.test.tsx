@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the reader's wheel and the margin's own scroll events, which user-event has no form for
 import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { Margin } from "./Margin";
 import { MarginProvider } from "./margin-context";
@@ -21,6 +22,14 @@ import {
   stubMatchMedia,
 } from "./margin-fixture";
 import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
+
+// The reply composer the landing card opens (`MentionField`) draws again when the lazy Markdown
+// engine lands. A row that waits outside `act` - the scroll stream below waits a frame at a time -
+// would take that draw outside it whenever the engine lands late, which the cold lane makes every
+// time. So each row starts with the engine loaded, whatever ran before it.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const secondComment: Comment = {
   ...comment,
@@ -112,11 +121,15 @@ function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] =
 }
 
 /** One rendering frame. happy-dom runs animation frames as immediates, so this is one turn of the
- *  event loop - and a frame is the unit the hold's relayout window counts. */
+ *  event loop - and a frame is the unit the hold's relayout window counts. Inside `act`, as
+ *  `quiet` is, so whatever the reply composer draws in the frame - its field taking focus, a
+ *  timer of its own landing - draws inside it. */
 async function nextFrame(): Promise<void> {
-  const done = Promise.withResolvers<void>();
-  requestAnimationFrame(() => done.resolve());
-  await done.promise;
+  await act(async () => {
+    const done = Promise.withResolvers<void>();
+    requestAnimationFrame(() => done.resolve());
+    await done.promise;
+  });
 }
 
 /** Longer than the hold's relayout window, so what follows is judged on its own: whatever the
