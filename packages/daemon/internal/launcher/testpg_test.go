@@ -372,7 +372,7 @@ here='` + dir + `'
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$here/calls"
 if [ "$(basename "$0")" = psql ]; then
 	case "$*" in
-	*"create database"*) [ ! -e "$here/psql-fails" ] || { echo "psql: create database refused" >&2; exit 3; } ;;
+	*"strategy file_copy"*) [ ! -e "$here/psql-fails" ] || { echo "psql: the copy was refused" >&2; exit 3; } ;;
 	esac
 	exit 0
 fi
@@ -610,7 +610,7 @@ func TestCheckTestPostgresNamesAFailedStopAndTheServerItLeft(t *testing.T) {
 		t.Fatalf("the stand-in's server runs as %v, want the one ensure started, which the failed stop left", servers)
 	}
 	for _, want := range []string{
-		"the pod's own test database: psql -X -q " + TestPGDSN + " -c create database legion_probe_testpg strategy file_copy: exit status 3: psql: create database refused",
+		"the pod's own test database: psql -X -q " + TestPGDSN + " -c create database legion_probe_testpg strategy file_copy: exit status 3: psql: the copy was refused",
 		"; and the stop after it: the pod's own test database: " + testPGProgram + " stop: exit status 1: pg_ctl: could not send stop signal",
 		"; the pod's own test database: the server in " + filepath.Join(cluster, "data") + " still runs after the stop: pid " + strconv.Itoa(servers[0]) + " (sleep)",
 	} {
