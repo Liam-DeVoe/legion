@@ -308,3 +308,43 @@ func TestGhJSONGraphQLStringsReadOneFieldAtATime(t *testing.T) {
 		reports(t, refusal(t, err).Lines, "the gh call's field query: "+leakguardtest.PairClass)
 	})
 }
+
+// gh reaches GitHub's GraphQL endpoint under more spellings than the bare word `graphql`. Each
+// endpoint below answered a GraphQL query from the gh of an INFRA issue pod on 2026-11-19, and
+// GitHub parsed a mutation sent through `/graphql` and through `https://api.github.com/graphql`:
+// it answered "Could not resolve to a node" for the invented id, so it had decoded the literals.
+// gh sends the `query` field as the `query` member of the request body, which GitHub's GraphQL
+// parser decodes as it decodes one sent to `graphql`. So a query sent under any of these
+// spellings is read one literal at a time, as under `graphql`: the fixture's two words in two
+// literals pass, and a name written with an escape inside one literal is refused, from a `query=`
+// field and from an `--input` body alike.
+func TestGhJSONGraphQLEndpointSpellingsReadOneFieldAtATime(t *testing.T) {
+	apart := graphQLMutation("the "+leakguardtest.PairName+" notes", "a "+leakguardtest.PairWord+" aside")
+	escaped := graphQLMutation("the "+strings.Replace(leakguardtest.PairName, "l", `\u006c`, 1)+" and the "+leakguardtest.PairWord, "a clean body")
+	refusedWhole(t, apart)
+	if strings.Contains(escaped, leakguardtest.PairName) {
+		t.Fatalf("the query %q spells the name in its own bytes, so it proves nothing", escaped)
+	}
+	for _, endpoint := range []string{
+		"/graphql",
+		"graphql?x=1",
+		"/graphql?x=1",
+		"https://api.github.com/graphql",
+		"https://api.github.com/graphql?x=1",
+		"https://API.GITHUB.COM/graphql",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			t.Run("a query field", func(t *testing.T) {
+				cleared(t, ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "-f", "query=" + apart}}))
+				err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "-f", "query=" + escaped}})
+				reports(t, refusal(t, err).Lines, "the gh call's field query, GraphQL string 2: "+leakguardtest.PairClass)
+			})
+			t.Run("an --input body", func(t *testing.T) {
+				cleared(t, ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", fieldFile(t, "request.json", graphQLBody(t, apart))}}))
+				body := fieldFile(t, "request.json", graphQLBody(t, escaped))
+				err := ghFieldCall(t, GhRequest{Args: []string{"api", endpoint, "--input", body}})
+				reports(t, refusal(t, err).Lines, body+", JSON .query, GraphQL string 2: "+leakguardtest.PairClass)
+			})
+		})
+	}
+}
