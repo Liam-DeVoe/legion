@@ -78,7 +78,7 @@ test("Sparkbars colours a bar by the verdict its caller hands it and not by wher
   render(
     <Sparkbars
       format={asNumber}
-      judged={{ eval: "deploy-frequency", statistic: "deploys.per_day" }}
+      judged={{ evalSlug: "deploy-frequency", statistic: "deploys.per_day" }}
       max={0}
       points={judgedElsewhere}
       target={20}
@@ -223,7 +223,7 @@ test("SpreadBars gives each of a day's two bars its own verdict: a neutral p90 b
     <SpreadBars
       days={apart}
       format={asMinutes}
-      judged={{ eval: "merge-to-production", series: "minutes" }}
+      judged={{ evalSlug: "merge-to-production", series: "minutes" }}
       noun="PRs"
       target={45}
     />

@@ -3,6 +3,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { wholeText } from "../../__tests__/whole-text";
 import type { DeliveryDailyPoint, DeliveryMeasuresResponse } from "../../api/types";
 import {
   chartBar,
@@ -235,11 +236,6 @@ function cellTones(day: string): Record<string, string> {
   return tonesIn(row, "day");
 }
 
-/** Finds the element whose whole text is `text`, the figures inside it included. */
-function wholeText(text: string): (content: string, element: Element | null) => boolean {
-  return (_, element) => element?.textContent === text;
-}
-
 /** The evals the elements within `scope` that name a statistic name (`data-eval`), each once. */
 function evalsIn(scope: Element): string[] {
   return [
@@ -304,7 +300,8 @@ test("the panel shows the six KPI cards, each with its badge, number and target"
   // target puts the median under it: the caption names the longest change alone, as before.
   expect(merge.getByText("target < 45m for every change")).toBeDefined();
 
-  // The median is the judged statistic, so it takes the verdict's tone, and the p90 reads plain.
+  // The median is the judged statistic and is toned by its own value: 5.5h misses under 60m. The
+  // p90 reads plain.
   const opened = within(card("PR open \u2192 merge"));
   expect(opened.getByText("5.5h").className).toContain(dangerText);
   expect(opened.getByText("7.7h").className).toContain(textPrimaryOnSurface);
@@ -511,23 +508,10 @@ test("a figure whose statistic the target does not judge takes no tone, whatever
 // that verdict and the headline figure reads plain. Under the catalogue's judges each headline
 // figure is the statistic judged, and is toned by its own value.
 test("a headline figure its target does not judge takes no tone: the per-deploy rate judged by the per-PR rate, deploys a day judged by the deploys with a PR", () => {
-  const failureRate: DeliveryMeasuresResponse["measures"]["change_failure_rate"] = {
-    per_pr: { confirmed: 2, pending: 0, rejected: 0, reverts: 0, total: 5, rate: 0.4 },
-    per_deploy: {
-      confirmed: 1,
-      pending: 1,
-      rejected: 0,
-      reverts: 0,
-      total: 50,
-      rate: 0.02,
-      confirmed_or_pending: 2,
-      upper_bound_rate: 0.04,
-    },
-  };
   renderPanel({
     ...fixtureMeasures,
     flags_source: "stored",
-    measures: { ...fixtureMeasures.measures, change_failure_rate: failureRate },
+    measures: { ...fixtureMeasures.measures, change_failure_rate: measuredFailureRate },
     targets: {
       ...catalogueTargets,
       change_failure_rate: { ...catalogueTargets.change_failure_rate, judges: ["per_pr.rate"] },
@@ -554,7 +538,7 @@ test("a headline figure its target does not judge takes no tone: the per-deploy 
   renderPanel({
     ...fixtureMeasures,
     flags_source: "stored",
-    measures: { ...fixtureMeasures.measures, change_failure_rate: failureRate },
+    measures: { ...fixtureMeasures.measures, change_failure_rate: measuredFailureRate },
     status: { ...fixtureMeasures.status, change_failure_rate: true },
   });
   expect(within(card("Change failure rate")).getByText("2.00%").className).toContain(successText);

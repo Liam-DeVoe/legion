@@ -196,42 +196,44 @@ export type Span = "day" | "window";
 /** The statistics a day's value is judged of, each a rate or a quantile of that day's own
  *  samples. A count or a sum (`minutes.n`, `runs.concluded`, `deploys.deploys`) judges the
  *  window's total, which no day is a share of, so no day's value of it is judged. */
-const DAY_STATISTICS: Readonly<Partial<Record<string, true>>> = {
-  "deploys.per_day": true,
-  "runs.rate": true,
-  "minutes.median": true,
-  "minutes.p90": true,
-  "minutes.max": true,
-} satisfies Partial<Record<Judge, true>>;
+const DAY_STATISTICS: ReadonlySet<string> = new Set<Judge>([
+  "deploys.per_day",
+  "runs.rate",
+  "minutes.median",
+  "minutes.p90",
+  "minutes.max",
+]);
+
+/** Whether target judges a day's value of statistic: it judges the statistic, and the statistic
+ *  is one a day's value is judged of (`DAY_STATISTICS`). A day's figure takes a tone, and a chart
+ *  draws its line, only where this holds. */
+function judgesDay(target: Target, statistic: string): boolean {
+  return DAY_STATISTICS.has(statistic) && judgesStatistic(target, statistic);
+}
 
 /** A figure's own verdict, which its tone follows: whether value, the figure's value of
  *  statistic over span, meets target (`meetsTarget`). Null, which tones the figure nothing, where
  *  the target is off or judges no such statistic, where the figure has no value, and for a day's
- *  value of a statistic no day is judged of (`DAY_STATISTICS`). No figure takes the card's
- *  badge, the server's verdict of every judged statistic at once: under a target of the longest
- *  change and the median a median figure is toned by its own median, and a p90 figure by
- *  nothing. */
+ *  value of a statistic no day is judged of (`judgesDay`). No figure takes the card's badge, the
+ *  server's verdict of every judged statistic at once: under a target of the longest change and
+ *  the median a median figure is toned by its own median, and a p90 figure by nothing. */
 export function ownVerdict(
   target: Target,
   statistic: string,
   span: Span,
   value: number | null
 ): boolean | null {
-  if (value === null || !judgesStatistic(target, statistic)) return null;
-  if (span === "day" && DAY_STATISTICS[statistic] !== true) return null;
-  return meetsTarget(value, target);
+  if (value === null) return null;
+  const judged = span === "day" ? judgesDay(target, statistic) : judgesStatistic(target, statistic);
+  return judged ? meetsTarget(value, target) : null;
 }
 
 /** Where a chart draws target's dashed line: exactly where its bars take a tone, the target's
- *  value where it judges one of `drawn`, the statistics the chart's bars draw, that a day's value
- *  is judged of (`ownVerdict`), whether or not any day has a value; undefined where it is off or
- *  judges none of them, since its value is then of a figure no bar draws. */
+ *  value where it judges a day's value of one of `drawn`, the statistics the chart's bars draw
+ *  (`judgesDay`), whether or not any day has a value; undefined where it is off or judges none of
+ *  them, since its value is then of a figure no bar draws. */
 export function targetLine(target: Target, drawn: readonly Judge[]): number | undefined {
-  return drawn.some(
-    (statistic) => DAY_STATISTICS[statistic] === true && judgesStatistic(target, statistic)
-  )
-    ? target?.value
-    : undefined;
+  return drawn.some((statistic) => judgesDay(target, statistic)) ? target?.value : undefined;
 }
 
 /** The statistics each chart's bars draw, a day's value of each: a day's deploys, which are its

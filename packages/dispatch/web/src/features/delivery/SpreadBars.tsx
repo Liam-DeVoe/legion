@@ -23,10 +23,11 @@ export interface SpreadBarDay {
 
 interface Props {
   days: readonly SpreadBarDay[];
-  // Where a target may judge the bars: the eval whose target it is and the series whose median and
-  // p90 the bars draw, which each bar names (`data-eval`, and `data-statistic` `<series>.median`
-  // or `<series>.p90`, with `data-span="day"`); omitted on a chart no eval judges.
-  judged?: { eval: string; series: string };
+  // Where a target may judge the bars: the slug of the eval whose target it is and the series
+  // whose median and p90 the bars draw, which each bar names (`data-eval`, and `data-statistic`
+  // `<series>.median` or `<series>.p90`, with `data-span="day"`); omitted on a chart no eval
+  // judges.
+  judged?: { evalSlug: string; series: string };
   // Omitted where no target exists: no target line.
   target?: number;
   noun: string; // what `n` counts, "runs"
@@ -87,7 +88,7 @@ export function SpreadBars({ days, judged, target, noun, format }: Props) {
                       ? chartBar.metFaint
                       : chartBar.missedFaint
                 }
-                data-eval={judged?.eval}
+                data-eval={judged?.evalSlug}
                 data-span={judged === undefined ? undefined : "day"}
                 data-statistic={judged === undefined ? undefined : `${judged.series}.p90`}
               />
@@ -103,7 +104,7 @@ export function SpreadBars({ days, judged, target, noun, format }: Props) {
                       ? chartBar.met
                       : chartBar.missed
                 }
-                data-eval={judged?.eval}
+                data-eval={judged?.evalSlug}
                 data-span={judged === undefined ? undefined : "day"}
                 data-statistic={judged === undefined ? undefined : `${judged.series}.median`}
               />

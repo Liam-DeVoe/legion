@@ -426,10 +426,9 @@ test("a lead-time card names and shows the statistics its target judges, whichev
     },
     status: { ...PIPELINE.status, opened_to_merge: true },
   });
-  const counted = card("opened_to_merge");
-  expect(counted.innerHTML).toContain("target count at least 2<");
+  expect(card("opened_to_merge").innerHTML).toContain("target count at least 2<");
   expect(judged("opened_to_merge")).toEqual(["Count today 1, 7 days 2"]);
-  expect(counted.querySelectorAll('svg[aria-label="per-day median and p90"] line')).toHaveLength(0);
+  expect(targetLines("opened_to_merge")).toBe(0);
   // A count judges the seven days' total, which no day is a share of: today's bars draw its
   // minutes, which the target does not judge, and read neutral.
   expect(todaysBars("opened_to_merge").map((bar) => bar.getAttribute("class"))).toEqual([

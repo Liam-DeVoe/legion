@@ -18,10 +18,10 @@ export interface SparkbarPoint {
 
 interface Props {
   points: SparkbarPoint[];
-  // Where a target may judge the bars: the eval whose target it is and the statistic each bar
-  // draws a day's value of, which every bar names (`data-eval`, `data-statistic`, with
+  // Where a target may judge the bars: the slug of the eval whose target it is and the statistic
+  // each bar draws a day's value of, which every bar names (`data-eval`, `data-statistic`, with
   // `data-span="day"`); omitted on a chart no eval judges.
-  judged?: { eval: string; statistic: string };
+  judged?: { evalSlug: string; statistic: string };
   // Omitted where no target exists: no target line.
   target?: number;
   // Top of the scale; the target line always fits under it.
@@ -69,7 +69,7 @@ export function Sparkbars({ points, judged, target, max, format }: Props) {
               width={BAR - 2}
               height={Math.max(HEIGHT - y(p.value), 1)}
               className={p.met == null ? chartBar.neutral : p.met ? chartBar.met : chartBar.missed}
-              data-eval={judged?.eval}
+              data-eval={judged?.evalSlug}
               data-span={judged === undefined ? undefined : "day"}
               data-statistic={judged?.statistic}
             />

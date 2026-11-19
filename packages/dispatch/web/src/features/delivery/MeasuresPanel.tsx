@@ -15,13 +15,11 @@
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { DeliveryDailyPoint, DeliveryMeasuresResponse } from "../../api/types";
+import type { DeliveryMeasuresResponse, DeliveryTargets } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import {
   borderDefault,
-  dangerText,
   linkText,
-  successText,
   surfaceBg,
   surfaceMutedBg,
   textMutedOnCanvas,
@@ -31,6 +29,7 @@ import {
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
+import { JudgedFigure, tone } from "./JudgedFigure";
 import { formatMinutes, NO_VALUE, pct } from "./lib/format";
 import {
   DEPLOY_BARS,
@@ -39,7 +38,6 @@ import {
   type Measure,
   ownVerdict,
   RUN_SUCCESS_BARS,
-  type Target,
   targetLabel,
   targetLine,
 } from "./lib/target";
@@ -51,8 +49,6 @@ const UNOWNED_P0_SHOWN = 6;
 /** What a pending read shows in each number's place. */
 const PENDING = "\u2026";
 
-type Targets = DeliveryMeasuresResponse["targets"];
-
 /** The change-failure-rate card's breakdown: deploys with a confirmed break, and how many more
  *  have only unreviewed (pending) flags. `confirmedOrPending` counts each deploy once (the
  *  prototype's web/src/lib/dora.ts:297-305). The confirmed count is the eval's
@@ -62,7 +58,7 @@ type Targets = DeliveryMeasuresResponse["targets"];
 function FailureRateBreakdown(props: {
   confirmed: number;
   confirmedOrPending: number;
-  targets: Targets;
+  targets: DeliveryTargets;
 }): ReactNode {
   const onlyPending = props.confirmedOrPending - props.confirmed;
   return (
@@ -76,13 +72,7 @@ function FailureRateBreakdown(props: {
         {props.confirmed}
       </WindowFigure>
       {` ${props.confirmed === 1 ? "deploy" : "deploys"} with a confirmed break; `}
-      {onlyPending === 0 ? (
-        "none"
-      ) : (
-        <>
-          <span>{onlyPending}</span> more
-        </>
-      )}
+      {onlyPending === 0 ? "none" : `${onlyPending} more`}
       {" with only unreviewed flags"}
     </>
   );
@@ -102,44 +92,37 @@ function measured(f: FailureRate): f is FailureRate & {
   );
 }
 
-/** A figure's tone by its own verdict: met green, missed red, and `plain` where it has none. */
-function tone(met: boolean | null, plain: string): string {
-  if (met === null) return plain;
-  return met ? successText : dangerText;
-}
-
-/** A figure of the whole window that the target of `measure`'s eval may judge (R5). It names the
- *  eval and the statistic it shows, and takes a tone only where that target judges the statistic,
- *  by its own value (`ownVerdict`), never by the card's badge, the server's verdict of everything
- *  the target judges. It reads `plain` where the target judges another statistic or is off, so a
- *  card judged by its p90 does not colour its median and change-fail-rate judged by its per-PR
- *  rate colours neither its per-deploy rate nor its upper bound, and muted while the read is
- *  pending (`targets` undefined). */
+/** A figure of the whole window that the target of `measure`'s eval may judge (`JudgedFigure`),
+ *  toned by its own value. It reads `plain` where that target judges another statistic or is off,
+ *  so a card judged by its p90 does not colour its median and change-fail-rate judged by its
+ *  per-PR rate colours neither its per-deploy rate nor its upper bound; and `pending`, muted
+ *  unless given, while the read is pending (`targets` undefined). */
 function WindowFigure(props: {
   measure: Measure;
   statistic: Judge;
-  targets: Targets | undefined;
+  targets: DeliveryTargets | undefined;
   value: number | null | undefined;
   className?: string;
   plain?: string;
+  pending?: string;
   children: ReactNode;
 }): ReactNode {
-  const toned =
-    props.targets === undefined
-      ? textMutedOnSurface
-      : tone(
-          ownVerdict(props.targets[props.measure], props.statistic, "window", props.value ?? null),
-          props.plain ?? ""
-        );
+  const { targets } = props;
   return (
-    <span
-      className={`${props.className ?? ""} ${toned}`.trim()}
-      data-eval={EVAL_SLUGS[props.measure]}
-      data-span="window"
-      data-statistic={props.statistic}
+    <JudgedFigure
+      className={props.className}
+      evalSlug={EVAL_SLUGS[props.measure]}
+      met={
+        targets === undefined
+          ? null
+          : ownVerdict(targets[props.measure], props.statistic, "window", props.value ?? null)
+      }
+      plain={targets === undefined ? (props.pending ?? textMutedOnSurface) : props.plain}
+      span="window"
+      statistic={props.statistic}
     >
       {props.children}
-    </span>
+    </JudgedFigure>
   );
 }
 
@@ -173,8 +156,9 @@ function KpiCard(props: {
 function BigNumber(props: {
   measure: Measure;
   statistic: Judge;
-  targets: Targets | undefined;
+  targets: DeliveryTargets | undefined;
   value: number | null | undefined;
+  pending?: string;
   children: string;
 }): ReactNode {
   return <WindowFigure className="text-lg font-semibold" plain={textPrimaryOnSurface} {...props} />;
@@ -294,7 +278,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           {measures === undefined || targets === undefined ? null : (
             <Sparkbars
               format={(v) => `${v} deploys`}
-              judged={{ eval: EVAL_SLUGS.deploys_per_day, statistic: "deploys.per_day" }}
+              judged={{ evalSlug: EVAL_SLUGS.deploys_per_day, statistic: "deploys.per_day" }}
               max={
                 targetLine(targets.deploys_per_day, DEPLOY_BARS) ??
                 Math.max(1, ...(measures.daily ?? []).map((d) => d.deploys))
@@ -487,7 +471,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <>
               <Sparkbars
                 format={pct}
-                judged={{ eval: EVAL_SLUGS.deploy_run_success_rate, statistic: "runs.rate" }}
+                judged={{
+                  evalSlug: EVAL_SLUGS.deploy_run_success_rate,
+                  statistic: "runs.rate",
+                }}
                 max={1}
                 points={(measures.daily ?? []).map((d) => ({
                   label: d.day,
@@ -581,7 +568,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                   {stat.value}
                 </span>
               ) : (
-                <BigNumber {...stat.judged} targets={targets}>
+                <BigNumber {...stat.judged} pending={textPrimaryOnSurface} targets={targets}>
                   {stat.value}
                 </BigNumber>
               )}
@@ -606,6 +593,33 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   );
 }
 
+/** One day's cell of the fold's per-day table that the target of `measure`'s eval may judge: it
+ *  names the eval and the statistic, and is toned by its own value where that target judges a
+ *  day's value of `statistic` (`ownVerdict`), plain otherwise, an off target included. A partial
+ *  day's cell takes no tone, its row reading muted. */
+function DayCell(props: {
+  measure: Measure;
+  statistic: Judge;
+  targets: DeliveryTargets;
+  partial: boolean;
+  value: number | null;
+  children: ReactNode;
+}): ReactNode {
+  const toned = props.partial
+    ? ""
+    : tone(ownVerdict(props.targets[props.measure], props.statistic, "day", props.value));
+  return (
+    <td
+      className={`px-2 py-0.5 text-right ${toned}`}
+      data-eval={EVAL_SLUGS[props.measure]}
+      data-span="day"
+      data-statistic={props.statistic}
+    >
+      {props.children}
+    </td>
+  );
+}
+
 /** The fold's eight definition cards and the per-day table, newest first. */
 function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   const { measures, targets } = data;
@@ -624,15 +638,6 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
       {text}
     </WindowFigure>
   );
-  // A day's Deploys and Run success cells each take a tone by their own value, where the target
-  // judges that statistic of a day (`ownVerdict`), and read plain otherwise, an off target
-  // included. A partial day's row reads muted, and its cells take no tone.
-  const cellTone = (
-    d: DeliveryDailyPoint,
-    target: Target,
-    statistic: Judge,
-    value: number | null
-  ): string => (d.partial ? "" : tone(ownVerdict(target, statistic, "day", value), ""));
   const frequency = measures.deploy_frequency;
   const merge = measures.lead_time.merge_to_production;
   const lead = measures.lead_time;
@@ -842,24 +847,26 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                     {d.day}
                     {d.partial ? " (partial)" : ""}
                   </td>
-                  <td
-                    className={`px-2 py-0.5 text-right ${cellTone(d, targets.deploys_per_day, "deploys.per_day", d.deploys)}`}
-                    data-eval={EVAL_SLUGS.deploys_per_day}
-                    data-span="day"
-                    data-statistic="deploys.per_day"
+                  <DayCell
+                    measure="deploys_per_day"
+                    partial={d.partial}
+                    statistic="deploys.per_day"
+                    targets={targets}
+                    value={d.deploys}
                   >
                     {d.deploys}
-                  </td>
+                  </DayCell>
                   <td className="px-2 py-0.5 text-right">{d.concluded}</td>
                   <td className="px-2 py-0.5 text-right">{d.reached_production}</td>
-                  <td
-                    className={`px-2 py-0.5 text-right ${cellTone(d, targets.deploy_run_success_rate, "runs.rate", d.run_success_rate)}`}
-                    data-eval={EVAL_SLUGS.deploy_run_success_rate}
-                    data-span="day"
-                    data-statistic="runs.rate"
+                  <DayCell
+                    measure="deploy_run_success_rate"
+                    partial={d.partial}
+                    statistic="runs.rate"
+                    targets={targets}
+                    value={d.run_success_rate}
                   >
                     {d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate)}
-                  </td>
+                  </DayCell>
                   <td className="px-2 py-0.5 text-right">{d.cancelled}</td>
                 </tr>
               ))}
