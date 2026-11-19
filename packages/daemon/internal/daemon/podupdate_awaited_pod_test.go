@@ -204,6 +204,45 @@ func TestPodUpdateGoesThroughAProcessASecondClaimStartsWhileTheFirstWaits(t *tes
 	}
 }
 
+// The replacement's log line names each claim with a session that the round did not wait for
+// (replacePodForRound). The issue has two such claims. The implementer's process died and the
+// runtime refused its relaunch for want of the pod's round, so its launch waits on the pod and it
+// has no process to answer. The planner failed, so the round asks it nothing. The round waits for
+// neither of them: it replaces the pod before its bound, through the locator the refusal named,
+// and its one line names the planner in failedNotWaitedFor and the implementer in
+// waitingOnThePodNotWaitedFor.
+//
+// The control is a line with one of the two fields empty: this test then fails and names that
+// field.
+func TestPodUpdateReplacementLineNamesEachClaimTheRoundDidNotWaitFor(t *testing.T) {
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleImplementer),
+		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true,
+			contract: readyWorker(claim.RolePlanner).contract},
+	)
+	token := rig.tokens[claim.RoleImplementer]
+	rig.drifts(podUpdateExchangeDrift)
+	rig.refuseUntilReplaced(claim.RoleImplementer)
+	rig.diesRefused(claim.RoleImplementer)
+	resumes := rig.rt.CallsOf("Resume")
+	refused := resumes[len(resumes)-1].Spec.Generation
+
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	replaced := rig.awaitReplacement(1, "with no claim to wait for")
+	if got := replaced[0].Pod; got.Claim != token || got.Locator == nil ||
+		!reflect.DeepEqual(*got.Locator, awaitedLocator(token, podUpdatePod, refused)) {
+		t.Fatalf("ReplacePod was asked %+v, want the locator the refusal named, in pod %s",
+			got, podUpdatePod)
+	}
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 || lines[0]["atTheBound"] != false {
+		t.Fatalf("the replacement was logged %+v, want one line that no bound made", lines)
+	}
+	wantField(t, lines[0], "failedNotWaitedFor", claim.RolePlanner)
+	wantField(t, lines[0], "waitingOnThePodNotWaitedFor", claim.RoleImplementer)
+}
+
 // waitingOn is role's claim of the rig's issue with no process, its launch waiting on pod
 // (supervise.Claim.AwaitsPod), in round where round is not "", and with a session where session
 // says so.
