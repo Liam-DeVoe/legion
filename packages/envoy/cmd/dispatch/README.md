@@ -947,7 +947,8 @@ What the two processes share, and what each keeps to itself:
   the line that ends the turn carries `stopped` and `stopped_by`, the moment it stopped bounded from below and from above rather than dated by the moment the line was written, and one value, the hold's deadline, whenever the turn ended there;
   the line that begins it (`took the publisher hold`) carries `started`, read before the process began publishing.
   A holder sends nothing once its hold's deadline has passed, and a send waits for no connection (`bus.Client.WindowUntil`), so one that freezes and resumes publishes nothing beside the new holder, and a batch begun while the client reconnects ends for NATS loss within the 2 s probe of its connection.
-  Each owner's events (an issue's, a document's or a project's) keep their order per destination:
+
+- Each owner's events (an issue's, a document's or a project's) keep their order per destination:
   an event goes to a session's subject, or to the owner's topic family, only after every earlier unpublished event of its owner bound there has reached it.
   The owner's topic family comes first beside that, because a session that follows the topic and is also sent the owner's events on its own subject takes both in stream order:
   no later event of the owner goes to any session's subject while an earlier one's topic send has not reached the topic family.
