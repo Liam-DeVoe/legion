@@ -79,6 +79,20 @@ var answeredAsk = `exists (
 		) newest
 		where newest.asserted and newest.to_id = '` + asks.StateAnswered + `')`
 
+// RemovedByAPerson is true of the asks row k whose node's newest removed_by tuple asserts
+// (graphstore.TupleRemovedBy): a person took its block out of the document its row names, which
+// stays taken, so the restore never writes it back. A block of the ask written back into that
+// document retracts it (docs' settlement), and a later removal is judged afresh. The read takes
+// graph_tuples_current, keyed by the node and the kind.
+var RemovedByAPerson = `exists (
+		select 1 from (
+			select t.asserted from graph_tuples t
+			where t.from_kind = '` + graphstore.KindAsk + `' and t.from_id = k.id::text
+			  and t.kind = '` + graphstore.TupleRemovedBy + `' and t.to_kind <> '` + graphstore.KindValue + `'
+			order by t.seq desc limit 1
+		) newest
+		where newest.asserted)`
+
 // restoreWorkRead is the restore's work in one statement, as ReadRestoreWork answers it.
 var restoreWorkRead = `
 	select work.shape, work.issue_key, work.ask_id, work.address, work.block_id, spec.ref_key,
@@ -88,7 +102,7 @@ var restoreWorkRead = `
 		       spec.ref_key || '#' || k.block_id as address, k.block_id, spec.id as spec_id
 		from asks k
 		join artifacts spec on spec.id = k.block_artifact_id and spec.is_primary and spec.issue_key = k.issue_key
-		where k.kind = 'question' and k.block_id is not null and ` + answeredAsk + `
+		where k.kind = 'question' and k.block_id is not null and ` + answeredAsk + ` and not ` + RemovedByAPerson + `
 		  and not exists (
 			select 1 from document_blocks d
 			where d.artifact_id = spec.id and d.block_id = k.block_id and d.type = 'ask')
@@ -114,7 +128,8 @@ var restoreWorkRead = `
 //     (asks.block_artifact_id is the issue's primary document) and whose block the spec does not
 //     hold as an ask block - no document_blocks row of type ask holds the ask's block id in it.
 //     Address is the spec's old address of that block. An ask is answered as its node holds it
-//     (answeredAsk).
+//     (answeredAsk), and an ask a person removed from the spec is none (RemovedByAPerson): the
+//     step reads who removed the rest before it writes one back (docs' restore).
 //   - RestoreMoves: an ask block a decisions document holds (decisionsDocuments), open, answered,
 //     declined, resolved or withdrawn alike (ruling D1: every ask block of that document moves): a
 //     document_blocks row of type ask of that document, whose asks row names the document and
@@ -206,8 +221,10 @@ func (r DanglingReport) Count(set string) int64 {
 // index recorded (document_block_texts, keyed by the document), whether the document stands or
 // was retired since (decisionsDocumentsEver), since the restore and the conversion retire it in
 // the transaction that moves its blocks out; and the addresses the returns name. One that
-// resolves, through block_moved_to, to a block a document_blocks row holds is no dangling target,
-// and neither is one in a document that still owes its block index, whose rows are not current.
+// resolves, through moved_to_reach, to a block a document_blocks row holds is no dangling target,
+// and neither is one whose moves end at an ask whose row stands - the heading of a section that
+// cites an answered ask a person removed, which answers that ask - nor one in a document that
+// still owes its block index, whose rows are not current.
 // The counter reads no other target: a `#b-` citation in prose is free text nothing validates,
 // and a block of a document past the deferral bound resolves to no block until the index catches
 // up, so a count of every unresolved citation of the instance is non-zero on a healthy one. A
@@ -234,7 +251,7 @@ var danglingRead = `
 	),
 	dangling as (
 		select t.address, t.counted from targets t
-		where block_moved_to(t.address) is null
+		where (select reach.kind from moved_to_reach(t.address) reach) is null
 		  and not exists (
 			select 1 from artifacts a join document_block_versions owed on owed.artifact_id = a.id
 			where a.ref_key = split_part(t.address, '#', 1) and owed.version is null)

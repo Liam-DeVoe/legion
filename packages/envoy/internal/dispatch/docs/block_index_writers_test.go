@@ -563,6 +563,10 @@ var indexPasses = map[string]string{
 	// from what it read of the issue's documents and asks under their locks, mending nothing.
 	"docs/decision_restore.go#writeVersion": "the facts the version's index pass stated and the event that recorded the version",
 	"docs/decision_restore.go#writeFacts":   "the restore's and the conversion's plan, read off the documents and the asks rows it locked",
+	// A person's own write that takes an answered ask's block out of its document states the
+	// person's node and the removed_by of each such ask, from the asks rows the write lost the
+	// blocks of and the person the write was made for, under the version's event.
+	"docs/removed_by.go#withRemovals": "the answered asks a person's own write took the blocks of out and the person it was made for",
 	// The removal of an untouched document states its node gone before its row goes, caused by
 	// the artifact.removed event it appends.
 	"api/artifact_removal.go#removeArtifact": "the document the request removes and the event it appended",

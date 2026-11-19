@@ -45,10 +45,14 @@ type DecisionIssue struct {
 	Issue string
 	// Restored is each answered ask the restore returned to the spec, in answer-time order.
 	Restored []RestoredAsk
-	// Decisions, Readings, Dropped and Left count the sections of the issue's decisions document by
-	// what became of each: a decision block, a reading under an ask, a section a rule of R9
-	// deleted, and a section no rule converts, which stays where it is.
-	Decisions, Readings, Dropped, Left int
+	// Declined is each answered ask of the main shape the restore did not return, because a
+	// person removed its block from the spec: the version that left it out is theirs.
+	Declined []DeclinedAsk
+	// Decisions, Readings, Dropped, Removed and Left count the sections of the issue's decisions
+	// document by what became of each: a decision block, a reading under an ask, a section R9's
+	// plain-answer rule deleted, a section deleted because the answered ask it cites is one a
+	// person removed from its spec, and a section no rule converts, which stays where it is.
+	Decisions, Readings, Dropped, Removed, Left int
 	// Retired is whether the decisions document was retired (RetireDocument).
 	Retired bool
 	// SpecVersion and DecisionsVersion are the versions the phase wrote of each, 0 for none.
@@ -68,10 +72,28 @@ type DecisionIssue struct {
 // (graphcensus.RestoreReturns, RestoreMoves), the address of the block it moved from where it
 // moved (a block of the decisions document, which a moved_to tuple now names), "" where it
 // returns under the spec's own address, and the address of the block it stands at now, with
-// whether that block took a new id.
+// whether that block took a new id. Read is, for an ask of the main shape, what the restore read
+// of the version that left its block out of the spec (restoreReadNoPerson, restoreReadNeverHeld,
+// restoreReadNoAuthors), and "" for an ask the restore moves.
 type RestoredAsk struct {
-	Ask, Shape, From, To string
-	NewID                bool
+	Ask, Shape, From, To, Read string
+	NewID                      bool
+}
+
+// What the restore read of the version that left an answered ask's block out of its spec, where
+// it returns the ask: that version's authors name no person and no agent acting with the person
+// scope; no version of the spec ever held the block; or that version names no author.
+const (
+	restoreReadNoPerson  = "no_person"
+	restoreReadNeverHeld = "never_held"
+	restoreReadNoAuthors = "no_authors"
+)
+
+// DeclinedAsk is one answered ask the restore declined to return to its spec: its id, the person
+// who removed its block, and the spec's version that left the block out, which is that person's.
+type DeclinedAsk struct {
+	Ask, Person string
+	Version     int
 }
 
 // DecisionSupersededApproval is an approval the phase superseded: the document's address, the
@@ -123,7 +145,8 @@ const issueDocumentColumns = `a.id::text, a.ref_key, a.issue_key, coalesce(a.pro
 // (from: for the second shape the address the finder read, and for the main shape the address of
 // a copy of the block the decisions document holds, "" where it holds none), the block of a
 // document of the issue it moves out of where that document still holds it (moved), the spec
-// blocks it shaped, and the readings it holds.
+// blocks it shaped, the readings it holds, and, for the main shape, what the restore read of the
+// version that left the block out (RestoredAsk.Read).
 type restoredBlock struct {
 	work     graphcensus.RestoreWork
 	row      model.Ask
@@ -132,6 +155,17 @@ type restoredBlock struct {
 	moved    *pmdoc.Node
 	shaped   []string
 	readings []*pmdoc.Node
+	read     string
+}
+
+// declinedAsk is one answered ask the restore declines to return (removalOf): the person who
+// removed its block, the spec's version that left it out, that version's time and the event that
+// recorded it, under which the pass states the removal (writeFacts).
+type declinedAsk struct {
+	ask, person string
+	version     int
+	at          time.Time
+	event       int64
 }
 
 // address is the block's address in the spec once restored.
@@ -160,6 +194,10 @@ const (
 	// fateDropped is a section that cites an answered ask and whose body is that ask's answer and
 	// nothing more, or nothing at all beside the ask's own block: R9 deletes it.
 	fateDropped
+	// fateRemovedAsk is a section that cites an answered ask a person removed from its spec (its
+	// node holds an asserted removed_by): R9 deletes it, because the person removed the decision it
+	// reads, and its heading moves to the ask itself.
+	fateRemovedAsk
 	// fateLeft is a section no rule converts: it stays, and is counted.
 	fateLeft
 )
@@ -219,6 +257,11 @@ type issueRestore struct {
 	documents map[string]issueDocument
 	askBlocks map[string]map[string]bool
 	restores  []*restoredBlock
+	// declined is each answered ask of the main shape the pass does not return, a person having
+	// removed its block from the spec (removalOf), and removed every ask of the issue a person
+	// removed: one whose node holds an asserted removed_by, or one the pass declines.
+	declined []*declinedAsk
+	removed  map[string]bool
 	// present is the shaped pointers and the readings this pass writes into an answered ask block
 	// a document of the issue holds already, by the document's id.
 	present  map[string]*presentEdits
@@ -367,9 +410,10 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 }
 
 // readState reads, in the issue's transaction, the rows of every question ask of the issue,
-// locked as a writer of an ask's row takes it (`for no key update`), and which of them hold an
-// answer on row and node (answered), every document of the issue that stands, and the blocks
-// their block indexes hold: every block of the spec, and every ask block of each.
+// locked as a writer of an ask's row takes it (`for no key update`), which of them hold an answer
+// on row and node (answered), which of them a person removed from the document its row names
+// (removed: their node's newest removed_by asserts), every document of the issue that stands, and
+// the blocks their block indexes hold: every block of the spec, and every ask block of each.
 func (r *issueRestore) readState(ctx context.Context) error {
 	rows, err := r.tx.Query(ctx, `
 		select `+AskColumns+` from asks a
@@ -392,6 +436,20 @@ func (r *issueRestore) readState(ctx context.Context) error {
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the asks of %s: %w", r.issue, err)
+	}
+	removed, err := r.tx.Query(ctx, `
+		select k.id::text from asks k
+		where k.issue_key = $1 and k.kind = 'question' and `+graphcensus.RemovedByAPerson, r.issue)
+	if err != nil {
+		return fmt.Errorf("read the asks a person removed of %s: %w", r.issue, err)
+	}
+	removedIDs, err := pgx.CollectRows(removed, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the asks a person removed of %s: %w", r.issue, err)
+	}
+	r.removed = make(map[string]bool, len(removedIDs))
+	for _, id := range removedIDs {
+		r.removed[id] = true
 	}
 	var answeredRows []string
 	for id, ask := range r.rows {
@@ -465,10 +523,15 @@ func (r *issueRestore) readState(ctx context.Context) error {
 // (R6's collision rule). An ask block of the decisions document moves whatever its ask's state
 // (D1). A work item whose row moved since the finder read it is left to the next pass, and so is a
 // returning ask whose block the spec holds again, which a person put back: a restore of it would
-// write a second block of that ask and leave the person's with no row. An ask the restore moves
+// write a second block of that ask and leave the person's with no row. A returning ask a person
+// removed from the spec is never written back: one whose node holds an asserted removed_by since
+// the finder read it is passed over, and one the version that left its block out shows a person
+// removed is declined (removalOf), which writeFacts records on its node. An ask the restore moves
 // out of the decisions document moves from the address the finder read (RestoreWork.Address),
 // which its moved_to and its node's relations name whether or not the document still holds the
-// block (writeFacts).
+// block (writeFacts). The person test is the main shape's alone: a block of the decisions
+// document moves whoever put it there, since that document retires and the block has nowhere
+// else to stand.
 func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.RestoreWork) error {
 	for _, item := range work {
 		row, held := r.rows[item.Ask]
@@ -489,6 +552,20 @@ func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.Rest
 					"issue", r.issue, "ask", item.Ask)
 				continue
 			}
+			if r.removed[item.Ask] {
+				continue
+			}
+			declined, read, err := r.removalOf(ctx, item.Ask, item.BlockID)
+			if err != nil {
+				return err
+			}
+			if declined != nil {
+				r.declined = append(r.declined, declined)
+				r.removed[item.Ask] = true
+				r.result.Declined = append(r.result.Declined, DeclinedAsk{Ask: item.Ask, Person: declined.person, Version: declined.version})
+				continue
+			}
+			restore.read = read
 		case graphcensus.RestoreMoves:
 			if r.decisions == nil || *row.BlockArtifactID != r.decisions.id {
 				continue
@@ -509,6 +586,112 @@ func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.Rest
 		return answeredAt(r.restores[a].row).Before(answeredAt(r.restores[b].row))
 	})
 	return nil
+}
+
+// removalOf reads who took ask's block, blockID, out of the spec: the version that left it out,
+// the lowest above the newest whose stored tree holds an ask block with that id, read newest first
+// through the stored-version reader the approval carry reads (approvedVersion), a version it
+// cannot read holding none. Where that version is a person's (versionPerson) it answers the
+// decline, with the version's time and the event that recorded it (versionEventID). Otherwise it
+// answers what it read, and the ask is restored: that version's authors name no person and no
+// agent acting with the person scope, no version of the spec held the block, or that version
+// names no author. A version a person's own write wrote is the person's whatever other authors
+// it lists, and one a session wrote with no act of a person - every agent's drop the restore
+// exists to undo, the release before's bearer writes among them - is no person's.
+//
+// The ask's answerer is no remover in the one version that first holds her answer: the version
+// written after the ask's answered_at whose previous version was written before it. The release
+// before wrote an answer into its block in the live document in the answerer's name, so the first
+// version after the answer credits her whatever else it holds, an agent's drop of the block among
+// it (answerersVersion). In every later version she counts as any person does.
+func (r *issueRestore) removalOf(ctx context.Context, ask, blockID string) (*declinedAsk, string, error) {
+	rows, err := r.tx.Query(ctx, `select number from artifact_versions where artifact_id = $1::uuid order by number desc`, r.spec.id)
+	if err != nil {
+		return nil, "", fmt.Errorf("read the versions of the spec of %s: %w", r.issue, err)
+	}
+	numbers, err := pgx.CollectRows(rows, pgx.RowTo[int])
+	if err != nil {
+		return nil, "", fmt.Errorf("read the versions of the spec of %s: %w", r.issue, err)
+	}
+	removing, holder := 0, 0
+	for _, number := range numbers {
+		tree, _, readable, err := approvedVersion(ctx, r.tx, r.spec.id, number)
+		if err != nil {
+			return nil, "", err
+		}
+		if readable && holdsAskBlock(tree, blockID) {
+			holder = number
+			break
+		}
+		removing = number
+	}
+	switch {
+	case holder == 0:
+		return nil, restoreReadNeverHeld, nil
+	case removing == 0:
+		// The newest version holds the block: no version left it out.
+		return nil, restoreReadNoPerson, nil
+	}
+	var authors []model.Actor
+	var at, previousAt time.Time
+	if err := r.tx.QueryRow(ctx, `
+		select v.authors, v.created_at, previous.created_at
+		from artifact_versions v, artifact_versions previous
+		where v.artifact_id = $1::uuid and v.number = $2 and previous.artifact_id = $1::uuid and previous.number = $3
+	`, r.spec.id, removing, holder).Scan(&authors, &at, &previousAt); err != nil {
+		return nil, "", fmt.Errorf("read the authors of version %d of the spec of %s: %w", removing, r.issue, err)
+	}
+	if len(authors) == 0 {
+		return nil, restoreReadNoAuthors, nil
+	}
+	person := versionPerson(authors, answerersVersion(r.rows[ask], at, previousAt))
+	if person == "" {
+		return nil, restoreReadNoPerson, nil
+	}
+	event, err := versionEventID(ctx, r.tx, artifactOwner{IssueKey: &r.issue}, r.spec.id, removing)
+	if err != nil {
+		return nil, "", err
+	}
+	return &declinedAsk{ask: ask, person: person, version: removing, at: at, event: event}, "", nil
+}
+
+// answerersVersion is the login of ask's answerer where a version written at at, whose previous
+// version was written at previousAt, is the one that first holds the answer - written after the
+// answer's time, its previous version before it - and "" otherwise (removalOf).
+func answerersVersion(ask model.Ask, at, previousAt time.Time) string {
+	if ask.Answer == nil || !at.After(ask.Answer.At) || !previousAt.Before(ask.Answer.At) {
+		return ""
+	}
+	return model.CanonicalLogin(ask.Answer.User)
+}
+
+// versionPerson is the person a version's authors name, "" where they name none: the first
+// author that is a person (kind user, a browser's person, or an agent acting for one through a
+// route that takes the person scope) or an agent whose recorded act holds the person scope (a
+// broker-issued token its person scoped), named as that author's person (personOf), other than
+// excluded, the answerer in the version that first holds her answer (answerersVersion).
+func versionPerson(authors []model.Actor, excluded string) string {
+	for _, author := range authors {
+		if author.Kind != "user" && (author.Act == nil || !slices.Contains(author.Act.Scopes, model.ScopePerson)) {
+			continue
+		}
+		if login := personOf(author); login != "" && login != excluded && graphstore.AddressFits(login) {
+			return login
+		}
+	}
+	return ""
+}
+
+// holdsAskBlock reports whether tree holds an ask block under id.
+func holdsAskBlock(tree *pmdoc.Node, id string) bool {
+	held := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if blockID, _ := node.Attrs[pmdoc.BlockIDAttr].(string); node.Type == "ask" && blockID == id {
+			held = true
+		}
+		return !held
+	})
+	return held
 }
 
 // specRowHolds reports whether the row of an ask of the issue other than ask names the spec's
@@ -721,6 +904,8 @@ func (r *issueRestore) planSections(ctx context.Context, tree *pmdoc.Node) (map[
 			r.result.Readings++
 		case fateDropped:
 			r.result.Dropped++
+		case fateRemovedAsk:
+			r.result.Removed++
 		}
 		for _, id := range section.blockIDs() {
 			drop[id] = true
@@ -746,6 +931,12 @@ func (r *issueRestore) planSections(ctx context.Context, tree *pmdoc.Node) (map[
 // body, the blocks the restore moves taken out, still holds an ask block, wherever in it - one
 // whose row moved since the finder read it, or one no row names: a conversion of the section would
 // take that block out of the document and write it nowhere (R6, R8).
+//
+// A section that cites one answered ask a person removed from its spec (removed: its node holds an
+// asserted removed_by, or this pass declined to restore it) is deleted by R9's rule for it
+// (fateRemovedAsk): the person removed the decision it reads, so no block takes its links or its
+// words, which stay in the decisions document's versions, and its heading moves to the ask itself
+// (writeFacts).
 //
 // A restore alone converts only a section that holds a block it moves, so no section is left
 // holding nothing but its heading; it still gives a restored answered ask the links of every
@@ -791,6 +982,12 @@ func (r *issueRestore) planSection(ctx context.Context, converted *convertedSect
 		return r.planDecision(ctx, converted, body)
 	}
 	converted.ask = ask
+	if len(held) == 0 && r.removed[ask] {
+		if r.convert {
+			converted.fate = fateRemovedAsk
+		}
+		return nil
+	}
 	document, blockID, stands := r.askBlockOf(ask)
 	if !stands {
 		converted.fate = r.leftUnlessRestoring(held)
@@ -1130,7 +1327,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 		added = append(added, block)
 		r.result.Restored = append(r.result.Restored, RestoredAsk{
 			Ask: restore.row.ID, Shape: restore.work.Shape, From: restore.from,
-			To: restore.address(r.spec), NewID: restore.id != restore.work.BlockID,
+			To: restore.address(r.spec), Read: restore.read, NewID: restore.id != restore.work.BlockID,
 		})
 	}
 	for _, converted := range r.sections {
@@ -1473,11 +1670,14 @@ func (r *issueRestore) stepCasesFor(document string) decisionStepCases {
 // for each ask the restore moved from the decisions document, its node's relations to the
 // documents, now the spec's (graphstore.AskClaims), and one moved_to tuple from the block it left
 // to the block it stands at; for each section the conversion took out, one moved_to tuple from its
-// heading's address to the decision it became or the ask block it restates (R8); and for each
-// decision whose section a person kept, the Keep on its node - a kept_by tuple, and a
-// kept_text_sum value where the Keep's sum is the section's as it stands (F3) - with the
-// decision_keeps row that projects it, as Keep writes one. A section a restore alone took out
-// writes its moved_to too.
+// heading's address to the decision it became or the ask block it restates (R8), or, for a section
+// that cites an answered ask a person removed, to that ask's own node; and for each decision whose
+// section a person kept, the Keep on its node - a kept_by tuple, and a kept_text_sum value where
+// the Keep's sum is the section's as it stands (F3) - with the decision_keeps row that projects
+// it, as Keep writes one. A section a restore alone took out writes its moved_to too. For each
+// answered ask the restore declined to return (removalOf), it appends one removed_by from the
+// ask's node to the person who removed its block, with that person's node, under the event that
+// recorded the person's version and at its time, so the finder leaves the ask out from then on.
 func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 	var nodes []graphstore.Node
 	var tuples []graphstore.Tuple
@@ -1486,6 +1686,23 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 		tuples = append(tuples, graphstore.Tuple{
 			FromKind: refs.BlockNodeKind, FromID: from, Kind: graphstore.TupleMovedTo,
 			ToKind: refs.BlockNodeKind, ToID: to, At: r.at, Who: DecisionStepActor, SourceEvent: cause, Asserted: true,
+		})
+	}
+	// One write states each node once: a person a Keep names and a person who removed an ask may
+	// be one.
+	people := map[string]bool{}
+	person := func(login string, at time.Time, event int64) {
+		if !people[login] {
+			people[login] = true
+			nodes = append(nodes, graphstore.PersonNode(login, DecisionStepActor, at, event))
+		}
+	}
+	for _, declined := range r.declined {
+		person(declined.person, declined.at, declined.event)
+		tuples = append(tuples, graphstore.Tuple{
+			FromKind: graphstore.KindAsk, FromID: declined.ask, Kind: graphstore.TupleRemovedBy,
+			ToKind: graphstore.KindPerson, ToID: declined.person,
+			At: declined.at, Who: DecisionStepActor, SourceEvent: declined.event, Asserted: true,
 		})
 	}
 	for _, restore := range r.restores {
@@ -1522,7 +1739,7 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 			sum := decisionread.TextSum(words)
 			login := model.CanonicalLogin(converted.keep.keptBy)
 			keeper := converted.keep.keeper
-			nodes = append(nodes, graphstore.PersonNode(login, DecisionStepActor, r.at, cause))
+			person(login, r.at, cause)
 			tuples = append(tuples, graphstore.Tuple{
 				FromKind: refs.BlockNodeKind, FromID: address, Kind: refs.TupleKeptBy,
 				ToKind: graphstore.KindPerson, ToID: login, At: converted.keep.keptAt, Who: keeper, SourceEvent: cause, Asserted: true,
@@ -1537,6 +1754,11 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 			keepRows = append(keepRows, keepRow{block: converted.decisionID, sum: keptSum, keptBy: login, keptAt: converted.keep.keptAt})
 		case fateReading, fateDropped:
 			moved(heading, storeBlockAddress(converted.askDocument.refKey, converted.askBlock))
+		case fateRemovedAsk:
+			tuples = append(tuples, graphstore.Tuple{
+				FromKind: refs.BlockNodeKind, FromID: heading, Kind: graphstore.TupleMovedTo,
+				ToKind: graphstore.KindAsk, ToID: converted.ask, At: r.at, Who: DecisionStepActor, SourceEvent: cause, Asserted: true,
+			})
 		}
 	}
 	if len(nodes)+len(tuples)+len(claims) > 0 {
@@ -1545,7 +1767,7 @@ func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {
 			return err
 		}
 		if _, err := r.tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
-			return fmt.Errorf("state the moves and the Keeps of the restore of %s: %w", r.issue, err)
+			return fmt.Errorf("state the moves, the removals and the Keeps of the restore of %s: %w", r.issue, err)
 		}
 	}
 	for _, keep := range keepRows {

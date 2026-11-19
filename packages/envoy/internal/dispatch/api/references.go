@@ -401,10 +401,13 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 // movedBlockNode is the block an address no current version holds moved to (dispatch://INFRA-1150
 // R8): the block the address's moved_to tuples reach (graphstore.MovedTo), named by its own
 // address and carrying its whole current text, so a citation written before the block moved reads
-// the block where it stands now. Where no move reaches a block, and where who may not see the
-// block one reaches, it answers the 404 of a block no current version holds, naming the address
-// asked, so a move says nothing of a block the reader may not see. The edges the read lists beside
-// it are those at the address asked: the citations of that address.
+// the block where it stands now. A chain that ends at an ask - the heading of a decisions
+// document's section that cites an answered ask a person removed from its spec - answers that
+// ask's own node, as a reference of the ask's address reads it, which holds its question and the
+// person's answer. Where no move reaches a block or an ask, and where who may not see the one it
+// reaches, it answers the 404 of a block no current version holds, naming the address asked, so a
+// move says nothing of a node the reader may not see. The edges the read lists beside it are
+// those at the address asked: the citations of that address.
 func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	noBlock := errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
@@ -415,7 +418,17 @@ func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address st
 	if !moved {
 		return model.GraphNode{}, noBlock
 	}
-	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached, true)
+	if reached.Ask != "" {
+		node, found, err := refs.Node(ctx, pool, who, graphstore.KindAsk, reached.Ask, true)
+		if err != nil {
+			return model.GraphNode{}, err
+		}
+		if !found {
+			return model.GraphNode{}, noBlock
+		}
+		return node, nil
+	}
+	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached.Address, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}

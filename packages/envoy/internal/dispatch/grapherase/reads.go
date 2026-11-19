@@ -368,16 +368,17 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 }
 
 // writesTheNode reports whether a tuple of kind out of a node of nodeKind, reaching a node of
-// toKind, names who wrote or answered that node: an ask's authored_by, answered_by or decided_by,
-// or a decision's decided_by or a reading's authored_by, into a person or a session. A comment's
-// authored_by is not one: no record of an erase holds a comment's author.
+// toKind, names who wrote, answered or removed that node: an ask's authored_by, answered_by,
+// decided_by or removed_by, or a decision's decided_by or a reading's authored_by, into a person or
+// a session. A comment's authored_by is not one: no record of an erase holds a comment's author.
 func writesTheNode(nodeKind, kind, toKind string) bool {
 	if toKind != graphstore.KindPerson && toKind != graphstore.KindSession {
 		return false
 	}
 	switch nodeKind {
 	case graphstore.KindAsk:
-		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleAnsweredBy || kind == graphstore.TupleDecidedBy
+		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleAnsweredBy || kind == graphstore.TupleDecidedBy ||
+			kind == graphstore.TupleRemovedBy
 	case refs.BlockNodeKind:
 		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleDecidedBy
 	}

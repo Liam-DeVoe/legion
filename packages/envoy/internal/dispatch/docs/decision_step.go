@@ -161,9 +161,9 @@ func (s *DecisionStep) OwedTotal() *int64 {
 //   - an answer whose block left its spec is the main shape of the restore's work
 //     (graphcensus.ReadRestoreWork, graphcensus.RestoreReturns): an answered `question` ask, as
 //     its node holds it, whose row names its issue's spec and whose block id no `document_blocks`
-//     row of type `ask` holds in that spec, leaving out a spec whose block index is owed, whose
-//     blocks are not known yet - the second shape's asks stand in a decisions document, which the
-//     first part counts;
+//     row of type `ask` holds in that spec and that no person removed from it (removed_by),
+//     leaving out a spec whose block index is owed, whose blocks are not known yet - the second
+//     shape's asks stand in a decisions document, which the first part counts;
 //   - a list of gated steps that holds `decisions` is a projects row whose gated_steps does.
 func countDecisionStepOwed(ctx context.Context, q graphstore.Queryer) (DecisionStepOwed, error) {
 	var owed DecisionStepOwed

@@ -384,9 +384,11 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 
 // writeDecisionIssue prints the one line of what the decisions step did to issue: how many
 // answered asks it restored, how many of them it moved out of the decisions document and how many
-// took a new block id; what became of the document's sections; whether it retired the document;
-// the versions it wrote; what became of the spec's approval; and each approval it superseded,
-// with the asks, as their nodes and their blocks, whose restore superseded it.
+// took a new block id; how many it declined to restore because a person removed their block from
+// the spec, each as ask@person@v<version>; what became of the document's sections; whether it
+// retired the document; the versions it wrote; what became of the spec's approval; and each
+// approval it superseded, with the asks, as their nodes and their blocks, whose restore superseded
+// it.
 func writeDecisionIssue(w io.Writer, name string, issue docs.DecisionIssue, dryRun bool) {
 	moved, renamed := 0, 0
 	for _, ask := range issue.Restored {
@@ -396,6 +398,10 @@ func writeDecisionIssue(w io.Writer, name string, issue docs.DecisionIssue, dryR
 		if ask.NewID {
 			renamed++
 		}
+	}
+	declined := make([]string, 0, len(issue.Declined))
+	for _, ask := range issue.Declined {
+		declined = append(declined, fmt.Sprintf("%s@%s@v%d", ask.Ask, ask.Person, ask.Version))
 	}
 	superseded := make([]string, 0, len(issue.Superseded))
 	for _, approval := range issue.Superseded {
@@ -407,8 +413,9 @@ func writeDecisionIssue(w io.Writer, name string, issue docs.DecisionIssue, dryR
 	if approval == "" {
 		approval = "none"
 	}
-	fmt.Fprintf(w, "%s: issue=%s restored=%d moved=%d new_ids=%d decisions=%d readings=%d dropped=%d left=%d retired=%t spec_version=%d decisions_version=%d other_versions=%d spec_approval=%s superseded=%s dry_run=%t\n",
-		name, issue.Issue, len(issue.Restored), moved, renamed, issue.Decisions, issue.Readings, issue.Dropped, issue.Left,
+	fmt.Fprintf(w, "%s: issue=%s restored=%d moved=%d new_ids=%d declined=%d declined_asks=%s decisions=%d readings=%d dropped=%d removed=%d left=%d retired=%t spec_version=%d decisions_version=%d other_versions=%d spec_approval=%s superseded=%s dry_run=%t\n",
+		name, issue.Issue, len(issue.Restored), moved, renamed, len(issue.Declined), strings.Join(declined, ","),
+		issue.Decisions, issue.Readings, issue.Dropped, issue.Removed, issue.Left,
 		issue.Retired, issue.SpecVersion, issue.DecisionsVersion, issue.OtherVersions, approval, strings.Join(superseded, ";"), dryRun)
 }
 

@@ -129,17 +129,44 @@ func (issue *restoreIssue) document(slug, name string, primary bool, role, markd
 	return id
 }
 
-// replace writes markdown over document as alice, a person, and its version, and settles it.
+// agentOfTheReleaseBefore is the session the fixtures' writes of the release before are made as:
+// that release refused no write that dropped an answered ask's block, and recorded a bearer's
+// write as the session it named, with no act of a person.
+var agentOfTheReleaseBefore = model.Actor{Kind: "session", ID: "session-of-the-release-before"}
+
+// replace writes markdown over document and its version as the release before's agent wrote one
+// (agentOfTheReleaseBefore), and settles it: the drop of an answered ask's block the restore
+// exists to undo. The write is made through this build's upload with the person scope's mark, the
+// one way it still takes such a drop, and the agent names no person, so it records no removal
+// (dropperOf) and its version names no person (versionPerson).
 func (issue *restoreIssue) replace(document, markdown string) {
+	issue.t.Helper()
+	issue.write(document, markdown, agentOfTheReleaseBefore, WithPersonScope)
+}
+
+// replaceAsPerson writes markdown over document as alice, a person, and its version, and settles
+// it.
+func (issue *restoreIssue) replaceAsPerson(document, markdown string) {
+	issue.t.Helper()
+	issue.write(document, markdown, model.Actor{Kind: "user", ID: "alice"}, func(ctx context.Context) context.Context { return ctx })
+}
+
+// write writes markdown over document as actor, in a context mark gives, with its version, whose
+// facts it appends with no event, as a version of the fixtures is recorded, and settles it.
+func (issue *restoreIssue) write(document, markdown string, actor model.Actor, mark func(context.Context) context.Context) {
 	t := issue.t
 	t.Helper()
-	alice := model.Actor{Kind: "user", ID: "alice"}
 	if err := joinedWrite(issue.service, func(ctx context.Context) error {
-		if _, err := issue.service.ReplaceText(ctx, document, markdown, alice); err != nil {
+		ctx = mark(ctx)
+		if _, err := issue.service.ReplaceText(ctx, document, markdown, actor); err != nil {
 			return err
 		}
-		_, err := issue.service.SnapshotVersion(ctx, document, alice)
-		return err
+		written, err := issue.service.SnapshotVersion(ctx, document, actor)
+		if err != nil {
+			return err
+		}
+		tx, _ := txFromContext(ctx)
+		return graphstore.Caused(ctx, tx, written.Blocks, graphstore.NoEvent)
 	}); err != nil {
 		t.Fatalf("replace %s: %v", document, err)
 	}
@@ -740,7 +767,7 @@ func TestTheRestoreLeavesAReturningAskWhoseBlockItsSpecHoldsAgain(t *testing.T) 
 	if err != nil || len(work) != 1 || work[0].Shape != graphcensus.RestoreReturns || work[0].Ask != ask {
 		t.Fatalf("the finder reads %+v (%v), want the returning ask %s", work, err, ask)
 	}
-	issue.replace(issue.spec, "# Spec\n\nThe corpus.\n\n"+block)
+	issue.replaceAsPerson(issue.spec, "# Spec\n\nThe corpus.\n\n"+block)
 
 	result := issue.restoreWith(work, false)
 	if len(result.Restored) != 0 || result.SpecVersion != 0 {
@@ -768,7 +795,7 @@ func TestTheRestoreMovesAnAskWhoseBlockLeftTheDecisionsDocumentSinceItWasRead(t 
 	if err != nil || len(work) != 1 || work[0].Shape != graphcensus.RestoreMoves || work[0].Ask != moved {
 		t.Fatalf("the finder reads %+v (%v), want the moving ask %s", work, err, moved)
 	}
-	issue.replace(decisions, "# Decisions\n\n## Which line names a moved block\n\nThe census names each move.\n")
+	issue.replaceAsPerson(decisions, "# Decisions\n\n## Which line names a moved block\n\nThe census names each move.\n")
 	if blockID, document := issue.askRow(moved); blockID != "q-doc" || document != decisions {
 		t.Fatalf("after the person took the block out the ask's row names %s of %s, want q-doc of the decisions document", blockID, document)
 	}

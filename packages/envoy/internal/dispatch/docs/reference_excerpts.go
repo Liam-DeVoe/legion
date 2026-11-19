@@ -57,7 +57,8 @@ const deferBlockIndexBlocks = 2000
 //
 // Its second result is what the block index stated in the node and tuple store, which the
 // caller appends under the event it goes on to record for this version
-// (graphstore.Caused), in this same transaction.
+// (graphstore.Caused), in this same transaction, with the removals a person's own write of this
+// transaction made of answered asks' blocks of the document (withRemovals).
 func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -82,12 +83,23 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	// request. The typed-node pass still runs here, so a decision is a node, with its ties and
 	// their rows, in the transaction that accepts it, whatever the size of its document
 	// (indexDeferredVersion).
-	if blocks := len(rendered.offsets); rendered.tree != nil && blocks > deferBlockIndexBlocks {
+	var changes model.ReferenceChanges
+	var blocks graphstore.Uncaused
+	var err error
+	if held := len(rendered.offsets); rendered.tree != nil && held > deferBlockIndexBlocks {
 		slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
-			"artifact", artifactID, "version", version, "blocks", blocks, "bound", deferBlockIndexBlocks)
-		return s.indexDeferredVersion(ctx, tx, artifactID, version, versionAt, markdown, rendered)
+			"artifact", artifactID, "version", version, "blocks", held, "bound", deferBlockIndexBlocks)
+		changes, blocks, err = s.indexDeferredVersion(ctx, tx, artifactID, version, versionAt, markdown, rendered)
+	} else {
+		changes, blocks, err = s.indexDocument(ctx, tx, artifactID, version, versionAt, markdown, rendered, nil)
 	}
-	return s.indexDocument(ctx, tx, artifactID, version, versionAt, markdown, rendered, nil)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	if blocks, err = withRemovals(ctx, tx, artifactID, blocks); err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	return changes, blocks, nil
 }
 
 // indexDeferredVersion indexes one document version whose blocks its write leaves to the

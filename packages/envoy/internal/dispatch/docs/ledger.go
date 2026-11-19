@@ -71,6 +71,10 @@ type Ledger struct {
 	// flushes are the room updates this transaction stored ahead of its own appends, one flush
 	// per document (flushThrough), which its commit marks stored.
 	flushes []*RoomFlush
+	// removals holds, per document, each answered ask a person's own write of this transaction
+	// took the block of out of that document, by ask id (answerDroppedAnsweredAsks), which the
+	// version the write leaves states on the ask's node (withRemovals).
+	removals map[string]map[string]heldRemoval
 }
 
 // ledgerAnnouncement is one document a transaction appended to and the last version it appended.

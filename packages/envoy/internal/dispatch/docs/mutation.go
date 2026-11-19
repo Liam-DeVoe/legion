@@ -697,7 +697,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	if err != nil {
 		return "", err
 	}
-	person := writtenByPerson(ctx, actor)
+	by := dropperOf(ctx, actor)
 	// The live document's locks, in their order (see liveWrite), are taken by the write's one read
 	// of the document (applyLive, forkLive): its owner row and writer slot, then its advisory lock
 	// with the head. The upload's version clears every pending author and each in-flight credit
@@ -745,7 +745,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 			if err := validateWrittenAskBlocks(target); err != nil {
 				return &ErrInvalidAskBlock{Reason: err}
 			}
-			if err := s.refuseDroppedAskBlocks(ctx, artifactID, target, person); err != nil {
+			if err := s.refuseDroppedAskBlocks(ctx, artifactID, target, by); err != nil {
 				return err
 			}
 		} else {
@@ -753,13 +753,12 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 				return &ErrInvalidAskBlock{Reason: err}
 			}
 			// A writer that is not a person may not take an answered ask's block out of the
-			// document or retype it (refuseDroppedAnsweredAsks). Only the ask blocks this upload
+			// document or retype it (refuseDroppedAnsweredAsks), and a person's own upload that
+			// does records it as their removal (holdRemovals). Only the ask blocks this upload
 			// drops are read for one, so an upload that keeps every ask block reads no ask.
-			if !person {
-				if dropped := droppedAskBlocks(current, target); len(dropped) > 0 {
-					if err := refuseDroppedAnsweredAsks(ctx, s.queryFrom(ctx), artifactID, target, droppedBlock(dropped)); err != nil {
-						return err
-					}
+			if dropped := droppedAskBlocks(current, target); len(dropped) > 0 {
+				if err := answerDroppedAnsweredAsks(ctx, s.queryFrom(ctx), artifactID, target, droppedBlock(dropped), by, false); err != nil {
+					return err
 				}
 			}
 		}
@@ -1014,17 +1013,20 @@ func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 // narrows to the blocks the batch dropped itself. A person's own editor is held to neither:
 // settlement retracts the ask of a block that leaves the document there.
 //
-// person is whether the write is a person's own (writtenByPerson). A write that is not is refused
-// for an answered ask too, whose block the written tree does not hold as an ask block
-// (refuseDroppedAnsweredAsks). The refusal is ErrInvalidAskBlock for an open ask, which comes
-// first, and ErrAnsweredAskKept for an answered one.
-func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node, person bool) error {
-	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), artifactID, target, person)
+// by is who writes it (dropperOf). A write that is not a person's own is refused for an answered
+// ask too, whose block the written tree does not hold as an ask block (refuseDroppedAnsweredAsks).
+// The refusal is ErrInvalidAskBlock for an open ask, which comes first, and ErrAnsweredAskKept for
+// an answered one. A person's own write is taken, and records as that person's removal each
+// answered ask whose block the document's block index held and the written tree does not
+// (holdRemovals): the index is what the document held before this write, so an ask whose block
+// an earlier write took out is no removal of this one.
+func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node, by dropper) error {
+	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), artifactID, target, by)
 }
 
 // refuseDroppedAskBlocksIn is refuseDroppedAskBlocks reading the document's asks through q,
 // for a caller that holds a transaction and no Service: the erase's (ReadErasedLiveText).
-func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string, target *pmdoc.Node, person bool) error {
+func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string, target *pmdoc.Node, by dropper) error {
 	open, err := openAskBlocksIn(ctx, q, artifactID)
 	if err != nil {
 		return err
@@ -1036,13 +1038,10 @@ func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string,
 	if err := refuseLostAskBlocks(open); err != nil {
 		return &ErrInvalidAskBlock{Reason: err}
 	}
-	if person {
-		return nil
-	}
-	return refuseDroppedAnsweredAsks(ctx, q, artifactID, target, func(blockID string) bool {
+	return answerDroppedAnsweredAsks(ctx, q, artifactID, target, func(blockID string) bool {
 		_, kept := held[blockID]
 		return !kept
-	})
+	}, by, true)
 }
 
 // refuseBatchDroppedAskBlocks refuses an edit batch for the open asks of the blocks the batch
@@ -1050,10 +1049,11 @@ func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string,
 // reading (ApplyOps, applyOpsUnconditional): a document can carry an open ask row whose block went
 // before this batch ran, and a batch that did not touch that block is not the write that lost it,
 // so refusing on it would name the caller a block they never wrote, with advice they cannot act
-// on. A batch that is not a person's own (person, writtenByPerson) is refused for the answered
-// asks of those blocks too, after, the tree the batch leaves, being what tells a retyped block
-// from a removed one (refuseDroppedAnsweredAsks).
-func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID string, dropped map[string]struct{}, after *pmdoc.Node, person bool) error {
+// on. A batch that is not a person's own (by, dropperOf) is refused for the answered asks of
+// those blocks too, after, the tree the batch leaves, being what tells a retyped block from a
+// removed one (refuseDroppedAnsweredAsks); a person's own batch records each as that person's
+// removal (holdRemovals).
+func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID string, dropped map[string]struct{}, after *pmdoc.Node, by dropper) error {
 	q := s.queryFrom(ctx)
 	open, err := openAskBlocksIn(ctx, q, artifactID)
 	if err != nil {
@@ -1067,10 +1067,7 @@ func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID st
 	if err := refuseLostAskBlocks(open); err != nil {
 		return &ErrInvalidAskBlock{Reason: err}
 	}
-	if person {
-		return nil
-	}
-	return refuseDroppedAnsweredAsks(ctx, q, artifactID, after, droppedBlock(dropped))
+	return answerDroppedAnsweredAsks(ctx, q, artifactID, after, droppedBlock(dropped), by, false)
 }
 
 // droppedBlock answers whether a block is among dropped, the ask blocks a write dropped itself
@@ -1908,7 +1905,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 				return
 			}
 			var written pmdoc.ValidDocument
-			if outcome, written, mutationErr = s.finishBatch(ctx, artifactID, tree, batch, len(ops), writtenByPerson(ctx, actor)); mutationErr != nil {
+			if outcome, written, mutationErr = s.finishBatch(ctx, artifactID, tree, batch, len(ops), dropperOf(ctx, actor)); mutationErr != nil {
 				return
 			}
 			mutationErr = recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
@@ -1943,17 +1940,17 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 // applyOpsUnconditional): the block ids the result still lacks, the ask rules it is held to, and
 // the outcome the route answers with, read back where the batch changed the document. tree is the
 // document the batch started from, the one this edit stamped the missing ask block ids on, and the
-// document returned is the one the route stores. person is whether the batch is a person's own
-// (writtenByPerson): one that is not may not drop or retype an answered ask's block either
-// (refuseBatchDroppedAskBlocks).
-func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdoc.Node, batch editBatch, ops int, person bool) (EditOutcome, pmdoc.ValidDocument, error) {
+// document returned is the one the route stores. by is who writes the batch (dropperOf): one that
+// is not a person's own may not drop or retype an answered ask's block either, and a person's own
+// records each it drops or retypes as their removal (refuseBatchDroppedAskBlocks).
+func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdoc.Node, batch editBatch, ops int, by dropper) (EditOutcome, pmdoc.ValidDocument, error) {
 	next := batch.tree
 	pmdoc.EnsureBlockIDs(next)
 	if err := validateEditedAskBlocks(tree, next); err != nil {
 		return EditOutcome{}, pmdoc.ValidDocument{}, &ErrInvalidAskBlock{Reason: err}
 	}
 	if dropped := droppedAskBlocks(batch.beforeTree, next); len(dropped) > 0 {
-		if err := s.refuseBatchDroppedAskBlocks(ctx, artifactID, dropped, next, person); err != nil {
+		if err := s.refuseBatchDroppedAskBlocks(ctx, artifactID, dropped, next, by); err != nil {
 			return EditOutcome{}, pmdoc.ValidDocument{}, err
 		}
 	}
@@ -2000,7 +1997,7 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 			return err
 		}
 		var written pmdoc.ValidDocument
-		if outcome, written, err = s.finishBatch(ctx, artifactID, tree, batch, len(ops), writtenByPerson(ctx, actor)); err != nil {
+		if outcome, written, err = s.finishBatch(ctx, artifactID, tree, batch, len(ops), dropperOf(ctx, actor)); err != nil {
 			return err
 		}
 		return recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
@@ -2635,6 +2632,11 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// them without rendering the document.
 	changes, blocks, err := s.indexDocument(ctx, tx, artifactID, version.Number, version.CreatedAt, markdown, rendered, write.settled)
 	if err != nil {
+		return versionWriteResult{}, err
+	}
+	// The removals a person's own write of this transaction made of answered asks' blocks wait
+	// for the event that records this version, with what its index stated (withRemovals).
+	if blocks, err = withRemovals(ctx, tx, artifactID, blocks); err != nil {
 		return versionWriteResult{}, err
 	}
 	if !write.closedIssue {

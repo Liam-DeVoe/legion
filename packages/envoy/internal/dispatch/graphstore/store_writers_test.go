@@ -128,6 +128,10 @@ var storeWriteCallSites = map[string]string{
 	// relations and the carried Keeps, with the person node a Keep names, under the spec's event.
 	"docs/decision_restore.go#writeVersion": "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
 	"docs/decision_restore.go#writeFacts":   "docs#TestTheDecisionsStepsWritersTakeTheStoreLockOrder",
+	// A person's own write that takes an answered ask's block out of its document: the person's
+	// node at the sentinel, after the version's block index and before the event that records the
+	// version, and the removed_by tuple appended with the index's facts under that event.
+	"docs/removed_by.go#withRemovals": "docs#TestAPersonsRemovalOfAnAnsweredAskTakesTheStoreLockOrder",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,

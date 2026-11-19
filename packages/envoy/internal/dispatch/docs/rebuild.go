@@ -189,7 +189,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		return RebuildReport{}, VersionResult{}, &ErrInvalidAskBlock{Reason: err}
 	}
 	// A rebuild is a person's own write: its route needs the person scope (api's routeScopes).
-	if err := s.refuseDroppedAskBlocks(ctx, artifactID, tree, true); err != nil {
+	if err := s.refuseDroppedAskBlocks(ctx, artifactID, tree, dropper{person: true, remover: personOf(actor), actor: actor}); err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
 	// A closed issue's document shows its asks as the close left them, and the tree read from the
@@ -449,7 +449,7 @@ func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, scope
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
 	}
 	// The erase is an operator's (envoy-dispatch erase), no agent's write.
-	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded, true); err != nil {
+	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded, dropper{person: true}); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, err)
 	}
 	margin, moved := keptMargin(marginOf(doc), scope)

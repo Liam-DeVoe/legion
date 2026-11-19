@@ -155,10 +155,10 @@ type StoreReport struct {
 	// first migration of this branch (20261109013400), so a database it has not reached has no
 	// kind to read, and the census reads none.
 	Absent bool
-	// StoreOnly is, for each tuple kind no table projects (copied_from and moved_to), how many
-	// the store states now, how many of those reach a far end that does not resolve and how many
-	// reach one in a document that still owes its block index (storeOnlyRead). An unresolved far
-	// end refuses the census; a count does not, and neither does a far end left out.
+	// StoreOnly is, for each tuple kind no table projects (copied_from, moved_to and removed_by),
+	// how many the store states now, how many of those reach a far end that does not resolve and
+	// how many reach one in a document that still owes its block index (storeOnlyRead). An
+	// unresolved far end refuses the census; a count does not, and neither does a far end left out.
 	StoreOnly []StoreOnlyReport
 	// Dangling is the dangling-citation counter over the restore's work (DanglingCitations), and
 	// Collisions the collision census of the same work (CollisionsOf), the block ids the restore
@@ -994,15 +994,17 @@ const censusAuthors = `unnest($1::text[], $2::text[], $3::timestamptz[]) stored 
 
 var inlineAuthors = `(` + storedAuthors + `) stored`
 
-// answeredHistory is every person an ask's answered_by or decided_by ever named, asserted or
-// retracted since, as (kind, id, at) (storedAuthors), read from each person's node: the probe of
-// graph_tuples binds graph_tuples_inbound's partial predicate (to_kind <> 'value') beside its join,
-// as graphstore.CurrentIn binds it, so that index is one the probe can take.
+// answeredHistory is every person an ask's answered_by or decided_by ever named, and every person
+// an ask's removed_by ever named (the person who took the ask's block out of its document, whose
+// node that write makes), asserted or retracted since, as (kind, id, at) (storedAuthors), read
+// from each person's node: the probe of graph_tuples binds graph_tuples_inbound's partial
+// predicate (to_kind <> 'value') beside its join, as graphstore.CurrentIn binds it, so that index
+// is one the probe can take.
 var answeredHistory = `select answered.kind, answered.id, answered.made_at from graph_nodes answered
 		where answered.kind = '` + graphstore.KindPerson + `' and exists (
 			select 1 from graph_tuples t
 			where t.to_kind = answered.kind and t.to_kind <> '` + graphstore.KindValue + `' and t.to_id = answered.id
-			  and t.kind in ('` + graphstore.TupleAnsweredBy + `', '` + graphstore.TupleDecidedBy + `')
+			  and t.kind in ('` + graphstore.TupleAnsweredBy + `', '` + graphstore.TupleDecidedBy + `', '` + graphstore.TupleRemovedBy + `')
 			  and t.from_kind = '` + graphstore.KindAsk + `')`
 
 // writtenHistory is every person and session a block's decided_by or authored_by ever named,
@@ -1334,15 +1336,18 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 	return report, nil
 }
 
-// storeOnlyRead counts, in one read of graph_tuples, every relation of the two kinds no table
+// storeOnlyRead counts, in one read of graph_tuples, every relation of the three kinds no table
 // projects that the store states now - the newest tuple of each (near end, far end), kept while
 // it asserts - and those of them whose far end does not resolve: a copied_from (a copy's block to
-// the ask it was copied from, graphstore.TupleCopiedFrom) resolves to a live ask node, and a
-// moved_to (graphstore.TupleMovedTo) to a block that stands, which is one a document_blocks row
-// holds, reached at once or through more moved_to tuples, a cycle reaching none. A far end is
-// followed through one tuple fewer than graphstore.MovedToHops, since the tuple that names it is
-// the first of the chain a citation of its near end is read through (graphstore.MovedTo), so a
-// far end that resolves here is one every resolver reaches from that near end.
+// the ask it was copied from, graphstore.TupleCopiedFrom) resolves to a live ask node; a moved_to
+// (graphstore.TupleMovedTo) to a block that stands, which is one a document_blocks row holds,
+// reached at once or through more moved_to tuples, a cycle reaching none, or to an ask whose row
+// stands, which ends a chain (the heading of a section that cites an answered ask a person
+// removed from its spec); and a removed_by (graphstore.TupleRemovedBy, an ask's node to the person
+// who took its block out) to a person node of the store. A far end is followed through one tuple
+// fewer than graphstore.MovedToHops, since the tuple that names it is the first of the chain a
+// citation of its near end is read through (graphstore.MovedTo), so a far end that resolves here
+// is one every resolver reaches from that near end.
 //
 // A moved_to whose chain reaches no block that stands but reaches an address in a document that
 // still owes its block index (document_block_versions.version null, as typedNodeOwed reads it) is
@@ -1352,15 +1357,15 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 // census leaves out documents that still owe their block index").
 //
 // The read walks graph_tuples_store_only (migration 20261116220307), the partial index of these
-// two kinds, in its own column order, so it reads their tuples and no other, and a store that
-// holds none of them reads two zero counts. It states the index's to_kind predicate, which leaves
-// out no tuple of either kind, since a far end of either is never a value.
+// three kinds, in its own column order, so it reads their tuples and no other, and a store that
+// holds none of them reads three zero counts. It states the index's to_kind predicate, which
+// leaves out no tuple of any of them, since none of their far ends is a value.
 var storeOnlyRead = `
 	with recursive stated as (
 		select held.from_kind, held.from_id, held.kind, held.to_kind, held.to_id from (
 			` + graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id, t.to_kind, t.to_id`,
 	`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
-	`t.kind in ('`+graphstore.TupleCopiedFrom+`', '`+graphstore.TupleMovedTo+`') and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+	`t.kind in ('`+graphstore.TupleCopiedFrom+`', '`+graphstore.TupleMovedTo+`', '`+graphstore.TupleRemovedBy+`') and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 		) held where held.asserted
 	),
 	followed (start, kind, address, hops, path) as (
@@ -1376,6 +1381,9 @@ var storeOnlyRead = `
 	standing as (
 		select distinct f.start from followed f
 		where f.kind = '` + refs.BlockNodeKind + `' and exists (select 1 from document_blocks d where d.node_id = f.address)
+		   or f.kind = '` + graphstore.KindAsk + `' and exists (
+			select 1 from asks k
+			where k.id = case when f.address ~ '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$' then f.address::uuid end)
 	),
 	owing as (
 		select distinct f.start from followed f
@@ -1389,7 +1397,10 @@ var storeOnlyRead = `
 			when '` + graphstore.TupleCopiedFrom + `' then s.to_kind = '` + graphstore.KindAsk + `' and exists (
 				select 1 from graph_nodes ask where ask.kind = '` + graphstore.KindAsk + `' and ask.id = s.to_id
 				  and ask.state = '` + graphstore.StateLive + `')
-			else s.to_kind = '` + refs.BlockNodeKind + `' and exists (select 1 from standing where standing.start = s.to_id)
+			when '` + graphstore.TupleRemovedBy + `' then s.to_kind = '` + graphstore.KindPerson + `' and exists (
+				select 1 from graph_nodes person where person.kind = '` + graphstore.KindPerson + `' and person.id = s.to_id)
+			else s.to_kind in ('` + refs.BlockNodeKind + `', '` + graphstore.KindAsk + `')
+			  and exists (select 1 from standing where standing.start = s.to_id)
 		end as resolves,
 		s.kind = '` + graphstore.TupleMovedTo + `' and s.to_kind = '` + refs.BlockNodeKind + `'
 		  and exists (select 1 from owing where owing.start = s.to_id) as left_out
@@ -1398,7 +1409,7 @@ var storeOnlyRead = `
 	select listed.kind, count(r.kind),
 	       count(r.kind) filter (where not r.resolves and not r.left_out),
 	       count(r.kind) filter (where not r.resolves and r.left_out)
-	from (values (1, '` + graphstore.TupleCopiedFrom + `'), (2, '` + graphstore.TupleMovedTo + `')) listed (position, kind)
+	from (values (1, '` + graphstore.TupleCopiedFrom + `'), (2, '` + graphstore.TupleMovedTo + `'), (3, '` + graphstore.TupleRemovedBy + `')) listed (position, kind)
 	left join resolved r on r.kind = listed.kind
 	group by listed.position, listed.kind
 	order by listed.position`

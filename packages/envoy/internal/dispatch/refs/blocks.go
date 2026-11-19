@@ -1349,43 +1349,45 @@ func scanBlockRefRows(rows pgx.Rows, err error) ([]blockRefRow, error) {
 // blocks of their documents: a deleted block's links drop out, and its stored mentions bring them
 // back when a version holds its id again. A link whose target no current version holds but whose
 // moved_to tuples reach a block of toArtifact (graphstore.MovedTo) counts as a link to that block,
-// which it names, so a citation written before its target moved still reaches it
-// (dispatch://INFRA-1150 R8); only a target no row holds is followed through block_moved_to, so a
-// link to a block that stands costs the probe alone. A pointer's link counts only while the block
-// it reaches has a type the pointer allows, tested as the arm of graph_edges that answers the row
-// tests it (blockRefListed). A link either of whose blocks who may not see drops out the same
-// way, since neither end resolves to a node.
+// which it names, so a citation written before its target moved still reaches it (R8); only a
+// target no row holds is followed through moved_to_reach (movedTarget), so a link to a block that
+// stands costs the probe alone. A mention whose target's moves end at an ask whose row names
+// toArtifact - the heading of a section that cites an answered ask a person removed - counts as a
+// link to that ask, which it names. A pointer's link counts only while the block it reaches has a
+// type the pointer allows, tested as the arm of graph_edges that answers the row tests it
+// (blockRefListed), and a pointer reaches no ask. A link either of whose ends who may not see
+// drops out the same way, since that end resolves to no node.
 func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, toArtifact string) ([]model.BlockLink, error) {
 	rows, err := q.Query(ctx, `
-		select r.kind, r.from_node, t.node_id, r.created_at, r.created_version
+		select r.kind, r.from_node, coalesce(t.node_id, k.id::text), case when t.node_id is null then '`+graphstore.KindAsk+`' else 'block' end,
+		       r.created_at, r.created_version
 		from block_refs r
 		join document_blocks f on f.artifact_id = r.artifact_id and f.block_id = r.block_id
-		cross join lateral (
-			select coalesce(
-				(select held.node_id from document_blocks held where held.node_id = r.to_id limit 1),
-				block_moved_to(r.to_id)) as node_id
+		cross join lateral (`+movedTarget(`r.to_id`)+`
 		) target
-		join document_blocks t on t.node_id = target.node_id and t.artifact_id = $2::uuid
-		where r.artifact_id = $1::uuid and r.to_kind = 'block' and `+blockRefListed("r", "t.node_id")+`
-		order by r.created_at desc, r.from_node, t.node_id`, fromArtifact, toArtifact)
+		left join document_blocks t on t.node_id = target.node_id and t.artifact_id = $2::uuid
+		left join asks k on k.id = case when target.ask_id is not null then target.ask_id::uuid end and k.block_artifact_id = $2::uuid
+		where r.artifact_id = $1::uuid and r.to_kind = 'block'
+		  and (t.node_id is not null and `+blockRefListed("r", "t.node_id")+` or k.id is not null and r.kind = 'mentions')
+		order by r.created_at desc, r.from_node, coalesce(t.node_id, k.id::text)`, fromArtifact, toArtifact)
 	if err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)
 	}
 	type linkRow struct {
-		kind, from, to string
-		createdAt      time.Time
-		createdVersion int
+		kind, from, to, toKind string
+		createdAt              time.Time
+		createdVersion         int
 	}
 	var links []linkRow
 	var ends []edgeRow
 	for rows.Next() {
 		var link linkRow
-		if err := rows.Scan(&link.kind, &link.from, &link.to, &link.createdAt, &link.createdVersion); err != nil {
+		if err := rows.Scan(&link.kind, &link.from, &link.to, &link.toKind, &link.createdAt, &link.createdVersion); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan a block link: %w", err)
 		}
 		links = append(links, link)
-		ends = append(ends, edgeRow{otherKind: "block", otherID: link.from}, edgeRow{otherKind: "block", otherID: link.to})
+		ends = append(ends, edgeRow{otherKind: "block", otherID: link.from}, edgeRow{otherKind: link.toKind, otherID: link.to})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -1398,7 +1400,7 @@ func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, t
 	result := make([]model.BlockLink, 0, len(links))
 	for _, link := range links {
 		from, fromFound := nodes[[2]string{"block", link.from}]
-		to, toFound := nodes[[2]string{"block", link.to}]
+		to, toFound := nodes[[2]string{link.toKind, link.to}]
 		if !fromFound || !toFound {
 			// A block deleted between the two reads: its links drop out as they would have.
 			continue

@@ -323,6 +323,10 @@ func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, a
 // row the release before wrote is stated on the store by the boot step's backfill. It runs where
 // claimCopies does, in who's name at at, and event is the version this settlement wrote, or
 // graphstore.NoEvent.
+//
+// The same write retracts each removed_by an ask whose block reads (readable) holds asserted: an
+// ask block of that ask stands in the document its row names again, so the person's removal no
+// longer stands, and a later removal is judged afresh (graphstore.TupleRemovedBy).
 func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx pgx.Tx, who model.Actor, at time.Time, event int64) error {
 	if len(r.invalid) == 0 && len(r.readable) == 0 {
 		return nil
@@ -369,6 +373,33 @@ func (r *settlementReconciliation) stateInvalidReasons(ctx context.Context, tx p
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the readability the ask nodes hold: %w", err)
+	}
+	if len(r.readable) > 0 {
+		removals, err := tx.Query(ctx, `
+			select held.from_id, held.to_id from (
+				`+graphstore.CurrentTupleRead(`t.from_id, t.to_id`, `t.from_id, t.to_id, t.asserted`,
+			`t.from_kind = $2 and t.from_id = any($1::text[]) and t.kind = $3 and t.to_kind = $4`)+`
+			) held where held.asserted
+			order by held.from_id, held.to_id
+		`, r.readable, graphstore.KindAsk, graphstore.TupleRemovedBy, graphstore.KindPerson)
+		if err != nil {
+			return fmt.Errorf("read the removals the ask nodes hold: %w", err)
+		}
+		for removals.Next() {
+			var ask, person string
+			if err := removals.Scan(&ask, &person); err != nil {
+				removals.Close()
+				return fmt.Errorf("read a removal an ask node holds: %w", err)
+			}
+			tuples = append(tuples, graphstore.Tuple{
+				FromKind: graphstore.KindAsk, FromID: ask, Kind: graphstore.TupleRemovedBy,
+				ToKind: graphstore.KindPerson, ToID: person, At: at, Who: who, SourceEvent: event,
+			})
+		}
+		removals.Close()
+		if err := removals.Err(); err != nil {
+			return fmt.Errorf("read the removals the ask nodes hold: %w", err)
+		}
 	}
 	if len(tuples) == 0 {
 		return nil

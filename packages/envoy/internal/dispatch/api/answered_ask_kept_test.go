@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // keptAskQuestion and keptAskAnswer are the question of the ask TestAnAgentCannotDropAnAnsweredAsk
@@ -23,9 +26,12 @@ const (
 // an edit that drops the ask's block, a whole-document replacement that leaves the block out, and
 // a retype of the block - is refused 409 ANSWERED_ASK_KEPT, quoting the ask's question and naming
 // its node and its block's address. The document's version is unchanged, and the answer is still in
-// the spec when it is read back. The same three writes by the person are taken, whether they are
-// made at a browser or through the person's own token, which holds the person scope that the
-// refusal reads (docs.WithPersonScope).
+// the spec when it is read back, and the ask's node holds no removal. The same three writes by the
+// person are taken, whether they are made at a browser or through the person's own token, which
+// holds the person scope that the refusal reads (docs.WithPersonScope), and each leaves one
+// asserted removed_by from the ask's node to that person, so the decisions step never writes the
+// block back. The person then writes the block back, and the settlement that binds the ask's row
+// to it retracts the removal.
 func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 	handler, database := blockAskHandler(t)
 	personalToken := personalTokenHolding(t, database, model.ScopePerson)
@@ -86,8 +92,9 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 			project := fmt.Sprintf("KP%c", 'A'+index)
 			index++
 			t.Run(write.name+" "+person.name, func(t *testing.T) {
-				issue := createInteractionIssue(t, handler, project, "An answered decision", keptAskContext+"\n"+
-					":::ask{#chosen urgency=\"high\" multiple=\"false\"}\n"+keptAskQuestion+"\n\n- Keep: The name we have.\n- Change: A new one.\n:::\n")
+				original := keptAskContext + "\n" +
+					":::ask{#chosen urgency=\"high\" multiple=\"false\"}\n" + keptAskQuestion + "\n\n- Keep: The name we have.\n- Change: A new one.\n:::\n"
+				issue := createInteractionIssue(t, handler, project, "An answered decision", original)
 				askID := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"chosen": keptAskQuestion})["chosen"]
 				answerDecisionBlock(t, handler, askID, "alice", []string{"Keep"}, keptAskAnswer, nil)
 				path := write.path(issue.Key, issue.PrimaryArtifactID)
@@ -119,6 +126,9 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 				if ask := readBlockAsk(t, handler, askID); ask.State != "answered" || ask.Answer == nil || ask.Answer.User != "alice" {
 					t.Fatalf("the ask after the agent's refused %s = state %q answer %#v, want alice's answer", write.name, ask.State, ask.Answer)
 				}
+				if held := removalsOfAsk(t, database, askID); len(held) != 0 {
+					t.Fatalf("the agent's refused %s left the removals %+v on the ask's node, want none", write.name, held)
+				}
 
 				taken := person.send(t, path, body)
 				if taken.Code != write.taken {
@@ -128,9 +138,36 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 				if strings.Contains(spec, ":::ask{#chosen") || !strings.Contains(spec, write.holds) {
 					t.Fatalf("the spec after the person's %s %s = %q, want no ask block chosen and %q", write.name, person.name, spec, write.holds)
 				}
+				// The person's removal stays: one asserted removed_by from the ask's node to them.
+				if held := removalsOfAsk(t, database, askID); len(held) != 1 || !held[0].Asserted ||
+					held[0].ToKind != graphstore.KindPerson || held[0].ToID != "alice" {
+					t.Fatalf("the person's %s %s left the removals %+v on the ask's node, want one asserted to alice", write.name, person.name, held)
+				}
+
+				// The person writes the ask's block back; the settlement that binds the ask's row to
+				// it retracts the removal.
+				back := person.send(t, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"actor": sessionActor(), "name": "spec.md", "content": original})
+				if back.Code != http.StatusCreated {
+					t.Fatalf("the person's upload of the ask's block back: status=%d body=%s", back.Code, back.Body.String())
+				}
+				awaitSettled(t, database, issue.PrimaryArtifactID)
+				held := removalsOfAsk(t, database, askID)
+				if len(held) != 2 || held[1].Asserted || held[1].ToID != "alice" {
+					t.Fatalf("with the ask's block back in the spec, its node holds the removals %+v, want alice's retracted", held)
+				}
 			})
 		}
 	}
+}
+
+// removalsOfAsk is every removed_by tuple of askID's node, in the order they were appended.
+func removalsOfAsk(t *testing.T, database *store.Store, askID string) []graphstore.Tuple {
+	t.Helper()
+	held, err := graphstore.History(context.Background(), database.Pool, graphstore.KindAsk, askID, graphstore.TupleRemovedBy)
+	if err != nil {
+		t.Fatalf("read the removals of ask %s: %v", askID, err)
+	}
+	return held
 }
 
 // requireAnswerInSpec fails t unless the spec, as GET .../text reads it, holds its ask block chosen,
