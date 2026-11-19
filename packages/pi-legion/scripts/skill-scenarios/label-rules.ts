@@ -16,8 +16,8 @@ export interface Entry {
    * any number of hits, none included. */
   readonly fenced?: true;
   /** Present only on a sentence that is a hit in one of the two trees alone: one that T5.12 or T5.13
-   * adds (head) or removes (base), or one whose words main changed after them, so that the head's
-   * merge of main holds it as a hit (head) or no longer does (base). */
+   * adds (head) or removes (base), or one whose words main, or a later round of the pull request,
+   * changed after them, so that the head holds it as a hit (head) or no longer does (base). */
   readonly at?: Tree;
   /** What the label does to this sentence. */
   readonly cut?: string;
@@ -91,6 +91,13 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     file: "skills/legion-retro/SKILL.md",
     has: "and the pull request body's `Checks` block carries each of those lines",
     cut: "The retro's gate asks a pass from both roles. The label deletes `from the implementer and from the tester alike,`.",
+    at: "base",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "`dispatch results` prints those head lines under each check, and the pull request body's `Checks` block holds none of them.",
+    cut: "The retro's gate asks a pass from both roles, in the words item 19 of the round gives the head lines. The label deletes `, from the implementer and from the tester alike`.",
+    at: "head",
   },
   {
     file: "skills/legion-retro/SKILL.md",
@@ -293,8 +300,57 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
-    has: "A pass and a fail",
-    cut: "T5.12's third pair. The label restores `A pass and a fail from CI at one head leave no pass standing there.`",
+    has: "A pass and a fail from CI at one head leave no pass standing there.",
+    cut: "T5.12 replaces it with its third pair. The label restores it.",
+    at: "base",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    has: "A pass and a fail at one head, from any role, leave that head not known, and a later pass there does not end it: refuse the approval at once, naming the check, and do not wait for a later result, for a CI run still going or for GitHub.",
+    cut: "T5.12's third pair, which item 13 makes a refusal at once, with no wait for a CI run or for GitHub. The label restores `A pass and a fail from CI at one head leave no pass standing there.`",
+    at: "head",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
+    has: "Until that run concludes, wait for it by its name, unless that head's line reads not known because a pass and a fail count there.",
+    cut: "Item 13 takes from the wait a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there`.",
+    at: "head",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/reviewer.md",
+    has: "Wait for a `ci_check` run still going or unread, unless the head's line reads not known because a pass and a fail count there, which is a request for changes naming the check, at once.",
+    cut: "Item 13 takes from the wait a head that reads not known for a pass and a fail. The label deletes `, unless the head's line reads not known because a pass and a fail count there, which is a request for changes naming the check, at once`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/ci-checks.md",
+    has: "so nothing in this section holds for such a check while its run is still going or GitHub is unread",
+    cut: "Item 13 adds it: a pass and a fail at the head decide a `ci_check` check at once for each role, with no wait for the run or for GitHub. The label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "do not approve or request changes for that check, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above.",
+    cut: "Item 13 takes from the wait a head that reads not known for a pass and a fail. The label deletes `, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/pr-body.md",
+    has: "fails no round, unless that head's line reads not known because a pass and a fail count there, which is that test failure, at once.",
+    cut: "Item 13 takes from the tester's wait a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there, which is that test failure, at once`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "read again where GitHub could not be read, unless that head's line reads not known because a pass and a fail count there: that check moves the issue back at once, as below.",
+    cut: "The retro's wait, in a text that the reviewer reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there: that check moves the issue back at once, as below`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-architect/SKILL.md",
+    has: "is waited for and moves nothing back, unless that head's line reads not known because a pass and a fail count there, which sends the issue back at once, naming the check.",
+    cut: "The architect's wait, in a text that the reviewer reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there, which sends the issue back at once, naming the check`.",
+    at: "head",
   },
   {
     file: "skills/legion-retro/SKILL.md",
@@ -340,8 +396,8 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
   },
   {
     file: "skills/legion-worker/references/merge-gate.md",
-    has: "That is a refusal: `REQUEST_CHANGES` naming the check",
-    cut: "T5.12 adds it. The label deletes it.",
+    has: "That is a refusal at once: `REQUEST_CHANGES` naming the check, with no wait for a later result, for a CI run still going or for GitHub.",
+    cut: "T5.12 adds it, and item 13 makes it a refusal at once, with no wait for a CI run or for GitHub. The label deletes it.",
     at: "head",
   },
   {
@@ -419,14 +475,14 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
   },
   {
     file: "skills/legion-architect/SKILL.md",
-    has: "A pass and a fail at one head leave it not known, whoever recorded them, and so the check's answer.",
-    cut: "The architect's rule, in a text that the reviewer reads. T5.12 adds it, and the label deletes it.",
+    has: "A pass and a fail at one head leave that head's line not known, whoever recorded them, so the check's own answer, its `A pass stands:` line, reads not known or no, and never yes.",
+    cut: "The architect's rule, in a text that the reviewer reads. T5.12 adds it, item 25 names the answer it leaves, and the label deletes it.",
     at: "head",
   },
   {
     file: "skills/legion-architect/SKILL.md",
-    has: "Such a check has no pass: send the issue back",
-    cut: "The architect's rule, in a text that the reviewer reads. T5.12 adds it, and the label deletes it.",
+    has: "Such a check has no pass: send the issue back at once with `request_backward_move` naming the check, and do not wait for a later result, for a CI run still going or for GitHub.",
+    cut: "The architect's rule, in a text that the reviewer reads. T5.12 adds it, item 13 makes the move back come at once, and the label deletes it.",
     at: "head",
   },
   {
@@ -496,14 +552,20 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
   },
   {
     file: "skills/legion-architect/SKILL.md",
-    has: "A pass and a fail at one head leave it not known, whoever recorded them, and so the check's answer.",
-    cut: "T5.12 adds it. The label deletes it.",
+    has: "A pass and a fail at one head leave that head's line not known, whoever recorded them, so the check's own answer, its `A pass stands:` line, reads not known or no, and never yes.",
+    cut: "T5.12 adds it, item 25 names the answer it leaves, and the label deletes it.",
     at: "head",
   },
   {
     file: "skills/legion-architect/SKILL.md",
-    has: "Such a check has no pass: send the issue back",
-    cut: "T5.12 adds it. The label deletes it.",
+    has: "Such a check has no pass: send the issue back at once with `request_backward_move` naming the check, and do not wait for a later result, for a CI run still going or for GitHub.",
+    cut: "T5.12 adds it, item 13 makes the move back come at once, and the label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-architect/SKILL.md",
+    has: "is waited for and moves nothing back, unless that head's line reads not known because a pass and a fail count there, which sends the issue back at once, naming the check.",
+    cut: "Item 13 takes from the architect's wait a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there, which sends the issue back at once, naming the check`.",
     at: "head",
   },
   {
@@ -541,8 +603,14 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
   },
   {
     file: "skills/legion-worker/references/merge-gate.md",
-    has: "That is a refusal: `REQUEST_CHANGES` naming the check",
-    cut: "The reviewer's rule, in a text that the architect reads. T5.12 adds it, and the label deletes it.",
+    has: "That is a refusal at once: `REQUEST_CHANGES` naming the check, with no wait for a later result, for a CI run still going or for GitHub.",
+    cut: "The reviewer's rule, in a text that the architect reads. T5.12 adds it, item 13 makes it a refusal at once, and the label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "do not approve or request changes for that check, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above.",
+    cut: "The reviewer's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above`.",
     at: "head",
   },
   {
@@ -555,6 +623,24 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-retro/SKILL.md",
     has: "A pass at another commit does not count, and a pass and a fail at one head leave it not known.",
     cut: "The retro's gate, in a text that the architect reads. T5.13 adds it, and the label deletes `, and a pass and a fail at one head leave it not known`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "read again where GitHub could not be read, unless that head's line reads not known because a pass and a fail count there: that check moves the issue back at once, as below.",
+    cut: "The retro's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there: that check moves the issue back at once, as below`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/ci-checks.md",
+    has: "so nothing in this section holds for such a check while its run is still going or GitHub is unread",
+    cut: "The rule of each role for a `ci_check` check, in a text that the architect reads. Item 13 adds it, and the label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/pr-body.md",
+    has: "fails no round, unless that head's line reads not known because a pass and a fail count there, which is that test failure, at once.",
+    cut: "The tester's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there, which is that test failure, at once`.",
     at: "head",
   },
   {
@@ -664,7 +750,7 @@ export const RULES: Record<string, Rule> = {
   },
   "ablate-architect-later-fail": {
     role: "architect",
-    rule: "A pass and a fail at one head leave it and the check's answer not known: send the issue back, with no wait.",
+    rule: "A pass and a fail at one head leave it not known and the check's answer never yes: send the issue back, with no wait.",
     patterns: LATER_FAIL,
     entries: ENTRIES_ARCHITECT_LATER_FAIL,
   },
