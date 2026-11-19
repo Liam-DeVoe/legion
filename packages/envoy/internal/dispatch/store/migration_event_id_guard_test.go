@@ -48,11 +48,12 @@ func migrationEventIDOffences(path, sql string) []string {
 // before its writer holds RowExclusiveLock on events. The safe horizon dates a writer by that lock
 // (events/horizon.go, "Safe horizon"), so it would pass such an id while the transaction holding
 // it is still open. No migration may name the sequence, or draw with nextval or setval from a
-// sequence that is not one string literal, which can be events_id_seq without spelling it; one that
-// must name it (to alter it) needs its own reading of why the horizon still holds, and an exemption
-// here that says so. A migration can also hand events' id default to another table without naming
-// the sequence (like events including defaults, inherits, partition of), which no reading of the
-// text sees: TestOnlyTheEventsIDDefaultDrawsFromItsSequence reads the migrated catalog for that.
+// sequence that is not one string literal of its name (one of digits alone is an OID), which can
+// be events_id_seq without spelling it; one that must name it (to alter it) needs its own reading
+// of why the horizon still holds, and an exemption here that says so. A migration can also hand
+// events' id default to another table without naming the sequence (like events including defaults,
+// inherits, partition of), which no reading of the text sees:
+// TestOnlyTheEventsIDDefaultDrawsFromItsSequence reads the migrated catalog for that.
 func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 	t.Run("the pattern reads each shape that draws from the sequence", func(t *testing.T) {
 		for _, row := range []struct {
@@ -98,6 +99,8 @@ func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 			{"a table name built from parts", "select nextval(pg_get_serial_sequence('event' || 's', 'id'));", 1},
 			{"a setval of a name built from parts", "select setval('events_' || 'id_seq', 1);", 1},
 			{"a literal cast through text", "select nextval('other_seq'::text);", 1},
+			{"a setval of a sequence by its OID", "select setval('16402', 1);", 1},
+			{"a nextval of a sequence by its OID, cast", "select nextval('16402'::regclass);", 1},
 			{"another sequence, by literal", "select nextval('other_seq'), nextval('other_seq'::regclass), setval('other_seq', 1, false);", 0},
 			{"another table's serial default", "alter table issues alter column n set default nextval('issues_n_seq'::regclass);", 0},
 		} {

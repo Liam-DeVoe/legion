@@ -17,10 +17,11 @@ package eventidtest
 // nextval or setval whose sequence is not one string literal, bare or cast to regclass: a name
 // built from parts ('events_' || 'id_seq', format('%s_id_seq', 'events')), written with escapes
 // (E'events\x5fid\x5fseq', U&'events\005fid\005fseq'), cast through text, or passed as a parameter
-// can be events_id_seq without spelling it, so only a literal one, which spells its sequence, is
-// read as another sequence (nextval('other_seq'), setval('other_seq', 1)). A guard reads it over
+// can be events_id_seq without spelling it. So can a literal of digits alone, which regclass reads
+// as an OID (nextval('16402')). So only a literal that spells its sequence's name is read as
+// another sequence (nextval('other_seq'), setval('other_seq', 1)). A guard reads it over
 // lowercased SQL.
-const SequencePattern = `\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]|\b(?:nextval|setval)\s*\(\s*(?:[^'\s]|'[^']*'\s*(?:[^\s,):]|::\s*[^\sr]))`
+const SequencePattern = `\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]|\b(?:nextval|setval)\s*\(\s*(?:[^'\s]|'[^']*'\s*(?:[^\s,):]|::\s*[^\sr]))|\b(?:nextval|setval)\s*\(\s*'\s*\d+\s*'`
 
 // CurrvalPattern is a read of the id this session's nextval last drew from events_id_seq,
 // pg_catalog.currval of the sequence in SequencePattern's literal spellings: a write phase reads

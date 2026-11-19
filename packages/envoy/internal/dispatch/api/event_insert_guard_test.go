@@ -222,13 +222,13 @@ func eventCopies(file *ast.File, constants map[string]string) int {
 // an insert naming the id) would hold an id the lock table cannot yet show, and the horizon would
 // pass it while it is open. So no statement may name events_id_seq but dispatch-seed's offline
 // setval and a currval of the id the statement's own insert drew (eventIDCurrval), none may draw
-// with nextval or setval from a sequence that is not one string literal, which can be events_id_seq
-// without spelling it, and every insert into events lists its columns, without id: a list that
-// leaves id out leaves it to the default, and an insert with no list fills id by position. No
-// source but dispatch-seed's copies rows into events, which writes them through no insert at all.
-// And no statement makes a table from events (inherits, partition of, like): a child's or a
-// partition's rows are rows of events written under a lock on another table, and a table made like
-// events can take its id default.
+// with nextval or setval from a sequence that is not one string literal of its name (one of digits
+// alone is an OID), which can be events_id_seq without spelling it, and every insert into events
+// lists its columns, without id: a list that leaves id out leaves it to the default, and an insert
+// with no list fills id by position. No source but dispatch-seed's copies rows into events, which
+// writes them through no insert at all. And no statement makes a table from events (inherits,
+// partition of, like): a child's or a partition's rows are rows of events written under a lock on
+// another table, and a table made like events can take its id default.
 //
 // Its reach is TestOnlyTheBrokerInsertsEvents's: the module's non-test Go sources as the scan
 // assembles their statements. The migrations' SQL, which the server also runs, is
@@ -316,6 +316,9 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 			{"a.go", "select setval('events_' || 'id_seq', 1)", []string{"names the events id sequence"}},
 			{"a.go", "select nextval('events_id' || '_seq'::text)", []string{"names the events id sequence"}},
 			{"a.go", "select nextval($1)", []string{"names the events id sequence"}},
+			{"a.go", "select nextval('16402')", []string{"names the events id sequence"}},
+			{"a.go", "select nextval('16402'::regclass)", []string{"names the events id sequence"}},
+			{"a.go", "select setval( ' 16402 ' , 1)", []string{"names the events id sequence"}},
 			{"a.go", "select nextval('other_seq'::text)", []string{"names the events id sequence"}},
 			{"a.go", "select nextval('other_seq')", nil},
 			{"a.go", "select nextval('other_seq'::regclass)", nil},

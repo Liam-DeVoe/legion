@@ -123,12 +123,13 @@ func TestOnlyTheEventsIDDefaultDrawsFromItsSequence(t *testing.T) {
 
 	// Only a superuser can change pg_catalog, and a pod's test server logs in as none
 	// (packages/daemon/docker/legion-testpg). Each shape is made alone, so each clause of the read
-	// is shown to name it: a function added to pg_catalog has an oid past initdb's, and Postgres's
-	// own currval(regclass) replaced in place keeps its oid and is no longer in the internal
-	// language.
+	// is shown to name it: a function added to pg_catalog has an oid past initdb's, and this one is
+	// in the internal language (Postgres's own textlen under currval's name), so only the oid
+	// clause names it; Postgres's own currval(regclass) replaced in place keeps its oid and is no
+	// longer in the internal language.
 	t.Run("the read names a sequence function a superuser made or replaced in pg_catalog", func(t *testing.T) {
 		for _, plant := range []struct{ statement, want string }{
-			{`create function pg_catalog.currval(text) returns bigint language sql as $$ select pg_catalog.nextval($1::regclass) $$`,
+			{`create function pg_catalog.currval(text) returns integer language internal immutable strict as 'textlen'`,
 				"pg_catalog.currval(text) is a function of a sequence function's name that is not Postgres's own"},
 			{`create or replace function pg_catalog.currval(regclass) returns bigint language sql as $$ select pg_catalog.nextval($1) $$`,
 				"pg_catalog.currval(regclass) is a function of a sequence function's name that is not Postgres's own"},
