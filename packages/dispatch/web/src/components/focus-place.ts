@@ -149,6 +149,11 @@ const DIALOG = `[role="dialog"], [${PANEL_ATTRIBUTE}]`;
  *  the reader did not cause lands in none of these, and in no control inside one. */
 const ROW = 'tr, [role="row"], [data-inbox-row]';
 
+/** Whether `element` is a row (`ROW`) or inside one. */
+export function inRow(element: Element): boolean {
+  return element.closest(ROW) !== null;
+}
+
 /** The one checkbox a row draws for its mark (the project List's `Select <key>`, the Inbox's
  *  mark): the reader empties a selection from a row by it, from the bar itself otherwise. */
 const MARK = 'input[type="checkbox"]';
