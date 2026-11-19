@@ -2754,13 +2754,13 @@ func TestAnUnsettledCICheckOnACheckHoldingARolesResultChangesNothingUntilSettlem
 // checkRunsFake is GitHub's listing of each commit's check runs, a hundred to a page, as the
 // read of a check CI proves asks for it, and the count of the pages asked for each commit. A
 // test sets the runs of a commit, a status and body every read answers in place of the listing,
-// or a hold that keeps every read waiting until its caller gives up.
+// or a hold that keeps every read waiting until its caller gives up (ciHeldRead).
 type checkRunsFake struct {
 	mu        sync.Mutex
 	runs      map[string][]map[string]any
 	fault     int
 	faultBody string
-	hold      bool
+	hold      *ciHeldRead
 	asked     map[string]int
 }
 
@@ -2788,11 +2788,15 @@ func (f *checkRunsFake) failWithBody(status int, body string) {
 	f.fault, f.faultBody = status, body
 }
 
-// holdEveryRead makes every read wait until its caller gives up.
-func (f *checkRunsFake) holdEveryRead() {
+// holdEveryRead makes every read wait until its caller gives up, or until t ends, and answers the
+// hold, which says when a read reached GitHub and when its caller gave up.
+func (f *checkRunsFake) holdEveryRead(t *testing.T) *ciHeldRead {
+	t.Helper()
+	held := newCIHeldRead(t)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.hold = true
+	f.hold = held
+	return held
 }
 
 // reads is how many pages of sha's check runs GitHub has been asked for.
@@ -2825,11 +2829,8 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	f.asked[sha]++
 	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
 	f.mu.Unlock()
-	if hold {
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
+	if hold != nil {
+		hold.wait(r)
 		return
 	}
 	if fault != 0 {
@@ -2896,14 +2897,6 @@ func issueOfProject(t *testing.T, handler http.Handler, project, title, verifica
 	key := decodeBody[model.Issue](t, response).Key
 	uploadDocument(t, handler, "/api/v1/issues/"+key, "verification.md", verification)
 	return key
-}
-
-// shortenCIReadDeadline sets the bound of one head's check-runs read for the test.
-func shortenCIReadDeadline(t *testing.T, deadline time.Duration) {
-	t.Helper()
-	before := ciReadDeadline
-	ciReadDeadline = deadline
-	t.Cleanup(func() { ciReadDeadline = before })
 }
 
 // ciVerdictLineOf is the pull-request body line of a check written by ciCheckBlock whose run
@@ -3057,13 +3050,22 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 		"status 500", "Server Error at the check runs of "+headCommit)
 
 	fake.failWith(0)
-	fake.holdEveryRead()
-	shortenCIReadDeadline(t, 300*time.Millisecond)
-	started := time.Now()
-	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"), "no answer within 300ms")
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("the held read answered after %s, want it cut at the deadline", elapsed)
+	// A read held until its caller gives up: the test ends the read's bound as ciReadDeadline would,
+	// once the read has reached GitHub, so no clock decides whether the read ended in time.
+	bounds := holdCIReadBounds(t)
+	held := fake.holdEveryRead(t)
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
+	}()
+	ciAwait(t, "the read to reach GitHub", held.entered)
+	bounds.expire(t)
+	ciAwait(t, "the held read to see its context end", held.cancelled)
+	response := ciAwait(t, "the results read to answer", answered)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the results of %s: status=%d body=%s", issue.Key, response.Code, response.Body.String())
 	}
+	assertUnread(t, checkOf(t, decodeBody[issueResults](t, response), "c1"), "no answer within "+ciReadDeadline.String())
 
 	keyless, keylessDatabase, deps := newTestServer(t, testServerOptions{})
 	if deps.GitHub != nil {

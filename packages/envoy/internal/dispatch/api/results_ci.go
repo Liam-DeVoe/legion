@@ -36,8 +36,16 @@ import (
 // token mints and every page together, and the read of one pushed branch's head, its token mint
 // included (readBranchHead): the route is read inside a role's turn and inside the reviewer's
 // gate, and a read that runs out is a failed read the next one repairs. githubapp.RequestTimeout
-// bounds one call at twice this, so the bound is the context's. A var so a test can shorten it.
-var ciReadDeadline = 10 * time.Second
+// bounds one call at twice this, so the bound is the context's (ciReadBound).
+const ciReadDeadline = 10 * time.Second
+
+// ciReadBound is ctx bounded by ciReadDeadline, the bound of each read of GitHub a results read
+// makes: the reads of every head together (readCIHeads), each head's read inside it (readCIRuns),
+// and one pushed branch's head (readBranchHead). A var so a test can end a bound on an event of its
+// own, once the reads it waits for have ended, and never on a clock a stopped scheduler runs past.
+var ciReadBound = func(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, ciReadDeadline)
+}
 
 // ciHeadReadConcurrency is how many heads' check runs one results read reads at one time: the
 // number the reconcile reads pull requests with (delivery's reconcilePartialConcurrency), so an
@@ -218,7 +226,7 @@ type ciHeadRead struct {
 // time, all under one ciReadDeadline: a head whose read did not end by then answers its error,
 // and every other head keeps its own answer. Each answer is at the index of its head.
 func (s *server) readCIHeads(ctx context.Context, heads []delivery.NewestHead, names map[string]struct{}) []ciHeadRead {
-	ctx, cancel := context.WithTimeout(ctx, ciReadDeadline)
+	ctx, cancel := ciReadBound(ctx)
 	defer cancel()
 	reads := make([]ciHeadRead, len(heads))
 	group, groupCtx := errgroup.WithContext(ctx)
@@ -297,7 +305,7 @@ func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names
 	if !split || owner == "" || repo == "" {
 		return nil, fmt.Errorf("the pull request row names repository %q, which is not owner/repo", head.Repo)
 	}
-	ctx, cancel := context.WithTimeout(ctx, ciReadDeadline)
+	ctx, cancel := ciReadBound(ctx)
 	defer cancel()
 	runs, err := s.readCIRunPages(ctx, owner, repo, head.HeadSHA, names)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -351,7 +359,7 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 // which GitHub also sends for a rate limit, a 5xx, the deadline — is model.ReasonReadFailed. The
 // token never reaches the log: it is sent in a header, and no error names it.
 func (s *server) readBranchHead(ctx context.Context, repo, branch string) branchHeadAnswer {
-	ctx, cancel := context.WithTimeout(ctx, ciReadDeadline)
+	ctx, cancel := ciReadBound(ctx)
 	defer cancel()
 	owner, name, _ := strings.Cut(repo, "/")
 	token, err := s.deps.GitHub.RepositoryToken(ctx, owner, name)

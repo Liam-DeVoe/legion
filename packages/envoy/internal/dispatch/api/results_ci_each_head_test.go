@@ -1,15 +1,17 @@
 // results_ci_each_head_test.go holds GET /api/v1/issues/{key}/results to R8: for a check CI
 // proves, Dispatch derives one result at the head of each open pull request of the issue, from the
 // newest check run of the named job at that head, read in the repository of that pull request's own
-// row. A read that does not end within the deadline makes that head not known. The test reads the
+// row. A read whose bound ends before it does makes that head alone not known. The test reads the
 // route's answer as JSON into the types of this file, so it builds at a commit before the rule and
 // fails there on its own assertion.
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"testing"
@@ -31,12 +33,16 @@ const ciEachHeadVerification = ":::check{#c1 negative_control=\"A build whose se
 
 // ciEachHeadGitHub is GitHub's listing of check runs, keyed by repository and commit, with the
 // count of the requests for each, and a hold that keeps the reads of one key waiting until their
-// caller gives up.
+// caller gives up (ciHeldRead).
 type ciEachHeadGitHub struct {
 	mu    sync.Mutex
 	runs  map[string][]map[string]any
 	asked map[string]int
-	held  map[string]bool
+	held  map[string]*ciHeldRead
+}
+
+func newCIEachHeadGitHub() *ciEachHeadGitHub {
+	return &ciEachHeadGitHub{runs: map[string][]map[string]any{}, asked: map[string]int{}, held: map[string]*ciHeldRead{}}
 }
 
 func ciEachHeadKey(repo, sha string) string { return repo + "@" + sha }
@@ -49,10 +55,15 @@ func (g *ciEachHeadGitHub) set(repo, sha string, runs ...map[string]any) {
 	g.runs[ciEachHeadKey(repo, sha)] = runs
 }
 
-func (g *ciEachHeadGitHub) hold(repo, sha string) {
+// hold keeps every read of sha in repo waiting until its caller gives up, or until t ends, and
+// answers the hold.
+func (g *ciEachHeadGitHub) hold(t *testing.T, repo, sha string) *ciHeldRead {
+	t.Helper()
+	held := newCIHeldRead(t)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.held[ciEachHeadKey(repo, sha)] = true
+	g.held[ciEachHeadKey(repo, sha)] = held
+	return held
 }
 
 func (g *ciEachHeadGitHub) requests(repo, sha string) int {
@@ -68,8 +79,8 @@ func (g *ciEachHeadGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	runs, listed := g.runs[key]
 	held := g.held[key]
 	g.mu.Unlock()
-	if held {
-		<-r.Context().Done()
+	if held != nil {
+		held.wait(r)
 		return
 	}
 	if !listed {
@@ -96,7 +107,12 @@ type ciEachHeadSubject struct {
 // ciEachHeadRead is c1's subjects as the results read answers them, each by its commit.
 func ciEachHeadRead(t *testing.T, handler http.Handler, issue string) map[string]ciEachHeadSubject {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/results", nil, "alice")
+	return ciEachHeadSubjectsOf(t, issue, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/results", nil, "alice"))
+}
+
+// ciEachHeadSubjectsOf is c1's subjects in response, the results read of issue, each by its commit.
+func ciEachHeadSubjectsOf(t *testing.T, issue string, response *httptest.ResponseRecorder) map[string]ciEachHeadSubject {
+	t.Helper()
 	if response.Code != http.StatusOK {
 		t.Fatalf("read the results of %s: status=%d body=%s", issue, response.Code, response.Body.String())
 	}
@@ -137,10 +153,10 @@ func ciEachHeadWants(t *testing.T, what string, subjects map[string]ciEachHeadSu
 }
 
 // TestACheckCIProvesDerivesAResultAtEachOpenHead: R8. Dispatch reads the named job's newest check
-// run at each open head, each in its own pull request's repository, and a read that does not end
-// within the deadline makes that head alone not known.
+// run at each open head, each in its own pull request's repository, and a read whose bound ends
+// before it does makes that head alone not known.
 func TestACheckCIProvesDerivesAResultAtEachOpenHead(t *testing.T) {
-	github := &ciEachHeadGitHub{runs: map[string][]map[string]any{}, asked: map[string]int{}, held: map[string]bool{}}
+	github := newCIEachHeadGitHub()
 	handler, database, _ := resultsGitHubServed(t, map[string]bool{"acme/widgets": true, "acme/infra": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, github.serve)
 	issue := issueInRepository(t, handler, "RESEH", "acme/widgets", "A check CI proves at each head")
@@ -172,15 +188,165 @@ func TestACheckCIProvesDerivesAResultAtEachOpenHead(t *testing.T) {
 		}
 	})
 
+	// H2's read is held until its caller gives up. The reads of every head share one bound
+	// (readCIHeads), which the test ends as ciReadDeadline would, once H2's read has reached GitHub
+	// and the reads of H1 and H3 have returned, so no clock decides which head was read in time.
+	// H2 then reads unknown for read_failed, H1 keeps its fail, and the held read sees its context
+	// end. The time each step took is logged, and asserted nowhere.
 	t.Run("a read that does not end", func(t *testing.T) {
-		shortenCIReadDeadline(t, 300*time.Millisecond)
-		github.hold("acme/widgets", ciEachHeadH2)
+		bounds := holdCIReadBounds(t)
+		held := github.hold(t, "acme/widgets", ciEachHeadH2)
 		started := time.Now()
-		subjects := ciEachHeadRead(t, handler, issue.Key)
-		if took := time.Since(started); took > 5*time.Second {
-			t.Fatalf("the read with H2 held took %s, want it bounded by the deadline", took)
-		}
-		ciEachHeadWants(t, "H2 held past the deadline", subjects, ciEachHeadH2, "unknown", "read_failed")
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			answered <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/results", nil, "alice")
+		}()
+		ciAwait(t, "H2's read to reach GitHub", held.entered)
+		ciAwait(t, "the read of the first of H1 and H3 to return", bounds.ended)
+		ciAwait(t, "the read of the second of H1 and H3 to return", bounds.ended)
+		reads := time.Since(started)
+		bounds.expire(t)
+		ciAwait(t, "H2's held read to see its context end", held.cancelled)
+		subjects := ciEachHeadSubjectsOf(t, issue.Key, ciAwait(t, "the results read to answer", answered))
+		t.Logf("H1 and H3 were read %s after the results read began; H2's held read saw its bound end and the read answered %s after it began",
+			reads, time.Since(started))
+		ciEachHeadWants(t, "H2 held until its bound ended", subjects, ciEachHeadH2, "unknown", "read_failed")
 		ciEachHeadWants(t, "H1 beside the held H2", subjects, ciEachHeadH1, "no", "fail")
 	})
+}
+
+// ciHeldRead is a read of check runs a fixture holds until its caller gives up: entered closes
+// when the read reaches GitHub, and cancelled when the read's context ends. A read still held when
+// the test that held it ends is let go then, so the fixture's server can close.
+type ciHeldRead struct {
+	entered, cancelled, release chan struct{}
+	enter, cancel               sync.Once
+}
+
+func newCIHeldRead(t *testing.T) *ciHeldRead {
+	t.Helper()
+	held := &ciHeldRead{entered: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { close(held.release) })
+	return held
+}
+
+// wait is the held read r: it says it reached GitHub, then waits for r's context to end and says
+// so, or for its test to end.
+func (h *ciHeldRead) wait(r *http.Request) {
+	h.enter.Do(func() { close(h.entered) })
+	select {
+	case <-r.Context().Done():
+		h.cancel.Do(func() { close(h.cancelled) })
+	case <-h.release:
+	}
+}
+
+// ciReadBounds stands in for ciReadBound for one test, so no bound of a read of GitHub ends on a
+// clock. The first bound made outside another of its own is the bound of the reads of every head
+// (readCIHeads): it ends with context.DeadlineExceeded when expire is called, as ciReadDeadline
+// would end it. A bound made inside one is the bound of one head's read (readCIRuns), and it says on
+// ended when its read has returned and cancelled it.
+type ciReadBounds struct {
+	mu    sync.Mutex
+	outer *ciEndedBound
+	ended chan struct{}
+}
+
+// holdCIReadBounds puts a ciReadBounds in ciReadBound's place until t ends.
+func holdCIReadBounds(t *testing.T) *ciReadBounds {
+	t.Helper()
+	bounds := &ciReadBounds{ended: make(chan struct{}, 64)}
+	before := ciReadBound
+	ciReadBound = bounds.bound
+	t.Cleanup(func() { ciReadBound = before })
+	return bounds
+}
+
+func (b *ciReadBounds) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	inner := ctx.Value(ciEndedBoundKey{}) != nil
+	bound := &ciEndedBound{parent: ctx, done: make(chan struct{})}
+	stop := context.AfterFunc(ctx, func() { bound.end(ctx.Err()) })
+	b.mu.Lock()
+	if !inner && b.outer == nil {
+		b.outer = bound
+	}
+	b.mu.Unlock()
+	return bound, func() {
+		stop()
+		bound.end(context.Canceled)
+		if inner {
+			b.ended <- struct{}{}
+		}
+	}
+}
+
+// expire ends the bound of the reads of every head as its deadline would.
+func (b *ciReadBounds) expire(t *testing.T) {
+	t.Helper()
+	b.mu.Lock()
+	outer := b.outer
+	b.mu.Unlock()
+	if outer == nil {
+		t.Fatal("no read of check runs has begun, so no bound is there to end")
+	}
+	outer.end(context.DeadlineExceeded)
+}
+
+// ciEndedBoundKey is the key a ciEndedBound answers itself for, so a bound made under one knows it.
+type ciEndedBoundKey struct{}
+
+// ciEndedBound is a context with no deadline that ends with the error end gives it, or with its
+// parent. It answers its parent's values, so the context package cancels a context made under it
+// with this bound's own Err, context.DeadlineExceeded where expire ended it.
+type ciEndedBound struct {
+	parent context.Context
+	done   chan struct{}
+	once   sync.Once
+	mu     sync.Mutex
+	err    error
+}
+
+func (c *ciEndedBound) end(err error) {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.err = err
+		c.mu.Unlock()
+		close(c.done)
+	})
+}
+
+func (c *ciEndedBound) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (c *ciEndedBound) Done() <-chan struct{} { return c.done }
+
+func (c *ciEndedBound) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *ciEndedBound) Value(key any) any {
+	if key == (ciEndedBoundKey{}) {
+		return c
+	}
+	return c.parent.Value(key)
+}
+
+// ciAwait waits for done, which an event of the test closes or sends on, with no bound of its own:
+// only the test binary's deadline, less a minute, stops the wait, so a fault that never sends
+// fails the test naming what it waited for, rather than hanging it until the binary panics.
+func ciAwait[T any](t *testing.T, what string, done <-chan T) T {
+	t.Helper()
+	var guard <-chan time.Time
+	if deadline, set := t.Deadline(); set {
+		guard = time.After(time.Until(deadline) - time.Minute)
+	}
+	select {
+	case value := <-done:
+		return value
+	case <-guard:
+		t.Fatalf("waited until a minute before the test binary's deadline for %s", what)
+	}
+	var none T
+	return none
 }

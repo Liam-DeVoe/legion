@@ -59,7 +59,7 @@ type ciRepositoryRig struct {
 
 func newCIRepositoryRig(t *testing.T) ciRepositoryRig {
 	t.Helper()
-	github := &ciEachHeadGitHub{runs: map[string][]map[string]any{}, asked: map[string]int{}, held: map[string]bool{}}
+	github := newCIEachHeadGitHub()
 	handler, database, _ := resultsGitHubServed(t, map[string]bool{"acme/widgets": true, "acme/infra": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, github.serve)
 	issue := issueInRepository(t, handler, "RESRP", "acme/widgets", "A check CI proves in two repositories")
