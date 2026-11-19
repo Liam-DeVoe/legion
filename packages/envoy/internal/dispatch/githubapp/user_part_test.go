@@ -10,13 +10,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 // The API base (DISPATCH_GITHUB_API_BASE) may carry a user and a password. A request that cannot
 // reach the base fails naming no part of it, with the failure's class, since net/http's transport
 // error quotes the request's URL with the user kept and a token written as the whole user part
-// whole; and an answer it refuses, a read's or an installation token mint's (Token), is named by
-// the request's path, not by the URL the base begins. The control is the same base with no user
+// whole; and an answer it refuses, a read's, an installation token mint's (Token) or a blob's
+// (DirFiles), is named by the request's path, not by the URL the base begins, and so is the
+// failure a read notes for /healthz (githubreads). The control is the same base with no user
 // part, whose errors name the same path, and whose unreached request's error is net/http's own,
 // the request's URL with it, since redact.URL prints that base whole. The user part's values are
 // made for this test.
@@ -59,6 +61,18 @@ func TestAnAPIBaseWithAUserPartIsNamedWithNoneOfIt(t *testing.T) {
 			t.Fatalf("user part %q: Token err = %v, want the refusal of the mint naming its path and status 500", userPart, err)
 		}
 		texts["a token mint the API refuses"] = err.Error()
+		_, err = answering.DirFiles(context.Background(), "made-up-installation-token", "acme", "widgets", githubapp.Dir{Files: []githubapp.DirFile{{Name: "a.md", Path: "notes/a.md", SHA: "0123456789abcdef0123456789abcdef01234567", Size: 1}}})
+		if err == nil || !strings.Contains(err.Error(), "/repos/acme/widgets/git/blobs/") || !strings.Contains(err.Error(), "status 500") {
+			t.Fatalf("user part %q: DirFiles err = %v, want the refusal of the blob read naming its path and status 500", userPart, err)
+		}
+		texts["a blob read the API refuses"] = err.Error()
+		noted, attempt := githubreads.Begin(context.Background())
+		_, _ = answering.HasCommit(noted, "made-up-installation-token", "acme", "widgets", "0123456789abcdef0123456789abcdef01234567")
+		if _, failed, cause := attempt.Outcome(); !failed || !strings.Contains(cause, "/repos/acme/widgets/commits/") {
+			t.Fatalf("user part %q: the read's noted failure is %v, %q, want the 500 naming the request's path", userPart, failed, cause)
+		} else {
+			texts["the failure a GitHub read notes, which /healthz names"] = cause
+		}
 		for name, text := range texts {
 			for _, part := range []string{user, password, token} {
 				if strings.Contains(text, part) {

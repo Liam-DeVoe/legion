@@ -904,6 +904,11 @@ export const JUDGED: readonly Judged[] = [
     text,
     why: "the path a _FILE variable names, and the variables' names",
   })),
+  {
+    file: `${DISPATCH}settings.go`,
+    text: "which its settings table (cmd/dispatch/settings.go) does not list",
+    why: "the name of the variable a reader asked lookup for, which the code wrote and the table does not list, never its value: the panic is how the settings tests catch such a reader",
+  },
   ...[
     'return strings.Join(names, ", ") + " and one of "',
     "must be unset because header identity and Google sign-in cannot share a deployment",
