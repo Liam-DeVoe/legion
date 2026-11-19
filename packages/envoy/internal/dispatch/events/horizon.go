@@ -37,14 +37,14 @@
 // names events_id_seq but to read with pg_catalog.currval the id its own insert's default just
 // drew (store.LatestEventID), which draws none, or in the offline seed tool's setval; a bare or
 // otherwise qualified currval could resolve to a function of another schema that draws, so it is
-// refused, and so is a nextval or setval of a sequence that is not one string literal of its name
-// (one of digits alone is an OID), which can be events_id_seq without spelling it. No insert lists
-// an explicit id, no source but that tool copies or merges rows into events, no statement makes a
-// table from events, no migration the server runs names the sequence, in a function, view, trigger
-// or default, or draws from a sequence it does not spell, and the schema they build gives no other
-// table events' id default, events no child or partition, whose rows would be rows of events
-// written under another table's lock, and no function a sequence function's name but Postgres's
-// own.
+// refused, and so is every nextval or setval but a call of one string literal of a sequence's name
+// (one of digits alone is an OID), and their C code under any name, since each can draw from
+// events_id_seq without spelling it. No insert lists an explicit id, no source but that tool
+// copies or merges rows into events, no statement makes a table from events, no migration the
+// server runs names the sequence, in a function, view, trigger or default, or draws from a
+// sequence it does not spell, and the schema they build gives no other table events' id default,
+// events no child or partition, whose rows would be rows of events written under another table's
+// lock, and no function of a sequence function's name, oid or code but Postgres's own.
 // TestOnlyAnEventInsertsDefaultDrawsAnEventID and TestOnlyTheBrokerInsertsEvents
 // (internal/dispatch/api) hold the Go half, TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault
 // (internal/dispatch/store) the migrations' text, and
@@ -264,10 +264,13 @@ type Horizon struct {
 	// sets pauseFor and a test replaces it to see the waits Await takes.
 	pause func(ctx context.Context, d time.Duration)
 	// afterObservationParked runs, outside the lock, each time a caller finds an observation
-	// already in flight and parks on it rather than running one of its own. Nothing in
-	// production sets it; the package's own test of concurrent callers waits on it instead of
-	// sleeping for a share of them to arrive.
-	afterObservationParked func()
+	// already in flight and parks on it rather than running one of its own, and
+	// afterParkedObservationEnded each time that observation has ended, before the caller looks
+	// again. Nothing in production sets them; the package's own tests of concurrent callers wait
+	// on the first instead of sleeping for a share of them to arrive, and hold callers on the
+	// second to make an observation end before they look.
+	afterObservationParked      func()
+	afterParkedObservationEnded func()
 
 	mu sync.Mutex
 	// generation counts Resets. An observation records only into the generation it started in,
@@ -275,8 +278,12 @@ type Horizon struct {
 	generation uint64
 	// started counts observations ever started and is never reset: an observation's number is
 	// its order, and Safe and Await each wait for one numbered above the count when called.
+	// inFlight is the observation running now, if any, and ended the newest one that has ended:
+	// one observation runs at a time, so every observation that has ended is numbered at or
+	// below ended's number.
 	started  uint64
 	inFlight *horizonFlight
+	ended    *horizonFlight
 	// safe is H. safeThrough is the number of the newest observation H covers: proven safe, or
 	// with an A at or below H when recorded or later. Both are this generation's.
 	safe        int64
@@ -428,7 +435,7 @@ func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 	h.mu.Lock()
 	after := h.started
 	h.mu.Unlock()
-	if err := h.observe(ctx, after); err != nil {
+	if _, err := h.observe(ctx, after); err != nil {
 		return 0, err
 	}
 	h.mu.Lock()
@@ -460,11 +467,15 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	h.mu.Lock()
 	after := h.started
 	h.mu.Unlock()
+	// seen is the number of the newest observation this call has used: each round takes one
+	// numbered above it, so no round reads the same observation twice.
+	seen := after
 	wait := horizonBackoffMin
 	var failed error
 	var failingSince time.Time
 	for {
-		err := h.observe(ctx, after)
+		number, err := h.observe(ctx, seen)
+		seen = max(seen, number)
 		again := false
 		if err == nil {
 			failed = nil
@@ -652,12 +663,21 @@ func (h *Horizon) Reset() {
 	h.persistedSafe = 0
 }
 
-// observe returns once an observation numbered above after has ended, recorded or failed: it
-// joins the one in flight, or runs one itself when none is. An observation numbered at or below
-// after started before the caller needed it, so the caller waits it out and takes the next.
-func (h *Horizon) observe(ctx context.Context, after uint64) error {
+// observe returns once an observation numbered above after has ended, recorded or failed, and
+// answers that observation's number and error. An observation numbered at or below after started
+// before the caller needed it, so the caller waits it out and takes the next; one numbered above
+// it started after, whoever ran it. So the caller takes the newest observation that has ended
+// when that one is numbered above after, joins the one in flight, or runs one itself when none
+// is. Taking the one that has ended is what keeps callers that waited out one observation
+// together on one more: the first of them to wake runs the next, and one that wakes only after
+// that has ended takes it rather than run another of its own.
+func (h *Horizon) observe(ctx context.Context, after uint64) (uint64, error) {
 	for {
 		h.mu.Lock()
+		if ended := h.ended; ended != nil && ended.number > after && !(ended.abandoned && ctx.Err() == nil) {
+			h.mu.Unlock()
+			return ended.number, ended.err
+		}
 		flight := h.inFlight
 		run := flight == nil
 		if run {
@@ -675,13 +695,16 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 			select {
 			case <-flight.done:
 			case <-ctx.Done():
-				return ctx.Err()
+				return 0, ctx.Err()
+			}
+			if h.afterParkedObservationEnded != nil {
+				h.afterParkedObservationEnded()
 			}
 		}
 		if flight.number <= after || (flight.abandoned && ctx.Err() == nil) {
 			continue
 		}
-		return flight.err
+		return flight.number, flight.err
 	}
 }
 
@@ -705,7 +728,7 @@ func (h *Horizon) run(ctx context.Context, flight *horizonFlight) {
 	h.mu.Unlock()
 	observation, writer, err := h.take(ctx, newestPending)
 	h.mu.Lock()
-	h.inFlight = nil
+	h.inFlight, h.ended = nil, flight
 	flight.err = err
 	flight.abandoned = err != nil && ctx.Err() != nil
 	var stalled *horizonObservation

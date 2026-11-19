@@ -164,7 +164,7 @@ func eventIDOffences(path, statement string) (offences []string, lists int) {
 	if eventIDPatterns[statement] {
 		return nil, 0
 	}
-	if eventIDSequence.MatchString(eventIDCurrval.ReplaceAllString(statement, "")) && !(strings.HasSuffix(path, seedSequenceReset) && strings.Contains(statement, "setval(")) {
+	if eventIDSequence.MatchString(eventIDCurrval.ReplaceAllStringFunc(statement, eventidtest.CurrvalReadKept)) && !(strings.HasSuffix(path, seedSequenceReset) && strings.Contains(statement, "setval(")) {
 		offences = append(offences, path+": names the events id sequence: "+statement)
 	}
 	if eventDerivedTable.MatchString(statement) {
@@ -221,14 +221,14 @@ func eventCopies(file *ast.File, constants map[string]string) int {
 // holding that lock. A writer that drew its id first (a select of nextval('events_id_seq'), then
 // an insert naming the id) would hold an id the lock table cannot yet show, and the horizon would
 // pass it while it is open. So no statement may name events_id_seq but dispatch-seed's offline
-// setval and a currval of the id the statement's own insert drew (eventIDCurrval), none may draw
-// with nextval or setval from a sequence that is not one string literal of its name (one of digits
-// alone is an OID), which can be events_id_seq without spelling it, and every insert into events
-// lists its columns, without id: a list that leaves id out leaves it to the default, and an insert
-// with no list fills id by position. No source but dispatch-seed's copies rows into events, which
-// writes them through no insert at all. And no statement makes a table from events (inherits,
-// partition of, like): a child's or a partition's rows are rows of events written under a lock on
-// another table, and a table made like events can take its id default.
+// setval and a currval of the id the statement's own insert drew (eventIDCurrval), none may use
+// nextval or setval but in a call of one string literal of a sequence's name (one of digits alone
+// is an OID), or their C code, which can draw from events_id_seq without spelling it, and every
+// insert into events lists its columns, without id: a list that leaves id out leaves it to the
+// default, and an insert with no list fills id by position. No source but dispatch-seed's copies
+// rows into events, which writes them through no insert at all. And no statement makes a table
+// from events (inherits, partition of, like): a child's or a partition's rows are rows of events
+// written under a lock on another table, and a table made like events can take its id default.
 //
 // Its reach is TestOnlyTheBrokerInsertsEvents's: the module's non-test Go sources as the scan
 // assembles their statements. The migrations' SQL, which the server also runs, is
@@ -320,6 +320,13 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 			{"a.go", "select nextval('16402'::regclass)", []string{"names the events id sequence"}},
 			{"a.go", "select setval( ' 16402 ' , 1)", []string{"names the events id sequence"}},
 			{"a.go", "select nextval('other_seq'::text)", []string{"names the events id sequence"}},
+			{"a.go", `select "nextval"('16402')`, []string{"names the events id sequence"}},
+			{"a.go", `select "pg_catalog"."setval"('16402', 1)`, []string{"names the events id sequence"}},
+			{"a.go", "select nextval/**/('16402')", []string{"names the events id sequence"}},
+			{"a.go", "select nextval -- a comment ('16402')", []string{"names the events id sequence"}},
+			{"a.go", `select u&"\006eextval"('16402')`, []string{"names the events id sequence"}},
+			{"a.go", "select nextval(pg_catalog.currval('events_id_seq') * 0 + 16402)", []string{"names the events id sequence"}},
+			{"a.go", "create function draw(regclass) returns bigint language internal as 'nextval_oid'", []string{"names the events id sequence"}},
 			{"a.go", "select nextval('other_seq')", nil},
 			{"a.go", "select nextval('other_seq'::regclass)", nil},
 			{"a.go", "select nextval ( 'other_seq' :: regclass )", nil},

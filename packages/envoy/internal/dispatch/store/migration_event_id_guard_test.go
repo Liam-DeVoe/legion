@@ -27,12 +27,13 @@ var migrationEventIDCurrval = regexp.MustCompile(eventidtest.CurrvalPattern)
 func migrationEventIDOffences(path, sql string) []string {
 	var offences []string
 	lowered := migrationEventIDCurrval.ReplaceAllStringFunc(strings.ToLower(sql), func(read string) string {
-		return strings.Map(func(r rune) rune {
+		kept := eventidtest.CurrvalReadKept(read)
+		return kept + strings.Map(func(r rune) rune {
 			if r == '\n' {
 				return r
 			}
 			return ' '
-		}, read)
+		}, read[len(kept):])
 	})
 	for _, span := range migrationEventIDSequence.FindAllStringIndex(lowered, -1) {
 		line := strings.Count(lowered[:span[0]], "\n") + 1
@@ -47,12 +48,12 @@ func migrationEventIDOffences(path, sql string) []string {
 // table's column default defined here that drew from events_id_seq would hand out an event id
 // before its writer holds RowExclusiveLock on events. The safe horizon dates a writer by that lock
 // (events/horizon.go, "Safe horizon"), so it would pass such an id while the transaction holding
-// it is still open. No migration may name the sequence, or draw with nextval or setval from a
-// sequence that is not one string literal of its name (one of digits alone is an OID), which can
-// be events_id_seq without spelling it; one that must name it (to alter it) needs its own reading
-// of why the horizon still holds, and an exemption here that says so. A migration can also hand
-// events' id default to another table without naming the sequence (like events including defaults,
-// inherits, partition of), which no reading of the text sees:
+// it is still open. No migration may name the sequence, or use nextval or setval but in a call of
+// one string literal of a sequence's name (one of digits alone is an OID), or their C code, which
+// can draw from events_id_seq without spelling it; one that must name it (to alter it) needs its
+// own reading of why the horizon still holds, and an exemption here that says so. A migration can
+// also hand events' id default to another table without naming the sequence (like events
+// including defaults, inherits, partition of), which no reading of the text sees:
 // TestOnlyTheEventsIDDefaultDrawsFromItsSequence reads the migrated catalog for that.
 func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 	t.Run("the pattern reads each shape that draws from the sequence", func(t *testing.T) {
@@ -101,6 +102,13 @@ func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 			{"a literal cast through text", "select nextval('other_seq'::text);", 1},
 			{"a setval of a sequence by its OID", "select setval('16402', 1);", 1},
 			{"a nextval of a sequence by its OID, cast", "select nextval('16402'::regclass);", 1},
+			{"a quoted nextval of an OID", `select "nextval"('16402');`, 1},
+			{"a quoted, qualified setval of an OID", `select "pg_catalog"."setval"('16402', 1);`, 1},
+			{"a nextval behind a comment", "select nextval/**/('16402');", 1},
+			{"a nextval across a line comment", "select nextval -- a comment\n('16402');", 1},
+			{"a nextval in Unicode escapes", `select U&"\006Eextval"('16402');`, 1},
+			{"a nextval around a currval read", "select nextval(pg_catalog.currval('events_id_seq') * 0 + 16402);", 1},
+			{"nextval's C function under another name", "create function draw(regclass) returns bigint language internal as 'nextval_oid';", 1},
 			{"another sequence, by literal", "select nextval('other_seq'), nextval('other_seq'::regclass), setval('other_seq', 1, false);", 0},
 			{"another table's serial default", "alter table issues alter column n set default nextval('issues_n_seq'::regclass);", 0},
 		} {

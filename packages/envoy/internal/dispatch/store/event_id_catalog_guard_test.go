@@ -16,15 +16,20 @@ import (
 // the safe horizon's proof needs of it (events/horizon.go, "Safe horizon"): only events.id's own
 // default depends on events_id_seq, events has no child table and no partition, events is a
 // plain table, and every function named currval, nextval, setval, lastval or
-// pg_get_serial_sequence is Postgres's own. A name resolves by the search path and by argument
-// type, so a currval(text) of public is called before pg_catalog.currval(regclass) for a text
-// argument, and one of those names in a schema placed before pg_catalog is called before
-// pg_catalog's; either can draw from the sequence in its body, which names nothing a reading of the
-// text could see. A superuser can also add one to pg_catalog (pg_catalog.currval(text)) or replace
-// Postgres's own in place, so one in pg_catalog counts as Postgres's own only when initdb made it
-// (an oid below 16384, FirstNormalObjectId) and it is still in the internal language, which every
-// one of them is in. It answers one row per offence, and a row also when events.id has no
-// nextval('events_id_seq') default, since the read would then see nothing.
+// pg_get_serial_sequence, or calling the C function of one, is Postgres's own. A name resolves by
+// the search path and by argument type, so a currval(text) of public is called before
+// pg_catalog.currval(regclass) for a text argument, and one of those names in a schema placed
+// before pg_catalog is called before pg_catalog's; either can draw from the sequence in its body,
+// which names nothing a reading of the text could see. A superuser can also add one to pg_catalog
+// (pg_catalog.currval(text)), replace Postgres's own in place, give one of Postgres's own another's
+// name (nextval renamed currval: Postgres calls a function of its own by its oid, so the name
+// currval then draws), or make a function of another name in the internal language that calls
+// nextval's C function (as 'nextval_oid'). So a function counts as Postgres's own only as the oid
+// initdb gives its name (pg_proc.dat: nextval 1574, currval 1575, setval 1576 and 1765, lastval
+// 2559, pg_get_serial_sequence 1665), in pg_catalog and still in the internal language; every
+// other function of one of those names or oids, or in the internal or C language with one of
+// their C functions as its source, is named. It answers one row per offence, and a row also when
+// events.id has no nextval('events_id_seq') default, since the read would then see nothing.
 const eventIDCatalogOffences = `
 	with own as (
 		select ad.oid from pg_attrdef ad join pg_attribute a on a.attrelid = ad.adrelid and a.attnum = ad.adnum
@@ -43,10 +48,15 @@ const eventIDCatalogOffences = `
 	from pg_class where oid = 'events'::regclass and relkind <> 'r'
 	union all
 	select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
-		|| ' is a function of a sequence function''s name that is not Postgres''s own'
+		|| ' is a function of a sequence function''s name or code that is not Postgres''s own'
 	from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-	where p.proname in ('currval', 'nextval', 'setval', 'lastval', 'pg_get_serial_sequence')
-		and (n.nspname <> 'pg_catalog' or p.oid >= 16384 or p.prolang <> (select oid from pg_language where lanname = 'internal'))
+	where (p.proname in ('currval', 'nextval', 'setval', 'lastval', 'pg_get_serial_sequence')
+			or p.oid in (1574, 1575, 1576, 1765, 2559, 1665)
+			or (p.prolang in (select oid from pg_language where lanname in ('internal', 'c'))
+				and p.prosrc in ('nextval_oid', 'currval_oid', 'setval_oid', 'setval3_oid', 'lastval', 'pg_get_serial_sequence')))
+		and not (n.nspname = 'pg_catalog' and p.prolang = (select oid from pg_language where lanname = 'internal')
+			and (p.proname, p.oid) in (values ('nextval'::name, 1574::oid), ('currval', 1575), ('setval', 1576),
+				('setval', 1765), ('lastval', 2559), ('pg_get_serial_sequence', 1665)))
 	union all
 	select 'events.id has no nextval(''events_id_seq'') default: this check reads nothing'
 	where not exists (select 1 from own)`
@@ -112,8 +122,8 @@ func TestOnlyTheEventsIDDefaultDrawsFromItsSequence(t *testing.T) {
 			"default value for column id of table rt_child depends on events_id_seq",
 			"default value for column id of table rt_like depends on events_id_seq",
 			"rule _RETURN on view rt_view depends on events_id_seq",
-			"public.currval(text) is a function of a sequence function's name that is not Postgres's own",
-			"rt_util.pg_get_serial_sequence(text, text) is a function of a sequence function's name that is not Postgres's own",
+			"public.currval(text) is a function of a sequence function's name or code that is not Postgres's own",
+			"rt_util.pg_get_serial_sequence(text, text) is a function of a sequence function's name or code that is not Postgres's own",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("the read did not name %q; it read:\n%s", want, got)
@@ -121,18 +131,24 @@ func TestOnlyTheEventsIDDefaultDrawsFromItsSequence(t *testing.T) {
 		}
 	})
 
-	// Only a superuser can change pg_catalog, and a pod's test server logs in as none
-	// (packages/daemon/docker/legion-testpg). Each shape is made alone, so each clause of the read
-	// is shown to name it: a function added to pg_catalog has an oid past initdb's, and this one is
-	// in the internal language (Postgres's own textlen under currval's name), so only the oid
-	// clause names it; Postgres's own currval(regclass) replaced in place keeps its oid and is no
-	// longer in the internal language.
+	// Only a superuser can change pg_catalog or make a function in the internal language, and a
+	// pod's test server logs in as none (packages/daemon/docker/legion-testpg). Each shape is made
+	// alone, so each is shown to be named by itself: a function added to pg_catalog in the internal
+	// language (Postgres's own textlen under currval's name) has an oid initdb did not give currval;
+	// Postgres's own currval(regclass) replaced in place keeps its oid and is no longer in the
+	// internal language; Postgres's own nextval renamed currval keeps nextval's oid, which Postgres
+	// calls nextval's C function by; and a function of another name in the internal language calls
+	// nextval's C function by its source.
 	t.Run("the read names a sequence function a superuser made or replaced in pg_catalog", func(t *testing.T) {
 		for _, plant := range []struct{ statement, want string }{
 			{`create function pg_catalog.currval(text) returns integer language internal immutable strict as 'textlen'`,
-				"pg_catalog.currval(text) is a function of a sequence function's name that is not Postgres's own"},
+				"pg_catalog.currval(text) is a function of a sequence function's name or code that is not Postgres's own"},
 			{`create or replace function pg_catalog.currval(regclass) returns bigint language sql as $$ select pg_catalog.nextval($1) $$`,
-				"pg_catalog.currval(regclass) is a function of a sequence function's name that is not Postgres's own"},
+				"pg_catalog.currval(regclass) is a function of a sequence function's name or code that is not Postgres's own"},
+			{`alter function pg_catalog.currval(regclass) rename to rt_currval; alter function pg_catalog.nextval(regclass) rename to currval`,
+				"pg_catalog.currval(regclass) is a function of a sequence function's name or code that is not Postgres's own"},
+			{`create function public.rt_draw(regclass) returns bigint language internal strict volatile as 'nextval_oid'`,
+				"public.rt_draw(regclass) is a function of a sequence function's name or code that is not Postgres's own"},
 		} {
 			func() {
 				tx, err := store.Pool.Begin(ctx)
