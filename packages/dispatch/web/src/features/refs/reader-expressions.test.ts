@@ -59,6 +59,15 @@ test.each([
   expect([...expressionsRunBy(() => run("abb"))]).toEqual(["/b+$/"]);
 });
 
+// The floor a one-pass row records from (`n`, a quarter of its read's text): an expression run
+// over a shorter text, such as the `/[A-Z]/g` happy-dom runs over a tag name it meets for the
+// first time, is no reading of the body and is left out; one run over a text as long as the
+// floor is recorded.
+test("an expression run over a text shorter than the floor is not recorded, and one at it is", () => {
+  expect([...expressionsRunBy(() => /b+$/.test("abb"), 4)]).toEqual([]);
+  expect([...expressionsRunBy(() => /b+$/.test("abbb"), 4)]).toEqual(["/b+$/"]);
+});
+
 // The control of the one-pass rows' list: a reader that counts its steps in one pass but trims
 // with the old mention expression, which no step count sees, fails the row and names it.
 test("a reader that runs an expression the list does not hold fails its one-pass row", () => {

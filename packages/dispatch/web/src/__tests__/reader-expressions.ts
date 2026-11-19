@@ -43,15 +43,23 @@ export function expressionKey(expression: RegExp): string {
   return `/${expression.source}/${flags}`;
 }
 
-/** The expressions `read` runs, as `expressionKey` writes them. Every match a string or an
- *  expression makes - `exec`, `test`, `match`, `matchAll`, `replace`, `search` and `split` -
- *  goes through `RegExp.prototype.exec` (ECMAScript's RegExpExec), so `read` runs with that one
- *  method recording, and the method is put back however `read` ends. */
-export function expressionsRunBy(read: () => void): Set<string> {
+/** The expressions `read` runs over a text of at least `shortest` characters, as
+ *  `expressionKey` writes them. Every match a string or an expression makes - `exec`, `test`,
+ *  `match`, `matchAll`, `replace`, `search` and `split` - goes through `RegExp.prototype.exec`
+ *  (ECMAScript's RegExpExec), so `read` runs with that one method recording, and the method is
+ *  put back however `read` ends.
+ *
+ *  A shorter text is left out because an expression over a text that does not grow with the body
+ *  costs the same on every body, however it is written. A library runs such expressions over a
+ *  name: happy-dom's `asciiLowerCase` runs `/[A-Z]/g` over a tag or attribute name, the first
+ *  time it meets that name, and property-information's `find` runs it over a `data` property's
+ *  name. An expression that reads a body again has to run over a stretch of that body, and a
+ *  one-pass row's stretch grows with the row's `n`. */
+export function expressionsRunBy(read: () => void, shortest = 0): Set<string> {
   const run = new Set<string>();
   const exec = RegExp.prototype.exec;
   RegExp.prototype.exec = function recordingExec(this: RegExp, text: string) {
-    run.add(expressionKey(this));
+    if (String(text).length >= shortest) run.add(expressionKey(this));
     return exec.call(this, text);
   };
   try {

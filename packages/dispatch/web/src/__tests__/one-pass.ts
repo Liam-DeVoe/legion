@@ -20,7 +20,8 @@ const checkedExpressions = new Set(
 
 /** The steps of this folder's text readers (`features/refs/reader-steps.ts`) that `read` takes
  *  on a text of `n` and on one of four times `n`, what `read` answered on the longer one, and the
- *  regular expressions it ran there (`expressionsRunBy`). */
+ *  regular expressions it ran there over a text of at least `n` characters, a quarter of the
+ *  read's own (`expressionsRunBy`). */
 export function stepsAtNAndFourN<Answer>(
   read: (n: number) => Answer,
   n: number
@@ -30,7 +31,7 @@ export function stepsAtNAndFourN<Answer>(
   const atFourN = countReaderSteps(() => {
     expressions = expressionsRunBy(() => {
       answerAtFourN = read(4 * n);
-    });
+    }, n);
   });
   return { answerAtFourN, atFourN, atN: countReaderSteps(() => read(n)), expressions };
 }
