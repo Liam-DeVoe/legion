@@ -788,19 +788,21 @@ func TestAHeldIssuesPostRecordsItsNearCopyCheck(t *testing.T) {
 	}
 }
 
-// The near-copy answer a held issue stores comes back as the gate gave it: the row, the answer with
-// its candidates, and whether the filing writes it in its transaction.
+// The near-copy answer a held issue stores comes back as the gate gave it: the row (built as the
+// gate builds it, newNearCopyCheckRow, with the spec's hash and the candidates' encoding), the
+// answer with its candidates, and whether the filing writes it in its transaction.
 func TestAHeldIssueKeepsItsNearCopyAnswerWhole(t *testing.T) {
+	check := &nearCopyCheck{
+		outcome: nearCopyNotMade, reason: nearCopyNotMadeUnrecorded, force: true,
+		candidates: []scoredDuplicate{{DuplicateCandidate: model.DuplicateCandidate{Key: "RVW-2", Title: "Close"}, Score: 0.91}},
+	}
 	want := issueCreate{Project: "RVW", Title: "Edited since", Labels: []string{}, NearCopy: &issueNearCopy{
-		row: nearCopyCheckRow{
-			id: "6f1e2d3c-4b5a-4978-8a1b-2c3d4e5f6a7b", project: "RVW", actor: model.Actor{Kind: "session", ID: heldWriter},
-			title: "Read by the gate", spec: "Its spec.", parent: "RVW-1",
-		},
-		check: &nearCopyCheck{
-			outcome: nearCopyNotMade, reason: nearCopyNotMadeUnrecorded, force: true,
-			candidates: []scoredDuplicate{{DuplicateCandidate: model.DuplicateCandidate{Key: "RVW-2", Title: "Close"}, Score: 0.91}},
-		},
-		inTx: true,
+		row: newNearCopyCheckRow(
+			"6f1e2d3c-4b5a-4978-8a1b-2c3d4e5f6a7b", "RVW", model.Actor{Kind: "session", ID: heldWriter},
+			"Read by the gate", "Its spec.", "RVW-1", check,
+		),
+		check: check,
+		inTx:  true,
 	}}
 	stored, err := json.Marshal(want)
 	if err != nil {

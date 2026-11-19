@@ -55,6 +55,7 @@ var (
 	markHeldEdit   = proseMark{why: "a held text's own wording, which the reviewer reads again before the text posts (held_routes.go): no person reads it until then"}
 	markHeldReason = proseMark{why: "the writer's reason for posting its held text as written, which Dispatch records and no person reads"}
 	markDraft      = proseMark{why: "a draft the reviewer reads and stores nothing of (reviewer_draft.go)"}
+	markStepRecord = proseMark{why: "a step record the Legion daemon writes for one run of a phase (steps.go), which is not a kind of text the reviewer reads (INFRA-3231 R5: asks, issues, comments, messages, documents and decision blocks)"}
 )
 
 // rawAs is the mark of a json.RawMessage member that holds an object of type T, whose own members
@@ -109,6 +110,11 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 	reflect.TypeFor[issueDesignGatesInput](): {},
 	reflect.TypeFor[issueDesignGate]():       {"step": markEnum, "artifact_id": markIdentifier},
 	reflect.TypeFor[createHandoffInput]():    {"body": markHandoff},
+	reflect.TypeFor[stepRecordInput](): {
+		"task": markStepRecord, "report": markStepRecord, "kind": markEnum, "result": markEnum,
+		"role": markEnum, "type": markEnum, "agent": markName, "session": markPerson,
+		"model": markIdentifier, "started_at": markTime, "ended_at": markTime,
+	},
 	reflect.TypeFor[checkResultInput](): {
 		"run": markProse, "observed": markProse, "negative_control": markProse,
 		"check": markIdentifier, "role": markEnum, "surface": markEnum, "commit": markIdentifier,
@@ -207,6 +213,7 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 	reflect.TypeFor[putArchitectureSourceInput]():  {"branch": markConfig},
 	reflect.TypeFor[projectDefaultAssigneeInput](): {"assignee": markPerson},
 	reflect.TypeFor[projectGatedStepsInput]():      {"steps": markEnum},
+	reflect.TypeFor[putLegionSettingInput]():       {"state_url": markConfig},
 	reflect.TypeFor[deliverySettingsInput](): {
 		"deploy_repo": markConfig, "deploy_workflow_path": markConfig, "production_job_names": markConfig,
 		"production_apply_step_name": markConfig, "pr_checks_workflow_path": markConfig,

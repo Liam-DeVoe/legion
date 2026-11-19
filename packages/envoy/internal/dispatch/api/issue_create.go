@@ -605,6 +605,12 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 			ctx, tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
 			adviceIssueRow{parent: parentRef, labels: create.Labels}, adviceAsks{},
 		)
+		// The spec's blocks come from the rendering the seed read back above, so they are worked
+		// out here, before the write phase's first statement takes the transaction's id, and never
+		// between two of its statements (INFRA-636's window).
+		if advice != nil && create.Spec != nil && strings.TrimSpace(*create.Spec) != "" {
+			advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
+		}
 	}
 
 	// The write phase: the statements from here on run back to back. A held issue's post takes
@@ -708,9 +714,6 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 	event, err := s.queueStampedEvent(ledger, issueOwner(key).event("issue.created", actor, payload), "artifact", artifactID)
 	if err != nil {
 		return issueWritten{}, err
-	}
-	if advice != nil && create.Spec != nil && strings.TrimSpace(*create.Spec) != "" {
-		advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
 	}
 	// A near copy let in because its refusal's row could not be confirmed (issueNearCopy.inTx)
 	// writes its row in this transaction, under the id the refusal used: the issue and the row that
