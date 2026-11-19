@@ -463,10 +463,8 @@ test("ProofDocument keeps the live editor mounted while a version is shown and d
     rerender({ version: 1 });
     await within(view.container).findByTestId("version-view");
     expect(
-      view.container
-        .querySelector("section[aria-label='Document editor'] article")
-        ?.hasAttribute("hidden")
-    ).toBe(true);
+      view.container.querySelector("section[aria-label='Document editor'] article")
+    ).toHaveAttribute("hidden");
     expect(editors[0]?.destroyed).toBe(false);
   } finally {
     view.unmount();

@@ -99,7 +99,7 @@ test("an issue's picture at a version draws from the version's bytes route, capt
   expect(img).toHaveAttribute("alt", "shot.png");
   expect(img).toHaveAttribute("loading", "lazy");
   expect(img.className).toBe(pictureClassName);
-  expect(img.hasAttribute("title")).toBe(false);
+  expect(img).not.toHaveAttribute("title");
   expect(dom.textContent).toBe("");
 });
 
@@ -335,7 +335,7 @@ test("a picture from elsewhere, or a reference the grammar refuses, is drawn by 
     expect(dom.tagName).toBe("IMG");
     expect(dom).toHaveAttribute("src", source);
     expect(dom).toHaveAttribute("alt", "logo");
-    expect(dom.hasAttribute("data-dispatch-doc-picture")).toBe(false);
+    expect(dom).not.toHaveAttribute("data-dispatch-doc-picture");
     expect(view.stopEvent).toBeUndefined();
   }
 });

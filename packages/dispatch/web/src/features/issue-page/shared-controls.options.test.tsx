@@ -1047,7 +1047,7 @@ test("inRow draws no label and the words of Details", async () => {
       name: `${CONTROL_LABELS.none}, Repository of CORE-1`,
     });
     expect(none.textContent).toBe(CONTROL_LABELS.none);
-    expect(none.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+    expect(none).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
     expect(classOf(none)).toEqual(expect.arrayContaining(tokens(pageQuietText)));
     expect(noRepository.queryByRole("combobox")).toBeNull();
     const repository = within(caseOf(view, "repository"));
@@ -3419,6 +3419,13 @@ function pickerOf(view: RenderResult): Promise<HTMLElement> {
   });
 }
 
+/** The priority picker as the page stands now, refused if the form is not open at this moment. */
+function pickerNow(view: RenderResult): HTMLElement {
+  return within(view.container).getByRole("combobox", {
+    name: CONTROL_LABELS.priority_to_advance,
+  });
+}
+
 function pickerShown(view: RenderResult): boolean {
   return (
     within(view.container).queryByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }) !==
@@ -3437,7 +3444,7 @@ test("the priority's add control puts the focus in its form", async () => {
       // A keyboard reaches the control and presses Enter on it.
       addControlOf(view, surface).focus();
       await user.keyboard("{Enter}");
-      expect(await pickerOf(view)).toHaveFocus();
+      expect(pickerNow(view)).toHaveFocus();
     } finally {
       undraw(view);
     }
@@ -3452,7 +3459,7 @@ test("Cancel in the priority's form returns the focus to its add control", async
     const view = draw(addablePriorityLine(surface), surface);
     try {
       await user.click(addControlOf(view, surface));
-      expect(await pickerOf(view)).toHaveFocus();
+      expect(pickerNow(view)).toHaveFocus();
       await user.click(within(view.container).getByRole("button", { name: CONTROL_LABELS.cancel }));
       expect(pickerShown(view)).toBe(false);
       expect(addControlOf(view, surface)).toHaveFocus();
@@ -3488,7 +3495,7 @@ test("Escape in the priority's form closes the form alone and returns the focus 
       // The sheet's first focus lands on its one control before the case presses anything.
       await waitFor(() => expect(addControlOf(view, surface)).toHaveFocus());
       await user.click(addControlOf(view, surface));
-      expect(await pickerOf(view)).toHaveFocus();
+      expect(pickerNow(view)).toHaveFocus();
 
       await user.keyboard("{Escape}");
       expect(pickerShown(view)).toBe(false);
@@ -3677,7 +3684,7 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       // the box's one description describes it. No box is drawn.
       expect(text().textContent).toBe(LONG_REPOSITORY);
       expect(text()).not.toHaveAttribute("title");
-      expect(text().hasAttribute(AUTHOR_TEXT_ATTRIBUTE)).toBe(true);
+      expect(text()).toHaveAttribute(AUTHOR_TEXT_ATTRIBUTE);
       expect(classOf(text())).toEqual(expect.arrayContaining(tokens(pageInkText)));
       expect(text()).toHaveAccessibleDescription(LONG_REPOSITORY);
       const described = text().getAttribute("aria-describedby");
@@ -3771,7 +3778,7 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
     );
     const words = scope.getByText(CONTROL_LABELS.repository_inherited);
     expect(words).toHaveAttribute("aria-hidden", "true");
-    expect(words.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+    expect(words).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
     expect(parentOf(words).contains(text)).toBe(true);
     expect(scope.queryByRole("combobox")).toBeNull();
   } finally {
@@ -4278,7 +4285,7 @@ test("inside NoTooltips Add in the priority form keeps the focus on the add cont
         } else if (surface === "outside") {
           // The write stopped pending as it landed, before its read, and a focus left on the body
           // moved to the add control then.
-          expect(add.hasAttribute("disabled")).toBe(false);
+          expect(add).not.toHaveAttribute("disabled");
           expect(reader === "waits" ? add : elsewhere).toHaveFocus();
         }
 
@@ -4286,8 +4293,8 @@ test("inside NoTooltips Add in the priority form keeps the focus on the add cont
         await scope.findByRole("link", { name: "P1 Evals collecting data now" });
         await settleReads();
         expect(add.isConnected).toBe(true);
-        expect(add.hasAttribute("aria-disabled")).toBe(false);
-        expect(add.hasAttribute("disabled")).toBe(false);
+        expect(add).not.toHaveAttribute("aria-disabled");
+        expect(add).not.toHaveAttribute("disabled");
         expect(reader === "waits" ? add : elsewhere).toHaveFocus();
         expect(patchIssue).toHaveBeenCalledTimes(1);
       } finally {
@@ -4354,7 +4361,7 @@ test("inside NoTooltips the priority form's Add is refused while a Remove's writ
       await waitFor(() => expect(remove.isConnected).toBe(false));
       await settleReads();
       expect(submit).toHaveFocus();
-      expect(submit.hasAttribute("aria-disabled")).toBe(false);
+      expect(submit).not.toHaveAttribute("aria-disabled");
       await user.keyboard("{Enter}");
       await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
       expect(patchIssue.mock.calls[1]?.[1].advances).toEqual(["evals-now"]);
@@ -4384,7 +4391,7 @@ test("inside NoTooltips the add control of a disabled priority line is disabled 
     try {
       const add = addControlOf(view, surface);
       expect(add).toBeDisabled();
-      expect(add.hasAttribute("aria-disabled")).toBe(false);
+      expect(add).not.toHaveAttribute("aria-disabled");
       await user.click(add);
       await settleReads();
       expect(pickerShown(view)).toBe(false);
@@ -4451,13 +4458,13 @@ async function landHeld<Answer>(
 function expectRefusedHoldingFocus(control: HTMLElement): void {
   expect(control).toHaveFocus();
   expect(control).toHaveAttribute("aria-disabled", "true");
-  expect(control.hasAttribute("disabled")).toBe(false);
+  expect(control).not.toHaveAttribute("disabled");
 }
 
 /** Outside `NoTooltips`, `control` refuses with `disabled` alone, as on `main`. */
 function expectDisabledAsOnMain(control: HTMLElement): void {
-  expect(control.hasAttribute("disabled")).toBe(true);
-  expect(control.hasAttribute("aria-disabled")).toBe(false);
+  expect(control).toHaveAttribute("disabled");
+  expect(control).not.toHaveAttribute("aria-disabled");
 }
 
 // Approve is refused while its write is out, and inside `NoTooltips` until the read after it is
@@ -4509,7 +4516,7 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
         expectRefusedHoldingFocus(approve);
       } else {
         // The write stopped pending as it landed, before its read.
-        expect(approve.hasAttribute("disabled")).toBe(false);
+        expect(approve).not.toHaveAttribute("disabled");
         expect(document.body).toHaveFocus();
       }
 
@@ -4555,11 +4562,11 @@ test("inside NoTooltips Approve keeps the focus when its write fails and takes t
 
       written.reject(new Error("the connection dropped"));
       const refusal = surface === "inside" ? "aria-disabled" : "disabled";
-      await waitFor(() => expect(approve.hasAttribute(refusal)).toBe(false));
+      await waitFor(() => expect(approve).not.toHaveAttribute(refusal));
       await settleReads();
       expect(approve.isConnected).toBe(true);
-      expect(approve.hasAttribute("aria-disabled")).toBe(false);
-      expect(approve.hasAttribute("disabled")).toBe(false);
+      expect(approve).not.toHaveAttribute("aria-disabled");
+      expect(approve).not.toHaveAttribute("disabled");
       expect(surface === "inside" ? approve : document.body).toHaveFocus();
 
       if (surface === "outside") approve.focus();
@@ -4672,21 +4679,21 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
         for (const control of [box, submit, cancel, requestChanges]) {
           expectDisabledAsOnMain(control);
         }
-        expect(box.hasAttribute("readonly")).toBe(false);
+        expect(box).not.toHaveAttribute("readonly");
         await user.keyboard("{Escape}");
         await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
         continue;
       }
 
-      expect(box.hasAttribute("disabled")).toBe(false);
-      expect(box.hasAttribute("readonly")).toBe(true);
+      expect(box).not.toHaveAttribute("disabled");
+      expect(box).toHaveAttribute("readonly");
       expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
       const close = dialog.getByRole("button", { name: "Close" });
       expect(close).toBe(cancel);
-      expect(close.hasAttribute("aria-disabled")).toBe(false);
-      expect(close.hasAttribute("disabled")).toBe(false);
+      expect(close).not.toHaveAttribute("aria-disabled");
+      expect(close).not.toHaveAttribute("disabled");
       expect(requestChanges).toHaveAttribute("aria-disabled", "true");
-      expect(requestChanges.hasAttribute("disabled")).toBe(false);
+      expect(requestChanges).not.toHaveAttribute("disabled");
       expectRefusedHoldingFocus(submit);
       await user.keyboard("{Enter}");
       await settleReads();
@@ -4714,7 +4721,7 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
       await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
       await settleReads();
       expect(requestChanges).toHaveFocus();
-      expect(requestChanges.hasAttribute("aria-disabled")).toBe(false);
+      expect(requestChanges).not.toHaveAttribute("aria-disabled");
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
     } finally {
       written.reject(new Error("the connection dropped"));
@@ -4801,8 +4808,8 @@ test("inside NoTooltips Escape closes the Request changes dialog while its chang
 
       if (surface === "outside") {
         for (const control of [approve, requestChanges]) {
-          expect(control.hasAttribute("disabled")).toBe(false);
-          expect(control.hasAttribute("aria-disabled")).toBe(false);
+          expect(control).not.toHaveAttribute("disabled");
+          expect(control).not.toHaveAttribute("aria-disabled");
         }
         continue;
       }
@@ -4832,10 +4839,10 @@ test("inside NoTooltips Escape closes the Request changes dialog while its chang
 
       answerReread(changesRequested);
       await scope.findByRole("button", { name: "Changes requested" });
-      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await waitFor(() => expect(requestChanges).not.toHaveAttribute("aria-disabled"));
       await settleReads();
       expect(requestChanges).toHaveFocus();
-      expect(approve.hasAttribute("aria-disabled")).toBe(false);
+      expect(approve).not.toHaveAttribute("aria-disabled");
       expect(scope.queryByRole("dialog")).toBeNull();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
     } finally {
@@ -4894,8 +4901,8 @@ test("inside NoTooltips the Request changes dialog's Close closes it while its c
 
       expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
       const close = dialog.getByRole("button", { name: "Close" });
-      expect(close.hasAttribute("aria-disabled")).toBe(false);
-      expect(close.hasAttribute("disabled")).toBe(false);
+      expect(close).not.toHaveAttribute("aria-disabled");
+      expect(close).not.toHaveAttribute("disabled");
       if (press === "Enter") {
         close.focus();
         await user.keyboard("{Enter}");
@@ -4931,10 +4938,10 @@ test("inside NoTooltips the Request changes dialog's Close closes it while its c
 
       answerReread(changesRequested);
       await scope.findByRole("button", { name: "Changes requested" });
-      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await waitFor(() => expect(requestChanges).not.toHaveAttribute("aria-disabled"));
       await settleReads();
       expect(requestChanges).toHaveFocus();
-      expect(approve.hasAttribute("aria-disabled")).toBe(false);
+      expect(approve).not.toHaveAttribute("aria-disabled");
       expect(scope.queryByRole("dialog")).toBeNull();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
 
@@ -4942,9 +4949,7 @@ test("inside NoTooltips the Request changes dialog's Close closes it while its c
       await user.keyboard("{Enter}");
       const next = within(await scope.findByRole("dialog", { name: "Request changes" }));
       await settleReads();
-      expect(next.getByRole("button", { name: "Cancel" }).hasAttribute("aria-disabled")).toBe(
-        false
-      );
+      expect(next.getByRole("button", { name: "Cancel" })).not.toHaveAttribute("aria-disabled");
       expect(next.queryByRole("button", { name: "Close" })).toBeNull();
     } finally {
       written.reject(new Error("the connection dropped"));
@@ -5000,8 +5005,8 @@ test("inside NoTooltips a refused change request keeps its dialog, its error and
         expect(alert.textContent).toBe("Could not request changes. Try again.");
         expect(scope.getByRole("dialog", { name: "Request changes" })).toBe(box);
         expect(dialog.getByRole("textbox", { name: "Reason" })).toHaveValue(reason);
-        expect(submit.hasAttribute("disabled")).toBe(false);
-        expect(submit.hasAttribute("aria-disabled")).toBe(false);
+        expect(submit).not.toHaveAttribute("disabled");
+        expect(submit).not.toHaveAttribute("aria-disabled");
         expect(surface === "inside" ? submit : document.body).toHaveFocus();
       }
 
@@ -5009,8 +5014,8 @@ test("inside NoTooltips a refused change request keeps its dialog, its error and
       await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
       await settleReads();
       expect(requestChanges).toHaveFocus();
-      expect(requestChanges.hasAttribute("disabled")).toBe(false);
-      expect(requestChanges.hasAttribute("aria-disabled")).toBe(false);
+      expect(requestChanges).not.toHaveAttribute("disabled");
+      expect(requestChanges).not.toHaveAttribute("aria-disabled");
       expect(createArtifactReview).toHaveBeenCalledTimes(2);
     } finally {
       createArtifactReview.mockRestore();
@@ -5052,12 +5057,12 @@ test("inside NoTooltips a change request refused after its dialog closed lets th
       await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
       await settleReads();
       written.reject(reviewVersionMoved());
-      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await waitFor(() => expect(requestChanges).not.toHaveAttribute("aria-disabled"));
       await settleReads();
       expect(requestChanges).toHaveFocus();
       for (const control of [approve, requestChanges]) {
-        expect(control?.hasAttribute("disabled")).toBe(false);
-        expect(control?.hasAttribute("aria-disabled")).toBe(false);
+        expect(control).not.toHaveAttribute("disabled");
+        expect(control).not.toHaveAttribute("aria-disabled");
       }
 
       await user.keyboard("{Enter}");
@@ -5129,7 +5134,7 @@ test("inside NoTooltips Request changes opens no dialog while Approve's write is
       answerReread(approved);
       await scope.findByRole("button", { name: "Approved v2" });
       await settleReads();
-      expect(requestChanges.hasAttribute("aria-disabled")).toBe(false);
+      expect(requestChanges).not.toHaveAttribute("aria-disabled");
       expect(requestChanges).toHaveFocus();
       expect(scope.queryByRole("dialog")).toBeNull();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
@@ -5411,12 +5416,12 @@ test("inside NoTooltips a copy pressed again by Enter while its write is out mak
           expect(button).toHaveFocus();
           expect(button).toHaveAttribute("aria-disabled", "true");
         } else {
-          expect(button.hasAttribute("aria-disabled")).toBe(false);
+          expect(button).not.toHaveAttribute("aria-disabled");
         }
         for (const write of writes) write.resolve();
         await scope.findByText("Copied");
         // The mark goes in the render after the one that draws Copied, so the case waits for it.
-        await waitFor(() => expect(button.hasAttribute("aria-disabled")).toBe(false));
+        await waitFor(() => expect(button).not.toHaveAttribute("aria-disabled"));
         if (surface === "inside") {
           await user.keyboard("{Enter}");
           await waitFor(() => expect(writes).toHaveLength(2));
@@ -5549,7 +5554,7 @@ test("inside NoTooltips a priority's Remove pressed by Enter keeps the focus unt
             expectRefusedHoldingFocus(remove);
           } else {
             // The write stopped pending as it landed, before its read.
-            expect(remove.hasAttribute("disabled")).toBe(false);
+            expect(remove).not.toHaveAttribute("disabled");
             expect(document.body).toHaveFocus();
           }
 
@@ -5586,8 +5591,8 @@ test("inside NoTooltips a priority's Remove pressed by Enter keeps the focus unt
           // kept the focus.
           const remove = await press(rocq);
           expect(remove.isConnected).toBe(true);
-          expect(remove.hasAttribute("aria-disabled")).toBe(false);
-          expect(remove.hasAttribute("disabled")).toBe(false);
+          expect(remove).not.toHaveAttribute("aria-disabled");
+          expect(remove).not.toHaveAttribute("disabled");
           expect(surface === "inside" ? remove : document.body).toHaveFocus();
         }
       } finally {
@@ -5709,7 +5714,7 @@ test("inside NoTooltips a priority's Remove draws its cross as an inline svg and
         const [cross] = crosses;
         if (cross === undefined) throw new Error("the Remove draws no svg");
         expect(cross).toHaveAttribute("aria-hidden", "true");
-        expect(cross.hasAttribute("data-remove-glyph")).toBe(true);
+        expect(cross).toHaveAttribute("data-remove-glyph");
         expect(classOf(cross)).toContain("size-[1em]");
         const paths = [...cross.querySelectorAll("path")];
         expect(paths).toHaveLength(1);
@@ -5810,7 +5815,7 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
             expect(rebuild.textContent).toBe("Rebuilding…");
           } else {
             // The rebuild stopped pending as it landed, before its read.
-            expect(rebuild.hasAttribute("disabled")).toBe(false);
+            expect(rebuild).not.toHaveAttribute("disabled");
             expect(rebuild.textContent).toBe("Rebuild from the latest version");
           }
 
@@ -6003,8 +6008,8 @@ test("inside NoTooltips an editor's Save and Cancel keep the focus while its sav
     expectRefusedHoldingFocus(cancel);
 
     saved.resolve();
-    await waitFor(() => expect(cancel.hasAttribute("aria-disabled")).toBe(false));
-    expect(save.hasAttribute("aria-disabled")).toBe(false);
+    await waitFor(() => expect(cancel).not.toHaveAttribute("aria-disabled"));
+    expect(save).not.toHaveAttribute("aria-disabled");
     await user.keyboard("{Enter}");
     expect(cancels).toBe(1);
   } finally {
@@ -6522,14 +6527,14 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
 function expectAskControlRefusedHoldingFocus(control: HTMLElement): void {
   if (control instanceof HTMLTextAreaElement) {
     expect(control).toHaveFocus();
-    expect(control.hasAttribute("readonly")).toBe(true);
-    expect(control.hasAttribute("disabled")).toBe(false);
+    expect(control).toHaveAttribute("readonly");
+    expect(control).not.toHaveAttribute("disabled");
     return;
   }
   if (control instanceof HTMLInputElement) {
     expect(control).toHaveFocus();
     expect(control.closest("fieldset")).toHaveAttribute("aria-disabled", "true");
-    expect(control.hasAttribute("disabled")).toBe(false);
+    expect(control).not.toHaveAttribute("disabled");
     return;
   }
   expectRefusedHoldingFocus(control);
@@ -6538,16 +6543,16 @@ function expectAskControlRefusedHoldingFocus(control: HTMLElement): void {
 /** Outside `NoTooltips`, the AskCard control is `disabled` alone, as on `main`. */
 function expectAskControlDisabledAsOnMain(control: HTMLElement): void {
   expectDisabledAsOnMain(control);
-  expect(control.hasAttribute("readonly")).toBe(false);
+  expect(control).not.toHaveAttribute("readonly");
   expect(control.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
 }
 
 /** Once its write has failed, the AskCard control is still drawn and takes a press again. */
 function expectAskControlFree(control: HTMLElement): void {
   expect(control.isConnected).toBe(true);
-  expect(control.hasAttribute("disabled")).toBe(false);
-  expect(control.hasAttribute("aria-disabled")).toBe(false);
-  expect(control.hasAttribute("readonly")).toBe(false);
+  expect(control).not.toHaveAttribute("disabled");
+  expect(control).not.toHaveAttribute("aria-disabled");
+  expect(control).not.toHaveAttribute("readonly");
   expect(control.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
 }
 
@@ -6733,8 +6738,8 @@ function expectOneMoveToRow(focus: FocusMoves, row: HTMLElement, surface: Surfac
  *  which would drop the focus in a browser. */
 function expectAnswerBoxReadOnly(scope: CardScope): void {
   const box = answerBoxOf(scope);
-  expect(box.hasAttribute("readonly")).toBe(true);
-  expect(box.hasAttribute("disabled")).toBe(false);
+  expect(box).toHaveAttribute("readonly");
+  expect(box).not.toHaveAttribute("disabled");
 }
 
 // An answer Dispatch made and lost its answer to (`409 KEY_COMMITTED`) lands with no body: the
@@ -6789,8 +6794,8 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
         expectAnswerBoxReadOnly(scope);
       } else {
         // The write stopped pending as it landed, before its read.
-        expect(answer.hasAttribute("disabled")).toBe(false);
-        expect(answer.hasAttribute("aria-disabled")).toBe(false);
+        expect(answer).not.toHaveAttribute("disabled");
+        expect(answer).not.toHaveAttribute("aria-disabled");
         expect(row).toHaveFocus();
       }
       expect(focus.moved).toHaveLength(0);
@@ -6862,9 +6867,9 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
       expect(focus.moved).toHaveLength(0);
 
       answerReread(threadOf(ask));
-      await waitFor(() => expect(askBack.hasAttribute("disabled")).toBe(true));
+      await waitFor(() => expect(askBack).toHaveAttribute("disabled"));
       await settleReads();
-      expect(askBack.hasAttribute("aria-disabled")).toBe(false);
+      expect(askBack).not.toHaveAttribute("aria-disabled");
       expectOneMoveToRow(focus, row, surface);
       expect(createComment).toHaveBeenCalledTimes(1);
     } finally {
@@ -6915,7 +6920,7 @@ test("inside NoTooltips Ask back instead keeps the focus until the ask is read a
       if (surface === "inside") {
         expect(anyway.isConnected).toBe(true);
         expect(anyway).toHaveAttribute("aria-disabled", "true");
-        expect(anyway.hasAttribute("disabled")).toBe(false);
+        expect(anyway).not.toHaveAttribute("disabled");
         expectRefusedHoldingFocus(instead);
         await user.keyboard("{Enter}");
         await settleReads();
@@ -6980,15 +6985,15 @@ test("outside NoTooltips AskCard sends an answer pressed while the ask is read a
         expect(answerAsk).not.toHaveBeenCalled();
         expect(answer).toHaveAttribute("aria-disabled", "true");
         answerReread(threadOf(ask));
-        await waitFor(() => expect(answer.hasAttribute("aria-disabled")).toBe(false));
+        await waitFor(() => expect(answer).not.toHaveAttribute("aria-disabled"));
         await settleReads();
         await user.click(answer);
         await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
       } else {
         // Nothing refuses while the read is out, and a press sends the answer then.
-        expect(answer.hasAttribute("disabled")).toBe(false);
-        expect(answer.hasAttribute("aria-disabled")).toBe(false);
-        expect(answerBoxOf(scope).hasAttribute("readonly")).toBe(false);
+        expect(answer).not.toHaveAttribute("disabled");
+        expect(answer).not.toHaveAttribute("aria-disabled");
+        expect(answerBoxOf(scope)).not.toHaveAttribute("readonly");
         await user.click(answer);
         await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
         answerReread(threadOf(ask));

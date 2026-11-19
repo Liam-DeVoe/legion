@@ -1509,7 +1509,7 @@ test("Use Send instead is disabled when the target does not advertise steer", as
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     const retry = await within(planner).findByRole("button", { name: "Use Send instead" });
-    expect(retry.hasAttribute("disabled")).toBe(true);
+    expect(retry).toHaveAttribute("disabled");
     expect(retry).not.toHaveAttribute("title");
     await within(planner).findByText(wholeText("Planner does not support Send — use BTW."));
     expect(within(planner).getByRole("button", { name: "Retry" })).not.toHaveAttribute("disabled");
@@ -2322,7 +2322,7 @@ test("a root targeted-message retry on the Agents page checks the role's current
     await expand(user, reviewerCard, "New reviewer");
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await within(reviewerCard).findByRole("button", { name: "Retry" });
-    expect(sendNormally.hasAttribute("disabled")).toBe(true);
+    expect(sendNormally).toHaveAttribute("disabled");
     expect(
       within(reviewerCard).getByRole("button", { name: "Use BTW instead" })
     ).not.toHaveAttribute("disabled");
@@ -2403,7 +2403,7 @@ test("a reply's targeted-message retry on the Agents page checks the thread's cu
     await expand(user, reviewerCard, "New reviewer");
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await within(reviewerCard).findByRole("button", { name: "Retry" });
-    expect(sendNormally.hasAttribute("disabled")).toBe(true);
+    expect(sendNormally).toHaveAttribute("disabled");
     expect(
       within(reviewerCard).getByRole("button", { name: "Use BTW instead" })
     ).not.toHaveAttribute("disabled");
@@ -4223,7 +4223,7 @@ test("/ focuses the Agents search box instead of opening the Dispatch-wide searc
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     const search = within(region).getByRole("searchbox", { name: "Search agents" });
-    expect(search).not.toBe(document.activeElement);
+    expect(search).not.toHaveFocus();
 
     // The keymap listens on the document, so the key with nothing focused reaches it.
     await user.keyboard("/");

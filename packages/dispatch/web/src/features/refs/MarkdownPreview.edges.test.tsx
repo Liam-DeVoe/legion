@@ -191,7 +191,7 @@ test("a preview inside a link holds no link of its own, and a click on its refer
     expect(within(view.container).getAllByRole("link")).toHaveLength(1);
     const reference = element.querySelector<HTMLElement>("[data-dispatch-ref]");
     expect(reference).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1");
-    expect(reference?.hasAttribute("href")).toBe(false);
+    expect(reference).not.toHaveAttribute("href");
     expect(reference?.textContent).toBe("CORE-1 Design decision");
     const docs = Array.from(element.querySelectorAll("[data-markdown-link]")).find(
       (link) => link.textContent === "the docs"

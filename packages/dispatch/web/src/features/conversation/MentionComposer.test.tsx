@@ -3072,7 +3072,7 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     fireEvent.paste(field, { clipboardData: { files: [file] } });
 
     const send = await screen.findByRole("button", { name: "Uploading file…" });
-    expect(send.hasAttribute("disabled")).toBe(true);
+    expect(send).toHaveAttribute("disabled");
     await user.click(send);
     field.focus();
     await user.keyboard("{Control>}{Enter}{/Control}");

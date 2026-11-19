@@ -781,7 +781,7 @@ test("IssuePage returns focus to the label trigger when Escape closes an unchang
     await user.keyboard("{Escape}");
 
     expect(screen.queryByRole("listbox", { name: "Label options" })).not.toBeInTheDocument();
-    expect(document.activeElement === trigger).toBe(true);
+    expect(trigger).toHaveFocus();
     expect(patchIssue).not.toHaveBeenCalled();
   } finally {
     view.unmount();

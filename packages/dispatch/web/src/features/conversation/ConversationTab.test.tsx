@@ -1066,7 +1066,7 @@ test("a handoff body that is not a JSON object shows as its raw text", async () 
   try {
     await user.click(await screen.findByRole("button", { name: "Show fields" }));
     const raw = await screen.findByText("not { json");
-    expect(raw.hasAttribute("data-handoff-raw")).toBe(true);
+    expect(raw).toHaveAttribute("data-handoff-raw");
     expect(view.container.querySelector("[data-handoff-field]")).toBeNull();
   } finally {
     view.unmount();
@@ -1901,7 +1901,7 @@ test("a root targeted-message retry checks the role's current holder after a han
   try {
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await screen.findByRole("button", { name: "Retry" });
-    expect(sendNormally.hasAttribute("disabled")).toBe(true);
+    expect(sendNormally).toHaveAttribute("disabled");
     expect(screen.getByRole("button", { name: "Use BTW instead" })).not.toHaveAttribute("disabled");
   } finally {
     view.unmount();
@@ -1953,7 +1953,7 @@ test("a reply's targeted-message retry checks the thread's current role holder a
     await screen.findByText("Any update?");
     // The new holder dropped steer, so the same-mode Retry of a steer attempt is refused.
     const sendNormally = await screen.findByRole("button", { name: "Retry" });
-    expect(sendNormally.hasAttribute("disabled")).toBe(true);
+    expect(sendNormally).toHaveAttribute("disabled");
     expect(screen.getByRole("button", { name: "Use BTW instead" })).not.toHaveAttribute("disabled");
   } finally {
     view.unmount();

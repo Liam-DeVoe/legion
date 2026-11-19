@@ -28,26 +28,33 @@
 #
 # The second rule is the same check over the assertions jest-dom's matchers carry. The unit
 # suite's preload registers `@testing-library/jest-dom`'s matchers, which print the element they
-# read and what they found when they fail, and the suite asserts focus and attributes with them:
-# `expect(el).toHaveFocus()`, not `expect(document.activeElement).toBe(el)`; and
+# read and what they found when they fail, and the suite asserts focus and attributes with them.
+# Focus is `expect(el).toHaveFocus()` (or `.not.toHaveFocus()`), not the focused element compared
+# by hand: `expect(document.activeElement).toBe(el)`, `expect(el).toBe(document.activeElement)`, or
+# `expect(document.activeElement === el)` with `===`, `!==`, `==` or `!=` on either side. An
+# attribute's presence is `expect(el).toHaveAttribute(name)` or `.not.toHaveAttribute(name)`, not
+# `expect(el.hasAttribute(name)).toBe(true)` or `.toBe(false)`. Its value is
 # `expect(el).toHaveAttribute(name, value)`, `expect(el).not.toHaveAttribute(name)` or
 # `expect(el).toHaveAttribute(name, expect.stringContaining(part))` (`expect.stringMatching(re)`),
 # not `expect(el.getAttribute(name))` compared by hand with `.toBe(`, `.toBeNull(`, `.toContain(`
-# or `.toMatch(`. Those hand-written shapes, and their `.not` forms, were rewritten by codemod, and
-# nothing but this keeps a new test from writing them again: between the merge that moved the
-# suite to the matchers (cybermonklabs/legion#2884) and this rule, the test files' focus reads went
-# from 3 to 126 and their attribute reads compared with `.toBe(` from 212 to 273. A site the
-# matcher cannot say the same thing at keeps its form and carries its reason as a `fireEvent` call
-# does: a value that may be null, which `toHaveAttribute` takes as one the attribute must hold, or
-# a `.not` form the matcher decides otherwise. On an absent attribute `.not.toContain(` fails and
-# `.not.toHaveAttribute(name, expect.stringContaining(…))` passes; on an element that may be
-# missing, `.not.toBeNull()` over `el?.getAttribute(name)` passes and `toHaveAttribute` fails.
+# or `.toMatch(`. The suite's sites of those hand-written shapes, and of their `.not` forms, were
+# rewritten, and nothing but this keeps a new test from writing them again: between the merge that
+# moved the suite to the matchers (cybermonklabs/legion#2884) and this rule, the test files' focus
+# reads went from 3 to 126 and their attribute reads compared with `.toBe(` from 212 to 273. A site
+# the matcher cannot say the same thing at keeps its form and carries its reason as a `fireEvent`
+# call does: a value that may be null, which `toHaveAttribute` takes as one the attribute must
+# hold, or a `.not` form the matcher decides otherwise. On an absent attribute `.not.toContain(`
+# fails and `.not.toHaveAttribute(name, expect.stringContaining(…))` passes; on an element that may
+# be missing, `.not.toBeNull()` over `el?.getAttribute(name)` and `.not.toBe(true)` over
+# `el?.hasAttribute(name)` pass, and the matcher fails.
 #
 # Biome's formatter wraps a long assertion, so this rule reads each file whole: a site whose
-# `expect(` ends its line, with the `getAttribute` read on the next, is the same site, and is named
-# at the line of its `expect(`. A read counts only at the top level of `expect`'s argument, never
+# `expect(` ends its line, with the read on the next, is the same site, and is named at the line of
+# its `expect(`. A read or comparison counts only at the top level of `expect`'s argument, never
 # inside a call there, so `expect(rows.map((row) => row.getAttribute(name))).toEqual(…)` is not
-# one. A locator holding an unbalanced parenthesis inside a string hides its site from this.
+# one, and neither is a read of a property of the focused element (`document.activeElement?.id`)
+# or a call it is passed to (`pane.contains(document.activeElement)`). A locator holding an
+# unbalanced parenthesis inside a string hides its site from this.
 #
 # A reason is a comment within the five lines above the call: the site's own one-line reason, or
 # the `biome-ignore` comment where the call sits beside the import. The window is five lines rather
@@ -90,10 +97,27 @@ COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*)")
 BALANCED = r"[^()]"
 for _ in range(4):
     BALANCED = rf"(?:[^()]|\({BALANCED}*\))"
-FOCUS = re.compile(r"\bexpect\(\s*document\.activeElement\s*\)\s*(?:\.not\s*)?\.toBe\(")
-ATTRIBUTE = re.compile(
-    rf"\bexpect\({BALANCED}*?\.getAttribute\({BALANCED}*\)\s*\)"
-    r"\s*(?:\.not\s*)?\.(?:toBe|toBeNull|toContain|toMatch)\("
+# The focused element compared by hand: read as `expect`'s whole argument and compared with
+# `.toBe(`; named as what `.toBe(` compares with; or compared with `===`, `!==`, `==` or `!=`, on
+# either side, at the top level of `expect`'s argument. A read of a property of the focused element
+# (`document.activeElement?.tagName`, `.matches(…)`) is not that element, and an argument it is
+# passed to (`pane.contains(document.activeElement)`) is not a comparison, so neither counts.
+FOCUS = (
+    re.compile(r"\bexpect\(\s*document\.activeElement\s*\)\s*(?:\.not\s*)?\.toBe\("),
+    re.compile(rf"\bexpect\({BALANCED}*\)\s*(?:\.not\s*)?\.toBe\(\s*document\.activeElement\s*\)"),
+    re.compile(
+        rf"\bexpect\({BALANCED}*?"
+        r"(?:\bdocument\.activeElement\s*[!=]==?|[!=]==?\s*document\.activeElement\b(?!\s*[!?]?\.))"
+    ),
+)
+ATTRIBUTE = (
+    re.compile(
+        rf"\bexpect\({BALANCED}*?\.getAttribute\({BALANCED}*\)\s*\)"
+        r"\s*(?:\.not\s*)?\.(?:toBe|toBeNull|toContain|toMatch)\("
+    ),
+    re.compile(
+        rf"\bexpect\({BALANCED}*?\.hasAttribute\({BALANCED}*\)\s*\)\s*(?:\.not\s*)?\.toBe\("
+    ),
 )
 
 
@@ -122,11 +146,9 @@ for path in sorted(ROOT.rglob("*")):
         if reasoned(lines, index):
             continue
         bare.append((path, index + 1, line.strip()))
-    found = sorted(
-        text.count("\n", 0, match.start())
-        for pattern in (FOCUS, ATTRIBUTE)
-        for match in pattern.finditer(text)
-    )
+    # A site two patterns both find is one site: each is counted once, at its `expect(`.
+    starts = {match.start() for pattern in (*FOCUS, *ATTRIBUTE) for match in pattern.finditer(text)}
+    found = sorted(text.count("\n", 0, start) for start in starts)
     for index in found:
         if COMMENT.match(lines[index]):
             continue
@@ -171,9 +193,13 @@ if bare_reads:
     report(bare_reads)
     print(
         "\nThe preload's jest-dom matchers say each of these and print the element they read when "
-        "they fail: `expect(el).toHaveFocus()` for `expect(document.activeElement).toBe(el)`; and "
-        "for `expect(el.getAttribute(name))`, `expect(el).toHaveAttribute(name, value)` for "
-        "`.toBe(value)`, `expect(el).not.toHaveAttribute(name)` for `.toBeNull()`, "
+        "they fail: `expect(el).toHaveFocus()` (`.not.toHaveFocus()`) for "
+        "`expect(document.activeElement).toBe(el)`, `expect(el).toBe(document.activeElement)` or "
+        "`expect(document.activeElement === el)`; `expect(el).toHaveAttribute(name)` for "
+        "`expect(el.hasAttribute(name)).toBe(true)` and `expect(el).not.toHaveAttribute(name)` "
+        "for `.toBe(false)`; and for `expect(el.getAttribute(name))`, "
+        "`expect(el).toHaveAttribute(name, value)` for `.toBe(value)`, "
+        "`expect(el).not.toHaveAttribute(name)` for `.toBeNull()`, "
         "`expect(el).toHaveAttribute(name)` for `.not.toBeNull()`, and "
         "`expect(el).toHaveAttribute(name, expect.stringContaining(part))` or "
         "`expect.stringMatching(re)` for `.toContain(part)` or `.toMatch(re)`. Where the matcher "

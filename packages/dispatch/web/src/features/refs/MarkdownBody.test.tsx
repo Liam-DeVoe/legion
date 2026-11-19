@@ -1288,7 +1288,7 @@ test("a task item draws one disabled checkbox, ticked as its source is, in every
     const plain = Array.from(view.container.querySelectorAll("li")).find(
       (item) => item.textContent === "plain"
     );
-    expect(plain?.hasAttribute("data-item-type")).toBe(false);
+    expect(plain).not.toHaveAttribute("data-item-type");
     expect(plain?.querySelector("input")).toBeNull();
 
     // A tight item's paragraph is unwrapped with its box in it: box and words sit in the item.

@@ -422,7 +422,7 @@ test("never synced: the source line says so and an empty model shows the Refresh
       name: "Refreshing legion/legion…",
     });
     expect(refreshing.textContent).toBe("Refreshing…");
-    expect(refreshing.hasAttribute("disabled")).toBe(true);
+    expect(refreshing).toHaveAttribute("disabled");
     settle?.();
     await screen.findByRole("button", { name: "Refresh legion/legion" });
   } finally {

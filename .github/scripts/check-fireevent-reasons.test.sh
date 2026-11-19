@@ -5,14 +5,17 @@
 # above the call, a `//` inside a string before the call on its own line, that same URL on the line
 # above, and the direct `fireEvent(node, event)` form the dotted pattern never saw; a call named
 # inside a comment is prose and is not counted. The jest-dom rule: a hand-written focus read, its
-# `.not` form and a hand-written attribute read with no comment above each fail, the attribute read
-# whether it is compared with `.toBe(`, `.toBeNull(`, `.not.toBeNull(`, `.toContain(` or
-# `.toMatch(`, and also when Biome has wrapped it onto lines of its own, where it is named at its
-# `expect(`; a kept site with its reason above passes; jest-dom's own matchers, an asymmetric
-# matcher among them, a read nested inside `expect`'s argument and a read named in a comment are
-# not counted; and one run reports both rules. The real repository passes over a count of calls
-# and of files it actually found, so a run that scanned nothing fails rather than reporting a clean
-# scan.
+# `.not` form, the focused element named as what `.toBe(` compares with, and a comparison with it
+# by `===` or `!==` inside `expect` each fail with no comment above, while a read of a property of
+# the focused element or a call it is passed to is not counted; a presence read
+# `expect(el.hasAttribute(name)).toBe(true|false)` fails, its `.not` and wrapped forms too; a
+# hand-written attribute read fails whether it is compared with `.toBe(`, `.toBeNull(`,
+# `.not.toBeNull(`, `.toContain(` or `.toMatch(`, and also when Biome has wrapped it onto lines of
+# its own, where it is named at its `expect(`; a kept site with its reason above passes; jest-dom's
+# own matchers, an asymmetric matcher among them, a read nested inside `expect`'s argument and a
+# read named in a comment are not counted; and one run reports both rules. The real repository
+# passes over a count of calls and of files it actually found, so a run that scanned nothing fails
+# rather than reporting a clean scan.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -193,6 +196,62 @@ EOF
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the read" "$(contains "$out" 'rows.test.tsx:2')"
+
+echo "case: the focused element compared by hand from the other side is refused"
+root=$(fixture focus_compared)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(row).toBe(document.activeElement);
+  expect(search).not.toBe(document.activeElement);
+  expect(document.activeElement === trigger).toBe(true);
+  expect(trigger !== document.activeElement).toBe(true);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts all four" "$(contains "$out" '4 of 4 hand-written focus and attribute assertions')"
+check "names the .toBe(document.activeElement)" "$(contains "$out" 'rows.test.tsx:2')"
+check "names the .not.toBe(document.activeElement)" "$(contains "$out" 'rows.test.tsx:3')"
+check "names the === comparison" "$(contains "$out" 'rows.test.tsx:4')"
+check "names the !== comparison" "$(contains "$out" 'rows.test.tsx:5')"
+
+echo "case: a read of a property of the focused element, or a call it is passed to, is not counted"
+root=$(fixture focus_property)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(document.activeElement?.tagName).toBe("BUTTON");
+  expect(document.activeElement?.matches("[data-row]")).toBe(true);
+  expect(pane.contains(document.activeElement)).toBe(true);
+  expect(document.activeElement?.id === "row-1").toBe(true);
+  expect(row === document.activeElement?.parentElement).toBe(true);
+});
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts no read at all" "$(contains "$out" 'every one of the 0 hand-written focus and attribute assertions')"
+
+echo "case: a presence read compared with toBe, its .not form and its wrapped form are refused"
+root=$(fixture presence)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(button.hasAttribute("disabled")).toBe(true);
+  expect(button.hasAttribute("aria-disabled")).toBe(false);
+  expect(button.hasAttribute("hidden")).not.toBe(true);
+  expect(
+    view.container.querySelector("section[aria-label='Document editor'] article")?.hasAttribute("hidden")
+  ).toBe(true);
+  expect(button).toHaveAttribute("disabled");
+  expect(rows.every((row) => row.hasAttribute("data-row"))).toBe(true);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts the four reads and nothing else" "$(contains "$out" '4 of 4 hand-written focus and attribute assertions')"
+check "names the toBe(true) read" "$(contains "$out" 'rows.test.tsx:2')"
+check "names the toBe(false) read" "$(contains "$out" 'rows.test.tsx:3')"
+check "names the .not.toBe read" "$(contains "$out" 'rows.test.tsx:4')"
+check "names the wrapped read at its expect" "$(contains "$out" 'rows.test.tsx:5')"
+check "names the matcher to use" "$(contains "$out" 'expect(el.hasAttribute(name)).toBe(true)')"
 
 echo "case: a hand-written attribute read with no comment above it is refused"
 root=$(fixture attribute)
