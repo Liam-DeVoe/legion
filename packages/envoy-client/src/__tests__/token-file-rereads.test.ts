@@ -71,7 +71,10 @@ test("a DispatchClient made once presents what DISPATCH_TOKEN_FILE holds at each
   await client.listAllIssues({});
   writeFileSync(file, "second-projected-not-a-secret\n");
   await client.listAllIssues({});
-  expect(dispatch.asked).toEqual(["Bearer first-projected-not-a-secret", "Bearer second-projected-not-a-secret"]);
+  expect(dispatch.asked).toEqual([
+    "Bearer first-projected-not-a-secret",
+    "Bearer second-projected-not-a-secret",
+  ]);
   expect(client.token, "the secret an excerpt redacts is the one presented last").toBe(
     "second-projected-not-a-secret"
   );
