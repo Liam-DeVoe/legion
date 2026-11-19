@@ -2,11 +2,12 @@ import { useMemo } from "react";
 import type { Agent, InboxRow } from "../../api/types";
 import {
   type AddressSpec,
+  type AddressValues,
   cappedTextParam,
   commaListParam,
+  fieldsAddress,
   useAddressFields,
 } from "../../lib/page-address";
-import { AGENTS_MACHINE_PARAM } from "../refs/routes";
 import { AGENT_GROUPS, type AgentGroup } from "./agent-groups";
 
 /**
@@ -23,17 +24,38 @@ export interface AgentFilters {
 
 /** The page's whole narrowing as the address spells it: the free-text query (`?q=`), and the
  *  groups, machines and roles each as one comma-separated parameter (`?group=`, `?machine=`,
- *  `?role=`). The names are the parameters': `machine` is the one the machines page links in
- *  with (`AGENTS_MACHINE_PARAM`), and the other three are this page's own. Every one of them is
- *  absent while nothing is picked, so a plain `/agents` is the page as it opens and unticking
- *  the last value does not bring the filter back on reload. A module-level constant, since its
- *  identity is what `useAddressFields` memoizes on. */
+ *  `?role=`). These names are the page's own, and a link from another page reaches them only
+ *  through `agentsAddress`, below, so nothing else spells them. Every one of them is absent
+ *  while nothing is picked, so a plain `/agents` is the page as it opens and unticking the last
+ *  value does not bring the filter back on reload. A module-level constant, since its identity
+ *  is what `useAddressFields` memoizes on. */
 const AGENT_FILTER_SPEC = {
   group: commaListParam(),
-  [AGENTS_MACHINE_PARAM]: commaListParam(),
+  machine: commaListParam(),
   q: cappedTextParam(),
   role: commaListParam(),
 } satisfies AddressSpec;
+
+/** The parameters a change of the narrowing writes, each under its name in `AGENT_FILTER_SPEC`.
+ *  A field `changed` leaves out writes nothing, so its parameter stays as it stands. */
+function addressFields(
+  changed: Partial<AgentFilters>
+): Partial<AddressValues<typeof AGENT_FILTER_SPEC>> {
+  const written: Partial<AddressValues<typeof AGENT_FILTER_SPEC>> = {};
+  if (changed.groups !== undefined) written.group = changed.groups;
+  if (changed.machines !== undefined) written.machine = changed.machines;
+  if (changed.roles !== undefined) written.role = changed.roles;
+  if (changed.search !== undefined) written.q = changed.search;
+  return written;
+}
+
+/** The Agents page narrowed by `narrowing` (`/agents?machine=<host>` for one machine's
+ *  sessions): the link another page sends a reader here by. It is written through the page's
+ *  own grammar and the field names `useAgentFilters`'s setter writes, so it is the address that
+ *  setter writes from a plain `/agents` for the same narrowing, cut and encoded the same way. */
+export function agentsAddress(narrowing: Partial<AgentFilters>): string {
+  return fieldsAddress("/agents", AGENT_FILTER_SPEC, addressFields(narrowing));
+}
 
 /** One frozen empty list, so an address naming no value of a filter gives the page the same
  *  value every render rather than new filter state. */
@@ -74,14 +96,7 @@ export function useAgentFilters(): readonly [
     }),
     [values]
   );
-  const setFilters = (changed: Partial<AgentFilters>) => {
-    const written: Partial<typeof values> = {};
-    if (changed.groups !== undefined) written.group = changed.groups;
-    if (changed.machines !== undefined) written.machine = changed.machines;
-    if (changed.roles !== undefined) written.role = changed.roles;
-    if (changed.search !== undefined) written.q = changed.search;
-    set(written);
-  };
+  const setFilters = (changed: Partial<AgentFilters>) => set(addressFields(changed));
   return [filters, setFilters] as const;
 }
 

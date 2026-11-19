@@ -15,6 +15,7 @@ import {
   recordCommits,
 } from "../../__tests__/commits";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pickNamed } from "../../__tests__/list-picks";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
@@ -1252,7 +1253,8 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
     const kept = await screen.findByTestId("ask-ask-b");
     expect(kept.closest("[data-inbox-row]")).toBe(row);
     expect(within(kept).getByText("bob")).toBeTruthy();
-    expect(within(kept).getByText("JSON, always.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("JSON, always.")).toBeTruthy();
     // The answer form is gone; the row keeps keyboard focus so j/k/Escape still start here.
     expect(row).toHaveFocus();
 
@@ -1264,6 +1266,81 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
     expect(screen.getByTestId("ask-ask-a")).toBeTruthy();
   } finally {
     view.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The same answer from elsewhere, with the page's focus rescue mounted as the app shell mounts it
+// (`RescuedMain`). The reader's click on the answer field has been answered, so no press of
+// theirs is live when the card swaps to its record: the loss is not their doing
+// (`causedByReader`), so the card's hand-off leaves it to the rescue, which moves the focus into
+// no row and scrolls nothing.
+test("an ask answered elsewhere while the reader's focus is in its form hands the focus to no row", async () => {
+  const user = userEvent.setup();
+  const askA = issueAsk({ id: "ask-a" });
+  const askB = issueAsk({
+    id: "ask-b",
+    issue: { assignee: "alice", key: "CORE-2", title: "Other issue" },
+    issue_key: "CORE-2",
+    question: "Which format?",
+  });
+  const answeredB: InboxRow = {
+    ...askB,
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "JSON, always.", user: "bob" },
+    state: "answered",
+  };
+  let threadB = askB;
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async (id: string) => ({
+    ask: id === askA.id ? askA : threadB,
+    answers: [],
+    edits: [],
+    claimant: null,
+    followers: [],
+    route: null,
+    route_status: null,
+    route_holder: null,
+    route_status_reason: null,
+    replies: [],
+  }));
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <RescuedMain>
+          <Inbox />
+        </RescuedMain>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const card = await screen.findByTestId("ask-ask-b");
+    const field = within(card).getByLabelText("Your answer");
+    await user.click(field);
+    await afterRescue();
+    expect(field).toHaveFocus();
+
+    // Bob answers it in his own tab: the server drops it from the inbox and the thread records
+    // the answer.
+    threadB = answeredB;
+    await act(async () => {
+      queryClient.setQueryData<InboxRow[]>(["inbox"], [askA]);
+      await queryClient.invalidateQueries({ queryKey: ["ask-thread", "ask-b"] });
+    });
+    // The card swaps to its record, and the answer form goes with the focus in it.
+    const kept = await screen.findByTestId("ask-ask-b");
+    expect(within(kept).getByText("JSON, always.")).toBeTruthy();
+    expect(field).not.toBeInTheDocument();
+    await afterRescue();
+
+    expect(document.activeElement?.closest("[data-inbox-row]") ?? null).toBeNull();
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    scrolls.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }
@@ -1633,7 +1710,8 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
 
     const kept = await screen.findByTestId("ask-ask-b");
     expect(kept.closest("[data-inbox-row]")).toBe(row);
-    expect(within(kept).getByText("YAML.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("YAML.")).toBeTruthy();
   } finally {
     view.unmount();
     answerAsk.mockRestore();
@@ -3248,7 +3326,8 @@ test("the reader's own answer takes its row off the list and selects the next on
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
 
     await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
@@ -3287,7 +3366,8 @@ test("an answer the server refuses keeps its question in the column, and a retry
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
 
     // The optimistic removal takes the row at once; the column keeps the question, because the
@@ -4278,7 +4358,8 @@ test("an answer given from the column drops the record: Escape lands on the ques
     // The reader answers the question in front of them from inside the column. Their clicks move
     // no focus, so no blur fires: what ends the record is the column showing another question.
     const pane = screen.getByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
     await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
     expect(rowIds()).toEqual(["ask-a", "ask-c"]);
@@ -4574,7 +4655,8 @@ test("Enter pressed inside the column belongs to the control holding it, and sti
     // A control inside the card, holding the focus the card gave it: Enter is that control's,
     // and the Inbox's own binding - which would move the focus to the answer box and swallow
     // the key with `preventDefault` - stands down.
-    const option = within(pane).getByRole("radio", { name: "Ship" });
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const option = await within(pane).findByRole("radio", { name: "Ship" });
     option.focus();
     await user.keyboard("{Enter}");
     expect(option).toHaveFocus();

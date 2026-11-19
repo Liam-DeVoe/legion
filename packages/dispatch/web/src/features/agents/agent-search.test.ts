@@ -3,7 +3,7 @@ import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { act } from "@testing-library/react";
 
 import { renderAddress } from "../../__tests__/render-address";
-import { useAgentFilters } from "./agent-search";
+import { agentsAddress, useAgentFilters } from "./agent-search";
 
 // The setter takes the fields that changed and writes those alone, so a caller hands it the one
 // field its control moves rather than the whole narrowing read back with one field replaced:
@@ -47,5 +47,41 @@ test("the field the reader edits is cut at the cap, and emptying it leaves the a
     expect(address().get("q")).toBe("x".repeat(SEARCH_QUERY_MAX));
   } finally {
     hook.unmount();
+  }
+});
+
+// Another page links here (the machine page's "Agents on this machine") through the page's own
+// grammar rather than spelling `?machine=` itself, so the link is the address the page's setter
+// writes for the same narrowing, encoded and cut the same way, and it reads back as exactly that
+// narrowing. Each name is paired with the machine the link reads back as: a name past the cap
+// reads back cut, as the setter wrote it.
+test("the link to the Agents page for a machine is the address the page's own grammar writes for it", () => {
+  const long = "x".repeat(SEARCH_QUERY_MAX + 12);
+  const names: readonly (readonly [string, string])[] = [
+    ["relay-1", "relay-1"],
+    ["sand-devbox.corp.example.com", "sand-devbox.corp.example.com"],
+    ["build host+1 & co #2", "build host+1 & co #2"],
+    [long, "x".repeat(SEARCH_QUERY_MAX)],
+  ];
+  for (const [name, readBack] of names) {
+    const link = agentsAddress({ machines: [name] });
+    const page = renderAddress(() => useAgentFilters(), ["/agents"]);
+    try {
+      act(() => page.result.current.value[1]({ machines: [name] }));
+      const { pathname, search } = page.result.current.location;
+      expect([name, link]).toEqual([name, `${pathname}${search}`]);
+    } finally {
+      page.unmount();
+    }
+
+    const linked = renderAddress(() => useAgentFilters(), [link]);
+    try {
+      expect([name, linked.result.current.value[0]]).toEqual([
+        name,
+        { groups: [], machines: [readBack], roles: [], search: "" },
+      ]);
+    } finally {
+      linked.unmount();
+    }
   }
 });

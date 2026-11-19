@@ -861,12 +861,15 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
 }
 
 /**
- * The page's one focus rescue, mounted once in the app shell: after any loss of the focus to the
- * body - a press, or an update that takes the focused control away - the keyboard focus never
- * stays on the page's body because the element holding it was disabled, hidden, taken away or
- * drawn again under a new key, unless the reader had scrolled that element out of their sight
- * (below). A keyboard reader left on the body starts again from the page's first link, a walk
- * through everything above the control they were using.
+ * The page's one focus rescue, mounted once in the app shell: after a loss of the focus to the
+ * body - a press, or an update that takes the focused control away - it answers a focus the
+ * element holding it took with it when it was disabled, hidden, taken away or drawn again under a
+ * new key, since a keyboard reader left on the body starts again from the page's first link, a
+ * walk through everything above the control they were using. It leaves the focus on the body
+ * where that is where the reader put it or left the control (below): a dialog opened from the
+ * body that closes, the reader's Escape, their click on the page or their Enter that commits a
+ * field, and a control they had scrolled out of their sight; and for a loss they did not cause,
+ * where nothing in their sight can take the focus without moving it into a row.
  *
  * Every element that takes the focus is noted as it does (`focusin`), with its region - the
  * dialog or panel holding it (`DIALOG`), modal or not, else the shell's main content (`main`),
@@ -934,10 +937,12 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * a frame and a task, so a component that watches the same control - the Agents composer, giving
  * its box the focus back - acts on the change first. A pointer press anywhere while a check or a
  * wait is out is the reader moving on - onto a control, or onto the page itself - and ends it, so
- * a control enabled again later never pulls back a focus the reader left on the page. So is the
- * reader's Escape: a control it takes away or leaves - the issue title's editor, which it
- * closes - is the reader leaving it, and the focus stays where Escape left it rather than going
- * to what is drawn in its place, as the Inbox's and the Board's own Escape leave it on the page.
+ * a control enabled again later never pulls back a focus the reader left on the page. The
+ * reader's Escape ends no check or wait already out; what it does is mark the loss it causes in
+ * its own task as the reader leaving the control (`leaving`): a control it takes away or leaves -
+ * the issue title's editor, which it closes - is not answered, and the focus stays where Escape
+ * left it rather than going to what is drawn in its place, as the Inbox's and the Board's own
+ * Escape leave it on the page.
  * The control a loss the reader caused walks back to is scrolled into view (`land`); what stands
  * where the element stood, and anything a loss they did not cause lands on, is focused with no
  * scroll.

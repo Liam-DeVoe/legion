@@ -878,6 +878,15 @@ async function droppedCard(): Promise<HTMLElement> {
   return within(await boardRegion()).getByRole("article", { name: "CORE-1 Alpha" });
 }
 
+/** Waits until a click reaches React again: dnd-kit stops click propagation for 50 ms after a
+ * drag ends, with a capture listener on `document` that a 50 ms timer removes (`detach` in
+ * `@dnd-kit/core`) and no unmount cancels. Every row that drags ends through this: the next row
+ * shares `document`, and a row that ends inside the 50 ms hands it that listener, so the next
+ * row's first click never reaches its target. */
+async function pastDndKitClickGuard(): Promise<void> {
+  await waitMs(80);
+}
+
 /** A PATCH that answers at once with the issue as it was. */
 function patchAnswered() {
   const patch = answerIssuePatches().mockImplementation(async (key) => saved(key));
@@ -903,6 +912,7 @@ test("the click that trails a drop never follows the card's link, however late i
   }
   expect(trailingFollowed).toBe(false);
   expect(screen.getByTestId("route").textContent).toBe("/projects/CORE/issues");
+  await pastDndKitClickGuard();
 });
 
 // Only the drag's own click is the drag's: the mark a drop leaves does not outlive the gesture
@@ -913,8 +923,7 @@ test("a drop that draws no click leaves the next press on the Board working", as
   board(keyboardIssues(), "?layout=board");
   const region = await boardRegion();
   await dropInPlace(await within(region).findByRole("article", { name: "CORE-1 Alpha" }));
-  // dnd-kit stops click propagation for 50 ms after a drop.
-  await waitMs(80);
+  await pastDndKitClickGuard();
   act(() => within(region).getByRole("article", { name: "CORE-1 Alpha" }).focus());
   await user.keyboard("{Enter}");
   expect(screen.getByTestId("route").textContent).toBe("/issues/CORE-1");
@@ -948,6 +957,7 @@ test("a drag cancelled with Escape keeps its own release off the card's link", a
   });
   expect(followed).toBe(false);
   expect(screen.getByTestId("route").textContent).toBe("/projects/CORE/issues");
+  await pastDndKitClickGuard();
 });
 
 test("a drop's mark never cancels a click outside the Board", async () => {
@@ -964,6 +974,7 @@ test("a drop's mark never cancels a click outside the Board", async () => {
     followed = fireEvent.click(elsewhere, { button: 0 });
   });
   expect(followed).toBe(true);
+  await pastDndKitClickGuard();
 });
 
 // A listing read asked for while a move is unanswered waits for the answer: the server may not
@@ -1545,4 +1556,5 @@ test("a card added while another is dragged is not held, and the anchor holds ag
   await waitFor(() => expect(columnCards("in_progress")).toHaveLength(4));
   expect(cardTop("CORE-4")).toBe(FIRST_CARD_TOP);
   expect(window.scrollY).toBe(CARD_PX);
+  await pastDndKitClickGuard();
 });

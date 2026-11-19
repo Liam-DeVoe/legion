@@ -294,12 +294,13 @@ function draw(tree: ReactNode, boxWidth?: number) {
     },
   });
   if (boxWidth !== undefined) {
-    // On `Element.prototype`, which owns the method: bun's `mockRestore` leaves a copy on a
-    // prototype that only inherits it, which would hide every later test's spy on `Element`.
+    // Stubbed on Element, the prototype that owns the method: patching HTMLElement would leave an
+    // own property behind that shadows every later spy on Element.
     const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-      this: HTMLElement
+      this: Element
     ) {
-      return new DOMRect(0, 0, this.dataset.testid?.endsWith("-scroll") ? boxWidth : 100, 40);
+      const box = this.getAttribute("data-testid")?.endsWith("-scroll") === true;
+      return new DOMRect(0, 0, box ? boxWidth : 100, 40);
     });
     restores.push(() => rect.mockRestore());
   }

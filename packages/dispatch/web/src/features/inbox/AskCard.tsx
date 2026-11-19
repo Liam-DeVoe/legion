@@ -22,7 +22,7 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
-import { focusOnMount } from "../../components/focus-place";
+import { causedByReader, focusOnMount } from "../../components/focus-place";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -236,20 +236,27 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
 };
 
 /** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
- *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
+ *  j/k/Escape still start from the same place) instead of letting it fall to the document body,
+ *  for a loss the reader caused: their live press, key or pick on the control holding the focus,
+ *  in its row, or in the dialog or panel it is in (`causedByReader`). A loss they did not cause -
+ *  the ask answered or resolved elsewhere, the card swapping to its record under them - moves
+ *  nothing here, so the focus goes into no row and nothing scrolls: the page's focus rescue
+ *  (`useFocusRescue`) answers it. */
 function handOffFocus(form: HTMLElement): void {
-  if (!form.contains(document.activeElement)) return;
+  const focused = document.activeElement;
+  if (focused === null || !form.contains(focused) || !causedByReader(focused)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
 }
 
-/** The form's callback ref. When the form leaves while a control inside it has focus - the ask
- *  was answered or resolved elsewhere and the card swaps to its record - focus is handed off
- *  without any event; React detaches a ref before removing its node, so the form is still in the
+/** The form's callback ref. When the form leaves while a control inside it has focus - the card
+ *  swapping to its record once the ask is answered, or resolved elsewhere - its cleanup runs the
+ *  hand-off without any event, which moves the focus to the row only for a loss the reader caused
+ *  (`handOffFocus`); React detaches a ref before removing its node, so the form is still in the
  *  document when this cleanup runs. The form is also kept in `formRef` for the disabled-control
  *  hand-off below: in the compact variant the answer field is unmounted while its disclosure is
  *  closed, so the field's `.form` is not a reliable way to reach it. The callback must be stable
  *  across renders: React re-runs a changed callback ref's cleanup on every commit, and that
- *  cleanup moves focus. */
+ *  cleanup can move focus. */
 function useFormRef(): [
   { current: HTMLFormElement | null },
   (form: HTMLFormElement | null) => (() => void) | undefined,

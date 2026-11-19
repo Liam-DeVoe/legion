@@ -5271,11 +5271,10 @@ function setClipboard(clipboard: Pick<Clipboard, "writeText"> | undefined): void
 }
 
 // Where the clipboard is missing (an origin that is not secure) or refuses, `copyText` copies
-// through a temporary text box that takes the focus and leaves the page, which drops the focus to
-// the body. Inside `NoTooltips` the focus returns to the copy button after each copy: at once
-// where the clipboard is missing, and once the copy settles where the clipboard refused, on a
-// second press made while the first copy's "Copied" still shows too. Outside `NoTooltips` the
-// focus stays where the copy left it, the body.
+// through a temporary text box that takes the focus and leaves the page, and gives the focus back
+// to the element that had it. On either surface the focus is on the copy button after each copy:
+// at once where the clipboard is missing, and once the copy settles where the clipboard refused,
+// on a second press made while the first copy's "Copied" still shows too.
 test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", async () => {
   const user = userEvent.setup();
   await withCopyFallback(async (copied) => {
@@ -5305,10 +5304,11 @@ test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", 
                 : document.activeElement === document.body
                   ? "the body"
                   : document.activeElement?.outerHTML;
-            expect({ clipboard, focus, press }).toEqual({
+            expect({ clipboard, focus, press, surface }).toEqual({
               clipboard,
-              focus: surface === "inside" ? "the copy button" : "the body",
+              focus: "the copy button",
               press,
+              surface,
             });
           }
         } finally {
@@ -5320,9 +5320,8 @@ test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", 
 });
 
 // A reader who moves the focus to another control while a copy is out keeps it there: the
-// clipboard refuses after the move, and the fallback's text box takes the focus and leaves it on
-// the body, so inside `NoTooltips` the focus goes back to where the reader put it, not to the
-// copy button. Outside `NoTooltips` the focus stays where the copy left it, the body.
+// clipboard refuses after the move, and the fallback's text box takes the focus and gives it back
+// to where the reader put it, not to the copy button, on either surface.
 test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where it is", async () => {
   const user = userEvent.setup();
   await withCopyFallback(async (copied) => {
@@ -5353,7 +5352,7 @@ test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where i
         await scope.findByText("Copied");
         await settleReads();
         expect(copied).toEqual(["copy"]);
-        expect(document.activeElement).toBe(surface === "inside" ? elsewhere : document.body);
+        expect(document.activeElement, surface).toBe(elsewhere);
       } finally {
         undraw(view);
       }
