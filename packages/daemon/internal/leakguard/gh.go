@@ -835,7 +835,7 @@ func readGhFile(named GhFile) (string, error) {
 		return string(text), err
 	}
 	why := failed.phrase
-	if failed.err == nil {
+	if failed.longer {
 		why += ", which is more text than GitHub takes through it"
 	}
 	return "", &SetupFailure{

@@ -441,7 +441,8 @@ func firstLine(printed string) string {
 // With a pin it answers a *SetupFailure, naming the pin and what the install holds, each as
 // shownText shows it, where the check is absent, where its tag file cannot be read (naming why),
 // where the install records no tag, and where it records another tag: a role whose check is not
-// the pin's runs no agent.
+// the pin's runs no agent. The reason a refused tag file gives is rolefile's own sentence, which
+// names the tag file's path as written, and not as shownText shows it.
 func Installed(env []string, dir string) (string, error) {
 	pin := value(env, TagVariable)
 	if pin == "" {

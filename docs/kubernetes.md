@@ -103,15 +103,15 @@ It carries:
   an older daemon pushes nothing, and a new image's shim then refuses every start.
   A tag of that repository is not protected, so a tag that is force-moved is served from the daemon's earlier copy until the daemon restarts.
   A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
-  The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
-  `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
+  The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are");
 
-- what a role sees when a write is refused, which is a command that wrote nothing and one of two lines on standard error:
+- the leak guard's answers to a role: a refused write is a command that wrote nothing and one of two lines on standard error:
   `LEAK CHECK: refusing <the write>: <the check that refused it>` is a name in the write.
   A private-name refusal shows each match with its record, the rule's description and its line, within the bounds of [The deployment's private-name rules](#the-deployments-private-name-rules).
   It shows the text because the agent that would make the write wrote it.
   `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>` is a broken pod and not a name in the write at all.
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
+  `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
 - `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
   two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve that pin with `mise where` and `mise x`.
@@ -3706,7 +3706,7 @@ A line that carries those words is scanned like any other line, so no writer can
 **What the rules read.**
 The private-name step runs only for a destination GitHub reports public, and for one the caller cannot name.
 It scans each record of the write on its own, so a rule that needs two words matches only where one record holds both.
-A report names a record by its label, as it was written.
+A report names a record by its label: as it was written where that is printable text of at most 200 bytes with no `\`, and otherwise as **The report** below says.
 A push has these records:
 
 - The ref name, labelled `the ref name`.
@@ -3727,7 +3727,7 @@ A gh call has these records:
 
 - The call's standard input, labelled `the gh call's standard input`, and each file the call sends, labelled by its path.
 
-- Each JSON string of a request body (`--input <file>` or `--input -`) that is exactly one JSON document, labelled `<record>, JSON <path>`, where `<record>` is the body's own label.
+- Each JSON string of a request body (`gh api --input <file>`, `gh api --input -`, or the standard input of `gh workflow run --json`) that is exactly one JSON document, labelled `<record>, JSON <path>`, where `<record>` is the body's own label.
   An object's name is a record too, labelled `<record>, JSON <path> (name)`.
   A path of more than 8 steps is shown as its first 2 steps, `…` and its last 5, and a step longer than 64 bytes is cut there, with `…`, so a deep body's labels stay short.
   An empty string is no record, since no rule can match it.

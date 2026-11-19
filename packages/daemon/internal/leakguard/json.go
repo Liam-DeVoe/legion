@@ -26,9 +26,10 @@ func jsonBody(record Record, graphQL bool) []Record {
 // jsonFields is the records of the strings record's text holds where that text is exactly one
 // JSON document, and false where it is not: no JSON at all, a document with more after it, or
 // two documents. A string is one record, an object's names and values alike, labelled
-// "<record>, JSON <path>" and a name "<record>, JSON <path> (name)", the path written as jq
-// writes it (`.body`, `.comments[0].body`, `."a b"`, and `.` for the document itself) within the
-// bounds jsonLabel keeps. An empty string makes no record: it holds no text a rule can match.
+// "<record>, JSON <path>" and a name "<record>, JSON <path> (name)", the record's label cut once
+// before the walk (cutLabel) and the path written as jq writes it (`.body`, `.comments[0].body`,
+// `."a b"`, and `.` for the document itself) within the bounds jsonLabel keeps. An empty string
+// makes no record: it holds no text a rule can match.
 //
 // A body is read one string at a time because GitHub stores it one string at a time: a review's
 // body and each of its comments' bodies are texts of their own, shown apart, and a rule that
@@ -56,6 +57,7 @@ func jsonFields(record Record, graphQL bool) ([]Record, bool) {
 	// number still, and not an error that sends the document to the raw read.
 	decoder.UseNumber()
 	var fields []Record
+	base := cutLabel(record.Label)
 	// open are the arrays and objects the next token stands inside, the outermost first, and path
 	// the steps from the document to the innermost of them, one for each but the document itself.
 	// A label is rendered from path when its string is read (jsonLabel), so that no string's
@@ -89,7 +91,7 @@ read:
 				name, _ := token.(string)
 				inner.member = jqMember(name)
 				if name != "" {
-					fields = append(fields, Record{Label: jsonLabel(record.Label, append(path, inner.member)) + " (name)", Text: name})
+					fields = append(fields, Record{Label: jsonLabel(base, append(path, inner.member)) + " (name)", Text: name})
 				}
 				continue
 			default:
@@ -108,7 +110,7 @@ read:
 			if value == "" {
 				break
 			}
-			field := Record{Label: jsonLabel(record.Label, at), Text: value}
+			field := Record{Label: jsonLabel(base, at), Text: value}
 			if graphQL && len(at) == 1 && at[0] == "."+graphQLQuery {
 				fields = append(fields, queryRecords(field)...)
 			} else {

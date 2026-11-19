@@ -227,6 +227,38 @@ func TestGhJSONReadsOneFieldOfADeepDocumentUnderABoundedLabel(t *testing.T) {
 	}
 }
 
+// A JSON body's own label can be kilobytes long, as the path an argv wrote for `--input <path>`
+// is, and every string of the body is labelled under it, so it is cut once before the walk
+// (cutLabel): each record's label is shorter than the body's. A refusal shows each line as the
+// whole label would show it, for a value, a name and a GraphQL literal that each name the
+// fixture's pair, under a label that holds a newline, a `\`, runes of several bytes and a byte
+// that is no UTF-8 at each end.
+func TestGhJSONShowsALongBodyLabelAsTheWholeLabelWould(t *testing.T) {
+	end := "a\nb\\ é漢𝄞 \xff "
+	whole := end + strings.Repeat("invented-dir/", 300) + end
+	pair := leakguardtest.PairName + " " + leakguardtest.PairWord
+	document := `{"body":"` + pair + `","` + pair + `":"a clean value","query":"mutation { createIssue(input: {title: \"` + pair + `\"}) { issue { number } } }"}`
+	fields, ok := jsonFields(Record{Label: whole, Text: document}, true)
+	if !ok {
+		t.Fatal("the document was read as no one JSON document")
+	}
+	for _, field := range fields {
+		if len(field.Label) >= len(whole) {
+			t.Errorf("the record of %q is labelled with %d bytes, want fewer than the body's %d", field.Text, len(field.Label), len(whole))
+		}
+	}
+	rules := fixtureRules(t)
+	got := refusal(t, rules.Check(bound(t), "the gh call", fields...)).Lines
+	want := refusal(t, rules.Check(bound(t), "the gh call",
+		Record{Label: whole + ", JSON .body", Text: pair},
+		Record{Label: whole + ", JSON " + jqMember(pair) + " (name)", Text: pair},
+		Record{Label: whole + ", JSON .query, GraphQL string 1", Text: pair},
+	)).Lines
+	if len(got) != 3 || !slices.Equal(got, want) {
+		t.Errorf("the report is %q, want the three lines of the whole label, %q", got, want)
+	}
+}
+
 // An empty string holds no text a rule can match, and makes no record, as a name or as a value;
 // the value of a member whose name is empty is read all the same, at the step `.""`. A name past
 // 64 bytes is shown to 64 in the label of each string beneath it, and "…" marks the cut.

@@ -149,8 +149,9 @@ func TestAGhCallsBodyFileIsRead(t *testing.T) {
 // A file a body option names that the guard cannot read is a setup failure naming the option,
 // never a call passed through: a guard that did not read what the call publishes has cleared
 // nothing, and a pass here would be the hole the test above closes by another door. The bound on
-// the read (maxGhFile) is the second door: a file past it is refused rather than pulled into
-// memory.
+// the read (maxGhFile) is the second door: a file one byte past it is refused rather than pulled
+// into memory, and that failure alone says the file is more text than GitHub takes through it,
+// which a file that cannot be opened does not.
 func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 	dir := t.TempDir()
 	absent := filepath.Join(dir, "absent.md")
@@ -158,10 +159,12 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 	if err := os.WriteFile(huge, bytes.Repeat([]byte("a"), maxGhFile+1), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	const tooLong = ", which is more text than GitHub takes through it"
 	for _, tc := range []struct {
-		name string
-		args []string
-		want string
+		name   string
+		args   []string
+		want   string
+		longer bool
 	}{
 		{
 			name: "a file that is not there",
@@ -169,9 +172,10 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 			want: "the file --body-file names",
 		},
 		{
-			name: "a file past the bound",
-			args: []string{"release", "create", "v0", "--notes-file", huge},
-			want: "the file --notes-file names",
+			name:   "a file past the bound",
+			args:   []string{"release", "create", "v0", "--notes-file", huge},
+			want:   "the file --notes-file names",
+			longer: true,
 		},
 		{
 			name: "a field's file that is not there",
@@ -185,6 +189,9 @@ func TestAGhCallsBodyFileThatCannotBeReadIsASetupFailure(t *testing.T) {
 			failed := setupFailure(t, err)
 			if !strings.Contains(failed.Error(), tc.want) {
 				t.Fatalf("the failure is %q, want it to name the option in %q", failed, tc.want)
+			}
+			if says := strings.Contains(failed.Error(), tooLong); says != tc.longer {
+				t.Errorf("the failure is %q; that it says %q is %t, want %t", failed, tooLong, says, tc.longer)
 			}
 		})
 	}

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -248,6 +249,48 @@ func TestRefusalShowsMatchUnderALabelOnOneBoundedLine(t *testing.T) {
 				t.Errorf("the report is %q, want the one line %q", lines, want)
 			}
 		})
+	}
+}
+
+// A document's base label past 400 bytes is cut once, before its walk (cutLabel), to at most 400
+// bytes, and the cut shows as the whole label shows. For a label of 4 KB of ASCII, of runes of
+// two, three and four bytes with one across each cut, of newlines and `\`, which show as two bytes
+// each, and of bytes that are no UTF-8 in runs too long for a rune's start to be found, shownText
+// of the cut with a JSON path after it is shownText of the whole label with that path: a path of
+// a few bytes, and one past the bound by itself. A cut of a label of UTF-8 is UTF-8, and a label
+// of 400 bytes is kept whole.
+func TestACutLabelShowsAsTheWholeLabel(t *testing.T) {
+	longPath := jsonLabel("", slices.Repeat([]string{jqMember(strings.Repeat("n", 100))}, 12))
+	if len(longPath) <= maxTextShown {
+		t.Fatalf("the long path is %d bytes, want it past %d", len(longPath), maxTextShown)
+	}
+	for _, tc := range []struct{ name, label string }{
+		{"ASCII", strings.Repeat("abcdefgh", 512)},
+		{"runes of several bytes", "a" + strings.Repeat("é漢𝄞", 455)},
+		{"newlines and backslashes", strings.Repeat("a\nb\\", 1024)},
+		{"bytes that are no UTF-8", "abcdef" + strings.Repeat("\x80\x80\x80\x80\x80\x80\x80\x80\xff", 454) + "abcd"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.label) != 4096 {
+				t.Fatalf("the label is %d bytes, want 4096", len(tc.label))
+			}
+			cut := cutLabel(tc.label)
+			if len(cut) > 2*maxTextShown {
+				t.Errorf("the cut label is %d bytes, want at most %d", len(cut), 2*maxTextShown)
+			}
+			if utf8.ValidString(tc.label) && !utf8.ValidString(cut) {
+				t.Errorf("the cut label %q cuts a rune of a label of UTF-8", cut)
+			}
+			for _, path := range []string{", JSON .body", longPath} {
+				if got, want := shownText(cut+path), shownText(tc.label+path); got != want {
+					t.Errorf("the cut label with %q after it shows as %q, want %q", path, got, want)
+				}
+			}
+		})
+	}
+	within := strings.Repeat("w", 2*maxTextShown)
+	if cut := cutLabel(within); cut != within {
+		t.Errorf("a label of %d bytes is cut to %q, want it whole", len(within), cut)
 	}
 }
 

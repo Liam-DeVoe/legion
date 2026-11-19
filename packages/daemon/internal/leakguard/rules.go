@@ -188,17 +188,20 @@ func readBounded(path string, bound int) ([]byte, error) {
 		return nil, &boundedReadError{phrase: "could not be read", err: withoutPath(err)}
 	}
 	if len(content) > bound {
-		return nil, &boundedReadError{phrase: fmt.Sprintf("is longer than %d bytes", bound)}
+		return nil, &boundedReadError{phrase: fmt.Sprintf("is longer than %d bytes", bound), longer: true}
 	}
 	return content, nil
 }
 
-// boundedReadError is readBounded's refusal of a file: phrase, which follows the file's name, and
-// the error underneath it, nil for a file longer than the bound. Its message is the phrase, then
-// that error after a colon.
+// boundedReadError is readBounded's refusal of a file: phrase, which follows the file's name; the
+// error underneath it, nil for a file longer than the bound; and longer, true for that file alone,
+// which a caller that says more of that refusal reads (readGhFile), so that what it adds rests on
+// a field that names the refusal and not on an error that happens to be nil. Its message is the
+// phrase, then that error after a colon.
 type boundedReadError struct {
 	phrase string
 	err    error
+	longer bool
 }
 
 func (e *boundedReadError) Error() string {
@@ -519,6 +522,30 @@ func shownRune(unit string) string {
 	}
 	quoted := strconv.Quote(unit)
 	return quoted[1 : len(quoted)-1]
+}
+
+// cutLabel is label, the base of the label of each string a document holds (jsonFields,
+// graphQLRecords), cut once before the document is read: where it is longer than 2*maxTextShown
+// bytes, its first maxTextShown bytes and its last maxTextShown, each cut on a rune boundary
+// (runeBack, runeOn) and the two joined with nothing; else the whole label. Each string's label is
+// the base and the string's path after it, and the base of an `--input <path>` body is the path
+// as the argv wrote it, of any length: a path of 4 KB and a mebibyte of one-letter strings would
+// otherwise build a gigabyte of labels.
+//
+// The cut shows no report line differently. A label is shown only through shownText, which shows
+// a label whose shown form is past maxTextShown bytes as the first textShownBefore bytes and the
+// last textShownAfter bytes of that form, and a shown byte is never fewer than the raw byte it
+// shows. So the label and its cut, with any path after either, are both past that bound and both
+// cut by shownText: the head it shows comes from the first textShownBefore raw bytes and the tail
+// from the last textShownAfter, each read with at most utf8.UTFMax bytes more to decode a rune.
+// The cut keeps at least maxTextShown-utf8.UTFMax+1 bytes of each end of the label, which holds
+// both, and the joined middle is never shown. It cuts and never escapes: shownText escapes the
+// label it shows, and a label escaped here too would print a newline as `\\n`.
+func cutLabel(label string) string {
+	if len(label) <= 2*maxTextShown {
+		return label
+	}
+	return label[:runeBack(label, maxTextShown, 0)] + label[runeOn(label, len(label)-maxTextShown, len(label)):]
 }
 
 // runeBack is the offset i of s moved back to the start of the rune it falls inside, and no

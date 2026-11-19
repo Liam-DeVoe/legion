@@ -60,9 +60,9 @@ func ghAPIGraphQLEndpoint(endpoint string) bool {
 }
 
 // graphQLRecords is record read as a GraphQL query: one record for each string literal of its
-// text, decoded, labelled "<record>, GraphQL string <k>" with k counted from 1, and true; or
-// false where its text does not lex (graphQLStrings), which its caller reads as written
-// (queryRecords).
+// text, decoded, labelled "<record>, GraphQL string <k>" with k counted from 1, the record's label
+// cut once before the literals are labelled (cutLabel), and true; or false where its text does not
+// lex (graphQLStrings), which its caller reads as written (queryRecords).
 //
 // A query is a document GitHub parses, as a JSON body is (jsonFields). GitHub stores the value of
 // each literal its arguments carry, decoded: the title and the body of a `createIssue` mutation
@@ -80,8 +80,9 @@ func graphQLRecords(record Record) ([]Record, bool) {
 		return nil, false
 	}
 	records := make([]Record, 0, len(literals))
+	base := cutLabel(record.Label) + ", GraphQL string "
 	for k, literal := range literals {
-		records = append(records, Record{Label: record.Label + ", GraphQL string " + strconv.Itoa(k+1), Text: literal})
+		records = append(records, Record{Label: base + strconv.Itoa(k+1), Text: literal})
 	}
 	return records, true
 }
