@@ -51,6 +51,7 @@ import type {
   IssueRead,
   IssueReferences,
   IssueRouteStatus,
+  IssueSteps,
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
@@ -1216,9 +1217,11 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/credential-requests?approver=me`: the credential requests the caller may
-   *  decide, relayed from the secrets broker, or null from a Dispatch that has no broker
-   *  configured, which is an ordinary deployment rather than a failure. `me` is the only approver
-   *  the route takes. It needs the same `person` scope the Inbox does. */
+   *  decide, then the expired ones nobody has dismissed (each row's `state`, `pending` or
+   *  `expired`; none from an older broker, which is pending), relayed from the secrets broker, or
+   *  null from a Dispatch that has no broker configured, which is an ordinary deployment rather
+   *  than a failure. `me` is the only approver the route takes. It needs the same `person` scope
+   *  the Inbox does. */
   async credentialPending(): Promise<CredentialPendingResponse | null> {
     return this.#json("GET", ["api", "v1", "credential-requests"], undefined, { approver: "me" });
   }
@@ -1808,6 +1811,13 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "handoffs", id]);
   }
 
+  /** `GET /api/v1/issues/{key}/steps`: every run of each step of the issue, task by task in the
+   *  order each task first ran, each with the attempt the read computes. An issue no step ran on
+   *  answers with no task; a key Dispatch does not hold is `404 NOT_FOUND`, as the issue read. */
+  async listSteps(issue: string): Promise<IssueSteps> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "steps"]);
+  }
+
   async getIssueReferences(issue: string): Promise<IssueReferences> {
     return this.#json(
       "GET",
@@ -2009,13 +2019,16 @@ export class DispatchClient {
     // that cannot answer throws here, out of the loop's reach, rather than being taken for a
     // failed attempt.
     const headers: Record<string, string> = { Accept: accept };
-    let presented = await this.#credential.headers(method, url);
+    // The call's own deadline and the client's, which the credential is given too: a broker
+    // credential waiting on a pod's missing registration stops at it, naming the session.
+    const limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
+    let presented = await this.#credential.headers(method, url, undefined, limit);
     if (body !== undefined) headers["Content-Type"] = body.type;
     if (key === undefined) {
       return this.fetchImpl(url, {
         method,
         headers: { ...headers, ...presented },
-        signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
+        signal: limit,
         ...(body === undefined ? {} : { body: body.content }),
       });
     }
@@ -2050,7 +2063,7 @@ export class DispatchClient {
       try {
         // Each attempt after the first presents the credential afresh: a resource server that
         // keeps a replay store refuses a proof it has already seen.
-        if (attempt > 1) presented = await this.#credential.headers(method, url);
+        if (attempt > 1) presented = await this.#credential.headers(method, url, undefined, limit);
         const sent = { ...headers, ...presented };
         answer = await writeAnswer(await this.#attempt(url, method, sent, body, silenceMs), key);
         if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
@@ -2221,10 +2234,14 @@ export class DispatchClient {
   async #probeKeyedLayer(): Promise<boolean> {
     try {
       const probe = `${this.#baseUrl}/healthz`;
+      const limit = AbortSignal.any([this.#signal, AbortSignal.timeout(KEY_LAYER_PROBE_MS)]);
       const response = await this.fetchImpl(probe, {
         method: "GET",
-        headers: { Accept: "application/json", ...(await this.#credential.headers("GET", probe)) },
-        signal: AbortSignal.any([this.#signal, AbortSignal.timeout(KEY_LAYER_PROBE_MS)]),
+        headers: {
+          Accept: "application/json",
+          ...(await this.#credential.headers("GET", probe, undefined, limit)),
+        },
+        signal: limit,
       });
       if (!isJson(response)) return false;
       const health: unknown = await response.json();
