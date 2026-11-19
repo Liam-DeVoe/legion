@@ -8,6 +8,7 @@
 // 429.
 
 import { expect, test } from "bun:test";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { newDpopKey } from "../dpop";
 import { BrokerTokenClient } from "../token-client";
 import { BrokerRefusedError, isFinalRefusal, TradeRetryingError } from "../token-errors";
@@ -28,10 +29,11 @@ function gatedSleep() {
       signal?.addEventListener("abort", () => resolve(), { once: true });
       return promise;
     },
-    /** Ends the loop's wait once it is waiting, so the next trade is the release's. */
+    /** Ends the loop's wait once it is waiting, so the next trade is the release's. Waits on turns
+     *  of the event loop for the loop to ask for its wait, and fails naming it at the real-time
+     *  bound (`turnsUntil`), so a loaded machine delays the row and never fails it. */
     async wake(): Promise<void> {
-      const deadline = Date.now() + 5_000;
-      while (waiting.length === 0 && Date.now() < deadline) await Bun.sleep(5);
+      await turnsUntil(() => waiting.length > 0, "waiting before its next trade");
       for (const resolve of waiting.splice(0)) resolve();
     },
   };

@@ -256,28 +256,44 @@ test("a tool call while the start waits for its broker token says what the start
     },
     stderr: "pipe",
   })
+  // The start has reached its wait for the token once its stderr says what the first trade came
+  // to: the token client writes that line at the wait after the trade, and the start names its
+  // wait before it trades. A start that never gets there in 45 s, a minute's row on a loaded
+  // machine, is named with what its stderr said.
+  let stderr = ""
+  const waiting = Promise.withResolvers<void>()
+  transport.stderr?.on("data", (chunk: Buffer | string) => {
+    stderr += String(chunk)
+    if (stderr.includes("trading again")) waiting.resolve()
+  })
+  const bound = setTimeout(
+    () =>
+      waiting.reject(
+        new Error(
+          `the start did not reach its wait for the token within 45 s; its stderr said: ${stderr.slice(-2_000)}`,
+        ),
+      ),
+    45_000,
+  )
+  // Settled here too, so a bound that fires while the connect is still out is no unhandled
+  // rejection; the row reads it where it awaits the wait.
+  waiting.promise.catch(() => undefined)
   try {
     await client.connect(transport)
-    let said = ""
-    await waitFor(
-      () =>
-        client.callTool({ name: "envoy_whoami", arguments: {} }).then(
-          () => {
-            throw new Error("the session started though its broker answers every trade 503")
-          },
-          (error: unknown) => {
-            said = String(error)
-            return !said.includes("it reads its settings")
-          },
-        ),
-      "the start to reach its wait for the token",
+    await waiting.promise
+    const said = await client.callTool({ name: "envoy_whoami", arguments: {} }).then(
+      () => {
+        throw new Error("the session started though its broker answers every trade 503")
+      },
+      (error: unknown) => String(error),
     )
     expect(said).toContain(
       "Envoy channel server is still starting: it waits for this session's broker token, and its stderr says what each trade came to",
     )
   } finally {
+    clearTimeout(bound)
     await client.close().catch(() => undefined)
     broker.stop(true)
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 20_000)
+}, 60_000)

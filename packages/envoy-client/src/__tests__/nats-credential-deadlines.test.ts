@@ -13,6 +13,7 @@
 // so what it reads is the code's own time, however loaded the machine.
 
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import {
   type BrokerNatsCredential,
   brokerNatsCredential,
@@ -27,14 +28,6 @@ const { podEnvironment, servers, stubBroker } = natsBrokerStandIns("nats-credent
 afterEach(() => {
   jest.useRealTimers();
 });
-
-/** One turn of the real event loop, which the fake clock does not hold: every promise the code
- *  has chained settles inside it. */
-function turn(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setImmediate(resolve);
-  return promise;
-}
 
 describe("ready", () => {
   test("a broker that never answers the trade fails it, named, at the deadline", async () => {
@@ -268,7 +261,31 @@ describe("followNatsCredential", () => {
   test("a connection that never comes back rejects 8 s after the token lands, and stops its reader", async () => {
     const credential = await switched();
     const rig = controlledConnection(credential);
-    await expect(followNatsCredential(rig.connection, credential)).rejects.toThrow(
+    // The follow's 8 s (`FOLLOW_RECONNECT_MS`) run from when it asks the connection to come back
+    // with the new session's token, which lands with the fake clock where the follow started it.
+    jest.useFakeTimers();
+    let reconnecting = false;
+    (rig.connection as { reconnect: () => Promise<void> }).reconnect = async () => {
+      reconnecting = true;
+      credential.authenticator("nonce-again");
+    };
+    let outcome: unknown;
+    void followNatsCredential(rig.connection, credential).then(
+      () => {
+        outcome = "followed";
+      },
+      (error: unknown) => {
+        outcome = error;
+      }
+    );
+    await turnsUntil(() => reconnecting, "asked to reconnect with the new session's token");
+    jest.advanceTimersByTime(7_999);
+    await turn();
+    expect(outcome).toBeUndefined();
+    expect(rig.stoppedReader()).toBe(false);
+    jest.advanceTimersByTime(1);
+    await turnsUntil(() => outcome !== undefined, "the follow's end at 8 s");
+    expect(String(outcome)).toContain(
       "the NATS connection did not come back as the new session within 8 s"
     );
     expect(rig.stoppedReader()).toBe(true);

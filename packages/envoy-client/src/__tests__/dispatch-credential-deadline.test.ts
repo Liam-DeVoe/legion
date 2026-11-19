@@ -20,6 +20,7 @@ import {
   TradeRetryingError,
   TradeUnansweredError,
 } from "@legion/broker-client/token-errors";
+import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { brokerCredential } from "../broker-credential";
 import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
@@ -45,13 +46,6 @@ const DEADLINE_MS = 3_000;
 /** The request's reserve out of a deadline of 2 s or more (`credentialDeadline`). */
 const RESERVE_MS = 1_000;
 
-/** One turn of the real event loop: every promise the code has chained settles inside it. */
-function turn(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setImmediate(resolve);
-  return promise;
-}
-
 /** Moves the fake clock on a millisecond at a time, settling what each step set off before the
  *  next, until `done()` holds or `most` milliseconds have passed, and answers how far it moved. A
  *  row calls it only once nothing but a timer is left to happen. */
@@ -69,14 +63,14 @@ async function stepUntil(done: () => boolean, most: number): Promise<number> {
 test("inside the renewal window, a broker that hangs leaves a Dispatch call its live token and the time to send it", async () => {
   let trades = 0;
   // The broker has the renewal: from then on only the credential's share of the deadline is left.
-  const renewing = Promise.withResolvers<void>();
+  let renewing = false;
   const broker = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: async () => {
       trades += 1;
       if (trades > 1) {
-        renewing.resolve();
+        renewing = true;
         return await new Promise<Response>(() => {});
       }
       // Good for 200 s: inside the 5-minute renewal window from the first.
@@ -107,14 +101,29 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
   await call();
   const started = performance.now();
   const second = call();
-  await renewing.promise;
+  let answered = false;
+  second.then(
+    () => {
+      answered = true;
+    },
+    () => {
+      answered = true;
+    }
+  );
+  await turnsUntil(() => renewing, "the renewal the broker holds");
   // A millisecond short of the credential's share, 2 s of the client's 3 s, nothing has gone.
   jest.advanceTimersByTime(DEADLINE_MS - RESERVE_MS - 1);
   await turn();
   expect(sentAt).toHaveLength(1);
   // At the share the call goes with the live token, and the clock stands there until Dispatch
-  // answers: a credential that waited longer would leave the call unsettled to the row's timeout.
+  // answers: a credential that waited longer sends nothing while it stands, which the wait names.
   jest.advanceTimersByTime(1);
+  await turnsUntil(
+    () => sentAt.length === 2,
+    "the call sent at the credential's share of its deadline, 2 s of 3",
+    { boundMs: 10_000 }
+  );
+  await turnsUntil(() => answered, "Dispatch's answer to the call", { boundMs: 10_000 });
   await second;
   expect(sentAt.slice(1).map((at) => at - started)).toEqual([DEADLINE_MS - RESERVE_MS]);
   expect(trades).toBe(2);
@@ -139,9 +148,9 @@ test.each([
     forgetKeyedLayerMemory();
     // The token client says what a trade came to at the wait after it, and the broker that never
     // answers has the trade: past either, only timers are left to happen.
-    const read = Promise.withResolvers<void>();
+    let read = false;
     const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
-      if (String(line).includes("trading again")) read.resolve();
+      if (String(line).includes("trading again")) read = true;
     });
     try {
       const broker = Bun.serve({
@@ -150,7 +159,7 @@ test.each([
         fetch: async () => {
           if (mode === "503") return new Response("away", { status: 503 });
           if (mode === "silent") {
-            read.resolve();
+            read = true;
             return await new Promise<Response>(() => {});
           }
           return Response.json(
@@ -179,7 +188,7 @@ test.each([
         .finally(() => {
           settled = true;
         });
-      await read.promise;
+      await turnsUntil(() => read, "the credential's first trade read", { boundMs: 10_000 });
       // The write ends where the credential's share ends, or where the client's deadline ends
       // the pause; a write that went on past its deadline is read as moving the clock further.
       const moved = await stepUntil(() => settled, deadlineMs + 5_000);

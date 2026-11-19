@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
   forgetHeldSecrets,
@@ -50,24 +50,35 @@ describe("how long a secret is held", () => {
     expect(scrub(`echo ${kept.slice(0, 10)}`)).toBe(`echo ${WITHHELD}`);
   });
 
-  test("held again, a secret is held for the longer of the two, and for life where either says so", async () => {
-    // Each is due to be forgotten a second from now, and held again before then.
-    const soon = () => Date.now() - HELD_PAST_LAPSE_MS + 1_000;
-    const renewed = holdSecret(secret(), soon());
-    holdSecret(renewed, Date.now());
-    const forLife = holdSecret(secret(), soon());
-    holdSecret(forLife);
-    // Held until an hour from now, then held again with a lapse long past: that shortens nothing.
-    const late = holdSecret(secret(), Date.now());
-    holdSecret(late, Date.now() - HELD_PAST_LAPSE_MS - 1);
-    const once = holdSecret(secret(), soon());
-    await Bun.sleep(1_100);
-    holdSecret(secret());
-    expect(scrub(renewed)).toBe(WITHHELD);
-    expect(scrub(forLife)).toBe(WITHHELD);
-    expect(scrub(late)).toBe(WITHHELD);
-    // The control: one held once, with the same lapse, is forgotten by now.
-    expect(scrub(once)).toBe(once);
+  test("held again, a secret is held for the longer of the two, and for life where either says so", () => {
+    // On the fake clock, which the registry's lapses are read by (`Date.now`): each is due to be
+    // forgotten a second from now, and held again before then.
+    jest.useFakeTimers();
+    try {
+      const soon = Date.now() - HELD_PAST_LAPSE_MS + 1_000;
+      const renewed = holdSecret(secret(), soon);
+      holdSecret(renewed, Date.now());
+      const forLife = holdSecret(secret(), soon);
+      holdSecret(forLife);
+      // Held until an hour from now, then held again with a lapse long past: that shortens
+      // nothing.
+      const late = holdSecret(secret(), Date.now());
+      holdSecret(late, Date.now() - HELD_PAST_LAPSE_MS - 1);
+      const once = holdSecret(secret(), soon);
+      // The control, held once with the same lapse: held a millisecond before its second is up,
+      // and forgotten at it. Each hold forgets what has lapsed by then.
+      jest.advanceTimersByTime(999);
+      holdSecret(secret());
+      expect(scrub(once)).toBe(WITHHELD);
+      jest.advanceTimersByTime(1);
+      holdSecret(secret());
+      expect(scrub(once)).toBe(once);
+      expect(scrub(renewed)).toBe(WITHHELD);
+      expect(scrub(forLife)).toBe(WITHHELD);
+      expect(scrub(late)).toBe(WITHHELD);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

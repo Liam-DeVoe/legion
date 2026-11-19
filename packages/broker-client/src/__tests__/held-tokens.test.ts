@@ -50,6 +50,8 @@ test("a trade holds its tokens an hour past their lapse, not for the process's l
   const exp = Math.floor(Date.now() / 1000) + 300;
   const subject = jwtLapsingAt(exp);
   const opaque = fixtureSecret("opaque");
+  // When each trade began and ended, by the subject token it traded.
+  const traded = new Map<string, { readonly before: number; readonly after: number }>();
   try {
     for (const read of [subject, opaque]) {
       const client = new BrokerTokenClient({
@@ -61,6 +63,7 @@ test("a trade holds its tokens an hour past their lapse, not for the process's l
       const before = Date.now();
       await client.token();
       const after = Date.now();
+      traded.set(read, { before, after });
       // The token it got: an hour past its own expiry.
       const token = forgetsAt(minted) as number;
       expect(token).toBeGreaterThanOrEqual(before + 600_000 + HELD_PAST_LAPSE_MS);
@@ -72,8 +75,9 @@ test("a trade holds its tokens an hour past their lapse, not for the process's l
     // One whose lapse it cannot read: an hour past the trade that sent it, which a broker that
     // echoes it answers within.
     const held = forgetsAt(opaque) as number;
-    expect(held).toBeGreaterThan(Date.now() + HELD_PAST_LAPSE_MS - 60_000);
-    expect(held).toBeLessThanOrEqual(Date.now() + HELD_PAST_LAPSE_MS);
+    const trade = traded.get(opaque) ?? { before: Number.NaN, after: Number.NaN };
+    expect(held).toBeGreaterThanOrEqual(trade.before + HELD_PAST_LAPSE_MS);
+    expect(held).toBeLessThanOrEqual(trade.after + HELD_PAST_LAPSE_MS);
   } finally {
     broker.stop();
   }

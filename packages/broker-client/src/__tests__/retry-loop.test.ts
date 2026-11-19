@@ -6,11 +6,14 @@
 // the client logged at each wait. The clock and the waits are the test's own: a wait the client
 // asks for passes at once while the row's budget of waits lasts and then holds, so a schedule of
 // minutes runs at the test's speed and a loop that trades forever stops where the row reads it.
-// A trade's own timeout is real (`attemptMs`), since the client sets it on the fetch: short in the
-// rows whose broker leaves a trade unanswered, which wait it out, and the client's own 30 s in
-// every other row, so a slow machine never turns a trade the broker answered into one it did not.
+// A trade's own timeout (`attemptMs`) is the client's, set on the fetch, on Bun's fake clock: the
+// row's waits (`until`) move that clock a millisecond at each turn of the event loop, so a row
+// whose broker leaves a trade unanswered sees it run out after `SILENT_ATTEMPT_MS` of turns, and
+// every other row gives a trade the client's own 30 s, so no machine is slow enough to turn a
+// trade the broker answered into one it did not. Real time bounds a wait only to name a hang.
 
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
+import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { newDpopKey } from "../dpop";
 import type { SubjectToken, TokenSource } from "../source";
@@ -140,26 +143,39 @@ async function rig(
   };
 }
 
-/** Turns of the event loop until `ready()` holds, failing the row past `boundMs` of real time. */
-async function until(ready: () => boolean, what: string, boundMs = 3_000): Promise<void> {
-  const end = Date.now() + boundMs;
-  while (!ready()) {
-    if (Date.now() > end) throw new Error(`still not ${what} after ${boundMs} ms`);
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
+/** Turns of the event loop until `ready()` holds, the fake clock moving a millisecond at each, so
+ *  a trade's attempt runs out as the client set it; a wait that would not end names `what`. */
+function until(ready: () => boolean, what: string): Promise<void> {
+  return turnsUntil(ready, what, { boundMs: 10_000, each: () => jest.advanceTimersByTime(1) });
 }
 
-/** What `call` settled with by a few turns of the event loop, or "pending". */
+/** How `call` settled, once it has: its value, or what it rejected with. */
+function settlement(call: Promise<unknown>): { outcome?: { readonly value: unknown } } {
+  const box: { outcome?: { readonly value: unknown } } = {};
+  call.then(
+    (value) => {
+      box.outcome = { value };
+    },
+    (error: unknown) => {
+      box.outcome = { value: error };
+    }
+  );
+  return box;
+}
+
+/** What `call` settles with, waited for as {@link until} waits: a call the client never answers
+ *  fails the row naming `what`, not at the row's timeout. A call that rejects answers its error. */
+async function settledWith(call: Promise<unknown>, what: string): Promise<unknown> {
+  const box = settlement(call);
+  await until(() => box.outcome !== undefined, what);
+  return box.outcome?.value;
+}
+
+/** What `call` settled with by a few turns of the event loop, with no clock moved, or "pending". */
 async function outcome(call: Promise<BrokerToken>): Promise<unknown> {
-  const bound = Promise.withResolvers<"pending">();
-  setTimeout(() => bound.resolve("pending"), 5);
-  return await Promise.race([
-    call.then(
-      (token) => token,
-      (error: unknown) => error
-    ),
-    bound.promise,
-  ]);
+  const box = settlement(call);
+  for (let turns = 0; turns < 3 && box.outcome === undefined; turns += 1) await turn();
+  return box.outcome === undefined ? "pending" : box.outcome.value;
 }
 
 /** A row of the table: what the broker answers, the waits that pass at once, and the drive. A row
@@ -301,11 +317,11 @@ const ROWS: [string, Row][] = [
         const late = new AbortController();
         const waiting = client.token(late.signal, READY).catch((error: unknown) => error);
         await until(() => waits.length === 1, "at its first wait");
-        const told = await fast;
+        const told = await settledWith(fast, "the fail-fast caller told");
         expect(told).toBeInstanceOf(TradeRetryingError);
         expect((told as Error).message).toContain("did not answer");
         late.abort();
-        const named = await waiting;
+        const named = await settledWith(waiting, "the waiting caller told at its deadline");
         expect(named).toBeInstanceOf(TradeRetryingError);
         expect((named as Error).message).toContain("did not answer");
         client.close();
@@ -332,7 +348,7 @@ const ROWS: [string, Row][] = [
         advance();
         await until(() => trades() === 2, "at its second trade");
         client.close();
-        await first;
+        await settledWith(first, "the first caller told the client closed");
       },
     },
   ],
@@ -405,7 +421,9 @@ const ROWS: [string, Row][] = [
       drive: async ({ client, waits, trades }) => {
         const first = client.token().catch((error: unknown) => error);
         await until(() => waits.length === 1, "at its first wait");
-        expect(await first).toBeInstanceOf(TradeRetryingError);
+        expect(await settledWith(first, "the fail-fast caller told")).toBeInstanceOf(
+          TradeRetryingError
+        );
         client.close();
         const told = await outcome(client.token());
         expect((told as Error).message).toBe(
@@ -424,7 +442,7 @@ const ROWS: [string, Row][] = [
         const ready = client.token(new AbortController().signal, READY);
         const fast = client.token(new AbortController().signal).catch((error: unknown) => error);
         await until(() => waits.length === 1, "at its first wait");
-        const told = await fast;
+        const told = await settledWith(fast, "the fail-fast caller told");
         expect(told).toBeInstanceOf(TradeRetryingError);
         expect((told as Error).message).toContain("ECONNREFUSED");
         // A caller arriving now is told the same at once, with no trade of its own.
@@ -432,7 +450,9 @@ const ROWS: [string, Row][] = [
         expect(trades()).toBe(1);
         expect(await outcome(ready)).toBe("pending");
         advance();
-        expect((await ready).accessToken).toStartWith("granted-");
+        expect(await settledWith(ready, "the wait-for-ready caller's token")).toMatchObject({
+          accessToken: expect.stringMatching(/^granted-/),
+        });
       },
     },
   ],
@@ -444,7 +464,7 @@ const ROWS: [string, Row][] = [
       drive: async ({ client, waits, trades, advance }) => {
         const fast = client.token(new AbortController().signal).catch((error: unknown) => error);
         await until(() => waits.length === 1, "at its first wait");
-        const told = await fast;
+        const told = await settledWith(fast, "the fail-fast caller told");
         expect(told).toBeInstanceOf(TradeRetryingError);
         expect((told as Error).message).toContain("HTTP 503");
         advance();
@@ -464,11 +484,18 @@ const ROWS: [string, Row][] = [
 /** When the registration of the last row lands, on the row's clock. */
 const LANDS_AT = { at: Number.POSITIVE_INFINITY };
 
-test.each(ROWS)("%s", async (_name, row) => {
-  const one = await rig(row.answer, row.budget, row.attemptMs ?? TRADE_ATTEMPT_MS);
-  try {
-    await row.drive(one);
-  } finally {
-    one.client.close();
-  }
-});
+test.each(ROWS)(
+  "%s",
+  async (_name, row) => {
+    jest.useFakeTimers();
+    const one = await rig(row.answer, row.budget, row.attemptMs ?? TRADE_ATTEMPT_MS);
+    try {
+      await row.drive(one);
+    } finally {
+      one.client.close();
+      // A fake clock left behind stops the timers of every file the same worker runs after this.
+      jest.useRealTimers();
+    }
+  },
+  20_000
+);
