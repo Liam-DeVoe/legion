@@ -950,12 +950,7 @@ func TestALinkWhoseVersionTheParserRefusesStaysAsItIs(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	var stored string
-	if err := database.Pool.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = 1
-	`, id).Scan(&stored); err != nil {
-		t.Fatalf("read version 1: %v", err)
-	}
+	stored := versionText(t, database, id, 1)
 	refused := "[spec]: https://example.com/spec\n\n" + stored
 	if !strings.Contains(refused, table.Text+"\n") {
 		t.Fatalf("version 1 = %q; the test needs it to hold the decision as %q", stored, table.Text)

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
+import { cliRefusals, type DispatchCliIo, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
@@ -558,9 +558,7 @@ async function run(
   argv: readonly string[],
   extra: Record<string, string | undefined>,
   stdin = "",
-  fetchImpl?: typeof fetch,
-  nearestAncestorNamed?: (names: readonly string[]) => string | undefined,
-  dryRunDeadlineMs?: number
+  seams: Pick<DispatchCliIo, "fetchImpl" | "nearestAncestorNamed" | "dryRunDeadlineMs"> = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -573,9 +571,7 @@ async function run(
     },
     readText: (path) => (path === "-" ? stdin : readFileSync(path, "utf-8")),
     cwd: stateDir,
-    ...(fetchImpl === undefined ? {} : { fetchImpl }),
-    ...(nearestAncestorNamed === undefined ? {} : { nearestAncestorNamed }),
-    ...(dryRunDeadlineMs === undefined ? {} : { dryRunDeadlineMs }),
+    ...seams,
   });
   return { code, stdout, stderr };
 }
@@ -1113,7 +1109,7 @@ describe("the dispatch CLI", () => {
     const held = Promise.withResolvers<Response>();
     roundTrip = () => held.promise;
     try {
-      const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES, undefined, undefined, 200);
+      const dry = await run([...UPLOAD, "--dry-run"], omp, NOTES, { dryRunDeadlineMs: 200 });
       expect(dry).toEqual({
         code: 0,
         stdout: NOTES_JSON,
@@ -1213,14 +1209,14 @@ describe("the dispatch CLI", () => {
   test("a failed write is asked again under its key when an earlier call of the session saw the keyed layer", async () => {
     const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
     const first = keyedDispatch(0);
-    expect((await run(message, omp, "", first.fetchImpl)).code).toBe(0);
+    expect((await run(message, omp, "", { fetchImpl: first.fetchImpl })).code).toBe(0);
     const state = JSON.parse(
       readFileSync(join(stateDir, "sessions", "ses-1", "state.json"), "utf-8")
     );
     expect(Object.keys(state.keyedLayer)).toEqual([`http://127.0.0.1:${server.port}`]);
     nextProcess("ses-1");
     const stalled = keyedDispatch(1);
-    const second = await run(message, omp, "", stalled.fetchImpl);
+    const second = await run(message, omp, "", { fetchImpl: stalled.fetchImpl });
     expect(second.code).toBe(0);
     expect(stalled.keys).toHaveLength(2);
     expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
@@ -1244,7 +1240,7 @@ describe("the dispatch CLI", () => {
       );
       nextProcess("ses-1");
       const stalled = keyedDispatch(1);
-      const { code } = await run(message, omp, "", stalled.fetchImpl);
+      const { code } = await run(message, omp, "", { fetchImpl: stalled.fetchImpl });
       return { code, posts: stalled.keys.length, probes: stalled.probes.length };
     };
     expect(await call(sighting(60_000))).toEqual({ code: 0, posts: 2, probes: 0 });
@@ -1294,7 +1290,7 @@ describe("the dispatch CLI", () => {
       ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
       omp,
       "",
-      fetchImpl
+      { fetchImpl }
     );
     expect({ code, posts, probes }).toEqual({ code: 1, posts: 1, probes: 1 });
     expect(JSON.parse(readFileSync(file, "utf-8")).keyedLayer).toEqual({});
@@ -2097,11 +2093,11 @@ describe("the dispatch CLI's envoy.json", () => {
       CODEX_THREAD_ID: "codex-thread-3",
     };
     const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
-    const underCodex = await run(argv, both, "", undefined, () => "codex");
+    const underCodex = await run(argv, both, "", { nearestAncestorNamed: () => "codex" });
     expect(underCodex.code).toBe(0);
-    const underClaude = await run(argv, both, "", undefined, () => "claude");
+    const underClaude = await run(argv, both, "", { nearestAncestorNamed: () => "claude" });
     expect(underClaude.code).toBe(0);
-    const unknown = await run(argv, both, "", undefined, () => undefined);
+    const unknown = await run(argv, both, "", { nearestAncestorNamed: () => undefined });
     expect(unknown.code).toBe(0);
     const actors = requests
       .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
@@ -2113,8 +2109,8 @@ describe("the dispatch CLI's envoy.json", () => {
     serverConfig(join(stateDir, ".config", "legion"));
     const both = { ...fromFile, CODEX_THREAD_ID: "codex-thread-4" };
     const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
-    expect((await run(argv, both, "", undefined, () => "codex")).code).toBe(0);
-    expect((await run(argv, both, "", undefined, () => "omp")).code).toBe(0);
+    expect((await run(argv, both, "", { nearestAncestorNamed: () => "codex" })).code).toBe(0);
+    expect((await run(argv, both, "", { nearestAncestorNamed: () => "omp" })).code).toBe(0);
     const actors = requests
       .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
       .map((request) => (request.body as { actor: { id: string } }).actor.id);
@@ -2467,14 +2463,14 @@ describe("the dispatch CLI's subscription note", () => {
       }) as typeof fetch;
     const create = ["issue", "--project", "DSP", "--title", "Nightly export retries for ever"];
 
-    const refused = await run(create, omp, "", creating(true));
+    const refused = await run(create, omp, "", { fetchImpl: creating(true) });
     expect(refused.code).toBe(1);
     expect(refused.stdout).toContain(
       'Not created: "Nightly export retries for ever" is a near copy of an open issue.'
     );
     expect(refused.stdout).toContain("DSP-9 [in_progress] Nightly export retries for ever");
 
-    const made = await run(create, omp, "", creating(false));
+    const made = await run(create, omp, "", { fetchImpl: creating(false) });
     expect(made.code).toBe(0);
     expect(made.stdout).toContain("Created DSP-10");
   });

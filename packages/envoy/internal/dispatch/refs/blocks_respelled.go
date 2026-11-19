@@ -11,11 +11,12 @@ import (
 
 // respellCandidate is a block the document's index holds whose text's sum a version moved, and
 // whose stored changed version, storedAt, another renderer version stored or none stamped
-// (pmdoc.OtherRenderer): the block, with its text at this version, that text's sha256 and its
-// excerpt.
+// (pmdoc.OtherRenderer): the block, with its text at this version (markdown[From:To]), that text's
+// sha256 and its excerpt (BlockExcerptRunes).
 type respellCandidate struct {
-	movedBlock
-	storedAt int
+	block              model.ArtifactBlock
+	body, sum, excerpt string
+	storedAt           int
 }
 
 // topLevelCandidates keeps, of candidates, each block that no block of blocks encloses: a

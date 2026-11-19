@@ -184,7 +184,7 @@ func PlanBlocks(
 		}
 		excerpt := text.HeadRunes(body, BlockExcerptRunes)
 		if storedAt, other := respellable[block.ID]; other {
-			candidates = append(candidates, respellCandidate{movedBlock: movedBlock{block: block, body: body, sum: hexSum, excerpt: excerpt}, storedAt: storedAt})
+			candidates = append(candidates, respellCandidate{block: block, body: body, sum: hexSum, excerpt: excerpt, storedAt: storedAt})
 			delete(respellable, block.ID)
 		}
 		indexing.ids, indexing.types, indexing.sums = append(indexing.ids, block.ID), append(indexing.types, block.Type), append(indexing.sums, hexSum)
@@ -746,13 +746,6 @@ func storedBlocks(ctx context.Context, q Queryer, artifactID string) (map[string
 		}
 	}
 	return sums, respellable, rows.Err()
-}
-
-// movedBlock is a block whose text's sum a version moved: the block, its text (markdown[From:To]),
-// that text's sha256 and its excerpt (BlockExcerptRunes).
-type movedBlock struct {
-	block              model.ArtifactBlock
-	body, sum, excerpt string
 }
 
 // blockPair is one link a block holds: the block's id, the edge's kind and its target, and the

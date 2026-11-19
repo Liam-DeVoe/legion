@@ -2717,8 +2717,9 @@ func respellVerification(t *testing.T, database *store.Store, artifactID string,
 // A pass recorded against a check whose version another renderer version stored keeps its
 // words when the next version, which rewords another check, writes the check in this build's
 // spelling: the check's digest moves, but its words did not, and the block index keeps its
-// changed version (refs.IndexBlocks), so the pass reads check_words_moved false and stands. A
-// version that rewords the check itself moves its words, and the pass no longer stands.
+// changed version (refs.BlockIndexing.KeepRespelled), so the pass reads check_words_moved false
+// and stands. A version that rewords the check itself moves its words, and the pass no longer
+// stands.
 func TestAPassKeepsItsChecksWordsAcrossAnotherRenderersSpelling(t *testing.T) {
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })

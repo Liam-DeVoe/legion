@@ -43,6 +43,8 @@
 
 import type { Root } from "@milkdown/kit/transformer";
 import { $remark } from "@milkdown/kit/utils";
+import { asciiAtext } from "micromark-util-character";
+import { codes } from "micromark-util-symbol";
 import type { Transformer } from "unified";
 import { markdownSource } from "./typed-block-drawing";
 
@@ -70,28 +72,12 @@ function isLocalPart(code: number): boolean {
   );
 }
 
-/** Whether `code` is a character RFC 5322 allows in a local part: its `atext`, or `.`. */
+/**
+ * Whether `code` is a character RFC 5322 allows in a local part: its `atext`, or `.`. micromark's
+ * `asciiAtext` holds every one of them, `.` included, but `!`.
+ */
 function isAtext(code: number): boolean {
-  switch (code) {
-    case 33: // !
-    case 35: // #
-    case 36: // $
-    case 37: // %
-    case 38: // &
-    case 39: // '
-    case 42: // *
-    case 47: // /
-    case 61: // =
-    case 63: // ?
-    case 94: // ^
-    case 96: // `
-    case 123: // {
-    case 124: // |
-    case 125: // }
-    case 126: // ~
-      return true;
-  }
-  return isLocalPart(code);
+  return code === codes.exclamationMark || asciiAtext(code);
 }
 
 function isText(node: MdastNode | undefined): node is TextNode {
@@ -170,7 +156,7 @@ function wholeEmailLinks(parent: MdastNode, source: string): void {
     // each in a local part, starting at `start` in the text right before the link. `crossed` is
     // whether it reaches into a link remark-gfm made, and `split` whether markup splits it.
     const before = children[index - 1];
-    let start = isText(before) ? before.value.length : 0;
+    let start = 0;
     let length = 0;
     let linked = true;
     let crossed = false;
@@ -190,7 +176,7 @@ function wholeEmailLinks(parent: MdastNode, source: string): void {
       }
       length += value.length - end;
       crossed ||= label !== undefined && end < value.length;
-      if (at === index - 1 && node === before) start = end;
+      if (at === index - 1) start = end;
       if (end > 0) break;
     }
     if (length === 0 || split || (linked && crossed)) {

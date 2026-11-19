@@ -116,7 +116,7 @@ func ParseRendering(markdown string) (*Node, error) {
 func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	var starts []int
 	doc, err := parseMarkdown(markdown, fromStart, true, NewWriteBudget(), func(doc *Node, root ast.Node, _ []byte, rest int) {
-		starts = startsInMarkdown(sourceStarts(doc, root, rest > 0, rest), markdown)
+		starts = startsInMarkdown(sourceStarts(doc, root, rest), markdown)
 	})
 	if err != nil {
 		return nil, nil, err
@@ -367,13 +367,14 @@ func parseMarkdown(
 
 // sourceStarts is where each of doc's top-level children starts in the markdown parsed: front
 // matter at 0, and every other child where the block of root it was converted from starts
-// (sourceStart), past the front matter's offset bytes. Each of root's blocks converts to one child
+// (sourceStart), past the front matter's offset bytes. offset is not 0 exactly when the parse read
+// front matter, which then opens doc (parseMarkdown). Each of root's blocks converts to one child
 // (parseBlocks); a child past root's last block, the empty paragraph of a document with no blocks,
 // answers -1.
-func sourceStarts(doc *Node, root ast.Node, front bool, offset int) []int {
+func sourceStarts(doc *Node, root ast.Node, offset int) []int {
 	starts := make([]int, len(doc.Children))
 	index := 0
-	if front {
+	if offset > 0 {
 		index = 1
 	}
 	for block := root.FirstChild(); index < len(starts); index++ {
@@ -410,10 +411,8 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 			case *typedDirective:
 				closed := end
 				if block.Closed {
-					closed = len(source)
-					if stop := bytes.IndexByte(source[block.closer:], '\n'); stop >= 0 {
-						closed = block.closer + stop
-					}
+					line, _, _ := bytes.Cut(source[block.closer:], []byte("\n"))
+					closed = block.closer + len(line)
 				}
 				outline.TypedBlocks = append(outline.TypedBlocks, OutlineTypedBlock{Start: rest + lineStart(source, start), End: rest + closed})
 				walk(block, true, closed)

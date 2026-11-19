@@ -57,26 +57,9 @@ func linkifyParsers() []util.PrioritizedValue {
 // local-part character (`x agent&#45;hosts@example.com` links `hosts@example.com`), and the
 // transform after a `-`, `.`, `+` or `_` once a `/` has refused the address's first character
 // (findEmails: `projects/p/serviceAccounts/agent-hosts@example.com` links `hosts@example.com`).
-// There the reading is Dispatch's own rather than remark-gfm's (INFRA-4224), and the engine
-// applies the same rule in both of its pipelines (remarkWholeEmailLinks,
-// packages/proof-editor/src/whole-email-links.ts), so the two still agree. Once both readers have
-// linked a block (CloseBlock, wholeEmailLinks), an email link that a reader made from a bare
-// address is read with the run of characters that RFC 5322 allows in a local part (its atext, an
-// ASCII letter or digit, a backtick or one of `!#$%&'*+-/=?^_{|}~`, and `.`) in the decoded text
-// just before it, which the link's own local part ends. The walk back stops at the first
-// character outside that set, and goes on through the label of an autolink a reader made from
-// bare text (bareAutolinkAttr) as through text. At any other node it stops: where that node's
-// text ends in a character of the set, as in `*agent*-hosts@example.com`, the writer split the
-// address with markup, and the link stays as the reader made it; after code ending in `:`, after
-// `<br>`, after a line break or at the start of the block the run starts there. When every
-// character of the run before the link is one GFM links in a local part (`[-.+_A-Za-z0-9]`), the
-// link takes the run, unless the run reaches into a reader's autolink, when both links stay. When
-// one is not, the link goes, and its text joins the text around it, so the address reads as
-// written: the `/` of a resource path, the `%` of `a.b+c_d%e-f@example.com`, the `&` of
-// `agent&amp;hosts@example.com` and the `'` of `www\.a'b@c.test`, whose www link stays, are
-// local-part characters GFM does not link. With no run before the link nothing changes:
-// `xé-agent@example.com` keeps `-agent@example.com`, since `é` ends the walk. A link the writer
-// wrote, `[…](mailto:…)`, `[…][label]` or `<…>`, is never changed.
+// There the reading is Dispatch's own rather than remark-gfm's: once both readers have linked a
+// block (CloseBlock), each email link a reader made from a bare address is held to the address as
+// written, by the rule wholeEmailLinks states in full.
 //
 // Asking the guard at a character no other parser is asked at ends the text goldmark is building
 // there: a line asked at a `.` and nowhere else becomes two texts. The guard records the last such

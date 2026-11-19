@@ -114,7 +114,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	if specFound {
 		specID = spec.ID
 	}
-	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID, reader); err != nil {
+	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID, reader, true); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -234,15 +234,20 @@ func (s *server) specOpenQuestions(
 // stored version's cut gives it. A decision whose heading stands in a list item, a quote or a
 // footnote definition has no cut, since the cut reads only the headings the parser places outside
 // every container but a typed block (pmdoc.RenderingOutline); its key names no cut of any version
-// (noCut), so it is never read as another decision of its heading.
+// (noCut), so it is never read as another decision of its heading. The cut parses the whole
+// document, so it is made only where a mark can change a decision - some decision links the spec,
+// or waits for review under a keep - and neither mark changes any other decision.
 //
 // reader is the answer's own, and each decision registers its text with it once the slice has
 // stopped growing, as the open questions beside them do (specOpenQuestions): a shaping registers
 // a pointer into the row, and an append that moved the backing array would leave the reader
 // filling a tree into memory the answer no longer holds. Keep reads the decisions to compare one
-// sum and answers none of them, so it passes no reader and no tree is read for it.
+// sum and answers none of them, so it passes no reader and no tree is read for it. It passes mark
+// false too, since it reads no field either mark sets: neither the cut nor the marks are made for
+// it, so a Keep makes no read of the versions its keeps name (markKeptAcrossRenderers), and a
+// failure of that read no longer fails a Keep.
 func (s *server) readDecisions(
-	ctx context.Context, document model.Artifact, reference, specID string, reader *displayTreeReader,
+	ctx context.Context, document model.Artifact, reference, specID string, reader *displayTreeReader, mark bool,
 ) ([]model.Decision, error) {
 	markdown, sections, err := s.decisionSections(ctx, document.ID)
 	if err != nil {
@@ -266,19 +271,11 @@ func (s *server) readDecisions(
 	if err != nil {
 		return nil, err
 	}
-	current, _ := decisionCuts(markdown)
-	keyAt := make(map[int]sectionKey, len(current))
-	for key, cut := range current {
-		keyAt[cut.start] = key
-	}
 	decisions := make([]model.Decision, 0, len(sections))
-	keys := make([]sectionKey, 0, len(sections))
+	// markable is whether a mark can change some decision: one that links the spec
+	// (markStaleLinks), or one that waits for review under a keep (markKeptAcrossRenderers).
+	markable := false
 	for _, section := range sections {
-		key, cut := keyAt[section.start]
-		if !cut {
-			key = sectionKey{heading: section.heading, occurrence: noCut}
-		}
-		keys = append(keys, key)
 		decision := model.Decision{
 			BlockID:  section.headingBlock,
 			Heading:  section.heading,
@@ -320,14 +317,33 @@ func (s *server) readDecisions(
 		decision.WaitingReview = decision.Kind == "agent" && !decision.Replaced &&
 			(decision.Kept == nil || decision.Kept.TextSHA256 != decision.TextSHA256)
 		decisions = append(decisions, decision)
+		markable = markable || len(decision.Links) > 0 || decision.WaitingReview && decision.Kept != nil
 	}
 	for index := range decisions {
 		reader.text(&decisions[index].TextTree, decisions[index].Text)
 	}
-	if err := s.markKeptAcrossRenderers(ctx, document.ID, decisions, keys, current); err != nil {
+	if !mark || !markable {
+		return decisions, nil
+	}
+	cuts, read := decisionCuts(markdown)
+	current := documentCut{markdown: markdown, cuts: cuts, read: read}
+	keyAt := make(map[int]sectionKey, len(cuts))
+	for key, cut := range cuts {
+		keyAt[cut.start] = key
+	}
+	keys := make([]sectionKey, len(sections))
+	for i, section := range sections {
+		key, cut := keyAt[section.start]
+		if !cut {
+			key = sectionKey{heading: section.heading, occurrence: noCut}
+		}
+		keys[i] = key
+	}
+	versions, err := s.markKeptAcrossRenderers(ctx, document.ID, decisions, keys, current)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.markStaleLinks(ctx, document.ID, decisions, keys, current); err != nil {
+	if err := s.markStaleLinks(ctx, document.ID, decisions, keys, current, versions); err != nil {
 		return nil, err
 	}
 	return decisions, nil
@@ -354,10 +370,11 @@ func (s *server) readDecisions(
 // decision, alone, as the text now (storedDecisions.holds), so a renderer change, which leaves
 // every version stored before it in its renderer's spelling, marks no link. A text that holds
 // `[^`, and a text cut from inside a typed block then or now (decisionCut.alone), are compared by
-// their sums alone (pmdoc.FragmentReadsAs).
+// their sums alone (pmdoc.FragmentReadsAs). read is the versions the keeps' pass already read
+// (markKeptAcrossRenderers), which are not read again.
 func (s *server) markStaleLinks(
 	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
-	current map[sectionKey]decisionCut,
+	current documentCut, read map[int]storedDecisions,
 ) error {
 	times := map[int64]time.Time{}
 	numbers := map[int]bool{}
@@ -379,13 +396,13 @@ func (s *server) markStaleLinks(
 	for _, number := range atTime {
 		numbers[number] = true
 	}
-	versions, err := s.storedDecisionsAt(ctx, artifactID, sortedNumbers(numbers))
+	versions, err := s.storedDecisionsAt(ctx, artifactID, sortedNumbers(numbers), current, read)
 	if err != nil {
 		return err
 	}
 	for i := range decisions {
 		decision := &decisions[i]
-		now, ok := current[keys[i]]
+		now, ok := current.cuts[keys[i]]
 		if !ok || len(decision.Links) == 0 {
 			continue
 		}
@@ -557,10 +574,7 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 		open = nil
 	}
 	for _, at := range outline.Headings {
-		line := markdown[at.Start:]
-		if stop := strings.IndexByte(line, '\n'); stop >= 0 {
-			line = line[:stop]
-		}
+		line, _, _ := strings.Cut(markdown[at.Start:], "\n")
 		level, heading := markdownHeading(line)
 		if level == 0 {
 			continue
@@ -584,6 +598,16 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 	}
 	closeAt(len(markdown))
 	return cuts, true
+}
+
+// documentCut is a markdown cut into its decisions (decisionCuts): its cuts, and whether the
+// parser read it. The document as it stands is cut once (readDecisions), and a stored version
+// whose markdown is that same markdown takes its cut, refusal included, rather than another parse
+// of it (scanStoredDecisions).
+type documentCut struct {
+	markdown string
+	cuts     map[sectionKey]decisionCut
+	read     bool
 }
 
 // sectionKey names one decision of a document across its versions: its heading, and how many
@@ -874,7 +898,7 @@ func (s *server) keptDecision(ctx context.Context, document model.Artifact, bloc
 	if !found || decisionsDocument.ID != document.ID {
 		return model.Decision{}, notFound
 	}
-	decisions, err := s.readDecisions(ctx, document, artifactReference(document), "", nil)
+	decisions, err := s.readDecisions(ctx, document, artifactReference(document), "", nil, false)
 	if err != nil {
 		return model.Decision{}, err
 	}

@@ -1408,8 +1408,9 @@ type CheckResultRetracted struct {
 // CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
 // a read can tell a result whose check has been reworded since: one whose check's digest and
 // version both moved, since a block respelled by another renderer version takes a new digest
-// and keeps its changed version (refs.IndexBlocks). CommitStands, CheckWordsMoved and Retracted
-// are read when the results are read and are absent from the record's own answer.
+// and keeps its changed version (refs.BlockIndexing.KeepRespelled). CommitStands,
+// CheckWordsMoved and Retracted are read when the results are read and are absent from the
+// record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
