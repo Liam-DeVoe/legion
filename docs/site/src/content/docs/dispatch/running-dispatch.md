@@ -583,13 +583,11 @@ What a reader sees while two servers are serving:
   under that document's lock, edits made at the same time merge rather than overwrite, and the
   stored history holds all of them.
 - Notifications are published by one server at a time, so a second server does not reorder an
-  issue's notifications. When the publishing server is killed, the other takes over within six
-  seconds; when it stops or loses its connection to NATS, within ten seconds. The health check's
-  `outbox_publisher` says which server publishes. A publishing server whose NATS goes silent
-  without the connection dropping, while it has nothing to send, is found out only by its next
-  send, which waits five seconds for NATS to answer and then two for a probe of the connection:
-  the other server then takes over within ten seconds of the next notification, not of the
-  moment NATS went silent.
+  issue's notifications. When the publishing server stops, is killed, freezes or loses its
+  connection to NATS, the other, while its own NATS works, takes over within six seconds. The
+  health check's `outbox_publisher` says which server publishes. A publishing server whose NATS
+  goes silent without the connection dropping is found out by its client's own pings within three
+  seconds, whether or not it has anything to send, and gives the publishing up two seconds later.
 - Two people on one document see each other's typing, cursors and presence, whichever server each
   one is on. Each server tells the others through Postgres, so this works while the message bus
   is down. A read never returns text older than what is stored. An agent's edit sees what a

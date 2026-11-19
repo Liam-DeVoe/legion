@@ -1968,7 +1968,14 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 	return value
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests, or, in a child this binary starts for the killed-holder row
+// (killedHolderEnv set), a holder of the publisher hold until the row kills it (runKilledHolder).
+func TestMain(m *testing.M) {
+	if databaseURL := os.Getenv(killedHolderEnv); databaseURL != "" {
+		runKilledHolder(databaseURL)
+	}
+	os.Exit(storetest.Main(m))
+}
 
 func waitFor(t *testing.T, timeout time.Duration, what string, condition func() bool) {
 	t.Helper()

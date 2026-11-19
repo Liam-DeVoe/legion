@@ -936,8 +936,8 @@ What the two processes share, and what each keeps to itself:
   `/healthz` says which (`outbox_publisher`).
   A holder that stops sends nothing more, records what NATS already answered, releases the rest of each batch in flight and then the hold, which wakes the standby at once;
   a graceful stop waits for that before it closes the database pool, up to `outboxStopBudget` after its shutdown starts.
-  One that is killed is replaced once its hold lapses, five seconds after its last renewal, so within six seconds of the kill;
-  one whose NATS stays down for three seconds, or whose failed sends meet a connection that does not answer a probe, releases the hold too.
+  One that is killed or frozen is replaced once its hold lapses, five seconds after its last renewal, so within six seconds of the kill or the freeze;
+  one whose NATS stays down for two seconds, or whose failed sends meet a connection that does not answer a probe, releases the hold too, and a connection that goes silent is found down by the client's pings two to three seconds in, so the other process takes over within six seconds of the silence.
   One that finds its hold lost releases it as well, which stops its renewal and deletes the row only while the row still names it.
   One that is alive but whose renewal is not confirmed within four seconds of the last one that was stops publishing at that moment, and no standby may take the name while its row stands: until its release, right after the line that ends the turn, deletes the row, or until the row lapses one second later when that release cannot reach the database first;
   the line that ends the turn carries `stopped` and `stopped_by`, the moment it stopped bounded from below and from above rather than dated by the moment the line was written, and one value, the hold's deadline, whenever the turn ended there;
@@ -3746,7 +3746,7 @@ Each item below names a path with its method and identity, then its purpose.
   it fails while the database is unreachable, so a liveness probe on it would restart every server process during a database failover.
   Every other field is reported and never decides `ok` or the status, and a deploy check that needs one asserts it itself (`nats: true`, `files: true`, `signin: true`):
   `nats`, whether the server's publisher is connected to NATS (`null` with `DISPATCH_NATS_DISABLED=1`), so a bus outage is `200` with `nats: false` while the process serves and its outbox waits for the bus;
-  the client pings every second and declares a connection lost at two pings outstanding, so a silently cut bus reads `false` within two to three seconds;
+  the client pings every second and declares a connection lost at two pings outstanding, so a silently cut bus reads `false` within two to three seconds, and the probe reads the client within a quarter of a second, so one in the middle of a reconnect attempt reads `false` rather than holding the probe;
   `files`, whether the file store's bucket answers its two-second probe (S3:
   `HeadBucket`; Cloud Storage: a metadata read of a key no upload writes, which a missing object answers healthy) where `DISPATCH_FILE_STORE_BUCKET` is set (`null` when it is not), so a bucket outage fails uploads and downloads and nothing else;
   `signin` and `service_tokens`, whether the sign-in issuer's and the service-account token issuer's discovery documents have been read (`false` before, `null` where that issuer is not configured).

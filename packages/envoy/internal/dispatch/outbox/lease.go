@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -25,8 +26,19 @@ const (
 	// inserts events, whichever process committed it.
 	eventsChannel = "dispatch_events"
 	// natsLossGrace is how long the holder's NATS connection may stay down before the holder gives
-	// the hold up, so that a process whose NATS works can publish instead.
-	natsLossGrace = 3 * time.Second
+	// the hold up, so that a process whose NATS works can publish instead. A standby takes the hold
+	// within six seconds of what stopped the holder, a loss of NATS included, and a connection
+	// that goes silent is found lost only by the client's own pings, two to three seconds into the
+	// silence (bus.WithSilentCutDetection): the grace and that detection, with statusReadBound at
+	// the grace's end, must fit in those six seconds, which 3 s did not.
+	natsLossGrace = 2 * time.Second
+	// statusReadBound bounds each of the holder's reads of its client's connection status
+	// (bus.ConnectedWithin). nats.go holds a connection's lock across each reconnect attempt's dial
+	// and handshake, up to the client's connect timeout (5 s), and a status read waits on that
+	// lock: an unbounded read at the grace's end answered only when the attempt failed, which
+	// handed a silent connection's hold over 8 to 9 s into the silence. A read that does not
+	// answer within the bound is a client in the middle of a reconnect, and so not connected.
+	statusReadBound = 250 * time.Millisecond
 	// probeTimeout bounds the flush that tells a connection that is gone or silent from one whose
 	// server still answers, after a batch's sends failed for the connection (scanBatch).
 	probeTimeout = 2 * time.Second
@@ -501,13 +513,15 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // stopped: ctx ended, the hold was lost or its deadline had passed when a scan was to start a
 // batch or write a send of one, or NATS was lost - down for natsLossGrace without a break and
 // still down when the grace ends, or a batch's sends failed for the connection and a probe of
-// that connection failed too.
+// that connection failed too. Each read of the client's status is bounded (statusReadBound), so a
+// reconnect attempt holding nats.go's lock of the connection neither holds the grace's end past
+// its time nor keeps a wake meanwhile from reaching the grace.
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	var disconnected, retryTimer *time.Timer
 	var disconnectedFor, retryDue <-chan time.Time
 	due := true
 	for {
-		if !o.deps.Publisher.Connected() {
+		if !bus.ConnectedWithin(o.deps.Publisher, statusReadBound) {
 			if disconnected == nil {
 				disconnected = time.NewTimer(natsLossGrace)
 				disconnectedFor = disconnected.C
@@ -563,7 +577,7 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 			// queued before it, so ConnectionChanged has not closed although the client is
 			// connected again: the client's own status decides, and a connected one serves on and
 			// scans, as the reconnect's wake would have it do.
-			if !o.deps.Publisher.Connected() {
+			if !bus.ConnectedWithin(o.deps.Publisher, statusReadBound) {
 				return natsLost
 			}
 			disconnected, disconnectedFor = nil, nil

@@ -808,11 +808,38 @@ func (c *Client) JS() nats.JetStreamContext {
 	return c.js
 }
 
-// Connected reports whether the client currently has a live NATS connection.
+// Connected reports whether the client currently has a live NATS connection. It takes the
+// connection under c.mu and reads its status after letting c.mu go: the read waits on nats.go's own
+// lock of the connection, which nats.go holds for the whole of each reconnect attempt, its dial
+// and its handshake, up to connectTimeout, and a read waiting there with c.mu held would hold up
+// every other user of c.mu with it, this client's connection callbacks (connectionChanged) and so
+// nats.go's callback goroutine among them.
 func (c *Client) Connected() bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.Conn != nil && c.Conn.Status() == nats.CONNECTED
+	conn := c.Conn
+	c.mu.Unlock()
+	return conn != nil && conn.Status() == nats.CONNECTED
+}
+
+// ConnectedWithin is client.Connected(), or false when that read has not answered within bound.
+// A read of a connection's status waits on nats.go's lock of that connection, which a reconnect
+// attempt holds across its dial and its handshake, up to connectTimeout, so once a silent cut is
+// found (WithSilentCutDetection) each attempt through the same dead path is such a wait, and an
+// unbounded read answers only when the attempt has failed. A reader that has to decide on time -
+// the holder of Dispatch's publisher hold timing its loss of NATS, a health probe - reads through
+// this, and a client in the middle of a reconnect reads as not connected, which it is. The read it
+// starts is left to end on its own, when nats.go lets the lock go.
+func ConnectedWithin(client interface{ Connected() bool }, bound time.Duration) bool {
+	answer := make(chan bool, 1)
+	go func() { answer <- client.Connected() }()
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case connected := <-answer:
+		return connected
+	case <-timer.C:
+		return false
+	}
 }
 
 // Connection is the client's connection now, read under its lock. A KV handle opened outside this

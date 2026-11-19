@@ -1,8 +1,14 @@
 kind: Fixed
 body: |-
-  A standby Dispatch process now takes over publishing within six seconds of the kill of the
-  process that published, a kill at the moment of a renewal included; it took six seconds or more
-  before. The publisher hold `dispatch-outbox` lasts 5 s after each renewal instead of 6 s, and a
-  holder reports itself lost 1 s before its row lapses instead of 2 s, so a renewal still has 4 s
-  from the last confirmed one. The cost: a holder whose renewal is late stops publishing 1 s, not
-  2 s, before a standby may take the hold.
+  A standby Dispatch process now takes over publishing within six seconds of what stopped the
+  process that published. A kill or a freeze at the moment of a renewal of the publisher hold was
+  followed by a take-over six seconds or more later before. A NATS connection that went silent
+  while the publisher had nothing to send was taken over eight to nine seconds into the silence.
+  The publisher hold `dispatch-outbox` lasts 5 s after each renewal instead of 6 s, and a holder
+  reports itself lost 1 s before its row lapses instead of 2 s, so a renewal still has 4 s from
+  the last confirmed one. A holder gives the hold up after 2 s without NATS instead of 3 s, and its
+  reads of its NATS client's state no longer wait out a reconnect attempt, which holds the client
+  for up to five seconds through a silent cut. `/healthz` no longer waits out that attempt either,
+  so it answers through a silent cut of NATS. The cost: a holder whose renewal is late stops
+  publishing 1 s, not 2 s, before a standby may take the hold, and a NATS outage of 2 to 3 s now
+  hands the hold to the other process.

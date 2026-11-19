@@ -1,9 +1,14 @@
 package outbox
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -485,44 +490,187 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // within six seconds of the kill.
 const standbyTakesWithin = 6 * time.Second
 
+// requireDatabaseInCI fails t, naming the variable to set, where CI is set and
+// DISPATCH_TEST_DATABASE_URL is not. storetest.Open skips a test without a database, and go test
+// reads a skip as a pass, so a row that is the check of a requirement would pass in CI with
+// nothing run. Every CI runner sets CI.
+func requireDatabaseInCI(t *testing.T) {
+	t.Helper()
+	if ci := os.Getenv("CI"); ci != "" && os.Getenv(storetest.DatabaseURLEnv) == "" {
+		t.Fatalf("%s must be set to run this row where CI is set (CI=%q): without it the row skips, and go test reads the skip as a pass", storetest.DatabaseURLEnv, ci)
+	}
+}
+
+// killedHolderEnv names, to a child of this test binary, the database on which the child holds the
+// publisher hold until it is killed (runKilledHolder): the holder the killed-holder row kills.
+const killedHolderEnv = "DISPATCH_OUTBOX_TEST_KILLED_HOLDER_DATABASE_URL"
+
+// runKilledHolder is the whole of such a child: an outbox on the database at databaseURL, as a
+// server process runs one (an outbox pool and an events broker of its own, and a publisher that is
+// always connected), which takes the publisher hold and renews it every Renew until the process
+// is killed. It first prints its instance, the holder its row names, on a line of its own.
+func runKilledHolder(databaseURL string) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open the holder's database: %v\n", err)
+		os.Exit(2)
+	}
+	pool, err := database.Pool.Outbox()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open the holder's outbox pool: %v\n", err)
+		os.Exit(2)
+	}
+	holder := New(Deps{Store: &store.Store{Pool: pool}, Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: database.Pool.Listener})
+	fmt.Printf("holder %s\n", holder.instance)
+	holder.Run(ctx)
+	// Run returns only once its context ends, and nothing ends this one: the row kills the process.
+	os.Exit(3)
+}
+
+// killedHolder is a child of this test binary that holds the publisher hold (runKilledHolder).
+type killedHolder struct {
+	cmd      *exec.Cmd
+	stdout   io.ReadCloser
+	stderr   bytes.Buffer
+	instance uuid.UUID
+}
+
+// startKilledHolder starts a holder on database's database and reads its instance. The child is
+// killed and waited for when the test ends, and its own output is logged when the test failed.
+func startKilledHolder(t *testing.T, database *store.Store) *killedHolder {
+	t.Helper()
+	holder := &killedHolder{cmd: exec.Command(os.Args[0])}
+	holder.cmd.Env = append(os.Environ(), killedHolderEnv+"="+database.Pool.Config().ConnString())
+	holder.cmd.Stderr = &holder.stderr
+	stdout, err := holder.cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("pipe the holder's output: %v", err)
+	}
+	holder.stdout = stdout
+	if err := holder.cmd.Start(); err != nil {
+		t.Fatalf("start the holder: %v", err)
+	}
+	t.Cleanup(func() {
+		if holder.cmd.ProcessState == nil {
+			_ = holder.cmd.Process.Kill()
+			holder.wait()
+		}
+		if t.Failed() {
+			t.Logf("the holder's output:\n%s", holder.stderr.String())
+		}
+	})
+	line := make(chan string, 1)
+	go func() {
+		read, _ := bufio.NewReader(stdout).ReadString('\n')
+		line <- read
+	}()
+	select {
+	case read := <-line:
+		text, found := strings.CutPrefix(strings.TrimSpace(read), "holder ")
+		instance, err := uuid.Parse(text)
+		if !found || err != nil {
+			t.Fatalf("the holder printed %q, want its instance", read)
+		}
+		holder.instance = instance
+	case <-time.After(outboxHangGuard):
+		t.Fatalf("the holder printed no instance within %v", outboxHangGuard)
+	}
+	return holder
+}
+
+// kill sends the holder SIGKILL and waits for it to end.
+func (h *killedHolder) kill(t *testing.T) {
+	t.Helper()
+	if err := h.cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill the holder: %v", err)
+	}
+	h.wait()
+}
+
+// wait reads what is left of the holder's output, which ends with the process, and waits for it.
+func (h *killedHolder) wait() {
+	_, _ = io.Copy(io.Discard, h.stdout)
+	_ = h.cmd.Wait()
+}
+
 // A publisher killed at the moment of a renewal is replaced by a standby within six seconds of the
-// kill, on the database's clock. The kill falls at the worst moment a renewal leaves: the dead
-// holder's row carries an expiry of the database's now() plus the hold's TTL, which is what its last
-// renewal writes, and nothing renews it again. The standby, started then, arms its timer to the
-// lapse and takes the hold. A trigger on duty_holds records the take's own now(), the moment the
-// row first names another holder, so the reading is the database's and not this test's poll.
+// kill, on the database's clock. The holder is a process of its own, a child of this test binary
+// (runKilledHolder), which takes the publisher hold and renews it; the standby runs here. A
+// trigger on duty_holds records each write of the hold's row - its statement's own now(), when
+// the statement started, and clock_timestamp(), when the row changed - and notifies, and the row
+// kills the holder with SIGKILL as soon as it is told of a renewal made since the standby started:
+// the worst moment a kill has, since the row that renewal left lapses a whole TTL after it. The
+// take is read at the moment the row changed, so the reading holds all of the take's statement,
+// a statement that waited included; the renewal at the moment its statement started, which is
+// before the kill, so take - renewal is at or above take - kill, and the row fails on it.
 func TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill(t *testing.T) {
+	requireDatabaseInCI(t)
 	database := storetest.Open(t)
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		create table hold_takes (holder uuid not null, taken_at timestamptz not null);
-		create function record_hold_take() returns trigger language plpgsql as $$
+		create table hold_writes (holder uuid not null, started timestamptz not null, changed timestamptz not null);
+		create function record_hold_write() returns trigger language plpgsql as $$
 		begin
-			insert into hold_takes (holder, taken_at) values (new.holder, now());
+			insert into hold_writes (holder, started, changed) values (new.holder, now(), clock_timestamp());
+			perform pg_notify('hold_writes', new.holder::text);
 			return null;
 		end $$;
-		create trigger record_hold_take after update on duty_holds for each row
-			when (old.holder is distinct from new.holder) execute function record_hold_take();
+		create trigger record_hold_write after insert or update on duty_holds for each row
+			when (new.name = 'dispatch-outbox') execute function record_hold_write();
 	`); err != nil {
-		t.Fatalf("record each take of the hold: %v", err)
+		t.Fatalf("record each write of the publisher hold: %v", err)
 	}
-	dead := uuid.New()
-	var killed time.Time
-	if err := database.Pool.QueryRow(ctx, `
-		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + make_interval(secs => $3))
-		returning now()
-	`, publisherHold, dead, publisherHoldOptions.TTL.Seconds()).Scan(&killed); err != nil {
-		t.Fatalf("leave the row of a holder killed at its renewal: %v", err)
+	listener, err := database.Pool.Listener(ctx)
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	defer listener.Close(ctx)
+	if _, err := listener.Exec(ctx, `listen hold_writes`); err != nil {
+		t.Fatalf("listen for the writes of the publisher hold: %v", err)
+	}
+	// writeOf waits for the next write of the hold's row by holder.
+	writeOf := func(holder uuid.UUID, what string) {
+		t.Helper()
+		for {
+			waitCtx, cancel := context.WithTimeout(ctx, outboxHangGuard)
+			note, err := listener.WaitForNotification(waitCtx)
+			cancel()
+			if err != nil {
+				t.Fatalf("wait for %s: %v", what, err)
+			}
+			if note.Payload == holder.String() {
+				return
+			}
+		}
 	}
 
+	holder := startKilledHolder(t, database)
+	writeOf(holder.instance, "the holder taking the publisher hold")
 	standby := New(Deps{Store: database, Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: database.Pool.Listener})
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { standby.Run(runCtx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
+	// The first renewal told of can be one made before the standby started; the second is not.
+	writeOf(holder.instance, "a renewal of the publisher hold")
+	writeOf(holder.instance, "a renewal of the publisher hold")
+	holder.kill(t)
+	var killedBy time.Time
+	if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&killedBy); err != nil {
+		t.Fatalf("read the database's clock after the kill: %v", err)
+	}
 	waitFor(t, outboxHangGuard, "the standby taking the publisher hold", standby.Publishing)
 
-	rows, err := database.Pool.Query(ctx, `select holder, taken_at from hold_takes order by taken_at`)
+	var renewal time.Time
+	var after int
+	if err := database.Pool.QueryRow(ctx, `
+		select max(started) filter (where changed <= $2), count(*) filter (where changed > $2)
+		from hold_writes where holder = $1
+	`, holder.instance, killedBy).Scan(&renewal, &after); err != nil {
+		t.Fatalf("read the killed holder's last renewal: %v", err)
+	}
+	rows, err := database.Pool.Query(ctx, `select holder, changed from hold_writes where holder <> $1 order by changed`, holder.instance)
 	if err != nil {
 		t.Fatalf("read the takes of the hold: %v", err)
 	}
@@ -540,11 +688,15 @@ func TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill(t *testing.
 	if len(takes) != 1 || takes[0].holder != standby.instance {
 		t.Fatalf("the hold was taken %v, want once, by the standby %s", takes, standby.instance)
 	}
-	after := takes[0].at.Sub(killed)
-	t.Logf("the standby took the publisher hold %v after the kill, on the database's clock", after)
-	if after > standbyTakesWithin {
-		t.Fatalf("the standby took the publisher hold %v after the kill, on the database's clock, past the %v bound: the hold lasts %v after a renewal",
-			after, standbyTakesWithin, publisherHoldOptions.TTL)
+	if !takes[0].at.After(killedBy) {
+		t.Fatalf("the standby took the publisher hold at %s, before the holder was killed (by %s)", takes[0].at, killedBy)
+	}
+	upper, lower := takes[0].at.Sub(renewal), takes[0].at.Sub(killedBy)
+	t.Logf("the standby took the publisher hold %v after the renewal the kill followed (at or above the time from the kill) and %v after a read of the database's clock made after the kill (at or below it); the killed holder wrote the row %d times after that read",
+		upper, lower, after)
+	if upper > standbyTakesWithin {
+		t.Fatalf("the standby took the publisher hold %v after the killed holder's last renewal, on the database's clock, past the %v bound: the hold lasts %v after a renewal",
+			upper, standbyTakesWithin, publisherHoldOptions.TTL)
 	}
 }
 
@@ -777,6 +929,51 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	cancel()
 	if end := <-ended; end != stopping {
 		t.Fatalf("serve ended %s once ctx ended, want %s", end, stopping)
+	}
+}
+
+// reconnectAttemptHolds is how long a reconnect attempt holds nats.go's lock of the connection
+// through a silent cut: the dial and handshake wait out the client's connect timeout.
+const reconnectAttemptHolds = 5 * time.Second
+
+// reconnectingUnderLock is a publisher whose client is disconnected and in the middle of a
+// reconnect attempt at every read of its status, as nats.go is through a silent cut: each read
+// waits out the attempt holding the connection's lock, and then answers not connected.
+type reconnectingUnderLock struct {
+	recordingPublisher
+}
+
+func (p *reconnectingUnderLock) Connected() bool {
+	time.Sleep(reconnectAttemptHolds)
+	return false
+}
+
+// A holder whose client reads disconnected gives the publisher hold up for NATS lost once
+// natsLossGrace has passed, though every read of its client's status waits out a reconnect
+// attempt: its reads are bounded (statusReadBound), so neither the read that finds the loss nor
+// the one at the grace's end holds the hand-over back. Unbounded, the two reads alone took twice
+// reconnectAttemptHolds.
+func TestAHolderWhoseClientIsMidReconnectGivesThePublisherUpOnTime(t *testing.T) {
+	requireDatabaseInCI(t)
+	database := storetest.Open(t)
+	outbox := New(Deps{Store: database, Publisher: &reconnectingUnderLock{}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hold, _ := outbox.tryHold(ctx)
+	if hold == nil {
+		t.Fatal("the outbox did not take the publisher hold")
+	}
+	t.Cleanup(func() { _ = hold.Release(context.Background()) })
+
+	started := time.Now()
+	end := outbox.serve(ctx, hold)
+	took := time.Since(started)
+	t.Logf("the holder whose client was mid-reconnect stopped serving (%s) %v after it began", end, took.Round(time.Millisecond))
+	if end != natsLost {
+		t.Fatalf("serve ended %s, want %s", end, natsLost)
+	}
+	if bound := natsLossGrace + 2*statusReadBound + time.Second; took > bound {
+		t.Fatalf("the holder gave the publisher hold up %v after it began, past %v: natsLossGrace, the two bounded reads and a second", took.Round(time.Millisecond), bound)
 	}
 }
 
