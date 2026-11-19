@@ -164,6 +164,7 @@ declare -A missing=(
   [email]=nobody@example.com
   [group]=no-such-group
   [agent-token]=00000000-0000-4000-8000-000000000009
+  [near-copy-check]=00000000-0000-4000-8000-00000000000a
   # A name no mapping holds on the GitHub subject lane of PRIV's acme/priv.lane.walk: a mapping
   # write answers a hidden project's mapping as it answers a neighbour on its lane. Both names
   # hold a `.`, which the lane spells `_`, so the lane both answers name masks neither fill.
@@ -203,6 +204,7 @@ priv_object() {
     handoff) recalled main "PRIV handoff" ;;
     result) recalled main "PRIV result" ;;
     going-run) recalled main "PRIV going run" ;;
+    near-copy-check) recalled main "PRIV near-copy check" ;;
     group) printf priv-group ;;
     # The labels resolve fills on each server with that server's own object.
     broadcast) printf '{session broadcast}' ;;
@@ -411,6 +413,17 @@ fi
 # of which bob answered.
 send main carol POST /api/v1/issues '{"project":"PRIV","title":"A child of PRIV-1","parent":"PRIV-1","advances":["access-work"]}'
 expect_status 201 "main: carol makes PRIV-2 under PRIV-1"
+# The near-copy gate answered that create and records its answer as a row of PRIV's
+# (recordNearCopyCheck, written after the create commits): the one object of PRIV that
+# GET /api/v1/near-copy-checks/{id} names. carol, who sees PRIV, reads it back from PRIV's page.
+near_copy=''
+for _ in $(seq 1 20); do
+  send main carol GET '/api/v1/near-copy-checks?project=PRIV'
+  near_copy=$(jq -r '[.checks[]? | select(.issue == "PRIV-2") | .id][0] // empty' "$work/body")
+  [ -z "$near_copy" ] || break
+  sleep 0.5
+done
+remember main "PRIV near-copy check" "$near_copy"
 psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "insert into delivery_pull_requests
     (repo, number, title, url, author, created_at, merged_at, issue_key)
   values ('acme/priv-repo', 7, 'The change of PRIV-1', 'https://github.com/acme/priv-repo/pull/7', 'octocat',
@@ -813,6 +826,8 @@ declare -A query_kind=(
   ["/api/v1/block-links to"]=spec-ref
   ["/api/v1/references from"]=issue-ref
   ["/api/v1/references to"]=issue-ref
+  # What many references point at: each ref is a dispatch:// reference, as the two above.
+  ["/api/v1/reference-targets ref"]=issue-ref
   # The question map's id names a comment once its kind says so (query_fixed).
   ["/api/v1/references/questions id"]=comment
   # An issue's comments are those of the path's issue, so ?artifact= names a document of that
