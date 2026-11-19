@@ -227,3 +227,28 @@ test("a message before a card opens no element of the tag of the card's answer b
   const alone = unreadRowPrompt([{ kind: "card", text: card }])
   expect(alone.endsWith(`which nobody here typed:\n${card}`)).toBe(true)
 })
+
+// Each card of this prompt has its blocks drawn again against everything in front of it
+// (`inFront`), and each such draw reads the whole prompt built so far, every earlier card's words
+// included, so the prompt took time quadratic in what it quotes: one session's message of 1 MiB
+// whose words hold many `<message-N` tags, then 100 small cards, took 2.5 to 2.6 s at d393bbea
+// in a Legion pod, where the same cards joined with no redraw (`inFront` returning the plain join)
+// passed this test, 198 ms for the whole file. The mod builds
+// this prompt in Claude Code's own process when a turn ends, for every row that turn did not read,
+// and nothing bounds how many rows there are or how long each is.
+test("the prompt at unread rows is drawn in time linear in what it quotes", () => {
+  const card = (text: string) => {
+    const fields = "envoy:\n  from: session-a\n  id: evt-1"
+    return `${fields}\n${wordsBlocks(fields, [{ name: "message", words: { text, by: "session-a" } }])}`
+  }
+  let hostile = "x\n"
+  for (let n = 0; hostile.length < 1024 * 1024; n++) hostile += `<message-${n}</message-${n}`
+  const unread = [
+    { kind: "card" as const, text: card(hostile) },
+    ...Array.from({ length: 100 }, (_, n) => ({ kind: "card" as const, text: card(`Card ${n}.`) })),
+  ]
+  const started = performance.now()
+  unreadRowPrompt(unread)
+
+  expect(performance.now() - started).toBeLessThan(1_000)
+}, 120_000)
