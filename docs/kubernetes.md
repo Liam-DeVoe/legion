@@ -7777,8 +7777,8 @@ The claim's next try, within a minute, starts in the new pod, which carries the 
 
 A waiting claim with a session had a worker, and that worker's process can have died in the pod before the runtime refused its relaunch.
 So where such a claim had not answered the round, the daemon names it as having lost what it did not push.
-The replacement's Info line, `supervise: the pod of this update round is replaced and the round is over`, names it under `waitingOnThePodNotWaitedFor`.
-If the pod goes before its round is over, the daemon's message on the issue names it with the other roles that had not answered (`lostClaims`).
+The replacement's Info line, `supervise: the pod of this update round is replaced and the round is over`, names under `waitingOnThePodNotWaitedFor` each waiting claim with a session that had not answered, whether or not it records the round (`unwaitedOnThePod`).
+If the pod goes before its round is over, the daemon's message on the issue names each such claim that records the round, with the other roles that had not answered (`lostClaims`).
 A waiting claim with no session never had a worker, and nothing names it.
 
 The daemon keeps the waiting pod in memory only.

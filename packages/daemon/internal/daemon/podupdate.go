@@ -671,17 +671,13 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	}
 	// The round waited for no failed claim, since such a claim runs no turn and is asked nothing
 	// (askedClaims), and the line names it: whatever it left unpushed on the disk went with the pod.
-	// The round waited for no claim whose launch waits on the round's pod either, since such a
-	// claim has no process to answer (waitingClaims), and the line names it where it has a session
-	// and had not answered, for the reason lostClaims gives.
+	// The round waited for no claim whose launch waits on the round's pod either, and the line
+	// names the ones unwaitedOnThePod gives.
 	failed := slices.DeleteFunc(blockingClaims(live, round), func(c supervise.Claim) bool { return c.State != supervise.StateFailed })
-	waitingOnPod := slices.DeleteFunc(askedClaims(live, round), func(c supervise.Claim) bool {
-		return c.Session == "" || answered(c, round) || !awaitsRoundPod(c, round)
-	})
 	bounded := ended.bounded()
 	s.log.Info("supervise: the pod of this update round is replaced and the round is over",
 		"issue", issue, "round", round, "pod", pod, "atTheBound", bounded, "failedNotWaitedFor", namesOf(failed),
-		"waitingOnThePodNotWaitedFor", namesOf(waitingOnPod))
+		"waitingOnThePodNotWaitedFor", namesOf(unwaitedOnThePod(live, round)))
 	if bounded {
 		s.log.Info("supervise pod update replaced at the bound",
 			"issue", issue, "round", round, "pod", pod,
@@ -1463,7 +1459,7 @@ func podLocator(c supervise.Claim) *runtime.Locator {
 // whether or not it has a session (blockingClaims), asks it nothing, since it never said it is
 // ready (askRound), and waits on no answer of it (waitingClaims). The pod is replaced through it
 // where no claim records a process there (podProcess). lostClaims says which such claims a gone
-// pod or a replacement names as having lost work.
+// pod names as having lost work, and unwaitedOnThePod which ones a replacement names.
 func awaitsRoundPod(c supervise.Claim, round string) bool {
 	return c.Locator == nil && c.AwaitsPod != nil && supervise.PodRound(podOf(c.AwaitsPod)) == round
 }
@@ -1685,6 +1681,26 @@ func lostClaims(group []supervise.Claim, round string) []supervise.Claim {
 		}
 	}
 	return lost
+}
+
+// unwaitedOnThePod is what the replacement's log line names under waitingOnThePodNotWaitedFor
+// (replacePodForRound): every claim the round asks (askedClaims) with a session whose launch
+// waits on the round's own pod (awaitsRoundPod) and that had not answered the round, whether or
+// not it records the round. The round waits on no answer of such a claim (waitingClaims), and
+// whatever its worker left unpushed went with the pod. A claim with no session that waits on the
+// pod never had a worker, and the line names nothing of it.
+//
+// It names more than lostClaims does: lostClaims names only a member of the round (memberOf),
+// and this one also names a waiting claim the round has not reached yet, which records another
+// round or none (waitingClaims).
+func unwaitedOnThePod(group []supervise.Claim, round string) []supervise.Claim {
+	var unwaited []supervise.Claim
+	for _, c := range askedClaims(group, round) {
+		if c.Session != "" && !answered(c, round) && awaitsRoundPod(c, round) {
+			unwaited = append(unwaited, c)
+		}
+	}
+	return unwaited
 }
 
 // workingClaims is every claim of the group whose worker runs a turn now, by role.
