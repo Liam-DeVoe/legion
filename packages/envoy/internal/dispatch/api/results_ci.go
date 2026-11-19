@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -220,6 +221,28 @@ func gitHubErrorText(err error) string {
 	}
 	return err.Error()
 }
+
+// gitHubReason is err's text as a refusal sentence carries it: gitHubErrorText, cut to its first
+// gitHubReasonBytes at a whole character where it is longer, saying so. The cut is the one bound
+// of every 502 GITHUB_UNREADABLE that names GitHub's error (linkedReadRefusal,
+// getAppInstallation), since an error GitHub answered with a page that is no JSON carries that
+// whole page, up to the megabyte githubapp reads of an answer.
+func gitHubReason(err error) string {
+	reason := gitHubErrorText(err)
+	if len(reason) <= gitHubReasonBytes {
+		return reason
+	}
+	cut := gitHubReasonBytes
+	for !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s… (GitHub's error, cut to its first %d of %d bytes)", reason[:cut], cut, len(reason))
+}
+
+// gitHubReasonBytes is the most bytes of GitHub's error gitHubReason keeps, about a kilobyte:
+// room for the status and a message as GitHub writes one, while the refusal stays a sentence a
+// caller prints whole.
+const gitHubReasonBytes = 1024
 
 // withGitHubMessage is reason, an error's text, with body, which ends it after ": ", replaced by
 // ": " and message, or by nothing where message is "". A text that does not end so is kept.

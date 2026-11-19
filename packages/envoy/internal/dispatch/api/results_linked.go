@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -162,26 +161,19 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 // answer (err) where no repository was shown to hold the commit: 502 GITHUB_UNREADABLE, the code
 // Dispatch answers a GitHub read that failed with (getAppInstallation), naming the repository,
 // the commit and GitHub's error, and telling the caller to record the result again. Nothing is
-// stored, so the record is made again whole. GitHub's error is worded as a check CI proves words
-// one (gitHubErrorText): where GitHub refused the read (githubapp.StatusError) or rate-limited it
-// (githubapp.RateLimitError), the body the error's text ends with is replaced by the `message`
-// GitHub wrote, and left out where it wrote none. Any other error keeps GitHub's body whole — an
+// stored, so the record is made again whole. GitHub's error is worded by gitHubReason, as
+// getAppInstallation's 502 words it: where GitHub refused the read (githubapp.StatusError) or
+// rate-limited it (githubapp.RateLimitError), the body the error's text ends with is replaced by
+// the `message` GitHub wrote, and left out where it wrote none; and the text is cut to
+// gitHubReasonBytes, saying so, since any other error keeps GitHub's body whole — an
 // installation token mint GitHub refused carries it, up to the megabyte githubapp reads of an
-// answer — so the error is cut to linkedReadReasonBytes, saying so. Where the read that failed
-// is the installation token mint (delivery.ErrTokenMint), as for a suspended installation's 403,
-// the sentence names the mint, since GitHub was asked nothing about the repository itself. A
-// rate limit names GitHub's wait, in the sentence and in Retry-After, rounded up to whole seconds
-// as every Retry-After Dispatch writes is (ratelimit.RetryAfterSeconds); any other failed read
-// names none, since GitHub gave none.
+// answer. Where the read that failed is the installation token mint (delivery.ErrTokenMint), as
+// for a suspended installation's 403, the sentence names the mint, since GitHub was asked nothing
+// about the repository itself. A rate limit names GitHub's wait, in the sentence and in
+// Retry-After, rounded up to whole seconds as every Retry-After Dispatch writes is
+// (ratelimit.RetryAfterSeconds); any other failed read names none, since GitHub gave none.
 func linkedReadRefusal(repo, sha string, err error) error {
-	reason := gitHubErrorText(err)
-	if len(reason) > linkedReadReasonBytes {
-		cut := linkedReadReasonBytes
-		for !utf8.RuneStart(reason[cut]) {
-			cut--
-		}
-		reason = fmt.Sprintf("%s… (GitHub's error, cut to its first %d of %d bytes)", reason[:cut], cut, len(reason))
-	}
+	reason := gitHubReason(err)
 	limited, rateLimited := githubapp.AsRateLimit(err)
 	again := "record the result again"
 	retryAfter := 0
@@ -197,11 +189,6 @@ func linkedReadRefusal(repo, sha string, err error) error {
 	refusal.retryAfter = retryAfter
 	return refusal
 }
-
-// linkedReadReasonBytes is the most bytes of GitHub's error linkedReadRefusal's sentence
-// carries, about a kilobyte: room for the status and a message as GitHub writes one, while the
-// refusal stays a sentence a caller prints whole.
-const linkedReadReasonBytes = 1024
 
 // repositoriesHold is the subject of a refusal's sentence, every repository it checked: "a
 // holds" for one, "a and b hold" for two, "a, b and c hold" for more.

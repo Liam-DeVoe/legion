@@ -16,7 +16,7 @@ import (
 // reader of a repository name holds it to (copied from the daemon's ghrepo). The rule is put to
 // the stored form, because a reader trims a trailing `.git` once more: `acme/.git.git` is
 // `acme/.git` stored, which every later read refuses. The value it reads is lowercased first
-// (canonicalRepo), so a name GitHub holds is taken however it was typed. Since migration
+// (refs.ExternalRepo), so a name GitHub holds is taken however it was typed. Since migration
 // 20261112004945 no repo_projects row stands behind an issue's own repository, so this grammar is
 // the whole gate on the value, and the value goes on to GitHub reads of its own: the CI repair
 // asks GitHub about every distinct repository an issue names (cireconcile's covered), once a

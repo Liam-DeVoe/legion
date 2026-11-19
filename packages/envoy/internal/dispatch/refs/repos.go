@@ -36,7 +36,7 @@ import (
 // repository: null where repo is null, so a comparison against it stays null rather than
 // becoming true. It reads repo_projects by a lowercased name on both sides, as every comparison
 // of a repository here does, because GitHub spells an owner and a repository as their owners do
-// (`Acme/Widgets`) while Dispatch stores a mapping's path canonicalised (api's canonicalRepo).
+// (`Acme/Widgets`) while Dispatch stores a mapping's path canonicalised (ExternalRepo).
 // The expression text is spliced twice, so repo must be a column, a bound parameter or another
 // side-effect-free expression.
 //
@@ -96,7 +96,7 @@ func CanonicalRepo(ctx context.Context, q Queryer, repo string) (string, error) 
 // GitHubName the 100, where the daemon's pattern holds both: that is where the bound is written,
 // not a difference in the names either rule takes, since each puts the bound to the name as it is
 // given. A route bounds the name it stores because it lower-cases the name and trims one `.git`
-// off it (api's canonicalRepo) before it puts the name to this rule: `acme/<100 characters>.git`
+// off it (ExternalRepo) before it puts the name to this rule: `acme/<100 characters>.git`
 // is written for that repository and stored as its 100 characters. The names the two rules take
 // differ in two places, both in a trailing `.git`, which a clone URL carries and GitHub strips
 // from a name at creation, and in nothing else. The daemon's ghrepo.Parse refuses every name
@@ -143,7 +143,7 @@ var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 // name's as it goes into the path, so `acme/<96 characters>.git` is taken and
 // `acme/<100 characters>.git`, whose name would reach GitHub as 104 characters, is refused. The
 // trimmed name is held to the rule as well because GitHub strips a trailing `.git` from a name at
-// creation, and a name Dispatch stores can end in one (api's canonicalRepo trims one `.git` and no
+// creation, and a name Dispatch stores can end in one (ExternalRepo trims one `.git` and no
 // more): `acme/.git.git` and `acme/...git.git` written are `acme/.git` and `acme/...git` stored,
 // which are empty and `..` once that `.git` is trimmed, so no repository GitHub holds is called
 // by them, and this refuses them. A route that takes a name from a person canonicalises it first
@@ -152,12 +152,15 @@ var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 // 100 characters. The halves come back as full spells them, so a caller keeps its own case and
 // its own suffix; the refusal is ErrNotGitHubRepo, naming full.
 //
-// It is the one rule every end reads: the API routes that take a repository from a person put the
-// canonical form they store to it and refuse a name it refuses (api's parseSourceRepo and
-// githubCouldHoldRepo), and each place that turns a stored name into a GitHub path refuses one
-// there (delivery's and cireconcile's splitRepo, the architecture importer's resolve, and api's
-// readCIRuns), so a name stored before the routes held it to the rule, or by direct SQL, never
-// reaches GitHub either.
+// It is the rule the routes and these readers read: the API routes that take a repository from a
+// person put the canonical form they store to it and refuse a name it refuses (api's
+// parseSourceRepo and githubCouldHoldRepo), and delivery's and cireconcile's splitRepo, the
+// architecture importer's resolve and api's readCIRuns each refuse one where they turn a stored
+// name into a GitHub path, so a name stored before the routes held it to the rule, or by direct
+// SQL, reaches GitHub through none of them. One reader does not put the name to it: the Legion
+// metrics' readMergeTimes (legion/metrics/population.go) splits delivery_pull_requests.repo with
+// strings.Cut into delivery.FetchPullRequest's path. Those rows are written from the names GitHub
+// itself gives, so only a name planted there by direct SQL reaches GitHub through that read.
 func SplitGitHubRepo(full string) (owner, name string, err error) {
 	owner, name, found := strings.Cut(full, "/")
 	if !found || !GitHubOwner(owner) || !GitHubName(name) || !GitHubName(strings.TrimSuffix(strings.ToLower(name), ".git")) {

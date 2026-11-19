@@ -4564,8 +4564,11 @@ Each item below names a path with its method and identity, then its purpose.
     the repository may hold the commit, and stored under it the result would sit at a commit no read showed any repository to hold.
     The refusal tells the caller to record the result again, and a rate limit names GitHub's wait, in the sentence and in `Retry-After`.
 
+  - A failed read of Dispatch's own rows of the issue's links refuses the record with `500 INTERNAL` and stores nothing: the links are read, before anything is written, wherever GitHub does not say that the issue's own repository holds the commit.
+
   - Otherwise only GitHub's `422 No commit found for SHA` refuses, and only once it has said so of the issue's own repository:
-    a deployment with no App key, an issue resolving to no repository, an issue's own repository the App cannot read (GitHub answers `404` for that; a linked repository the App is not installed on or cannot read is one that does not count, as above), a rate limit, a timeout and a failed read of the issue's own repository all store the result as before.
+    a deployment with no App key, an issue resolving to no repository, an issue's own repository the App cannot read (GitHub answers `404` for that; a linked repository the App is not installed on or cannot read is one that does not count, as above), and a rate limit, a timeout or a failed read of the issue's own repository where every linked read answered, all store the result as before.
+    A failed read of the issue's own repository beside a linked read that did not answer is the `502 GITHUB_UNREADABLE` above.
     The stored result keeps a linked repository (`check_results.commit_repo`) where GitHub said that repository holds the commit.
     Where the read of the issue's own repository did not answer, every linked read answered and no linked repository holds the commit, the result keeps none, as before.
     After the write, the read-through of the pull requests GitHub names for the commit reads the repository the commit is taken to be of, that linked repository or the issue's own, so the pull request of a linked repository is learned from that repository.

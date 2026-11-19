@@ -443,7 +443,7 @@ func upsertHeadUnderCanonicalName(
 // linkedPullRequestTerms are the `with recursive` terms of the pull requests the external links
 // of the issue $1 name in a repository the issue does not resolve to: linked_pulls (repo,
 // number, url), one row per link of the form https://github.com/<owner>/<repo>/pull/<n>, the
-// repository lowercased, as api's canonicalRepo spells a mapping, and under the canonical name
+// repository lowercased, as refs.ExternalRepo spells a mapping, and under the canonical name
 // it is called today (refs.CanonicalRepoSQL).
 //
 // Such a pull request is one of the issue's heads when the results are read, as a pull request
@@ -676,7 +676,7 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 // as every other comparison of a repository here is (refs.CanonicalRepoSQL): a row written from
 // a `pull_request` envelope carries GitHub's own spelling of the repository (`Acme/Widgets`),
 // while the results read is passed the lowercased spelling the repository-to-project mapping
-// stores (api's canonicalRepo), so an exact comparison would answer "no row" for a repository
+// stores (refs.ExternalRepo), so an exact comparison would answer "no row" for a repository
 // whose owner writes their name with capitals. The read is one index lookup on
 // pull_request_heads_repo_head (migration 20261105112616), which is built on
 // `(lower(repo), head_sha)` for that reason: pull_request_heads_issue_head is partial on
