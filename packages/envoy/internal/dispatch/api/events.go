@@ -402,10 +402,13 @@ func (s *server) readEventRows(ctx context.Context, query string, arguments ...a
 
 // postBodyEventKinds is the kind of post each event kind's payload is about: the kind whose
 // table the payload's `id` names, and whose own body the payload carries under `body`. They are
-// what attachPostMarks marks: every other kind of either post either carries no body
-// (comment.delivery, message.delivery, message.accepted, whose payload names the message under
-// message_id and holds no text of it) or carries the body of another post, which the event log
-// keeps (a reply's reply_body and reply_block.text).
+// what attachPostMarks marks: every other kind of either post carries no body of its own. The
+// receipts carry no text of the post at all (comment.delivery, message.delivery, message.accepted,
+// whose payload names the message under message_id and holds no text of it), and a delete event
+// (comment.deleted, message.deleted) is built from the post with its body cleared and carries no
+// text of the post a reply answers either (deleteEventReplyBlock). The other events of a reply
+// also carry the text of the post it answers, which the event log keeps (reply_body and
+// reply_block.text, below).
 var postBodyEventKinds = map[string]refs.ItemKind{
 	"comment.created":          refs.ItemComment,
 	"comment.edited":           refs.ItemComment,
@@ -447,8 +450,8 @@ type postKey struct {
 // post's creation, beside the body as it stood then, so without the post's own mark a read of
 // the log would print that body as if nobody had replaced it since. Of a deleted post it also
 // takes the body out of the payload: a read of the post's own events says that it is deleted and
-// gives no part of what it said, while a reply's own events keep the preview they froze of it
-// (below). The stored row is never rewritten - the log is the record of
+// gives no part of what it said, while the events of a reply that quote it keep the preview they
+// froze of it (below). The stored row is never rewritten - the log is the record of
 // what happened - so the marks are read here, at every read, which is why readEventRows calls it
 // for readEvents and readEventsAfterID alike. The time of each edit stays the created_at of the
 // edit's own event.
@@ -459,14 +462,16 @@ type postKey struct {
 // payload's body anyway.
 //
 // The frozen previews of another post stay, as the delete leaves them: the reply_body and the
-// reply_block.text of a message reply's message.answered and of each later event of that reply
-// written before the delete (its message.edited and message.deleted), and the reply_block.text of
-// a comment reply's comment.created or comment.answered and of each later event of that reply
-// written before the delete. An event of the reply written after the delete carries no text of
-// it. Each is part of an event of the post that quoted it, and only the quoted post's own events
-// are marked here. So are the document events of an accepted suggestion, which are no event of
-// the post: the accept's artifact.version, and an artifact.renamed written before the delete,
-// which carries every version, keep the name the accept gave the version.
+// reply_block.text of a message reply's message.answered and of its message.edited written
+// before the delete, and the reply_block.text of a comment reply's comment.created or
+// comment.answered and of each later event of that reply written before the delete but its
+// comment.deleted. A reply's own delete event, message.deleted or comment.deleted, carries no
+// text of the post it answers whenever it is written (deleteEventReplyBlock), and an event of
+// the reply written after the delete carries no text of it. Each is part of an event of the post
+// that quoted it, and only the quoted post's own events are marked here. So are the document
+// events of an accepted suggestion, which are no event of the post: the accept's
+// artifact.version, and an artifact.renamed written before the delete, which carries every
+// version, keep the name the accept gave the version.
 func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.

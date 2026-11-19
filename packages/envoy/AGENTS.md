@@ -1970,6 +1970,9 @@ Every comment and message a route returns, and every `comment.*` and `message.*`
 `text` is the block's stored excerpt, which a removal keeps, so a block an edit removed reads the last text it held, and `removed` is true while no current revision holds it;
 in a route's answer a block of an item its author deleted reads removed with no text, and carries the item's `deleted_at` and `deleted_by` (`refs.ReplyBlocks`), while an event payload written before the delete keeps the block as that write froze it.
 A message reply naming a block carries that block's text as `reply_body` in place of its parent's.
+A reply's own delete event carries no text of the post it answers (`deleteEventReplyBlock`, applied by `commentCorrectionPayload` and `messageCorrectionEvent`):
+its `comment.deleted` or `message.deleted` carries `reply_block` with its `node`, `ref`, `block_id`, `removed` and the quoted post's marks and an empty `text`, and `message.deleted` carries no `reply_body`, while it keeps every field that routes it (`in_reply_to` or `reply_to`, `ask_id`, `thread_root_id`, `thread_target`, `thread_logins`).
+The reply's creation keeps the preview it froze, and its `comment.edited` or `message.edited` carries the text it quotes as that text reads when the edit is written.
 A reply naming no block answers the whole item, as before.
 
 Every comment and message has a state row, `comment_block_state` (`revision`, `next_block`, `body_sha256`, `owed_at`, `windows_owed_at`) or `message_block_state` (`body_sha256`, `owed_at`, `windows_owed_at`).

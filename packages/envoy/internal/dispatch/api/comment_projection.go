@@ -175,6 +175,15 @@ func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *mo
 // event's insert (the logins this returns, for queueLoggedEvent), as the comment create's are,
 // so they are what the transaction's queued writes leave. The ask's question, state and turn
 // belong to the moment the comment was posted and stay with that event.
+//
+// A reply's comment.edited carries the block it names with the text that block holds as the edit
+// is written, as its comment.created carried the text it held then. Its comment.deleted carries
+// no text at all: the deleted comment's body and suggestion are already cleared in the comment
+// this payload is built from, and the block it names keeps every field but its text
+// (deleteEventReplyBlock), so the event keeps every field that routes it - reply_to, ask_id, the
+// anchor a root comment carries, the block's node id and id, thread_root_id and thread_logins -
+// and no copy of the post the reply answers. A reply naming no block carries reply_block null
+// either way.
 func (s *server) commentCorrectionPayload(ctx context.Context, tx pgx.Tx, comment *model.Comment, artifactName string, changes model.ReferenceChanges) (model.CommentEventPayload, *events.Logins, error) {
 	var thread commentEventThread
 	if comment.ReplyTo != nil {
@@ -183,6 +192,9 @@ func (s *server) commentCorrectionPayload(ctx context.Context, tx pgx.Tx, commen
 	payload, err := s.commentEventPayload(ctx, tx, comment, artifactName, thread, changes)
 	if err != nil {
 		return model.CommentEventPayload{}, nil, err
+	}
+	if comment.DeletedAt != nil {
+		payload.ReplyBlock = deleteEventReplyBlock(payload.ReplyBlock)
 	}
 	return payload, events.ThreadLoginsOf(commentThread(*comment)), nil
 }

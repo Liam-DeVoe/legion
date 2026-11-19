@@ -1335,8 +1335,9 @@ export const dispatchToolSpecs = [
       "Withdraw a comment or a suggestion you wrote, where the text itself should not stand. The " +
       "author alone may delete a comment: every other caller is refused 403 NOT_AUTHOR. The " +
       "comment keeps its id and its place in its thread, and no read of it gives any part of its " +
-      "body again: each read of it marks it deleted and names who deleted it and when. A reply's " +
-      "own events keep the preview of it the reply froze, and the document's events written " +
+      "body again: each read of it marks it deleted and names who deleted it and when. The " +
+      "events of a reply's creation and of each edit of the reply written before the delete keep " +
+      "the preview of it they carried, and the document's events written " +
       "before the delete keep the name an accepted suggestion gave its version, which the delete " +
       "renames. Its " +
       "replies keep their own text and their own places, a suggestion's replacement text goes " +
@@ -1434,7 +1435,8 @@ export const dispatchToolSpecs = [
       "an issue is deleted; a message of a direct conversation, which names no issue, is refused " +
       "409 NOT_AN_ISSUE_MESSAGE. The message keeps its id and its place in its thread, and no read " +
       "of it gives any part of its body again: each read of it marks it deleted and names who " +
-      "deleted it and when, and a reply's own events keep the preview of it the reply froze. " +
+      "deleted it and when, and the events of a reply's creation and of each edit of the reply " +
+      "written before the delete keep the preview of it they carried. " +
       "Its replies keep their own text, each send still waiting is failed, and search stops " +
       "matching it. A Dispatch of this release keeps the body: dispatch read --ref " +
       "dispatch://KEY/message/<id> " +

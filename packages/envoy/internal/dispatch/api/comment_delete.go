@@ -4,9 +4,11 @@
 // block's stored excerpt, the text each revision recorded of a block, the document margin mark,
 // and the name of the document version an accepted suggestion made — each rewritten in the one
 // transaction that clears it. The event log's payloads stay as written and are masked at each
-// read (attachPostMarks), and a reply's own events keep the preview they froze. A pending
-// suggestion's proof is in the document itself, so the same transaction rejects it before the
-// clear.
+// read (attachPostMarks), and a reply's events that quote the comment - its creation, and each
+// later event of the reply but its own delete, written before this one - keep the preview they
+// froze. The delete's own comment.deleted, of a comment that is itself a reply, carries no text
+// of the post it answers (commentCorrectionPayload). A pending suggestion's proof is in the
+// document itself, so the same transaction rejects it before the clear.
 package api
 
 import (

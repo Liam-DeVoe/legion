@@ -117,7 +117,8 @@ export const messageEventPayloadFields = {
   deleted_at: messageFields.deleted_at.optional(),
   deleted_by: messageFields.deleted_by.optional(),
   /** First 160 characters of the reply target's body, or of the block it names (`reply_block`);
-   *  empty otherwise. */
+   *  empty otherwise. Absent on a reply's `message.deleted`: a delete event carries no text of
+   *  another post. */
   reply_body: z.string().optional(),
   /** The target of a reply's thread root: the conversation the reply lands in, for a consumer
    *  that groups a thread under its root. A session replying to a message aimed at that

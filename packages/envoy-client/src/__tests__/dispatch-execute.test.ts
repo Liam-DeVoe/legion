@@ -16452,7 +16452,7 @@ test("deletes a comment by bare id and says no read of it gives its body again",
   );
 
   expect(result).toEqual({
-    text: `Deleted comment ${correctedComment} on DSP-42. No read of it gives its body again; a reply's own events keep the preview of it the reply froze, and the document's events written before the delete keep the name an accepted suggestion gave its version.`,
+    text: `Deleted comment ${correctedComment} on DSP-42. No read of it gives its body again; the events of a reply's creation and of each edit of the reply written before the delete keep the preview of it they carried, and the document's events written before the delete keep the name an accepted suggestion gave its version.`,
     details: { issue: "DSP-42", comment: correctedComment },
   });
   // A bare id is the comment itself, so nothing is read before the delete.
@@ -16525,7 +16525,7 @@ test("deletes an issue message by bare id and says no read of it gives its body 
   );
 
   expect(result).toEqual({
-    text: `Deleted message ${correctedMessage} on DSP-42. No read of it gives its body again; a reply's own events keep the preview of it the reply froze.`,
+    text: `Deleted message ${correctedMessage} on DSP-42. No read of it gives its body again; the events of a reply's creation and of each edit of the reply written before the delete keep the preview of it they carried.`,
     details: { issue: "DSP-42", message: correctedMessage },
   });
   expect(requests).toEqual([

@@ -201,8 +201,11 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 // row and its place in the thread stay; the body goes, and with it each copy a read serves as the
 // message's own text that does not follow the cleared column — the block index and each block's
 // stored excerpt — in the one transaction that clears it. The event log's payloads stay as
-// written and are masked at each read (attachPostMarks), and a reply's own events keep the
-// preview they froze. Each reply keeps its own text and its own place.
+// written and are masked at each read (attachPostMarks), and a reply's events that quote the
+// message - its creation, and an edit of the reply written before the delete - keep the preview
+// they froze. Each reply keeps its own text and its own place. The delete's own message.deleted,
+// of a message that is itself a reply, carries no text of the post it answers
+// (messageCorrectionEvent).
 func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	if !requireUUIDPath(w, r, "message") {
 		return
@@ -289,9 +292,16 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 // correction's read phase: the payload every write of a message builds, so an edit's and a
 // delete's say the same thing about the thread as the create's did, and the thread_logins of the
 // message's thread root, which the event's insert reads (events.ThreadLoginsOf), as the message
-// create's does. The deleted message's body is already cleared in the message this payload is
-// built from, so the event carries none. The message is an issue message: a correction refuses
-// any other (lockedMessageForCorrection).
+// create's does. The message is an issue message: a correction refuses any other
+// (lockedMessageForCorrection).
+//
+// A reply's message.edited carries the preview of the post it answers as that post reads when the
+// edit is written - reply_body, and reply_block with its text - as its create carried the preview
+// of the post as it read then. Its message.deleted carries no text at all: the deleted message's
+// body is already cleared in the message this payload is built from, and of the post the reply
+// answers it carries no reply_body and the reply_block with every field but its text
+// (deleteEventReplyBlock). It keeps every field that routes it: in_reply_to, thread_target, the
+// block's node id and id, and the thread_logins.
 func (s *server) messageCorrectionEvent(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -311,5 +321,10 @@ func (s *server) messageCorrectionEvent(
 	if err != nil {
 		return model.Event{}, nil, err
 	}
-	return messageEvent(*message, eventType, actor, thread.payload(*message, changes)), events.ThreadLoginsOf(root), nil
+	payload := thread.payload(*message, changes)
+	if message.DeletedAt != nil {
+		payload.ReplyBody = ""
+		payload.ReplyBlock = deleteEventReplyBlock(payload.ReplyBlock)
+	}
+	return messageEvent(*message, eventType, actor, payload), events.ThreadLoginsOf(root), nil
 }
