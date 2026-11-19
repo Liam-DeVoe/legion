@@ -10,7 +10,8 @@ import (
 // api.github.com, as a server reads a path: under gh's own word `graphql`, with a slash, a query
 // or a fragment, in another case, percent-escaped, through a `..`, and as the API's whole URL on
 // any port. A path elsewhere, another host, a longer word and a path whose escapes do not decode
-// are none. The endpoint is found past `-X POST`, a cluster's `-iX POST` and a bare `--`.
+// are none. The endpoint is found past `-X POST`, a cluster's `-iX POST`, a bare `--`, and options
+// whose value it is not: a field given before it and a template whose value is itself `-X`.
 func TestGhAPIGraphQLIsTheEndpointsPath(t *testing.T) {
 	for _, tc := range []struct {
 		endpoint string
@@ -39,10 +40,12 @@ func TestGhAPIGraphQLIsTheEndpointsPath(t *testing.T) {
 			{"api", "-X", "POST", tc.endpoint},
 			{"api", "-iX", "POST", tc.endpoint},
 			{"api", "--", tc.endpoint},
+			{"api", "-f", "query={ viewer { login } }", tc.endpoint},
+			{"api", "-t", "-X", tc.endpoint},
 		} {
 			t.Run(strings.Join(args, " "), func(t *testing.T) {
-				if got := ghAPIGraphQL(args); got != tc.want {
-					t.Fatalf("ghAPIGraphQL(%q) = %v, want %v", args, got, tc.want)
+				if got := readGhArgv(args).graphQL; got != tc.want {
+					t.Fatalf("readGhArgv(%q).graphQL = %v, want %v", args, got, tc.want)
 				}
 			})
 		}

@@ -106,7 +106,7 @@ func TestNoRuleFileRunsNoPrivateNameRule(t *testing.T) {
 				}
 			}
 			answer, err := guard.GhCall(bound(t), GhRequest{Args: []string{"pr", "comment", "1", "--body", leakguardtest.RulesHost}, Repo: "invented-org/invented-repo"})
-			if err != nil || !answer.NoRules || answer.CheckedOnly {
+			if err != nil || answer.Read != GhReadNoRules {
 				t.Errorf("GhCall = %+v, %v; want it passed, saying no rule is named", answer, err)
 			}
 			if got, want := countLines(t, checked), len(writes)+1; got != want {

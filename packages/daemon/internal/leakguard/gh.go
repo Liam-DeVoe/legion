@@ -23,15 +23,13 @@ type GhRequest struct {
 	// only where the shared check asks for it, and what is read comes back from GhCall for the
 	// caller to hand gh in its place.
 	Stdin io.Reader
-	// StdinOption is the option whose value named standard input (`-`, or `@-` for a field), by
-	// its long name as gh spells it: `--input`, `--body-file`, `--notes-file`, `--from-file` or
-	// `--field`. It says what the input is (stdinRecords): `gh api --input -` makes it the
-	// request body, a JSON document GitHub parses, `-F query=@-` in a `gh api graphql` call the
-	// query, a GraphQL document GitHub parses, and each other option text GitHub stores as it
-	// stands. "" is a caller that does not know. Where such a caller also handed no Files, the
-	// guard reads the option out of the argv (ghFileArgs); where nothing knows, it reads the
-	// input both ways.
-	StdinOption string
+	// StdinUse is what the call makes of its standard input, as the caller read it from the
+	// option whose value named that input (`-`, or `@-` for a field): a JSON request body, the
+	// value of a field, or text GitHub stores as it stands, which says how the input is read
+	// (stdinRecords). StdinUnknown is a caller that does not know. Where such a caller also
+	// handed no Files, the guard reads the use out of the argv (readGhArgv); where nothing
+	// knows, it reads the input both ways.
+	StdinUse StdinUse
 	// Repo is the destination repository, as "owner/name". Empty where the caller knows no
 	// destination, which the guard reads as public (Guard.scanThrough).
 	Repo string
@@ -41,12 +39,12 @@ type GhRequest struct {
 	// knows a `-dF <file>` and a `-F=<file>` for what they are, which a reader of the argv
 	// alone cannot.
 	//
-	// Nil is a caller that parsed none, and the guard then reads the argv with a table of its
-	// own (ghFileArgs). `legion gh` hands nil only from the answers of its parse that send
-	// nothing (`--version`, a group with no leaf, `--help`), so in this binary the table is the
-	// fail-closed answer for a future caller that hands the guard bare arguments, not a path
+	// Nil is a caller that parsed none, and the guard then reads the argv with tables of its
+	// own (readGhArgv). `legion gh` hands nil only from the answers of its parse that send
+	// nothing (`--version`, a group with no leaf, `--help`), so in this binary the tables are
+	// the fail-closed answer for a future caller that hands the guard bare arguments, not a path
 	// any write takes today. An empty, non-nil slice is a caller that parsed and found no file,
-	// and the table is not consulted for it.
+	// and the tables are not consulted for its files or for the use of its standard input.
 	Files []GhFile
 	// WritesNothing is a call its caller found sends no text into any repository: a read, which
 	// `legion gh` admits only by a grammar in its code of the words the call is typed with, one
@@ -64,18 +62,54 @@ type GhRequest struct {
 	ProvenCheck string
 }
 
+// StdinUse is what a gh call makes of its standard input, which says how the guard reads that
+// input (stdinRecords). It is named by the use and not by the option that named the input,
+// because one option means different things in different commands: `-F` is `--field` in `gh api`,
+// where `-F <name>=@-` makes the input the value of a field, and `--body-file` in `gh pr create`,
+// where `-F -` makes it the body.
+type StdinUse int
+
+const (
+	// StdinUnknown is a use nothing knows: a caller that names none, over an argv that names
+	// none, or names two that differ, only one of which can have the input. The input is read
+	// both ways, the raw record and the strings of a JSON document beside it, which errs toward
+	// reading more.
+	StdinUnknown StdinUse = iota
+	// StdinRequestBody is `gh api --input -`: the input is the request body, one JSON document
+	// GitHub parses.
+	StdinRequestBody
+	// StdinField is a `-F <name>=@-` or a `--field <name>=@-` of `gh api` or `gh workflow run`:
+	// the input is the value of the fields that name it, and is read by their names.
+	StdinField
+	// StdinText is any other option's `-` — `--body-file -`, `--notes-file -`, `--from-file -`,
+	// and the `-F -` that is one of them — whose input is text GitHub stores as it stands.
+	StdinText
+)
+
 // GhAnswer is what GhCall cleared a call with.
 type GhAnswer struct {
 	// Stdin is the standard input the guard read, for the caller to hand gh in its place, and nil
 	// where it read none and the caller's own is still whole.
 	Stdin []byte
-	// CheckedOnly is whether the shared check was the whole of the guard (GhRequest.WritesNothing
-	// honoured): the call read no visibility and had no private-name step.
-	CheckedOnly bool
-	// NoRules is whether the call skipped the private-name step because no rule is named: it read
-	// no visibility and no file the call sends.
-	NoRules bool
+	// Read is how much of the guard the call had.
+	Read GhRead
 }
+
+// GhRead is how much of the guard GhCall ran over a call it cleared. A call has one of these and
+// never two, so they are one value and not a flag for each.
+type GhRead int
+
+const (
+	// GhReadWhole is the whole guard: the shared check, the destination's visibility and, where
+	// the destination is public, the private-name pass over what the call sends.
+	GhReadWhole GhRead = iota
+	// GhReadCheckedOnly is the shared check as the whole of the guard (GhRequest.WritesNothing
+	// honoured): the call read no visibility and had no private-name step.
+	GhReadCheckedOnly
+	// GhReadNoRules is the shared check alone because no rule is named: the call skipped the
+	// private-name step, and read no visibility and no file the call sends.
+	GhReadNoRules
+)
 
 // checkProgram is the shared check's program, beside the script Resolve finds, whose sha256 says
 // which check is installed: the script only runs it.
@@ -110,10 +144,10 @@ func provenCheck(check, proven string) bool {
 const whatGhCall = "the gh call"
 
 // GhCall checks a gh call before it is made, in the shared check's gh-guard shape, and answers
-// the standard input it read, whether the shared check was the whole of it, which it is for a call
-// that writes nothing under the check its caller's rule was proven against
-// (GhRequest.WritesNothing, GhRequest.ProvenCheck), and whether it skipped the private-name step
-// because no rule is named.
+// the standard input it read and how much of the guard the call had (GhRead): the shared check
+// alone for a call that writes nothing under the check its caller's rule was proven against
+// (GhRequest.WritesNothing, GhRequest.ProvenCheck) and for a call under no named rule, and the
+// whole guard for every other.
 //
 // The check reads a call that takes its body on standard input in two goes: the first call exits
 // 4, meaning "this call reads standard input; buffer it and ask me again", and the second call is
@@ -147,7 +181,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		// the private-name pass is read for it: the check above, which refuses a credential in a
 		// call it reads as a read, is all it needs. Under a check its caller's rule was not
 		// proven against, the check may read the call as a write, so the guard goes on whole.
-		answer.CheckedOnly = true
+		answer.Read = GhReadCheckedOnly
 		return answer, nil
 	}
 	rules, err := g.rules(whatGhCall)
@@ -155,7 +189,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		return answer, err
 	}
 	if rules == nil {
-		answer.NoRules = true
+		answer.Read = GhReadNoRules
 		return answer, nil
 	}
 	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
@@ -167,27 +201,26 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	}
 	// What the call would send, read here and not before the visibility answer: a private or
 	// internal destination runs no rule pass, and reading its files would cost the opens for
-	// nothing. The files, and the option that named standard input, are the caller's parse where
-	// it handed one and the argv's table where it did not.
-	files, stdinOption := req.Files, req.StdinOption
+	// nothing. The argv is read once (readGhArgv). The files, and the use of standard input, are
+	// the caller's parse where it handed one and the argv's tables where it did not.
+	call := readGhArgv(req.Args)
+	files, use := req.Files, req.StdinUse
 	if files == nil {
-		if upload, found := ghUnreadUploadArg(req.Args); found {
+		if call.upload != "" {
 			return answer, &SetupFailure{
 				What: whatGhCall,
-				Why:  upload + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads",
+				Why:  call.upload + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads",
 			}
 		}
-		var named string
-		files, named = ghFileArgs(req.Args)
-		if stdinOption == "" {
-			stdinOption = named
+		files = call.files
+		if use == StdinUnknown {
+			use = call.stdin
 		}
 	}
-	graphQL := ghAPIGraphQL(req.Args)
-	records := ghArgRecords(req.Args, graphQL)
+	records := call.records
 	if len(answer.Stdin) > 0 {
 		stdin := Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}
-		records = append(records, stdinRecords(stdin, stdinOption, req.Args, graphQL)...)
+		records = append(records, stdinRecords(stdin, use, call.stdinFields, call.graphQL)...)
 	}
 	for _, named := range files {
 		text, err := readGhFile(named)
@@ -196,10 +229,10 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		}
 		record := Record{Label: named.Path, Text: text}
 		switch {
-		case graphQL && named.Field == graphQLQuery:
-			records = append(records, graphQLRecords(record)...)
+		case call.graphQL && named.Field == graphQLQuery:
+			records = append(records, queryRecords(record)...)
 		case named.Option == inputOption:
-			records = append(records, jsonBody(record, graphQL)...)
+			records = append(records, jsonBody(record, call.graphQL)...)
 		default:
 			records = append(records, record)
 		}
@@ -207,186 +240,419 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	return answer, rules.Check(ctx, whatGhCall, records...)
 }
 
-// ghArgRecords is the records of args, a gh call's argv: one of each argument, and none that
-// joins two. An argument is "the gh call's argument <i>", i its index in args, and holds the
-// argument as it was written. A field, the `<name>=<value>` given to -f, --raw-field, -F or
-// --field in any spelling ghFieldArg reads (`-f name=value`, `-fname=value`,
-// `--raw-field=name=value`, and in `gh api` a short cluster's `-iF name=value`), is two
-// records: "the gh call's field <name>", which holds the value after the first `=`, and "the gh
-// call's field <name> (name)", which holds the name. A call's fields are values GitHub stores
-// apart — the title and the body of `gh api …/issues -f title=… -f body=…`, a gist's file name
-// in `-f 'files[<name>][content]=…'` — and a rule that needs two words on one line matches only
-// where one of them holds both. The joined argv would put every field on one line.
+// ghArgv is a gh call's argv as readGhArgv reads it: every answer GhCall needs of the argv, from
+// one walk of it.
+type ghArgv struct {
+	// graphQL is whether the call sends GitHub a GraphQL query: a `gh api` call whose endpoint is
+	// GitHub's GraphQL endpoint under any spelling (ghAPIGraphQLEndpoint). A call it is true of is
+	// what this package's comments call `gh api graphql`.
+	graphQL bool
+	// records are the records of the argv, in the order it writes them.
+	records []Record
+	// files are the files the argv names for gh to send to GitHub as content, each named once, in
+	// the order the argv writes them; stdin is the use of standard input its options name, and
+	// stdinNamed whether any names one; and upload is the first option of ghUnreadUploads it
+	// names, "" for none. These four are the fallback, for a caller that hands the guard a bare
+	// argv (GhRequest.Files nil).
+	files      []GhFile
+	stdin      StdinUse
+	stdinNamed bool
+	upload     string
+	// stdinFields are the names of the fields whose value is standard input, each `-F <name>=@-`
+	// and `--field <name>=@-`, in the order the argv writes them. A -f or --raw-field sends `@-`
+	// as those two characters and reads no input, so it names none.
+	stdinFields []string
+}
+
+// readGhArgv reads args, a gh call's argv, once, for everything GhCall asks of it: whether the
+// call is GraphQL, the records the rules read, the files it sends, the use it makes of standard
+// input and the fields that read that input. One walk answers all of them, so that no two answers
+// read one argv two ways: a reader that takes an option's value for an option of its own reads a
+// field where another reads a title.
 //
-// A field's value is the literal string it is: gh does the JSON escaping, so a `\u0074` written
-// in an argument reaches GitHub's REST API as those six characters, and the rules read what
-// GitHub would show. The one field that is not is a GraphQL query, `query` in a `gh api
-// graphql` call (graphQL), whose literals GitHub's own parser decodes: it is read one literal at
-// a time (graphQLRecords). A `-F query=@<path>` reads the query from the file, which is read so
-// (GhFile.Field), and a `-F query=@-` from standard input, which is read so too (stdinRecords);
-// the field's own value is then the path or the `@-`, read as written.
+// The command is read first (ghLeafOf). Two commands are read by the arity of each of their
+// options, `gh api` and `gh workflow run` (readLeaf), which are the two whose help gives them
+// gh's field options; every other command is read with no arity but that of its file options
+// (readOther).
 //
-// The reader knows no option's arity but the four fields', which is the direction it errs in:
-// an argument it takes for a field is read as a name and a value, and one it takes for anything
-// else is read whole. Arguments past a bare `--` are read as arguments, with no field among
-// them: gh sends them to nobody, and reading them costs nothing.
-func ghArgRecords(args []string, graphQL bool) []Record {
-	records := make([]Record, 0, len(args))
-	argument := func(i int) {
-		records = append(records, Record{Label: "the gh call's argument " + strconv.Itoa(i), Text: args[i]})
+// Every argument is a record of its own, "the gh call's argument <i>", i its index in args, which
+// holds the argument as it was written, and no record joins two: a rule that needs two words on
+// one line matches only where one argument holds both, and the joined argv would put every
+// argument on one line. A field of `gh api` and `gh workflow run` is read as two records, its
+// name and its value, in place of the argument that holds it (readLeaf). Arguments past a bare
+// `--` that ends gh's options are read as arguments, with no field among them, and name no file:
+// gh's parser takes no option after one, so a `-f` or a `--body-file` there is a word of some
+// other program's, and reading the words costs nothing.
+func readGhArgv(args []string) ghArgv {
+	argv := ghArgv{records: make([]Record, 0, len(args))}
+	leaf, start := ghLeafOf(args)
+	if leaf == nil {
+		argv.readOther(args)
+		return argv
 	}
-	api := len(args) > 0 && args[0] == "api"
+	for i := range start {
+		argv.argument(args, i)
+	}
+	argv.readLeaf(args, leaf, start)
+	return argv
+}
+
+// ghLeaf is a command of gh's whose options readGhArgv reads by their arity, as gh's own parser
+// does: its path, and the long options and the letters of the short ones that take a value
+// written as the argument after them. Every other option of it takes none, and a long option
+// written `--name=value` holds its own.
+type ghLeaf struct {
+	path  []string
+	long  map[string]bool
+	short string
+}
+
+// ghLeaves are the commands of ghLeaf: `gh api` and `gh workflow run`, the two whose help gives
+// them gh's field options (ghFieldOptions).
+var (
+	ghAPILeaf         = ghLeaf{path: []string{"api"}, long: ghAPIValueOptions, short: ghAPIShortValueOptions}
+	ghWorkflowRunLeaf = ghLeaf{path: []string{"workflow", "run"}, long: ghWorkflowRunValueOptions, short: ghWorkflowRunShortValueOptions}
+	ghLeaves          = []*ghLeaf{&ghAPILeaf, &ghWorkflowRunLeaf}
+)
+
+// ghAPIValueOptions are `gh api`'s long options that take a value, and ghAPIShortValueOptions the
+// letters of its short ones, in gh 2.98.0's help (cmd/legion/testdata/gh-help/api.txt, which
+// TestGhLeafOptionTablesAreTheirHelps holds them to). Its other options (`--include`,
+// `--paginate`, `--silent`, `--slurp`, `--verbose`, `--allow-escape-sequences`, `--help`) take
+// none.
+var ghAPIValueOptions = map[string]bool{
+	"--cache":     true,
+	"--field":     true,
+	"--header":    true,
+	"--hostname":  true,
+	"--input":     true,
+	"--jq":        true,
+	"--method":    true,
+	"--preview":   true,
+	"--raw-field": true,
+	"--template":  true,
+}
+
+const ghAPIShortValueOptions = "FHXfpqt"
+
+// ghWorkflowRunValueOptions are `gh workflow run`'s long options that take a value, and
+// ghWorkflowRunShortValueOptions the letters of its short ones, in gh 2.98.0's help
+// (cmd/legion/testdata/gh-help/workflow_run.txt, which TestGhLeafOptionTablesAreTheirHelps holds
+// them to), the inherited -R/--repo among them. Its other options (`--json`, `--help`) take none.
+var ghWorkflowRunValueOptions = map[string]bool{
+	"--field":     true,
+	"--raw-field": true,
+	"--ref":       true,
+	"--repo":      true,
+}
+
+const ghWorkflowRunShortValueOptions = "FRfr"
+
+// ghFieldOptions are gh's field options, which `gh api` and `gh workflow run` have and no other
+// command does, each true where its value is typed: a typed field's `@<path>` reads its value
+// from the file, and its `@-` from standard input, where a raw field sends its value literally,
+// `@` and all (`gh api -f body=@x` posts the two characters `@x` and opens no file).
+var ghFieldOptions = map[string]bool{
+	"-f":          false,
+	"--raw-field": false,
+	"-F":          true,
+	"--field":     true,
+}
+
+// ghLeafOf is the command of ghLeaves args runs and the index of its first argument past the
+// command's own words, or nil where args runs any other. The command is the words of args that
+// are not options, read until they are a path of ghLeaves or a word leaves every path. -R and
+// --repo, which gh takes before and between those words and `legion gh` does too (`-R <v>`,
+// `-R<v>`, `--repo <v>`, `--repo=<v>`), are passed over with their value, and so is any other
+// option there, `--help` and `-h` among them, which takes none. A bare `--` there ends gh's
+// options before any command is named.
+func ghLeafOf(args []string) (*ghLeaf, int) {
+	var words []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--" {
-			for ; i < len(args); i++ {
-				argument(i)
+		switch arg := args[i]; {
+		case arg == "--":
+			return nil, 0
+		case arg == "-R" || arg == "--repo":
+			i++
+		case len(arg) > 1 && arg[0] == '-':
+		default:
+			words = append(words, arg)
+			further := false
+			for _, leaf := range ghLeaves {
+				if len(leaf.path) < len(words) || !slices.Equal(leaf.path[:len(words)], words) {
+					continue
+				}
+				if len(leaf.path) == len(words) {
+					return leaf, i + 1
+				}
+				further = true
 			}
-			break
+			if !further {
+				return nil, 0
+			}
 		}
-		option, value, attached := ghFieldArg(args[i], api)
-		if option == "" {
-			argument(i)
+	}
+	return nil, 0
+}
+
+// readLeaf reads args from start, the arguments of leaf, a command of ghLeaves, as gh's parser
+// reads them. An option of leaf's table takes the next argument as its value, and that value is
+// never read as an option of its own: `gh api -t '-fix <name>=<word>'` is a Go template, read
+// whole. A short cluster is read as pflag reads one: the letters before the first that takes a
+// value take none (`-i` is `--include`), and that letter ends the cluster, taking the rest of the
+// argument, an `=` before it dropped, or the next argument where it is the last letter. So
+// `-iF query=<v>`, `-iFquery=<v>` and `-if query=<v>` are fields, and a cluster whose value letter
+// is any other (`-iX POST`) is no field.
+//
+// A field, the `<name>=<value>` given to a field option (ghFieldOptions), is two records: "the gh
+// call's field <name>", which holds the value after the first `=`, and "the gh call's field
+// <name> (name)", which holds the name (field). A call's fields are values GitHub stores apart —
+// the title and the body of `gh api …/issues -f title=… -f body=…`, the inputs of a workflow run,
+// a gist's file name in `-f 'files[<name>][content]=…'` — and are read apart for the reason
+// arguments are. The value of every other option is the one record of the argument that holds it.
+//
+// A field's value is the literal string it is: gh does the JSON escaping, so a `\u0074` written in
+// an argument reaches GitHub's REST API as those six characters, and the rules read what GitHub
+// would show. The one field that is not is a GraphQL query, `query` in a `gh api graphql` call,
+// whose literals GitHub's own parser decodes: it is read one literal at a time (queryRecords),
+// once the endpoint, which may come after it, says the call is one. A `-F query=@<path>` reads the
+// query from the file, which is read so (GhFile.Field), and a `-F query=@-` from standard input,
+// which is read so too (stdinRecords); the field's own value is then the path or the `@-`, read as
+// written.
+//
+// `gh api`'s endpoint is its first positional argument, the first past the bare `--` where none
+// comes before it; a `-` alone is a positional to pflag. Its `--input <path>` names the request
+// body's file, and its `--input -` standard input (names).
+func (argv *ghArgv) readLeaf(args []string, leaf *ghLeaf, start int) {
+	api := leaf == &ghAPILeaf
+	// endpoint is whether the endpoint has been read, which only gh api has; queries are the
+	// indices in records of the query fields' values, read as GraphQL where the call is.
+	endpoint, queries := !api, []int(nil)
+read:
+	for i := start; i < len(args); i++ {
+		arg := args[i]
+		var option, value string
+		var attached bool
+		switch {
+		case arg == "--":
+			if !endpoint && i+1 < len(args) {
+				argv.graphQL = ghAPIGraphQLEndpoint(args[i+1])
+			}
+			for ; i < len(args); i++ {
+				argv.argument(args, i)
+			}
+			break read
+		case strings.HasPrefix(arg, "--"):
+			option, value, attached = strings.Cut(arg, "=")
+			if !attached && !leaf.long[option] {
+				argv.argument(args, i)
+				continue
+			}
+		case len(arg) > 1 && arg[0] == '-':
+			letter := 1 + strings.IndexAny(arg[1:], leaf.short)
+			if letter == 0 {
+				argv.argument(args, i)
+				continue
+			}
+			option, value, attached = "-"+arg[letter:letter+1], strings.TrimPrefix(arg[letter+1:], "="), letter+1 < len(arg)
+		default:
+			argv.argument(args, i)
+			if !endpoint {
+				endpoint, argv.graphQL = true, ghAPIGraphQLEndpoint(arg)
+			}
 			continue
 		}
+		at := i
 		if !attached {
-			argument(i)
+			argv.argument(args, i)
 			if i+1 == len(args) {
+				// An option with no value at all: gh refuses the call itself.
 				break
 			}
 			i++
+			at, value = i, args[i]
+		}
+		if typed, field := ghFieldOptions[option]; field {
+			if argv.field(args, at, option, value, typed) {
+				queries = append(queries, len(argv.records)-1)
+			}
+			continue
+		}
+		argv.argument(args, at)
+		if api && option == inputOption {
+			argv.names(option, value, "", StdinRequestBody)
+		}
+	}
+	if !argv.graphQL || len(queries) == 0 {
+		return
+	}
+	records := make([]Record, 0, len(argv.records))
+	for k, record := range argv.records {
+		if len(queries) > 0 && queries[0] == k {
+			queries = queries[1:]
+			records = append(records, queryRecords(record)...)
+			continue
+		}
+		records = append(records, record)
+	}
+	argv.records = records
+}
+
+// field reads value, the value of the field option option held by args[at] (readLeaf), typed
+// where option is -F or --field, and answers whether its last record is the value of a field
+// named query, which is the query should the call be `gh api graphql`. A value with no `=`
+// (`-f <name>`, gh's empty array `key[]`) is the argument, read whole. A typed field whose value
+// is `@<path>` names a file gh reads the value from, and `@-` standard input (names); such a
+// field's value is the `@<path>` as written, and no query.
+func (argv *ghArgv) field(args []string, at int, option, value string, typed bool) (query bool) {
+	name, text, found := strings.Cut(value, "=")
+	if !found {
+		argv.argument(args, at)
+		return false
+	}
+	label := "the gh call's field " + name
+	argv.records = append(argv.records, Record{Label: label + " (name)", Text: name}, Record{Label: label, Text: text})
+	path, fromFile := strings.CutPrefix(text, "@")
+	if !typed || !fromFile {
+		return name == graphQLQuery
+	}
+	argv.names(option, path, name, StdinField)
+	return false
+}
+
+// readOther reads args, the argv of a command none of ghLeaves is. Each argument is one record,
+// read whole, whatever it looks like: -f and -F are no field options there and mean other things
+// — `-F` is `--body-file` in `gh pr create`, `-f` is `--force` in `gh label create` — so a title
+// written `-fix <name>=<word>` is a title, which a reader taking it for a field would part into
+// two records that a rule needing two words reads apart.
+//
+// The files it names are the values of ghFileOptions, each in its separate and its attached
+// spelling (`--body-file=<path>`), and of `-F <path>`, `-F<path>` and `-F=<path>`, the last as
+// pflag reads a short option. gh gives -F to --body-file, --notes-file and --from-file, and outside
+// `gh api` and `gh workflow run` to nothing else (`grep -ho -- '-F, --[a-z-]*'
+// testdata/gh-help/*.txt | sort -u`), so a -F is a file option whichever of the three the command
+// has. A `-F` anywhere but the front of a short argument is not read: it is the value of the
+// option before it in `gh gist create` (`-dF` is `--desc F`), and reading it as a file would
+// refuse a call over a file nobody named, while in `gh pr create` `-dF` is `--draft --body-file`,
+// which only the leaf's own help can say, and `legion gh` reads it so (GhRequest.Files).
+//
+// No other option's arity is known here, so an option's value that itself begins with `-F` (a
+// `--body` whose first word is `-Fixed`) is read as a -F of its own and refuses the call, naming a
+// file nobody meant; and so is a value that is itself `--attach`, which is read as the upload
+// (ghUnreadUploads). That is the direction this errs in: the other way round is `gh release create
+// -F notes.md`, the documented short spelling, going to GitHub unread.
+func (argv *ghArgv) readOther(args []string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			for ; i < len(args); i++ {
+				argv.argument(args, i)
+			}
+			return
+		}
+		argv.argument(args, i)
+		name, after, found := strings.Cut(arg, "=")
+		if ghUnreadUploads[name] && argv.upload == "" {
+			argv.upload = name
+		}
+		var option, value string
+		var attached bool
+		switch {
+		case strings.HasPrefix(arg, "-F"):
+			option, value, attached = "-F", strings.TrimPrefix(arg[2:], "="), len(arg) > 2
+		case ghFileOptions[name]:
+			option, value, attached = name, after, found
+		default:
+			continue
+		}
+		if !attached {
+			if i+1 == len(args) {
+				// An option with no value at all: gh refuses the call itself, and there is no
+				// file here to read.
+				break
+			}
+			i++
+			argv.argument(args, i)
 			value = args[i]
 		}
-		name, text, found := strings.Cut(value, "=")
-		if !found {
-			// `-f <name>` with no value is gh's empty array (`key[]`), or the value of some
-			// other command's option: either way the argument is read whole.
-			argument(i)
-			continue
-		}
-		label := "the gh call's field " + name
-		records = append(records, Record{Label: label + " (name)", Text: name})
-		field := Record{Label: label, Text: text}
-		fromFile := (option == "-F" || option == "--field") && strings.HasPrefix(text, "@")
-		if graphQL && name == graphQLQuery && !fromFile {
-			records = append(records, graphQLRecords(field)...)
-			continue
-		}
-		records = append(records, field)
+		argv.names(option, value, "", StdinText)
 	}
-	return records
 }
 
-// ghFieldArg reads arg as a field option of gh's: the option, -f, --raw-field, -F or --field;
-// its value where arg holds it (attached), as `--field=<value>`, `-F<value>` and, as pflag reads
-// a short option, `-F=<value>` do; and "" for an argument that is no field option.
+// names reads path, the value of option where it names a file gh sends (field, the name of the
+// field the file's text is the value of, "" for any other option): standard input, used as use
+// says, where path is `-`; nothing where it is empty; and a file to send for any other path,
+// which is named once, since a second record of one file is a second open and a second line of
+// the same report.
 //
-// A short option is read at the front of arg alone, but in a `gh api` call (api), whose short
-// options are all known (ghAPIShortValueOptions). There a short cluster is read as pflag reads
-// one: the letters before the first that takes a value take none (`-i` is `--include`), and that
-// letter ends the cluster, taking the rest of arg, an `=` before it dropped, or the next argument
-// where it is the last letter. So `-iF query=<v>`, `-iFquery=<v>` and `-if query=<v>` are fields,
-// and a cluster whose value letter is any other (`-iX POST`) is no field option. Every other
-// command's letters mean other things — `-dF` is `--draft --body-file` in `gh pr create` and
-// `--desc F` in `gh gist create` — which only the leaf's own help tells apart.
-func ghFieldArg(arg string, api bool) (option, value string, attached bool) {
-	switch {
-	case arg == "--raw-field" || arg == "--field":
-		return arg, "", false
-	case strings.HasPrefix(arg, "--raw-field=") || strings.HasPrefix(arg, "--field="):
-		option, value, _ = strings.Cut(arg, "=")
-		return option, value, true
-	case len(arg) < 2 || arg[0] != '-' || arg[1] == '-':
-		return "", "", false
-	}
-	letter := 1
-	if api {
-		letter += strings.IndexAny(arg[1:], ghAPIShortValueOptions)
-	}
-	switch {
-	case letter == 0:
-		return "", "", false
-	case arg[letter] == 'f':
-		option = "-f"
-	case arg[letter] == 'F':
-		option = "-F"
+// Standard input is no file to open: the shared check's exit-4 handshake buffers that input and
+// GhCall records it already (askAgain). What is kept is the use the option makes of it, and the
+// field's name. Two options that name it with uses that differ leave its use StdinUnknown, since
+// only one of them can have the input, and the guard then reads it both ways.
+func (argv *ghArgv) names(option, path, field string, use StdinUse) {
+	switch path {
+	case "":
+	case "-":
+		if field != "" {
+			argv.stdinFields = append(argv.stdinFields, field)
+		}
+		switch {
+		case !argv.stdinNamed:
+			argv.stdin, argv.stdinNamed = use, true
+		case argv.stdin != use:
+			argv.stdin = StdinUnknown
+		}
 	default:
-		return "", "", false
+		if !slices.ContainsFunc(argv.files, func(file GhFile) bool { return file.Path == path }) {
+			argv.files = append(argv.files, GhFile{Option: option, Path: path, Field: field})
+		}
 	}
-	if letter == len(arg)-1 {
-		return option, "", false
-	}
-	return option, strings.TrimPrefix(arg[letter+1:], "="), true
 }
 
-// stdinRecords is the records of record, the call's buffered standard input, by the option that
-// named it (GhRequest.StdinOption). Named by `--input`, it is the request body, read as JSON
-// (jsonBody). Named by any other option — `--body-file -`, `--notes-file -`, `--from-file -`,
-// `-F <name>=@-` — it is text GitHub stores as it stands, one record: gh makes one JSON string
-// of a field's bytes itself, and a body option's input is the body. Named by nothing known, it
-// is read both ways, the raw record and the strings of a JSON document beside it, which errs
-// toward reading more.
+// argument records args[i], as it was written, as "the gh call's argument <i>".
+func (argv *ghArgv) argument(args []string, i int) {
+	argv.records = append(argv.records, Record{Label: "the gh call's argument " + strconv.Itoa(i), Text: args[i]})
+}
+
+// stdinRecords is the records of record, the call's buffered standard input, by the use the call
+// makes of it (StdinUse), and fields, the names of the fields whose value it is
+// (ghArgv.stdinFields). As the request body it is read as JSON (jsonBody). As text it is one
+// record: a body option's input is the body. Of no known use it is read both ways, the raw record
+// and the strings of a JSON document beside it, which errs toward reading more.
 //
-// The one field whose input is not text is the query of a `gh api graphql` call (graphQL): gh
-// sends the bytes of `-F query=@-` as the query, which GitHub parses, so they are read one
-// literal at a time (graphQLRecords), as the same query is from a file. Where a field named the
-// input of such a call — the option is `--field` or `-F`, or nothing known and args, the argv,
-// names a field of standard input — the input is read by the names of the fields whose value is
-// `@-` (ghStdinFields). All of them `query` is the query alone, with no raw record, which would
-// join its literals on one line. Some `query` and some not is a call whose one input goes to one
-// field, which gh's order of reading decides and the guard does not guess: the raw record and
-// the literals are both read. None `query` is text, as above.
-func stdinRecords(record Record, option string, args []string, graphQL bool) []Record {
-	if graphQL {
-		if names := ghStdinFields(args); option == "--field" || option == "-F" || option == "" && len(names) > 0 {
-			if !slices.Contains(names, graphQLQuery) {
-				return []Record{record}
-			}
-			literals := graphQLRecords(record)
-			if !slices.ContainsFunc(names, func(name string) bool { return name != graphQLQuery }) {
-				return literals
-			}
-			if len(literals) == 1 && literals[0] == record {
-				// A query that does not lex is read as written already.
-				return literals
-			}
+// As fields' value it is text too, one record, since gh makes one JSON string of a field's bytes
+// itself; but for the query of a `gh api graphql` call (graphQL), whose bytes gh sends as the
+// query, which GitHub parses, so they are read one literal at a time (graphQLRecords), as the
+// same query is from a file. All of the fields `query` is the query alone, with no raw record,
+// which would join its literals on one line. Some `query` and some not is a call whose one input
+// goes to one field, which gh's order of reading decides and the guard does not guess: the raw
+// record and the literals are both read. None `query` is text. A use nobody knows in a `gh api
+// graphql` call whose argv names fields of standard input is read as those fields' value.
+func stdinRecords(record Record, use StdinUse, fields []string, graphQL bool) []Record {
+	if use == StdinUnknown && graphQL && len(fields) > 0 {
+		use = StdinField
+	}
+	switch use {
+	case StdinRequestBody:
+		return jsonBody(record, graphQL)
+	case StdinText:
+		return []Record{record}
+	case StdinField:
+		if !graphQL || !slices.Contains(fields, graphQLQuery) {
+			return []Record{record}
+		}
+		literals, lexed := graphQLRecords(record)
+		switch {
+		case !lexed:
+			// A query that does not lex is read as written.
+			return []Record{record}
+		case slices.ContainsFunc(fields, func(name string) bool { return name != graphQLQuery }):
 			return append([]Record{record}, literals...)
 		}
+		return literals
 	}
-	switch option {
-	case inputOption:
-		return jsonBody(record, graphQL)
-	case "":
-		fields, _ := jsonFields(record, graphQL)
-		return append([]Record{record}, fields...)
-	}
-	return []Record{record}
-}
-
-// ghStdinFields are the names of the fields of args, a gh call's argv, whose value is standard
-// input: each `-F <name>=@-` and `--field <name>=@-`, in every spelling ghFieldArg reads, before a
-// bare `--` and in the order the argv writes them. A -f or --raw-field sends `@-` as those two
-// characters and reads no input, so it names none.
-func ghStdinFields(args []string) []string {
-	api := len(args) > 0 && args[0] == "api"
-	var names []string
-	for i := 0; i < len(args) && args[i] != "--"; i++ {
-		option, value, attached := ghFieldArg(args[i], api)
-		if option == "" {
-			continue
-		}
-		if !attached {
-			if i+1 == len(args) {
-				break
-			}
-			i++
-			value = args[i]
-		}
-		name, after, found := strings.Cut(value, "=")
-		if found && after == "@-" && (option == "-F" || option == "--field") {
-			names = append(names, name)
-		}
-	}
-	return names
+	decoded, _ := jsonFields(record, graphQL)
+	return append([]Record{record}, decoded...)
 }
 
 // jsonBody is the records of record, a request body GitHub parses as JSON: the strings of the
@@ -492,7 +758,7 @@ read:
 			}
 			field := Record{Label: jsonLabel(record.Label, at), Text: value}
 			if graphQL && len(at) == 1 && at[0] == "."+graphQLQuery {
-				fields = append(fields, graphQLRecords(field)...)
+				fields = append(fields, queryRecords(field)...)
 			} else {
 				fields = append(fields, field)
 			}
@@ -603,100 +869,24 @@ type GhFile struct {
 // is itself a JSON document (jsonBody, stdinRecords).
 const inputOption = "--input"
 
-// ghFileOptions are the options whose whole value is the path of a file gh sends to GitHub as
-// content, in gh 2.98.0's spelling — the version the worker image pins, whose help is
-// cmd/legion/testdata/gh-help, which is where each of these was read.
-var ghFileOptions = map[string]bool{
-	// The body of a pull request, an issue, a comment, a review or a revert. Twelve commands of
-	// the pinned reference carry it: `awk '/^### /{cmd=$0} /--body-file/{print cmd}'
-	// testdata/gh-help/reference.txt | sort -u`.
-	"--body-file": true,
-	// `gh release create` and `gh release edit`'s release notes.
-	"--notes-file": true,
-	// `gh api`'s HTTP request body.
-	"--input": true,
-	// `gh agent-task create`'s task description.
-	"--from-file": true,
-}
-
-// ghUnreadUploads are the options whose value names a file gh uploads to GitHub that this
-// package does not read: gh 2.104.0's --attach, of `gh issue` and `gh pr` comment, create and
-// edit and of `gh issue artifact create` and `edit`, which uploads an image (an SVG's text among
-// them, up to 10 MiB) or a video (up to 100 MiB) as an asset GitHub serves. It has no short
-// spelling. The fallback refuses a call naming one (ghUnreadUploadArg) rather than read a file
-// of that kind and size; `legion gh`, which hands the guard the files it parsed, refuses it
-// before the guard runs.
-var ghUnreadUploads = map[string]bool{"--attach": true}
-
-// ghUnreadUploadArg is the first option of ghUnreadUploads args names, in its separate or its
-// attached spelling (`--attach=<path>`), before a bare `--`, and whether there is one. It reads
-// the argv with no gh to say which options take a value, so an option's value that is itself
-// `--attach` refuses the call too, the direction ghFileArgs errs in as well.
-func ghUnreadUploadArg(args []string) (string, bool) {
-	for _, arg := range args {
-		if arg == "--" {
-			return "", false
-		}
-		name, _, _ := strings.Cut(arg, "=")
-		if ghUnreadUploads[name] {
-			return name, true
-		}
-	}
-	return "", false
-}
-
-// ghFileArgs are the files args would have gh send to GitHub as content, each named once and in
-// the order the argv writes them, and the option that named standard input. A gh call carries
-// its text in a file as readily as in an argument — `gh api --method PATCH
-// repos/<owner>/<repo>/pulls/<n> -F body=@body.md` is how a Legion role writes a pull request's
-// body — so each file's text is a record of its own beside the records of the argv, which hold
-// the file's name and never its text.
+// ghFileOptions are the options of the commands readOther reads whose whole value is the path of
+// a file gh sends to GitHub as content, in gh 2.98.0's spelling — the version the worker image
+// pins, whose help is cmd/legion/testdata/gh-help, which is where each of these was read. A gh
+// call carries its text in a file as readily as in an argument, so each file's text is a record of
+// its own beside the records of the argv, which hold the file's name and never its text. `gh
+// api`'s files are readLeaf's: its --input, and the `@<path>` of a typed field, which `gh
+// workflow run` reads too — `gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F
+// body=@body.md` is how a Legion role writes a pull request's body.
 //
-// This is the fallback, for a caller that hands the guard a bare argv (GhRequest.Files nil). The
-// caller that can do better does: `legion gh` parses the command with gh's own help of the leaf,
-// so it knows every option's arity and reads a shape no table can — a short cluster whose last
-// letter is the option (`-dF <path>`, which is `--draft --body-file <path>` in `gh pr create`
-// and `--desc F` in `gh gist create`) — and hands the files it found. What is read here instead
-// is ghFileOptions, each in its separate and its attached spelling (`--body-file=<path>`), and
-// two more shapes of one short option:
-//
-//   - `-F <value>`: gh gives -F to --body-file, --notes-file, --from-file and --field, and to
-//     nothing else (`grep -ho -- '-F, --[a-z-]*' testdata/gh-help/*.txt | sort -u`), so a -F is
-//     read by its value rather than its name. A value holding no `=` is one of the three file
-//     options' (`-F body.md`); a value of the shape `name=@<path>` is --field's file; any other
-//     `name=value` is a literal field and names no file.
-//   - `--field <name>=@<path>`: `gh api`'s field read from a file. A --field whose value holds
-//     no `=` names no file — `gh project field-list --field <name>` names a field of a project —
-//     so only the `@` shape is read.
-//
-// The attached short spellings `-F<value>` and `-F=<value>` are read as well, the two split as
-// ghArgRecords splits a field (ghFieldArg), which is how pflag reads them: `-F=body=@notes.md` is
-// the field body read from notes.md. Outside `gh api` they are the only short cluster read: a
-// `-F` anywhere but the front of a short argument is the value of the option before it (`-dF` is
-// `--desc F`), and reading that as a file would refuse a call over a file nobody named. `gh api`'s
-// short letters are all known, so its clusters are read as pflag reads them (ghFieldArg):
-// `-iF body=@notes.md` is the same field.
-//
-// This reads the argv with no gh to tell it which other options take a value, so an option's
-// value that itself begins with `-F` (a `--body` whose first word is `-Fixed`) is read as a -F
-// of its own and refuses the call, naming a file nobody meant. That is the direction this errs
-// in: the other way round is `gh release create -F notes.md`, the documented short spelling,
-// going to GitHub unread.
-//
-// A value of `-`, and an `@-`, is standard input rather than a file. The shared check's exit-4
-// handshake buffers that input and GhCall records it already (askAgain), so there is nothing
-// here to open. What is answered instead is the option that named it, which says what the input
-// is (GhRequest.StdinOption), by its long name: `--input -`, `--input=-`, `--body-file -` and the
-// other file options answer their own name, and `-F <name>=@-` and `--field <name>=@-` answer
-// `--field`. A `-F -` answers `-F`: it is --body-file, --notes-file or --from-file as the leaf
-// says, and each of the three makes its input text GitHub stores as it stands. Two options that
-// name standard input and differ answer "", since only one of them can have the input, and the
-// guard then reads it both ways.
+// These are the fallback, for a caller that hands the guard a bare argv (GhRequest.Files nil).
+// The caller that can do better does: `legion gh` parses the command with gh's own help of the
+// leaf, so it knows every option's arity and reads a shape no table can — a short cluster whose
+// last letter is the option (`-dF <path>`, which is `--draft --body-file <path>` in `gh pr
+// create` and `--desc F` in `gh gist create`) — and hands the files it found.
 //
 // Four things are deliberately left out:
 //
-//   - `-f`/`--raw-field`, which sends its value literally: `gh api -f body=@x` posts the two
-//     characters `@x` and opens no file.
+//   - `-f`/`--raw-field`, which sends its value literally (ghFieldOptions) and opens no file.
 //   - `--env-file` (`gh secret set`, `gh variable set`), whose values are secrets GitHub stores
 //     and never publishes. A secret is the shared check's to read, not the private-name rules',
 //     which are names a deployment keeps out of public repositories.
@@ -716,72 +906,26 @@ func ghUnreadUploadArg(args []string) (string, bool) {
 //     on release assets, that reading inside them is the check's policy and not this issue's
 //     (dispatch://INFRA-1527, Goals and non-goals). No Legion role writes a gist: the roles
 //     post pull request and issue text, which the options above carry.
-//
-// Arguments past a bare `--` are read as nothing: gh's parser takes no option after one, so a
-// `--body-file` there is a word of some other program's and names no file gh would send.
-func ghFileArgs(args []string) ([]GhFile, string) {
-	var files []GhFile
-	stdin, stdinNamed := "", false
-	api := len(args) > 0 && args[0] == "api"
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			break
-		}
-		// A field option is split as ghArgRecords splits it (ghFieldArg), and any other option at
-		// its first `=`. A -f or --raw-field then reads as neither --field nor a file option, and
-		// names no file.
-		option, value, attached := ghFieldArg(arg, api)
-		if option == "" {
-			option = arg
-			if name, after, found := strings.Cut(arg, "="); found {
-				option, value, attached = name, after, true
-			}
-		}
-		field := option == "-F" || option == "--field"
-		if !field && !ghFileOptions[option] {
-			continue
-		}
-		if !attached {
-			if i+1 == len(args) {
-				// An option with no value at all: gh refuses the call itself, and there is no
-				// file here to read.
-				break
-			}
-			i++
-			value = args[i]
-		}
-		path, named, fieldName := value, option, ""
-		if field {
-			name, after, found := strings.Cut(value, "=")
-			switch {
-			case found && strings.HasPrefix(after, "@"):
-				path, named, fieldName = strings.TrimPrefix(after, "@"), "--field", name
-			case found || option != "-F":
-				continue
-			}
-		}
-		// A path of "-" is standard input, and a file named twice is read once: a second record
-		// of one file is a second open and a second line of the same report.
-		if path == "-" {
-			switch {
-			case !stdinNamed:
-				stdin, stdinNamed = named, true
-			case stdin != named:
-				stdin = ""
-			}
-			continue
-		}
-		if path == "" {
-			continue
-		}
-		if slices.ContainsFunc(files, func(file GhFile) bool { return file.Path == path }) {
-			continue
-		}
-		files = append(files, GhFile{Option: option, Path: path, Field: fieldName})
-	}
-	return files, stdin
+var ghFileOptions = map[string]bool{
+	// The body of a pull request, an issue, a comment, a review or a revert. Twelve commands of
+	// the pinned reference carry it: `awk '/^### /{cmd=$0} /--body-file/{print cmd}'
+	// testdata/gh-help/reference.txt | sort -u`.
+	"--body-file": true,
+	// `gh release create` and `gh release edit`'s release notes.
+	"--notes-file": true,
+	// `gh agent-task create`'s task description.
+	"--from-file": true,
 }
+
+// ghUnreadUploads are the options whose value names a file gh uploads to GitHub that this
+// package does not read: gh 2.104.0's --attach, of `gh issue` and `gh pr` comment, create and
+// edit and of `gh issue artifact create` and `edit`, which uploads an image (an SVG's text among
+// them, up to 10 MiB) or a video (up to 100 MiB) as an asset GitHub serves. It has no short
+// spelling, and `gh api` and `gh workflow run` have none of them. The fallback refuses a call
+// naming one, in its separate or its attached spelling (`--attach=<path>`), before a bare `--`
+// (ghArgv.upload), rather than read a file of that kind and size; `legion gh`, which hands the
+// guard the files it parsed, refuses it before the guard runs.
+var ghUnreadUploads = map[string]bool{"--attach": true}
 
 // readGhFile is the text of one file a gh call would send, read to maxGhFile (readBounded). A
 // file that cannot be opened, cannot be read, or is longer than maxGhFile is a setup failure

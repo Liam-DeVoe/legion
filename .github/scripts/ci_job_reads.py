@@ -528,6 +528,9 @@ RULES = {
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:142")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
+    f"{DAEMON}/internal/leakguard/gh_test.go": reads(
+        (f"{DAEMON}/cmd/legion/testdata/gh-help/api.txt", "internal/leakguard/gh_test.go:594 reads ../../cmd/legion/testdata/gh-help/<help>, api.txt for gh api (:590)"),
+        (f"{DAEMON}/cmd/legion/testdata/gh-help/workflow_run.txt", "internal/leakguard/gh_test.go:594 reads ../../cmd/legion/testdata/gh-help/<help>, workflow_run.txt for gh workflow run (:591)")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),

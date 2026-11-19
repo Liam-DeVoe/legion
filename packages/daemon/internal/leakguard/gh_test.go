@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -49,7 +50,7 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 		return asked, answer, err
 	}
 	t.Run("a read the check clears", func(t *testing.T) {
-		if asked, answer, err := call(t, bound(t), passes, theProgram, true); err != nil || len(asked) != 0 || !answer.CheckedOnly {
+		if asked, answer, err := call(t, bound(t), passes, theProgram, true); err != nil || len(asked) != 0 || answer.Read != GhReadCheckedOnly {
 			t.Fatalf("GhCall = %+v, %v, visibility asked of %q; want the read cleared by the check alone", answer, err, asked)
 		}
 	})
@@ -89,8 +90,8 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 			if report := refusal(t, err); len(report.Lines) != 1 || !namesClass(report.Lines[0], leakguardtest.RulesHostClass) {
 				t.Fatalf("the refusal does not name the class: %v", report)
 			}
-			if !slices.Equal(asked, []string{repo}) || answer.CheckedOnly {
-				t.Fatalf("visibility asked of %q and checked only %v, want %q asked once and the whole guard", asked, answer.CheckedOnly, repo)
+			if !slices.Equal(asked, []string{repo}) || answer.Read != GhReadWhole {
+				t.Fatalf("visibility asked of %q and the guard read %v, want %q asked once and the whole guard", asked, answer.Read, repo)
 			}
 		})
 	}
@@ -248,16 +249,16 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 	}
 }
 
-// The option table itself: which arguments name a file gh would send as content, in both
-// spellings of each, and which name no file at all, and which option names standard input. The
-// entries that answer nothing are the table's boundary, and each is a call that must not be
-// refused over a file nobody named.
+// The option tables themselves (readGhArgv): which arguments name a file gh would send as
+// content, in both spellings of each, and which name no file at all, and what use of standard
+// input they name. The entries that answer nothing are the tables' boundary, and each is a call
+// that must not be refused over a file nobody named.
 func TestTheFilesAGhCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		args  []string
 		want  []GhFile
-		stdin string
+		stdin StdinUse
 	}{
 		{
 			name: "a separate --body-file",
@@ -295,7 +296,7 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 			want: []GhFile{{Option: "-F", Path: "body.md"}},
 		},
 		{
-			// pflag reads `-F=<value>` as `-F <value>`, and so does this reader (ghFieldArg).
+			// pflag reads `-F=<value>` as `-F <value>`, and so does this reader (readOther).
 			name: "a short -F with its value attached by an equals sign",
 			args: []string{"pr", "create", "-F=body.md"},
 			want: []GhFile{{Option: "-F", Path: "body.md"}},
@@ -327,7 +328,7 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		},
 		{
 			// gh api's short letters are all known, so its cluster is read as pflag reads it: `-i`
-			// is --include, and the -F that ends the cluster is --field (ghFieldArg).
+			// is --include, and the -F that ends the cluster is --field (readLeaf).
 			name: "a field read from a file, at the end of gh api's short cluster",
 			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-iF", "body=@body.md"},
 			want: []GhFile{{Option: "-F", Path: "body.md", Field: "body"}},
@@ -339,34 +340,47 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		},
 		{
 			name: "the same file named twice",
-			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-F", "body=@body.md", "--body-file", "body.md"},
+			args: []string{"api", "repos/invented-org/invented-repo/pulls/1", "-F", "body=@body.md", "--input", "body.md"},
 			want: []GhFile{{Option: "-F", Path: "body.md", Field: "body"}},
+		},
+		{
+			name: "gh workflow run's field read from a file",
+			args: []string{"workflow", "run", "w.yml", "-F", "notes=@notes.md"},
+			want: []GhFile{{Option: "-F", Path: "notes.md", Field: "notes"}},
+		},
+		{
+			// -F is --body-file outside gh api and gh workflow run, so its whole value is the path,
+			// an `=@` in it included.
+			name: "another command's -F whose path holds an =@",
+			args: []string{"pr", "create", "-F", "notes=@draft.md"},
+			want: []GhFile{{Option: "-F", Path: "notes=@draft.md"}},
 		},
 		{name: "a field whose value is a literal", args: []string{"api", "x", "-F", "body=text"}},
 		{name: "a raw field, which sends its value literally", args: []string{"api", "x", "-f", "body=@body.md"}},
 		{name: "an attached raw field, which sends its value literally", args: []string{"api", "x", "-f=body=@body.md"}},
 		{name: "a --field naming a project's field", args: []string{"project", "field-list", "1", "--field", "Status"}},
-		{name: "a body option whose value is standard input", args: []string{"pr", "comment", "1", "--body-file", "-"}, stdin: "--body-file"},
-		{name: "a field read from standard input", args: []string{"api", "x", "-F", "body=@-"}, stdin: "--field"},
-		{name: "a long field read from standard input", args: []string{"api", "x", "--field", "body=@-"}, stdin: "--field"},
-		{name: "a field read from standard input, at the end of gh api's short cluster", args: []string{"api", "graphql", "-iF", "query=@-"}, stdin: "--field"},
+		{name: "a body option whose value is standard input", args: []string{"pr", "comment", "1", "--body-file", "-"}, stdin: StdinText},
+		{name: "a field read from standard input", args: []string{"api", "x", "-F", "body=@-"}, stdin: StdinField},
+		{name: "a long field read from standard input", args: []string{"api", "x", "--field", "body=@-"}, stdin: StdinField},
+		{name: "a field read from standard input, at the end of gh api's short cluster", args: []string{"api", "graphql", "-iF", "query=@-"}, stdin: StdinField},
 		// A cluster whose first value letter is another option's: `-iXF` is --include and the
 		// method F, so the argument after it is a positional of gh's and names no file.
 		{name: "gh api's short cluster ending in another option", args: []string{"api", "x", "-iXF", "body=@body.md"}},
-		{name: "gh api's request body on standard input", args: []string{"api", "x", "--input", "-"}, stdin: "--input"},
-		{name: "gh api's attached request body on standard input", args: []string{"api", "x", "--input=-"}, stdin: "--input"},
-		{name: "release notes on standard input", args: []string{"release", "create", "v0", "--notes-file", "-"}, stdin: "--notes-file"},
-		// -F with no `=` is one of three options whose input is text, and the leaf alone says which.
-		{name: "a short -F of standard input", args: []string{"pr", "comment", "1", "-F", "-"}, stdin: "-F"},
+		{name: "gh api's request body on standard input", args: []string{"api", "x", "--input", "-"}, stdin: StdinRequestBody},
+		{name: "gh api's attached request body on standard input", args: []string{"api", "x", "--input=-"}, stdin: StdinRequestBody},
+		{name: "release notes on standard input", args: []string{"release", "create", "v0", "--notes-file", "-"}, stdin: StdinText},
+		// -F outside gh api and gh workflow run is one of three options whose input is text, and
+		// the leaf alone says which.
+		{name: "a short -F of standard input", args: []string{"pr", "comment", "1", "-F", "-"}, stdin: StdinText},
 		{
 			name:  "a file beside standard input",
 			args:  []string{"api", "x", "--input", "-", "-F", "body=@body.md"},
 			want:  []GhFile{{Option: "-F", Path: "body.md", Field: "body"}},
-			stdin: "--input",
+			stdin: StdinRequestBody,
 		},
 		// Only one of two options can have the input, so the guard is told it does not know.
 		{name: "two options of standard input that differ", args: []string{"api", "x", "--input", "-", "-F", "body=@-"}},
-		{name: "one option of standard input twice", args: []string{"api", "x", "-F", "title=@-", "-F", "body=@-"}, stdin: "--field"},
+		{name: "one option of standard input twice", args: []string{"api", "x", "-F", "title=@-", "-F", "body=@-"}, stdin: StdinField},
 		{name: "a secret's env file", args: []string{"secret", "set", "NAME", "--env-file", "secrets.env"}},
 		{name: "a template of the repository", args: []string{"pr", "create", "--template", "pull_request_template.md"}},
 		{name: "a gist's positional files", args: []string{"gist", "create", "note.md"}},
@@ -382,8 +396,8 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{name: "an option with no value at all", args: []string{"pr", "comment", "1", "--body-file"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got, stdin := ghFileArgs(tc.args); !slices.Equal(got, tc.want) || stdin != tc.stdin {
-				t.Fatalf("ghFileArgs(%q) = %v, %q; want %v, %q", tc.args, got, stdin, tc.want, tc.stdin)
+			if got := readGhArgv(tc.args); !slices.Equal(got.files, tc.want) || got.stdin != tc.stdin {
+				t.Fatalf("readGhArgv(%q) read the files %v and standard input %v; want %v and %v", tc.args, got.files, got.stdin, tc.want, tc.stdin)
 			}
 		})
 	}
@@ -438,23 +452,23 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	})
 }
 
-// gh api's short cluster (ghFieldArg) is gh api's alone. In `gh pr create`, `-dF <path>` is
+// gh api's short cluster (readLeaf) is gh api's alone. In `gh pr create`, `-dF <path>` is
 // `--draft --body-file <path>`: the file the caller parsed out of it is read as the body it is,
 // and the argv makes no field of it. The file's name holds an `=`, so a reader that took `-dF`
 // for gh api's field option would make a field of the path.
 func TestAShortClusterOutsideGhAPIIsNoField(t *testing.T) {
 	body := fieldFile(t, "notes=draft.md", "the "+leakguardtest.PairName+" and the "+leakguardtest.PairWord)
 	args := []string{"pr", "create", "-dF", body}
-	for _, record := range ghArgRecords(args, false) {
+	for _, record := range readGhArgv(args).records {
 		if strings.HasPrefix(record.Label, "the gh call's field ") {
-			t.Fatalf("ghArgRecords(%q) made the field record %q", args, record.Label)
+			t.Fatalf("readGhArgv(%q) made the field record %q", args, record.Label)
 		}
 	}
 	err := ghFieldCall(t, GhRequest{Args: args, Files: []GhFile{{Option: "--body-file", Path: body}}})
 	reports(t, refusal(t, err).Lines, body+": "+leakguardtest.PairClass)
 }
 
-// In a `gh api` call a short cluster is read as pflag reads it (ghFieldArg): `-iF query=<v>`,
+// In a `gh api` call a short cluster is read as pflag reads it (readLeaf): `-iF query=<v>`,
 // `-iFquery=<v>` and `-if query=<v>` are the query field after --include. So a GraphQL query given
 // so is read one literal at a time: the fixture's two words in two literals of one mutation pass,
 // though a read of the argument whole joins them, and the two in one literal are refused, the
@@ -494,12 +508,15 @@ func TestGhAPIGraphQLStandardInputIsReadByTheFieldsThatTakeIt(t *testing.T) {
 		t.Fatalf("the query %q spells the name in its own bytes, so it proves nothing", escaped)
 	}
 	const stdin = "the gh call's standard input"
-	for _, tc := range []struct{ name, stdinOption string }{
-		{"read out of the argv", ""},
-		{"named by the caller's parse", "--field"},
+	for _, tc := range []struct {
+		name     string
+		stdinUse StdinUse
+	}{
+		{"read out of the argv", StdinUnknown},
+		{"named by the caller's parse", StdinField},
 	} {
 		t.Run("another field's input is text, "+tc.name, func(t *testing.T) {
-			err := ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "-F", "body=@-"}, Stdin: strings.NewReader(apart), StdinOption: tc.stdinOption})
+			err := ghFieldCall(t, GhRequest{Args: []string{"api", "graphql", "-F", "body=@-"}, Stdin: strings.NewReader(apart), StdinUse: tc.stdinUse})
 			reports(t, refusal(t, err).Lines, stdin+": "+leakguardtest.PairClass)
 		})
 	}
@@ -517,6 +534,110 @@ func TestGhAPIGraphQLStandardInputIsReadByTheFieldsThatTakeIt(t *testing.T) {
 		cleared(t, ghFieldCall(t, call(apart)))
 		reports(t, refusal(t, ghFieldCall(t, call(escaped))).Lines, stdin+", GraphQL string 2: "+leakguardtest.PairClass)
 	})
+}
+
+// The use a call makes of its standard input is read out of its argv by the command's own
+// options, the command found past the -R gh takes before it. In `gh workflow run`, `-F <name>=@-`
+// makes the input the value of a field, text gh makes one JSON string of; in `gh pr create`, `-F
+// -` is `--body-file -`, and the input is the body, text too. So a JSON document on either is read
+// as the text it is, an escape and all, and is cleared where only its decoded string names the
+// fixture's pair, which an input of no known use, read decoded as well, is refused for; and either
+// input is refused where its own text names the pair.
+func TestGhStandardInputIsReadAsTheCommandUsesIt(t *testing.T) {
+	// The word with its first letter written as a JSON escape: decoded, the document's one string
+	// names the pair, and as text it does not.
+	escaped := `{"body":"the ` + leakguardtest.PairName + ` and the \u006d` + leakguardtest.PairWord[1:] + `"}`
+	if leakguardtest.PairWord[0] != 'm' || strings.Contains(escaped, leakguardtest.PairWord) {
+		t.Fatalf("the document %q spells the word in its own bytes, so it proves nothing", escaped)
+	}
+	plain := "the " + leakguardtest.PairName + " and the " + leakguardtest.PairWord
+	const stdin = "the gh call's standard input"
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		use    StdinUse
+		fields []string
+	}{
+		{"a field of gh workflow run past -R", []string{"-R", "invented-org/invented-repo", "workflow", "run", "w.yml", "-F", "x=@-"}, StdinField, []string{"x"}},
+		{"gh pr create's -F", []string{"pr", "create", "-F", "-"}, StdinText, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if argv := readGhArgv(tc.args); argv.stdin != tc.use || !slices.Equal(argv.stdinFields, tc.fields) || argv.files != nil {
+				t.Fatalf("readGhArgv(%q) read standard input as %v, by the fields %q, and the files %v; want %v, by %q, and no file", tc.args, argv.stdin, argv.stdinFields, argv.files, tc.use, tc.fields)
+			}
+			cleared(t, ghFieldCall(t, GhRequest{Args: tc.args, Stdin: strings.NewReader(escaped)}))
+			reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: tc.args, Stdin: strings.NewReader(plain)})).Lines, stdin+": "+leakguardtest.PairClass)
+		})
+	}
+	t.Run("the same document of no known use is read decoded", func(t *testing.T) {
+		err := ghFieldCall(t, GhRequest{Args: []string{"pr", "create", "-F", "-"}, Stdin: strings.NewReader(escaped), Files: []GhFile{}})
+		reports(t, refusal(t, err).Lines, stdin+", JSON .body: "+leakguardtest.PairClass)
+	})
+}
+
+// The option tables of ghLeaves are the helps of their commands in gh 2.98.0, the version the
+// worker image pins (cmd/legion/testdata/gh-help): every option whose line under FLAGS or
+// INHERITED FLAGS names a value after its flag names (`  -X, --method string`, `      --input
+// file`, `  -F, --field key=value`) is in its command's table, its long name and its short letter
+// both, and no option whose line names none (`  -i, --include`) is. A table short of an option
+// would read that option's value as an argument of its own, a field or the endpoint where gh reads
+// a value, and a table holding one too many would take the argument after a flag for its value.
+func TestGhLeafOptionTablesAreTheirHelps(t *testing.T) {
+	for _, tc := range []struct {
+		help string
+		leaf *ghLeaf
+	}{
+		{"api.txt", &ghAPILeaf},
+		{"workflow_run.txt", &ghWorkflowRunLeaf},
+	} {
+		t.Run(strings.Join(tc.leaf.path, " "), func(t *testing.T) {
+			help, err := os.ReadFile(filepath.Join("..", "..", "cmd", "legion", "testdata", "gh-help", tc.help))
+			if err != nil {
+				t.Fatal(err)
+			}
+			long, short, options := map[string]bool{}, []byte{}, 0
+			flags := false
+			for line := range strings.Lines(string(help)) {
+				line = strings.TrimSuffix(line, "\n")
+				if line != "" && line[0] != ' ' {
+					// A heading: USAGE, FLAGS, INHERITED FLAGS, EXAMPLES and the rest.
+					flags = line == "FLAGS" || line == "INHERITED FLAGS"
+					continue
+				}
+				// An option's line is its flag names, the value it takes, if any, and, past two
+				// spaces, its description.
+				names, _, _ := strings.Cut(strings.TrimLeft(line, " "), "  ")
+				words := strings.Fields(names)
+				if !flags || len(words) == 0 || !strings.HasPrefix(words[0], "-") {
+					continue
+				}
+				letter, hasShort := strings.CutSuffix(words[0], ",")
+				if hasShort {
+					words = words[1:]
+				}
+				options++
+				if len(words) < 2 {
+					continue
+				}
+				long[words[0]] = true
+				if hasShort {
+					short = append(short, strings.TrimPrefix(letter, "-")...)
+				}
+			}
+			if options == 0 {
+				t.Fatalf("%s lists no option under FLAGS or INHERITED FLAGS, so it was not read", tc.help)
+			}
+			if !maps.Equal(long, tc.leaf.long) {
+				t.Errorf("the long options of %s that take a value are %q, and the table holds %q", tc.help, slices.Sorted(maps.Keys(long)), slices.Sorted(maps.Keys(tc.leaf.long)))
+			}
+			table := []byte(tc.leaf.short)
+			slices.Sort(short)
+			slices.Sort(table)
+			if string(short) != string(table) {
+				t.Errorf("the short options of %s that take a value are %q, and the table holds %q", tc.help, short, table)
+			}
+		})
+	}
 }
 
 // A JSON body is read decoded. A string's escapes are text GitHub stores and shows — `\u0074` is

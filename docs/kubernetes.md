@@ -3561,7 +3561,9 @@ A push has these records:
 A gh call has these records:
 
 - Each argument, labelled `the gh call's argument <i>`.
-  A field given to `-f`, `--raw-field`, `-F` or `--field` is two records: its value, labelled `the gh call's field <name>`, and its name, labelled `the gh call's field <name> (name)`.
+  A field given to `-f`, `--raw-field`, `-F` or `--field` of `gh api` or `gh workflow run` is two records: its value, labelled `the gh call's field <name>`, and its name, labelled `the gh call's field <name> (name)`.
+  Only those two commands have field options: in every other command `-f` and `-F` mean other things (`-F` is `--body-file` in `gh pr create`), so there every argument is one record, read whole.
+  An option's value is read as that option's value and never as an option of its own, so `gh api -t '-f…'` is a template, read whole.
 
 - The call's standard input, labelled `the gh call's standard input`, and each file the call sends, labelled by its path.
 

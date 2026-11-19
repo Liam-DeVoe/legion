@@ -99,10 +99,10 @@ func TestGhJSONReadsOneFieldAtATime(t *testing.T) {
 	})
 	t.Run("two fields of standard input the caller names --input pass", func(t *testing.T) {
 		cleared(t, ghFieldCall(t, GhRequest{
-			Args:        []string{"api", endpoint, "--input", "-"},
-			Stdin:       strings.NewReader(apart),
-			Files:       []GhFile{},
-			StdinOption: "--input",
+			Args:     []string{"api", endpoint, "--input", "-"},
+			Stdin:    strings.NewReader(apart),
+			Files:    []GhFile{},
+			StdinUse: StdinRequestBody,
 		}))
 	})
 	t.Run("one field of --input <file> is refused", func(t *testing.T) {
@@ -142,10 +142,10 @@ func TestGhJSONReadsOneFieldAtATime(t *testing.T) {
 	})
 	t.Run("standard input the caller names --body-file is read as text", func(t *testing.T) {
 		err := ghFieldCall(t, GhRequest{
-			Args:        []string{"pr", "comment", "1", "--body-file", "-"},
-			Stdin:       strings.NewReader(apart),
-			Files:       []GhFile{},
-			StdinOption: "--body-file",
+			Args:     []string{"pr", "comment", "1", "--body-file", "-"},
+			Stdin:    strings.NewReader(apart),
+			Files:    []GhFile{},
+			StdinUse: StdinText,
 		})
 		reports(t, refusal(t, err).Lines, "the gh call's standard input: "+leakguardtest.PairClass)
 	})
@@ -246,6 +246,38 @@ func TestGhJSONArgumentsReadOneFieldAtATime(t *testing.T) {
 			reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: tc.args})).Lines, tc.want+": "+leakguardtest.PairClass)
 		})
 	}
+}
+
+// gh has field options in `gh api` and `gh workflow run` alone, and the argv is read so. In every
+// other command -f and -F mean other things (`-F` is `--body-file` in `gh pr create`), so an
+// argument that looks like a field is one record, read whole: a title written `-fix <name>=<word>`
+// is refused by the rule that needs both words, where a reader taking it for the field `ix <name>`
+// would read the two words apart. In `gh api` an option's value is that option's value and never
+// an option of its own, so a Go template written the same way is read whole too. The inputs of a
+// workflow run are fields, read apart: the fixture's two words in one input are refused, the
+// report naming the field, and in two inputs pass.
+func TestGhFieldsAreReadOnlyWhereGhHasThem(t *testing.T) {
+	lookalike := "-fix " + leakguardtest.PairName + "=" + leakguardtest.PairWord
+	refusedWhole(t, lookalike)
+	both := "the " + leakguardtest.PairName + " and the " + leakguardtest.PairWord
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"gh issue create's title", []string{"issue", "create", "-t", lookalike}, "the gh call's argument 3"},
+		{"gh api's template", []string{"api", "repos/invented-org/invented-repo/issues", "-t", lookalike}, "the gh call's argument 3"},
+		{"gh workflow run's input", []string{"workflow", "run", "w.yml", "-f", "body=" + both}, "the gh call's field body"},
+	} {
+		t.Run(tc.name+" is refused", func(t *testing.T) {
+			reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: tc.args})).Lines, tc.want+": "+leakguardtest.PairClass)
+		})
+	}
+	t.Run("gh workflow run's two inputs pass", func(t *testing.T) {
+		args := []string{"workflow", "run", "w.yml", "-f", "a=" + leakguardtest.PairName, "-f", "b=" + leakguardtest.PairWord}
+		refusedWhole(t, strings.Join(args, " "))
+		cleared(t, ghFieldCall(t, GhRequest{Args: args}))
+	})
 }
 
 // graphQLMutation is a one-line createIssue mutation whose title and body literals hold title
@@ -415,13 +447,16 @@ func TestGhJSONGraphQLQueryOnStandardInputReadsOneFieldAtATime(t *testing.T) {
 	if strings.Contains(escaped, leakguardtest.PairName) {
 		t.Fatalf("the query %q spells the name in its own bytes, so it proves nothing", escaped)
 	}
-	for _, tc := range []struct{ name, stdinOption string }{
-		{"read out of the argv", ""},
-		{"named by the caller's parse", "--field"},
+	for _, tc := range []struct {
+		name     string
+		stdinUse StdinUse
+	}{
+		{"read out of the argv", StdinUnknown},
+		{"named by the caller's parse", StdinField},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			call := func(query string) GhRequest {
-				return GhRequest{Args: []string{"api", "graphql", "-F", "query=@-"}, Stdin: strings.NewReader(query), StdinOption: tc.stdinOption}
+				return GhRequest{Args: []string{"api", "graphql", "-F", "query=@-"}, Stdin: strings.NewReader(query), StdinUse: tc.stdinUse}
 			}
 			cleared(t, ghFieldCall(t, call(apart)))
 			reports(t, refusal(t, ghFieldCall(t, call(escaped))).Lines, "the gh call's standard input, GraphQL string 2: "+leakguardtest.PairClass)

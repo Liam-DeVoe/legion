@@ -16,13 +16,14 @@ import (
 // read as the field it is.
 const graphQLQuery = "query"
 
-// ghAPIGraphQL is whether args, a gh call's argv, sends GitHub a GraphQL query: the command
-// `api`, whose endpoint, the first positional argument after it, is GitHub's GraphQL endpoint
-// under any spelling (ghAPIGraphQLEndpoint). A call it finds is what this package's comments call
-// `gh api graphql`. The options before the endpoint are read by ghAPIValueOptions and
-// ghAPIShortValueOptions, so that the value of one (`-X POST`) is not taken for the endpoint, in a
-// short cluster as pflag reads one (`-iX POST`), and past a bare `--` every argument is
-// positional.
+// ghAPIGraphQLEndpoint is whether endpoint, a `gh api` call's endpoint (its first positional
+// argument, readLeaf), is GitHub's GraphQL endpoint, the path /graphql of api.github.com, under
+// whatever spelling the call gives it, read as a server reads a path. An endpoint holding `://` is
+// a whole URL to gh, which sends the request there, so it is parsed as one and its host, in any
+// case and on any port, must be api.github.com; any other endpoint is a path gh appends to the
+// API's. The path is read up to its query or fragment, its percent-escapes decoded and its `.` and
+// `..` segments resolved, and what is left, its slashes trimmed, is `graphql` in any case. A path
+// whose escapes do not decode is none.
 //
 // The endpoint is read by the path it reaches, not by gh's own rule, the exact word `graphql`.
 // That rule is how gh groups the fields: for that word alone it puts `query` and `operationName`
@@ -36,45 +37,6 @@ const graphQLQuery = "query"
 // its query one field among the others, as every query was before literals were read; a call it
 // found that was none would have a REST field named `query` read as a GraphQL document, which
 // leaves out the text outside its literals.
-func ghAPIGraphQL(args []string) bool {
-	if len(args) == 0 || args[0] != "api" {
-		return false
-	}
-	for i := 1; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--":
-			return i+1 < len(args) && ghAPIGraphQLEndpoint(args[i+1])
-		case strings.HasPrefix(arg, "--"):
-			if ghAPIValueOptions[arg] {
-				i++
-			}
-		case len(arg) > 1 && arg[0] == '-':
-			// The first letter of a cluster that takes a value takes the rest of the argument
-			// as it, or the next argument where it is the cluster's last letter.
-			for j := 1; j < len(arg); j++ {
-				if strings.IndexByte(ghAPIShortValueOptions, arg[j]) >= 0 {
-					if j == len(arg)-1 {
-						i++
-					}
-					break
-				}
-			}
-		default:
-			return ghAPIGraphQLEndpoint(arg)
-		}
-	}
-	return false
-}
-
-// ghAPIGraphQLEndpoint is whether endpoint, a `gh api` call's endpoint, is GitHub's GraphQL
-// endpoint, the path /graphql of api.github.com, under whatever spelling the call gives it, read
-// as a server reads a path. An endpoint holding `://` is a whole URL to gh, which sends the
-// request there, so it is parsed as one and its host, in any case and on any port, must be
-// api.github.com; any other endpoint is a path gh appends to the API's. The path is read up to
-// its query or fragment, its percent-escapes decoded and its `.` and `..` segments resolved, and
-// what is left, its slashes trimmed, is `graphql` in any case. A path whose escapes do not decode
-// is none.
 //
 // cmd/legion's ghAPIRESTEndpoint reads the same endpoint for the other question, whether a call
 // is a REST read, and names the same spellings — `/graphql`, `GRAPHQL`, `%67raphql`,
@@ -97,29 +59,10 @@ func ghAPIGraphQLEndpoint(endpoint string) bool {
 	return strings.EqualFold(strings.Trim(path.Clean("/"+decoded), "/"), "graphql")
 }
 
-// ghAPIValueOptions are `gh api`'s long options that take a value written as the argument after
-// them, and ghAPIShortValueOptions the letters of its short ones, in gh 2.98.0's help
-// (cmd/legion/testdata/gh-help/api.txt). Its other options (`--include`, `--paginate`,
-// `--silent`, `--slurp`, `--verbose`, `--allow-escape-sequences`, `--help`) take none, and a long
-// option written `--name=value` holds its own.
-var ghAPIValueOptions = map[string]bool{
-	"--cache":     true,
-	"--field":     true,
-	"--header":    true,
-	"--hostname":  true,
-	"--input":     true,
-	"--jq":        true,
-	"--method":    true,
-	"--preview":   true,
-	"--raw-field": true,
-	"--template":  true,
-}
-
-const ghAPIShortValueOptions = "FHXfpqt"
-
 // graphQLRecords is record read as a GraphQL query: one record for each string literal of its
-// text, decoded, labelled "<record>, GraphQL string <k>" with k counted from 1, and record itself
-// where its text does not lex.
+// text, decoded, labelled "<record>, GraphQL string <k>" with k counted from 1, and true; or
+// false where its text does not lex (graphQLStrings), which its caller reads as written
+// (queryRecords).
 //
 // A query is a document GitHub parses, as a JSON body is (jsonFields). GitHub stores the value of
 // each literal its arguments carry, decoded: the title and the body of a `createIssue` mutation
@@ -129,22 +72,29 @@ const ghAPIShortValueOptions = "FHXfpqt"
 // text of the caller's. So a literal is a record of its own, and the query text is read as no
 // record: the raw text would join the title and the body on one line, and would show a rule the
 // escape rather than the letter. The shared check reads what GitHub stores, one value at a time,
-// for the same reason (dispatch://INFRA-4383, R1).
-//
-// A query with no literal lexes to no record, since GitHub stores nothing of it. A text that does
-// not lex (graphQLStrings) is read as written, as every query was before literals were read: a
-// guard that cannot tell where a literal ends cannot tell which part of the text GitHub would
-// store.
-func graphQLRecords(record Record) []Record {
+// for the same reason (dispatch://INFRA-4383, R1). A query with no literal lexes to no record,
+// since GitHub stores nothing of it.
+func graphQLRecords(record Record) ([]Record, bool) {
 	literals, ok := graphQLStrings(record.Text)
 	if !ok {
-		return []Record{record}
+		return nil, false
 	}
 	records := make([]Record, 0, len(literals))
 	for k, literal := range literals {
 		records = append(records, Record{Label: record.Label + ", GraphQL string " + strconv.Itoa(k+1), Text: literal})
 	}
-	return records
+	return records, true
+}
+
+// queryRecords is record read as a GraphQL query, one literal at a time (graphQLRecords), and
+// record itself where its text does not lex, as every query was read before literals were: a
+// guard that cannot tell where a literal ends cannot tell which part of the text GitHub would
+// store.
+func queryRecords(record Record) []Record {
+	if literals, lexed := graphQLRecords(record); lexed {
+		return literals
+	}
+	return []Record{record}
 }
 
 // graphQLStrings is the decoded value of each string literal of source, a GraphQL document, in

@@ -7,14 +7,14 @@ import (
 )
 
 // ghCheckedOnlyVisibility is the call log's visibility for a call the shared check alone read
-// (leakguard.GhAnswer.CheckedOnly): a call that writes nothing, under the check the rule was
+// (leakguard.GhReadCheckedOnly): a call that writes nothing, under the check the rule was
 // proven against, for which nothing read its repository's visibility. It is neither `github` nor
 // `kept`, and not the empty value of a call the guard read no visibility for because it named no
 // repository.
 const ghCheckedOnlyVisibility = "checked-only"
 
 // ghNoRulesVisibility is the call log's visibility for a call that skipped the private-name step
-// because the deployment names no rule file (leakguard.GhAnswer.NoRules): the shared check read
+// because the deployment names no rule file (leakguard.GhReadNoRules): the shared check read
 // it, and nothing read its repository's visibility, since without a rule there is nothing the
 // visibility would decide. It is neither checked-only, which is a read the shared check alone
 // clears whatever rules are named, nor the empty value of a call that named no repository.
