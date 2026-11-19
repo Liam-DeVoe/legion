@@ -397,6 +397,52 @@ def check_race_fill_packages(packages: list, job: str, problems: list) -> None:
                                                   f"command as the list reads, so the next change to either shows as a difference"))
 
 
+def check_race_fill_scripts(fills: list, problems: list) -> None:
+    """Each (fill job, script, its workdir, its compile call) of `fills` is a ci-caches.yaml job
+    that fills a family whose race step runs a script: the job's steps in that workdir run the
+    script's compile call, exactly as written, and no `go test` with -race of their own. The
+    script holds the package list and -race the race step runs, so the fill and the step cannot
+    name other packages or flags only while the fill reaches them through that script; a race
+    build the fill wrote itself is the copy this rule exists to stop, and nothing fails when it
+    drifts. A line that names the script with any other arguments fails too, naming the line, as
+    does a fill job that is gone or never calls the script.
+
+    The table is an argument, as check_race_fill_packages' list is: main() holds ci_job_reads.py,
+    and nothing here imports it."""
+    if not (REPO / CACHE_WORKFLOW).is_file():
+        return
+    jobs = (load_repository_yaml(REPO / CACHE_WORKFLOW) or {}).get("jobs") or {}
+    for job_id, script, workdir, call in fills:
+        name = script.rsplit("/", 1)[-1]
+        if job_id not in jobs:
+            problems.append(error(CACHE_WORKFLOW, f"this workflow has no job {job_id}, which {TABLE} names as the one "
+                                                  f"that fills the race objects {script} compiles; name the fill job there, "
+                                                  f"or drop the entry with the step it serves"))
+            continue
+        calls = 0
+        for step in (jobs[job_id] or {}).get("steps") or []:
+            if (step or {}).get("working-directory", "") != workdir:
+                continue
+            for line in script_lines(str((step or {}).get("run", ""))):
+                if name in line:
+                    if line == call:
+                        calls += 1
+                    else:
+                        problems.append(error(CACHE_WORKFLOW, f"job {job_id} runs `{line}`, where the fill runs "
+                                                              f"`{call}` and nothing else of {script}: the step that "
+                                                              f"restores this cache runs the script's other mode, so any "
+                                                              f"other call compiles objects the step does not link"))
+                elif RACE_TEST.search(line) and RACE_FLAG.search(line):
+                    problems.append(error(CACHE_WORKFLOW, f"job {job_id} runs `{line}`, a race build of its own: "
+                                                          f"its race objects come from `{call}`, which takes the "
+                                                          f"packages and flags from {script}, so a copy of them here "
+                                                          f"can drift from the step and nothing fails"))
+        if calls != 1:
+            problems.append(error(CACHE_WORKFLOW, f"job {job_id} runs `{call}` {calls} times in {workdir}, where it "
+                                                  f"fills the race objects {script} compiles once: with none the step "
+                                                  f"links them from nothing on every run"))
+
+
 # ---------------------------------------------------------------- the workspaces and the table
 # The root manifest, whose workspaces ci_job_reads.py's WORKSPACES must name one for one, and the
 # file that table is in. Both are named in the errors below, each in the one it is about.

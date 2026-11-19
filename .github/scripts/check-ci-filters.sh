@@ -264,7 +264,13 @@
 #      ./internal/record/ stayed in the fill after the lane dropped it. It fails naming the
 #      package, the job and both lists; that job with no race build at all fails too, and so
 #      does a ci-caches.yaml with no such job, since the lane would then be filled by nobody. A
-#      race build of another job fills another family and is not this rule's.
+#      race build of another job fills another family and is not this rule's. And a fill job
+#      ci_job_reads.py's RACE_FILL_SCRIPTS names whose steps in the script's directory do not run
+#      that script's compile line once and exactly, or that run a `go test` with -race of their
+#      own: such a fill reaches its race step's packages and flags through the script that step
+#      runs (packages/envoy/infra/scripts/race-unit.sh for envoy-infra-go), and a fill that calls
+#      it otherwise or copies its build compiles objects the step does not link, with nothing
+#      failing. It fails naming the job and the line.
 #  17. a gate's filter whose generated block is not exactly the `!` patterns that keep it off
 #      every Go test file it would select and its job does not read, naming the filter, the
 #      first pattern that differs and the command that writes the block; and a `!` pattern of
