@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   type ArchitectureSource,
   type IssueSummary,
@@ -7,6 +7,8 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -14,6 +16,7 @@ import {
   DispatchGatewayError,
   DispatchNoRouteError,
   type DispatchWriteRetry,
+  DispatchWriteUnsettledError,
   forgetKeyedLayerMemory,
   type SearchOptions,
 } from "../dispatch-http";
@@ -126,8 +129,9 @@ describe("DispatchClient", () => {
   });
 
   // A JSON answer that is not a page is Dispatch's own and comes back the same on a retry; text in
-  // its place is most likely a proxy or gateway page, which a retry can get past. The agent acts on
-  // the advice, so each kind gets its own.
+  // its place is most likely a proxy or gateway page, which a retry can get past, and the read
+  // path refuses it before any listing reads it (`#response`). The agent acts on the advice, so
+  // each kind gets its own.
   test("refuses an issue listing answer that is not a page, naming what arrived and whether a retry can help", async () => {
     const { fetchImpl } = fakeFetch([
       jsonResponse({ issues: "DSP-1", total: 1 }),
@@ -149,14 +153,22 @@ describe("DispatchClient", () => {
       ". Retrying will not help: the same request gets the same answer until that Dispatch is " +
       "upgraded or fixed.";
     const maySucceed =
-      "and got text that is not a JSON page, which looks like a proxy or gateway page rather than " +
-      "Dispatch's own answer, so a retry may succeed.";
+      "which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may " +
+      "succeed.";
 
     expect(await refusal()).toEndWith(
       `and got an object without an issues array or a numeric limit or a numeric offset${sameAgain}`
     );
     expect(await refusal()).toEndWith(`and got null${sameAgain}`);
-    for (const text of [await refusal(), await refusal()]) {
+    const html = await refusal();
+    expect(html).toStartWith(
+      'GET http://dispatch.test/api/v1/issues?project=DSP&limit=50&offset=0 answered 200 with a body that is not JSON ("bad gateway")'
+    );
+    const truncated = await refusal();
+    expect(truncated).toStartWith(
+      'GET http://dispatch.test/api/v1/issues?project=DSP&limit=50&offset=0 answered 200 with a body that is not JSON ("{truncat")'
+    );
+    for (const text of [html, truncated]) {
       expect(text).toEndWith(maySucceed);
       expect(text).not.toContain("Retrying will not help");
     }
@@ -739,6 +751,95 @@ describe("DispatchClient", () => {
     expect(notFound).toEqual(expect.objectContaining({ code: "HTTP_404", transient: false }));
   });
 
+  // F5 (the review of 81d860a8f7): a read behind a redirect is told where the redirect pointed,
+  // by origin alone, which is what tells a Dispatch URL to correct. The redirect is not followed,
+  // and the Location's user info, path and query are never printed.
+  test("a read a redirect answers names the origin the redirect points at, and does not follow it", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      new Response("<html><body>Moved</body></html>", {
+        status: 302,
+        statusText: "Found",
+        headers: {
+          "Content-Type": "text/html",
+          Location: "https://user:secret@elsewhere.test:8443/login?token=abc",
+        },
+      }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    const error = await client.getIssueEvents("DSP-1", 4, 10).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (caught: Error) => caught
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.init.redirect).toBe("manual");
+    expect(error).toBeInstanceOf(DispatchGatewayError);
+    expect(error.message).toStartWith(
+      "GET http://dispatch.test/api/v1/issues/DSP-1/events?after=4&limit=10 answered 302 Found " +
+        "(a redirect to https://elsewhere.test:8443, which this client does not follow) with a body " +
+        `that is not Dispatch's error JSON ("Moved")`
+    );
+    expect(error.message).not.toContain("user:");
+    expect(error.message).not.toContain("token=abc");
+    expect(error.message).not.toContain("/login");
+  });
+
+  // Red team 7 and 4 (the review of 4dad905e68): a read's 2xx that is not JSON is a
+  // DispatchGatewayError, with its status, advice that a retry may succeed, and `transient` saying
+  // so too: a portal or a proxy in the way, which a later request can get past, and which never
+  // reached Dispatch. A JSON answer is read whatever the case of its type, and a `+json` type is
+  // JSON; a bodiless 204 is no answer to refuse.
+  test("a read's 2xx that is not JSON is a gateway error a retry may clear; any JSON type and a 204 are read", async () => {
+    const { fetchImpl } = fakeFetch([
+      new Response("<html><title>Sign in to the network</title></html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+      new Response(JSON.stringify([{ id: 5 }]), {
+        status: 200,
+        headers: { "Content-Type": "Application/JSON; charset=utf-8" },
+      }),
+      new Response(JSON.stringify([{ id: 6 }]), {
+        status: 200,
+        headers: { "Content-Type": "application/vnd.dispatch+json" },
+      }),
+      new Response(null, { status: 204 }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    const error = await client.getIssueEvents("DSP-1", 4, 10).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(DispatchGatewayError);
+    const gateway = error as DispatchGatewayError;
+    expect(gateway.status).toBe(200);
+    expect(gateway.advice).toBe("a retry may succeed");
+    expect(gateway.transient).toBe(true);
+    expect(gateway.mayHaveReachedDispatch).toBe(false);
+    expect(gateway.message).toContain(
+      'answered 200 with a body that is not JSON ("Sign in to the network")'
+    );
+
+    const read = async (): Promise<unknown> => await client.getIssueEvents("DSP-1", 4, 10);
+    expect(await read()).toEqual([{ id: 5 }]);
+    expect(await read()).toEqual([{ id: 6 }]);
+    expect(await read()).toBe("");
+  });
+
   // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, so advising
   // a retry there can post a message twice: the write is told to check what took effect. A 408 or
   // 429 is the gateway's own timeout or rate limit, sent before it forwards the request, so the
@@ -775,13 +876,18 @@ describe("DispatchClient", () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
     const page404 = `${request}404 Not Found with a body that is not Dispatch's error JSON ("404 Not Found")`;
 
+    // A 502 can come after Dispatch committed the write, so with no ask left the write ends
+    // unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
     const badGateway = await refusal();
+    expect(badGateway).toBeInstanceOf(DispatchWriteUnsettledError);
     expect(badGateway.message).toBe(
       `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
-        `${gateway}, so the write may or may not have reached Dispatch: check whether it took ` +
-        "effect before retrying it."
+        `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
+        "it may or may not have taken effect: check whether it did before retrying it."
     );
-    expect(badGateway).toEqual(expect.objectContaining({ mayHaveReachedDispatch: true }));
+    expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
+      expect.objectContaining({ mayHaveReachedDispatch: true })
+    );
     for (const [status, statusText] of [
       [408, "Request Timeout"],
       [429, "Too Many Requests"],
@@ -807,7 +913,7 @@ describe("DispatchClient", () => {
   // quoted: the client's own bearer wherever it appears (trimmed, as fetch sends it), and the
   // value after `Authorization:` or `Bearer`. The reason phrase is cut to one line like the body.
   test("redacts the bearer and an Authorization or Bearer value from the excerpt and the reason phrase", async () => {
-    const token = "dsp_live_4f9a2c7e";
+    const token = fixtureSecret("dsp");
     const echo =
       `<html><body><h1>401 Unauthorized</h1><pre>token=${token}\r\n` +
       "Authorization: Basic dXNlcjpwYXNz\r\nX-Forwarded: Bearer other.jwt-value</pre></body></html>";
@@ -863,11 +969,54 @@ describe("DispatchClient", () => {
     }
   });
 
+  // M4 (the review of 99b1e438db): a DPoP token after `Authorization: DPoP` or `DPoP` is redacted
+  // as a bearer's is, and so is the token the request was sent with when the credential names
+  // another by the time the answer comes (a renewal between the two): the excerpt redacts every
+  // token this client presented, not only the one `secret()` names now.
+  test("redacts a DPoP value and the token a request was sent with, after the credential renewed", async () => {
+    const sent = fixtureSecret("sent");
+    const renewed = fixtureSecret("renewed");
+    let presentations = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presentations += 1;
+        return { Authorization: `DPoP ${sent}`, DPoP: "proof" };
+      },
+      // The renewal landed while the request was out: the credential names the next token.
+      secret: () => (presentations === 0 ? sent : renewed),
+    };
+    const echo =
+      `<html><body><h1>502 Bad Gateway</h1><pre>Authorization: DPoP ${sent}\r\n` +
+      `X-Echo: DPoP ${sent.slice(2)}\r\nX-Raw: ${sent}</pre></body></html>`;
+    const { fetchImpl } = fakeFetch([
+      new Response(echo, {
+        status: 502,
+        statusText: "Bad Gateway",
+        headers: { "Content-Type": "text/html" },
+      }),
+    ]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+      retryNoRoute: false,
+    });
+
+    const message = await client.getIssue("DSP-1").then(
+      () => "",
+      (error: Error) => error.message
+    );
+
+    expect(message).toContain(
+      '("502 Bad Gateway Authorization: DPoP [redacted] X-Echo: DPoP [redacted] X-Raw: [redacted]")'
+    );
+    expect(message).not.toContain(sent.slice(-12));
+  });
+
   // A Dispatch URL may carry a user and a password: the config accepts such a URL, and the
   // requests go to it as configured. Every message that names the request or the Dispatch names
-  // the URL without them: a gateway's answer, a refused listing, a write whose answer was lost, a
+  // no part of the URL, only its fixed phrase, since the URL parser can split such a URL otherwise
+  // than its writer meant: a gateway's answer, a refused listing, a write whose answer was lost, a
   // review route the build lacks, and a write whose attempt heard nothing.
-  test("names the Dispatch URL without its user and password in every refusal that names it", async () => {
+  test("names a Dispatch URL with user info by its fixed phrase in every refusal that names it", async () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
     const configured = `https://${user}:${secret}@host.example`;
@@ -928,26 +1077,21 @@ describe("DispatchClient", () => {
       `${configured}/api/v1/issues/DSP-1/messages`,
       `${configured}/api/v1/artifacts/a-1/versions/2/reviews`,
     ]);
-    expect(messages[0]).toStartWith(
-      "GET https://host.example/api/v1/issues/DSP-1 answered 502 Bad Gateway with a body"
-    );
-    expect(messages[1]).toStartWith(
-      "GET https://host.example/api/v1/issues?limit=2&offset=0 asked for a page"
-    );
+    const shown = `the configured Dispatch URL ${URL_NOT_PRINTED}`;
+    expect(messages[0]).toStartWith(`GET ${shown} answered 502 Bad Gateway with a body`);
+    expect(messages[1]).toStartWith(`GET ${shown} asked for a page`);
     expect(messages[2]).toBe(
-      "GET https://host.example/api/v1/issues asked for the unpaged listing and got a page, so " +
+      `GET ${shown} asked for the unpaged listing and got a page, so ` +
         "this Dispatch pages a request that carries no limit and no offset."
     );
-    expect(messages[3]).toStartWith(
-      "POST https://host.example/api/v1/issues/DSP-1/messages was made, but its answer was lost"
-    );
+    expect(messages[3]).toStartWith(`POST ${shown} was made, but its answer was lost`);
     expect(messages[4]).toStartWith(
-      "Dispatch at https://host.example answered no route for " +
+      `Dispatch at ${shown} answered no route for ` +
         "POST /api/v1/artifacts/a-1/versions/2/reviews each time the review was sent"
     );
-    expect(messages[4]).toContain("GET https://host.example/healthz names the commit");
+    expect(messages[4]).toContain("GET /healthz on that server names the commit");
     expect(messages[5]).toBe(
-      "POST https://host.example/api/v1/issues/DSP-1/messages made no progress for 0.02 s, so it " +
+      `POST ${shown} made no progress for 0.02 s, so it ` +
         "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
         "so it may or may not have taken effect: check whether it did before retrying it."
     );
@@ -1610,20 +1754,25 @@ describe("syncArchitectureSources against a server older than the every-source s
 });
 
 // Dispatch answers 429 OVERLOADED or EDIT_QUEUE_FULL before a request runs, and 503 DATABASE_BUSY
-// or REQUEST_TIMEOUT when a read could not get a connection or passed its deadline, each with
-// Retry-After. The client waits that out (plus jitter) and asks again, at most twice and never past
-// its 60 s deadline; a write's 503 may have committed, so it is never repeated.
+// or REQUEST_TIMEOUT when a bound of its own ended a call before the database answered it or a read
+// passed its deadline, each with Retry-After. A read waits that out (plus jitter) and asks again, at
+// most twice and never past the client's deadline; a PUT or a DELETE waits out the two 429s alone.
+// A write (POST, PATCH) is asked again by its own loop under its one key (`#write`, whose table,
+// write-outcome.ts, reads a 429 as `try-later` and a 5xx as `server-error`), on its own pacing or
+// the longer Retry-After.
 describe("DispatchClient waits out Retry-After", () => {
-  // The client reads its deadline and waits out `Retry-After` on the write retry's own clock and
-  // timer, so here a wait moves `at` instead of sleeping. A write's own retries under its key are
-  // another mechanism (dispatch-keyed-writes.test.ts), which `pausesMs: []` leaves out: each
-  // attempt below is one send, so what the rows count is the wait-out alone.
+  // What a Dispatch runs is remembered per process and origin, and these rows drive one origin as
+  // Dispatches of their own.
+  beforeEach(forgetKeyedLayerMemory);
+  afterEach(forgetKeyedLayerMemory);
+
+  // The client waits out `Retry-After`, and paces a write's asking, on the write retry's own clock
+  // and timer, so here a wait moves `at` instead of sleeping. The schedule is the write's default
+  // (1, 2, 4 and 8 s, none starting past 30 s), which a read's wait-out does not read.
   function fakeClock() {
     const state = { at: 0, waits: [] as number[] };
     const writeRetry: DispatchWriteRetry = {
       ...DISPATCH_WRITE_RETRY,
-      pausesMs: [],
-      withinMs: 0,
       now: () => state.at,
       pause: async (ms) => {
         state.waits.push(ms);
@@ -1633,20 +1782,80 @@ describe("DispatchClient waits out Retry-After", () => {
     return { state, writeRetry };
   }
 
-  function retryClient(fetchImpl: typeof fetch, writeRetry: DispatchWriteRetry): DispatchClient {
+  function retryClient(
+    fetchImpl: typeof fetch,
+    writeRetry: DispatchWriteRetry,
+    deadlineMs?: number
+  ): DispatchClient {
     return new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
       writeRetry,
+      deadlineMs,
     });
   }
 
-  function refusal(status: number, code: string, retryAfter?: string): Response {
+  /** Dispatch's refusal `code`, with `retryAfter` as its Retry-After and `key` carried back as its
+   *  keyed layer carries a write's key, where given. */
+  function refusal(status: number, code: string, retryAfter?: string, key?: string): Response {
     return new Response(JSON.stringify({ error: "busy", code }), {
       status,
       headers: {
         "Content-Type": "application/json",
         ...(retryAfter === undefined ? {} : { "Retry-After": retryAfter }),
+        ...(key === undefined ? {} : { "Idempotency-Key": key }),
       },
     });
+  }
+
+  const posted = { id: "message-1", issue_key: "DSP-1" };
+
+  /** The 201 Dispatch's keyed layer answers a write with, its key carried back. */
+  function created(key: string): Response {
+    return new Response(JSON.stringify(posted), {
+      status: 201,
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+    });
+  }
+
+  /** A connection reset once the request went out: the attempt may have reached Dispatch. */
+  function reset(): Response {
+    throw Object.assign(new TypeError("The socket connection was closed"), {
+      code: "ECONNRESET",
+    });
+  }
+
+  /** Each request's Idempotency-Key, undefined for one that carries none. */
+  const keysOf = (requests: readonly RecordedRequest[]) =>
+    requests.map(
+      (request) => (request.init.headers as Record<string, string | undefined>)["Idempotency-Key"]
+    );
+
+  /**
+   * A Dispatch whose every answer to the write is made from the key the request carries (an
+   * answer that throws is a failed fetch), and whose `/healthz` says `runsKeyedLayer` of its keyed
+   * layer. `requests` holds the write's sends alone.
+   */
+  function keyedDispatch(answers: readonly ((key: string) => Response)[], runsKeyedLayer: boolean) {
+    const requests: RecordedRequest[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (String(input).endsWith("/healthz")) {
+        return jsonResponse({ idempotency_keys: runsKeyedLayer });
+      }
+      requests.push({ url: String(input), init: init ?? {} });
+      const answer = answers[requests.length - 1];
+      if (answer === undefined) throw new Error("unexpected request");
+      return answer((init?.headers as Record<string, string>)["Idempotency-Key"] ?? "");
+    }) as typeof fetch;
+    return { fetchImpl, requests };
+  }
+
+  /** What `call` threw, which must be `DispatchWriteUnsettledError`. */
+  async function unsettled(call: Promise<unknown>): Promise<DispatchWriteUnsettledError> {
+    const error = await call.then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    return error as DispatchWriteUnsettledError;
   }
 
   test.each([
@@ -1667,10 +1876,54 @@ describe("DispatchClient waits out Retry-After", () => {
   });
 
   test.each([
+    ["PUT", "OVERLOADED"],
+    ["PUT", "EDIT_QUEUE_FULL"],
+    ["DELETE", "OVERLOADED"],
+    ["DELETE", "EDIT_QUEUE_FULL"],
+  ] as const)("a %s answered 429 %s is sent again after its Retry-After", async (method, code) => {
+    const { fetchImpl, requests } = fakeFetch([
+      refusal(429, code, "2"),
+      new Response(null, { status: 204 }),
+    ]);
+    const { state, writeRetry } = fakeClock();
+    const client = retryClient(fetchImpl, writeRetry);
+
+    await (method === "PUT"
+      ? client.followAsk("ask-1", "session-1", actor)
+      : client.unfollowAsk("ask-1", "session-1", actor));
+
+    expect(requests.map((request) => request.init.method)).toEqual([method, method]);
+    expect(keysOf(requests)).toEqual([undefined, undefined]);
+    expect(state.waits).toHaveLength(1);
+    expect(state.waits[0]).toBeGreaterThanOrEqual(2_000);
+    expect(state.waits[0]).toBeLessThanOrEqual(2_250);
+  });
+
+  // A PUT or a DELETE carries no key, and a 503 can come after an earlier statement of a write
+  // committed, so it comes back to its caller at once.
+  test.each([
+    ["PUT", "DATABASE_BUSY"],
+    ["DELETE", "REQUEST_TIMEOUT"],
+  ] as const)("a %s answered 503 %s comes back at once", async (method, code) => {
+    const { fetchImpl, requests } = fakeFetch([refusal(503, code, "1")]);
+    const { state, writeRetry } = fakeClock();
+    const client = retryClient(fetchImpl, writeRetry);
+
+    await expect(
+      method === "PUT"
+        ? client.followAsk("ask-1", "session-1", actor)
+        : client.unfollowAsk("ask-1", "session-1", actor)
+    ).rejects.toMatchObject({ name: "DispatchServiceError", code, status: 503, message: "busy" });
+    expect(requests).toHaveLength(1);
+    expect(state.waits).toEqual([]);
+  });
+
+  // A write's 429 is `try-later` in its table: nothing of the write ran, so it is asked again
+  // under its one key, after the longer of its schedule's pause (1 s first) and the Retry-After.
+  test.each([
     "OVERLOADED",
     "EDIT_QUEUE_FULL",
-  ])("a POST answered 429 %s is sent again after its Retry-After", async (code) => {
-    const posted = { id: "message-1", issue_key: "DSP-1" };
+  ])("a POST answered 429 %s is sent again under its key after its Retry-After", async (code) => {
     const { fetchImpl, requests } = fakeFetch([refusal(429, code, "3"), jsonResponse(posted)]);
     const { state, writeRetry } = fakeClock();
     const client = retryClient(fetchImpl, writeRetry);
@@ -1684,9 +1937,10 @@ describe("DispatchClient waits out Retry-After", () => {
       { body: "Shipped.", actor },
       { body: "Shipped.", actor },
     ]);
-    expect(state.waits).toHaveLength(1);
-    expect(state.waits[0]).toBeGreaterThanOrEqual(3_000);
-    expect(state.waits[0]).toBeLessThanOrEqual(3_250);
+    const keys = keysOf(requests);
+    expect(keys[0]).toBeString();
+    expect(keys).toEqual([keys[0], keys[0]]);
+    expect(state.waits).toEqual([3_000]);
   });
 
   // One call is one intent, so every send of it carries the one key: the caller's own, where it
@@ -1715,31 +1969,116 @@ describe("DispatchClient waits out Retry-After", () => {
       id: "message-1",
     });
 
-    const keys = requests.map(
-      (request) => (request.init.headers as Record<string, string>)["Idempotency-Key"]
-    );
+    const keys = keysOf(requests);
     expect(keys.slice(0, 2)).toEqual([callerKey, callerKey]);
     expect(keys[2]).toBeString();
     expect(keys[3]).toBe(keys[2]);
     expect(keys[2]).not.toBe(callerKey);
   });
 
+  // Dispatch sends each of these to a write before the write's COMMIT: admission's 429 OVERLOADED
+  // before its keyed layer runs (no key back), the writer gate's 429 EDIT_QUEUE_FULL and a busy
+  // bound's 503 DATABASE_BUSY from inside that layer (the key back), a busy bound's 503 before it
+  // (no key back), and 503 REQUEST_TIMEOUT, which it sends only to a read, read as any 5xx. The
+  // write is asked again under its one key after the Retry-After and returns the 2xx, whether that
+  // answer was the first (`nothing-sent`) or came after an attempt that may have landed
+  // (`may-have-landed`: a connection reset once the request went out). From there it asks only a
+  // Dispatch that runs the keyed layer, as the echo or `/healthz` says.
   test.each([
-    "DATABASE_BUSY",
-    "REQUEST_TIMEOUT",
-  ])("a POST answered 503 %s is not sent again, since it may have committed", async (code) => {
-    const { fetchImpl, requests } = fakeFetch([refusal(503, code, "1")]);
+    [429, "OVERLOADED", false, "nothing-sent"],
+    [429, "OVERLOADED", false, "may-have-landed"],
+    [429, "EDIT_QUEUE_FULL", true, "nothing-sent"],
+    [429, "EDIT_QUEUE_FULL", true, "may-have-landed"],
+    [503, "DATABASE_BUSY", true, "nothing-sent"],
+    [503, "DATABASE_BUSY", true, "may-have-landed"],
+    [503, "DATABASE_BUSY", false, "nothing-sent"],
+    [503, "DATABASE_BUSY", false, "may-have-landed"],
+    [503, "REQUEST_TIMEOUT", true, "nothing-sent"],
+    [503, "REQUEST_TIMEOUT", true, "may-have-landed"],
+  ] as const)("a POST answered %d %s (key back: %p) from %s is asked again under its key and returns the 2xx", async (status, code, echoed, from) => {
+    const { fetchImpl, requests } = keyedDispatch(
+      [
+        ...(from === "may-have-landed" ? [reset] : []),
+        (key) => refusal(status, code, "5", echoed ? key : undefined),
+        created,
+      ],
+      true
+    );
     const { state, writeRetry } = fakeClock();
     const client = retryClient(fetchImpl, writeRetry);
 
-    await expect(client.message("DSP-1", { body: "Shipped.", actor })).rejects.toMatchObject({
-      name: "DispatchServiceError",
-      code,
-      status: 503,
-      message: "busy",
-    });
+    await expect(client.message("DSP-1", { body: "Shipped.", actor })).resolves.toMatchObject(
+      posted
+    );
+
+    const keys = keysOf(requests);
+    expect(keys).toHaveLength(from === "nothing-sent" ? 2 : 3);
+    expect(keys[0]).toBeString();
+    expect(new Set(keys).size).toBe(1);
+    expect(state.waits.at(-1)).toBe(5_000);
+  });
+
+  // A write's 503 can come after an earlier statement of it committed, its key's claim among them,
+  // so its table reads it as `server-error` (`may-have-landed`): a Dispatch not known to run the
+  // keyed layer, which would run a repeat as a second write, is not sent it again, and the write
+  // ends unsettled, carrying its key.
+  test.each([
+    "DATABASE_BUSY",
+    "REQUEST_TIMEOUT",
+  ])("a POST answered 503 %s is not sent again to a Dispatch not known to run the keyed layer", async (code) => {
+    const { fetchImpl, requests } = keyedDispatch([() => refusal(503, code, "1")], false);
+    const { state, writeRetry } = fakeClock();
+    const client = retryClient(fetchImpl, writeRetry);
+
+    const error = await unsettled(client.message("DSP-1", { body: "Shipped.", actor }));
+
     expect(requests).toHaveLength(1);
+    expect(error.key).toBe(keysOf(requests)[0] ?? "");
+    expect(error.last).toMatchObject({ name: "DispatchServiceError", code, status: 503 });
     expect(state.waits).toEqual([]);
+  });
+
+  // Dispatch answers `500 COMMIT_OUTCOME_UNKNOWN` when it sent the write's COMMIT and heard nothing
+  // back, so the write may have landed. Its table reads it as `server-error`, which moves the write
+  // to `may-have-landed`, so it is never asked again as if nothing ran: a Dispatch not known to run
+  // the keyed layer is not sent it again at all, where its 429 is; one that runs it gets every
+  // repeat under the one key, which it answers from what the key holds; and with no ask left the
+  // write ends `DispatchWriteUnsettledError`, carrying that key.
+  test("a POST answered 500 COMMIT_OUTCOME_UNKNOWN is never asked again as if nothing ran", async () => {
+    const unknown = (key?: string) => refusal(500, "COMMIT_OUTCOME_UNKNOWN", undefined, key);
+    const message = (client: DispatchClient) =>
+      client.message("DSP-1", { body: "Shipped.", actor });
+
+    const bare = keyedDispatch([() => unknown()], false);
+    const bareClock = fakeClock();
+    const bareEnd = await unsettled(message(retryClient(bare.fetchImpl, bareClock.writeRetry)));
+    expect(bare.requests).toHaveLength(1);
+    expect(bareEnd.key).toBe(keysOf(bare.requests)[0] ?? "");
+    expect(bareEnd.last).toMatchObject({ code: "COMMIT_OUTCOME_UNKNOWN", status: 500 });
+    expect(bareClock.state.waits).toEqual([]);
+
+    const busy = keyedDispatch(
+      [() => refusal(429, "OVERLOADED", "1"), () => jsonResponse(posted, 201)],
+      false
+    );
+    await expect(
+      message(retryClient(busy.fetchImpl, fakeClock().writeRetry))
+    ).resolves.toMatchObject(posted);
+    expect(busy.requests).toHaveLength(2);
+
+    const keyed = keyedDispatch(
+      Array.from({ length: 5 }, () => unknown),
+      true
+    );
+    const keyedClock = fakeClock();
+    const keyedEnd = await unsettled(message(retryClient(keyed.fetchImpl, keyedClock.writeRetry)));
+    const keys = keysOf(keyed.requests);
+    expect(keys).toHaveLength(5);
+    expect(new Set(keys).size).toBe(1);
+    expect(keyedEnd.key).toBe(keys[0] ?? "");
+    expect(keyedEnd.attempts).toBe(5);
+    expect(keyedEnd.last).toMatchObject({ code: "COMMIT_OUTCOME_UNKNOWN", status: 500 });
+    expect(keyedClock.state.waits).toEqual([1_000, 2_000, 4_000, 8_000]);
   });
 
   test("answers any other refusal at once, as before", async () => {
@@ -1762,23 +2101,46 @@ describe("DispatchClient waits out Retry-After", () => {
     }
   });
 
+  // The deadline is the client's (`deadlineMs`), on the monotonic clock, which the fake clock does
+  // not move, so these rows give the client a short one rather than moving the clock.
   test("starts no retry whose wait would pass the deadline", async () => {
     const late = fakeFetch([refusal(503, "DATABASE_BUSY", "1")]);
     const lateClock = fakeClock();
-    const lateClient = retryClient(late.fetchImpl, lateClock.writeRetry);
-    lateClock.state.at = 59_500;
+    const lateClient = retryClient(late.fetchImpl, lateClock.writeRetry, 1_000);
 
     await expect(lateClient.getIssue("DSP-1")).rejects.toMatchObject({
       code: "DATABASE_BUSY",
       status: 503,
       message:
         "busy; Dispatch refused 1 attempt with 503 DATABASE_BUSY, and waiting the 1 s it asks " +
-        "for (Retry-After) would pass this call's 60 s deadline, so wait 1 s and try again",
+        "for (Retry-After) would pass the client's deadline, so wait 1 s and try again",
     });
     expect(late.requests).toHaveLength(1);
     expect(lateClock.state.waits).toEqual([]);
 
-    // The first 30 s wait fits; the second would end past the 60 s deadline, so it never starts.
+    // The first 1 s wait fits in a 10 s deadline; the 30 s the second asks for would not.
+    const { fetchImpl, requests } = fakeFetch([
+      refusal(429, "OVERLOADED", "1"),
+      refusal(429, "OVERLOADED", "30"),
+    ]);
+    const { state, writeRetry } = fakeClock();
+    const client = retryClient(fetchImpl, writeRetry, 10_000);
+
+    await expect(client.getIssue("DSP-1")).rejects.toMatchObject({
+      code: "OVERLOADED",
+      status: 429,
+      message:
+        "busy; Dispatch refused 2 attempts with 429 OVERLOADED, and waiting the 30 s it asks " +
+        "for (Retry-After) would pass the client's deadline, so wait 30 s and try again",
+    });
+    expect(requests).toHaveLength(2);
+    expect(state.waits).toHaveLength(1);
+  });
+
+  // A write's asking has a bound of its own: no retry starts past `withinMs` (30 s) from its first
+  // attempt. The first 30 s wait ends on that bound; the second would end past it, so it never
+  // starts, and the write ends with the refusal as Dispatch wrote it, since nothing of it ran.
+  test("a write starts no retry past its own bound, and ends with Dispatch's refusal", async () => {
     const { fetchImpl, requests } = fakeFetch([
       refusal(429, "OVERLOADED", "30"),
       refusal(429, "OVERLOADED", "30"),
@@ -1787,19 +2149,48 @@ describe("DispatchClient waits out Retry-After", () => {
     const client = retryClient(fetchImpl, writeRetry);
 
     await expect(client.message("DSP-1", { body: "Shipped.", actor })).rejects.toMatchObject({
+      name: "DispatchServiceError",
       code: "OVERLOADED",
       status: 429,
-      message:
-        "busy; Dispatch refused 2 attempts with 429 OVERLOADED, and waiting the 30 s it asks " +
-        "for (Retry-After) would pass this call's 60 s deadline, so wait 30 s and try again",
+      message: "busy",
     });
     expect(requests).toHaveLength(2);
-    expect(state.waits).toHaveLength(1);
+    expect(state.waits).toEqual([30_000]);
   });
 
   test("gives up after two retries, its advice naming the wait and the attempts", async () => {
     // No Retry-After, and one that is not whole seconds, both wait the default 1 s.
     const { fetchImpl, requests } = fakeFetch([
+      refusal(429, "OVERLOADED"),
+      refusal(429, "OVERLOADED", "soon"),
+      refusal(429, "OVERLOADED"),
+    ]);
+    const { state, writeRetry } = fakeClock();
+    const client = retryClient(fetchImpl, writeRetry);
+
+    await expect(client.getIssue("DSP-1")).rejects.toMatchObject({
+      name: "DispatchServiceError",
+      code: "OVERLOADED",
+      status: 429,
+      message:
+        "busy; Dispatch refused 3 attempts with 429 OVERLOADED, waiting out its Retry-After " +
+        "between them, so wait 1 s (Retry-After) and try again",
+    });
+    expect(requests).toHaveLength(3);
+    expect(state.waits).toHaveLength(2);
+    for (const wait of state.waits) {
+      expect(wait).toBeGreaterThanOrEqual(1_000);
+      expect(wait).toBeLessThanOrEqual(1_250);
+    }
+  });
+
+  // A write keeps its own schedule (1, 2, 4 and 8 s apart, five attempts) under its one key, a
+  // Retry-After that is missing or not whole seconds leaving the schedule's pause as it is, and
+  // with no ask left it ends with the refusal as Dispatch wrote it, since nothing of it ran.
+  test("a write refused on every attempt asks five times under its key, then ends with the refusal", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      refusal(429, "EDIT_QUEUE_FULL"),
+      refusal(429, "EDIT_QUEUE_FULL", "soon"),
       refusal(429, "EDIT_QUEUE_FULL"),
       refusal(429, "EDIT_QUEUE_FULL", "soon"),
       refusal(429, "EDIT_QUEUE_FULL"),
@@ -1813,22 +2204,20 @@ describe("DispatchClient waits out Retry-After", () => {
       name: "DispatchServiceError",
       code: "EDIT_QUEUE_FULL",
       status: 429,
-      message:
-        "busy; Dispatch refused 3 attempts with 429 EDIT_QUEUE_FULL, waiting out its Retry-After " +
-        "between them, so wait 1 s (Retry-After) and try again",
+      message: "busy",
     });
-    expect(requests).toHaveLength(3);
-    expect(state.waits).toHaveLength(2);
-    for (const wait of state.waits) {
-      expect(wait).toBeGreaterThanOrEqual(1_000);
-      expect(wait).toBeLessThanOrEqual(1_250);
-    }
+    const keys = keysOf(requests);
+    expect(keys).toHaveLength(5);
+    expect(keys[0]).toBeString();
+    expect(new Set(keys).size).toBe(1);
+    expect(state.waits).toEqual([1_000, 2_000, 4_000, 8_000]);
   });
 
-  // An attempt cut off for silence may still be running in Dispatch, and the 429 was answered
-  // before its keyed layer claimed the key, so the repeat carries the key that attempt carried:
-  // Dispatch answers it `409 KEY_IN_FLIGHT` and the call collects that run's answer
-  // (dispatch-keyed-writes.test.ts), where a new key could run the write a second time.
+  // An attempt cut off for silence may still be running in Dispatch, so the repeat carries the key
+  // that attempt carried: Dispatch answers it `409 KEY_IN_FLIGHT` and the call collects that run's
+  // answer (dispatch-keyed-writes.test.ts), where a new key could run the write a second time. The
+  // 429 after it was answered before the keyed layer ran, so it carries no key back, and the
+  // client asks `/healthz` before it asks again; the 201 the keyed layer answers carries it.
   test("repeats a write cut off for silence under the key its first attempt carried", async () => {
     // An answer that never comes: the request waits until its signal aborts, then fails with its
     // reason, as fetch does, which is how `#attempt`'s silence cut ends it.
@@ -1837,25 +2226,29 @@ describe("DispatchClient waits out Retry-After", () => {
       signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
       return promise;
     };
-    const posted = { id: "message-1", issue_key: "DSP-1" };
-    const answers: ((signal: AbortSignal | null | undefined) => Response | Promise<Response>)[] = [
+    const answers: ((
+      signal: AbortSignal | null | undefined,
+      key: string
+    ) => Response | Promise<Response>)[] = [
       hang,
       () => refusal(429, "OVERLOADED", "1"),
-      () => jsonResponse(posted),
+      (_signal, key) => created(key),
     ];
     const keys: (string | undefined)[] = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       // A silence cut is no answer at all, so the client asks `/healthz` whether this Dispatch
       // runs the keyed layer before it asks again under the key.
       if (String(input).endsWith("/healthz")) return jsonResponse({ idempotency_keys: true });
-      keys.push((init?.headers as Record<string, string>)["Idempotency-Key"]);
+      const key = (init?.headers as Record<string, string>)["Idempotency-Key"];
+      keys.push(key);
       const answer = answers[keys.length - 1];
       if (answer === undefined) throw new Error("unexpected request");
-      return answer(init?.signal);
+      return answer(init?.signal, key ?? "");
     }) as typeof fetch;
     const { state, writeRetry } = fakeClock();
-    // One ask under the key, and a silence bound short enough to cut the first attempt at once:
-    // that bound runs on a real timer, unlike the waits, which only move the fake clock.
+    // One ask under the key on the schedule, and a silence bound short enough to cut the first
+    // attempt at once: that bound runs on a real timer, unlike the waits, which only move the fake
+    // clock.
     const client = retryClient(fetchImpl, {
       ...writeRetry,
       pausesMs: [1_000],
@@ -1866,15 +2259,13 @@ describe("DispatchClient waits out Retry-After", () => {
     await expect(client.message("DSP-1", { body: "Shipped.", actor })).resolves.toMatchObject(
       posted
     );
-    // What a Dispatch runs is remembered per process and origin; the tests around this one drive
-    // the same origin as a Dispatch of their own.
-    forgetKeyedLayerMemory();
 
     expect(keys).toHaveLength(3);
     expect(keys[0]).toBeString();
     expect(new Set(keys).size).toBe(1);
-    // The ask under the key after the cut, then the wait-out before the third attempt.
-    expect(state.waits).toHaveLength(2);
+    // The schedule's 1 s after the cut, then the in-flight pause of 3 s, longer than the 429's
+    // Retry-After, since Dispatch may still be running the cut attempt.
+    expect(state.waits).toEqual([1_000, 3_000]);
   });
 });
 
@@ -2014,23 +2405,30 @@ describe("a broker token Dispatch says is not live", () => {
 
   /**
    * A credential like the broker's: each presentation carries the token it holds now, and
-   * `stale`, which records what it was told, moves it to the next of `tokens`. `refusal`, where
-   * given, is what a presentation after `stale` throws, as a trade the broker refuses does.
+   * `stale`, which records what it was told (the session and the presentation it names), moves it
+   * to the next of `tokens`. `refusal`, where given, is what a presentation after `stale` throws,
+   * as a trade the broker refuses does. `headers` keeps every object it answered, so a row can
+   * check that `stale` names the very presentation the dead token went out in.
    */
   function brokered(tokens: readonly string[], refusal?: Error) {
     const stales: (string | undefined)[] = [];
+    const told: (Readonly<Record<string, string>> | undefined)[] = [];
+    const answered: Readonly<Record<string, string>>[] = [];
     const credential: RequestCredential = {
       scheme: "DPoP",
       headers: () => {
         if (refusal !== undefined && stales.length > 0) throw refusal;
-        return { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+        const headers = { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+        answered.push(headers);
+        return headers;
       },
-      stale: (session) => {
+      stale: (session, presented) => {
         stales.push(session);
+        told.push(presented);
       },
       secret: () => tokens[stales.length] ?? "",
     };
-    return { credential, stales };
+    return { credential, stales, told, answered };
   }
 
   /** What each request presented, in order. */
@@ -2040,21 +2438,26 @@ describe("a broker token Dispatch says is not live", () => {
   test("a read is sent once more with a fresh token", async () => {
     const listed = [{ key: "DSP-1", title: "DSP-1", status: "todo" }];
     const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse(listed)]);
-    const { credential, stales } = brokered(["dead", "fresh"]);
+    const { credential, stales, told, answered } = brokered(["dead", "fresh"]);
     const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
 
     expect(await client.listAllIssues({})).toEqual(listed as unknown as IssueSummary[]);
     expect(stales).toEqual([undefined]);
+    // The credential is told which presentation was dead: the first `headers` answer itself.
+    expect(told).toHaveLength(1);
+    expect(told[0]).toBe(answered[0] as Readonly<Record<string, string>>);
     expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
   });
 
   test("a write is sent once more with a fresh token, under the same Idempotency-Key", async () => {
     const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse({ id: "message-1" }, 201)]);
-    const { credential, stales } = brokered(["dead", "fresh"]);
+    const { credential, stales, told, answered } = brokered(["dead", "fresh"]);
     const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
 
     await client.message("DSP-1", { body: "Shipped.", actor });
     expect(stales).toEqual([undefined]);
+    expect(told).toHaveLength(1);
+    expect(told[0]).toBe(answered[0] as Readonly<Record<string, string>>);
     expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
     const keys = requests.map(
       (request) => (request.init.headers as Record<string, string>)["Idempotency-Key"]
@@ -2142,10 +2545,11 @@ describe("a broker token Dispatch says is not live", () => {
     }
   });
 
-  // The two ways one call sends its request again meet in `#send`: a token that is not live is
-  // traded afresh, and an answer to wait out is asked again after its `Retry-After`. Every send
-  // of a write carries the call's one key whichever of the two repeated it, and the credential
-  // is told once a call, so a token that is not live again after the wait is the call's answer.
+  // The two ways one call sends its request again meet in each path's own loop: a token that is
+  // not live is traded afresh once a call, and an answer to wait out is asked again after its
+  // `Retry-After`. A write's are its table's (`dead-token`, then `try-later` on the write's
+  // pacing): every send carries the call's one key whichever of the two repeated it, and a token
+  // that is not live again after the wait is the call's answer.
   test("a write that meets a dead token and an overload keeps one Idempotency-Key", async () => {
     const overloaded = () =>
       new Response(JSON.stringify({ error: "busy", code: "OVERLOADED" }), {
@@ -2155,8 +2559,6 @@ describe("a broker token Dispatch says is not live", () => {
     const waits: number[] = [];
     const writeRetry: DispatchWriteRetry = {
       ...DISPATCH_WRITE_RETRY,
-      pausesMs: [],
-      withinMs: 0,
       now: () => 0,
       pause: async (ms) => {
         waits.push(ms);
@@ -2191,5 +2593,45 @@ describe("a broker token Dispatch says is not live", () => {
     );
     expect(refusedKeys[0]).toBeString();
     expect(refusedKeys).toEqual([refusedKeys[0], refusedKeys[0], refusedKeys[0]]);
+  });
+
+  // A read's are `#send`'s: the credential is told once a `#send`, whichever of its sends drew the
+  // dead token, and the wait-out counts its attempts apart from that resend.
+  test("a read that meets a dead token and an overload tells the credential once", async () => {
+    const overloaded = () =>
+      new Response(JSON.stringify({ error: "busy", code: "OVERLOADED" }), {
+        status: 429,
+        headers: { "Content-Type": "application/json", "Retry-After": "1" },
+      });
+    const waits: number[] = [];
+    const writeRetry: DispatchWriteRetry = {
+      ...DISPATCH_WRITE_RETRY,
+      pause: async (ms) => {
+        waits.push(ms);
+      },
+    };
+    const issue = { key: "DSP-1", title: "Issue" };
+
+    const sent = fakeFetch([notLive(), overloaded(), jsonResponse(issue)]);
+    const traded = brokered(["dead", "fresh"]);
+    await expect(
+      new DispatchClient("http://dispatch.test", traded.credential, sent.fetchImpl, {
+        writeRetry,
+      }).getIssue("DSP-1")
+    ).resolves.toMatchObject(issue);
+    expect(traded.stales).toEqual([undefined]);
+    expect(presented(sent.requests)).toEqual(["DPoP dead", "DPoP fresh", "DPoP fresh"]);
+    expect(waits).toHaveLength(1);
+
+    const refused = fakeFetch([overloaded(), notLive(), notLive()]);
+    const dead = brokered(["dead", "also-dead"]);
+    await expect(
+      new DispatchClient("http://dispatch.test", dead.credential, refused.fetchImpl, {
+        writeRetry,
+      }).getIssue("DSP-1")
+    ).rejects.toMatchObject({ status: 401, code: "BROKER_TOKEN_NOT_ACTIVE" });
+    expect(dead.stales).toHaveLength(1);
+    expect(presented(refused.requests)).toEqual(["DPoP dead", "DPoP dead", "DPoP also-dead"]);
+    expect(waits).toHaveLength(2);
   });
 });
