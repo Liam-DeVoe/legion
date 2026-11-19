@@ -481,6 +481,73 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 	waitForPublished(t, time.Second, database, counter, event)
 }
 
+// standbyTakesWithin is the take-over a killed publisher gets: a standby takes the publisher hold
+// within six seconds of the kill.
+const standbyTakesWithin = 6 * time.Second
+
+// A publisher killed at the moment of a renewal is replaced by a standby within six seconds of the
+// kill, on the database's clock. The kill falls at the worst moment a renewal leaves: the dead
+// holder's row carries an expiry of the database's now() plus the hold's TTL, which is what its last
+// renewal writes, and nothing renews it again. The standby, started then, arms its timer to the
+// lapse and takes the hold. A trigger on duty_holds records the take's own now(), the moment the
+// row first names another holder, so the reading is the database's and not this test's poll.
+func TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		create table hold_takes (holder uuid not null, taken_at timestamptz not null);
+		create function record_hold_take() returns trigger language plpgsql as $$
+		begin
+			insert into hold_takes (holder, taken_at) values (new.holder, now());
+			return null;
+		end $$;
+		create trigger record_hold_take after update on duty_holds for each row
+			when (old.holder is distinct from new.holder) execute function record_hold_take();
+	`); err != nil {
+		t.Fatalf("record each take of the hold: %v", err)
+	}
+	dead := uuid.New()
+	var killed time.Time
+	if err := database.Pool.QueryRow(ctx, `
+		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + make_interval(secs => $3))
+		returning now()
+	`, publisherHold, dead, publisherHoldOptions.TTL.Seconds()).Scan(&killed); err != nil {
+		t.Fatalf("leave the row of a holder killed at its renewal: %v", err)
+	}
+
+	standby := New(Deps{Store: database, Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: database.Pool.Listener})
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { standby.Run(runCtx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	waitFor(t, outboxHangGuard, "the standby taking the publisher hold", standby.Publishing)
+
+	rows, err := database.Pool.Query(ctx, `select holder, taken_at from hold_takes order by taken_at`)
+	if err != nil {
+		t.Fatalf("read the takes of the hold: %v", err)
+	}
+	type take struct {
+		holder uuid.UUID
+		at     time.Time
+	}
+	takes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (take, error) {
+		var each take
+		return each, row.Scan(&each.holder, &each.at)
+	})
+	if err != nil {
+		t.Fatalf("read the takes of the hold: %v", err)
+	}
+	if len(takes) != 1 || takes[0].holder != standby.instance {
+		t.Fatalf("the hold was taken %v, want once, by the standby %s", takes, standby.instance)
+	}
+	after := takes[0].at.Sub(killed)
+	t.Logf("the standby took the publisher hold %v after the kill, on the database's clock", after)
+	if after > standbyTakesWithin {
+		t.Fatalf("the standby took the publisher hold %v after the kill, on the database's clock, past the %v bound: the hold lasts %v after a renewal",
+			after, standbyTakesWithin, publisherHoldOptions.TTL)
+	}
+}
+
 // A holder whose NATS connection is cut releases the publisher hold once it has been without NATS
 // for natsLossGrace, and the other process, whose NATS works, takes the hold and publishes what is
 // written after the cut.
@@ -543,9 +610,10 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 // A standby waits for the publisher hold to be released or to lapse, or for its NATS connection to
 // change, and for nothing else: the events the holder writes and publishes do not make it try the
 // hold. 100 events written one after another while the holder holds send at most the few takes and
-// lapse reads the standby's timer to the holder's lapse makes over that span (each renewal moves the
-// lapse 6 s on), not one take and one read per event, which would put a write on duty_holds for
-// every event on every standby.
+// lapse reads the standby's timer to the holder's lapse makes over that span, not one take and one
+// read per event, which would put a write on duty_holds for every event on every standby. Each
+// renewal moves the lapse TTL on and comes Renew after the last, so the timer fires at most once
+// each TTL - Renew, 4 s: the row allows that many over the span it counts, and never fewer than 3.
 func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
@@ -577,6 +645,7 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	time.Sleep(time.Second)
 
 	takes, reads := len(tracer.matching("insert into duty_holds")), len(tracer.matching("from duty_holds where name"))
+	counting := time.Now()
 	var last model.Event
 	for index := range 100 {
 		last = writeMessage(t, holder, fmt.Sprintf("message %d", index))
@@ -587,10 +656,13 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	}
 	takes = len(tracer.matching("insert into duty_holds")) - takes
 	reads = len(tracer.matching("from duty_holds where name")) - reads
-	t.Logf("while 100 events were written and published, the standby sent %d takes of the hold and %d reads of its lapse", takes, reads)
-	if takes > 3 || reads > 3 {
-		t.Fatalf("the standby sent %d takes of the publisher hold and %d reads of its lapse while the holder wrote 100 events, want at most 3 of each: its timer to the lapse alone",
-			takes, reads)
+	span := time.Since(counting)
+	timerFires := max(3, int(span/(publisherHoldOptions.TTL-publisherHoldOptions.Renew))+1)
+	t.Logf("while 100 events were written and published, over %v, the standby sent %d takes of the hold and %d reads of its lapse",
+		span.Round(time.Millisecond), takes, reads)
+	if takes > timerFires || reads > timerFires {
+		t.Fatalf("the standby sent %d takes of the publisher hold and %d reads of its lapse while the holder wrote 100 events over %v, want at most %d of each: its timer to the lapse alone",
+			takes, reads, span.Round(time.Millisecond), timerFires)
 	}
 }
 

@@ -838,8 +838,13 @@ func drainEnvelopes(t *testing.T, from <-chan contracts.Envelope, quiet time.Dur
 const (
 	// takeOverWithin bounds a take-over: from the moment the publisher is killed, cut off NATS or
 	// frozen, the other process takes the publisher hold, publishes its first batch and a session
-	// takes a comment written since, each within it.
+	// takes a comment written since, each within it. The take after a kill has the tighter
+	// killedTakeOverWithin.
 	takeOverWithin = 10 * time.Second
+	// killedTakeOverWithin bounds the take of the publisher hold after the publisher is killed:
+	// the hold lapses 5 s after the killed process's last renewal, and the other process takes it
+	// within a second of the lapse (outbox.publisherHoldOptions), so within 6 s of the kill.
+	killedTakeOverWithin = 6 * time.Second
 	// outboxDeliveryWithin bounds the wait for what a row wrote to reach every session it is
 	// addressed to.
 	outboxDeliveryWithin = 60 * time.Second
@@ -1439,9 +1444,10 @@ func (s *outboxScene) framesSince(at time.Time) map[*testSession][]sessionFrame 
 }
 
 // requireTakeOver waits for p to take the publisher hold at or after since, then to log its first
-// batch, and for a session to take a comment written since since; and requires each within
-// takeOverWithin of since, the moment what happened to the publisher before p.
-func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since time.Time, what string) {
+// batch, and for a session to take a comment written since since; and requires the take within
+// tookWithin of since, the moment what happened to the publisher before p, and the batch and the
+// comment each within takeOverWithin of it.
+func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since time.Time, what string, tookWithin time.Duration) {
 	t.Helper()
 	took := p.waitForOutboxLine(t, tookHold, since, 2*takeOverWithin)
 	batch := p.waitForOutboxLine(t, sentBatch, took.at, 2*takeOverWithin)
@@ -1454,15 +1460,16 @@ func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since ti
 	t.Logf("after %s, the other process took the publisher hold in %v and logged its first batch in %v, and a session took a comment written since in %v",
 		what, took.at.Sub(since).Round(time.Millisecond), batch.at.Sub(since).Round(time.Millisecond), arrived.Sub(since).Round(time.Millisecond))
 	for _, step := range []struct {
-		what string
-		at   time.Time
+		what   string
+		at     time.Time
+		within time.Duration
 	}{
-		{"the other process took the publisher hold", took.at},
-		{"the other process logged its first batch", batch.at},
-		{"a session took a comment written since", arrived},
+		{"the other process took the publisher hold", took.at, tookWithin},
+		{"the other process logged its first batch", batch.at, takeOverWithin},
+		{"a session took a comment written since", arrived, takeOverWithin},
 	} {
-		if after := step.at.Sub(since); after > takeOverWithin {
-			t.Errorf("%s %v after %s, past the %v bound", step.what, after.Round(time.Millisecond), what, takeOverWithin)
+		if after := step.at.Sub(since); after > step.within {
+			t.Errorf("%s %v after %s, past the %v bound", step.what, after.Round(time.Millisecond), what, step.within)
 		}
 	}
 }
@@ -1855,10 +1862,10 @@ func TestEachSessionTakesEachEventOnceAndInOrderAcrossTwoProcesses(t *testing.T)
 }
 
 // The publisher is killed while comments are written through the other process at 4 a second: the
-// other process takes the publisher hold, logs its first batch, and a session takes a comment
-// written after the kill, each within 10 s of it, and every session still takes each comment once
-// and in order across the hand-over.
-func TestAKilledPublisherIsReplacedWithin10Seconds(t *testing.T) {
+// other process takes the publisher hold within 6 s of the kill, and logs its first batch and a
+// session takes a comment written after the kill, each within 10 s of it, and every session still
+// takes each comment once and in order across the hand-over.
+func TestAKilledPublisherIsReplacedWithin6Seconds(t *testing.T) {
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	publisher, _ := waitForPublisher(t, pair, takeOverWithin)
@@ -1869,7 +1876,7 @@ func TestAKilledPublisherIsReplacedWithin10Seconds(t *testing.T) {
 
 	killed := publisher.signal(t, syscall.SIGKILL)
 	publisher.WaitExit(t, "SIGKILL")
-	scene.requireTakeOver(t, survivor, killed, "the publisher was killed")
+	scene.requireTakeOver(t, survivor, killed, "the publisher was killed", killedTakeOverWithin)
 	written := scene.writtenCount()
 	waitUntil(t, outboxDeliveryWithin, "eight more comments written", func() bool { return scene.writtenCount() >= written+8 })
 	stop()
@@ -2144,7 +2151,7 @@ func (s *outboxScene) handOver(t *testing.T, publisher *dispatchProcess, what st
 
 	at := time.Now()
 	cut()
-	s.requireTakeOver(t, s.pair.other(publisher), at, what)
+	s.requireTakeOver(t, s.pair.other(publisher), at, what, takeOverWithin)
 	released := publisher.waitForOutboxLine(t, releasedHold, at, 2*takeOverWithin)
 	if released.reason != "NATS lost" {
 		t.Errorf("the publisher released the hold for %q after %s, want NATS lost: %s", released.reason, what, released.text)
@@ -2178,7 +2185,7 @@ func TestAFrozenPublisherSendsNothingWhenItResumes(t *testing.T) {
 	stopped := publisher.signal(t, syscall.SIGSTOP)
 	stop := scene.writeAtRate(t, 4, standby)
 	defer stop()
-	scene.requireTakeOver(t, standby, stopped, "the publisher was stopped")
+	scene.requireTakeOver(t, standby, stopped, "the publisher was stopped", takeOverWithin)
 	time.Sleep(time.Until(stopped.Add(frozenFor)))
 	stop()
 	scene.waitDelivered(t)

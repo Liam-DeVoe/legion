@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A standby Dispatch process now takes over publishing within six seconds of the kill of the
+  process that published, a kill at the moment of a renewal included; it took six seconds or more
+  before. The publisher hold `dispatch-outbox` lasts 5 s after each renewal instead of 6 s, and a
+  holder reports itself lost 1 s before its row lapses instead of 2 s, so a renewal still has 4 s
+  from the last confirmed one. The cost: a holder whose renewal is late stops publishing 1 s, not
+  2 s, before a standby may take the hold.

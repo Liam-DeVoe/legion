@@ -43,9 +43,19 @@ const (
 	concurrentBatches = 4
 )
 
-// publisherHoldOptions are the publisher hold's parameters: it lasts 6 s on the database's clock
-// after each renewal, is renewed every 1 s, and reports itself lost 2 s before it lapses, so a
-// process that is killed is replaced by a standby within 6 s of its last renewal.
+// publisherHoldOptions are the publisher hold's parameters: it lasts 5 s on the database's clock
+// after each renewal, is renewed every 1 s, and reports itself lost 1 s before it lapses. A
+// process that is killed at the moment of a renewal leaves a row that lapses 5 s later, and a
+// standby takes the hold within a second of the lapse (duty's
+// TestHoldTakesOverWithinASecondAfterTheLapse), so a standby takes the hold within 6 s of a kill
+// (TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill).
+//
+// TTL is 5 s, not 6 s, and Margin 1 s, not 2 s, so that a take-over meets those 6 s while the
+// window a renewal has, TTL - Margin, stays the 4 s measured below. What that costs: Margin is
+// how long a holder whose renewal is late has stopped publishing before its row lapses and a
+// standby may take the hold. A lost holder now stops 1 s, not 2 s, before its row lapses, so a
+// send it made just before its deadline has 1 s, not 2 s, to reach NATS before a standby may
+// publish beside it.
 //
 // Renew is 1 s, not 2 s, because the window a renewal has is TTL - Margin, 4 s from the last
 // confirmed renewal, and each renewal's own wait for an answer is bounded at Renew. At 2 s the
@@ -73,7 +83,7 @@ const (
 // standby out until its release deletes the row, or for Margin after the deadline when that
 // release cannot reach the database first. That gap is the product's, and the two-process row
 // holds it to the take-over bound rather than to nothing.
-var publisherHoldOptions = duty.HoldOptions{TTL: 6 * time.Second, Renew: time.Second, Margin: 2 * time.Second}
+var publisherHoldOptions = duty.HoldOptions{TTL: 5 * time.Second, Renew: time.Second, Margin: time.Second}
 
 // holdEnd is why a holder stopped publishing.
 type holdEnd string
