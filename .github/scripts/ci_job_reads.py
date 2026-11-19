@@ -59,15 +59,17 @@ from typing import NamedTuple
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 from go_build_tags import go_skips_dir, tag_sets
+from workflow_paths import glob_regex
 
 ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
 INFRA = "packages/envoy/infra"
 FIX = "packages/contracts/fixtures"
 CONTRACTS_SRC = "packages/contracts/src/**"
-# The dashboard's pages file, which packages/contracts/src/dispatch-href.ts:8 imports (reads adds it
-# to every read set that names CONTRACTS_SRC).
+# The dashboard's pages file, which CONTRACTS_PAGES_IMPORTER imports at its line 8 (reads adds it to
+# every read set with a glob that matches that module).
 CONTRACTS_PAGES_FILE = f"{ENVOY}/internal/dispatch/text/dashboard-pages.json"
+CONTRACTS_PAGES_IMPORTER = "packages/contracts/src/dispatch-href.ts"
 GO_TARGETS = ".github/go-release-targets.json"
 CLIENT_TARGETS = ".github/agent-secrets-client-targets.json"
 INFRA_TARGETS = ".github/envoy-infra-targets.json"
@@ -182,14 +184,16 @@ INFRA_DARWIN_VET = "Vet envoy-infra for darwin, its live-test tags included"
 
 
 def reads(*entries):
-    """The reads of entries, each a (glob, why). A program that compiles the contracts' sources
-    (CONTRACTS_SRC) reads the dashboard's pages file with them: packages/contracts/src/
-    dispatch-href.ts:8 imports it, so every read set that names CONTRACTS_SRC names that file too,
-    in this one place, as envoy_client_dep does for the next workspace envoy-client reaches."""
+    """The reads of entries, each a (glob, why). A program that compiles the contracts'
+    dispatch-href.ts reads the dashboard's pages file with it: CONTRACTS_PAGES_IMPORTER:8 imports
+    it, so every read set with a glob that matches that module (CONTRACTS_SRC, packages/contracts/**)
+    names that file too, in this one place, as envoy_client_dep does for the next workspace
+    envoy-client reaches. A gate that compiles the module through a listed block of its filter, and
+    so reads none of packages/contracts/src here (dispatch_ui), names the file itself."""
     out = [Read(glob, why) for glob, why in entries]
     globs = {glob for glob, _ in entries}
-    if CONTRACTS_SRC in globs and CONTRACTS_PAGES_FILE not in globs:
-        out.append(Read(CONTRACTS_PAGES_FILE, "packages/contracts/src/dispatch-href.ts:8 imports it, beside the contracts' sources this job compiles"))
+    if CONTRACTS_PAGES_FILE not in globs and any(glob_regex(glob).fullmatch(CONTRACTS_PAGES_IMPORTER) for glob in globs):
+        out.append(Read(CONTRACTS_PAGES_FILE, f"{CONTRACTS_PAGES_IMPORTER}:8 imports it, beside the contracts' sources this job compiles"))
     return out
 
 
@@ -2789,6 +2793,9 @@ GATES = [
         # is what its two tsc programs list, so check-ts-filters.sh writes them into the filter's
         # listed block and holds the block to them (ci_ts_programs.py, LISTED), and rule 9's second
         # direction passes over that block's patterns.
+        # The pages file one of those modules imports is no file of that tree, so it is a read of
+        # this table's: reads adds it only beside a glob of the contracts' sources.
+        (CONTRACTS_PAGES_FILE, f"{CONTRACTS_PAGES_IMPORTER}:8 imports it, and both tsc programs of this job compile that module (the filter's listed block)"),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:12-16"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:451-452"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:30 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),

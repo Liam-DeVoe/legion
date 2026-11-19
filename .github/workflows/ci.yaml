@@ -1334,6 +1334,9 @@ jobs:
               # src/dispatch-tools.test.ts:64,1565 reads these skills.
               - 'skills/dispatch/SKILL.md'
               - 'skills/dispatch-writing-specs/SKILL.md'
+              # src/dispatch-href.ts:8 imports the dashboard's pages file, which this job's tsc
+              # program compiles with it.
+              - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
               # The Go copies its tests hold the TypeScript to: src/dispatch-href.test.ts:49-53 and
               # src/dispatch-text-references.test.ts:10-14 read the Go reader's JSON tables,
               # src/dispatch-block-ref.test.ts reads pmdoc's block pointer and typed block id
@@ -2501,6 +2504,9 @@ jobs:
               # This job's tsc program of packages/dispatch compiles the shared test fixtures its
               # web, e2e and server-side tests import.
               - 'packages/test-fixtures/src/**'
+              # The contracts' src/dispatch-href.ts:8 imports the dashboard's pages file, which
+              # both of this job's tsc programs compile with it.
+              - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
               # The contracts modules this job's two tsc programs compile and no other (the
               # web/vite.config.ts:117-126 aliases point at the same sources): not legion-api.ts.
               # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
