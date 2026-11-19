@@ -64,6 +64,10 @@ ENVOY = "packages/envoy"
 DAEMON = "packages/daemon"
 INFRA = "packages/envoy/infra"
 FIX = "packages/contracts/fixtures"
+CONTRACTS_SRC = "packages/contracts/src/**"
+# The dashboard's pages file, which packages/contracts/src/dispatch-href.ts:8 imports (reads adds it
+# to every read set that names CONTRACTS_SRC).
+CONTRACTS_PAGES_FILE = f"{ENVOY}/internal/dispatch/text/dashboard-pages.json"
 GO_TARGETS = ".github/go-release-targets.json"
 CLIENT_TARGETS = ".github/agent-secrets-client-targets.json"
 INFRA_TARGETS = ".github/envoy-infra-targets.json"
@@ -178,7 +182,15 @@ INFRA_DARWIN_VET = "Vet envoy-infra for darwin, its live-test tags included"
 
 
 def reads(*entries):
-    return [Read(glob, why) for glob, why in entries]
+    """The reads of entries, each a (glob, why). A program that compiles the contracts' sources
+    (CONTRACTS_SRC) reads the dashboard's pages file with them: packages/contracts/src/
+    dispatch-href.ts:8 imports it, so every read set that names CONTRACTS_SRC names that file too,
+    in this one place, as envoy_client_dep does for the next workspace envoy-client reaches."""
+    out = [Read(glob, why) for glob, why in entries]
+    globs = {glob for glob, _ in entries}
+    if CONTRACTS_SRC in globs and CONTRACTS_PAGES_FILE not in globs:
+        out.append(Read(CONTRACTS_PAGES_FILE, "packages/contracts/src/dispatch-href.ts:8 imports it, beside the contracts' sources this job compiles"))
+    return out
 
 
 def envoy_go_files_but_infra():
@@ -378,7 +390,6 @@ def at_browser(step, job=BROWSER_SHARD):
     return at(job, step, BROWSER_SITE)
 
 
-CONTRACTS_SRC = "packages/contracts/src/**"
 ENVOY_CLIENT_SRC = "packages/envoy-client/src/**"
 BROKER_CLIENT_SRC = "packages/broker-client/**"
 # The shared test fixtures every other Bun package's tests import.

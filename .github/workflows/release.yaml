@@ -100,7 +100,8 @@ env:
   # Oh My Pi session loads as the plugin's skills, so a commit there releases whatever its type. Its
   # notices generator, the prepack itself and patches/ (the bundle inlines nats.js with
   # patches/nats@2.29.3.patch applied) are shipped build inputs too, so they get the same patch
-  # release.
+  # release, and so is the dashboard's pages file, which envoy-client and contracts read when the
+  # bundle is built.
   PI_ENVOY_VERSION_ARGS: >-
     --first-npm @sjawhar/pi-legion-envoy
     --patch-path skills/agent-secrets/ --patch-path skills/approval-review/
@@ -110,9 +111,9 @@ env:
     --patch-path skills/outside-message/ --patch-path skills/plain-words/
     --patch-path skills/thermonuclear-code-quality/ --patch-path skills/thermonuclear-deep-review/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
-    --patch-path patches/
+    --patch-path patches/ --patch-path packages/envoy/internal/dispatch/text/dashboard-pages.json
     -- packages/pi-envoy/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
-    packages/broker-client/
+    packages/broker-client/ packages/envoy/internal/dispatch/text/dashboard-pages.json
     skills/agent-secrets/ skills/approval-review/ skills/asd-ste100/ skills/dispatch/
     skills/dispatch-first/ skills/dispatch-writing-specs/ skills/envoy/
     skills/outside-message/ skills/plain-words/
@@ -120,25 +121,27 @@ env:
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # The Legion Oh My Pi plugin, seeded as the Envoy one is. scripts/pi-plugin-prepack.sh copies
   # this plugin's six skills into dist/skills, which a Legion pane's prompts load, so a commit
-  # there releases whatever its type. Its notices generator, the prepack itself and patches/ (the
-  # bundle inlines nats.js through envoy-client, with its patch applied) are shipped build inputs
-  # too, so they get the same patch release.
+  # there releases whatever its type. Its notices generator, the prepack itself, patches/ (the
+  # bundle inlines nats.js through envoy-client, with its patch applied) and the dashboard's pages
+  # file (envoy-client and contracts read it) are shipped build inputs too, so they get the same
+  # patch release.
   PI_LEGION_VERSION_ARGS: >-
     --first-npm @sjawhar/pi-legion-envoy
     --patch-path skills/legion-architect/ --patch-path skills/legion-controller/
     --patch-path skills/legion-oracle/ --patch-path skills/legion-retro/
     --patch-path skills/legion-worker/ --patch-path skills/simplify-settled-diff/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
-    --patch-path patches/
+    --patch-path patches/ --patch-path packages/envoy/internal/dispatch/text/dashboard-pages.json
     -- packages/pi-legion/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
-    packages/broker-client/
+    packages/broker-client/ packages/envoy/internal/dispatch/text/dashboard-pages.json
     skills/legion-architect/ skills/legion-controller/ skills/legion-oracle/ skills/legion-retro/
     skills/legion-worker/ skills/simplify-settled-diff/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # The Claude Code plugin, @sjawhar/claude-envoy. Its build runs from
   # packages/claude-envoy/scripts/build-inputs.txt, the one statement of what can change this
   # plugin's bundles and its generated legion/ plugin, so the paths below are that list's, in its
-  # order: this package, the workspace packages its bundles inline, pi-legion's agents and all of
+  # order: this package, the workspace packages its bundles inline, the dashboard's pages file they
+  # read, pi-legion's agents and all of
   # skills/ (scripts/pi-plugin-prepack.sh stages pi-legion's share into legion/skills and this
   # package's skills/ links into skills/), the notices generator, the prepack and patches/ (the
   # bundles inline nats.js with patches/nats@2.29.3.patch applied). Everything after
@@ -150,11 +153,13 @@ env:
     --first-npm @sjawhar/claude-envoy
     --patch-path packages/pi-shared/ --patch-path packages/envoy-client/
     --patch-path packages/contracts/ --patch-path packages/broker-client/
+    --patch-path packages/envoy/internal/dispatch/text/dashboard-pages.json
     --patch-path packages/pi-legion/agents/ --patch-path skills/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
     --patch-path patches/
     -- packages/claude-envoy/ packages/pi-shared/ packages/envoy-client/ packages/contracts/
-    packages/broker-client/ packages/pi-legion/agents/ skills/
+    packages/broker-client/ packages/envoy/internal/dispatch/text/dashboard-pages.json
+    packages/pi-legion/agents/ skills/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # The Go `legion`. The binary embeds its prompts (internal/prompts/roles and go), so a docs:
   # commit there still releases. The notices scripts and the target list are runtime inputs of the

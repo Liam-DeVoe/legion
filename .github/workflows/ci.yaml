@@ -1266,6 +1266,9 @@ jobs:
               # must run both jobs.
               - '.github/workflows/release.yaml'
               - 'packages/contracts/src/**'
+              # The contracts' src/dispatch-href.ts:8 imports the dashboard's pages file, so the
+              # build reads it with them (ci_job_reads.py's reads adds it beside CONTRACTS_SRC).
+              - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
               - 'packages/envoy-client/src/**'
               # Its src/broker-credential.ts:21-22 imports @legion/broker-client, whose exports
               # map every entry to ./src/<module>.ts, so a build compiles that package's seven
@@ -2322,6 +2325,8 @@ jobs:
               # src/handoff-record.test.ts:7 imports @legion/envoy-client/test/fake-dispatch.
               - 'packages/envoy-client/test/**'
               - 'packages/contracts/src/**'
+              # The contracts' src/dispatch-href.ts:8 imports the dashboard's pages file.
+              - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
               # src/*.test.ts and test/*.ts import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # src/daemon-client.test.ts:15 and its neighbours read the daemon API fixtures.
@@ -2362,6 +2367,8 @@ jobs:
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/envoy-client/scripts/build-dispatch-cli.sh'
               - 'packages/contracts/src/**'
+              # The contracts' src/dispatch-href.ts:8 imports the dashboard's pages file.
+              - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # extensions/envoy.test.ts:300.
@@ -3342,6 +3349,8 @@ jobs:
               # pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
+              # The contracts' src/dispatch-href.ts:8 imports the dashboard's pages file.
+              - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
               # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
               - *listener_command
               - 'packages/envoy/internal/testnats/*'
@@ -3578,6 +3587,8 @@ jobs:
               - 'packages/broker-client/**'
               # src/token-client.ts imports @legion/contracts/trailing-slash.
               - 'packages/contracts/src/**'
+              # The contracts' src/dispatch-href.ts:8 imports the dashboard's pages file.
+              - 'packages/envoy/internal/dispatch/text/dashboard-pages.json'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # src/__tests__/dpop.test.ts reads both signers' connection proofs.
