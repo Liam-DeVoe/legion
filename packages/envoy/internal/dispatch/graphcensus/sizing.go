@@ -451,10 +451,17 @@ func storeKinds() []StoreKind {
 		Driver: "assumed at 5 a day, since the block schema holds no criterion type before dispatch://INFRA-1253 and no" +
 			" row holds one: its authored_by, its node and placement being a block's, which the block terms count",
 	}, {
-		Name: "result", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 16,
-		Driver: "check_results.created_at: the result's node, its visibility and state, its verdict, surface, run," +
-			" observed, commit, role, failed, skipped, excluded and negative_control values, its tuples to its check, its" +
-			" recorder and its run's session, and its part_of its check",
+		// Counted off graphstore.ResultFacts, which the record route (api's writeRecordedResult) and
+		// the backfill (backfillResults) write a result through, for one a session recorded naming
+		// no screenshot, which result_screenshot counts: graphstore.Write's visibility, state and
+		// project of the node it makes; the twelve values; the part_of and the result_of its check;
+		// graphstore.AuthorFacts' authored_by with the one alias_of a session's credential can prove
+		// of its owner; and the run_session.
+		Name: "result", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 20,
+		Driver: "check_results.created_at: the result's node, its visibility, state and project, its verdict, surface," +
+			" run, observed, commit, role, failed, skipped, excluded, negative_control, check_version and check_sha256" +
+			" values, its part_of and its result_of its check, its authored_by its recorder and at most the alias_of" +
+			" of a recording session to the person its credential proved, and its run_session",
 		count: `(select count(*) from check_results where created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "result_screenshot", MovedBy: movedWithBlocks, Tuples: 1,

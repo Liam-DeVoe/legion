@@ -1491,10 +1491,13 @@ type CheckResultRetracted struct {
 
 // CheckResult is one result recorded against a `check` block of an issue's Verification
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
-// of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
-// CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
-// a read can tell a result whose check has been reworded since. CommitStands, CheckWordsMoved
-// and Retracted are read when the results are read and are absent from the record's own answer.
+// of CheckIssueKey, the issue whose Verification document holds the check. CheckArtifactID is the
+// artifact the check's document_blocks row is keyed by, which keys the result's row too: the tree
+// artifact of an issue room, else the Verification document. A result CI derives (api's
+// results_ci.go) names the same one. CheckVersion and CheckSHA256 are the block's changed_version
+// and text_sha256 when the result was recorded, so a read can tell a result whose check has been
+// reworded since. CommitStands, CheckWordsMoved and Retracted are read when the results are read
+// and are absent from the record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -1548,19 +1551,24 @@ type CheckResultRetraction struct {
 
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
 // lives, its attributes, the version its words last changed in and their digest, and every
-// result recorded against it from any issue, newest first. CICheck is the block's `ci_check` as
-// stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
-// where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
-// `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
-// one result is the one derived from that run. Text is the block's words with every link and
-// dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
-// content whole, links and references kept, as the reader is shown it, present only for a
-// caller that sent `Dispatch-Trees: 1`.
+// result recorded against it from any issue, newest first. ArtifactID is the Verification
+// document, and RowArtifactID the room it is edited in (api's checkBlocksOf), which keys the
+// check's document_blocks row: the tree artifact of an issue room, else ArtifactID, whether the
+// index holds that row yet or not. A result of the check names RowArtifactID as its
+// CheckArtifactID; no response carries it. CICheck is the block's `ci_check` as stored, spaces
+// included. A blank value is served as stored, not as "", so CICheck is "" only where the block
+// stores no `ci_check` or an empty one. CI is what Dispatch read of the run that `ci_check`
+// names, set only for a check CI proves, and CI.Run is that run's name. Such a check's one result
+// is the one derived from that run. Text is the block's words with every link and dispatch://
+// reference dropped (the pull-request line reads them); TextTree is the block's own content
+// whole, links and references kept, as the reader is shown it, present only for a caller that
+// sent `Dispatch-Trees: 1`.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
 	IssueKey        string        `json:"issue_key"`
 	ArtifactID      string        `json:"artifact_id"`
+	RowArtifactID   string        `json:"-"`
 	Text            string        `json:"text"`
 	TextTree        DisplayTree   `json:"text_tree,omitempty"`
 	When            string        `json:"when"`
@@ -1640,7 +1648,9 @@ type RequirementCoverage struct {
 
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
 // result, the issue it was recorded on (Issue, which is the check's issue only when the result
-// was recorded there) and the check it proves.
+// was recorded there) and the check it proves. CheckArtifactID is the artifact the check's
+// document_blocks row is keyed by, as the result's row names it (CheckResult): the tree artifact
+// of an issue room, else the Verification document.
 type CheckResultEventPayload struct {
 	ResultID        string `json:"result_id"`
 	Issue           string `json:"issue"`

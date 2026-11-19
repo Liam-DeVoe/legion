@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -404,6 +406,37 @@ func sizedTerms(t *testing.T, printed string) map[string]sizedTerm {
 	return terms
 }
 
+// resultWrite is every tuple the store states of one result a session recorded, naming no
+// screenshot (the result_screenshot term counts those), by its kind: the visibility, state and
+// project the node write states of the result's node (graphstore.BaseAttributeFacts), then each
+// tuple graphstore.ResultFacts appends - its values, its part_of and result_of its check, its
+// authored_by with the alias_of a session's credential proves of its owner (graphstore.AuthorFacts)
+// and its run_session. The author's own nodes are the session and person terms'. The result term
+// is held to it, so a value or a tuple ResultFacts comes to state fails the sizing until its term
+// counts and names it.
+func resultWrite(t *testing.T) []string {
+	t.Helper()
+	owner, session := "alice", "ses_sized"
+	recorder := model.Actor{Kind: "session", ID: session, Owner: &owner, Act: &model.ActorAct{Session: session, SessionProven: true}}
+	nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
+		ID: "00000000-0000-4000-8000-000000000001", Project: "CORE", Check: "CORE-1/verification-md#c-one",
+		Verdict: "fail", Surface: "cli", Run: "go test ./...", Observed: "FAIL", Commit: strings.Repeat("a", 40),
+		Role: "tester", Control: "Broke it and watched it fail.", Failed: 1, CheckVersion: 1, CheckSHA256: "x",
+		Session: session, Recorder: recorder, At: time.Now().UTC(), Event: graphstore.NoEvent,
+	})
+	if !ok || len(nodes) == 0 || nodes[0].Kind != graphstore.KindResult {
+		t.Fatalf("graphstore.ResultFacts states no result node for a session's result: %+v", nodes)
+	}
+	var kinds []string
+	for _, fact := range graphstore.BaseAttributeFacts(nodes[:1]) {
+		kinds = append(kinds, fact.Kind)
+	}
+	for _, tuple := range tuples {
+		kinds = append(kinds, tuple.Kind)
+	}
+	return kinds
+}
+
 // The sizing counts every tuple the writers append, term by term, from the database's own
 // history: rows a day is the sum over the kinds of writes a day times tuples a write (R4), so a
 // kind it leaves out reads the one-year verdict low. The history here holds a version that drops
@@ -420,6 +453,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	seedSizedHistory(t, database)
 	printed := sizingCensus(t, database)
 	terms := sizedTerms(t, printed)
+	resultKinds := resultWrite(t)
 	// Each kind R20 gives the five children (dispatch://INFRA-1149/spec#b-r-kinds-here), beside the
 	// term that counts it. A kind whose write states facts beyond its node has further terms, which
 	// want below holds; requirements, plan nodes and checks are typed blocks of a document, which
@@ -482,7 +516,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// CORE-2 is a child of CORE-1 and waits on it.
 		"issue": {tuples: 2, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 1},
 		"document_version": {tuples: 2, writes: 2}, "criterion": {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
-		"result": {tuples: 16, writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
+		"result": {tuples: int64(len(resultKinds)), writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
 		// The leaf's part_of the root and its depends_on it, and CORE-1's affects of the root.
 		"component": {tuples: 2, writes: 2}, "component_relation": {tuples: 1, writes: 3},
 		"ask": {tuples: 8, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 5, writes: 1},
@@ -506,6 +540,17 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 			t.Errorf("the sizing prints no term %s, whose writer appends %d tuple(s) a write", name, want[name].tuples)
 		case got != want[name]:
 			t.Errorf("the sizing prints term %s as %+v, want %+v", name, got, want[name])
+		}
+	}
+	// The result term's driver names every kind of tuple its writer states (resultWrite), as the
+	// count above holds its tuples to that writer's.
+	resultDriver := regexp.MustCompile(`(?m)^census: sizing tuples-a-write kind=result .* driver=(.*)$`).FindStringSubmatch(printed)
+	if resultDriver == nil {
+		t.Fatalf("the sizing prints no driver of the result term:\n%s", printed)
+	}
+	for _, kind := range resultKinds {
+		if !regexp.MustCompile(`\b` + regexp.QuoteMeta(kind) + `\b`).MatchString(resultDriver[1]) {
+			t.Errorf("the result term's driver %q names no %s, which graphstore.ResultFacts states of a session's result", resultDriver[1], kind)
 		}
 	}
 	var tuples int64

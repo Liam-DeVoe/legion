@@ -784,11 +784,14 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *di
 	return checks, nil
 }
 
-// checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
-// digest filled in. The reference is built from the document's own slug, which is a property of
-// the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by. The indexed rows
-// are read in the room the document is edited in (refs.DocumentRoomBlocksSQL).
+// checkBlocksOf is checkBlocksIn with each block's reference, issue, indexed version and digest,
+// and the room the document is edited in (RowArtifactID), filled in. The reference is built from
+// the document's own slug, which is a property of the artifacts row and not of a block row, so a
+// Verification document whose blocks the index does not hold yet still answers a reference every
+// check can be addressed by. The room (refs.DocumentRoomSQL) keys every check's row and every
+// result recorded on one, so each check takes it whether the index holds its row yet or not: one
+// query answers it beside the indexed rows, read in that room (refs.DocumentRoomBlocksSQL), and
+// answers it on a row of its own where no check is indexed.
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	checks, err := s.checkBlocksIn(ctx, artifact.ID, trees)
 	if err != nil {
@@ -801,10 +804,12 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	if artifact.IssueKey != nil {
 		issueKey = *artifact.IssueKey
 	}
+	var room string
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
-		select d.block_id, d.changed_version, d.text_sha256
-		from document_blocks d where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.type = 'check'
+		select room.id::text, coalesce(d.block_id, ''), coalesce(d.changed_version, 0), coalesce(d.text_sha256, '')
+		from (select `+refs.DocumentRoomSQL("$1::uuid")+` as id) room
+		left join document_blocks d on `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.type = 'check'
 	`, artifact.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
@@ -812,16 +817,18 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	defer rows.Close()
 	for rows.Next() {
 		var block model.CheckBlock
-		if err := rows.Scan(&block.BlockID, &block.Version, &block.SHA256); err != nil {
+		if err := rows.Scan(&room, &block.BlockID, &block.Version, &block.SHA256); err != nil {
 			return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 		}
-		indexed[block.BlockID] = block
+		if block.BlockID != "" {
+			indexed[block.BlockID] = block
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 	}
 	for index := range checks {
-		checks[index].IssueKey = issueKey
+		checks[index].IssueKey, checks[index].RowArtifactID = issueKey, room
 		checks[index].Ref, _ = text.FormatBlockRef(text.Ref{
 			Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: checks[index].BlockID,
 		})
