@@ -149,10 +149,10 @@ jobs:
           retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
 YAML
 
-  # Exception (a)'s fourth and fifth sites: the browser lane's visual job pulls the pinned
-  # Playwright copy and its stack's Postgres copy from the same package. The entries naming them
-  # are in EXEMPTIONS, and an entry matching nothing fails this check, so every fixture carries
-  # the sites its entries name.
+  # Exception (a)'s fourth to seventh sites: the browser lane's visual job pulls the pinned
+  # Playwright copy and its stack's Postgres copy from the same package, and the multiprocess and
+  # embedder jobs pull that same Postgres copy. The entries naming them are in EXEMPTIONS, and an
+  # entry matching nothing fails this check, so every fixture carries the sites its entries name.
   cat > "$root/.github/workflows/dispatch-browser.yaml" <<YAML
 name: Dispatch browser
 on:
@@ -164,6 +164,16 @@ jobs:
       - name: Pull the pinned Playwright copy
         run: docker pull ghcr.io/example/legion/ci@$DIGEST
       - name: Pull the visual stack's Postgres copy
+        run: docker pull ghcr.io/example/legion/ci@$DIGEST
+  multiprocess:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pull the multiprocess stack's Postgres image
+        run: docker pull ghcr.io/example/legion/ci@$DIGEST
+  embedder:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pull the embedder stack's Postgres image
         run: docker pull ghcr.io/example/legion/ci@$DIGEST
 YAML
 
@@ -446,11 +456,12 @@ root=$(fixture exceptions)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it read" "$(contains "$out" 'every network fetch in CI retries at the floor')"
-# Six sites, not the seven this case counted while exception (c) had a script: that script
+# Eight sites, not the seven this case counted while exception (c) had a script: that script
 # went with the browser suite's move into an image this repository builds
 # (cybermonklabs/legion#2938), and its two exempted apt sites went with it; the visual job's
-# pull of its stack's Postgres copy is the one added since (dispatch://INFRA-1545, round 37).
-check "counts the sites the exceptions name" "$(contains "$out" '6 site(s) the exceptions name')"
+# pull of its stack's Postgres copy is one added since (dispatch://INFRA-1545, round 37), and
+# the multiprocess and embedder jobs' pulls of that same copy are the other two (round 41).
+check "counts the sites the exceptions name" "$(contains "$out" '8 site(s) the exceptions name')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: a workflow with a bare curl of a release asset"

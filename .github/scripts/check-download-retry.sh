@@ -1007,7 +1007,10 @@
 #      `download-retry-images` job added a third, the pull of the base images of the four
 #      Dockerfiles, which is the same package and the same reasoning. The browser lane's visual
 #      job holds two more, its pulls of the pinned Playwright copy and of its stack's Postgres
-#      copy, each made before its timed browser step (dispatch://INFRA-1545, round 37).
+#      copy, each made before its timed browser step (dispatch://INFRA-1545, round 37). The
+#      multiprocess and embedder jobs hold one each, their pulls of that same Postgres digest,
+#      made before their timed browser steps since main's #4486 moved their Postgres from a
+#      `services:` container to the harness's own (dispatch://INFRA-1545, round 41).
 #   b. A `uses:` reference, and anything inside a third-party action. This needs no entry: only a
 #      step's `run:` is read for its fetches, and no third-party action's source is in this tree.
 #      A composite action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun
@@ -4109,6 +4112,10 @@ EXEMPTIONS = [
               "Pull the pinned Playwright copy", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "visual",
               "Pull the visual stack's Postgres copy", ("docker pull",), GHCR_WHY),
+    Exemption(".github/workflows/dispatch-browser.yaml", "multiprocess",
+              "Pull the multiprocess stack's Postgres image", ("docker pull",), GHCR_WHY),
+    Exemption(".github/workflows/dispatch-browser.yaml", "embedder",
+              "Pull the embedder stack's Postgres image", ("docker pull",), GHCR_WHY),
 ]
 
 
