@@ -84,6 +84,18 @@ type StreamToolStep struct {
 	ConnSequence uint64
 }
 
+// StreamAnswered is the agent's model answering, as the stream read the frame (stream.Answered):
+// Model is `<provider>/<model>`, or the model alone when the frame named no provider, or empty for
+// an answer whose model no store can keep (stream.Answered). It is what the claim's last answer is
+// built from (answered, LastAnswer), and it is no part of the claim the store holds: a record of a
+// step reads it from memory, and a restarted daemon knows no model until the agent answers again.
+// Generation is the launch whose connection read the frame (stream.Answered).
+type StreamAnswered struct {
+	Claim      claim.Token
+	Model      string
+	Generation uint64
+}
+
 // StreamClosed is the claim's connection closing. It says nothing about the process by itself.
 type StreamClosed struct{ Claim claim.Token }
 
@@ -586,6 +598,7 @@ func (StreamTurnEnd) isEvent()        {}
 func (StreamTurnAnswered) isEvent()   {}
 func (IssueTurnEnded) isEvent()       {}
 func (StreamToolStep) isEvent()       {}
+func (StreamAnswered) isEvent()       {}
 func (StreamClosed) isEvent()         {}
 func (Timer) isEvent()                {}
 func (StalePlugin) isEvent()          {}
@@ -624,6 +637,7 @@ const (
 	onTurnAnswered  eventKind = "stream_turn_answered"
 	onIssueTurnEnd  eventKind = "issue_turn_ended"
 	onToolStep      eventKind = "stream_tool_step"
+	onAnswered      eventKind = "stream_answered"
 	onClosed        eventKind = "stream_closed"
 	onTakeAdopted   eventKind = "take_adopted"
 	onBootTimer     eventKind = timerPrefix + eventKind(TimerBoot)
@@ -688,6 +702,8 @@ func kindOf(ev Event) eventKind {
 		return onIssueTurnEnd
 	case StreamToolStep:
 		return onToolStep
+	case StreamAnswered:
+		return onAnswered
 	case StreamClosed:
 		return onClosed
 	case TakeAdopted:
@@ -951,6 +967,12 @@ func fillTable(t *builder) {
 	// the stream is up from the shim's hello.
 	t.row(onToolStep, "the agent stepped: record the call its stream reports", toolStepped, nil, live...)
 	t.ignore(onToolStep, noProcess, processless...)
+
+	// The model that answered, which the record of a step names. The row keeps it in memory and
+	// leaves the claim exactly where it found it (answered), so it is a row of every state a
+	// process of this claim can send a frame from, as the tool step's is.
+	t.row(onAnswered, "the agent's model answered: keep which model it was", answered, nil, live...)
+	t.ignore(onAnswered, noProcess, processless...)
 
 	// Timers.
 	t.row(onBootTimer, "the boot interval: probe the unregistered process", bootInterval,

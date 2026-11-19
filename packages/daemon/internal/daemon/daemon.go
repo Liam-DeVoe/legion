@@ -228,6 +228,20 @@ type overrides struct {
 	// taskBucketMarkerLife is how long a delete marker of this project's key is left in the task
 	// bucket before the watch purges it (taskBucket.purgeMarkers); zero is taskBucketMarkerLife.
 	taskBucketMarkerLife time.Duration
+	// streamWaitBegan runs, naming the claim, once an agent's request has queued its mark on the
+	// worker stream and begins to wait for the claim's machine to handle what the stream read
+	// before it (supervision.awaitStreamWithin); nil, in production, is nothing. It is the seam a
+	// test learns at that the request has reached that wait, which nothing outside the daemon can
+	// read: the wait writes nothing and answers nothing until the machine lets it go or its bound
+	// runs out.
+	streamWaitBegan func(claim.Token)
+	// beforeDecision runs on a claim's feed before its machine decides each event the feed took
+	// (supervisor.add), naming the claim and the event, with no lock of the machine's held; nil, in
+	// production, is nothing. It is the seam a test holds an event at while the stream has read it
+	// and the machine has not decided it, with the machine free for every reader: a hold inside
+	// the decision would hold the machine's lock, which an agent's request waits on at its grant
+	// check (supervise.Machine.Claim).
+	beforeDecision func(claim.Token, supervise.Event)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -538,12 +552,23 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// judged by none: a design choice, not an inability to tell its failures apart from
 		// Dispatch's — an unreachable Postgres refuses earlier, at store.Open
 		// (TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword, scripts/e2e/stage1-skeleton.sh).
-		// The two probes, and the cutover repair after them, run one after another on this
-		// goroutine, so they share one hold mark (a sequential flow); whether the daemon is stopping
-		// is still read from ctx.
+		// The open of the uncounted runs, the two probes and the cutover repair after them run one
+		// after another on this goroutine, so they share one hold mark (a sequential flow); whether
+		// the daemon is stopping is still read from ctx.
 		probing := store.WithTransactionTracking(ctx)
-		err := bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
-			readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))
+		// The runs no start of this release counted, which an earlier release began, get their
+		// open row first (openUncountedRuns): before the listing's reconcile, the boot's first
+		// admission pass, and before any fact, so the settle of each fact ends such a run as an
+		// open run, and a fact its agent's request applies waits for that agent's stream. It is
+		// one Postgres transaction with a bound of its own, and a failure of it stops the boot as
+		// the reconcile's own transaction's does.
+		opening, cancelOpening := context.WithTimeout(probing, bootTimeout)
+		err := workflow.openUncountedRuns(opening)
+		cancelOpening()
+		if err == nil {
+			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
+				readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))
+		}
 		// The catch-up of the roots that run or wait on a person is its own probe, after the
 		// reconcile that held them (holdForCatchUp). It reads Dispatch once or twice per root (the
 		// issue's latest sequence, its event log after the root's cursor, and the approval of a
@@ -958,6 +983,10 @@ type plan struct {
 	taskBucketMarkerLife time.Duration
 	// noLaunch is why this daemon launches no worker (launchRefusal), nil for one that launches.
 	noLaunch error
+	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
+	streamWaitBegan func(claim.Token)
+	// beforeDecision is overrides.beforeDecision; nil runs nothing.
+	beforeDecision func(claim.Token, supervise.Event)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1100,7 +1129,8 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 		taskValues: o.taskValues, taskBucketCheck: taskBucketCheck, taskBucketMarkerLife: markerLife,
-		noLaunch: launchRefusal(cfg, o.taskValues),
+		noLaunch:        launchRefusal(cfg, o.taskValues),
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1660,6 +1690,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
 	sup.noLaunch = p.noLaunch
+	sup.beforeDecision = p.beforeDecision
 	listener, err := stream.Listen(draining, p.stream,
 		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
 	if err != nil {
@@ -2030,14 +2061,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 	}()
 	go func() {
 		defer s.wg.Done()
-		for ev := range s.stream.Events() {
-			mapped, err := superviseEvent(ev)
-			if err != nil {
-				s.log.Error("worker stream: an event no machine can take", "error", err)
-				continue
-			}
-			s.supervisor.post(claimOf(mapped), mapped)
-		}
+		s.pump()
 	}()
 	go func() {
 		defer s.wg.Done()
@@ -2717,6 +2741,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		CallerPod:          callerPodOf(s.runtime),
 		Ready:              ready.serving,
 		Supervisor:         s.supervisor,
+		AwaitStream:        s.awaitStream,
 		PodUpdateRounds:    s.podUpdateRoundsView,
 		BootTokens:         s.tokens,
 		Project:            p.project,

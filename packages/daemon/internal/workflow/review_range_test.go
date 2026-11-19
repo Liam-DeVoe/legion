@@ -574,7 +574,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		pool, engine, _ := reviewRoundTwo(t)
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			_, err := engine.startPhaseOwner(ctx, tx, phaseOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
 				run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row, supervise.OriginResume)
 			return err
@@ -587,7 +587,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		pool, engine, _ := reviewRoundTwo(t)
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.repairSilence(ctx, tx, *issue, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 				intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 				reviewTestedAt.Add(2*time.Hour))
@@ -606,7 +606,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		carried := issueRecord(t, pool, "LEGION-208")
 		carried.Generation++
 		seedIssue(t, pool, *carried)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
@@ -669,11 +669,11 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 	t.Run("the re-admission of the root", func(t *testing.T) {
 		pool, engine, _ := reviewedChild(t)
 		before := reviewerRow(t, pool)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-207", time.Now().UTC())
 		})
 		member := issueRecord(t, pool, "LEGION-208")
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
@@ -688,7 +688,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 		child := issueRecord(t, pool, "LEGION-208")
 		fact := RecordedFact(*child)
 		fact.Status = "todo"
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.ReenterChild(ctx, tx, *child, fact)
 		})
 		testsIntoReviewing(t, pool, apply)
@@ -707,7 +707,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 		root := liveRootOf(t, pool, "LEGION-300", 1)
 		member := issueRecord(t, pool, "LEGION-208")
 		member.Status = "todo"
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.AdoptMember(ctx, tx, *member, root, intake.AdoptedChild{Issue: "LEGION-208", Parent: "LEGION-300", Status: "todo"})
 		})
 		if got := issueRecord(t, pool, "LEGION-208").Tree; got != "LEGION-300" {
