@@ -347,10 +347,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 			own = append(own, issue)
 		}
 	}
-	// The admission block is the one judgement of it, which the admission pass's state event
-	// carries too (blockers.JudgeAdmission): the project's live records and its own slots among
-	// the slots read above, the waiting line those leave, what blocks and what holds its issues,
-	// its live trees and the cap, read in this transaction's snapshot like every other fact here.
+	// The admission block is the one judgement of it (blockers.JudgeAdmission), built by
+	// blockers.AdmissionOf, which also builds the block the admission pass's state event carries:
+	// the project's live records and its own slots among the slots read above, the waiting line
+	// those leave, what blocks and what holds its issues, its live trees and the cap, read in this
+	// transaction's snapshot like every other fact here.
 	// The line it judged, the mirror rows it judged the links from and the facts it read are what
 	// each issue's view below is read from, so a member's place and every issue's `why` come from
 	// the judgement whose lists the block serves.

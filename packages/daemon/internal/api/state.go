@@ -577,10 +577,10 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 }
 
 // AdmissionOf is the block the state route serves, built from the one judgement of it
-// (blockers.JudgeAdmission), which the admission pass's state event carries as well
-// (record.StateAdmission): the cap and the five lists, field for field, so the block a caller reads
-// here and the block an event carries are one value, and the two encodings write the same keys
-// (record.AdmissionBlock.MarshalJSON).
+// (blockers.JudgeAdmission) by blockers.AdmissionOf, which also builds the block the admission
+// pass's state event carries (record.StateAdmission): the cap and the five lists, field for field,
+// so the block a caller reads here and the block an event carries are one value, and the two
+// encodings write the same keys (record.AdmissionBlock.MarshalJSON).
 func AdmissionOf(block record.AdmissionBlock) Admission {
 	return Admission{Cap: block.Cap, Active: block.Active, Waiting: block.Waiting, Trees: block.Trees,
 		Blocked: block.Blocked, Held: block.Held}

@@ -12,15 +12,17 @@ import (
 // passRead is one read of what an admission pass judges (reread): the project's live records,
 // every project's slots and the line facts over those records, beside the transaction it was taken
 // in and how many rows that transaction had written to the tables a judgement reads when the read
-// was taken (record.Store.JudgedWrites). The count is taken before the read, so a write anywhere
-// in the transaction after it, by any code, makes a later count differ; and a count is the
-// transaction's own, so a read of another transaction never stands in this one.
+// was taken (record.Store.JudgedWrites), with counted false where Postgres kept no such count. The
+// count is taken before the read, so a write anywhere in the transaction after it, by any code,
+// makes a later count differ; and a count is the transaction's own, so a read of another
+// transaction never stands in this one.
 type passRead struct {
-	tx     pgx.Tx
-	writes int64
-	issues []record.Issue
-	slots  []record.Slot
-	facts  record.LineFacts
+	tx      pgx.Tx
+	writes  int64
+	counted bool
+	issues  []record.Issue
+	slots   []record.Slot
+	facts   record.LineFacts
 }
 
 // passJudgement is a pass's read (passRead) and, when judged is set, the judgement of the line the
@@ -40,7 +42,7 @@ type passJudgement struct {
 // (record.Store.JudgedWrites), and it is what every pass reads its records through, so the pass's
 // end can tell whether that read still stands (finalJudgement).
 func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) (passRead, error) {
-	writes, err := a.store.JudgedWrites(ctx, tx)
+	writes, counted, err := a.store.JudgedWrites(ctx, tx)
 	if err != nil {
 		return passRead{}, err
 	}
@@ -48,7 +50,7 @@ func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) (passRead, error) {
 	if err != nil {
 		return passRead{}, err
 	}
-	return passRead{tx: tx, writes: writes, issues: issues, slots: slots, facts: facts}, nil
+	return passRead{tx: tx, writes: writes, counted: counted, issues: issues, slots: slots, facts: facts}, nil
 }
 
 // judged records, as this pass's last judgement, the judgement of the line JudgeLine answered over
@@ -72,12 +74,13 @@ func (a *Admission) judge(ctx context.Context, tx pgx.Tx, read passRead) (*passJ
 // they stand now, after every write the transaction has made so far, the workflow handler's ahead
 // of this pass and the pass's own promotions and releases among them. It is the pass's last
 // judgement (last) where the transaction has written no row a judgement reads since the read that
-// judgement was made over (record.Store.JudgedWrites answers the count that read was taken at):
-// then a fresh read would read the same rows and a fresh judgement judge them alike, so the pass
-// judges nothing again. Where the pass's last read stands and it made no judgement over it (the
-// entry sweep's), it judges that read, reading nothing. Otherwise it reads the project again and
-// judges that read. Either way the answer is recorded as the pass's last judgement, so a second
-// caller at the pass's end gets the same judgement.
+// judgement was made over: both counts are ok and equal (record.Store.JudgedWrites answers the
+// count that read was taken at). Then a fresh read would read the same rows and a fresh judgement
+// judge them alike, so the pass judges nothing again. Where the pass's last read stands and it
+// made no judgement over it (the entry sweep's), it judges that read, reading nothing. Otherwise,
+// and wherever Postgres keeps no counts, it reads the project again and judges that read. Either
+// way the answer is recorded as the pass's last judgement, so a second caller at the pass's end
+// gets the same judgement.
 //
 // The rows a pass writes after this — the block's own row and its state event, a controller
 // notice — are no input of any judgement: the block's table is not among the tables a judgement
@@ -86,12 +89,12 @@ func (a *Admission) judge(ctx context.Context, tx pgx.Tx, read passRead) (*passJ
 // hands the one judgement to each of its readers (endPass) rather than asking this again after
 // each write.
 func (a *Admission) finalJudgement(ctx context.Context, tx pgx.Tx) (*passJudgement, error) {
-	if last := a.last; last != nil && last.tx == tx && last.writes >= 0 {
-		writes, err := a.store.JudgedWrites(ctx, tx)
+	if last := a.last; last != nil && last.tx == tx && last.counted {
+		writes, counted, err := a.store.JudgedWrites(ctx, tx)
 		if err != nil {
 			return nil, err
 		}
-		if writes == last.writes {
+		if counted && writes == last.writes {
 			if last.judged {
 				return last, nil
 			}

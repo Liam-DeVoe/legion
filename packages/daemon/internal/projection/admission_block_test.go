@@ -37,13 +37,14 @@ func (s routeRecords) Issues(ctx context.Context, tx pgx.Tx) ([]record.Issue, er
 	return own, nil
 }
 
-// The admission block has one computation (blockers.JudgeAdmission), which the state route serves
-// and the admission pass's state event carries, judged from the pass's own read: the project's
-// live records and its own slots. It holds the block the state serves (Project) to the judgement's
-// block as the event carries it (record.AdmissionBlock), over the store the controller-claim golden
-// projects and over one holding what the two reads part on: done issues — a child, a child holding
-// a slot still, a parent on a member's chain, a root whose linger ran out — another project's slot,
-// and a lingering tree with a member still in the workflow.
+// The admission block has one assembly (blockers.AdmissionOf), which the state route serves over
+// its judgement (blockers.JudgeAdmission) and the admission pass's state event carries, both
+// judged from the pass's own read: the project's live records and its own slots. It holds the
+// block the state serves (Project) to the judgement's block as the event carries it
+// (record.AdmissionBlock), over the store the controller-claim golden projects and over one
+// holding what the two reads part on: done issues — a child, a child holding a slot still, a
+// parent on a member's chain, a root whose linger ran out — another project's slot, and a
+// lingering tree with a member still in the workflow.
 func TestTheJudgedAdmissionBlockIsTheBlockTheStateServes(t *testing.T) {
 	architect, err := claim.NewToken("legion", "LEGION-208", claim.RoleArchitect)
 	if err != nil {

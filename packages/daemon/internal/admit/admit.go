@@ -653,18 +653,19 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 // (`silent`, silentWorkers).
 //
 // The two are two assemblies of one judgement of the line, the admission block's own `held` and
-// `blocked` (blockers.JudgeAdmissionFrom), so they are built together here: `blocked` is
+// `blocked` (blockers.AdmissionOf), so they are built together here: `blocked` is
 // blockers.Blocked over the mirror rows and the line, `held` is record.HeldList over the same line
 // and the rows the pass left behind, and both read the judgement promotion itself reads
 // (blockers.JudgeLine). Built apart they cost the tick two judgements of the whole project — the
 // same four reads, and the mirror read twice in one transaction — and a reader of either list
 // could not say the two were made over one record.
 //
-// Each is built by the judgement the state builds the same list with (blockers.JudgeAdmission),
-// over this transaction's own reads, so what the controller is told and what `legion state` shows
-// for one issue agree: one word in both, and one set of blocked rows in both. The rows are built
-// whether or not a controller is registered to be told, because the unclassified line is written
-// from them (logUnclassified), and that line is the daemon's own record of what the words miss.
+// Each is built by the function the state route builds the same list with (blockers.AdmissionOf,
+// over the JudgeLine of blockers.JudgeAdmission), here over this transaction's own reads, so what
+// the controller is told and what `legion state` shows for one issue agree: one word in both, and
+// one set of blocked rows in both. The rows are built whether or not a controller is registered to
+// be told, because the unclassified line is written from them (logUnclassified), and that line is
+// the daemon's own record of what the words miss.
 //
 // It makes no read of the line of its own: it reads the pass's final judgement (final, endPass),
 // the one the admission block of the same pass is assembled from, and the candidates are the live
@@ -1833,7 +1834,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err != nil {
 		return 0, released, err
 	}
-	a.judged(passRead{tx: tx, writes: read.writes, issues: issues, slots: slots, facts: read.facts}, rows, facts, line, dropped)
+	a.judged(passRead{tx: tx, writes: read.writes, counted: read.counted, issues: issues, slots: slots, facts: read.facts}, rows, facts, line, dropped)
 	// The issues this judgement finds waiting give their rows back before the line is promoted,
 	// so this pass's own line and its own slots (record.OwnSlots) read the state after the
 	// release: an issue that waits holds none of the cap's slots, and the slot it gives back is

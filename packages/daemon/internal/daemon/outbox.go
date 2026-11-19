@@ -530,9 +530,13 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// Nobody is told, and the line is what says the event is lost. The row is finished so it
 		// no longer holds the project's later state events behind it, and any row that rode beside
 		// it in the refused message goes out as the next one, whose first sequence is one above
-		// this row's: Dispatch finds the gap the row leaves and reads the daemon's whole state.
+		// this row's. Dispatch finds the gap the row leaves, and the row's events reach Dispatch at
+		// its next whole read of the project. Dispatch makes that read at the gap, or, when its
+		// last read of the project is less than a minute old, when that minute ends: the message
+		// that found the gap goes back to the stream with a delay of the time left, and its
+		// redelivery makes the read (ReadRetryAfter in packages/envoy's legion intake).
 		told = func() {
-			r.log.Error("outbox state event refused by the listener and dropped; Dispatch reads the whole state at the gap it leaves",
+			r.log.Error("outbox state event refused by the listener and dropped; its events reach Dispatch at the next whole read of the project",
 				"row", row.ID, "project", row.Issue, "seq", row.StateSeq, "kind", row.Kind, "error", cause)
 		}
 	case record.StepRecord:
@@ -2328,9 +2332,10 @@ func stateCarried(encoded []byte) int {
 // first row the lane claims once this message's rows are finished; the message that takes the
 // transaction's last row carries no `more`, so a reader holds a split transaction's events until
 // that message arrives. The head's event goes out whatever its size, so a row too large for any
-// message is refused by the listener and dropped rather than held. The store id every message
-// carries (record.Store.StatePublication) is read in the transaction that reads the rows, from the
-// counter row the head's own commit stepped, so it is there for any row the lane can claim.
+// message is refused by the listener and dropped rather than held (finishRefused), and its event
+// reaches Dispatch at the next whole read of the project. The store id every message carries
+// (record.Store.StatePublication) is read in the transaction that reads the rows, from the counter
+// row the head's own commit stepped, so it is there for any row the lane can claim.
 //
 // The message's key is the head's own (record.OutboxKey), so a message published again after a
 // failed finish is one the stream already holds. Once the listener has taken it, head and the rows

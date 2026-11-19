@@ -7,7 +7,7 @@
 -- a state_change when a write moves an issue's phase, tree, slot, waitingOn or claim, a
 -- state_admission when the admission block changes, and a state_boot at each boot
 -- (internal/record's StateChange, StateAdmission and StateBoot). Dispatch reads the events in
--- sequence order and reads the daemon's whole state again when it finds a gap, so the sequence
+-- sequence order and takes the daemon's whole state again when it finds a gap, so the sequence
 -- has to follow commit order and have no gap. Every state row carries the bare Dispatch project
 -- key in outbox.issue, as gated_steps_publish does, so a project has one state lane, and that
 -- lane publishes its rows strictly in sequence order (internal/record's outboxInOrder).

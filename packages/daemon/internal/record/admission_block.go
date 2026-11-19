@@ -12,9 +12,11 @@ import (
 
 // AdmissionBlock is a project's admission block: the cap and the five lists GET /legion/v1/state
 // serves under `admission` (api.Admission, which is built from this type) and a state_admission
-// event carries (StateAdmission). One judgement of one read of the project computes it
-// (blockers.JudgeAdmission), which the state route and the admission pass both call, so the block
-// the route serves and the block the event carries are the same value.
+// event carries (StateAdmission). Both readers build it with blockers.AdmissionOf from one
+// judgement of the line over one read of the project: the state route over the JudgeLine of
+// blockers.JudgeAdmission, and the admission pass over its final judgement (admit's
+// finalJudgement). So the block the route serves and the block the event carries are the same
+// value for the same records.
 //
 // It is declared here, below both readers, because the admission pass that writes the event cannot
 // import api. Its JSON is the route's own: the keys api.Admission writes, in its order, and every

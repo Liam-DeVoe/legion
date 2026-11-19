@@ -310,8 +310,9 @@ func stateIssue() record.Issue {
 // every later state row of the project until it goes. A publish the listener refuses the same way
 // however often it is sent, its own grant denying the subject or the message itself refused,
 // finishes its row with an ERROR line naming the sequence it drops, and the next row goes out one
-// above the gap, at which Dispatch reads the whole state. Every message carries the store's one id
-// (record.StatePublication.StateID), the id GET /legion/v1/state serves as `daemon.stateId`.
+// above the gap. The dropped events reach Dispatch at its next whole read of the project. Every
+// message carries the store's one id (record.StatePublication.StateID), the id GET
+// /legion/v1/state serves as `daemon.stateId`.
 func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T) {
 	r := newStateRig(t)
 	topic := notify.StateTopic("legion")

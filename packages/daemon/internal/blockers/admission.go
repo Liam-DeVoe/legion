@@ -36,14 +36,16 @@ type AdmissionJudgement struct {
 // (record.HeldList). now is the caller's clock, the one thing the judgement reads beside the
 // records (JudgeLine).
 //
-// It is the one computation of the block, and both readers of it call it: the state route
-// (projection.Project), which serves it, and the admission pass, which at the end of each of its
-// passes writes the block's state event where the block changed (admit's queueAdmissionBlock), and
-// whose tick tells the controller its held and blocked lists (admit's tickRows). The pass's own
-// read is the live records, which leave out a done record holding no slot, so the route judges the
-// block from that read too, and the two cannot differ for any record of the project. The records a
-// live read leaves out still reach the judgement where it needs them: a done parent on a chain
-// (LineFacts.Parents) and a done or parked root (LineFacts.Roots), each read by ReadLineFacts.
+// It is the state route's judgement of the block (projection.Project), which serves it. Both
+// readers of the block build it with AdmissionOf: the state route over the JudgeLine this function
+// calls, and the admission pass over its own final judgement of the line (admit's finalJudgement),
+// from which it writes the block's state event where the block changed (admit's
+// queueAdmissionBlock) and tells the controller its held and blocked lists (admit's tickRows). The
+// pass reads the live records too (admit's reread), which leave out a done record holding no slot,
+// so the route judges the block from that read as well, and the two cannot differ for any record
+// of the project. The records a live read leaves out still reach the judgement where it needs
+// them: a done parent on a chain (LineFacts.Parents) and a done or parked root (LineFacts.Roots),
+// each read by ReadLineFacts.
 func JudgeAdmission(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep,
 	slots []record.Slot, cap int, now time.Time,
 ) (AdmissionJudgement, error) {
@@ -55,21 +57,12 @@ func JudgeAdmission(ctx context.Context, tx pgx.Tx, store record.Store, project 
 	if err != nil {
 		return AdmissionJudgement{}, fmt.Errorf("judge the admission of %s: %w", project, err)
 	}
-	return JudgeAdmissionFrom(ctx, tx, store, project, issues, slots, facts, cap, now)
-}
-
-// JudgeAdmissionFrom is JudgeAdmission over the reads its caller already made in tx: the project's
-// live records, every project's slots and the facts read over those records, as the admission pass
-// reads them once for all its judgements (admit's reread).
-func JudgeAdmissionFrom(ctx context.Context, tx pgx.Tx, store record.Store, project string, issues []record.Issue,
-	every []record.Slot, facts record.LineFacts, cap int, now time.Time,
-) (AdmissionJudgement, error) {
-	slots := record.OwnSlots(issues, every)
-	rows, facts, line, dropped, err := JudgeLine(ctx, tx, store, project, issues, slots, facts, nil, now)
+	own := record.OwnSlots(issues, slots)
+	rows, facts, line, dropped, err := JudgeLine(ctx, tx, store, project, issues, own, facts, nil, now)
 	if err != nil {
 		return AdmissionJudgement{}, fmt.Errorf("judge the admission of %s: %w", project, err)
 	}
-	return AdmissionOf(issues, slots, rows, facts, line, dropped, cap), nil
+	return AdmissionOf(issues, own, rows, facts, line, dropped, cap), nil
 }
 
 // AdmissionOf is the admission judgement of one judgement of the line (JudgeLine), which reads
@@ -78,9 +71,10 @@ func JudgeAdmissionFrom(ctx context.Context, tx pgx.Tx, store record.Store, proj
 // what JudgeLine answered over them. Under cap: `active`, the issues holding those slots in slot
 // order; `waiting`, the line in its order; `trees`, the live roots by key (record.LiveRoots);
 // `blocked`, what waits on another issue (Blocked); and `held`, what the daemon holds in the
-// workflow and runs nothing of (record.HeldList). The admission pass assembles its block with it
-// from the last judgement it made itself (admit's finalJudgement), so the block costs no judgement
-// of its own where that judgement still stands.
+// workflow and runs nothing of (record.HeldList). Both readers of the block build it with this
+// function. The state route builds it over the JudgeLine of JudgeAdmission. The admission pass
+// builds it over its final judgement (admit's finalJudgement), so the block costs no judgement of
+// its own where the pass's last judgement still stands.
 func AdmissionOf(issues []record.Issue, slots []record.Slot, rows map[string]Row, facts record.LineFacts,
 	line []record.LineEntry, dropped []record.HeldIssue, cap int,
 ) AdmissionJudgement {

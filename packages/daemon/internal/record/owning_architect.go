@@ -16,31 +16,23 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, fromPar
 }
 
 // NoticeStartsAtParent is whether the owner walk for a notice of kind, about role's claim, starts
-// at its issue's parent (OwningIssue's fromParent) rather than at the issue itself. Three notices
-// do. A child's close or status change: it tells of the child's own run starting, leaving, coming
-// back or closing, which is not the child's own architect to judge (a leave suspends that architect
-// and a close as done retires it, in workflow's leave), and the architect above it decides what
-// the rest of the tree does. A worker-died or a worker-stalled about an issue's own architect
+// at its issue's parent (OwningIssue's fromParent) rather than at the issue itself. Two notices do.
+// A child's close or status change: it tells of the child's own run starting, leaving, coming back
+// or closing, which is not the child's own architect to judge (a leave suspends that architect and
+// a close as done retires it, in workflow's leave), and the architect above it decides what the
+// rest of the tree does. And a worker-died or a worker-stalled about an issue's own architect
 // (role is claim.RoleArchitect): the notice is about that architect, so the architect above it
 // must hear it, and the tree root's own architect, which has none above it, hears its own (the
-// walk from the root ends at the root, OwningIssue). And the phase-finished of the gate's opening,
-// the one phase-finished that names no role (workflow's noticeFor: every other names the worker
-// whose phase ended, and only the move out of admitted has none). The child's own architect starts
-// with that move (workflow's gateOpened) and is told what it owns by its catch-up, so the notice
-// goes to the architect above the child, which owned the child at admitted. A walk from the child
-// would reach the child's own architect before its catch-up whenever the notice waited for the
-// architect above, for example for its released pod: the next attempt finds the child's architect
-// launching.
+// walk from the root ends at the root, OwningIssue).
 //
-// Each of these notices on a child with no parent goes to the tree root, never to the child's own
+// Either notice on a child with no parent goes to the tree root, never to the child's own
 // architect: a failed claim is passed over by the walk anyway, but a stalled one still holds its
 // role and would be told of its own stall, and the outbox can publish a child's close or status
 // change while the child's own architect still holds its role, before its suspension or close
 // lands. On a root each walk ends at the root, as every walk from the root does.
 func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
 	aboutItsArchitect := role == claim.RoleArchitect && (kind == "worker-died" || kind == "worker-stalled")
-	gateOpened := kind == "phase-finished" && role == ""
-	return aboutItsArchitect || gateOpened || kind == "child-closed" || kind == "child-status"
+	return aboutItsArchitect || kind == "child-closed" || kind == "child-status"
 }
 
 // OwningIssue is the key of the issue whose architect owns issue: the nearest issue at or above

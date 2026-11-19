@@ -24,6 +24,8 @@ body: |-
   a workflow serves it. A caller below 175 gets the answer without them. The daemon now refuses a
   `project` that is not a Dispatch project key (`^[A-Z][A-Z0-9]{1,9}$`, at most ten characters)
   when it loads its settings, naming the key, before it opens or migrates its store or mints any
-  credential; the keys of `projects` take the same rule.
+  credential; the keys of `projects` take the same rule. A child's first phase start no longer
+  sends a `phase-finished` notice: its own architect starts with that move and learns of it from
+  its catch-up, and the architect above it gets the `child-status` notice of the start, once.
 custom:
   Issue: pr4432
