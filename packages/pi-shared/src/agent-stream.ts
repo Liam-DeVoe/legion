@@ -121,10 +121,18 @@ export type AgentStreamContextState = Omit<
 >;
 
 /** The caller's record of one reading: the number of its interval it goes out in, when it goes
- *  out under that number, and when it was read, each as the `context` frame carries it. */
+ *  out under that number, and when it was read, each as the `context` frame carries it, and as the
+ *  `context-cleared` frame carries it for an answer of no window. */
 export type AgentStreamContextTiming = Required<
   Pick<AgentStreamContextState, "interval" | "at" | "readAt">
 >;
+
+/** What the context slot holds without its envelope: a `context` frame's reading, or the
+ *  `context-cleared` frame an answer of no window puts in its place, each with the caller's record
+ *  of it. */
+type AgentStreamContextSlot =
+  | Omit<Extract<AgentStreamFrame, { kind: "context" }>, "v" | "seq">
+  | Omit<Extract<AgentStreamFrame, { kind: "context-cleared" }>, "v" | "seq">;
 
 const encoder = new TextEncoder();
 
@@ -331,12 +339,14 @@ export class AgentStreamPublisher {
   #settingsSeq = 0;
   /** `#settings` as JSON, which a new state is compared against. */
   #settingsJson: string | undefined;
-  /** How much of its context window the session fills, as last kept; undefined until the host
-   *  first answers figures `setContext` publishes. */
-  #context: AgentStreamContextState | undefined;
+  /** How much of its context window the session fills, as last kept: the reading `setContext`
+   *  last let through, the clearing frame once the host has answered no window, and undefined
+   *  until the host first answers either (and again after `reset`). */
+  #context: AgentStreamContextSlot | undefined;
   #contextSeq = 0;
-  /** `#context`'s two figures as JSON, which a new reading is compared against: its interval
-   *  number is when it went out, not what it says. */
+  /** The two figures of the reading `#context` holds as JSON, which a new reading is compared
+   *  against; undefined while it holds none. Its interval number is when it went out, not what it
+   *  says. */
   #contextJson: string | undefined;
 
   constructor(deps: AgentStreamPublisherDeps) {
@@ -460,43 +470,57 @@ export class AgentStreamPublisher {
   /**
    * How much of its context window the session fills now, as the host's own `getContextUsage()`
    * answered: kept for every replay, whose frame between the settings and the commands it is, and
-   * published at once when it differs from the reading last kept while a viewer is attached.
+   * published at once when it differs from what was last kept while a viewer is attached.
    * `timing` is the caller's record of the reading, which the frame carries: the number of the
    * caller's interval it goes out in, when, and when it was read. The caller's throttle numbers
-   * the intervals, and a reading kept unchanged keeps the record it went out with.
+   * the intervals, an answer of no window among them, and a reading or a clear kept unchanged
+   * keeps the record it went out with.
    *
-   * A reading is published only when the host answers a positive window and a usable figure:
-   * `contextWindow` above zero, and either a `percent` the host computed or tokens of its own.
-   * The pinned binary has more than one wiring behind `getContextUsage`: the canonical one
-   * answers from the session's context breakdown, and the status line's startup session answers
-   * `{tokens: 0, contextWindow, percent: null}`, which would draw a viewer a ring at zero per
-   * cent for a conversation that is nothing of the sort. A host that holds no breakdown answers
-   * nothing at all, and a host too old to have the method lets its caller pass undefined; neither
-   * refusal disturbs the reading this publisher already keeps.
+   * A reading is kept and published only when the host answers a window above zero and a usable
+   * figure: either a `percent` the host computed or tokens of its own. An answer of no usage, or
+   * of a window of zero or below, clears instead: the publisher sends `context-cleared` and keeps
+   * it in every replay in the reading's place, so a viewer takes its ring away. It does so even
+   * before any reading: a page held open while the session is relaunched with `--resume` holds
+   * the earlier process's reading, and only a clearing frame with a newer `seq` takes that ring
+   * away. The `{tokens: 0, contextWindow, percent: null}` answer reports a window and no figure,
+   * so it leaves the slot as it is, neither replacing nor clearing it.
+   *
+   * The pinned host (Oh My Pi 18.18.6-sami.20261117-013345, `.omp-pin`) answers undefined only
+   * from a runner not yet initialised, never after a good reading, so clearing on it cannot make
+   * the ring flicker. A window of zero comes from a model with no window, or from no model, and
+   * lasts until the model changes. The `percent: null` guard stays for an older pinned build,
+   * 18.16.0-sami.20261105-032528, whose status line's startup wiring answered that shape: sent,
+   * it would draw a ring at nought per cent over a conversation well underway.
    */
   setContext(
     subject: string,
     usage: ContextUsage | undefined,
     timing: AgentStreamContextTiming
   ): void {
-    if (usage === undefined) return;
-    if (!(usage.contextWindow > 0)) return;
-    if (typeof usage.percent !== "number" && !(usage.tokens > 0)) return;
-    const figures = { contextWindow: usage.contextWindow, tokens: usage.tokens };
-    const json = JSON.stringify(figures);
-    if (json === this.#contextJson) return;
-    const kept: AgentStreamContextState = { ...figures, ...timing };
-    this.#context = kept;
-    this.#contextJson = json;
+    if (usage === undefined || !(usage.contextWindow > 0)) {
+      if (this.#context?.kind === "context-cleared") return;
+      this.#context = { kind: "context-cleared", ...timing };
+      // Forgotten, so a reading equal to the one before the clear is news again.
+      this.#contextJson = undefined;
+    } else {
+      if (typeof usage.percent !== "number" && !(usage.tokens > 0)) return;
+      const figures = { contextWindow: usage.contextWindow, tokens: usage.tokens };
+      const json = JSON.stringify(figures);
+      if (json === this.#contextJson) return;
+      this.#context = { kind: "context", ...figures, ...timing };
+      this.#contextJson = json;
+    }
     this.#seq += 1;
     this.#contextSeq = this.#seq;
-    if (this.watched) this.#deps.publish(subject, JSON.stringify(this.#contextFrame(kept)));
+    if (this.watched) {
+      this.#deps.publish(subject, JSON.stringify(this.#contextFrame(this.#context)));
+    }
     this.#fitCommands(subject);
   }
 
   /** Keeps the host-order prefix of the listed commands whose frame fits the replay's byte budget
-   *  after the settings and context frames, and publishes it when it differs from the list last
-   *  kept. */
+   *  after the settings frame and the context slot's frame (a reading or the clearing frame), and
+   *  publishes it when it differs from the list last kept. */
   #fitCommands(subject: string): void {
     const listed = this.#listedCommands;
     if (listed === undefined) return;
@@ -543,8 +567,10 @@ export class AgentStreamPublisher {
     return { ...settings, kind: "settings", seq: this.#settingsSeq, v: AGENT_STREAM_PROTOCOL };
   }
 
-  #contextFrame(context: AgentStreamContextState): AgentStreamFrame {
-    return { ...context, kind: "context", seq: this.#contextSeq, v: AGENT_STREAM_PROTOCOL };
+  /** The frame the context slot rides in: the reading it keeps, or the clearing frame in its
+   *  place. */
+  #contextFrame(context: AgentStreamContextSlot): AgentStreamFrame {
+    return { ...context, seq: this.#contextSeq, v: AGENT_STREAM_PROTOCOL };
   }
 
   /**
@@ -612,9 +638,9 @@ export class AgentStreamPublisher {
     const ordered = [...this.#history.values()].sort((left, right) =>
       left.at === right.at ? left.seq - right.seq : left.at - right.at
     );
-    // The settings, the context usage and then the command list ride last, in that order, and are
-    // paid for first, so a full history never crowds them out; `#fitCommands` keeps the three
-    // inside the budget.
+    // The settings, the context slot (a reading or the clearing frame) and then the command list
+    // ride last, in that order, and are paid for first, so a full history never crowds them out;
+    // `#fitCommands` keeps the three inside the budget.
     const tail: AgentStreamFrame[] = [];
     if (this.#settings !== undefined) tail.push(this.#settingsFrame(this.#settings));
     if (this.#context !== undefined) tail.push(this.#contextFrame(this.#context));

@@ -1648,13 +1648,13 @@ function sessionPodListener(): SessionPodListener {
  * A session `sessionID` in a session pod, registering with `listener`, its transcript starting with
  * `transcript` (a fresh session has none). A `launch` names the role the pod's launch names in
  * `ENVOY_SESSION_ROLE` and, when it names one, the session it names for it in
- * `ENVOY_SESSION_ROLE_SESSION` (agent-infra's sessions workload); with no `launch` the environment
- * is left as it is. The host has one session manager, as Oh My Pi's has: `move` takes it to session
- * `id` the way `reason` does (a `/fork` or a tree branch carries the branch on, a `/new` starts an
- * empty one, and a `/fork`, a `/new` or a resume opens the branch `opens` gives, where given; a tree
- * branch keeps its own). `heartbeat` runs one heartbeat pass and lets it settle, `records` reads the
- * role claim records the session's transcript holds, and `notices` is every notice the extension
- * showed on screen, as `<level>: <text>`.
+ * `ENVOY_SESSION_ROLE_SESSION` (the deployment repository's sessions workload); with no `launch`
+ * the environment is left as it is. The host has one session manager, as Oh My Pi's has: `move`
+ * takes it to session `id` the way `reason` does (a `/fork` or a tree branch carries the branch on,
+ * a `/new` starts an empty one, and a `/fork`, a `/new` or a resume opens the branch `opens` gives,
+ * where given; a tree branch keeps its own). `heartbeat` runs one heartbeat pass and lets it
+ * settle, `records` reads the role claim records the session's transcript holds, and `notices` is
+ * every notice the extension showed on screen, as `<level>: <text>`.
  */
 async function bootSessionPod(
   query: string,
@@ -17218,8 +17218,9 @@ console.log(JSON.stringify(args));
   // The ring a viewer draws over the session's context window (INFRA-812). The host fires no
   // event for its filling either, so it is read from `ctx.getContextUsage()` after each message of
   // a turn, at each turn's start and after a compaction, at most once in each
-  // `ENVOY_CONTEXT_FRAME_INTERVAL_MS`. A reading no viewer could draw a true ring from is not
-  // sent at all.
+  // `ENVOY_CONTEXT_FRAME_INTERVAL_MS`. A host that reports no window takes the ring away with the
+  // `context-cleared` frame in a reading's place (INFRA-4325); a reading that names a window and
+  // no figure is not sent at all.
   describe("the session's context frame", () => {
     const framesSubject = "agentstream.ses_delivery.frames";
     const message = {
@@ -17228,21 +17229,23 @@ console.log(JSON.stringify(args));
       timestamp: 20,
     };
 
-    /** Every context frame the session published to its attached viewer, oldest first. */
+    /** Every frame of the context slot the session published to its attached viewer, oldest
+     *  first: each reading, and each clearing frame, which carries no figures. Both carry the
+     *  session's record of when they were read and went out. */
     const publishedContext = (): {
-      readonly tokens: number;
-      readonly contextWindow: number;
+      readonly v: number;
+      readonly kind: "context" | "context-cleared";
+      readonly seq: number;
+      readonly tokens?: number;
+      readonly contextWindow?: number;
       readonly interval: number;
       readonly at: number;
       readonly readAt: number;
-      readonly kind: string;
-      readonly seq: number;
-      readonly v: number;
     }[] =>
       natsState.published
         .filter((each) => each.subject === framesSubject)
         .map((each) => JSON.parse(new TextDecoder().decode(each.data)))
-        .filter((frame) => frame.kind === "context");
+        .filter((frame) => frame.kind === "context" || frame.kind === "context-cleared");
 
     /** A viewer arms this session's publisher, as the relay's watch does. */
     const attachViewer = async (): Promise<void> => {
@@ -17435,26 +17438,94 @@ console.log(JSON.stringify(args));
       expect(publishedContext().map((frame) => frame.interval)).toEqual([1, 2]);
     });
 
+    // A host that reports no window is a session the viewer must draw no ring for, whatever it
+    // drew before: a model with no window, or a runner with no breakdown to answer from.
     for (const [name, usage] of [
       ["the host names no window", { contextWindow: 0, percent: 12, tokens: 24_000 }],
-      ["the host holds no breakdown", { contextWindow: 200_000, percent: null, tokens: 0 }],
       ["the host answers nothing", undefined],
     ] as const) {
-      test(`sends nothing when ${name}`, async () => {
-        const { context, fixture } = await bootDirectSession(`context-frame-refused-${name}`, {
+      test(`publishes the clearing frame and no reading when ${name}`, async () => {
+        const { context, fixture } = await bootDirectSession(`context-frame-cleared-${name}`, {
           contextUsage: () => usage,
         });
         await attachViewer();
 
         await fixture.handlers.get("turn_start")?.({}, context);
 
-        expect(publishedContext()).toEqual([]);
+        // The answer of no window goes through the interval as a reading does, and its frame
+        // carries the same record: the first interval's, sent as it was read.
+        expect(publishedContext()).toEqual([
+          {
+            kind: "context-cleared",
+            seq: expect.any(Number),
+            v: 1,
+            interval: 1,
+            at: expect.any(Number),
+            readAt: expect.any(Number),
+          },
+        ]);
+        const [cleared] = publishedContext();
+        expect(cleared?.at).toBe(cleared?.readAt);
       });
     }
 
+    // A window with no figure is neither a reading a viewer could draw a true ring from nor a
+    // report of no window, so it sends nothing at all.
+    test("sends nothing when the host holds no breakdown", async () => {
+      const { context, fixture } = await bootDirectSession("context-frame-no-breakdown", {
+        contextUsage: () => ({ contextWindow: 200_000, percent: null, tokens: 0 }),
+      });
+      await attachViewer();
+
+      await fixture.handlers.get("turn_start")?.({}, context);
+
+      expect(publishedContext()).toEqual([]);
+    });
+
+    // A view that opens after a switch to a model with no window draws its ring from the replay,
+    // so the clearing frame takes the reading's place in the replay's tail, right after the
+    // settings (this host lists no commands to ride after it), and the reading before it is gone.
+    // The answer of no window ends inside the interval the turn's reading opened, so the interval
+    // holds it: the trailing timer is the publisher's own, in this process, so the row holds it on
+    // Bun's fake clock and moves the clock to the interval's end (R4), as the trailing-reading row
+    // above does.
+    test("a window of zero after a reading replays the clearing frame in its place", async () => {
+      process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS = "50";
+      let contextWindow = 200_000;
+      const { context, fixture } = await bootDirectSession("context-frame-cleared-replay", {
+        contextUsage: () => ({ contextWindow, percent: 25, tokens: 50_000 }),
+      });
+      await attachViewer();
+
+      jest.useFakeTimers();
+      await fixture.handlers.get("turn_start")?.({}, context);
+      contextWindow = 0;
+      await fixture.handlers.get("message_end")?.({ message }, context);
+      expect(publishedContext().map((frame) => frame.kind)).toEqual(["context"]);
+      jest.advanceTimersByTime(49);
+      await settle();
+      expect(publishedContext().map((frame) => frame.kind)).toEqual(["context"]);
+      jest.advanceTimersByTime(1);
+      await settle();
+      // The held clear went out at its interval's end, numbered the next interval's.
+      expect(publishedContext().map((frame) => [frame.kind, frame.interval])).toEqual([
+        ["context", 1],
+        ["context-cleared", 2],
+      ]);
+      jest.useRealTimers();
+
+      expect(publishedContext().map((frame) => frame.kind)).toEqual(["context", "context-cleared"]);
+      const replayed = await replayedFrames("inbox-context-cleared-replay");
+      const kinds = replayed.map((frame) => frame.kind);
+      expect(kinds.slice(-2)).toEqual(["settings", "context-cleared"]);
+      expect(kinds).not.toContain("context");
+      // The very frame the viewer was sent, its `seq` included.
+      expect(replayed.at(-1)).toEqual(publishedContext().at(-1));
+    });
+
     // The negative control of the check: a session context with no `getContextUsage` publishes no
-    // frame at all, and the replay a view opens on carries none either, so the view draws no ring
-    // rather than a stale or invented one.
+    // frame at all, the clearing one included, and the replay a view opens on carries none either,
+    // so the view draws no ring rather than a stale or invented one.
     test("sends nothing on a host too old to report one, and replays none", async () => {
       const { context, fixture } = await bootDirectSession("context-frame-no-method");
       await attachViewer();
@@ -17464,7 +17535,9 @@ console.log(JSON.stringify(args));
 
       expect(publishedContext()).toEqual([]);
       const replayed = await replayedFrames("inbox-context-no-method");
-      expect(replayed.map((frame) => frame.kind)).not.toContain("context");
+      const kinds = replayed.map((frame) => frame.kind);
+      expect(kinds).not.toContain("context");
+      expect(kinds).not.toContain("context-cleared");
     });
   });
 
