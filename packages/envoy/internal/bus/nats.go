@@ -408,17 +408,18 @@ type Client struct {
 	// connection installed, and a disconnect, reconnect or close of a connection the client dialled.
 	// ConnectionChanged makes the next one when a caller takes it.
 	connChanged chan struct{}
-	// connStatus is the record of Conn's status (connStatus), under mu, set with Conn; a reader
-	// that holds mu, or a lock of a caller's, reads it rather than nats.go's state (statusLocked).
-	connStatus *connStatus
+	// prober reads Conn's status within heldLockBudget (connProber), for a caller that can hold a
+	// lock; under mu, made for each connection the first time it is asked (proberLocked). probeDown
+	// is a test's seam (ProbeReadsDownForTest), nil outside tests.
+	prober    *connProber
+	probeDown atomic.Pointer[func() bool]
 	// life is the life of lifeConn that requests are bound to (Request, requestLife), under mu: a
-	// context endLife ends, with ErrConnectionLost as its cause, at the end of lifeEpoch, the
-	// connected run of lifeConn it began in, and lifeReconnects is nats.go's reconnect count of
-	// lifeConn when it began. nil before the client's first request on a connected connection.
+	// context endLife ends, with ErrConnectionLost as its cause, at the first drop of lifeConn its
+	// own status listener is sent, and lifeReconnects is nats.go's reconnect count of lifeConn when
+	// it began. nil before the client's first request on a connected connection.
 	life           context.Context
 	endLife        context.CancelCauseFunc
 	lifeConn       *nats.Conn
-	lifeEpoch      *connEpoch
 	lifeReconnects uint64
 
 	// reconnectWaits counts the waits ensureConnWithContext makes for a connection nats.go is
@@ -665,9 +666,8 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 			return err
 		}
 	}
-	status := followConnStatus(nc)
 	c.mu.Lock()
-	c.Conn, c.connStatus, c.js = nc, status, c.readsOwnRefusals(bindJetStream(c, js))
+	c.Conn, c.js = nc, c.readsOwnRefusals(bindJetStream(c, js))
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so the record holds
 	// at most what the stream's ensure on nc left unread (recordPublishDenial records for the
@@ -876,29 +876,53 @@ func (c *Client) JS() nats.JetStreamContext {
 	return c.js
 }
 
-// Connected reports whether the client currently has a live NATS connection: CONNECTED, as the
-// record of its status reads it (connStatus), which is the view the client's own requests are
-// answered by (requestLife), and which waits for no reconnect's handshake. The record trails
-// nats.go's report by the moment its sources take to tell it.
+// Connected reports whether the client currently has a live NATS connection, as nats.go reads it.
+// It reads nats.go's state after it lets the client's lock go, so a wait for a reconnect's
+// handshake, which that read can make, holds no caller of the client's lock; it is exact, so none
+// of its readers - the dispatch outbox's loss grace, the health checks, the keeper's pass - acts on
+// a "down" the probe's budget (heldLockBudget) would give under load.
 func (c *Client) Connected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.Conn == nil {
-		return false
-	}
-	status, _ := c.statusLocked().read()
-	return status == nats.CONNECTED
+	conn := c.Connection()
+	return conn != nil && conn.Status() == nats.CONNECTED
 }
 
-// statusLocked is the record of Conn's status (connStatus), which the client sets with each
-// connection it installs (install, ensureConnWithContext). A client built without either, as a
-// test builds one around a connection of its own, gets one here, the first time it is asked, under
-// mu: the one read of nats.go's state made under mu, and never on a client the constructor made.
-func (c *Client) statusLocked() *connStatus {
-	if c.connStatus == nil || c.connStatus.conn != c.Conn {
-		c.connStatus = followConnStatus(c.Conn)
+// proberLocked is the prober of Conn's status (connProber), made for each connection the first
+// time it is asked. It reads nothing of nats.go's state.
+func (c *Client) proberLocked() *connProber {
+	if c.prober == nil || c.prober.conn != c.Conn {
+		c.prober = newConnProber(c.Conn)
 	}
-	return c.connStatus
+	return c.prober
+}
+
+// probeConn is the probe's read of conn's status and reconnect count (connProber.probe), or, when
+// conn is no longer the client's connection, nats.go's own read of it, which a closed connection
+// answers at once. A test's seam (ProbeReadsDownForTest) can make the probe answer "down".
+func (c *Client) probeConn(conn *nats.Conn) (status nats.Status, reconnects uint64, answered bool) {
+	c.mu.Lock()
+	var prober *connProber
+	if conn == c.Conn && conn != nil {
+		prober = c.proberLocked()
+	}
+	c.mu.Unlock()
+	if prober == nil {
+		return conn.Status(), conn.Stats().Reconnects, true
+	}
+	if down := c.probeDown.Load(); down != nil && (*down)() {
+		return 0, 0, false
+	}
+	return prober.probe()
+}
+
+// upNow reports whether conn is connected now (statusUp) by the probe, without a wait for a
+// reconnect's dial or handshake past heldLockBudget, and nats.go's reconnect count with an up
+// answer.
+func (c *Client) upNow(conn *nats.Conn) (up bool, reconnects uint64) {
+	status, reconnects, answered := c.probeConn(conn)
+	if !answered || !statusUp(status) {
+		return false, 0
+	}
+	return true, reconnects
 }
 
 // Connection is the client's connection now, read under its lock. A KV handle opened outside this
@@ -1737,7 +1761,6 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			return err
 		}
 
-		status := followConnStatus(nc)
 		c.mu.Lock()
 		// Drain and Close read c.Conn under c.mu after stopping the client, so checking here, under
 		// the same lock, means a connection dialled while they ran is either theirs to close or
@@ -1752,17 +1775,15 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			// serve with, so this one closes without its callbacks: its ClosedCB would start a
 			// recovery of a client that has a connection, and its DisconnectedErrCB would log
 			// "envoy nats disconnected" under the client's name, as if the connection it serves with
-			// had dropped. The line below says what happened instead. Its record stops following
-			// here, since the callbacks it would end on are cleared.
+			// had dropped. The line below says what happened instead.
 			c.mu.Unlock()
-			status.stop()
 			nc.SetClosedHandler(nil)
 			nc.SetDisconnectErrHandler(nil)
 			nc.Close()
 			slog.Info("envoy nats discarded a second replacement connection", slog.String("name", c.name))
 			continue
 		}
-		c.Conn, c.connStatus = nc, status
+		c.Conn = nc
 		c.js = c.readsOwnRefusals(bindJetStream(c, js))
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()

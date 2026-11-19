@@ -21,3 +21,29 @@ func HoldFirstConnectForTest(gate <-chan struct{}) (restore func()) {
 // first-connect callback (onConnect). It is for tests alone, which read it beside
 // HoldFirstConnectForTest.
 func (c *Client) AwaitingConnectionForTest() bool { return c.awaitingFirstConnection() }
+
+// ProbeReadsDownForTest makes each read of c's connection's status through the probe (connProber,
+// the reads of a caller that can hold a lock: connForRequest, requestLife and closedUnder on a
+// withLossAtOnce client) answer "down", as a read nats.go's lock kept waiting past heldLockBudget
+// does, while down reports true, until the function it answers takes the seam out. It is for tests
+// alone: it is the false "down" a loaded box can give, made on demand.
+func (c *Client) ProbeReadsDownForTest(down func() bool) (restore func()) {
+	previous := c.probeDown.Swap(&down)
+	return func() { c.probeDown.Store(previous) }
+}
+
+// ProbesForTest is the number of reads the probe of c's current connection has begun. It is for
+// tests alone.
+func (c *Client) ProbesForTest() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Conn == nil {
+		return 0
+	}
+	return c.proberLocked().probes.Load()
+}
+
+// ProbeReadsDownForTest is Client.ProbeReadsDownForTest on the session consumers' own client.
+func (s *SessionConsumers) ProbeReadsDownForTest(down func() bool) (restore func()) {
+	return s.client.ProbeReadsDownForTest(down)
+}

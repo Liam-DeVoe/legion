@@ -28,21 +28,12 @@ func (c *Client) onClosed() {
 // the reconnect hooks, an owning client's ensure of the stream first (ensureStreamOn).
 // nats.go runs it once per connection, and the client never installs a second connection before
 // this one has connected (ensureConnWithContext), so it marks the end of the wait only for c.Conn.
-// It is the record of the connection's status's report of that first connection too
-// (connStatus.connectedBack), which the record does not wrap, since the options set it.
 func (c *Client) onConnect(nc *nats.Conn) {
 	c.mu.Lock()
-	var status *connStatus
 	if nc == c.Conn {
 		c.awaitingConnection = false
-		if c.connStatus != nil && c.connStatus.conn == nc {
-			status = c.connStatus
-		}
 	}
 	c.mu.Unlock()
-	if status != nil {
-		status.connectedBack()
-	}
 	c.onReconnect(nc)
 }
 
@@ -56,9 +47,6 @@ func (c *Client) onConnect(nc *nats.Conn) {
 // (TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce). The run off this goroutine is
 // the one recover already makes after a failed run, and it takes turns with recover's (rewatch).
 func (c *Client) onReconnect(nc *nats.Conn) {
-	// A reconnect report nats.go lost is made up for here (endLifeIfDown refreshes the record of
-	// the connection's status).
-	c.endLifeIfDown()
 	// The reconnect is reported first (ConnectionChanged), so a publish waiting for it goes on
 	// without waiting for the re-subscribe and the hooks below.
 	c.connectionChanged()
