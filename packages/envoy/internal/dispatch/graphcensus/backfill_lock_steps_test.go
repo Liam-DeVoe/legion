@@ -433,7 +433,7 @@ func TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows(t *testing.T) {
 		for _, ask := range []string{coreAskID, acmeAskID} {
 			holds = append(holds, lockstep.HoldRow(t, database, &lockstep.Hold{
 				Name: "ask " + ask + "'s row", Step: lockstep.StepHeld, Taken: true,
-				Statement: "select k.id::text, k.author, k.created_at, k.state",
+				Statement: "select k.id from asks k",
 				Unlocked:  []string{"graph_tuples"},
 			}, `select 1 from asks where id = $1::uuid for update`, ask))
 		}
