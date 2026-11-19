@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `EventSchema` reads one Dispatch event strictly, with the fields the OpenAPI document's `Event`
+  declares, and `PublishedEventSchema` reads the copy Dispatch's outbox publishes, which adds
+  `quiet`. Five shared issue event envelopes in `packages/daemon/internal/intake/testdata/dispatch/`
+  hold the Dispatch writer, these schemas, the issue event schemas and the Legion daemon's intake to
+  the same `issue.updated`, `issue.claimed` and `issue.released` events.
+time: 2026-11-19T11:45:20.899893725Z
+custom:
+    Issue: pr4496

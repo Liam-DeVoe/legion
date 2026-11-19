@@ -817,15 +817,18 @@ RULES = {
         ("packages/contracts/src/dispatch-api*.ts",
          "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "
          "and :149 reads each module the glob finds (the .test.ts files :146 skips apart)")),
-    # The issue.updated and issue.claimed envelopes packages/daemon's intake decodes and
-    # packages/contracts parses, which this package's TestTheBuiltIssueEnvelopesAreTheSharedFixtures
-    # holds the outbox's build to: read from another module, as startup/started_test.go below reads
-    # the server.started one, so the envoy_go filter names both files.
-    f"{ENVOY}/internal/dispatch/outbox/shared_issue_envelopes_test.go": reads(
-        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated-every-field.json",
-         "internal/dispatch/outbox/shared_issue_envelopes_test.go:97 os.ReadFile (issueUpdatedFixture :20)"),
-        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-claimed-every-field.json",
-         "internal/dispatch/outbox/shared_issue_envelopes_test.go:97 os.ReadFile (issueClaimedFixture :21)")),
+    # The issue event envelopes packages/daemon's intake decodes and packages/contracts parses,
+    # which this package's TestTheBuiltIssueEnvelopesAreTheSharedFixtures holds the outbox's build
+    # to and walks for every field Dispatch writes: read from another module, as
+    # startup/started_test.go below reads the server.started one, so the envoy_go filter names each
+    # file.
+    f"{ENVOY}/internal/dispatch/outbox/shared_issue_envelopes_test.go": reads(*[
+        (f"{DAEMON}/internal/intake/testdata/dispatch/{name}",
+         "internal/dispatch/outbox/shared_issue_envelopes_test.go:185 and :334 os.ReadFile "
+         "(sharedEnvelopes + each example's file, :25)")
+        for name in ("issue-updated-every-field.json", "issue-claimed-every-field.json",
+                     "issue-updated-no-field-moved.json", "issue-updated-null-fields.json",
+                     "issue-released-null-claim.json")]),
     f"{ENVOY}/internal/dispatch/pmdoc/update_test.go": [
         Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
@@ -2567,9 +2570,12 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json", "packages/contracts/src/dispatch-href.test.ts:51-55"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json", "packages/contracts/src/dispatch-text-references.test.ts:10-14"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
-        (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:410 (the URL at :406-409)"),
-        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated-every-field.json", "packages/contracts/src/dispatch-api.test.ts:426 (the URL at :425, the file named at :428)"),
-        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-claimed-every-field.json", "packages/contracts/src/dispatch-api.test.ts:426 (the URL at :425, the file named at :446)"),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:407 (the URL at :403-406)"),
+        *[(f"{DAEMON}/internal/intake/testdata/dispatch/{name}",
+           "packages/contracts/src/dispatch-issue-events.test.ts:220 (the URL at :219, each file of EXAMPLES, :25)")
+          for name in ("issue-updated-every-field.json", "issue-claimed-every-field.json",
+                       "issue-updated-no-field-moved.json", "issue-updated-null-fields.json",
+                       "issue-released-null-claim.json")],
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:129-133 reads pmdoc's own JSON copy of the block pointer table by relative path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:146-150 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
         (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:63 reads it for the envelope aliases, :81 reads every file of generated (:20-26, this one :7), and gen-go.ts's outputs list holds it (--check compares the committed file)"),

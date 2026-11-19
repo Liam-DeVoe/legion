@@ -219,9 +219,9 @@ func (e dispatchEvent) mark() record.EventMark {
 }
 
 // dispatchIssuePayload is what the daemon reads of an issue.created, issue.updated or issue.closed
-// payload (Dispatch's model.IssueEventPayload): each field its DispatchIssue takes. The shared
-// envelope testdata/dispatch/issue-updated-every-field.json carries every one of them, as
-// Dispatch's outbox builds it.
+// payload (Dispatch's model.IssueEventPayload): each field its DispatchIssue takes, and the labels
+// LabelSetter reads. The shared envelopes testdata/dispatch/issue-updated-*.json carry every one
+// of them, as Dispatch's outbox builds them.
 type dispatchIssuePayload struct {
 	Key          string          `json:"key"`
 	Status       string          `json:"status"`
@@ -236,14 +236,25 @@ type dispatchIssuePayload struct {
 	BlockedBy []string `json:"blocked_by"`
 	// Claim is present on every issue event of a Dispatch that has claims (null for none),
 	// and absent from an event retained from before it did, which says nothing of the claim.
+	// issueEventClaim reads it into dispatchClaim.
 	Claim json.RawMessage `json:"claim"`
 }
 
 // dispatchClaimPayload is what the daemon reads of an issue.claimed or issue.released payload
-// (Dispatch's model.IssueClaimEventPayload): the claim alone. The shared envelope
-// testdata/dispatch/issue-claimed-every-field.json carries it, as Dispatch's outbox builds it.
+// (Dispatch's model.IssueClaimEventPayload): the claim alone, which issueEventClaim reads into
+// dispatchClaim. The shared envelopes testdata/dispatch/issue-claimed-every-field.json and
+// issue-released-null-claim.json carry it, as Dispatch's outbox builds them.
 type dispatchClaimPayload struct {
 	Claim json.RawMessage `json:"claim"`
+}
+
+// dispatchClaim is what the daemon reads of a claim an issue event carries (Dispatch's
+// model.IssueClaim): the kind and the id of the actor holding it.
+type dispatchClaim struct {
+	Actor struct {
+		Kind string `json:"kind"`
+		ID   string `json:"id"`
+	} `json:"actor"`
 }
 
 // decodeDispatchFact decodes one Dispatch issue event of project from its name in either form
@@ -509,12 +520,7 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	if raw == nil {
 		return "", false
 	}
-	var claimed *struct {
-		Actor struct {
-			Kind string `json:"kind"`
-			ID   string `json:"id"`
-		} `json:"actor"`
-	}
+	var claimed *dispatchClaim
 	if err := json.Unmarshal(raw, &claimed); err != nil {
 		*unread = append(*unread, fmt.Sprintf("claim %s is not a claim: %v", raw, err))
 		return "", false

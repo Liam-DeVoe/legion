@@ -7,14 +7,16 @@ import type {
   AskFollowerEventPayload,
 } from "./dispatch-api-asks";
 import type { CommentDeliveryEventPayload, CommentEventPayload } from "./dispatch-api-comments";
-import type {
-  ArchitectureSourceUpdatedEventPayload,
-  ArchitectureSyncedEventPayload,
-  ArchitectureSyncFailedEventPayload,
-  DisplayTree,
-  PriorityUpdatedEventPayload,
-  ProjectDefaultAssigneeUpdatedEventPayload,
-  RepoProjectUpdatedEventPayload,
+import {
+  ActorSchema,
+  type ArchitectureSourceUpdatedEventPayload,
+  type ArchitectureSyncedEventPayload,
+  type ArchitectureSyncFailedEventPayload,
+  type DisplayTree,
+  DisplayTreeSchema,
+  type PriorityUpdatedEventPayload,
+  type ProjectDefaultAssigneeUpdatedEventPayload,
+  type RepoProjectUpdatedEventPayload,
 } from "./dispatch-api-core";
 import type {
   ArtifactCreatedEventPayload,
@@ -366,3 +368,30 @@ export const DispatchEventSchema = z.object({
 });
 
 export type InboundDispatchEvent = z.output<typeof DispatchEventSchema>;
+
+/** The fields of one event as Dispatch writes it (Go's `model.Event`), each as it is always
+ *  written: `trees` alone is left out, of every frame but a reply to `Dispatch-Trees: 1` and a
+ *  `/ws/live` frame. The payload is read by its type's own schema. */
+const eventFields = {
+  id: z.number().int(),
+  issue_key: z.string().nullable(),
+  artifact_id: z.string().nullable(),
+  project: z.string(),
+  seq: z.number().int(),
+  type: z.string(),
+  actor: ActorSchema,
+  notify: z.boolean(),
+  created_at: z.string(),
+  payload: z.record(z.string(), z.unknown()),
+  trees: z.record(z.string(), DisplayTreeSchema).optional(),
+};
+
+/** One event as Dispatch writes it, read strictly: the document's `Event`, which the spellings
+ *  test holds to the same fields, where `DispatchEventSchema` is a reader's tolerant reading. */
+export const EventSchema = z.strictObject(eventFields).readonly();
+
+/** One event as Dispatch's outbox writes it into an envelope (`PublishedDispatchEvent`): the event
+ *  and `quiet`, which the outbox writes on every copy it publishes. */
+export const PublishedEventSchema = z
+  .strictObject({ ...eventFields, quiet: z.boolean() })
+  .readonly();

@@ -46,12 +46,10 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
   type IdempotencyLandedCode,
-  IssueClaimEventPayloadSchema,
   IssueDeployedEventPayloadSchema,
   IssueEventPayloadSchema,
   type ItemBlocks,
   inboxThreadRow,
-  issueClaimEventPayloadFields,
   type Message,
   MessageDeliveryEventPayloadSchema,
   type MessageDeliveryMode,
@@ -72,7 +70,6 @@ import {
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
   type UserThreadStateUpdatedEventPayload,
-  WrittenIssueEventPayloadSchema,
 } from "./dispatch-api";
 
 test("review event validation preserves approved byte hashes and their provenance", () => {
@@ -413,44 +410,6 @@ test("the envelope Dispatch publishes for an announcement carries a payload this
     commit: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
     started_at: "2026-10-27T12:00:00Z",
   });
-});
-
-test("the issue.updated and issue.claimed events Dispatch publishes carry payloads these schemas read", async () => {
-  // The fixtures are shared with the Go writer (`packages/envoy/internal/dispatch/outbox`, whose
-  // test requires the envelope it builds to equal each one) and the Legion daemon's intake test,
-  // which requires every field the daemon reads. Each payload holds every field Dispatch writes
-  // on its type, so a schema that names a field Dispatch does not write, or that refuses one it
-  // does, fails here.
-  const event = async (name: string) => {
-    const path = new URL(`../../daemon/internal/intake/testdata/dispatch/${name}`, import.meta.url);
-    return JSON.parse(JSON.parse(await Bun.file(path).text()).payload);
-  };
-  const updated = await event("issue-updated-every-field.json");
-  expect(updated.type).toBe("issue.updated");
-  expect(WrittenIssueEventPayloadSchema.parse(updated.payload)).toEqual(updated.payload);
-  // A reader of the bus keeps the fields it reads, each as Dispatch wrote it.
-  const { title, labels, status, priority, rank, route, changed, ancestors, thread_logins } =
-    updated.payload;
-  expect(IssueEventPayloadSchema.parse(updated.payload)).toEqual({
-    title,
-    labels,
-    status,
-    priority,
-    rank,
-    route,
-    changed,
-    ancestors,
-    thread_logins,
-  });
-
-  const claimed = await event("issue-claimed-every-field.json");
-  expect(claimed.type).toBe("issue.claimed");
-  expect(IssueClaimEventPayloadSchema.parse(claimed.payload)).toEqual(claimed.payload);
-  // A takeover carries every field the schema declares for a claim event, the claim it replaced
-  // among them: one missing here, or one the schema names that Dispatch does not write, fails.
-  expect(Object.keys(claimed.payload).sort()).toEqual(
-    Object.keys(issueClaimEventPayloadFields).sort()
-  );
 });
 
 test("models every supported typed-block content rule", () => {
