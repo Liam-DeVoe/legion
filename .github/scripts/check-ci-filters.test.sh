@@ -2805,9 +2805,10 @@ tidy_tree() {
   printf 'tidy tidier  # what check-go-tidy.sh reads\n' >> "$1/.github/go-fetch/deep.txt"
 }
 tidy_keys() {
-  local file
+  local file tidy_suite_hash
+  tidy_suite_hash="${suite_hash/"'mod/go.sum') }}"/"'mod/go.sum', 'tidier/go.mod', 'tidier/go.sum', 'other/go.mod') }}"}"
   for file in ci-caches.yaml suite.yaml deep.yaml; do
-    replace_every "$1/.github/workflows/$file" "'mod/go.sum') }}" "'mod/go.sum', 'tidier/go.mod', 'tidier/go.sum', 'other/go.mod') }}"
+    replace_every "$1/.github/workflows/$file" "$suite_hash" "$tidy_suite_hash"
   done
 }
 
