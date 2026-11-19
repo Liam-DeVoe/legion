@@ -2618,7 +2618,8 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 // carries the field's name. A value of `-`, an `@-`, a field given a literal and a raw field name
 // no file to open; a `-` and an `@-` are standard input instead, and the parse answers the use the
 // option that named it makes of it (leakguard.GhRequest.StdinUse), or none where two options with
-// different uses did.
+// different uses did. `gh workflow run --json`, at a last value of true, names it as a request
+// body; `--json` of any other command takes the fields to print and names none.
 func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -2691,6 +2692,30 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			argv:  []string{"api", "repos/acme/widgets/pulls", "--input", "-"},
 			want:  []leakguard.GhFile{},
 			stdin: leakguard.StdinRequestBody,
+		},
+		{
+			name:  "gh workflow run's inputs as JSON on standard input",
+			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json"},
+			want:  []leakguard.GhFile{},
+			stdin: leakguard.StdinRequestBody,
+		},
+		{
+			name:  "gh workflow run's --json whose last value is false",
+			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "--json=false"},
+			want:  []leakguard.GhFile{},
+			stdin: leakguard.StdinUnknown,
+		},
+		{
+			name:  "gh workflow run's --json beside a field read from standard input",
+			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "-F", "notes=@-"},
+			want:  []leakguard.GhFile{},
+			stdin: leakguard.StdinUnknown,
+		},
+		{
+			name:  "another command's --json, which names the fields to print",
+			argv:  []string{"pr", "list", "-R", "acme/widgets", "--json", "number"},
+			want:  []leakguard.GhFile{},
+			stdin: leakguard.StdinUnknown,
 		},
 		{
 			name:  "two fields read from standard input",

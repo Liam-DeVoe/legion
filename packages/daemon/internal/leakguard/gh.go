@@ -24,11 +24,11 @@ type GhRequest struct {
 	// caller to hand gh in its place.
 	Stdin io.Reader
 	// StdinUse is what the call makes of its standard input, as the caller read it from the
-	// option whose value named that input (`-`, or `@-` for a field): a JSON request body, the
-	// value of a field, or text GitHub stores as it stands, which says how the input is read
-	// (stdinRecords). StdinUnknown is a caller that does not know. Where such a caller also
-	// handed no Files, the guard reads the use out of the argv (readGhArgv); where nothing
-	// knows, it reads the input both ways.
+	// option whose value named that input (`-`, or `@-` for a field), or from `gh workflow run
+	// --json`: a JSON request body, the value of a field, or text GitHub stores as it stands,
+	// which says how the input is read (stdinRecords). StdinUnknown is a caller that does not
+	// know. Where such a caller also handed no Files, the guard reads the use out of the argv
+	// (readGhArgv); where nothing knows, it reads the input both ways.
 	StdinUse StdinUse
 	// Repo is the destination repository, as "owner/name". Empty where the caller knows no
 	// destination, which the guard reads as public (Guard.scanThrough).
@@ -76,7 +76,8 @@ const (
 	// reading more.
 	StdinUnknown StdinUse = iota
 	// StdinRequestBody is `gh api --input -`: the input is the request body, one JSON document
-	// GitHub parses.
+	// GitHub parses. So is `gh workflow run --json`'s, the run's inputs as one JSON object, each
+	// of which GitHub keeps as a value of its own.
 	StdinRequestBody
 	// StdinField is a `-F <name>=@-` or a `--field <name>=@-` of `gh api` or `gh workflow run`:
 	// the input is the value of the fields that name it, and is read by their names.
@@ -338,7 +339,8 @@ const ghAPIShortValueOptions = "FHXfpqt"
 // ghWorkflowRunValueOptions are `gh workflow run`'s long options that take a value, and
 // ghWorkflowRunShortValueOptions the letters of its short ones, in gh 2.98.0's help
 // (cmd/legion/testdata/gh-help/workflow_run.txt, which TestGhLeafOptionTablesAreTheirHelps holds
-// them to), the inherited -R/--repo among them. Its other options (`--json`, `--help`) take none.
+// them to), the inherited -R/--repo among them. Its other options take none: `--help`, and
+// `--json`, a boolean that makes standard input the run's inputs (jsonInputsOption, readLeaf).
 var ghWorkflowRunValueOptions = map[string]bool{
 	"--field":     true,
 	"--raw-field": true,
@@ -423,11 +425,18 @@ func ghLeafOf(args []string) (*ghLeaf, int) {
 // `gh api`'s endpoint is its first positional argument, the first past the bare `--` where none
 // comes before it; a `-` alone is a positional to pflag. Its `--input <path>` names the request
 // body's file, and its `--input -` standard input (names).
+//
+// `gh workflow run`'s `--json` (jsonInputsOption) is a boolean, `--json` or `--json=<bool>`, whose
+// last value is the one pflag keeps; a value that is no boolean leaves it as it was, since gh
+// refuses that call itself. Where it ends true, gh reads the run's inputs from standard input as
+// one JSON object, so after the walk standard input is named as a request body (names), by the
+// rule of every other option that names it. The argument itself is read as any argument is.
 func (argv *ghArgv) readLeaf(args []string, leaf *ghLeaf, start int) {
-	api := leaf == &ghAPILeaf
+	api, run := leaf == &ghAPILeaf, leaf == &ghWorkflowRunLeaf
 	// endpoint is whether the endpoint has been read, which only gh api has; queries are the
-	// indices in records of the query fields' values, read as GraphQL where the call is.
-	endpoint, queries := !api, []int(nil)
+	// indices in records of the query fields' values, read as GraphQL where the call is; and
+	// inputs is whether gh workflow run reads its inputs from standard input.
+	endpoint, queries, inputs := !api, []int(nil), false
 read:
 	for i := start; i < len(args); i++ {
 		arg := args[i]
@@ -446,6 +455,9 @@ read:
 			option, value, attached = strings.Cut(arg, "=")
 			if !attached && !leaf.long[option] {
 				argv.argument(args, i)
+				if run && option == jsonInputsOption {
+					inputs = true
+				}
 				continue
 			}
 		case len(arg) > 1 && arg[0] == '-':
@@ -479,9 +491,17 @@ read:
 			continue
 		}
 		argv.argument(args, at)
-		if api && option == inputOption {
+		switch {
+		case api && option == inputOption:
 			argv.names(option, value, "", StdinRequestBody)
+		case run && option == jsonInputsOption:
+			if on, err := strconv.ParseBool(value); err == nil {
+				inputs = on
+			}
 		}
+	}
+	if inputs {
+		argv.names(jsonInputsOption, "-", "", StdinRequestBody)
 	}
 	if !argv.graphQL || len(queries) == 0 {
 		return
@@ -865,9 +885,14 @@ type GhFile struct {
 	Option, Path, Field string
 }
 
-// inputOption is `gh api`'s request body, the one option whose file, and whose standard input,
-// is itself a JSON document (jsonBody, stdinRecords).
+// inputOption is `gh api`'s request body, the one option whose file is itself a JSON document
+// (jsonBody), and one of the two whose standard input is (stdinRecords).
 const inputOption = "--input"
+
+// jsonInputsOption is the other: `gh workflow run --json`, a boolean that makes standard input
+// the run's inputs as one JSON object (readLeaf). It names no file. In every other gh command
+// `--json` takes the names of the fields to print, and makes no input of standard input.
+const jsonInputsOption = "--json"
 
 // ghFileOptions are the options of the commands readOther reads whose whole value is the path of
 // a file gh sends to GitHub as content, in gh 2.98.0's spelling — the version the worker image

@@ -350,9 +350,10 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 // any of them begins with that many characters, one of which is a "+" ("++text" for a line of
 // the resolution's own, in a merge of two). The whole prefix comes off, and a line added against
 // one parent alone is read as added: the destination gains it from this commit whatever a parent
-// holds. The "+++ b/<path>" that names the file is read only where a header stands, between a
-// "diff --" line and the hunk that follows it, so a line of content that reads like one is not
-// mistaken for the name of a file.
+// holds. The "+++ b/<path>" that names the file (with a tab after the path where it holds a
+// space, which diffPath takes off) is read only where a header stands, between a "diff --" line
+// and the hunk that follows it, so a line of content that reads like one is not mistaken for the
+// name of a file.
 //
 // A line's place is counted from its hunk's header (hunkStart), one up for each line of the hunk
 // that the new file holds: in a diff of one parent a "+" line, and in a combined diff a line none
@@ -416,7 +417,16 @@ func hunkStart(header string, width int) (int, error) {
 
 // diffPath is the path a patch's "+++" line names, with the b/ prefix off and the C quoting a
 // path with a byte git will not print raw undone. A deletion's /dev/null names no file.
+//
+// git writes a tab after the name where the path holds a space (diff.c; measured with git 2.47.3:
+// `+++ b/docs/a b.md<tab>`, and `+++ "b/docs/a \"b\" c.md"<tab>` where it quotes the name too),
+// and one trailing tab comes off before the name is unquoted: kept, it would end the record's
+// label and Path, leave a quoted name quoted, and keep a path-scoped allowlist anchored on the
+// path from clearing the file. A raw tab there is always git's and never the path's, since git
+// C-quotes a tab in a path as `\t`, under core.quotePath=false too. A merge's combined diff writes
+// no tab after the name (combine-diff.c, dump_quoted_path), and the trim leaves its name as it is.
 func diffPath(field string) string {
+	field = strings.TrimSuffix(field, "\t")
 	if field == "/dev/null" {
 		return ""
 	}

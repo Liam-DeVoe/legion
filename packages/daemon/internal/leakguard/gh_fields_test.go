@@ -163,6 +163,37 @@ func TestGhJSONReadsOneFieldAtATime(t *testing.T) {
 	})
 }
 
+// `gh workflow run <workflow> --json` reads the run's inputs from standard input as one JSON
+// object (cmd/legion/testdata/gh-help/workflow_run.txt), and GitHub keeps each input apart, so a
+// bare argv's reader names that input a request body as `legion gh`'s parse does: two inputs
+// holding the fixture's two words pass, and one input holding both is refused, the report naming
+// it by its JSON path. --json is a boolean whose last value counts, so `--json=false` names no
+// input; and beside a field of standard input it is a second use, so the use is unknown. Either
+// way the input is read raw too, and the two inputs on its one line are refused.
+func TestGhWorkflowRunJSONReadsItsInputsOneFieldAtATime(t *testing.T) {
+	apart := `{"name":"` + leakguardtest.PairName + `","greeting":"` + leakguardtest.PairWord + `"}`
+	together := `{"name":"the ` + leakguardtest.PairName + ` and the ` + leakguardtest.PairWord + `","greeting":"hello"}`
+	refusedWhole(t, apart)
+	run := func(t *testing.T, stdin string, options ...string) error {
+		t.Helper()
+		return ghFieldCall(t, GhRequest{Args: append([]string{"workflow", "run", "triage.yml", "-R", "acme/widgets"}, options...), Stdin: strings.NewReader(stdin)})
+	}
+	t.Run("two inputs pass", func(t *testing.T) {
+		cleared(t, run(t, apart, "--json"))
+	})
+	t.Run("two inputs of a last --json=true pass", func(t *testing.T) {
+		cleared(t, run(t, apart, "--json=false", "--json=true"))
+	})
+	t.Run("one input holding both is refused", func(t *testing.T) {
+		reports(t, refusal(t, run(t, together, "--json")).Lines, "the gh call's standard input, JSON .name: "+leakguardtest.PairClass)
+	})
+	for _, options := range [][]string{{"--json=false"}, {"--json", "--json=false"}, {"--json", "-F", "notes=@-"}, {"-F", "notes=@-", "--json"}} {
+		t.Run("the input of "+strings.Join(options, " ")+" is read raw", func(t *testing.T) {
+			reports(t, refusal(t, run(t, apart, options...)).Lines, "the gh call's standard input: "+leakguardtest.PairClass)
+		})
+	}
+}
+
 // A JSON body nested thousands of objects deep is read one string at a time under a label of
 // bounded length: a chain of 9,999 objects whose innermost value names the fixture's pair is
 // refused, the report naming the value by the path's first two steps, "…" and its last five. The
