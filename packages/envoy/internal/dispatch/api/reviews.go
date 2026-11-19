@@ -948,20 +948,48 @@ func (s *server) renewApprovalAsk(
 		}
 		appended = append(appended, handedBack)
 	}
-	// The requester follows the request. A renewal that appended no event above - an unchanged
-	// request that already waits on the human - and adds the requester as a follower records
-	// that as ask.follower_added, in this transaction, as the follower route does: a follower is a
-	// destination of the issue's later ask events, and an earlier event of the issue that now
-	// reaches it must hold a later comment's mention to it until the outbox has read the change,
-	// which a new event of the issue does (model.MentionCopyHolderSQL). Whether the follow is new
-	// is read here, in the read phase: the follower route takes the owner lock this route holds, so
-	// no other follow of this ask commits between this read and this transaction's commit.
+	// The requester follows the request again. A renewal that appended no event above - an
+	// unchanged request that already waits on the human - and adds the requester as a follower
+	// records that as ask.follower_added, in this transaction, as the follower route does: a
+	// follower is a destination of the issue's later ask events, and an earlier event of the issue
+	// that now reaches it must hold a later comment's mention to it until the outbox has read the
+	// change, which a new event of the issue does (model.MentionCopyHolderSQL). Whether the follow
+	// is new is read here, in the read phase: the follower route takes the owner lock this route
+	// holds, so no other follow of this ask commits between this read and this transaction's
+	// commit. The events are dated by the transaction's now(), their column's default.
+	//
+	// A renewal that appended events queues the follow right after them, so a session
+	// requester's node is caused by the last of them. One that appends ask.follower_added queues
+	// the follow before it, given no cause, and appends what the follow holds under it once it is
+	// appended, as the follower route does; a retry that appends neither, the requester following
+	// already, leaves the node it makes, if the store holds none yet, at the sentinel. A follow
+	// given no cause states no base attribute of its own and holds the node's two for the step
+	// after it, which appends them at the cause it is handed, the sentinel included
+	// (asks.Followed).
 	follows := true
 	if len(appended) == 0 && actor.Kind == "session" && actor.ID != "" {
 		if follows, err = asks.Follows(ctx, tx, open.ID, actor.ID); err != nil {
 			return nil, err
 		}
 	}
+	followCause, at := graphstore.NoEvent, open.CreatedAt
+	if len(appended) > 0 || !follows {
+		if at, err = ledger.Now(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if len(appended) > 0 {
+		followCause = graphstore.LatestEvent
+	}
+	var held graphstore.Uncaused
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		var err error
+		held, err = asks.QueueFollowAuthor(b, open.ID, actor, at, followCause)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	heldCause := followCause
 	if !follows {
 		followed, err := s.queueEvent(ledger, ownerOf(open.IssueKey, open.ArtifactID).event(
 			"ask.follower_added", actor, model.AskFollowerEventPayload{AskID: open.ID, SessionID: actor.ID, By: actor},
@@ -970,26 +998,10 @@ func (s *server) renewApprovalAsk(
 			return nil, err
 		}
 		appended = append(appended, followed)
-	}
-	// Every event of the renewal is queued by now, ask.follower_added included, so a session
-	// requester's node is caused by the last of them, the follow queued right after it; a retry
-	// appends none, and the node it makes, if the store holds none yet, stays at the sentinel. A
-	// follow given no cause states no base attribute of its own and holds the node's two for the
-	// step after it, which appends them at the cause the follow was given, the sentinel included
-	// (asks.Followed). The events are dated by the transaction's now(), their column's default.
-	cause, at := graphstore.NoEvent, open.CreatedAt
-	if len(appended) > 0 {
-		if at, err = ledger.Now(ctx); err != nil {
-			return nil, err
-		}
-		cause = graphstore.LatestEvent
+		heldCause = graphstore.LatestEvent
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		followed, err := asks.QueueFollowAuthor(b, open.ID, actor, at, cause)
-		if err != nil {
-			return err
-		}
-		return graphstore.QueueCaused(b, followed, cause)
+		return graphstore.QueueCaused(b, held, heldCause)
 	}); err != nil {
 		return nil, err
 	}

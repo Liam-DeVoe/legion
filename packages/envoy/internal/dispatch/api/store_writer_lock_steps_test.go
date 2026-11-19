@@ -465,23 +465,20 @@ func (r *storeWriterRig) askCreate() storeWriter {
 }
 
 // approvalRetry is the spec's approval request renewed while it waits on the person
-// (renewApprovalAsk), a retry that appends no event: a session no write has recorded asks for the
-// same approval again. The renewal takes its owner's lock (requireOpenOwner), follows the request
-// for that session with the node marked for its cause, since nothing caused the follow, and
-// appends the node's two base attributes at the sentinel (graphstore.QueueCaused). The path takes
-// no event step, which the written order lets it skip, and its tuples carry no event, so no event
-// orders them.
+// (renewApprovalAsk), a retry that changes the request in nothing: a session no write has recorded
+// asks for the same approval again, which makes it a follower, so the renewal appends
+// ask.follower_added as the follower route does. The renewal takes its owner's lock
+// (requireOpenOwner), follows the request for that session with the node marked for its cause,
+// since the follow is queued before its event, appends the event, and then moves the node onto it
+// and appends the node's two base attributes under it (graphstore.QueueCaused).
 func (r *storeWriterRig) approvalRetry() storeWriter {
 	return storeWriter{
 		name: "renewApprovalAsk on a retry",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
 			followNodeStep("the requester's node"),
-			{
-				name: "the tuple append", order: tupleStep,
-				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
-				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
-			},
+			eventAppendStep(),
+			tupleAppendStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			session := r.fresh("lock-steps-requester")
@@ -489,8 +486,8 @@ func (r *storeWriterRig) approvalRetry() storeWriter {
 			return storeWriterRun{
 				made: graphstore.SessionNode(session, actor, time.Now().UTC(), graphstore.NoEvent),
 				write: func() error {
-					// 200 is the request already standing as asked: a 201 would be a renewal that
-					// appended an event, which is the other path.
+					// 200 is the request already standing as asked, its follower_added aside: a 201
+					// would be a renewal that handed it back, which is the other path.
 					return statusOrError(sessionRequest(t, r.call, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 						map[string]any{"actor": map[string]any{"kind": "session", "id": session}}), http.StatusOK)
 				},
