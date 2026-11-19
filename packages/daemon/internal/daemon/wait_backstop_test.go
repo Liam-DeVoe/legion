@@ -281,7 +281,7 @@ func (r *idleRig) waitsUnended(t *testing.T) record.ClaimWait {
 }
 
 // A release of a held merger's pod arms its backstop, as any release does (R1): when that backstop
-// is taken is dispatch://INFRA-3522's, and this asserts only that it is armed. The merger's spec
+// is taken is backstop_hold_test.go's, and this asserts only that it is armed. The merger's spec
 // is closed, so the gate holds it, and the idle release takes its pod. A held merger with a wait
 // row no closing ended — a hold that began with no gate row written, as when `gates.design`
 // changes across a restart — has no wait that stands under the hold (workflow.WaitStands), and is

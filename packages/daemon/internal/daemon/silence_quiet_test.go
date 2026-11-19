@@ -184,6 +184,44 @@ func TestTheSilenceSweepHoldsOffAMergerTheDesignGateHoldsUntilTheGateOpens(t *te
 	}
 }
 
+// A sweep that the hold leaves alone spends nothing, so the sweep acts on the merger once the hold
+// ends, also when no gate-row write ends it (R1). The merger's last step and its launch both come
+// before the gate closes over it, so its silence has one identity throughout
+// (workerSilentEventID). During the hold the sweep writes no start and no notice for it (that it
+// mints no fact is TestTheSilenceSweepHoldsOffAMergerTheDesignGateHoldsUntilTheGateOpens's). The
+// daemon then boots on a deployment whose `gates.design` is empty, which writes no gate row and
+// leaves the merger's claim, its launch and its last step as they were: the first sweep of that
+// boot mints the same silence, which no sweep of the hold spent, sends the merger its phase's task
+// again and tells its architect.
+func TestTheSilenceSweepLeavesAHeldMergerAloneAndSweepsItAfterABootThatEmptiesTheGatedSteps(t *testing.T) {
+	q := aQuietMerger(t, config.DesignGateRootIssues.Steps())
+	merger := claim.RoleMerger
+	q.goesQuiet(merger)
+	q.applies("spec-2", intake.DispatchArtifact{Key: podUpdateIssue, ArtifactID: podUpdateArtifact,
+		Kind: intake.DispatchArtifactVersion, Version: 2})
+
+	q.sweepForSilence()
+	if got := q.starts(); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s = %+v, want none while the gate holds the merger", podUpdateIssue, got)
+	}
+	if got := q.noticesOf("worker-silent"); len(got) != 0 {
+		t.Fatalf("the worker-silent notices of %s = %+v, want none while the gate holds the merger", podUpdateIssue, got)
+	}
+
+	booted := attachesWorkflow(q.podUpdateRig, nil)
+	booted.sweepForSilence()
+	if minted := booted.mintedFor(merger); len(minted) != 1 {
+		t.Fatalf("the first sweep after the boot minted %+v for the merger, want its one silence", minted)
+	}
+	if starts := booted.starts(); len(starts) != 1 || starts[0].Role != merger || !starts[0].ResumeTask {
+		t.Fatalf("the supervise rows of %s after the boot = %+v, want the one start that sends the merger its phase's task again: the hold's sweeps spent nothing",
+			podUpdateIssue, starts)
+	}
+	if got := booted.noticesOf("worker-silent"); len(got) != 1 || got[0].Role != merger {
+		t.Fatalf("the worker-silent notices of %s after the boot = %+v, want the merger's one", podUpdateIssue, got)
+	}
+}
+
 // A gated step that has no gate row holds no merger (R1): the outbox's fence lets that merger
 // merge, although the tree's gate (record.TreeGate.Open) reads closed. The deployment gates the
 // spec and the decisions, the root's spec row is approved and the decisions have none, so the only

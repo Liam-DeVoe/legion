@@ -19,7 +19,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -2220,7 +2219,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 		}
-		if err := r.mergerWaitsForTheDesignGate(ctx, issue, payload.Role); err != nil {
+		if err := r.mergerWaitsForTheDesignGate(ctx, issue, payload); err != nil {
 			return err
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
@@ -3310,42 +3309,54 @@ func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload recor
 	return nil
 }
 
-// designGateClosed says whether the design gate of the issue's tree is closed, which holds the
-// merger's start (supervise): the gate is the tree root's, so every member of the tree reads the
-// same rows, and it is closed when a step the deployment gates holds a row no approval has opened
-// (classify.StandingGate, the first such step in the configured order). A tree with no row for a
-// step — nothing registered one, or the project's design gate is off, which registers it
-// approved — holds nothing on that step: nobody can be waiting on a document the record does not
-// know. It is read just before the row acts, as every other fence of a row is.
-func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool, error) {
+// mergerHeld is the closed gate that holds issue's merger, and whether one does
+// (workflow.HeldByDesignGate over the deployment's gated steps and the tree's gate rows, the one
+// rule every reader of the hold reads, dispatch://INFRA-2040 R9): the merger of an issue in
+// merging, while a step the deployment gates holds a row no approval has opened. The gate is the
+// tree root's, so every member of the tree reads the same rows. A step with no row — nothing
+// registered one, or the project's design gate is off, which registers it approved — holds
+// nothing: nobody can be waiting on a document the record does not know. It is read in a
+// read-only transaction of its own just before the row acts, as every other fence of a row is.
+//
+// It holds the merger whatever the row is about to do. The fence asks it only of a start of the
+// merger's phase work (mergerWaitsForTheDesignGate); the merge-queue removal's message asks it
+// before it wakes a released merger (mergeQueueRemoval), since a merger woken by that message
+// during the hold could enqueue the pull request again against the gate.
+func (r *outbox) mergerHeld(ctx context.Context, issue record.Issue) (record.DesignGate, bool, error) {
 	var gates map[record.DesignStep]record.DesignGate
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
 		gates, err = r.records.GatesOf(ctx, tx, issue.Tree)
 		return err
 	}); err != nil {
-		return false, fmt.Errorf("read the design gate of %s: %w", issue.Tree, err)
+		return record.DesignGate{}, false, fmt.Errorf("read the design gate of %s: %w", issue.Tree, err)
 	}
-	_, closed := classify.StandingGate(r.gatedSteps, gates)
-	return closed, nil
+	held, holds := workflow.HeldByDesignGate(issue, claim.RoleMerger, record.TreeGate{Steps: r.gatedSteps, Rows: gates})
+	return held, holds, nil
 }
 
 // mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing
 // while its tree's design gate is closed, because a new version of the spec is with its reviewer
-// and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
-// wait error for a merger start the gate holds, which leaves the start on the row's backoff as a
-// check start waits on its look (checkLookHolds), and nil for every other role and an open gate.
-// The gate opening releases the row's next try, and tells every phase worker of the tree and the
-// root's architect as well (workflow's tellGateMoved).
-func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.Issue, role claim.Role) error {
-	if role != claim.RoleMerger {
+// and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It holds the
+// merger's phase work and nothing else (dispatch://INFRA-2040 R7, D14 of its plan): a start that
+// names a phase (payload.Phase) the hold holds (mergerHeld) is answered a wait error, which leaves
+// it on the row's backoff as a check start waits on its look (checkLookHolds). Every start that
+// names no phase passes, the merger's among them: a wake's start (a CI settlement, a message to its
+// role or to its session, a backstop the wake tick took, a wait's time), the resume of a cancelled
+// idle release (releaseResume), the wait's own start of a running claim, and a check's look. None
+// of them is the phase's work, and a merger held asleep by them would not hear the gate's state
+// until the opening. The gate opening releases the held row's next try, and tells every phase
+// worker of the tree and the root's architect as well (workflow's tellGateMoved).
+func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.Issue, payload record.SuperviseRequest) error {
+	if payload.Role != claim.RoleMerger || payload.Phase == "" {
 		return nil
 	}
-	closed, err := r.designGateClosed(ctx, issue)
-	if err != nil || !closed {
+	held, holds, err := r.mergerHeld(ctx, issue)
+	if err != nil || !holds {
 		return err
 	}
-	return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
+	return wait.Errorf("the merger of %s waits for the design gate of %s to open: version %d of its %s document (%s) is with its reviewer",
+		issue.Key, issue.Tree, held.LatestVersion, held.Step.OrSpec(), held.ArtifactID)
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for

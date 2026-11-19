@@ -139,6 +139,11 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// heldBackstops is each due backstop this boot's wake tick left due because the design gate
+	// holds its merger, by the backstop's row id (fireDueBackstops): what logs the hold once per
+	// backstop and per boot, and the taking once, when the first tick that reads the gate open
+	// takes it. Only the wake tick's goroutine reads or writes it.
+	heldBackstops map[int64]struct{}
 	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
 	// so it waits out its own period rather than the daemon's minute.
 	entrySweep time.Duration

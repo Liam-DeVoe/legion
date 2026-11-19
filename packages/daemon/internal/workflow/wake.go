@@ -242,9 +242,24 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // release, whatever else did or did not happen. The row is fired under a conditional update, so a
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts.
+//
+// A merger the design gate holds is not woken by its backstop while the gate is closed
+// (dispatch://INFRA-2040 R1, D13 of its plan): its turn would come during the hold with nothing
+// it may do. The hold is read in this fact's own transaction before the row is fired
+// (backstopHeld), and while it holds the fact writes nothing and answers Unspent: the row stays
+// due and unfired and no resume is recorded, so pod_resumes_one_open_per_role refuses no later
+// wake of the merger (a CI settlement, a message), and intake.ApplyFact forgets the event id, so
+// the first tick that reads the gate open applies the same pod-backstop:<id> again and takes it.
+// That is the merger's one wake of an opening no gate row writes, such as `gates.design` emptied
+// across a restart. The wake tick passes over such a backstop before it applies any fact
+// (HeldMergers, internal/daemon's fireDueBackstops); this read decides a fact that raced the
+// gate's, closed after the tick read it open.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
+	}
+	if held, err := e.backstopHeld(ctx, tx, fact.Issue, fact.Role); err != nil || held {
+		return intake.Result{Unspent: held}, err
 	}
 	fired, err := e.cfg.Pods.FirePodBackstop(ctx, tx, fact.ID)
 	if err != nil || !fired {
@@ -257,6 +272,61 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
 	_, err = e.wakeReleased(ctx, tx, released, pods.WakeBackstop, detail, e.now())
 	return intake.Result{}, err
+}
+
+// backstopHeld is whether the design gate holds role's work on key (HeldByDesignGate), read in tx
+// from the issue and its tree's gate rows under the deployment's gated steps. Only a merger can be
+// held, so no other role's backstop reads anything; an issue the record does not hold is held by
+// nothing, and its backstop finds no claim to wake.
+func (e *Engine) backstopHeld(ctx context.Context, tx pgx.Tx, key string, role claim.Role) (bool, error) {
+	if role != claim.RoleMerger {
+		return false, nil
+	}
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return false, err
+	}
+	rows, err := e.store.GatesOf(ctx, tx, issue.Tree)
+	if err != nil {
+		return false, err
+	}
+	_, held := HeldByDesignGate(*issue, role, record.TreeGate{Steps: e.cfg.Steps, Rows: rows})
+	return held, nil
+}
+
+// HeldMergers is, of issues, every one whose merger the design gate holds (HeldByDesignGate), with
+// the closed gate's row that holds it, by issue. It is the wake tick's own filter
+// (internal/daemon's fireDueBackstops), read once per tick over the issues of the mergers'
+// backstops that came due, so a held merger's backstop costs that read each minute and no fact's
+// transaction, as the silence sweep's filter spares a held merger (QuietByDesign). podBackstopDue
+// asks the same rule again inside each fact, so a gate that closed after this read is decided
+// there.
+//
+// It reads in batches, never per issue: the issues, then their trees' gate rows. An issue the
+// record does not hold is answered nothing, and its fact finds no claim to wake.
+func (e *Engine) HeldMergers(ctx context.Context, tx pgx.Tx, issues []string) (map[string]record.DesignGate, error) {
+	held := make(map[string]record.DesignGate)
+	if len(issues) == 0 {
+		return held, nil
+	}
+	read, err := e.store.IssuesOf(ctx, tx, e.cfg.Project, issues)
+	if err != nil {
+		return nil, err
+	}
+	trees := make([]string, 0, len(read))
+	for _, issue := range read {
+		trees = append(trees, issue.Tree)
+	}
+	gates, err := e.store.Gates(ctx, tx, trees)
+	if err != nil {
+		return nil, err
+	}
+	for _, issue := range read {
+		if gate, holds := HeldByDesignGate(issue, claim.RoleMerger, record.TreeGate{Steps: e.cfg.Steps, Rows: gates[issue.Tree]}); holds {
+			held[issue.Key] = gate
+		}
+	}
+	return held, nil
 }
 
 // wakeReleased is the one act every wake of this file performs, and the one place the gates are

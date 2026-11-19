@@ -120,11 +120,13 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // Each attempt reads, in this order, what ends or holds the row. The row finishes undelivered,
 // with one log line naming why, once the issue has left merging at the row's head (mergingAt, the
 // read row's own rule), and once the merger's claim has failed or retired, since that claim will
-// not hold its role again. While the root's design gate is closed (designGateClosed) a released
-// merger is neither woken nor told, and the row waits for the gate to open: a merger the gate holds
-// may not know the gate closed, and woken by this message it could enqueue the pull request again
-// against the gate, which holds the merge (mergerWaitsForTheDesignGate holds its start the same
-// way). A merger whose session holds its role is told at once, gate or none. The three other
+// not hold its role again. While the design gate holds the merger (mergerHeld) a released merger
+// is neither woken nor told, and the row waits for the gate to open: a merger the gate holds may
+// not know the gate closed, and woken by this message it could enqueue the pull request again
+// against the gate, which holds the merge. This wait is the row's own, apart from the fence's
+// (mergerWaitsForTheDesignGate), which holds only a start of the merger's phase work and lets the
+// start of the wake this row would make pass (dispatch://INFRA-2040 R7, D14 of its plan). A merger
+// whose session holds its role is told at once, gate or none. The three other
 // answers of the confirmed publish route keep the ordinary retry, as they do for a phase-ended
 // message: a holder that did not confirm in time (notify.ErrNotDelivered), one that does not
 // advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS
@@ -155,12 +157,13 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 		return nil
 	}
 	if held.Released() {
-		closed, err := r.designGateClosed(ctx, issue)
+		gate, holds, err := r.mergerHeld(ctx, issue)
 		if err != nil {
 			return err
 		}
-		if closed {
-			return wait.Errorf("the merge-queue removal of %s waits for the design gate of %s to open before it wakes the released merger", row.Issue, issue.Tree)
+		if holds {
+			return wait.Errorf("the merge-queue removal of %s waits for the design gate of %s to open before it wakes the released merger: version %d of its %s document (%s) is with its reviewer",
+				row.Issue, issue.Tree, gate.LatestVersion, gate.Step.OrSpec(), gate.ArtifactID)
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released

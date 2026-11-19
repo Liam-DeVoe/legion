@@ -2,7 +2,7 @@ package daemon
 
 // A gated step that nobody registered holds no merger (dispatch://INFRA-2040 R9): every reader of
 // the design gate's hold reads one rule, classify.StandingGate over the deployment's gated steps
-// and the tree's gate rows (the outbox's designGateClosed, workflow.HeldByDesignGate). Such a step
+// and the tree's gate rows (the outbox's mergerHeld, workflow.HeldByDesignGate). Such a step
 // still holds the tree's work (record.TreeGate.Open), but it names no document, so nobody can be
 // asked about it and no task or message can name its version. Each case drives the daemon's own
 // pieces over a real PostgreSQL: the production fact handlers, the outbox's executor and its

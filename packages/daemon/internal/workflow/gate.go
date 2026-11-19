@@ -1067,11 +1067,12 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue
 // holds by step: no step the deployment gates is closed with a row of its own
 // (classify.StandingGate). It is the one predicate the message and the merger's start hold both
-// read — the hold asks it as the outbox's designGateClosed — so a member is never told the gate
-// opened while the hold still holds its merger, nor left untold when the hold lets it go. A step
-// the deployment gates that nothing has registered holds the tree's work (FirstClosedStep) but
-// names no document, so nobody can be asked about it and nothing can be said of it: it is why the
-// message reads StandingGate rather than DesignGatesOpen, and the one difference between them.
+// read — the hold asks it through HeldByDesignGate, as the outbox's mergerHeld does — so a member
+// is never told the gate opened while the hold still holds its merger, nor left untold when the
+// hold lets it go. A step the deployment gates that nothing has registered holds the tree's work
+// (FirstClosedStep) but names no document, so nobody can be asked about it and nothing can be
+// said of it: it is why the message reads StandingGate rather than DesignGatesOpen, and the one
+// difference between them.
 func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate) bool {
 	_, held := classify.StandingGate(e.cfg.Steps, gates)
 	return !held
@@ -1082,13 +1083,13 @@ func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate)
 // row no approval has opened (classify.StandingGate over gate's steps and rows). The gate
 // answered is that row, which names the step, the document and its version.
 //
-// It reads the gate with the test the outbox's fence on a merger's start reads (internal/daemon's
-// designGateClosed, for mergerWaitsForTheDesignGate) and standingGateOpen reads for the message,
-// asked of a claim rather than of a start row: a merger in merging is held exactly while the
-// fence would hold its start. A step the deployment gates that nothing has registered holds no
-// merger, although it holds the tree's work (record.TreeGate.Open reads it closed): it names no
-// document, so the fence lets the merger's start through. Nor does an empty gates.design, which
-// asks no person about anything, whatever rows the root holds.
+// It is the test the outbox's fence on a merger's phase start reads (internal/daemon's
+// mergerHeld, for mergerWaitsForTheDesignGate) and standingGateOpen reads for the message, asked
+// of a claim rather than of a start row: a merger in merging is held exactly while the fence would
+// hold its phase start. A step the deployment gates that nothing has registered holds no merger,
+// although it holds the tree's work (record.TreeGate.Open reads it closed): it names no document,
+// so the fence lets the merger's start through. Nor does an empty gates.design, which asks no
+// person about anything, whatever rows the root holds.
 func HeldByDesignGate(issue record.Issue, role claim.Role, gate record.TreeGate) (record.DesignGate, bool) {
 	if role != claim.RoleMerger || issue.Phase != phase.Merging {
 		return record.DesignGate{}, false

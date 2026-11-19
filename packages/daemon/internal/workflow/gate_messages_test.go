@@ -70,7 +70,7 @@ func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
 
 // Under more than one gated step, the message is of the standing of every step the deployment
 // gates, not of the one row the event names. The merger merges on it, and the merger's own start
-// is held while any required step is closed (the outbox's designGateClosed over
+// is held while any required step is closed (the outbox's mergerHeld over
 // classify.StandingGate), so an "opened" message sent while another document is still under
 // review would merge a head whose design nobody has approved (dispatch://INFRA-714/spec R5,
 // under the steps INFRA-1272 gates).
@@ -108,7 +108,7 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 }
 
 // The message and the merger's start hold ask one question, so they read one predicate
-// (classify.StandingGate, the outbox's designGateClosed). A step the deployment gates that
+// (classify.StandingGate, the outbox's mergerHeld). A step the deployment gates that
 // nothing has registered names no document, so the hold passes it over; a message decided over a
 // predicate that let such a step hold the work would say nothing at all while the hold moved,
 // which is what a step list that grew left behind (dispatch://INFRA-714/spec R5).
