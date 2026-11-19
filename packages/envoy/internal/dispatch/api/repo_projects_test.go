@@ -375,6 +375,41 @@ func TestRepoProjectDeleteRemovesTheMappingItsPathSpellsBeforeTheOneItReadsAs(t 
 	deleteLeaving("acme/no%20thing", http.StatusBadRequest, "acme/x")
 }
 
+// A DELETE is the same however often it is sent: the dashboard sends a DELETE again, with no key,
+// when an earlier attempt's answer did not reach it and that attempt may have landed
+// (packages/dispatch/web/src/features/writes/keyed-write.ts), and two tabs can send the same
+// removal at once. So the DELETE of `acme/x.git` that removed the mapping stored under that
+// spelling removes nothing more when it is sent again, and the mapping of `acme/x` beside it,
+// which nobody asked to remove, stays.
+func TestRepoProjectDeleteSentAgainRemovesNoOtherMapping(t *testing.T) {
+	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, path := range []string{"acme/x.git.git", "acme/x"} {
+		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+path,
+			map[string]string{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("map %s: status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		response := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/repo-projects/acme/x.git", nil, "alice")
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("DELETE acme/x.git, attempt %d: status=%d body=%s, want 204", attempt, response.Code, response.Body.String())
+		}
+		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/repo-projects", nil, "alice")
+		var repos []string
+		for _, mapping := range decodeBody[[]repoProjectResponse](t, listed) {
+			repos = append(repos, mapping.Repo)
+		}
+		if !slices.Equal(repos, []string{"acme/x"}) {
+			t.Fatalf("after DELETE acme/x.git, attempt %d, the mappings are %q, want acme/x alone", attempt, repos)
+		}
+	}
+}
+
 func TestExternalIssueUsesPersistedRepoProject(t *testing.T) {
 	handler, _ := newTestHandlerWithDefaultProject(t)
 	for _, project := range []map[string]string{
