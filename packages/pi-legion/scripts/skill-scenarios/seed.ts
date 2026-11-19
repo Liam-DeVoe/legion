@@ -80,12 +80,13 @@
 //                                          artifacts.json in <run dir>)
 //   seed.ts heads-issue <file> <scenario> [<case>]
 //                                          a heads scenario's issue (reviewer-own-head <case>,
-//                                          reviewer-pass-and-fail or architect-pass-and-fail),
-//                                          before rig.sh's heads_fixture: the GitHub stand-in
-//                                          FAKE_GITHUB_PORT names holds the run's repository, the
-//                                          run's project is mapped to it, the delivery settings
-//                                          are written, and the issue has its spec and its
-//                                          Verification document; writes {issue, title} to <file>
+//                                          reviewer-pass-and-fail, architect-pass-and-fail or
+//                                          ci-pass-and-fail <role>), before rig.sh's heads_fixture:
+//                                          the GitHub stand-in FAKE_GITHUB_PORT names holds the
+//                                          run's repository, the run's project is mapped to it,
+//                                          the delivery settings are written, and the issue has
+//                                          its spec and its Verification document; writes {issue,
+//                                          title, verification} to <file>
 //   seed.ts heads-events <file> <heads file> <scenario> [<case>]
 //                                          after heads_fixture: the stand-in serves the open pull
 //                                          requests at the heads <heads file> names, their opened
@@ -884,7 +885,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <reviewer-own-head <sibling-fails|ci-only|no-implementer|no-tester>|reviewer-pass-and-fail|architect-pass-and-fail> | heads-events <file> <heads file> <the same scenario>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <reviewer-own-head <sibling-fails|ci-only|no-implementer|no-tester>|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail <reviewer|tester|architect>> | heads-events <file> <heads file> <the same scenario>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its

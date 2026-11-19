@@ -160,6 +160,15 @@
 #                   saying its runner lost its checkout before grep ran, after the reviewer's
 #                   approval and review record; its daemon stand-in serves sign_off and
 #                   request_backward_move. Scored by headsArchitect.
+#   ci-pass-and-fail
+#                   One world, #702 alone, in which k1 carries ci_check="go-checks": the job
+#                   recorded a pass and then a fail at #702's head while its third attempt there is
+#                   still in progress, so #702's line reads not known for the pass and the fail
+#                   beside "CI run go-checks has no result (not_completed)" (ci_job_results). Its
+#                   case is the role it drives, in the run's name, ci-pass-and-fail-<role>-<label>-<n>:
+#                   reviewer (on the tester's pass), tester (on the implementer's completion) and
+#                   architect (in accepting, after the reviewer's approval). Scored by headsReview,
+#                   headsTester and headsArchitect, counted per role and label.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -217,8 +226,8 @@
 #                                 nochange-block, untried or tried (required for that scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
-#   SKILL_SCENARIOS_FIXTURE_ONLY  reviewer-own-head, reviewer-pass-and-fail and
-#                                 architect-pass-and-fail: 1 stops each run once its Dispatch knows
+#   SKILL_SCENARIOS_FIXTURE_ONLY  reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail
+#                                 and ci-pass-and-fail: 1 stops each run once its Dispatch knows
 #                                 #702's head (fixture_heads), with <run>/fixture-only and no agent
 #   SKILL_SCENARIOS_OWNER     a label `owner=<value>` on the batch's Postgres and NATS containers,
 #                             for a machine whose rules name each container's owner; each
@@ -1800,8 +1809,18 @@ legion_session() {
   launch
 }
 
+# tester_prompt PR HEAD writes $R/prompt.txt: the architect's assignment of a tester, with the
+# Handoff line the daemon's task names the predecessor's record in
+# (packages/daemon/internal/workflow/effects.go), naming the implement record in $R/fixture.json.
+tester_prompt() {
+  local version
+  version=$(jq -r .implement.version "$R/fixture.json")
+  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
+    "$worker_key" "$1" "https://github.com/$worker_repo/pull/$1" "$worker_repo" "$2" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+}
+
 run_tester_proof() {
-  local index=$1 start=$2 pr head version
+  local index=$1 start=$2 pr head
   # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
   # reads and whose newest test record it writes.
   own_dispatch project
@@ -1810,12 +1829,8 @@ run_tester_proof() {
   # Called on its own, never as the left side of `||`, which would turn errexit off inside it.
   worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1
   seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
-  version=$(jq -r .implement.version "$R/fixture.json")
   read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
-  # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
-  # record in (packages/daemon/internal/workflow/effects.go).
-  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
-    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+  tester_prompt "$pr" "$head"
   legion_session tester
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
@@ -1878,7 +1893,8 @@ fixture_heads() {
 # order: the run's own NATS and GitHub stand-in (own_github) and its own Dispatch, which reads both
 # (own_dispatch); its issue (seed.ts heads-issue), whose key names the fixture's branches
 # (heads_fixture); the opened events of the pull requests, the case's results and the handoff
-# records (seed.ts heads-events), which read those branches' heads; and the wait for the run's
+# records (seed.ts heads-events), which read those branches' heads; in ci-pass-and-fail, the CI
+# job's own pass and fail of k1 at #702's head (ci_job_results); and the wait for the run's
 # Dispatch to know #702's head (fixture_heads). With SKILL_SCENARIOS_FIXTURE_ONLY=1 it then writes
 # $R/fixture-only, and the run starts no agent.
 heads_world() {
@@ -1889,34 +1905,84 @@ heads_world() {
   worker_key=$(jq -r .issue "$R/fixture.json")
   heads_fixture "$index" "$start" >>"$R/fixture.log" 2>&1
   seed_ts heads-events "$R/fixture.json" "$R/heads.json" "$scenario" ${scenario_case:+"$scenario_case"}
+  [ "$scenario" != ci-pass-and-fail ] || ci_job_results
   fixture_heads 702
   [ "${SKILL_SCENARIOS_FIXTURE_ONLY:-}" != 1 ] || : >"$R/fixture-only"
+}
+
+# ci_job_results writes, in ci-pass-and-fail, the CI job's own two results of k1 at #702's head
+# into the run's database: a pass of go-checks two minutes back and a fail now, after every record
+# of seed.ts heads-events, as two attempts of a job that a re-run made flaky leave them, while its
+# third attempt is still going (the GitHub stand-in's run of go-checks at that head is
+# `in_progress`). The route takes a result of a check CI proves only from that job's results token,
+# which the secrets broker mints for one CI run (POST /api/v1/issues/{key}/results), and the run's
+# Dispatch has no broker (start_dispatch), so the rows go into ci_check_results as
+# insertCIJobCheckResult writes them (packages/envoy/internal/dispatch/api/results_rows.go): the
+# block's version and digest, the check's surface and negative control, the run's commit and
+# branch, the job's session as the actor, an empty statement and no result.recorded event. The block
+# is k1 of the Verification document seed.ts heads-issue wrote, which Dispatch's settlement indexes
+# a moment after the upload, so the insert is tried every 2 s, at most 31 times (60 s), until it
+# writes both rows.
+ci_job_results() {
+  local database artifact head out attempt
+  database=$(jq -r .database "$R/dispatch.json")
+  artifact=$(jq -r .verification "$R/fixture.json")
+  head=$(jq -r '."702"' "$R/heads.json")
+  for ((attempt = 1; ; attempt++)); do
+    out=$(docker exec -i "$tag-pg" psql -U postgres -d "$database" -v ON_ERROR_STOP=1 -qAt \
+      -v issue="$worker_key" -v artifact="$artifact" -v head="$head" -v branch="legion/$worker_key-702" \
+      -v session="ci-results:$worker_repo/.github/workflows/ci-results.yaml" 2>&1 <<'SQL'
+with written as (
+  insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+    check_version, check_sha256, run, surface, negative_control, observed, commit_sha, branch,
+    verdict, attestation, session, actor, created_at)
+  select :'issue', :'issue', b.artifact_id, b.block_id, b.changed_version, b.text_sha256,
+    'go-checks', 'cli', 'Drop the line from docs/usage.md and the go-checks job fails.',
+    r.observed, :'head', :'branch', r.verdict, '{}'::jsonb, :'session',
+    jsonb_build_object('kind', 'session', 'id', :'session'), now() - r.ago
+  from document_blocks b
+  cross join (values
+    ('pass', 'Attempt 1 of go-checks passed: docs/usage.md names widgets --help.', interval '2 minutes'),
+    ('fail', 'Attempt 2 of go-checks failed: the runner lost its checkout before the docs check ran.', interval '0 seconds')
+  ) as r(verdict, observed, ago)
+  where b.artifact_id = :'artifact'::uuid and b.block_id = 'k1'
+  returning 1
+)
+select count(*) from written;
+SQL
+    ) || fail "the CI job's results of k1 were not written; psql answered: $out"
+    [ "$out" != 2 ] || return 0
+    [ "$attempt" -lt 31 ] || break
+    sleep 2
+  done
+  fail "the Verification document of $worker_key held no block k1 within 60 s, so the CI job's results of k1 were not written (psql answered $out)"
 }
 
 # heads_routes SCENARIO [CASE] writes the gh stand-in's routes of a heads scenario to
 # $R/fixtures.json, in the form of worker_fixture's, once fixture_heads has passed. They serve
 # `gh pr view`, `gh pr diff`, `gh pr checks` and the pull request read of #702 and #703 (#702 alone
-# in architect-pass-and-fail), `gh pr list`, the check runs and the status of each head (in
-# ci-only, #702's head also has a success of k1's named job, docs), an empty list of review threads
-# for `gh api graphql`, no rules on main, and the reviews of each pull request: a review submitted
-# through `gh api` answers its id, and a read lists none but, in architect-pass-and-fail, #702's
-# one APPROVED review, whose Legion footer names #702's head. A `gh pr` read of a number the world
-# holds no pull request of is refused, as GitHub refuses it. The stand-in records each call and its
-# body in calls.jsonl.
+# in architect-pass-and-fail and ci-pass-and-fail), `gh pr list`, the check runs and the status of
+# each head (in ci-only, #702's head also has a success of k1's named job, docs; in
+# ci-pass-and-fail, its named job go-checks is still in progress there), an empty list of review
+# threads for `gh api graphql`, no rules on main, and the reviews of each pull request: a review
+# submitted through `gh api` answers its id, and a read lists none but, in architect-pass-and-fail
+# and ci-pass-and-fail's architect case, #702's one APPROVED review, whose Legion footer names
+# #702's head. A `gh pr` read of a number the world holds no pull request of is refused, as GitHub
+# refuses it. The stand-in records each call and its body in calls.jsonl.
 # Each body is `Dispatch: <issue>`, then the template's Verification section
 # (skills/legion-worker/references/pr-body.md), whose one Checks line is that of k1 at that pull
 # request's head: the line Dispatch answered for the newest pass a role recorded there, or for the
 # tester's fail at #703 in sibling-fails (seed.ts heads-events keeps both in $R/fixture.json), and in
-# ci-only the `Pull request line:` results-before.txt holds under the line of that head; with none,
-# `not yet run`. So no body disagrees with the results, and a reviewer's refusal cannot come from a
-# body.
+# ci-only and ci-pass-and-fail the `Pull request line:` results-before.txt holds under the line of
+# that head; with none, `not yet run`. So no body disagrees with the results, and a reviewer's
+# refusal cannot come from a body.
 heads_routes() {
-  local scenario=$1 scenario_case=${2:-} pr head line body files jobs title pulls='[]' prs=(702 703)
-  [ "$scenario" != architect-pass-and-fail ] || prs=(702)
+  local scenario=$1 scenario_case=${2:-} pr head line body files jobs pending approved title pulls='[]' prs=(702 703)
+  case $scenario in architect-pass-and-fail | ci-pass-and-fail) prs=(702) ;; esac
   title=$(jq -r .title "$R/fixture.json")
   for pr in "${prs[@]}"; do
     head=$(jq -r --arg pr "$pr" '.[$pr]' "$R/heads.json")
-    if [ "$scenario_case" = ci-only ]; then
+    if [ "$scenario_case" = ci-only ] || [ "$scenario" = ci-pass-and-fail ]; then
       line=$(awk -v at="  - #$pr at " 'index($0, at) == 1 { under = 1; next }
         under && sub(/^    Pull request line: /, "") { print; exit }
         under && !/^    / { exit }' "$R/results-before.txt")
@@ -1943,12 +2009,16 @@ ${line:-- Check k1 (before_merge): not yet run}
       jq -R -s -c 'split("\n") | map(select(. != "") | split("\t") | {path:.[2], additions:(.[0]|tonumber), deletions:(.[1]|tonumber)})')
     jobs='["lint","test"]'
     [ "$scenario_case:$pr" != ci-only:702 ] || jobs='["lint","test","docs"]'
+    pending='[]'
+    [ "$scenario" != ci-pass-and-fail ] || pending='["go-checks"]'
     pulls=$(jq -c --argjson n "$pr" --arg head "$head" --arg body "$body" --argjson files "$files" --argjson jobs "$jobs" \
-      --arg diff "$(git -C "$R/remote.git" diff main "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
-      '. + [{number:$n, head:$head, body:$body, files:$files, jobs:$jobs, diff:$diff, url:$url}]' <<<"$pulls")
+      --argjson pending "$pending" --arg diff "$(git -C "$R/remote.git" diff main "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
+      '. + [{number:$n, head:$head, body:$body, files:$files, jobs:$jobs, pending:$pending, diff:$diff, url:$url}]' <<<"$pulls")
   done
+  approved=false
+  [ "$scenario" != architect-pass-and-fail ] && [ "$scenario:$scenario_case" != ci-pass-and-fail:architect ] || approved=true
   jq -n --argjson pulls "$pulls" --arg key "$worker_key" --arg title "$title" --arg repo "$worker_repo" \
-    --argjson approved "$([ "$scenario" = architect-pass-and-fail ] && echo true || echo false)" \
+    --argjson approved "$approved" \
     --arg at "$(date -u +%FT%TZ)" '
     def ref: "legion/\($key)-\(.number)";
     def approval: {id:7001, node_id:"PRR_rig7001", user:{login:"rig-review[bot]", type:"Bot"},
@@ -1959,12 +2029,15 @@ ${line:-- Check k1 (before_merge): not yet run}
       headRefName:ref, headRefOid:.head, baseRefName:"main", body, mergeable:"MERGEABLE",
       reviewDecision:(if reviews == [] then "" else "APPROVED" end),
       head:{sha:.head, ref:ref}, base:{ref:"main"}, files,
-      statusCheckRollup:[.jobs[] | {name:., status:"COMPLETED", conclusion:"SUCCESS"}],
+      statusCheckRollup:([.jobs[] | {name:., status:"COMPLETED", conclusion:"SUCCESS"}] +
+        [.pending[] | {name:., status:"IN_PROGRESS", conclusion:""}]),
       reviews:[reviews[] | {author:{login:.user.login}, state, body, submittedAt:.submitted_at, commit:{oid:.commit_id}}],
       latestReviews:[reviews[] | {author:{login:.user.login}, state, body, submittedAt:.submitted_at, commit:{oid:.commit_id}}]};
-    def checks: [.jobs[] | "\(.)\tpass\t10s\thttps://github.com/\($repo)/actions/runs/1"] | join("\n");
-    def runs: {total_count:(.jobs | length), check_runs:[.jobs | to_entries[] |
-      {id:(8000 + .key), name:.value, status:"completed", conclusion:"success"}]};
+    def checks: [(.jobs[] | "\(.)\tpass\t10s\thttps://github.com/\($repo)/actions/runs/1"),
+      (.pending[] | "\(.)\tpending\t0\thttps://github.com/\($repo)/actions/runs/41")] | join("\n");
+    def runs: {total_count:((.jobs + .pending) | length), check_runs:([.jobs | to_entries[] |
+      {id:(8000 + .key), name:.value, status:"completed", conclusion:"success"}] + [.pending | to_entries[] |
+      {id:(9100 + .key), name:.value, status:"in_progress", conclusion:null}])};
     ($pulls[0]) as $first | [$pulls[] | select(.number != 702)] as $others |
     {routes:(
       [{match:"^gh api (?=.*pulls/[0-9]+/reviews)(?!.* (-X|--method)[ =]?GET( |$))(?=.* ((-X|--method)[ =]?POST|--input|-f|-F|--field|--raw-field)( |$))",
@@ -2040,8 +2113,8 @@ hide_state_off() {
 hidden_needs_heads() {
   case $1 in *-hidden) ;; *) return 0 ;; esac
   case $2 in
-  reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail) ;;
-  *) fail "the label $1 hides Dispatch's computed state, which only reviewer-own-head, reviewer-pass-and-fail and architect-pass-and-fail hide; $2 is none of them" ;;
+  reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;;
+  *) fail "the label $1 hides Dispatch's computed state, which only reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail and ci-pass-and-fail hide; $2 is none of them" ;;
   esac
 }
 
@@ -2071,35 +2144,68 @@ run_reviewer_pass_and_fail() {
   hide_state_off
 }
 
-# architect-pass-and-fail: the tree's root architect, in a session of the daemon's catch-up of a tree
-# in `accepting` (QueueCatchUp, packages/daemon/internal/workflow/catch_up.go) with the Handoff and
-# Pull request words of the daemon's task after it, judges #702, at whose head the tester recorded
-# a pass, its test record and then a fail, and the reviewer its review record. Its stand-in daemon
-# serves its sign_off and request_backward_move. Scored by headsArchitect.
-run_architect_pass_and_fail() {
-  local index=$1 start=$2 version
-  heads_world architect-pass-and-fail "$index" "$start"
-  [ ! -e "$R/fixture-only" ] || return 0
-  heads_routes architect-pass-and-fail
+# architect_prompt writes $R/prompt.txt: the session of the daemon's catch-up of a tree in
+# `accepting` (QueueCatchUp, packages/daemon/internal/workflow/catch_up.go) with the Handoff and
+# Pull request words of the daemon's task after it, naming the review record seed.ts heads-events
+# wrote.
+architect_prompt() {
+  local version
   version=$(jq -r .review.version "$R/fixture.json")
   printf 'the tree of %s at generation 1 as the daemon records it now; start or resume it as your role says; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move). Handoff: review version %s (dispatch handoff-read --issue %s --phase review --version %s). Pull request: #702.\n' \
     "$worker_key" "$worker_key" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+}
+
+# architect-pass-and-fail: the tree's root architect, in accepting (architect_prompt), judges #702,
+# at whose head the tester recorded a pass, its test record and then a fail, and the reviewer its
+# review record. Its stand-in daemon serves its sign_off and request_backward_move. Scored by
+# headsArchitect.
+run_architect_pass_and_fail() {
+  local index=$1 start=$2
+  heads_world architect-pass-and-fail "$index" "$start"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes architect-pass-and-fail
+  architect_prompt
   hide_state_on
   legion_session architect accepting
   hide_state_off
 }
 
+# ci-pass-and-fail: one world for each of three roles, the run's case. k1 carries
+# ci_check="go-checks", whose job recorded a pass and then a fail at #702's head (ci_job_results)
+# while its third attempt there is still going, so `dispatch results` prints #702's line not known
+# for the pass and the fail, with the `Pull request line:` that CI run go-checks has no result
+# (not_completed) under it: the deep audit's state, in which the old texts sent each role to wait
+# for the run. The reviewer reviews #702 on the tester's pass (reviewer_prompt); the tester tests it
+# on the implementer's completion (tester_prompt), and its records are read back afterwards
+# (seed.ts capture-handoffs); the architect judges it in accepting (architect_prompt). Scored by
+# headsReview, headsTester and headsArchitect.
+run_ci_pass_and_fail() {
+  local index=$1 start=$2 role=$3
+  heads_world ci-pass-and-fail "$index" "$start" "$role"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes ci-pass-and-fail "$role"
+  case $role in
+  reviewer) reviewer_prompt ;;
+  tester) tester_prompt 702 "$(jq -r '."702"' "$R/heads.json")" ;;
+  architect) architect_prompt ;;
+  esac
+  hide_state_on
+  if [ "$role" = architect ]; then legion_session architect accepting; else legion_session "$role"; fi
+  hide_state_off
+  [ "$role" != tester ] || seed_ts capture-handoffs "$R/fixture.json" "$R"
+}
+
 cmd_run() {
-  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail> <label> <n> <index> <start> [<case>]"
-  [ $# = 5 ] || { [ $# = 6 ] && [ "$1" = reviewer-own-head ]; } || fail "$usage"
+  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <label> <n> <index> <start> [<case>]"
+  [ $# = 5 ] || { [ $# = 6 ] && { [ "$1" = reviewer-own-head ] || [ "$1" = ci-pass-and-fail ]; }; } || fail "$usage"
   local scenario=$1 label=$2 n=$3 index=$4 start=$5 scenario_case=${6:-} name old
   load_label "$label"
   hidden_needs_heads "$label" "$scenario"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\`"
-  # An askgate or reviewer-own-head run's name carries its case, so the batches or runs of the
-  # cases, each numbered from 1, never remove each other's runs.
+  # An askgate, reviewer-own-head or ci-pass-and-fail run's name carries its case, so the batches or
+  # runs of the cases, each numbered from 1, never remove each other's runs.
   if [ "$scenario" = askgate ]; then
     case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried)
@@ -2111,6 +2217,11 @@ cmd_run() {
     case $scenario_case in
     sibling-fails | ci-only | no-implementer | no-tester) name=$scenario-$scenario_case-$label-$n ;;
     *) fail "the reviewer-own-head case '$scenario_case' is not sibling-fails, ci-only, no-implementer or no-tester" ;;
+    esac
+  elif [ "$scenario" = ci-pass-and-fail ]; then
+    case $scenario_case in
+    reviewer | tester | architect) name=$scenario-$scenario_case-$label-$n ;;
+    *) fail "the ci-pass-and-fail case '$scenario_case' is not reviewer, tester or architect" ;;
     esac
   else
     name=$scenario-$label-$n
@@ -2146,6 +2257,7 @@ cmd_run() {
   reviewer-own-head) run_reviewer_own_head "$index" "$start" "$scenario_case" ;;
   reviewer-pass-and-fail) run_reviewer_pass_and_fail "$index" "$start" ;;
   architect-pass-and-fail) run_architect_pass_and_fail "$index" "$start" ;;
+  ci-pass-and-fail) run_ci_pass_and_fail "$index" "$start" "$scenario_case" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
   if [ -e "$R/fixture-only" ]; then echo "$name (${R##*/}): fixture only"; else echo "$name (${R##*/}): $(tail -n 1 "$R/out.txt")"; fi
@@ -2168,12 +2280,14 @@ stop_batch() {
 }
 
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail> <runs> <label>..."
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <runs> <label>..."
   local runs=$2 label n index=0 start scenario_case cases=('')
   batch_scenario=$1
-  case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail) ;; *) fail "unknown scenario $batch_scenario" ;; esac
-  # reviewer-own-head runs each of its four cases, the case the last argument of each run.
+  case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;; *) fail "unknown scenario $batch_scenario" ;; esac
+  # reviewer-own-head runs each of its four cases and ci-pass-and-fail each of its three roles, the
+  # case the last argument of each run.
   [ "$batch_scenario" != reviewer-own-head ] || cases=(sibling-fails ci-only no-implementer no-tester)
+  [ "$batch_scenario" != ci-pass-and-fail ] || cases=(reviewer tester architect)
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
     *) fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')" ;;
@@ -2210,7 +2324,7 @@ cmd_batch() {
   services_up
   # Each run of a heads scenario starts a natsd of its own (own_github), built here once, as
   # scripts/e2e/verification-results.sh builds it.
-  case $batch_scenario in reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail)
+  case $batch_scenario in reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail)
     mkdir -p "$S/bin"
     go -C "$root/packages/envoy" build -o "$S/bin/natsd" ./internal/testnats/cmd/natsd ||
       fail "./internal/testnats/cmd/natsd did not build"

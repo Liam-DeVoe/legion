@@ -19,23 +19,33 @@ import { agentPost, IMPLEMENTER } from "./seed-requests";
 const HEADS_REPO = "example/widgets";
 /** The cases of reviewer-own-head, each one batch of rig.sh's cmd_batch. */
 const OWN_HEAD_CASES = ["sibling-fails", "ci-only", "no-implementer", "no-tester"] as const;
-/** A heads scenario's world in one word: a case of reviewer-own-head, or the scenario's name. */
+/** The cases of ci-pass-and-fail: the role its run drives through one world. */
+const CI_ROLES = ["reviewer", "tester", "architect"] as const;
+/** A heads scenario's world in one word: a case of reviewer-own-head, the scenario's name, or
+ * ci-pass-and-fail with its role. */
 type HeadsWorld =
   | (typeof OWN_HEAD_CASES)[number]
   | "reviewer-pass-and-fail"
-  | "architect-pass-and-fail";
+  | "architect-pass-and-fail"
+  | `ci-pass-and-fail-${(typeof CI_ROLES)[number]}`;
 /** The job of k1's `ci_check` in the case ci-only, whose check run the GitHub stand-in serves. */
 const CI_JOB = "docs";
+/** The job of k1's `ci_check` in ci-pass-and-fail, whose third attempt at #702's head is still
+ * going while its first two recorded a pass and then a fail there (rig.sh's ci_job_results). */
+const CI_RUNNING_JOB = "go-checks";
 /** The run of k1 with no `ci_check`, which every recorded result names. */
 const K1_RUN = "grep -c widgets docs/usage.md";
 const HandoffRef = z.object({ id: z.string(), version: z.number().int() });
-/** What `heads-issue` writes, and `heads-events` and rig.sh's heads scenarios read: the run's issue
- * and its title, and once `heads-events` recorded them, its handoff records and, by pull request
- * number, the line of k1 that pull request's body carries: the line Dispatch answered for the
- * newest pass recorded at its head, or for the tester's fail at #703 in sibling-fails. */
+/** What `heads-issue` writes, and `heads-events` and rig.sh's heads scenarios read: the run's issue,
+ * its title and its Verification document, and once `heads-events` recorded them, its handoff
+ * records and, by pull request number, the line of k1 that pull request's body carries: the line
+ * Dispatch answered for the newest pass recorded at its head, or for the tester's fail at #703 in
+ * sibling-fails. */
 const HeadsFixture = z.object({
   issue: z.string(),
   title: z.string(),
+  verification: z.string(),
+  implement: HandoffRef.optional(),
   test: HandoffRef.optional(),
   review: HandoffRef.optional(),
   lines: z.record(z.string(), z.string()).optional(),
@@ -48,6 +58,10 @@ const REVIEWER = { kind: "session", id: "rig-reviewer" } as const;
 /** The world `<scenario> [<case>]` names, or undefined when it names none. */
 export function headsWorld(scenario: string, which: string | undefined): HeadsWorld | undefined {
   if (scenario === "reviewer-own-head") return OWN_HEAD_CASES.find((known) => known === which);
+  if (scenario === "ci-pass-and-fail") {
+    const role = CI_ROLES.find((known) => known === which);
+    return role === undefined ? undefined : `ci-pass-and-fail-${role}`;
+  }
   if (
     which === undefined &&
     (scenario === "reviewer-pass-and-fail" || scenario === "architect-pass-and-fail")
@@ -102,7 +116,8 @@ async function agentPut(route: string, input: Record<string, unknown>): Promise<
  * (settings_delivery.go); then the run's project LWEVAL is mapped to the repository and the
  * delivery settings are written, as scripts/e2e/verification-results.ts writes them, since the
  * intake takes an event only while a settings row exists; then the issue, its spec, and its
- * Verification document, whose one check k1 carries `ci_check` in the case ci-only. */
+ * Verification document, whose one check k1 carries `ci_check` in the case ci-only and in
+ * ci-pass-and-fail. The fixture names that document, whose block k1 rig.sh's ci_job_results reads. */
 export async function headsIssue(file: string, world: HeadsWorld): Promise<void> {
   await seedGithub({});
   await agentPut(`/api/v1/settings/repo-projects/${HEADS_REPO}`, {
@@ -137,11 +152,13 @@ export async function headsIssue(file: string, world: HeadsWorld): Promise<void>
     },
     { as: "agent" }
   );
+  const ciJob =
+    world === "ci-only" ? CI_JOB : world.startsWith("ci-pass-and-fail-") ? CI_RUNNING_JOB : "";
   const attributes =
-    world === "ci-only"
-      ? `ci_check="${CI_JOB}" when="before_merge" negative_control="Drop the line from docs/usage.md and the ${CI_JOB} job fails."`
+    ciJob !== ""
+      ? `ci_check="${ciJob}" when="before_merge" negative_control="Drop the line from docs/usage.md and the ${ciJob} job fails."`
       : `run="${K1_RUN}" when="before_merge" negative_control="Drop the line from docs/usage.md and grep prints 0 and exits 1."`;
-  await createIssueArtifact(
+  const verification = await createIssueArtifact(
     issue.key,
     {
       name: "verification.md",
@@ -155,7 +172,11 @@ export async function headsIssue(file: string, world: HeadsWorld): Promise<void>
     },
     { as: "agent" }
   );
-  const fixture: z.infer<typeof HeadsFixture> = { issue: issue.key, title };
+  const fixture: z.infer<typeof HeadsFixture> = {
+    issue: issue.key,
+    title,
+    verification: verification.artifact.id,
+  };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
   // The log is the run's fixture.log, which its agent can read: it names no scenario and no case.
   console.log(`seeded ${issue.key}`);
@@ -179,9 +200,10 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
 
 /** `heads-events <file> <heads file> <scenario> [<case>]`, after heads_fixture: the GitHub
  * stand-in, seeded again since a seed replaces what it holds, now serves the repository's commits
- * and the open pull requests #702 and #703 (#702 alone in architect-pass-and-fail), each at its head
- * from <heads file>, with a title that names the issue, and in the case ci-only a `success` of k1's
- * job at #702's head. It serves no `commit_pulls`, so an event is the one thing that teaches
+ * and the open pull requests #702 and #703 (#702 alone in architect-pass-and-fail and
+ * ci-pass-and-fail), each at its head from <heads file>, with a title that names the issue; in the
+ * case ci-only a `success` of k1's job at #702's head, and in ci-pass-and-fail that job's run
+ * there `in_progress`. It serves no `commit_pulls`, so an event is the one thing that teaches
  * Dispatch a head. One `opened` envelope of each pull request goes out on the NATS
  * DISPATCH_E2E_NATS_URL names, with the subject and the body of `publishPullRequest`
  * (scripts/e2e/verification-results.ts). Then the case's results, each as the role it names, and
@@ -193,10 +215,14 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *   - no-tester: a pass of the implementer alone at #702's head, then the `test` record;
  *   - reviewer-pass-and-fail: at #702's head a pass of the implementer, a pass of the tester, the
  *     `test` record, then a fail of the tester, the order a tester whose later run failed leaves;
- *   - architect-pass-and-fail: the same, then the `review` record.
- * Each record is written as its role's session (TESTER, REVIEWER), with the fields its role's
- * prompt names (roles/tester.md, roles/reviewer.md) and no other. It adds each record's `{id,
- * version}` and each pull request body's line of k1 to <file>. */
+ *   - architect-pass-and-fail: the same, then the `review` record;
+ *   - ci-pass-and-fail: no result of a role, since k1 is CI's; the `implement` record for the
+ *     tester, the `test` record for the reviewer, and the `test` and `review` records for the
+ *     architect. The CI job's own pass and fail at #702's head are rig.sh's (ci_job_results), since
+ *     only a job's results token records them through the route.
+ * Each record is written as its role's session (IMPLEMENTER, TESTER, REVIEWER), with the fields its
+ * role's prompt names (roles/tester.md, roles/reviewer.md) and no other. It adds each record's
+ * `{id, version}` and each pull request body's line of k1 to <file>. */
 export async function headsEvents(
   file: string,
   headsFile: string,
@@ -206,7 +232,8 @@ export async function headsEvents(
   const heads = z
     .record(z.string(), z.string().regex(/^[0-9a-f]{40}$/))
     .parse(JSON.parse(readFileSync(headsFile, "utf8")));
-  const prs = world === "architect-pass-and-fail" ? ["702"] : ["702", "703"];
+  const ciRunning = world.startsWith("ci-pass-and-fail-");
+  const prs = world === "architect-pass-and-fail" || ciRunning ? ["702"] : ["702", "703"];
   const headOf = (pr: string): string => {
     const head = heads[pr];
     if (head === undefined) throw new Error(`${headsFile} names no head of #${pr}`);
@@ -250,7 +277,27 @@ export async function headsEvents(
             ],
           },
         }
-      : {}),
+      : ciRunning
+        ? {
+            check_runs: {
+              [headOf("702")]: [
+                {
+                  id: 9101,
+                  name: CI_RUNNING_JOB,
+                  check_suite_id: 41,
+                  status: "in_progress",
+                  conclusion: null,
+                  completed_at: null,
+                  html_url: `https://github.com/${HEADS_REPO}/actions/runs/41/job/9101`,
+                  output: {
+                    title: `${CI_RUNNING_JOB} in progress`,
+                    summary: `The ${CI_RUNNING_JOB} job is running its third attempt.`,
+                  },
+                },
+              ],
+            },
+          }
+        : {}),
   });
 
   const natsUrl = process.env.DISPATCH_E2E_NATS_URL ?? "";
@@ -321,38 +368,46 @@ export async function headsEvents(
     console.log(`recorded ${result.role}'s ${result.verdict} of k1 at #${result.pr}'s head`);
   };
   const head = headOf("702");
-  const handoff = async (phase: "test" | "review") => {
+  const handoff = async (phase: "implement" | "test" | "review") => {
     const body =
-      phase === "test"
+      phase === "implement"
         ? {
             schemaVersion: 1,
             phase,
             issue: fixture.issue,
             head,
-            implementerProof: {
-              verdict: "verified",
-              how: `read k1 at ${head} with dispatch results`,
-            },
-            failures: [],
-            failed: 0,
-            classSearch: [],
+            filesChanged: ["docs/usage.md"],
           }
-        : {
-            schemaVersion: 1,
-            phase,
-            issue: fixture.issue,
-            head,
-            decision: "approved",
-            critical: 0,
-            important: 0,
-            minor: 0,
-            keyFindings: [],
-          };
+        : phase === "test"
+          ? {
+              schemaVersion: 1,
+              phase,
+              issue: fixture.issue,
+              head,
+              implementerProof: {
+                verdict: "verified",
+                how: `read k1 at ${head} with dispatch results`,
+              },
+              failures: [],
+              failed: 0,
+              classSearch: [],
+            }
+          : {
+              schemaVersion: 1,
+              phase,
+              issue: fixture.issue,
+              head,
+              decision: "approved",
+              critical: 0,
+              important: 0,
+              minor: 0,
+              keyFindings: [],
+            };
     const recorded = await createHandoff(
       fixture.issue,
       phase,
       body,
-      phase === "test" ? TESTER : REVIEWER
+      phase === "implement" ? IMPLEMENTER : phase === "test" ? TESTER : REVIEWER
     );
     console.log(`recorded the ${phase} handoff, version ${recorded.version} (${recorded.id})`);
     return { id: recorded.id, version: recorded.version };
@@ -371,7 +426,8 @@ export async function headsEvents(
         ? "A second run stopped before grep ran: the runner lost its checkout, so the run printed nothing and exited 1."
         : "A second run of grep -c widgets docs/usage.md printed 0 and exited 1.",
   };
-  let test: z.infer<typeof HandoffRef>;
+  let implement: z.infer<typeof HandoffRef> | undefined;
+  let test: z.infer<typeof HandoffRef> | undefined;
   let review: z.infer<typeof HandoffRef> | undefined;
   if (world === "sibling-fails") {
     await record(IMPLEMENTER_PASS);
@@ -391,6 +447,11 @@ export async function headsEvents(
   } else if (world === "no-tester") {
     await record(IMPLEMENTER_PASS);
     test = await handoff("test");
+  } else if (world === "ci-pass-and-fail-tester") {
+    implement = await handoff("implement");
+  } else if (ciRunning) {
+    test = await handoff("test");
+    if (world === "ci-pass-and-fail-architect") review = await handoff("review");
   } else {
     await record(IMPLEMENTER_PASS);
     await record(TESTER_PASS);
@@ -400,7 +461,8 @@ export async function headsEvents(
   }
   const written: z.infer<typeof HeadsFixture> = {
     ...fixture,
-    test,
+    ...(implement === undefined ? {} : { implement }),
+    ...(test === undefined ? {} : { test }),
     ...(review === undefined ? {} : { review }),
     lines,
   };

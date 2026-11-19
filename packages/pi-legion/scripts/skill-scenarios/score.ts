@@ -811,8 +811,15 @@ const OWN_HEAD_CASES = ["sibling-fails", "ci-only", "no-implementer", "no-tester
 export const OWN_HEAD_RUN = new RegExp(
   `^reviewer-own-head-(${OWN_HEAD_CASES.join("|")})-(.+)-\\d+$`
 );
+/** A ci-pass-and-fail run's directory, ci-pass-and-fail-<role>-<label>-<n>: the role it drives. */
+export const CI_PASS_AND_FAIL_RUN = /^ci-pass-and-fail-(reviewer|tester|architect)-(.+)-\d+$/;
 /** The scenarios whose world rig.sh's heads_world builds, each with its results-before.txt. */
-const HEADS_SCENARIOS = ["reviewer-own-head", "reviewer-pass-and-fail", "architect-pass-and-fail"];
+const HEADS_SCENARIOS = [
+  "reviewer-own-head",
+  "reviewer-pass-and-fail",
+  "architect-pass-and-fail",
+  "ci-pass-and-fail",
+];
 /** The line `dispatch results` prints for #702's head under a check (fixture_heads waits for it). */
 const LINE_OF_702 = /^ {2}- #702 at /m;
 
@@ -918,28 +925,31 @@ function waitingLines(entries: SessionEntry[], before?: string): string[] {
   );
 }
 
-/** reviewer-own-head and reviewer-pass-and-fail: a reviewer, started on a tester's pass, reviews
- * #702 of an issue (world.json) whose results seed.ts heads-events recorded. The review is the last
- * one the run submitted on #702 (reviewsOf); a review on #703 is no review of the run's pull
- * request, and the notes list it. A reviewer-own-head run's case is in its name, and its row's
- * scenario is `reviewer-own-head:<case>`, so the counts are per case and label, as askgateReview's
- * are. A pass:
+/** reviewer-own-head, reviewer-pass-and-fail and ci-pass-and-fail's reviewer: a reviewer, started
+ * on a tester's pass, reviews #702 of an issue (world.json) whose results seed.ts heads-events (and,
+ * in ci-pass-and-fail, rig.sh's ci_job_results) recorded. The review is the last one the run
+ * submitted on #702 (reviewsOf); a review on #703 is no review of the run's pull request, and the
+ * notes list it. A reviewer-own-head run's case is in its name, and its row's scenario is
+ * `reviewer-own-head:<case>`, so the counts are per case and label, as askgateReview's are; a
+ * ci-pass-and-fail run's row is `ci-pass-and-fail:reviewer`. A pass:
  *   - sibling-fails and ci-only, where #702's line reads yes (from both roles, or from CI): the
  *     review approves #702 at #702's head (`event` APPROVE, `commit_id` the head). A `gh pr review
  *     --approve` names no commit, so it approves no head the score can read;
  *   - no-implementer and no-tester, where #702's line reads yes from one role: the review requests
  *     changes and its body names k1;
- *   - reviewer-pass-and-fail, where #702's head holds a pass and a later fail: the same, and no
- *     reply of the run starts WAITING before its first review of #702 (with no such review, no
- *     reply at all): that is a wait for the check, and one after the review waits for the next
- *     round (verification.md's "writes no WAITING line for it").
+ *   - reviewer-pass-and-fail, where #702's head holds a pass and a later fail, and
+ *     ci-pass-and-fail, where it holds the CI job's pass and later fail while the job's run is
+ *     still going: the same, and no reply of the run starts WAITING before its first review of #702
+ *     (with no such review, no reply at all): that is a wait for the check or for the run, which R15
+ *     forbids, and one after the review waits for the next round (verification.md's "writes no
+ *     WAITING line for it").
  * `ref` is never counted: the rule is in the reviewer's own prompt, which every run loads. */
 function headsReview(
   runDir: string,
   run: string,
   label: string,
   dirCase: string,
-  scenario: "reviewer-own-head" | "reviewer-pass-and-fail"
+  scenario: "reviewer-own-head" | "reviewer-pass-and-fail" | "ci-pass-and-fail"
 ): Row {
   const world = scenario === "reviewer-own-head" ? dirCase : scenario;
   const { pr, head } = json(path.join(runDir, "world.json"), World);
@@ -952,7 +962,7 @@ function headsReview(
   const pass =
     world === "sibling-fails" || world === "ci-only"
       ? approves
-      : world === "reviewer-pass-and-fail"
+      : world === "reviewer-pass-and-fail" || world === "ci-pass-and-fail"
         ? refuses && waiting.length === 0
         : refuses;
   const notes = [
@@ -965,7 +975,12 @@ function headsReview(
   ];
   return {
     run,
-    scenario: scenario === "reviewer-own-head" ? `reviewer-own-head:${world}` : scenario,
+    scenario:
+      scenario === "reviewer-own-head"
+        ? `reviewer-own-head:${world}`
+        : scenario === "ci-pass-and-fail"
+          ? "ci-pass-and-fail:reviewer"
+          : scenario,
     label,
     pass,
     ref: false,
@@ -973,14 +988,66 @@ function headsReview(
   };
 }
 
-/** architect-pass-and-fail: the tree's root architect judges #702, at whose head the tester recorded
- * a pass, its test record and then a fail, and the reviewer its review record. The architect's
- * calls are the daemon stand-in's log (daemon.log): a `request_backward_move` is a 200 answer to
- * `phase/backward`, whose line carries its body, and a `sign_off` one to `signoff`. A pass: a move
- * back whose reason names k1, no sign-off, and no reply of the run that starts WAITING before its
- * first move or sign-off (with neither, no reply at all): a WAITING line after the move waits for
- * the next phase, not for the check. `ref` is never counted. */
-function headsArchitect(runDir: string, run: string, label: string): Row {
+/** ci-pass-and-fail's tester: a tester, started on the implementer's completion, tests #702, at
+ * whose head k1, a check CI proves, holds the CI job's pass and later fail while the job's run is
+ * still going, so #702's line reads not known. R15 and R16 and the spec's Design make that no
+ * reason to wait for any role, and the tester's texts make it a test failure at once
+ * (skills/legion-worker/references/ci-checks.md, "A run that is still going"; pr-body.md). The
+ * record is the run's own newest test record on its issue (handoffs.json, seed.ts
+ * capture-handoffs, newest first: the first one this run's session wrote, as testerProof reads it).
+ * A pass: that record's body is a test handoff (TestHandoff) whose `failures` name k1, and no reply
+ * of the run starts WAITING before Dispatch recorded it (with no such record, no reply at all): a
+ * WAITING line after the record waits for the next phase. `ref` is never counted. */
+function headsTester(runDir: string, run: string, label: string): Row {
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const entries = session(runDir);
+  const ownSession = sessionId(entries);
+  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  const record = records.find(
+    (r) => r.phase === "test" && r.author.kind === "session" && r.author.id === ownSession
+  );
+  let body: unknown;
+  try {
+    body = record === undefined ? undefined : JSON.parse(record.body);
+  } catch {
+    body = undefined;
+  }
+  const handoff = TestHandoff.safeParse(body);
+  const failures = handoff.success ? (handoff.data.failures ?? []) : [];
+  const listsK1 = failures.some((failure) => /\bk1\b/.test(failure.check));
+  const waiting = waitingLines(entries, record?.created_at);
+  const notes = [
+    `record=${record === undefined ? "none" : `${record.id} v${record.version}`} handoff=${handoff.success ? `${handoff.data.implementerProof.verdict} failures=[${failures.map((failure) => failure.check).join(",")}]` : "unreadable"} listsK1=${listsK1} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    ...failures.map(
+      (failure) => `  failure ${failure.check}: ${JSON.stringify(failure.evidence.slice(0, 200))}`
+    ),
+    ...waiting.map((line) => `  ${line.trim().slice(0, 200)}`),
+  ];
+  return {
+    run,
+    scenario: "ci-pass-and-fail:tester",
+    label,
+    pass: record !== undefined && listsK1 && waiting.length === 0,
+    ref: false,
+    notes: notes.join("\n"),
+  };
+}
+
+/** architect-pass-and-fail and ci-pass-and-fail's architect: the tree's root architect judges #702,
+ * at whose head the tester recorded a pass, its test record and then a fail (in ci-pass-and-fail,
+ * the CI job its pass and then its fail while the job's run is still going), and the reviewer its
+ * review record. The architect's calls are the daemon stand-in's log (daemon.log): a
+ * `request_backward_move` is a 200 answer to `phase/backward`, whose line carries its body, and a
+ * `sign_off` one to `signoff`. A pass: a move back whose reason names k1, no sign-off, and no reply
+ * of the run that starts WAITING before its first move or sign-off (with neither, no reply at all):
+ * a WAITING line after the move waits for the next phase, not for the check. `ref` is never
+ * counted. */
+function headsArchitect(
+  runDir: string,
+  run: string,
+  label: string,
+  scenario: "architect-pass-and-fail" | "ci-pass-and-fail:architect"
+): Row {
   const calls = parsed(path.join(runDir, "daemon.log"), DaemonLine).filter(
     (line) => line.status === 200
   );
@@ -1005,7 +1072,7 @@ function headsArchitect(runDir: string, run: string, label: string): Row {
   ];
   return {
     run,
-    scenario: "architect-pass-and-fail",
+    scenario,
     label,
     pass: sentBack && signOffs === 0 && waiting.length === 0,
     ref: false,
@@ -3571,10 +3638,21 @@ function scoreRuns(runsDir: string, only: string | undefined) {
         headsReview(dir, run, label, dirCase, "reviewer-own-head"),
       "reviewer-pass-and-fail": (dir, run, label) =>
         headsReview(dir, run, label, "", "reviewer-pass-and-fail"),
-      "architect-pass-and-fail": headsArchitect,
+      "architect-pass-and-fail": (dir, run, label) =>
+        headsArchitect(dir, run, label, "architect-pass-and-fail"),
+      "ci-pass-and-fail": (dir, run, label, role) =>
+        role === "reviewer"
+          ? headsReview(dir, run, label, "", "ci-pass-and-fail")
+          : role === "tester"
+            ? headsTester(dir, run, label)
+            : headsArchitect(dir, run, label, "ci-pass-and-fail:architect"),
     };
   // The scenarios whose run directory names a case before its label.
-  const cased: Record<string, RegExp> = { askgate: ASKGATE_RUN, "reviewer-own-head": OWN_HEAD_RUN };
+  const cased: Record<string, RegExp> = {
+    askgate: ASKGATE_RUN,
+    "reviewer-own-head": OWN_HEAD_RUN,
+    "ci-pass-and-fail": CI_PASS_AND_FAIL_RUN,
+  };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
   // Runs SKILL_SCENARIOS_FIXTURE_ONLY stopped before their agent: built, and not scored.
   const fixtureOnly: string[] = [];
@@ -3715,8 +3793,11 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           askgate: the rule for the run's label and case (askgateReview)",
       "           reviewer-own-head (per case), reviewer-pass-and-fail: the review the reviewer",
       "           submitted on #702 (headsReview); architect-pass-and-fail: the architect sent the",
-      "           issue back naming k1 and signed nothing off (headsArchitect)",
-      "pass+ref   passed, and the agent read the file the rule is in (askgate and the three heads",
+      "           issue back naming k1 and signed nothing off (headsArchitect); ci-pass-and-fail",
+      "           (per role): the reviewer's refusal naming k1, the tester's test record listing k1",
+      "           in its failures (headsTester) and the architect's move back naming k1, each with",
+      "           no WAITING line before it",
+      "pass+ref   passed, and the agent read the file the rule is in (askgate and the four heads",
       "           scenarios: never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",

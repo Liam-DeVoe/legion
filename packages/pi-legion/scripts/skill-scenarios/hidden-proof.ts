@@ -25,7 +25,12 @@ import path from "node:path";
 import { SessionEntry, toolResults } from "./transcript";
 
 /** The scenarios whose agent reads Dispatch's computed state (rig.sh's hidden_needs_heads). */
-const HEADS_SCENARIOS = ["reviewer-own-head", "reviewer-pass-and-fail", "architect-pass-and-fail"];
+const HEADS_SCENARIOS = [
+  "reviewer-own-head",
+  "reviewer-pass-and-fail",
+  "architect-pass-and-fail",
+  "ci-pass-and-fail",
+];
 
 /** A line that states what Dispatch computes from the results: the check's answer, the count of
  * heads that read yes, the line of a head, the pull request line under it, or the fields that hold
