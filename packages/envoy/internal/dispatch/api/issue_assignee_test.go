@@ -550,9 +550,9 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 // is told person beside read, and no read-only token is told approve. The control is a token
 // that writes, told neither read nor a cut.
 //
-// The handler is called directly with each token, since the route itself answers a read-only
-// token 403 READ_ONLY_TOKEN before its handler: whoami is not a route Dispatch serves such a
-// token on yet (refuseReadOnlyToken).
+// The handler is called directly with each token, so the test reads whoami's own answer alone;
+// the read-only walks (read_only_token_test.go) hold the gate in front of it, which lets every
+// read-only token through to whoami, a token that carries a cut included.
 func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
