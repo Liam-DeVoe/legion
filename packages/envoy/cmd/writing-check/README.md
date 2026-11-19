@@ -918,6 +918,7 @@ reads them. An agent's text is a text that `writingcheck.Checks` checks.
 | `--snapshot`, `--verdicts`, `--seed` | The three inputs. |
 | `--confirmed`, `--confirmed-seed` | Optional, together: the result of a fresh reader's read of a sample of question cases (`{"reader", "confirmed", "total", "items": [{"case_id", "about_words"}]}`), and the seed of its draw. |
 | `--from` | A bundle `pack` wrote, in place of the other inputs: the tarball, its manifest, or a directory that holds one of them. |
+| `--to-development` | Optional: the split groups whose cases go to the development part whatever the split says, one key a line. A blank line and a line that opens with `#` are skipped. See below the split. |
 | `--out` | The directory for the output files. |
 
 `build` refuses a verdicts file that has no verdict for one of the owner's texts. It makes the
@@ -971,6 +972,18 @@ share, taken together, nearer 40%: the sum over the four case groups of the squa
 each held-out share from 40% falls. A split group that holds cases of several case groups counts
 in each. `build` fails if one tree is in both parts.
 
+With `--to-development`, each split group of the list goes whole to the development part after
+the split, whatever part the split gave it. The list is the split groups whose texts a change-1
+scoring run read while they were held out (INFRA-3231's pair check). They are development data
+now, so a held-out run never scores them. No other group moves: no group goes to the held-out part
+in place of them, so each case group's held-out share falls by the cases moved, and `build` prints
+by how much. The list holds issue keys, so it is never a file of this repository. It is the
+Dispatch artifact `infra-3231-to-development` of INFRA-3231, and `dataset.go` holds its SHA-256
+(`dsToDevelopmentSHA256`). `build` refuses a file with another SHA-256 and prints both. It also
+refuses a list with a key that is no split group of the build; the error gives the count of such
+keys, not the keys. On the parts it writes, `build` fails if a case of a listed group is in the
+held-out part. Without the flag, the split is the one above.
+
 `build` writes these files to `--out`:
 
 - `cases.jsonl.gz`: the cases, by id.
@@ -994,7 +1007,14 @@ reader, and the result file's SHA-256. `build` refuses a result whose counts do 
 items, a case read twice, and a case that is not a question case of this build. The cases do not
 change.
 
-`build` prints the SHA-256 of `documents.jsonl.gz`, `sessions.tsv` and `cases.jsonl.gz`.
+With `--to-development`, `counts.json` also holds `to_development`: the list's SHA-256, the split
+groups it lists, those of them the split held out and the list moved, and the cases moved, in all
+and by case group. It holds no key. The counts of the groups and of the parts are those after the
+move.
+
+`build` prints the SHA-256 of `documents.jsonl.gz`, `sessions.tsv` and `cases.jsonl.gz`. With
+`--to-development`, it also prints the split groups and cases that the list moved and, for each
+case group, the held-out share the split gave and the share after the move.
 
 The verdicts file holds the verdict of each person's text. A harness that gives a reviewer the
 words a reader asked about before (Decision 19) takes only the verdicts of texts written before

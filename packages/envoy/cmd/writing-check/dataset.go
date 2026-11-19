@@ -2537,6 +2537,7 @@ type dsCounts struct {
 	SessionsUnlisted  int                      `json:"sessions_not_a_store_id"`
 	SHA256            map[string]string        `json:"sha256"`
 	ConfirmedSample   *dsConfirmedSample       `json:"confirmed_sample,omitempty"`
+	ToDevelopment     *dsToDevelopmentCounts   `json:"to_development,omitempty"`
 }
 
 // dsConfirmedSample is the result of a fresh reader's read of a sample of question cases: how
@@ -2603,12 +2604,15 @@ type dsBuildResult struct {
 
 // dsInputs is what a build reads: the snapshot, the verdicts and the seed, and, when Confirmed
 // names a file, the result of a fresh reader's read of a sample of question cases, drawn with
-// ConfirmedSeed.
+// ConfirmedSeed. ToDevelopment, when set, is the list of build --to-development: the split
+// groups whose cases go to the development part whatever the split says. pack does not put it
+// in a bundle.
 type dsInputs struct {
 	Snapshot, Verdicts string
 	Seed               uint64
 	Confirmed          string
 	ConfirmedSeed      uint64
+	ToDevelopment      *dsToDevelopment
 }
 
 // confirmedFlags are the flags of the confirmation read, which build and pack both take.
@@ -2626,6 +2630,7 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 	confirmed, confirmedSeed := confirmedFlags(flags)
 	from := flags.String("from", "", "a bundle pack wrote, in place of the other inputs: the tarball, its manifest, or a directory holding one")
 	out := flags.String("out", "", "the directory for cases.jsonl.gz, documents.jsonl.gz, sessions.tsv and counts.json (required; keep it under $TMPDIR)")
+	toDevelopment := flags.String("to-development", "", "a list of split-group keys, one a line, whose cases go to the development part whatever the split says; its SHA-256 must be the one dataset.go commits (dsToDevelopmentSHA256)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -2648,6 +2653,16 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "writing-check dataset build: %v\n", err)
 		return 1
 	}
+	// The list is read first, so a list the repository does not commit is refused before the
+	// bundle is joined.
+	var toDev *dsToDevelopment
+	if *toDevelopment != "" {
+		list, err := readToDevelopment(*toDevelopment, dsToDevelopmentSHA256)
+		if err != nil {
+			return fail(err)
+		}
+		toDev = list
+	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return fail(err)
 	}
@@ -2662,6 +2677,7 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 			return fail(err)
 		}
 	}
+	in.ToDevelopment = toDev
 	started := time.Now()
 	result, err := buildDataset(in, *out)
 	if err != nil {
@@ -2676,6 +2692,22 @@ func runDatasetBuild(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "cases: %d; no tree is in both parts\n", c.Cases)
 	if s := c.ConfirmedSample; s != nil {
 		fmt.Fprintf(stdout, "confirmed sample: %d of %d question cases are about words (seed %d)\n", s.Confirmed, s.Total, s.Seed)
+	}
+	if td := c.ToDevelopment; td != nil {
+		share := func(n, of int) float64 {
+			if of == 0 {
+				return 0
+			}
+			return 100 * float64(n) / float64(of)
+		}
+		fmt.Fprintf(stdout, "to development (list sha256 %s): %d split groups listed; %d of them, with %d cases, moved from the held-out part\n",
+			td.ListSHA256, td.SplitGroups, td.GroupsMoved, td.CasesMoved)
+		fmt.Fprintf(stdout, "| Group | Cases moved | Held out by the split | Held out | Change |\n| --- | ---: | ---: | ---: | ---: |\n")
+		for _, g := range dsGroups {
+			gc, moved := c.Groups[g], td.CasesMovedByGroup[g]
+			split, now := share(gc.HeldOut+moved, gc.Cases), share(gc.HeldOut, gc.Cases)
+			fmt.Fprintf(stdout, "| %s | %d | %.1f%% | %.1f%% | %+.1f points |\n", g, moved, split, now, now-split)
+		}
 	}
 	fmt.Fprintf(stdout, "wall time: %s\n", time.Since(started).Round(time.Second))
 	fmt.Fprintf(stdout, "documents.jsonl.gz sha256: %s\n", result.documentSHA)
@@ -3004,8 +3036,13 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	if err != nil {
 		return res, err
 	}
-	for _, c := range list {
-		c.Part = parts[c.SplitGroup]
+	// The split groups of --to-development go to the development part after the split, so every
+	// other group keeps the part the split gave it.
+	if counts.ToDevelopment, err = in.ToDevelopment.apply(list, parts); err != nil {
+		return res, err
+	}
+	if err := dsAssignParts(list, parts, in.ToDevelopment); err != nil {
+		return res, err
 	}
 	treeParts := map[string]string{}
 	counts.NoTreeInBothParts = true
@@ -3256,6 +3293,106 @@ func dsSplit(cases []*dsCase, seed uint64) (map[string]string, error) {
 		return nil, errors.New("the split did not place every split group")
 	}
 	return parts, nil
+}
+
+// dsToDevelopmentSHA256 is the SHA-256 of the one list build --to-development takes: the split
+// groups whose texts a change-1 scoring run read while they were held out (INFRA-3231's pair
+// check). Those groups are development data now, so they leave the held-out part, and a held-out
+// run never scores them. The list holds issue keys, so this repository holds only its SHA-256: the
+// keys are the Dispatch artifact infra-3231-to-development of INFRA-3231.
+const dsToDevelopmentSHA256 = "3baca74d8955b0586da7b93fbe18879dc8193120aff8ead8db4f13d92f62b624"
+
+// dsToDevelopment is the list of build --to-development: its SHA-256 and its split-group keys.
+type dsToDevelopment struct {
+	sha256 string
+	keys   map[string]bool
+}
+
+// dsToDevelopmentCounts is what counts.json holds of the list: its SHA-256, the split groups it
+// lists, those of them the split held out, which the list moved to the development part, and their
+// cases, in all and by case group. It holds no key.
+type dsToDevelopmentCounts struct {
+	ListSHA256        string         `json:"list_sha256"`
+	SplitGroups       int            `json:"split_groups"`
+	GroupsMoved       int            `json:"split_groups_moved"`
+	CasesMoved        int            `json:"cases_moved"`
+	CasesMovedByGroup map[string]int `json:"cases_moved_by_group"`
+}
+
+// readToDevelopment reads the list of --to-development: one split-group key a line; a blank line
+// and a line that opens with # are skipped. It refuses a file whose SHA-256 is not want, the one
+// the repository commits (dsToDevelopmentSHA256), and says both.
+func readToDevelopment(path, want string) (*dsToDevelopment, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if sum := sha256Hex(data); sum != want {
+		return nil, fmt.Errorf("--to-development %s has SHA-256 %s, and the repository commits SHA-256 %s for the list", path, sum, want)
+	}
+	l := &dsToDevelopment{sha256: want, keys: map[string]bool{}}
+	for line := range strings.Lines(string(data)) {
+		if key := strings.TrimSpace(line); key != "" && !strings.HasPrefix(key, "#") {
+			l.keys[key] = true
+		}
+	}
+	return l, nil
+}
+
+// apply puts each split group of the list in the development part of parts, the split's
+// assignment, whatever the split said. It moves no other group: none goes to the held-out part in
+// place of the groups it moves, so a case group's held-out share falls by the cases it moves. It
+// refuses a list with a key that is no split group of parts, and says how many keys are no split
+// group, not which. A nil list moves nothing and answers no counts.
+func (l *dsToDevelopment) apply(cases []*dsCase, parts map[string]string) (*dsToDevelopmentCounts, error) {
+	if l == nil {
+		return nil, nil
+	}
+	unknown := 0
+	for key := range l.keys {
+		if _, ok := parts[key]; !ok {
+			unknown++
+		}
+	}
+	if unknown > 0 {
+		return nil, fmt.Errorf("%d of the %d keys of --to-development are no split group of this build", unknown, len(l.keys))
+	}
+	tc := &dsToDevelopmentCounts{ListSHA256: l.sha256, SplitGroups: len(l.keys), CasesMovedByGroup: map[string]int{}}
+	for _, g := range dsGroups {
+		tc.CasesMovedByGroup[g] = 0
+	}
+	for _, c := range cases {
+		if l.keys[c.SplitGroup] && parts[c.SplitGroup] == dsHeldOut {
+			tc.CasesMoved++
+			tc.CasesMovedByGroup[c.Group]++
+		}
+	}
+	for key := range l.keys {
+		if parts[key] == dsHeldOut {
+			tc.GroupsMoved++
+		}
+		parts[key] = dsDevelopment
+	}
+	return tc, nil
+}
+
+// dsAssignParts gives each case the part that parts, the split's assignment, gives its split
+// group. It refuses an assignment that leaves a case of a split group of the list l in the
+// held-out part. The build calls it on the assignment it writes, so a step before it that puts a
+// listed group back in the held-out part fails the build.
+func dsAssignParts(cases []*dsCase, parts map[string]string, l *dsToDevelopment) error {
+	held, groups := 0, map[string]bool{}
+	for _, c := range cases {
+		c.Part = parts[c.SplitGroup]
+		if l != nil && l.keys[c.SplitGroup] && c.Part == dsHeldOut {
+			held++
+			groups[c.SplitGroup] = true
+		}
+	}
+	if held > 0 {
+		return fmt.Errorf("%d cases of %d split groups of --to-development are in the held-out part", held, len(groups))
+	}
+	return nil
 }
 
 // dsWriteGzipJSONL writes each value as one JSON line to a gzipped file, and answers the file's

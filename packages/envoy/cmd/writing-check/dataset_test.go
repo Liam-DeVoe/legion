@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -422,6 +423,171 @@ func TestDatasetNearCopyMovesWithItsGroup(t *testing.T) {
 	}
 	if other.SplitGroup != "TREE-0" {
 		t.Errorf("TREE-0's case is in split group %s, want one of its own", other.SplitGroup)
+	}
+}
+
+// writeToDevelopment writes a --to-development list of keys, with a comment line and a blank line,
+// and reads it with its own SHA-256 as the one the repository commits. It answers the list and
+// that SHA-256.
+func writeToDevelopment(t *testing.T, path string, keys ...string) (*dsToDevelopment, string) {
+	t.Helper()
+	data := []byte("# split groups for the test\n\n" + strings.Join(keys, "\n") + "\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l, err := readToDevelopment(path, sha256Hex(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l, sha256Hex(data)
+}
+
+// build --to-development puts every case of a listed split group in the development part, and
+// every other case keeps the part the split gives it: no group goes to the held-out part in place
+// of the ones moved. counts.json holds the list's SHA-256 and what moved, and no key. The build
+// without the list writes no to_development, and a list of groups the split already puts in
+// development changes no file but counts.json.
+func TestDatasetBuildToDevelopmentMovesOnlyTheListedGroups(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, verdicts := standardFixture().write(t, dir)
+	in := dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}
+	plain, err := buildDataset(in, filepath.Join(dir, "plain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	partOf, groupPart, casesOf := map[string]string{}, map[string]string{}, map[string]int{}
+	for _, c := range readDatasetCases(t, filepath.Join(dir, "plain")) {
+		partOf[c.ID], groupPart[c.SplitGroup] = c.Part, c.Part
+		casesOf[c.SplitGroup]++
+	}
+	var held, developed []string
+	for _, g := range sortedKeys(groupPart) {
+		if groupPart[g] == dsHeldOut {
+			held = append(held, g)
+		} else {
+			developed = append(developed, g)
+		}
+	}
+	if len(held) < 2 || len(developed) < 1 {
+		t.Fatalf("split groups held out %v and in development %v, want two and one", held, developed)
+	}
+	listed := []string{held[0], held[1], developed[0]}
+	list, sum := writeToDevelopment(t, filepath.Join(dir, "list.txt"), listed...)
+	in.ToDevelopment = list
+	moved, err := buildDataset(in, filepath.Join(dir, "moved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range readDatasetCases(t, filepath.Join(dir, "moved")) {
+		want := partOf[c.ID]
+		if slices.Contains(listed, c.SplitGroup) {
+			want = dsDevelopment
+		}
+		if c.Part != want {
+			t.Errorf("case %s of split group %s is in the %s part, want %s", c.ID, c.SplitGroup, c.Part, want)
+		}
+	}
+	td := moved.counts.ToDevelopment
+	if td == nil || td.ListSHA256 != sum || td.SplitGroups != 3 || td.GroupsMoved != 2 || td.CasesMoved != casesOf[held[0]]+casesOf[held[1]] {
+		t.Fatalf("to_development = %+v, want the list's SHA-256 %s, 3 groups listed, 2 moved with %d cases", td, sum, casesOf[held[0]]+casesOf[held[1]])
+	}
+	for _, g := range dsGroups {
+		if was, is := plain.counts.Groups[g].HeldOut, moved.counts.Groups[g].HeldOut; was-is != td.CasesMovedByGroup[g] {
+			t.Errorf("%s: %d cases held out by the split and %d after the list, and the list says it moved %d", g, was, is, td.CasesMovedByGroup[g])
+		}
+	}
+	counts, err := os.ReadFile(filepath.Join(dir, "moved", "counts.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range listed {
+		if bytes.Contains(counts, []byte(`"`+key+`"`)) {
+			t.Errorf("counts.json holds the listed key %s", key)
+		}
+	}
+	if plainCounts, _ := os.ReadFile(filepath.Join(dir, "plain", "counts.json")); bytes.Contains(plainCounts, []byte("to_development")) || !bytes.Contains(counts, []byte(`"to_development"`)) {
+		t.Errorf("to_development is in the counts.json of the build without the list, or not in the one with it")
+	}
+
+	in.ToDevelopment, _ = writeToDevelopment(t, filepath.Join(dir, "developed.txt"), developed[0])
+	same, err := buildDataset(in, filepath.Join(dir, "same"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same.casesSHA != plain.casesSHA || same.documentSHA != plain.documentSHA || same.sessionsSHA != plain.sessionsSHA ||
+		same.counts.ToDevelopment.GroupsMoved != 0 || same.counts.ToDevelopment.CasesMoved != 0 {
+		t.Errorf("a list of a group already in development wrote cases %s (without it %s) and moved %+v", same.casesSHA, plain.casesSHA, same.counts.ToDevelopment)
+	}
+}
+
+// build refuses a --to-development file whose SHA-256 is not the one the repository commits, and
+// says both, before it writes a file. It refuses a list with a key that is no split group of the
+// build, and says how many keys are, not which.
+func TestDatasetBuildToDevelopmentRefusesAnotherList(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, verdicts := standardFixture().write(t, dir)
+	path := filepath.Join(dir, "list.txt")
+	data := []byte("NEAR-1\nTREE-1\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	out := filepath.Join(dir, "cli")
+	code := run(t.Context(), []string{"dataset", "build", "--snapshot", snapshot, "--verdicts", verdicts, "--seed", strconv.Itoa(fixtureSeed),
+		"--to-development", path, "--out", out}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), sha256Hex(data)) || !strings.Contains(stderr.String(), dsToDevelopmentSHA256) {
+		t.Errorf("build of a list the repository does not commit: exit %d, stderr %q; want 1 and both SHA-256s", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(out, "cases.jsonl.gz")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused build wrote cases.jsonl.gz (%v)", err)
+	}
+	other := strings.Repeat("0", 64)
+	if _, err := readToDevelopment(path, other); err == nil || !strings.Contains(err.Error(), sha256Hex(data)) || !strings.Contains(err.Error(), other) {
+		t.Errorf("a list read against another committed SHA-256: %v, want a refusal that says both", err)
+	}
+
+	list, _ := writeToDevelopment(t, filepath.Join(dir, "unknown.txt"), "NEAR-1", "TREE-NONE", "TREE-NADA")
+	_, err := buildDataset(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed, ToDevelopment: list}, filepath.Join(dir, "unknown"))
+	if err == nil || !strings.Contains(err.Error(), "2 of the 3 keys") || strings.Contains(err.Error(), "TREE-N") {
+		t.Errorf("a list with two keys that are no split group: %v, want a refusal that counts 2 of 3 and says no key", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "unknown", "cases.jsonl.gz")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused build wrote cases.jsonl.gz (%v)", err)
+	}
+}
+
+// The build gives the cases their parts with dsAssignParts, on the assignment it writes, and
+// dsAssignParts refuses one that holds out a case of a listed split group: a step that puts a
+// listed group back in the held-out part after the list moved it fails the build. The list moves
+// only its groups.
+func TestDatasetBuildFailsWhenAListedGroupIsHeldOut(t *testing.T) {
+	t.Parallel()
+	cases := []*dsCase{
+		{ID: "question/comment:a@1", Group: dsGroupQuestion, SplitGroup: "TREE-1", Tree: "TREE-1"},
+		{ID: "plain/comment:b@2", Group: dsGroupPlain, SplitGroup: "TREE-1", Tree: "TREE-3"},
+		{ID: "answer/comment:c@3", Group: dsGroupAnswer, SplitGroup: "TREE-2", Tree: "TREE-2"},
+	}
+	list := &dsToDevelopment{sha256: sha256Hex([]byte("TREE-1\n")), keys: map[string]bool{"TREE-1": true}}
+	parts := map[string]string{"TREE-1": dsHeldOut, "TREE-2": dsHeldOut}
+	moved, err := list.apply(cases, parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.GroupsMoved != 1 || moved.CasesMoved != 2 || moved.CasesMovedByGroup[dsGroupQuestion] != 1 || moved.CasesMovedByGroup[dsGroupPlain] != 1 ||
+		parts["TREE-1"] != dsDevelopment || parts["TREE-2"] != dsHeldOut {
+		t.Fatalf("the list moved %+v and left the parts %v, want TREE-1 alone in development with its 2 cases", moved, parts)
+	}
+	if err := dsAssignParts(cases, parts, list); err != nil || cases[0].Part != dsDevelopment || cases[2].Part != dsHeldOut {
+		t.Fatalf("dsAssignParts of the list's assignment: %v, parts %s %s %s", err, cases[0].Part, cases[1].Part, cases[2].Part)
+	}
+	parts["TREE-1"] = dsHeldOut
+	if err := dsAssignParts(cases, parts, list); err == nil || !strings.Contains(err.Error(), "2 cases of 1 split groups") || strings.Contains(err.Error(), "TREE-1") {
+		t.Errorf("dsAssignParts of an assignment that holds out the listed group: %v, want a refusal that counts its 2 cases and says no key", err)
+	}
+	if err := dsAssignParts(cases, parts, nil); err != nil || cases[0].Part != dsHeldOut {
+		t.Errorf("dsAssignParts with no list: %v, part %s; want the assignment as it is", err, cases[0].Part)
 	}
 }
 
