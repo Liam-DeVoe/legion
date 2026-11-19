@@ -23,9 +23,9 @@
 //     measured_at more than a day past its clock or before the floor (R18), and Load refuses a
 //     Now that would make it refuse one.
 //
-// Base writes only the tables the base head 02a7b3c6 has, for k8's negative control: the same
-// issues, events, observations and delivery history and the same smaller projects, and no reading
-// (evalfixture.BaseLacks names what the base lacks).
+// Base writes only the tables the base head 02a7b3c6 has, for k8's and k13's negative controls:
+// the same issues, events, observations and delivery history and the same smaller projects, and no
+// reading (evalfixture.BaseLacks names what the base lacks).
 //
 // AddFailureDay writes, into a database Load filled, a failure day on top of its history: the
 // worst day of deploy failures INFRA's own history has had, 36 failed deploy runs with 45 failed
@@ -104,7 +104,7 @@ type Spec struct {
 	// TenTimes writes ten times the stated run rate: 200 deploy runs and 600 pull-request runs a
 	// day, the rate R13's 660 ms for the run-jobs read was measured at.
 	TenTimes bool
-	// Base writes only the base head's tables, for k8's negative control: no reading.
+	// Base writes only the base head's tables, for k8's and k13's negative controls: no reading.
 	Base bool
 	// BuiltBy is the build the readings write records on the logged evals' day rows
 	// (eval_days.built_by): the server's stamped commit, so every family's rows carry the running
