@@ -16,7 +16,9 @@ body: |-
   the freeze ends. Every connection a Dispatch process opens names the process's identity, minted
   at boot, at the end of its `application_name` (for example `dispatch <identity>` for the shared
   pool, or the `DATABASE_URL`'s own `application_name` followed by it), and a request whose session
-  was ended answers `503 DATABASE_SESSION_ENDED` with `Retry-After: 1`. The cost: a holder whose
-  renewal is late stops publishing 1 s, not 2 s, before a standby may take the hold, a NATS outage
-  of 2 to 3 s now hands the hold to the other process, and a slow holder whose row lapses loses
-  the requests its database sessions were serving.
+  was ended answers `503 DATABASE_SESSION_ENDED` with `Retry-After: 1`; the first such answer has
+  every pool of the process drop the connections it holds, so its later requests dial afresh. The
+  cost: a holder whose renewal is late stops publishing 1 s, not 2 s, before a standby may take the
+  hold, a NATS outage of 2 to 3 s now hands the hold to the other process, and a slow holder whose
+  row lapses loses the requests its database sessions were serving and the first statement that
+  meets one of its idle connections.

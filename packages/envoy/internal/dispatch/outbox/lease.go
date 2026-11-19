@@ -415,8 +415,9 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // standby that takes the hold over ends those sessions, which rolls the transactions back and
 // frees the locks within the take-over's six seconds. A process that was only slow, and runs on,
 // meets the ended sessions as SQLSTATE 57P01 (store.SessionEnded) on the requests they served,
-// which the API answers 503 DATABASE_SESSION_ENDED; its pools dial fresh connections, and it
-// stands by for the hold like any other process.
+// which the API answers 503 DATABASE_SESSION_ENDED; the first of them has its pools drop every
+// connection they hold (store.Pool.onSessionEnded), and it stands by for the hold like any other
+// process.
 //
 // It is bounded by recordTimeout, as a record is. A failure is logged and the take stands: the
 // process holds the hold, and a session it could not end is the frozen process's alone.

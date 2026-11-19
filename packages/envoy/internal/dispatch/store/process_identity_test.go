@@ -5,10 +5,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // An application_name is the base, one space and the identity, with the base cut on a rune
@@ -224,5 +226,62 @@ func TestEndSessionsOfEndsTheSessionsOfOneIdentityAlone(t *testing.T) {
 	}
 	if SessionEnded(errors.New("57P01")) || SessionEnded(nil) {
 		t.Error("SessionEnded reads an error that is no Postgres error as an ended session")
+	}
+}
+
+// A store whose sessions were all ended while idle in its pools fails at most the first statement
+// handed one of them: that statement finds its session ended (SessionEnded), and the store's pools
+// then drop every connection they hold, so each later statement runs on a connection dialled
+// afresh. The four connections are ended while the test holds them, released at once and used
+// within the second after which pgxpool pings an idle connection before it hands it out, so
+// without the drop each of them would fail a statement of its own.
+func TestAStoreWhoseSessionsWereEndedFailsOneStatementAndDialsAfresh(t *testing.T) {
+	ctx := context.Background()
+	ended := openTestStore(t)
+	ending := openTestStore(t)
+	const held = 4
+	conns := make([]*pgxpool.Conn, 0, held)
+	pids := make([]int32, 0, held)
+	for range held {
+		conn, err := ended.Pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire a connection: %v", err)
+		}
+		var pid int32
+		if err := conn.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+			t.Fatalf("read the connection's backend: %v", err)
+		}
+		conns, pids = append(conns, conn), append(pids, pid)
+	}
+	sessions, err := ending.Pool.EndSessionsOf(ctx, ended.Pool.Identity())
+	if err != nil || len(sessions) < held {
+		t.Fatalf("end the store's sessions: %d ended, %v; want at least %d", len(sessions), err, held)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var live int
+		if err := ending.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity where pid = any($1)`, pids).Scan(&live); err != nil {
+			t.Fatalf("read the ended backends: %v", err)
+		}
+		if live == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of the store's backends %v still live 10 s after they were ended", live, pids)
+		}
+	}
+	for _, conn := range conns {
+		conn.Release()
+	}
+	released := time.Now()
+	var failed []error
+	for range held + 1 {
+		var one int
+		if err := ended.Pool.QueryRow(ctx, `select 1`).Scan(&one); err != nil {
+			failed = append(failed, err)
+		}
+	}
+	t.Logf("%d statements after the release, %v after it: %d failed", held+1, time.Since(released).Round(time.Millisecond), len(failed))
+	if len(failed) > 1 || (len(failed) == 1 && !SessionEnded(failed[0])) {
+		t.Fatalf("after its sessions were ended, the store failed %d of %d statements (%v); want at most the first, with its session ended", len(failed), held+1, failed)
 	}
 }

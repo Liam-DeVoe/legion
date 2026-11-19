@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // A server process's identity is one uuid, minted when Open opens its pool, which every
@@ -96,9 +98,45 @@ const sessionEndedCode = "57P01"
 
 // SessionEnded reports whether err is a statement whose database session was ended under it
 // (SQLSTATE 57P01): by a standby that took the publisher hold over from this process
-// (EndSessionsOf), by an operator, or by the server shutting down. The request it served did
-// nothing that commits; the pool dials a fresh connection for the next one.
+// (EndSessionsOf), by an operator, or by the server shutting down. What the session had not
+// committed was rolled back; the pools dial fresh connections for what comes next
+// (onSessionEnded).
 func SessionEnded(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == sessionEndedCode
+}
+
+// onSessionEnded wraps next, a connection's handler of the errors Postgres sends it, so that the
+// first connection of this process that meets an ended session (SessionEnded) has every pool of p
+// drop the connections it holds (resetAll), and then does what next does: pgconn's default closes
+// a connection on any FATAL error, as 57P01 is. A standby that takes the publisher hold over ends
+// every session of this process at once, those idle in a pool too, and Postgres's answer to an
+// idle one waits unread on its socket: without this, each of them would fail the next statement
+// handed it, one request apiece, unless it had sat idle the second after which pgxpool pings a
+// connection before handing it out. Every connection of p's pools carries the handler, since
+// each separate pool is opened from a copy of the shared pool's configuration.
+func (p *Pool) onSessionEnded(next pgconn.PgErrorHandler) pgconn.PgErrorHandler {
+	return func(conn *pgconn.PgConn, pgErr *pgconn.PgError) bool {
+		if pgErr.Code == sessionEndedCode {
+			p.resetAll()
+		}
+		if next != nil {
+			return next(conn, pgErr)
+		}
+		return !strings.EqualFold(pgErr.Severity, "FATAL")
+	}
+}
+
+// resetAll has the shared pool and every separate pool opened from it destroy their idle
+// connections at once and each connection in use when it is released (pgxpool.Pool.Reset), so
+// the next caller of each is handed a connection dialled afresh.
+func (p *Pool) resetAll() {
+	p.mu.Lock()
+	pools := []*pgxpool.Pool{p.pool, p.rooms, p.roomAppends, p.health, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}
+	p.mu.Unlock()
+	for _, pool := range pools {
+		if pool != nil {
+			pool.Reset()
+		}
+	}
 }
