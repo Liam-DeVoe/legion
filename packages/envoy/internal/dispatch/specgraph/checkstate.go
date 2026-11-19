@@ -109,6 +109,10 @@ const (
 	reasonNoFailingExample     = "no_failing_example"
 	reasonFailingExampleMissed = "failing_example_missed"
 	reasonFaultByTestAuthor    = "fault_by_test_author"
+	reasonNoPlantedOn          = "no_planted_on"
+	reasonNoFaultPaths         = "no_fault_paths"
+	reasonBlankFaultPath       = "blank_fault_path"
+	reasonPlantedOnTested      = "planted_on_tested_commit"
 	reasonPassed               = "passed"
 	reasonFailed               = "failed"
 )
@@ -194,9 +198,16 @@ const (
 //     names the commit that the step planted its fault on (PlantedOn) and one path of the fault or
 //     more (FaultPaths), each a source file and no file of a test (isFaultPath) and each covered by
 //     C's tie at PlantedOn where that tie is known, and that counts at S from PlantedOn as a run of
-//     PlantedOn would, by the rule of step 4; never at its Commit, the commit that CI tested (R9:
-//     "For a check that a program runs, the failing example is a fault that a step plants in the
-//     code"; faultCommit). For a query or an agent of the code, one that counts at S as a run does
+//     PlantedOn would, by the rule of step 4; never at a subject at its Commit, the commit that CI
+//     tested, whatever its PlantedOn names (R9: "For a check that a program runs, the failing
+//     example is a fault that a step plants in the code"; faultCommit, countingFaults). Beside
+//     those, each failing example of such a check whose record does not say where the step planted
+//     its fault (unplanted), which counts nowhere: when it is the newest, unknown, with the reason
+//     that names what the record lacks, no_planted_on, no_fault_paths for no path or only paths of
+//     only white space, which are no paths, blank_fault_path for such a path beside a real one, or
+//     planted_on_tested_commit for a PlantedOn that is its own Commit, since a later answer of the
+//     step decides (R7: "the latest counts"), and such a record says nothing of the code where its
+//     fault was planted. For a query or an agent of the code, one that counts at S as a run does
 //     (R8: it counts "only while no file that the test reads changed"); for a program check of
 //     production or the graph, one whose TestCommit counts at S.Commit by the rule of step 4 (R9:
 //     "its test, as it is now"); for a query or an agent of production or the graph, the newest.
@@ -454,6 +465,8 @@ func (j *checkJudge) state(c Check) CheckState {
 	switch {
 	case !caught:
 		return unknownCheck(reasonNoFailingExample, "")
+	case countsFromPlantedOn(c) && unplanted(fault) != "":
+		return unknownCheck(unplanted(fault), "")
 	case fault.Outcome != OutcomeFail:
 		return unknownCheck(reasonFailingExampleMissed, "")
 	case c.Procedure == ProcedureProgram && !byAnotherAgent(fault):
@@ -532,28 +545,68 @@ func readOf(c Check, commit, deploy, graphTx string) string {
 	return commit
 }
 
-// countingFaults is the failing examples of c that count at the subject (step 7).
+// countingFaults is the failing examples of c that count at the subject (step 7). For a program
+// check of the code (countsFromPlantedOn), a failing example counts from the commit that its fault
+// was planted on (faultCommit), and never at a subject at its own Commit, the commit that CI
+// tested, whatever its PlantedOn names: the code of that commit is the code with the fault. Beside
+// those it gives each failing example of such a check whose record does not say where the step
+// planted its fault (unplanted), which counts nowhere, so that step 7 reads the check unknown when
+// such a record is the newest, as a later answer of the step decides (R7: "the latest counts").
 func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
-	if !CountsAtACommit(c) {
+	switch {
+	case !CountsAtACommit(c):
 		return faults
+	case !countsFromPlantedOn(c):
+		return resultsWhere(faults, func(r Result) bool { return j.carries(c.ID, resultCommit(r)) })
 	}
-	return resultsWhere(faults, func(r Result) bool { return j.carries(c.ID, j.faultCommit(c, r)) })
+	return resultsWhere(faults, func(r Result) bool {
+		return unplanted(r) != "" || r.Commit != j.in.Subject.Commit && j.carries(c.ID, j.faultCommit(c, r))
+	})
+}
+
+// countsFromPlantedOn is whether c counts a failing example from the commit that the step planted
+// its fault on, rather than where its job ran: a program check of the code (R9: "For a check that a
+// program runs, the failing example is a fault that a step plants in the code").
+func countsFromPlantedOn(c Check) bool {
+	return c.Subject == SubjectCode && c.Procedure == ProcedureProgram
+}
+
+// unplanted is the reason of step 7 for a failing example r of a program check of the code whose
+// record does not say where the step planted its fault, and "" when it says: r names no commit that
+// the fault was planted on (no_planted_on); or no path of the fault, a path that is empty or only
+// white space being no path (no_fault_paths); or such a path beside a real one (blank_fault_path),
+// which is no source file, so the record counts nowhere, and which leaves the check unknown, so that
+// no older failing example decides; or its own Commit as that commit (planted_on_tested_commit),
+// where the step stores the one parent of the fault's commit, which is never the commit itself.
+func unplanted(r Result) string {
+	blank := func(path string) bool { return strings.TrimSpace(path) == "" }
+	switch {
+	case r.PlantedOn == "":
+		return reasonNoPlantedOn
+	case !slices.ContainsFunc(r.FaultPaths, func(path string) bool { return !blank(path) }):
+		return reasonNoFaultPaths
+	case slices.ContainsFunc(r.FaultPaths, blank):
+		return reasonBlankFaultPath
+	case r.PlantedOn == r.Commit:
+		return reasonPlantedOnTested
+	}
+	return ""
 }
 
 // faultCommit is the commit that the failing example r of c counts from (step 7), "" for none. For
 // a program check of the code, it is r's PlantedOn, the commit that the step planted the fault on,
-// when r names it and one path of the fault or more, and each path is a source file and no file of
-// a test (isFaultPath) and is covered by c's tie at PlantedOn where that tie is known; else none.
-// It is never r's Commit, the fault's own commit, which CI tested (R9: "For a check that a program
-// runs, the failing example is a fault that a step plants in the code"): the code of that commit is
-// the code with the fault, and no commit of the branch holds it. For each other check, it is the
-// commit where r's job ran (resultCommit).
+// when r says where the step planted it (unplanted), and each path of the fault is a source file
+// and no file of a test (isFaultPath) and is covered by c's tie at PlantedOn where that tie is
+// known; else none. It is never r's Commit, the fault's own commit, which CI tested (R9: "For a
+// check that a program runs, the failing example is a fault that a step plants in the code"): the
+// code of that commit is the code with the fault, and no commit of the branch holds it. For each
+// other check, it is the commit where r's job ran (resultCommit).
 func (j *checkJudge) faultCommit(c Check, r Result) string {
-	if c.Subject != SubjectCode || c.Procedure != ProcedureProgram {
+	if !countsFromPlantedOn(c) {
 		return resultCommit(r)
 	}
 	tie := j.in.Ties[r.PlantedOn][c.ID]
-	if r.PlantedOn == "" || len(r.FaultPaths) == 0 || slices.ContainsFunc(r.FaultPaths, func(path string) bool {
+	if unplanted(r) != "" || slices.ContainsFunc(r.FaultPaths, func(path string) bool {
 		return !isFaultPath(path) || tie.Known && !tie.Covers(path)
 	}) {
 		return ""

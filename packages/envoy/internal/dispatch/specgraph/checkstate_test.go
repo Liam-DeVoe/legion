@@ -384,6 +384,57 @@ func TestCheckState(t *testing.T) {
 			c.Subject.Commit = "c2"
 			c.Uncited = map[string]map[string]string{c.Results[1].Commit: {c.check: "test-not-in-code"}}
 		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		// R9 and the plan's t-graph-3: a failing example of a program check of the code counts from
+		// the commit that its fault was planted on, "never at the commit that CI tested", and a record
+		// that does not say where the step planted its fault counts nowhere; as the newest failing
+		// example it makes the check unknown, with the reason that names what it lacks, since the
+		// latest answer of the step decides (R7). Each row's missed failing example comes after c1's
+		// caught one, which alone would make the check true.
+		{name: "R9, a later failing example that missed its fault and names no planted_on: unknown (no_planted_on), and not true from c1's caught one", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn = "" }))
+		}, want: CheckState{State: "unknown", Reason: "no_planted_on"}},
+		{name: "R9, a later failing example that missed its fault and names no fault path: unknown (no_fault_paths)", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.FaultPaths = nil }))
+		}, want: CheckState{State: "unknown", Reason: "no_fault_paths"}},
+		{name: "R9, a later failing example that missed its fault and names its own commit as planted_on: unknown (planted_on_tested_commit)", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.Commit = r.PlantedOn }))
+		}, want: CheckState{State: "unknown", Reason: "planted_on_tested_commit"}},
+		{name: "control: the later failing example that missed its fault, planted on c1 with its path: unknown (failing_example_missed)", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(*Result) {}))
+		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
+		// A fault path that is empty or only white space is no path: a record whose paths are all
+		// such reads as one with no path, and one with such a path beside a real one reads unknown with
+		// a reason of its own, and is neither left out nor counted.
+		{name: "R9, a later failing example that missed its fault and whose one fault path is a space: unknown (no_fault_paths), and not true from c1's caught one", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.FaultPaths = []string{" "} }))
+		}, want: CheckState{State: "unknown", Reason: "no_fault_paths"}},
+		{name: "R9, a later failing example that missed its fault and whose fault paths are its source file and a tab: unknown (blank_fault_path), and not true from c1's caught one", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.FaultPaths = append(r.FaultPaths, "\t") }))
+		}, want: CheckState{State: "unknown", Reason: "blank_fault_path"}},
+		{name: "R9, a later failing example that missed its fault and whose fault paths are a space and its source file: unknown (blank_fault_path)", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.FaultPaths = append([]string{" "}, r.FaultPaths...) }))
+		}, want: CheckState{State: "unknown", Reason: "blank_fault_path"}},
+		{name: "control: a later failing example that missed its fault, whose fault path is a source file of the tie with a space in its name: unknown (failing_example_missed)", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.FaultPaths = []string{"packages/envoy/cmd/listener/main two.go"} }))
+		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
+		{name: "control: an earlier failing example that names no planted_on, and c1's caught one after it: true", change: func(c *checkCase) {
+			unplanted := c.Results[1]
+			unplanted.PlantedOn, unplanted.At = "", checkStateRun.Add(time.Minute)
+			c.Results = slices.Insert(c.Results, 1, unplanted)
+		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		{name: "R9, c1's caught failing example names c1, which CI tested, as planted_on: unknown (planted_on_tested_commit) at c2", change: func(c *checkCase) {
+			c.commit("c2", "c1", "docs/x.md")
+			c.Subject.Commit = "c2"
+			c.Results[1].Commit = "c1"
+		}, want: CheckState{State: "unknown", Reason: "planted_on_tested_commit"}},
+		{name: "R9, the subject is the fault's own commit, which CI tested, with the tree and the ties of c1, where the fault was planted: unknown (no_failing_example)", change: func(c *checkCase) {
+			c.commit(c.Results[1].Commit, "c1")
+			c.Subject.Commit = c.Results[1].Commit
+		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+		{name: "control: a subject with the tree and the ties of c1 at another commit than the fault's: true from c1", change: func(c *checkCase) {
+			c.commit("c2", "c1")
+			c.Subject.Commit = "c2"
+		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
 		{name: "R48, a refusal of a program check of production at the commit of the test that caught its fault takes out that example", change: func(c *checkCase) {
 			c.productionProgram("docs/x.md", "c1")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
@@ -907,6 +958,16 @@ func legRun(commit, leg string, attempt int, outcome Outcome, at time.Time) Resu
 func caughtFault(commit string, at time.Time) Result {
 	return plantedOn(Result{Check: checkStateCheck.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Job: "go-checks", Attempt: 1,
 		At: at, FaultAuthor: "author-b", TestAuthors: []string{"author-a"}}, commit)
+}
+
+// laterMissed is a failing example of C after the base's caught one, ten minutes after the base's
+// run, planted on c1 by the step in a fault of its own, on which the test missed its fault, with
+// change made to it.
+func laterMissed(change func(r *Result)) Result {
+	r := caughtFault("c1", checkStateRun.Add(10*time.Minute))
+	r.Commit, r.Outcome = "f2-c1", OutcomePass
+	change(&r)
+	return r
 }
 
 // checkStateFaultPath is the path that the fault of each failing example of a program check of the

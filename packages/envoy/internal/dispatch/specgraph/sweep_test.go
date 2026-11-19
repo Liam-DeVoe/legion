@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -69,14 +70,19 @@ func notRepoPaths(path string) []string {
 // production-and-graph, a program check of production whose runs name the commit of their test
 // (test_commit), a query of the graph at the transaction of its subject (graph_tx), and a run of a
 // job that has not ended. So each member that a rule reads is in a record of some scenario, and
-// each place of it is swept. The sweep also reads the shapes that no scenario holds (sweepBases).
-// One right, which sweepInputs gives the input where it writes it: a repository path of a tree
-// written " " is a real path, since git holds a file of that name (git ls-tree of a tree that holds
-// one lists the path " "), so the tree changed at a path that a tie covers, and a result there, a
-// failure among them, carries no more across it (R8: "A result at one commit also counts at
-// another commit when no code that the check runs changed between the two"); a base whose failure
-// at one commit carries to another shows it. A content label is no path, and one of " " names no
-// content, so the reader refuses it and it has no right.
+// each place of it is swept. The sweep also reads the shapes that no scenario holds (sweepBases),
+// and it reads back each value that it writes (treeWithRead), so that a sweep that writes nothing
+// fails by name. One right, which sweepInputs gives the input where it writes it: a repository path
+// of a tree written " " is a real path, since git holds a file of that name (git ls-tree of a tree
+// that holds one lists the path " "), so the tree changed at a path that a tie covers, and a result
+// there, a failure among them, carries no more across it (R8: "A result at one commit also counts
+// at another commit when no code that the check runs changed between the two"); a base whose
+// failure at one commit carries to another shows it. A path of a fault written " " is no path, as
+// one of only white space is none, so its record does not say what its fault changed, and as the
+// newest failing example it reads unknown, no_fault_paths where it was the one path and
+// blank_fault_path beside a real one: it has no right, and a base whose failing example of two paths
+// that missed its fault is newer than a caught one shows that it needs none. A content label is no
+// path, and one of " " names no content, so the reader refuses it and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -280,7 +286,8 @@ var addableMembers = map[string]struct {
 // moves nothing, also where CI refused the check at that commit, since such a check reads no commit
 // (CountsAtACommit); and a commit on a result of a check of production or of the graph is refused.
 // A planted_on alone, or fault_paths alone, on a failing example of a program check of the code
-// that no step planted moves nothing: it counts from planted_on only with both (CheckStates, step 7).
+// that no step planted moves no state: it counts from planted_on only with both, and with one of
+// the two it reads unknown with the reason that names the other (CheckStates, step 7).
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -319,7 +326,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 						}
 						for _, v := range values[m[1]] {
 							fsys := maps.Clone(base)
-							fsys[file] = &fstest.MapFile{Data: encodeTree(t, treeWith(tree, append(slices.Clone(place), m[0]), v))}
+							fsys[file] = &fstest.MapFile{Data: encodeTree(t, treeWithRead(t, tree, append(slices.Clone(place), m[0]), v))}
 							inputs = append(inputs, sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys})
 						}
 					}
@@ -475,7 +482,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 				}
 				for _, form := range forms {
 					if form != v {
-						with(fmt.Sprintf("%s %s as %q", name, treePointer(at), form), name, encodeTree(t, treeWith(tree, at, form)))
+						with(fmt.Sprintf("%s %s as %q", name, treePointer(at), form), name, encodeTree(t, treeWithRead(t, tree, at, form)))
 					}
 				}
 			}
@@ -735,6 +742,41 @@ func treeWith(v any, place []string, x any) any {
 		return c
 	}
 	panic(fmt.Sprintf("no value at %q", place))
+}
+
+// treeWithRead is treeWith(v, place, x), read back: it fails the test unless the copy holds x at
+// place, so that a sweep whose engine writes nothing, or another value, fails by name, where it
+// would read each input as its base and pass.
+func treeWithRead(t *testing.T, v any, place []string, x any) any {
+	t.Helper()
+	c := treeWith(v, place, x)
+	if got, held := treeAt(c, place); !held || !reflect.DeepEqual(got, x) {
+		t.Fatalf("the sweep wrote %s at %s, and the tree holds %v there (held %t)", encodeTree(t, x), treePointer(place), got, held)
+	}
+	return c
+}
+
+// treeAt is the value of the JSON tree v at place, and whether v holds one there.
+func treeAt(v any, place []string) (any, bool) {
+	for _, name := range place {
+		switch o := v.(type) {
+		case map[string]any:
+			x, held := o[name]
+			if !held {
+				return nil, false
+			}
+			v = x
+		case []any:
+			i, err := strconv.Atoi(name)
+			if err != nil || i < 0 || i >= len(o) {
+				return nil, false
+			}
+			v = o[i]
+		default:
+			return nil, false
+		}
+	}
+	return v, true
 }
 
 // treeRenamed is a copy of the JSON tree v with the member at place, the last name of place, under

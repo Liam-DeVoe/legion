@@ -52,7 +52,7 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 						for _, form := range names {
 							if block[at[0]:at[1]] != form {
 								fsys := maps.Clone(base)
-								fsys["approved.json"] = &fstest.MapFile{Data: encodeTree(t, treeWith(tree, place, block[:at[0]]+form+block[at[1]:]))}
+								fsys["approved.json"] = &fstest.MapFile{Data: encodeTree(t, treeWithRead(t, tree, place, block[:at[0]]+form+block[at[1]:]))}
 								inputs = append(inputs, sweepInput{what: fmt.Sprintf("approved.json %s: %q as %q", treePointer(place), block[at[0]:at[1]], form), fsys: fsys})
 							}
 						}
@@ -113,7 +113,7 @@ func leftOutAttributes(t *testing.T, base fstest.MapFS, tree any) []sweepInput {
 				}
 				what := fmt.Sprintf("approved.json %s: %q left out", treePointer(place), opening[at[0]+1:at[1]])
 				fsys := maps.Clone(base)
-				fsys["approved.json"] = &fstest.MapFile{Data: encodeTree(t, treeWith(tree, place, without+"\n"+body))}
+				fsys["approved.json"] = &fstest.MapFile{Data: encodeTree(t, treeWithRead(t, tree, place, without+"\n"+body))}
 				inputs = append(inputs, sweepInput{what: what, fsys: fsys, right: right})
 				inFiles := maps.Clone(fsys)
 				held := false

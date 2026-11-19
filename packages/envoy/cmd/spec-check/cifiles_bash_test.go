@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,10 +38,10 @@ var (
 )
 
 // bashScripts is each command of bashNames, bashBetween and bashSubs after each of bashPrefixes,
-// and the same commands after each of bashNestedBy inside each of bashWrappings. It leaves out a
-// command where a backslash and a line break right after the command's name, with blanks after
-// them, meet another backslash and line break in the name or in the subcommand: one reading of the
-// rule keeps the blanks and the other removes them, and neither reads both
+// and the same commands after each of bashNestedBy inside each of bashWrappings (bashShapes). It
+// leaves out a command where a backslash and a line break right after the command's name, with
+// blanks after them, meet another backslash and line break in the name or in the subcommand: one
+// reading of the rule keeps the blanks and the other removes them, and neither reads both
 // (TestCIFilesThatCompareLeavesAFormOutsideTheClaim).
 func bashScripts() []string {
 	var commands []string
@@ -54,6 +55,12 @@ func bashScripts() []string {
 			}
 		}
 	}
+	return bashShapes(commands)
+}
+
+// bashShapes is each of commands after each of bashPrefixes, and after each of bashNestedBy inside
+// each of bashWrappings: the shapes of bashScripts.
+func bashShapes(commands []string) []string {
 	var scripts []string
 	for _, prefix := range bashPrefixes {
 		for _, command := range commands {
@@ -75,8 +82,9 @@ func bashScripts() []string {
 // spec-check is a shell function that records its first argument, and a spec-check on PATH and in
 // ./bin does the same for a nested sh and for a path. Whenever Bash runs spec-check with compare
 // as its first argument, directly or in a nested shell, the guard names the file; a miss fails the
-// test. The guard can name more, and the test logs how many files it names where no shell runs
-// the comparison.
+// test. Only a file that the guard names no line of can be a miss, so Bash runs those
+// (expectEachComparisonNamed), with the controls: spec-check compare --dir a, and spec-check tree
+// --dir a, of the name spec-check and of ./bin/spec-check, in each shape of bashScripts.
 func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
@@ -98,7 +106,13 @@ func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 			files = append(files, bashFile{"run: " + style, raw, workflow.Jobs["spec"].Steps[0].Run})
 		}
 	}
-	expectEachComparisonNamed(t, bash, files, began)
+	var controls []bashControl
+	for _, sub := range []string{"compare", "tree"} {
+		for _, script := range bashShapes([]string{"spec-check " + sub + " --dir a", "./bin/spec-check " + sub + " --dir a"}) {
+			controls = append(controls, bashControl{script, sub == "compare"})
+		}
+	}
+	expectEachComparisonNamed(t, bash, files, controls, began)
 }
 
 // bashEarlierParts and bashEarlierForms are the pieces of the scripts that the Bash test of the
@@ -169,7 +183,8 @@ func bashEarlierScripts() []string {
 // The scripts of the round-6 reader's Bash test, which the text rule names too, run in bash as
 // scripts, as that test ran them: whenever Bash runs the comparison, directly or in a nested shell,
 // the guard names the file. So no comparison that a head of the text rule named in that corpus is
-// lost.
+// lost. The controls are the first form, spec-check compare --dir a and spec-check tree --dir a,
+// after no part and after each part of bashEarlierParts, and inside each of bashWrappings.
 func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
@@ -181,51 +196,84 @@ func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.
 	for _, script := range bashEarlierScripts() {
 		files = append(files, bashFile{"script", script, script})
 	}
-	expectEachComparisonNamed(t, bash, files, began)
+	var controls []bashControl
+	for _, word := range []string{"compare", "tree"} {
+		command := strings.ReplaceAll(bashEarlierForms[0], "{w}", word)
+		scripts := []string{command}
+		for _, p := range bashEarlierParts {
+			scripts = append(scripts, p+command)
+		}
+		for _, wrap := range bashWrappings {
+			scripts = append(scripts, wrap(command))
+		}
+		for _, script := range scripts {
+			controls = append(controls, bashControl{script, word == "compare"})
+		}
+	}
+	expectEachComparisonNamed(t, bash, files, controls, began)
 }
 
 // bashFile is one file of a Bash test: its kind, its text as the guard reads it, and the script
 // that Bash runs from it.
 type bashFile struct{ kind, raw, script string }
 
-// expectEachComparisonNamed runs the script of each of files in bash and fails the test for each
-// file where Bash runs the comparison and the guard names no line. It logs how many files the guard
-// names where no shell runs the comparison, and it does not pass when Bash ran the comparison in
-// none of the files or in all of them.
-func expectEachComparisonNamed(t *testing.T, bash string, files []bashFile, began time.Time) {
+// bashControl is a script that Bash runs beside the files of a Bash test, and whether Bash runs
+// the comparison in it: a control of the shape of the test's scripts, which runs spec-check
+// compare, or another subcommand, and nothing else.
+type bashControl struct {
+	script   string
+	compares bool
+}
+
+// expectEachComparisonNamed fails the test for each file of files where Bash runs the comparison
+// and the guard names no line. Only a file that the guard names no line of can be a miss, whatever
+// Bash runs in a file that it names, so Bash runs the script of each file that the guard names no
+// line of, and of each of controls; the guard reads every file. The test fails as UNKNOWN unless
+// Bash, as firstArguments asks it, runs the comparison in each control that runs compare and in no
+// other control, so that an answer of no comparison comes from an instrument that sees one in each
+// shape of the files, and tells it from another subcommand. It logs how many files the guard names.
+func expectEachComparisonNamed(t *testing.T, bash string, files []bashFile, controls []bashControl, began time.Time) {
 	t.Helper()
-	scripts := make([]string, len(files))
-	for n, f := range files {
-		scripts[n] = f.script
-	}
-	calls := firstArguments(t, bash, scripts)
-	ran, missed, over := 0, 0, 0
-	for n, f := range files {
-		named := textHits([]byte(f.raw)) != nil
-		switch compares := slices.Contains(calls[n], "compare"); {
-		case compares && !named:
-			if missed++; missed <= 20 {
-				t.Errorf("%s %q: bash runs the comparison (first arguments %q), and the guard names no line", f.kind, f.raw, calls[n])
-			}
-		case compares:
-			ran++
-		case named:
-			over++
+	var unnamed []bashFile
+	for _, f := range files {
+		if textHits([]byte(f.raw)) == nil {
+			unnamed = append(unnamed, f)
 		}
 	}
-	if ran == 0 || ran == len(files) {
-		t.Fatalf("UNKNOWN: bash ran the comparison in %d of %d files, so the files cannot tell a guard that names each file from one that names none", ran+missed, len(files))
+	scripts := make([]string, 0, len(controls)+len(unnamed))
+	for _, c := range controls {
+		scripts = append(scripts, c.script)
 	}
-	t.Logf("%d files in bash, in %v. Bash ran the comparison in %d; the guard missed %d, and named %d files where no shell ran the comparison",
-		len(files), time.Since(began).Round(time.Millisecond), ran+missed, missed, over)
+	for _, f := range unnamed {
+		scripts = append(scripts, f.script)
+	}
+	calls := firstArguments(t, bash, scripts)
+	for n, c := range controls {
+		if slices.Contains(calls[n], "compare") != c.compares {
+			t.Fatalf("UNKNOWN: in the control %q bash makes the calls %q, and runs the comparison there: %t; want %t, so bash as the test asks it cannot show a miss", c.script, calls[n], !c.compares, c.compares)
+		}
+	}
+	missed := 0
+	for n, f := range unnamed {
+		if c := calls[len(controls)+n]; slices.Contains(c, "compare") {
+			if missed++; missed <= 20 {
+				t.Errorf("%s %q: bash runs the comparison (first arguments %q), and the guard names no line", f.kind, f.raw, c)
+			}
+		}
+	}
+	t.Logf("%d files, in %v. The guard names %d; bash ran the other %d and %d controls, and runs the comparison in %d of those files, each a miss",
+		len(files), time.Since(began).Round(time.Millisecond), len(files)-len(unnamed), len(unnamed), len(controls), missed)
 }
 
 // firstArguments runs each of scripts in bash and answers, for each, the first argument of each
 // call of spec-check that it makes. A bash that defines spec-check as a function, and exports it to
-// a nested bash, reads each script with ., as a CI step's bash reads its run: value, and a
-// spec-check on PATH and in ./bin records the calls of a nested sh and of a path. The scripts run
-// in batches, one bash for each, which writes before each script's calls a byte 1, the script's
-// number and a byte 1, and each call's first argument with a NUL after it.
+// a nested bash, runs each script with eval, which parses and runs a text in the shell as . runs
+// the text of a file, as a CI step's bash reads its run: value, and a spec-check on PATH and in
+// ./bin records the calls of a nested sh and of a path. The scripts run in batches, one bash for
+// each, which reads them on its standard input, each script's number and then its text, each with
+// a NUL after it, so that no script is a file to write and remove, and a batch costs the processes
+// that its scripts start. Before each script's calls it writes a byte 1, the script's number and a
+// byte 1, and each call's first argument with a NUL after it.
 func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 	t.Helper()
 	dir := t.TempDir()
@@ -237,12 +285,13 @@ func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 		t.Fatal(err)
 	}
 	driver := filepath.Join(dir, "driver.sh")
-	writeFile(t, driver, []byte("spec-check() { printf '%s\\0' \"$1\" >&3; }\nexport -f spec-check\nfor f; do printf '\\001%s\\001' \"${f##*/}\"; . \"$f\" 3>&1 </dev/null >/dev/null 2>&1; done\nexit 0\n"))
-	batches := make([][]string, min(runtime.NumCPU(), 16))
+	writeFile(t, driver, []byte("spec-check() { printf '%s\\0' \"$1\" >&3; }\nexport -f spec-check\nwhile IFS= read -r -d '' n && IFS= read -r -d '' s; do printf '\\001%s\\001' \"$n\"; eval -- \"$s\" 3>&1 </dev/null >/dev/null 2>&1; done\nexit 0\n"))
+	batches := make([][]byte, min(runtime.NumCPU(), 16))
 	for n, s := range scripts {
-		path := filepath.Join(dir, fmt.Sprint(n))
-		writeFile(t, path, []byte(s))
-		batches[n%len(batches)] = append(batches[n%len(batches)], path)
+		if strings.Contains(s, "\x00") {
+			t.Fatalf("the script %q holds a NUL, which ends a script on bash's standard input", s)
+		}
+		batches[n%len(batches)] = fmt.Appendf(batches[n%len(batches)], "%d\x00%s\x00", n, s)
 	}
 	outputs := make([][]byte, len(batches))
 	failures := make([]error, len(batches))
@@ -251,7 +300,8 @@ func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			run := exec.Command(bash, append([]string{driver}, batch...)...)
+			run := exec.Command(bash, driver)
+			run.Stdin = bytes.NewReader(batch)
 			run.Dir = dir
 			run.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "LC_ALL=C"}
 			var stderr strings.Builder

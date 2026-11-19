@@ -76,13 +76,16 @@ type Result struct {
 	// of Commit, the fault's own commit, which CI tested; FaultPaths is each path that the fault
 	// changed (R9: "For a check that a program runs, the failing example is a fault that a step
 	// plants in the code"). A failing example of a program check of the code counts from PlantedOn,
-	// only when each of FaultPaths is a source file and no file of a test, and never at Commit
-	// (CheckStates, step 7; faultCommit). A result of any other kind or check may name them, and no
-	// rule of the state reads them there. The rules of a name and of a repository path read them on
-	// every result: PlantedOn holds a letter or a digit (nameFault), and each of FaultPaths is a
-	// repository path (isRepoPath), since a path that names none would read as a real one.
-	PlantedOn  string   `json:"planted_on" input:"zero: it names no commit that a fault was planted on, so a failing example of a program check of the code counts nowhere"`
-	FaultPaths []string `json:"fault_paths" input:"zero: it names no path of a fault, so a failing example of a program check of the code counts nowhere"`
+	// only when each of FaultPaths is a source file and no file of a test, and never at a subject at
+	// Commit; a record with no PlantedOn, no path, a path of only white space, which is no path, or
+	// Commit as its PlantedOn counts nowhere, and as the newest failing example makes its check read
+	// unknown with the reason that names what it lacks (CheckStates, step 7; faultCommit,
+	// unplanted). A result of any other kind or check may name them, and no rule of the state reads
+	// them there. The rules of a name and of a repository path read them on every result: PlantedOn
+	// holds a letter or a digit (nameFault), and each of FaultPaths is a repository path
+	// (isRepoPath), since a path that names none would read as a real one.
+	PlantedOn  string   `json:"planted_on" input:"zero: it names no commit that a fault was planted on, so a failing example of a program check of the code counts nowhere and, as the newest, reads no_planted_on"`
+	FaultPaths []string `json:"fault_paths" input:"zero: it names no path of a fault, so a failing example of a program check of the code counts nowhere and, as the newest, reads no_fault_paths"`
 }
 
 // resultCommit is the commit where the job of r ran, and where r counts (R8; CheckStates, steps 2,
