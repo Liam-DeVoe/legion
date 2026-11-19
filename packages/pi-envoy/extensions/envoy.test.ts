@@ -5056,7 +5056,7 @@ describe("envoy OMP extension", () => {
   // every reader takes "" as unset. The process here starts with the variable, loads the entry
   // (with the host package stood in by the role takeover smoke's preload), runs its session_start
   // for a session with no id, and starts `env` the PTY's way: `env K=V … env`.
-  test("a session with no id hands a PTY child no inherited DISPATCH_SESSION_ID", () => {
+  test("a session with no id hands a PTY child no inherited DISPATCH_SESSION_ID", async () => {
     const marker = "dispatch-session-report ";
     const script = `
       const { createStandInHost } = await import(${JSON.stringify(join(import.meta.dir, "..", "test", "stand-in-host.ts"))});
@@ -5093,24 +5093,28 @@ describe("envoy OMP extension", () => {
     `;
     const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
     const { ENVOY_URL: _url, ENVOY_NATS_URL: _nats, ...rest } = process.env;
-    const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
+    const started = Bun.spawn([process.execPath, "--preload", hostStub, "-e", script], {
       cwd: import.meta.dir,
       env: { ...rest, DISPATCH_SESSION_ID: "parent-session" },
       stdout: "pipe",
       stderr: "pipe",
-      timeout: 30_000,
+      // A backstop above the row's own limit, so that limit, not this kill, decides a slow run.
+      // The runner kills the process of a row it abandons.
+      timeout: 360_000,
     });
-    const report = run.stdout
-      .toString()
-      .split("\n")
-      .find((line) => line.startsWith(marker));
-    if (run.exitCode !== 0 || report === undefined) {
-      throw new Error(
-        `the process that loaded the entry reported nothing: ${run.stderr.toString()}`
-      );
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(started.stdout).text(),
+      new Response(started.stderr).text(),
+      started.exited,
+    ]);
+    const report = stdout.split("\n").find((line) => line.startsWith(marker));
+    if (exitCode !== 0 || report === undefined) {
+      throw new Error(`the process that loaded the entry reported nothing: ${stderr}`);
     }
     expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
-  });
+    // A hang guard: what can hang is a process that never reports. 200_000, the session-pod
+    // row's guard below, whose processes each load the extension as this row's child does.
+  }, 200_000);
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
   const titledContext = (kind: "main" | "sub", name: () => string | undefined): SessionContext => ({
