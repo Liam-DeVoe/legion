@@ -208,14 +208,19 @@ function boundsEnv({ answerMs, boundMs }: RemovalBounds): Record<string, string>
 /** A stand-in for the program a start's holder read runs (`StatReader`): it reads the paths from
  *  its standard input, separated by NUL, says it is ready, and writes where each path leads, in
  *  turn, as the start's own reader does; but at `never` it writes nothing more and waits, as a stat
- *  of a path on a mount whose server hangs waits, until it is killed, for at most 600 s. */
+ *  of a path on a mount whose server hangs waits, until it is killed or the start that ran it
+ *  ends (its parent pid changes). It sets itself no bound of its own: one shorter than the row's
+ *  limit would end the wait in the start's place, and a start with no bound would pass the row. */
 export function neverAnswering(never: string): StatReader {
   return [
     process.execPath,
     "--eval",
     `
 const { readFileSync, statSync, writeSync } = require("node:fs");
-setTimeout(() => process.exit(1), 600_000);
+const start = process.ppid;
+setInterval(() => {
+  if (process.ppid !== start) process.exit(1);
+}, 1_000);
 const paths = readFileSync(0, "utf8").split("\\0");
 writeSync(1, "ready\\n");
 for (const path of paths) {
