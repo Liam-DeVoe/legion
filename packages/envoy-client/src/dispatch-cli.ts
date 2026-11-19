@@ -410,9 +410,10 @@ export async function runDispatchCli(
             ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
             signal: deadline,
             // The waits before asking a route again, and before sending the round trip again
-            // after a failed attempt, would outlast the deadline: the step asks once and says what
-            // Dispatch answered, and has an answer of its own to a Dispatch that holds no such
-            // route.
+            // after a failed attempt, would outlast the deadline: the step sends no second attempt
+            // after a failed one (it still presents a fresh token once where Dispatch says the
+            // token is no longer live), says what Dispatch answered, and has an answer of its own
+            // to a Dispatch that holds no such route.
             retryNoRoute: false,
             writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [] },
           };

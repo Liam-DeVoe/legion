@@ -35,9 +35,11 @@ body: |-
   a web address (`www.`, `http://` or `https://`) in the joined text that reaches into the
   address keeps the reader's email link, and so does an earlier link a reader made next to an
   email link the writer wrote, or one whose text starts `_www.`. Where the renderer cannot write
-  an address as the rule reads it so that the text reads back, a write, and the settlement of a
-  document edited in the browser editor, give that address its earlier reading, so no text the
-  earlier release stores is refused. Every reader keeps the rule's reading, so a text the browser
+  an address as the rule reads it so that the text reads back, Dispatch gives that address its
+  earlier reading: in a write of a whole text, in an insert, a replacement of blocks or an
+  accepted suggestion, in a snapshot or a named version taken before the document's settlement,
+  and in the settlement of a document edited in the browser editor. So none of those refuses a
+  text the earlier release stores. Every reader keeps the rule's reading, so a text the browser
   editor reads before it is saved can hold one link fewer than the version stores. An address
   split by inline markup keeps its earlier reading, and a link the
   writer wrote is never changed. The browser editor reads by the same rule, and the display tree
