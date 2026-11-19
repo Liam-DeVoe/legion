@@ -1,10 +1,8 @@
 package admission
 
 import (
-	"container/list"
 	"context"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -124,18 +122,14 @@ func (r *OutsideRefusal) Error() string {
 }
 
 // Outside is a Limiter's places for the request-pool work outside admission (OutsideLimit), and
-// the queue the work waits in for one: a gate of a class's shape (gate) with no weights and no
-// second class, so its waiters are served first in, first out. A nil Outside limits nothing, so a
-// server a test builds without a Limiter takes every place it asks for.
+// the queue the work waits in for one: a fifoGate, as a heavy read's lane is, with its own wait
+// and its refusals counted by user. A nil Outside limits nothing, so a server a test builds
+// without a Limiter takes every place it asks for.
 type Outside struct {
+	// fifoGate's limit is OutsideLimit, set once by New.
+	fifoGate
 	// wait is how long work waits for a place (Limits.OutsideWait), set once by New.
 	wait time.Duration
-
-	// mu guards the places held, the queue and its longest length.
-	mu        sync.Mutex
-	used      int
-	waiters   list.List // of chan struct{}, in arrival order
-	maxQueued int
 
 	refused [outsideUserCount]outsideRefusalCounts
 }
@@ -155,53 +149,29 @@ func (o *Outside) Take(ctx context.Context, user OutsideUser) error {
 	if o == nil {
 		return nil
 	}
-	o.mu.Lock()
-	if o.waiters.Len() == 0 && o.used < OutsideLimit {
-		o.used++
-		o.mu.Unlock()
+	leftQueue, err := o.enter(ctx, func(ready <-chan struct{}) (bool, error) {
+		timer := time.NewTimer(o.wait)
+		defer timer.Stop()
+		select {
+		case <-ready:
+			return true, nil
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-timer.C:
+			return false, &OutsideRefusal{User: user, Reason: WaitExceeded}
+		}
+	})
+	switch {
+	case err == nil:
 		return nil
-	}
-	if o.waiters.Len() >= OutsideQueueLimit {
-		o.mu.Unlock()
+	case err == errGateFull:
 		o.refused[user].queueFull.Add(1)
 		return &OutsideRefusal{User: user, Reason: QueueFull}
 	}
-	ready := make(chan struct{})
-	element := o.waiters.PushBack(ready)
-	o.maxQueued = max(o.maxQueued, o.waiters.Len())
-	o.mu.Unlock()
-
-	timer := time.NewTimer(o.wait)
-	defer timer.Stop()
-	var failure error
-	select {
-	case <-ready:
-		return nil
-	case <-ctx.Done():
-		failure = ctx.Err()
-	case <-timer.C:
-		failure = &OutsideRefusal{User: user, Reason: WaitExceeded}
-	}
-
-	o.mu.Lock()
-	select {
-	case <-ready:
-		// Handed a place in the moment the wait ended: work whose wait ran out takes it, since it
-		// is here; work whose context ended gives it straight on.
-		o.mu.Unlock()
-		if ctx.Err() == nil {
-			return nil
-		}
-		o.Release()
-		return failure
-	default:
-	}
-	o.waiters.Remove(element)
-	o.mu.Unlock()
-	if _, refused := failure.(*OutsideRefusal); refused {
+	if _, refused := err.(*OutsideRefusal); refused && leftQueue {
 		o.refused[user].waitExceeded.Add(1)
 	}
-	return failure
+	return err
 }
 
 // Release gives back a place Take took, handing it to the work at the head of the queue where any
@@ -210,14 +180,7 @@ func (o *Outside) Release() {
 	if o == nil {
 		return
 	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if front := o.waiters.Front(); front != nil {
-		o.waiters.Remove(front)
-		close(front.Value.(chan struct{}))
-		return
-	}
-	o.used--
+	o.leave()
 }
 
 // Hold is Take for work that gives its place back at a point of its own and must give it back on
@@ -307,9 +270,8 @@ type OutsideRefusals struct {
 // refusal count on its own, so a scrape that races a refusal may see it in one count and not yet
 // in another.
 func (o *Outside) Stats() OutsideStats {
-	o.mu.Lock()
-	stats := OutsideStats{Limit: OutsideLimit, InUse: o.used, Queued: o.waiters.Len(), MaxQueued: o.maxQueued}
-	o.mu.Unlock()
+	used, queued, maxQueued := o.counts()
+	stats := OutsideStats{Limit: o.limit, InUse: used, Queued: queued, MaxQueued: maxQueued}
 	for user := range outsideUserCount {
 		stats.Refused[user] = OutsideRefusals{
 			QueueFull: o.refused[user].queueFull.Load(), WaitExceeded: o.refused[user].waitExceeded.Load(),

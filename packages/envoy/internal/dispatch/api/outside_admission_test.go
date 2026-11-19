@@ -105,7 +105,8 @@ func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T)
 	} {
 		t.Run(run.name, func(t *testing.T) {
 			scripted := &scriptedCheckIdentity{steps: run.steps}
-			served := directServer(Deps{Identity: scripted, StreamHeartbeat: heartbeat})
+			counts := &HeartbeatCounts{}
+			served := directServer(Deps{Identity: scripted, StreamHeartbeat: heartbeat, Heartbeats: counts})
 			// A wait for a place well inside the check's bound of a heartbeat, as production's
 			// second is inside its fifteen, so a check no place comes free for is skipped.
 			served.outside = admission.New(admission.Limits{OutsideWait: heartbeat / 5}).Outside()
@@ -130,7 +131,6 @@ func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T)
 				<-r.Context().Done()
 				ended <- context.Cause(r.Context())
 			})
-			transientBefore, ceilingBefore := HeartbeatTransientFailures(), HeartbeatClosesAtCeiling()
 			go connection(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws/doc/room", nil))
 
 			var cause error
@@ -149,11 +149,17 @@ func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T)
 			if skipped := stats.Refused[admission.HeartbeatCheck]; skipped != (admission.OutsideRefusals{WaitExceeded: uint64(len(run.heldFull))}) || stats.InUse != 0 {
 				t.Errorf("%+v checks skipped and %d places held, want %d whose wait ran out and none held", skipped, stats.InUse, len(run.heldFull))
 			}
-			if got := HeartbeatTransientFailures() - transientBefore; got < run.transient {
+			// The counts are this server's own (Deps.Heartbeats), which no other test's sockets add
+			// to, so they are exact.
+			if got := counts.TransientFailures(); got != run.transient {
 				t.Errorf("%d transient failures counted, want %d", got, run.transient)
 			}
-			if run.cause != identity.ErrNoIdentity && HeartbeatClosesAtCeiling() == ceilingBefore {
-				t.Error("the socket closed at the ceiling was not counted")
+			var closedAtCeiling uint64
+			if run.cause != identity.ErrNoIdentity {
+				closedAtCeiling = 1
+			}
+			if got := counts.ClosesAtCeiling(); got != closedAtCeiling {
+				t.Errorf("%d sockets counted closed at the ceiling, want %d", got, closedAtCeiling)
 			}
 			time.Sleep(3 * heartbeat)
 			if asked := int(scripted.asked.Load()); asked != run.closesAt {

@@ -8,6 +8,7 @@ package admission
 import (
 	"container/list"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,20 +112,103 @@ const MinHeavyReadLane = 3
 // MaxHeavyReadLane is the widest a heavy read lane grows: the read class's cap over the four lanes.
 const MaxHeavyReadLane = MaxReadLimit / int(laneCount-1)
 
-// laneGate is one lane's limit and its queue: as a class's gate, but with a lane's own mutex,
-// since a lane is taken before the classes and holds none of their units while it waits. Its
-// waiters are served first in, first out - a request takes its lane before anything else it
-// waits for, right after the arrival that stamps its place (Limiter.Arrive), so the order it
-// reaches the queue is the order it arrived in. Its wait is the read class's, which EnterLane
-// counts against the wait the request has already spent.
-type laneGate struct {
-	lane  Lane
+// fifoGate is a limit of places and the queue that waits for one, served first in, first out, one
+// place a holder: the gate a heavy read's lane (laneGate) and the request pool's work outside
+// admission (Outside) are both built on. It has a mutex of its own, since neither holds any of the
+// Limiter's while it waits, and its queue holds at most queueFactor times its limit, the shape of
+// a class's queue (queueFactor says why). How long a waiter waits, and what a refusal is and is
+// counted against, are the caller's (enter).
+type fifoGate struct {
 	limit int
-	wait  time.Duration
 
-	mu      sync.Mutex
-	used    int
-	waiters list.List // of chan struct{}, in arrival order
+	// mu guards the places held, the queue and its longest length.
+	mu        sync.Mutex
+	used      int
+	waiters   list.List // of chan struct{}, in arrival order
+	maxQueued int
+}
+
+// errGateFull is fifoGate.enter's answer where the queue already holds queueFactor times the
+// limit; its caller answers its own refusal for a full queue (QueueFull).
+var errGateFull = errors.New("the queue for a place is full")
+
+// enter takes a place and answers nil once it holds one: at once where a place is free and nothing
+// waits, else after waiting for one in the queue, behind every caller that asked before it. wait
+// does the waiting: it waits on ready, which leave closes to hand the caller a place, and answers
+// whether the place came and, where not, why - the caller's own refusal where its wait ran out,
+// ctx's error where ctx ended. A caller refused or gone holds no place and has left the queue:
+// enter answers errGateFull at once where the queue is full, and otherwise wait's failure, with
+// leftQueue true. A place handed over in the moment the wait ended is the caller's where ctx is
+// still live; where ctx has ended it is given straight on and enter answers wait's failure with
+// leftQueue false, since that caller was handed a place rather than refused one.
+func (g *fifoGate) enter(ctx context.Context, wait func(ready <-chan struct{}) (bool, error)) (leftQueue bool, err error) {
+	g.mu.Lock()
+	if g.waiters.Len() == 0 && g.used < g.limit {
+		g.used++
+		g.mu.Unlock()
+		return false, nil
+	}
+	if g.waiters.Len() >= queueFactor*g.limit {
+		g.mu.Unlock()
+		return false, errGateFull
+	}
+	ready := make(chan struct{})
+	element := g.waiters.PushBack(ready)
+	g.maxQueued = max(g.maxQueued, g.waiters.Len())
+	g.mu.Unlock()
+
+	granted, failure := wait(ready)
+	if granted {
+		return false, nil
+	}
+
+	g.mu.Lock()
+	select {
+	case <-ready:
+		// Handed a place in the moment the wait ended: a caller still there takes it, one whose
+		// context ended gives it straight on.
+		g.mu.Unlock()
+		if ctx.Err() == nil {
+			return false, nil
+		}
+		g.leave()
+		return false, failure
+	default:
+	}
+	g.waiters.Remove(element)
+	g.mu.Unlock()
+	return true, failure
+}
+
+// leave gives one place back, handing it to the waiter at the head of the queue where any waits.
+func (g *fifoGate) leave() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if front := g.waiters.Front(); front != nil {
+		g.waiters.Remove(front)
+		close(front.Value.(chan struct{}))
+		return
+	}
+	g.used--
+}
+
+// counts reads the places held, the waiters queued now and the most that have queued at once.
+func (g *fifoGate) counts() (used, queued, maxQueued int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.used, g.waiters.Len(), g.maxQueued
+}
+
+// laneGate is one lane's limit and its queue: a fifoGate, since a lane is taken before the
+// classes and holds none of their units while it waits. Its waiters are served first in, first
+// out - a request takes its lane before anything else it waits for, right after the arrival that
+// stamps its place (Limiter.Arrive), so the order it reaches the queue is the order it arrived
+// in. Its wait is the read class's, which EnterLane counts against the wait the request has
+// already spent.
+type laneGate struct {
+	fifoGate
+	lane Lane
+	wait time.Duration
 
 	queueFull, waitExceeded atomic.Uint64
 }
@@ -145,10 +229,9 @@ func (l *Limiter) LaneStats() []LaneStats {
 	stats := make([]LaneStats, 0, len(HeavyReadLanes()))
 	for _, lane := range HeavyReadLanes() {
 		g := l.lanes[lane]
-		g.mu.Lock()
-		stats = append(stats, LaneStats{Lane: lane, Limit: g.limit, InFlight: g.used,
-			Queued: g.waiters.Len(), QueueFull: g.queueFull.Load(), WaitExceeded: g.waitExceeded.Load()})
-		g.mu.Unlock()
+		used, queued, _ := g.counts()
+		stats = append(stats, LaneStats{Lane: lane, Limit: g.limit, InFlight: used,
+			Queued: queued, QueueFull: g.queueFull.Load(), WaitExceeded: g.waitExceeded.Load()})
 	}
 	return stats
 }
@@ -177,58 +260,21 @@ func (l *Limiter) EnterLane(ctx context.Context, lane Lane, arrival *Arrival) (f
 		return func() {}, nil
 	}
 	g := l.lanes[lane]
-	g.mu.Lock()
-	if g.waiters.Len() == 0 && g.used < g.limit {
-		g.used++
-		g.mu.Unlock()
+	leftQueue, err := g.enter(ctx, func(ready <-chan struct{}) (bool, error) {
+		return arrival.await(ctx, ready, g.wait, &Refusal{Class: Read, Reason: WaitExceeded, Lane: lane})
+	})
+	switch {
+	case err == nil:
 		return func() { g.leave() }, nil
-	}
-	if g.waiters.Len() >= queueFactor*g.limit {
-		g.mu.Unlock()
+	case err == errGateFull:
 		g.queueFull.Add(1)
 		return nil, &Refusal{Class: Read, Reason: QueueFull, Lane: lane}
 	}
-	ready := make(chan struct{})
-	element := g.waiters.PushBack(ready)
-	g.mu.Unlock()
-
-	granted, failure := arrival.await(ctx, ready, g.wait, &Refusal{Class: Read, Reason: WaitExceeded, Lane: lane})
-	if granted {
-		return func() { g.leave() }, nil
-	}
-
-	g.mu.Lock()
-	select {
-	case <-ready:
-		// Granted in the moment the wait ended: the place is this request's, and a request
-		// that is no longer there gives it straight back.
-		g.mu.Unlock()
-		if ctx.Err() == nil {
-			return func() { g.leave() }, nil
-		}
-		g.leave()
-		return nil, failure
-	default:
-	}
-	g.waiters.Remove(element)
-	g.mu.Unlock()
-	if _, refused := failure.(*Refusal); refused {
+	if _, refused := err.(*Refusal); refused && leftQueue {
 		g.waitExceeded.Add(1)
 		// The lane spends the read class's wait, so the longest a refused read waited is the
 		// longest of either queue (gate.noteRefusedWait).
 		l.classes[Read].noteRefusedWait(arrival.waited)
 	}
-	return nil, failure
-}
-
-// leave gives one place in the lane back and hands it to the waiter at the head of the queue.
-func (g *laneGate) leave() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.used--
-	if front := g.waiters.Front(); front != nil {
-		g.waiters.Remove(front)
-		g.used++
-		close(front.Value.(chan struct{}))
-	}
+	return nil, err
 }

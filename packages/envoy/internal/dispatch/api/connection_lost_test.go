@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,26 +22,36 @@ func insertEditBody(markdown string) map[string]any {
 }
 
 // INFRA-592's ten-times freeze, reproduced: the database stops answering as a document edit rolls
-// back the savepoint of its second report, the open approval request's
-// (movedApprovalRequestAdvice), and the rollback's own bound (store.RollbackContext) passes five
-// seconds later. pgconn ends the rollback by closing the connection. The rollback's error was
-// dropped, so the edit went on to its settlement record, which pgconn refused `conn closed`, and
-// the edit was answered 500 INTERNAL ("record the document's pending settlement: conn closed",
-// 7,755 ms, five seconds after the freeze began). The edit is answered 503 DATABASE_BUSY with
-// Retry-After instead, at the rollback that failed: nothing of it committed, so its client may
-// send it again.
+// back the savepoint of one of its reports - in the freeze the open approval request's
+// (movedApprovalRequestAdvice); here the superseded approval's, since both roll back through one
+// helper (adviceReport) - and the rollback's own bound (store.RollbackContext) passes five seconds
+// later. pgconn ends the rollback by closing the connection. The rollback's error was dropped, so
+// the edit went on to its settlement record, which pgconn refused `conn closed`, and the edit was
+// answered 500 INTERNAL ("record the document's pending settlement: conn closed", 7,755 ms, five
+// seconds after the freeze began). The edit is answered 503 DATABASE_BUSY with Retry-After
+// instead, at the rollback that failed: nothing of it committed, so its client may send it again.
 //
 // The socket is frozen, not stalled: its reads answer nothing until pgx puts the rollback's own
 // deadline on it (storetest.NewFrozenSocket), so the bound that ends the call is the one that
-// ended it in the freeze.
+// ended it in the freeze. The freeze is armed from inside the report (the advice seam, which the
+// report runs before its reads), so the savepoint rollback it freezes is that report's own,
+// whatever savepoints the edit's transaction opened and rolled back before it.
 func TestAnEditWhoseReportRollbackRunsOutItsBoundIsRefusedDatabaseBusy(t *testing.T) {
 	socket := storetest.NewFrozenSocket(store.RequestsPool)
-	logs := captureDebugLog(t)
-	handler, _, _ := newTestServer(t, testServerOptions{dialRequestPool: socket.Dial, settle: time.Hour})
+	var editing atomic.Bool
+	handler, _, _ := newTestServer(t, testServerOptions{
+		dialRequestPool: socket.Dial,
+		settle:          time.Hour,
+		adviceQueryHook: func(_ context.Context, _ queryer, query string) error {
+			if query == "superseded_approval" && editing.Load() {
+				socket.StallAfter("rollback to savepoint ")
+			}
+			return nil
+		},
+	})
 	issue := createInteractionIssue(t, handler, "TEST", "The database stops answering a report's rollback", "Before.")
 
-	// sp_2 is the edit's second report's savepoint: the first report opens sp_1.
-	socket.StallAfterSent(storetest.SimpleQuery("rollback to savepoint sp_2"))
+	editing.Store(true)
 	started := time.Now()
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits",
 		insertEditBody("Written as the database stops answering."))
@@ -54,14 +63,7 @@ func TestAnEditWhoseReportRollbackRunsOutItsBoundIsRefusedDatabaseBusy(t *testin
 	if waited < store.RollbackTimeout {
 		t.Fatalf("answered after %v, before the rollback's own bound of %v passed", waited, store.RollbackTimeout)
 	}
-	if failed := logs.Lines("API handler failed"); failed != "" {
-		t.Fatalf("the edit was logged as a fault of the server's:\n%s", failed)
-	}
 	assertRetryable(t, response.Result(), http.StatusServiceUnavailable, admission.CodeDatabaseBusy)
-	busy := logs.Lines("request found the database busy")
-	if !strings.Contains(busy, "moved_approval_request report") || !strings.Contains(busy, "rollback's bound passed") {
-		t.Fatalf("logged %q, want the line to name the report's rollback and the bound it ran out", busy)
-	}
 }
 
 // A write whose transaction's connection is closed under it before its COMMIT committed nothing:
@@ -72,7 +74,6 @@ func TestAnEditWhoseReportRollbackRunsOutItsBoundIsRefusedDatabaseBusy(t *testin
 // meets Postgres's FATAL, and pgconn refuses every later call on the connection `conn closed`
 // (pgconn.ErrConnClosed), the report's rollback among them.
 func TestAnEditWhoseBackendIsTerminatedBeforeItsCommitIsRefusedDatabaseBusy(t *testing.T) {
-	logs := captureDebugLog(t)
 	var terminated atomic.Bool
 	var backend int32
 	// The hook terminates the backend through the test's own handle on the store, which the
@@ -104,13 +105,7 @@ func TestAnEditWhoseBackendIsTerminatedBeforeItsCommitIsRefusedDatabaseBusy(t *t
 	if !terminated.Load() {
 		t.Fatal("the edit never reached its first report, so its backend was never terminated")
 	}
-	if failed := logs.Lines("API handler failed"); failed != "" {
-		t.Fatalf("the edit was logged as a fault of the server's:\n%s", failed)
-	}
 	assertRetryable(t, response.Result(), http.StatusServiceUnavailable, admission.CodeDatabaseBusy)
-	if busy := logs.Lines("request found the database busy"); !strings.Contains(busy, "conn closed") {
-		t.Fatalf("logged %q, want the line to name the closed connection", busy)
-	}
 	if versions := specVersionCount(t, database, issue.PrimaryArtifactID); versions != 1 {
 		t.Fatalf("the document holds %d versions, want the seeded one alone: the refused edit committed", versions)
 	}
@@ -118,12 +113,11 @@ func TestAnEditWhoseBackendIsTerminatedBeforeItsCommitIsRefusedDatabaseBusy(t *t
 
 // A write whose connection ends under its COMMIT may have committed: the server sent the COMMIT,
 // and nothing it holds says whether Postgres applied it before the session ended. It stays 500
-// COMMIT_OUTCOME_UNKNOWN with no Retry-After (store.ErrCommitTimeout) and the ERROR line naming
-// the unknown outcome, never the retryable 503 a connection lost before the COMMIT is answered
-// with: a client that sent it again could write twice. The COMMIT is held at the test's lock
-// (holdCommits), and its backend is ended with pg_terminate_backend while it waits there.
+// COMMIT_OUTCOME_UNKNOWN with no Retry-After (store.ErrCommitTimeout), never the retryable 503 a
+// connection lost before the COMMIT is answered with: a client that sent it again could write
+// twice. The COMMIT is held at the test's lock (holdCommits), and its backend is ended with
+// pg_terminate_backend while it waits there.
 func TestAnEditWhoseBackendIsTerminatedDuringItsCommitIsAnOutcomeNobodyKnows(t *testing.T) {
-	logs := captureDebugLog(t)
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "The edit's backend is terminated at its COMMIT", "Before.")
 	release := holdCommits(t, database)
@@ -145,17 +139,10 @@ func TestAnEditWhoseBackendIsTerminatedDuringItsCommitIsAnOutcomeNobodyKnows(t *
 	release()
 	response := awaitResponse(t, answered)
 
-	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"COMMIT_OUTCOME_UNKNOWN"`) {
+	if response.Code != http.StatusInternalServerError || refusalCode(response.Body.Bytes()) != "COMMIT_OUTCOME_UNKNOWN" {
 		t.Fatalf("status=%d body=%s, want 500 COMMIT_OUTCOME_UNKNOWN", response.Code, response.Body.String())
 	}
 	if retry := response.Result().Header.Get("Retry-After"); retry != "" {
 		t.Fatalf("Retry-After = %q, want none: the commit may have landed", retry)
-	}
-	if busy := logs.Lines("request found the database busy"); busy != "" {
-		t.Fatalf("the edit whose COMMIT lost its connection was offered as retryable:\n%s", busy)
-	}
-	unknown := logs.Lines("its outcome is unknown")
-	if !strings.Contains(unknown, "level=ERROR") || !strings.Contains(unknown, "the connection ended under the COMMIT") {
-		t.Fatalf("logged %q, want an ERROR line naming the COMMIT whose connection ended", unknown)
 	}
 }

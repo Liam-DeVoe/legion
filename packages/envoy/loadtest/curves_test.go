@@ -1176,23 +1176,19 @@ func TestCurvesSetAsideAStepWhoseGeneratorBrokeItsSchedule(t *testing.T) {
 		t.Errorf("curves.csv passes: 1x %q, 2x %q, 3x %q; want true, set aside, false", rows["1x"]["passes"], rows["2x"]["passes"], rows["3x"]["passes"])
 	}
 	md := readText(t, filepath.Join(out, "CURVES.md"))
-	for _, want := range []string{
-		"| 2x (set aside) | 2 | ok | ok | ok | ok | ok | ok | set aside |",
-		"`set aside`: nothing shows the step's generator delivered the load the step claims (summary.json `set_aside`): in a second of the window it sent more than 10% over that second's schedule",
-		"- 2x (set aside): " + stalled.SetAside.Why + ".",
-	} {
-		if !strings.Contains(md, want) {
-			t.Errorf("CURVES.md lacks %q:\n%s", want, md)
-		}
+	if row := "| 2x (set aside) | 2 | ok | ok | ok | ok | ok | ok | set aside |"; !strings.Contains(md, row) {
+		t.Errorf("CURVES.md lacks the Pass table's row %q:\n%s", row, md)
+	}
+	// What CURVES.md and KNEES.md say of the set-aside step and the knee is checked by the data they
+	// carry - the step's own why, and the bracket's two factors - not the sentences around it.
+	if !strings.Contains(md, stalled.SetAside.Why) {
+		t.Errorf("CURVES.md does not carry why 2x was set aside, %q:\n%s", stalled.SetAside.Why, md)
 	}
 	knees := readText(t, filepath.Join(out, "KNEES.md"))
-	for _, want := range []string{
-		"- 2x (step 2x): set aside (" + stalled.SetAside.Why + "): nothing shows its generator delivered the load the step claims",
-		"## Knee at 3x (step 3x)",
-		"- Bracket: (1, 3): last passing factor 1 (step 1x), failing factor 3.",
-	} {
-		if !strings.Contains(knees, want) {
-			t.Errorf("KNEES.md lacks %q:\n%s", want, knees)
-		}
+	if !strings.Contains(knees, stalled.SetAside.Why) {
+		t.Errorf("KNEES.md does not carry why 2x was set aside, %q:\n%s", stalled.SetAside.Why, knees)
+	}
+	if knee := section(knees, "Knee at 3x (step 3x)"); !strings.Contains(knee, "(1, 3)") {
+		t.Errorf("KNEES.md's knee at 3x is not bracketed back to 1x, the last step that passed, as (1, 3):\n%s", knees)
 	}
 }

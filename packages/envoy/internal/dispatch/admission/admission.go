@@ -302,6 +302,7 @@ func (l *Limiter) Outside() *Outside { return &l.outside }
 // the read limit and the total, which is all the reads could ever hold.
 func New(limits Limits) *Limiter {
 	l := &Limiter{}
+	l.outside.limit = OutsideLimit
 	l.outside.wait = limits.OutsideWait
 	if l.outside.wait <= 0 {
 		l.outside.wait = DefaultReadWait
@@ -320,7 +321,7 @@ func New(limits Limits) *Limiter {
 		l.total = limits.Total
 	}
 	for _, lane := range HeavyReadLanes() {
-		l.lanes[lane] = &laneGate{lane: lane, limit: max(limits.HeavyReadLane, 1), wait: l.classes[Read].wait}
+		l.lanes[lane] = &laneGate{fifoGate: fifoGate{limit: max(limits.HeavyReadLane, 1)}, lane: lane, wait: l.classes[Read].wait}
 	}
 	l.reservedReads = min(max(limits.ReservedReads, 0), l.classes[Read].limit, l.total)
 	return l
@@ -679,7 +680,7 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival) error {
 // A false answer carries why: refusal, the caller's own, when the wait ran out, and ctx's error
 // when the caller's context ended. Either way the place may have been granted in the moment the
 // wait ended, which only the gate's own lock can settle, so the caller re-locks and looks again
-// before it gives the refusal (Limiter.acquire, Limiter.EnterLane). a is the request's own
+// before it gives the refusal (Limiter.acquire, fifoGate.enter for a lane). a is the request's own
 // arrival, which only its goroutine touches.
 func (a *Arrival) await(ctx context.Context, ready <-chan struct{}, wait time.Duration, refusal *Refusal) (bool, error) {
 	queuedAt := time.Now()

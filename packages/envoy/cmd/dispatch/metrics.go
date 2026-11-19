@@ -51,6 +51,9 @@ type metricsSources struct {
 	Background *store.Pool
 	Events     *events.Broker
 	Admission  *admission.Limiter
+	// Heartbeats is the API server's socket heartbeat counts (api.Deps.Heartbeats); nil reads
+	// zero.
+	Heartbeats *api.HeartbeatCounts
 	Docs       *docs.Service
 	Logs       *logging.Handler
 	// Conns is the API server's connection watch (conn_age.go), nil in a test that serves no
@@ -311,10 +314,10 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 		return samples
 	})
 	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_transient_failures_total", "Socket heartbeat checks that failed for a transient reason, a busy pool, the check's own bound or a place of the request pool's share outside admission refused it, the one that closed its socket at the ceiling included.", func() []metrics.Sample {
-		return []metrics.Sample{{Value: float64(api.HeartbeatTransientFailures())}}
+		return []metrics.Sample{{Value: float64(sources.Heartbeats.TransientFailures())}}
 	})
 	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_ceiling_closes_total", "Sockets closed because their heartbeat check failed for a transient reason three times in a row.", func() []metrics.Sample {
-		return []metrics.Sample{{Value: float64(api.HeartbeatClosesAtCeiling())}}
+		return []metrics.Sample{{Value: float64(sources.Heartbeats.ClosesAtCeiling())}}
 	})
 
 	registry.NewGaugeFunc(metricPrefix+"doc_writer_queued", "Writers waiting for a document's writer gate now.", sources.Docs.QueuedDocumentWriters)

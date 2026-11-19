@@ -19,9 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
-	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -121,18 +119,19 @@ func (s *server) decidedBrokerToken(r *http.Request) (resolvedCaller, error) {
 // share is it is made, and a token the broker stopped holding live closes its socket at the first
 // heartbeat that asks.
 //
-// Every other resolution that reads the request pool (resolutionReadsRequestPool) takes a place of
-// that share first (takeHeartbeatPlace), and is skipped where it is refused one; a sign-in cookie's
-// resolution gives it back while a lapsed confirmation is renewed with the sign-in issuer.
+// Every other resolution that reads the request pool (readsRequestPool) takes a place of that share
+// first (takeHeartbeatPlace), and is skipped where it is refused one; a sign-in cookie's resolution
+// gives it back while a lapsed confirmation is renewed with the sign-in issuer.
 func (s *server) callerStillResolves(r *http.Request) error {
-	if _, presented := brokertoken.Presented(r); presented {
+	kind, _ := s.requestCredential(r)
+	if kind == brokerTokenCredential {
 		if s.deps.BrokerTokens == nil {
 			return errNoBrokerConfigured()
 		}
 		_, err := s.deps.BrokerTokens.Live(r.Context(), r)
 		return err
 	}
-	if s.resolutionReadsRequestPool(r) {
+	if kind.readsRequestPool() {
 		check, place, err := s.takeHeartbeatPlace(r)
 		if err != nil {
 			return err
@@ -144,18 +143,18 @@ func (s *server) callerStillResolves(r *http.Request) error {
 	return err
 }
 
-// resolutionReadsRequestPool reports whether resolving r's caller again on a heartbeat
-// (callerStillResolves), r presenting no broker-issued token, reads the request pool, by the
-// credential optionalActor would resolve it by, in optionalActor's own order: a personal token's
-// row and a sign-in cookie's session do; the deployment's shared token (a comparison with the token
-// it holds) and a service-account token (its issuer's keys) do not. A credential kind optionalActor
-// learns later reads the pool here until this learns it too, so it is limited rather than not.
-func (s *server) resolutionReadsRequestPool(r *http.Request) bool {
-	token, present := auth.BearerToken(r)
-	if !present {
-		return true
+// readsRequestPool reports whether resolving a caller again by credentials of kind on a heartbeat
+// (callerStillResolves) reads the request pool: a personal token's row and a sign-in cookie's
+// session do; the deployment's shared token (a comparison with the token it holds) and a
+// service-account token (its issuer's keys) do not, and a broker-issued token's heartbeat asks the
+// broker alone. Every kind not named as reading nothing reads the pool here, so a kind
+// requestCredential learns later is limited until it is named rather than not.
+func (kind credentialKind) readsRequestPool() bool {
+	switch kind {
+	case brokerTokenCredential, sharedTokenCredential, serviceTokenCredential:
+		return false
 	}
-	return !auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens) && (s.deps.OIDC == nil || !oidc.LooksLikeJWT(token))
+	return true
 }
 
 // errNoBrokerConfigured is what a DPoP presentation is to a Dispatch with no broker: there is no

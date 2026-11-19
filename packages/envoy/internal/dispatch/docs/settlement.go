@@ -126,11 +126,11 @@ type settlement struct {
 	// reconciliation before it did not see them (treePoint).
 	reads int
 	plan  *repairPlan
-	// passTx is the transaction of the pass under way, from the pass's begin to its end, and nil
-	// outside one: the settlement's read of whether its document was removed goes through it
-	// (documentRemoved).
-	passTx       pgx.Tx
-	stoppedShort func(error) settleOutcome
+	// stopShort is the outcome of the settlement stopping short with err having written nothing
+	// into the room (settleRoomWithin), its read of whether the document was removed
+	// (documentRemoved) made through removed: the settlements pool outside a pass, the pass's
+	// transaction inside one (stoppedShort).
+	stopShort func(removed Queryer, err error) settleOutcome
 }
 
 // settlementPass is one pass of a settlement, and what that pass holds of the document: what it
@@ -266,14 +266,14 @@ func skipUnreadableSettlement(room string, err error) bool {
 // maxSettlePasses in all and maxSettleRereads reads again.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
 	settle := &settlement{service: s, room: room, generation: generation}
-	// stoppedShort is the outcome of a settlement that stopped short with err having written
+	// stopShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room: a retry, unless its deadline or parent has ended, the pools refused it
 	// a connection, the document has been removed or Shutdown refused the write. The generation it
 	// counts that retry's failure against is the one the settlement stands at now, which its
 	// passes move as they read the room again. An err that is the append gate's refusal of an
 	// update the room took after its issue closed is no fault to retry: it ends the settlement
 	// (endOnRefusedUpdate).
-	settle.stoppedShort = func(err error) settleOutcome {
+	settle.stopShort = func(removed Queryer, err error) settleOutcome {
 		if errors.Is(err, ErrIssueClosed) {
 			return settle.endOnRefusedUpdate()
 		}
@@ -285,7 +285,7 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 			next = settleOutOfBudget
 		case store.Unserved(parent, err):
 			next = settleOverloaded
-		case settle.documentRemoved(parent):
+		case settle.documentRemoved(parent, removed):
 			return settleOutcome{}
 		case s.shuttingDown(room) && errors.Is(err, ErrServiceUnavailable):
 			next = settleRefusedInShutdown
@@ -406,6 +406,27 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	}
 }
 
+// stoppedShort is the settlement stopping short with err outside a pass (stopShort): its read of
+// whether the document was removed goes through the settlements pool, and is not made before that
+// pool is open.
+func (s *settlement) stoppedShort(err error) settleOutcome {
+	if s.settlements == nil {
+		return s.stopShort(nil, err)
+	}
+	return s.stopShort(s.settlements, err)
+}
+
+// stoppedShort is the settlement stopping short with err in this pass (stopShort): once the pass
+// holds its transaction, the read of whether the document was removed goes through it, since a
+// pooled read beside it would be a second connection of the pool that transaction holds one of,
+// and through the settlements pool before (settlement.stoppedShort).
+func (p *settlementPass) stoppedShort(err error) settleOutcome {
+	if p.tx == nil {
+		return p.settlement.stoppedShort(err)
+	}
+	return p.stopShort(p.tx, err)
+}
+
 // settlePass is one pass of the settlement over doc, the room instance it holds, and the outcome
 // the settlement reports when the pass ends it (settleDone). The pass takes its transaction from
 // the pool the settlement opened for every read and write of its own (settleRoomWithin).
@@ -439,14 +460,9 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 	}
 	ctx, err := pass.begin(parent)
 	if err != nil {
-		return settleDone, s.stoppedShort(err)
+		return settleDone, pass.stoppedShort(err)
 	}
 	tx := pass.tx
-	// The settlement's own read beside this pass goes through the pass's transaction until the
-	// pass ends (documentRemoved): a pooled read would be a second connection of the pool this
-	// transaction holds one of.
-	s.passTx = tx
-	defer func() { s.passTx = nil }()
 	// Rolled back apart from ctx: one the settlement's deadline ended still rolls back.
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	owner, open, err := lockArtifactOwner(ctx, tx, s.room)
@@ -460,7 +476,7 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 		// (Service.documentRemoved), and the settlement it had armed goes with the room's state.
 		return settleDone, settleOutcome{}
 	case err != nil:
-		return settleDone, s.stoppedShort(err)
+		return settleDone, pass.stoppedShort(err)
 	}
 	// The issue's state is the row this transaction now holds locked, not the room's record of
 	// it: a close commits on that row, so a close this process has not heard of yet is read here,

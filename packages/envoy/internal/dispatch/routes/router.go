@@ -153,6 +153,9 @@ type AppContextOptions struct {
 	// Admission is the API's admission limiter, which main also reads for the metrics endpoint;
 	// nil is one at the deployment's limits. See api.DepsInput.
 	Admission *admission.Limiter
+	// Heartbeats counts what the API's socket heartbeat checks met, which main also reads for the
+	// metrics endpoint; nil counts nothing. See api.Deps.Heartbeats.
+	Heartbeats *api.HeartbeatCounts
 	// RouteRosterTTL replaces how long a stored listener answer serves issue reads; zero keeps the
 	// server's five seconds. See api.Deps.RouteRosterTTL.
 	RouteRosterTTL time.Duration
@@ -231,6 +234,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		Admission:              opts.Admission,
+		Heartbeats:             opts.Heartbeats,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
 	})

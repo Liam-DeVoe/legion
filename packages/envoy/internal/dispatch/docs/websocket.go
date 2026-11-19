@@ -642,16 +642,13 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	}
 	// The load belongs to the room, not to the request whose join began it: ygo hands every join
 	// waiting on this load the load's error, so a read the joiner's own end cut short - its browser
-	// left, or the server ended its request - failed every other join with it. The reads run
+	// left, or the server ended its request - failed every other join with it. The reads below run
 	// detached from that end, keeping ctx's values, under the bound a cold read's fold of the same
 	// history runs under (coldReadTimeout), and each acquire under the rooms pool's own bound. A
 	// read that bound ends fails the load as one a bound of this server's ended (loadReadFailed).
-	reads := ctx
-	if !admitted || checked == nil {
-		var cancel context.CancelFunc
-		reads, cancel = context.WithTimeoutCause(context.WithoutCancel(ctx), coldReadTimeout, errLoadReadsBound)
-		defer cancel()
-	}
+	// A load that reads neither, both read already, holds the bound unused.
+	reads, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), coldReadTimeout, errLoadReadsBound)
+	defer cancel()
 	if !admitted {
 		if issue, err = s.readIssue(reads, rooms, room); err != nil {
 			return loadReadFailed(reads, err)

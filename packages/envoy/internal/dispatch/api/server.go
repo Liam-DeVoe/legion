@@ -154,6 +154,9 @@ type Deps struct {
 	// refusal, at the third transient failure in a row (heartbeatTransientCeiling) - and a live
 	// socket pings its page and sends it a heartbeat frame. It also bounds each of those checks.
 	StreamHeartbeat time.Duration
+	// Heartbeats counts what those checks met (HeartbeatCounts), which cmd/dispatch reads on its
+	// metrics endpoint; nil counts nothing.
+	Heartbeats *HeartbeatCounts
 	// Admission admits every table route's request but the test hooks' (register); nil is a
 	// Limiter at admission.DefaultLimits. A test sets a small one to fill it.
 	Admission *admission.Limiter
@@ -270,6 +273,8 @@ type DepsInput struct {
 	// (Deps.StreamHeartbeat). Zero keeps fifteen seconds; a test proving a connection closes
 	// sets a short one.
 	StreamHeartbeat time.Duration
+	// Heartbeats is Deps.Heartbeats.
+	Heartbeats *HeartbeatCounts
 	// Admission, ReadDeadline and DownloadDeadline are Deps.Admission, Deps.ReadDeadline and
 	// Deps.DownloadDeadline.
 	Admission        *admission.Limiter
@@ -370,6 +375,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
+		Heartbeats:             input.Heartbeats,
 		Admission:              input.Admission,
 		ReadDeadline:           input.ReadDeadline,
 		DownloadDeadline:       input.DownloadDeadline,
@@ -1288,12 +1294,12 @@ func (s *server) checkEveryHeartbeat(ctx context.Context, check *http.Request, s
 			failedInARow = 0
 			continue
 		case transientCheckFailure(ctx, err):
-			heartbeatTransientFailures.Add(1)
+			s.deps.Heartbeats.noteTransientFailure()
 			failedInARow++
 			if failedInARow < heartbeatTransientCeiling {
 				continue
 			}
-			heartbeatClosesAtCeiling.Add(1)
+			s.deps.Heartbeats.noteCloseAtCeiling()
 		}
 		// A refusal, or the ceiling's transient failure.
 		closeConnection(fmt.Errorf("%w: %w", errCallerNoLongerResolves, err))
@@ -1379,22 +1385,50 @@ func (s *server) takeHeartbeatPlace(r *http.Request) (*http.Request, *admission.
 	return r.WithContext(admission.WithPlace(r.Context(), place)), place, nil
 }
 
-// heartbeatTransientFailures counts the heartbeat checks that failed for a transient reason, a
-// skipped one and the one that closes its socket at the ceiling included, and
-// heartbeatClosesAtCeiling the sockets closed at that ceiling (heartbeatTransientCeiling), since
-// the process started. One API server runs in a process (cmd/dispatch), so the counts are the
-// process's.
-var heartbeatTransientFailures, heartbeatClosesAtCeiling atomic.Uint64
+// HeartbeatCounts counts what the heartbeat checks of one API server's sockets met
+// (checkEveryHeartbeat): the checks that failed for a transient reason, a skipped one and the one
+// that closes its socket at the ceiling included, and the sockets closed at that ceiling
+// (heartbeatTransientCeiling). cmd/dispatch makes one, hands it to its API server
+// (Deps.Heartbeats) and reads it on its metrics endpoint, so the counts are that server's, and two
+// servers in one process - a test's - count apart. A nil HeartbeatCounts counts nothing and reads
+// zero.
+type HeartbeatCounts struct {
+	transientFailures, closesAtCeiling atomic.Uint64
+}
 
-// HeartbeatTransientFailures is how many of this process's sockets' heartbeat checks have failed
-// for a transient reason (transientCheckFailure): the
-// dispatch_socket_heartbeat_transient_failures_total counter of the metrics endpoint.
-func HeartbeatTransientFailures() uint64 { return heartbeatTransientFailures.Load() }
+// TransientFailures is how many of the server's sockets' heartbeat checks have failed for a
+// transient reason (transientCheckFailure): the dispatch_socket_heartbeat_transient_failures_total
+// counter of the metrics endpoint.
+func (c *HeartbeatCounts) TransientFailures() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.transientFailures.Load()
+}
 
-// HeartbeatClosesAtCeiling is how many of this process's sockets were closed for
-// heartbeatTransientCeiling transient failures of their heartbeat check in a row: the
+// ClosesAtCeiling is how many of the server's sockets were closed for heartbeatTransientCeiling
+// transient failures of their heartbeat check in a row: the
 // dispatch_socket_heartbeat_ceiling_closes_total counter of the metrics endpoint.
-func HeartbeatClosesAtCeiling() uint64 { return heartbeatClosesAtCeiling.Load() }
+func (c *HeartbeatCounts) ClosesAtCeiling() uint64 {
+	if c == nil {
+		return 0
+	}
+	return c.closesAtCeiling.Load()
+}
+
+// noteTransientFailure counts one heartbeat check failed for a transient reason.
+func (c *HeartbeatCounts) noteTransientFailure() {
+	if c != nil {
+		c.transientFailures.Add(1)
+	}
+}
+
+// noteCloseAtCeiling counts one socket closed at the ceiling.
+func (c *HeartbeatCounts) noteCloseAtCeiling() {
+	if c != nil {
+		c.closesAtCeiling.Add(1)
+	}
+}
 
 // signInStillResolves answers whether the sign-in cookie a document socket was admitted with
 // still resolves, which is what whileCallerResolves asks on that socket's every heartbeat. The
@@ -1529,12 +1563,57 @@ func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// optionalActor resolves the request's caller. The authentication scheme decides the credential
-// before anything reads a token: RFC 9449 Section 7.2 refuses a DPoP-bound token presented under
-// any other scheme, so a broker-issued token reaches Dispatch under DPoP alone and a DPoP
-// presentation is never retried as another kind. Each branch names that caller on the request's
-// access-log line (accesslog.Note), which costs the line what the authentication already
-// resolved and never a lookup of its own.
+// credentialKind is the credential a request's caller is resolved by (requestCredential).
+type credentialKind int
+
+const (
+	// brokerTokenCredential is an access token the secrets broker issued, presented under the
+	// DPoP scheme (brokerTokenActor).
+	brokerTokenCredential credentialKind = iota
+	// emptyBearerCredential is the bearer scheme with no token, refused 401 UNAUTHORIZED.
+	emptyBearerCredential
+	// sharedTokenCredential is the deployment's one shared agent token, a comparison with the
+	// token it holds (auth.MatchesSharedAgentToken).
+	sharedTokenCredential
+	// serviceTokenCredential is a JWT-shaped bearer where service-account tokens are verified, a
+	// Kubernetes pod's projected token checked against its issuer's keys (serviceTokenActor).
+	serviceTokenCredential
+	// personalTokenCredential is every other bearer, a personal token's row (personalTokenActor).
+	personalTokenCredential
+	// signInCookieCredential is no Authorization credential at all: the person Deps.Identity
+	// resolves, a sign-in cookie's session.
+	signInCookieCredential
+)
+
+// requestCredential names the credential optionalActor resolves r's caller by, and the bearer
+// token where it is one, judged on r alone with nothing read. It is optionalActor's order, written
+// once: the authentication scheme decides before anything reads a token - RFC 9449 Section 7.2
+// refuses a DPoP-bound token presented under any other scheme, so a broker-issued token reaches
+// Dispatch under DPoP alone and a DPoP presentation is never retried as another kind - then the
+// bearer, then the sign-in. Work that must know what a resolution will read before it runs it - a
+// heartbeat that takes a place of the request pool's share only for a resolution that reads the
+// pool (callerStillResolves) - asks this, so a credential kind added here reaches both.
+func (s *server) requestCredential(r *http.Request) (credentialKind, string) {
+	if _, presented := brokertoken.Presented(r); presented {
+		return brokerTokenCredential, ""
+	}
+	token, present := auth.BearerToken(r)
+	switch {
+	case !present:
+		return signInCookieCredential, ""
+	case token == "":
+		return emptyBearerCredential, ""
+	case auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens):
+		return sharedTokenCredential, token
+	case s.deps.OIDC != nil && oidc.LooksLikeJWT(token):
+		return serviceTokenCredential, token
+	}
+	return personalTokenCredential, token
+}
+
+// optionalActor resolves the request's caller by the credential it presents (requestCredential).
+// Each branch names that caller on the request's access-log line (accesslog.Note), which costs the
+// line what the authentication already resolved and never a lookup of its own.
 func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	// The caller may already be decided: a keyed write resolves before its handler
 	// (keyedWrites), and a DPoP presentation is decided once a request however many layers
@@ -1543,22 +1622,20 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	if caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
 		return caller.actor, caller.human, caller.err
 	}
-	if _, presented := brokertoken.Presented(r); presented {
+	kind, token := s.requestCredential(r)
+	switch kind {
+	case brokerTokenCredential:
 		return s.brokerTokenActor(r)
-	}
-	if token, present := auth.BearerToken(r); present {
-		if token == "" {
-			return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
-		}
-		if auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens) {
-			accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
-			// A credential that holds no scope, not the absence of one: the deployment's one
-			// shared token is nobody's, so it acts as no person.
-			return model.Actor{Credential: scopelessCredential}, false, nil
-		}
-		if s.deps.OIDC != nil && oidc.LooksLikeJWT(token) {
-			return s.serviceTokenActor(r, token)
-		}
+	case emptyBearerCredential:
+		return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+	case sharedTokenCredential:
+		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
+		// A credential that holds no scope, not the absence of one: the deployment's one
+		// shared token is nobody's, so it acts as no person.
+		return model.Actor{Credential: scopelessCredential}, false, nil
+	case serviceTokenCredential:
+		return s.serviceTokenActor(r, token)
+	case personalTokenCredential:
 		actor, err := s.personalTokenActor(r.Context(), token)
 		if err != nil {
 			return model.Actor{}, false, err

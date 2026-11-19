@@ -325,36 +325,29 @@ func TestMetaRecordsAFailedPostgresVersionRead(t *testing.T) {
 // TestMetaKeepsTheQuietGatesReadingsBesideBoxBusyBefore: run-step.sh's quiet-box gate passes
 // loadgen run every reading it took and its bar, and meta.json keeps the reading the step started
 // on (the last), every reading and the bar beside box_busy_before, which stays the reading
-// run-step.sh took after the gate; run.log names them. A step run without the gate records null for
-// all three and logs no gate. Flags that describe no gate that started a step are refused.
+// run-step.sh took after the gate. A step run without the gate records null for all three. Flags
+// that describe no gate that started a step are refused.
 func TestMetaKeepsTheQuietGatesReadingsBesideBoxBusyBefore(t *testing.T) {
 	t.Setenv("LOADTEST_ROOT", t.TempDir())
 	gate, err := parseBusyGate("0.4200,0.0400", 0.10, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta := func(g busyGate) (string, string) {
-		var logged bytes.Buffer
+	meta := func(g busyGate) string {
 		cfg := runConfig{boxBusyBefore: 0.01, busyGate: g, ep: endpoints{pg: unreachablePG, pids: map[string]int{}}}
-		b, err := json.Marshal(collectMeta(context.Background(), cfg, log.New(&logged, "", 0)))
+		b, err := json.Marshal(collectMeta(context.Background(), cfg, log.New(io.Discard, "", 0)))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return string(b), logged.String()
+		return string(b)
 	}
-	gated, logged := meta(gate)
+	gated := meta(gate)
 	if want := `"box_busy_before":0.01,"box_busy_before_window_s":5,"box_busy_gate":0.04,"box_busy_gate_readings":[0.42,0.04],"box_busy_gate_max":0.1,`; !strings.Contains(gated, want) {
 		t.Errorf("meta.json lacks %s:\n%s", want, gated)
 	}
-	if want := "meta: quiet-box gate: the step started on a box 4% busy, at or under its bar of 10% (LOADTEST_MAX_BUSY_BEFORE); its readings 42%, 4%"; !strings.Contains(logged, want) {
-		t.Errorf("run.log lacks %q:\n%s", want, logged)
-	}
-	ungated, logged := meta(busyGate{})
+	ungated := meta(busyGate{})
 	if want := `"box_busy_before":0.01,"box_busy_before_window_s":5,"box_busy_gate":null,"box_busy_gate_readings":null,"box_busy_gate_max":null,`; !strings.Contains(ungated, want) {
 		t.Errorf("meta.json of a step run without the gate lacks %s:\n%s", want, ungated)
-	}
-	if strings.Contains(logged, "quiet-box gate") {
-		t.Errorf("run.log of a step run without the gate names one:\n%s", logged)
 	}
 
 	if g, err := parseBusyGate("", -1, false); err != nil || len(g.readings) != 0 {

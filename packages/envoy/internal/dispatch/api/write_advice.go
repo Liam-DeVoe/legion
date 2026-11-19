@@ -412,31 +412,46 @@ func (s *server) logAdviceError(route, issueKey, query string, err error) {
 	slog.Warn("dispatch: write advice omitted", "route", route, "issue", issueKey, "query", query, "error", err)
 }
 
-// adviceSavepoint opens the savepoint one document report runs behind and bounds its statements.
-// It answers the savepoint, or nil when the report cannot run: with a nil error when the bound
-// could not be set and the savepoint was rolled back, which costs the report alone and is logged
-// under field, the report's own name; and with the error when the savepoint could not be opened
-// or rolled back, after either of which the write cannot commit (endAdviceSavepoint). Each
-// report runs behind one of these rather than sharing a savepoint with the report beside it, so a
-// failed read costs its own report and no other.
+// adviceReport runs read, one document report, behind a savepoint of its own inside the write's
+// transaction tx, its statements bounded, and answers what read reports. Each report runs behind
+// one of these rather than sharing a savepoint with the report beside it, because a failed
+// statement aborts the transaction it ran in and a failed read must never fail the write it
+// describes, nor the report beside it. A report writes nothing, so its savepoint is always rolled
+// back rather than released (endAdviceSavepoint), and that rollback restores the
+// statement_timeout set here.
 //
-// The caller rolls the savepoint back once its report is read (endAdviceSavepoint): a report
-// writes nothing, so its savepoint is always rolled back rather than released, and that rollback
-// restores the statement_timeout this set. Where this answers nil it has rolled back already,
-// and there is no savepoint for the caller to hold.
-func (s *server) adviceSavepoint(ctx context.Context, tx pgx.Tx, route, issueKey, field string) (pgx.Tx, error) {
+// A read that failed - read's error, or a bound that could not be set - costs the report alone:
+// it is logged under field, the report's own name, and the report is nil. A savepoint that could
+// not be opened or rolled back is another matter: the write cannot commit after it, so that
+// failure is the error this answers, with no report, for the write to fail with.
+func adviceReport[T any](
+	ctx context.Context,
+	s *server,
+	tx pgx.Tx,
+	route, issueKey, field string,
+	read func(adviceTx pgx.Tx) (*T, error),
+) (report *T, ended error) {
 	adviceTx, err := tx.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the savepoint of the write's %s report: %w", field, err)
 	}
+	defer func() {
+		if err := endAdviceSavepoint(ctx, adviceTx, field); err != nil {
+			report, ended = nil, err
+		}
+	}()
 	// Healthy advice queries complete in single-digit milliseconds. Bound them at 500 ms so a
 	// future plan regression cannot hold the write's row locks and a pool connection
 	// indefinitely.
 	if _, err := adviceTx.Exec(ctx, "set local statement_timeout = '500ms'"); err != nil {
 		s.logAdviceError(route, issueKey, field, err)
-		return nil, endAdviceSavepoint(ctx, adviceTx, field)
+		return nil, nil
 	}
-	return adviceTx, nil
+	if report, err = read(adviceTx); err != nil {
+		s.logAdviceError(route, issueKey, field, err)
+		return nil, nil
+	}
+	return report, nil
 }
 
 // endAdviceSavepoint rolls back the savepoint a document report ran behind, on a context of its
@@ -553,7 +568,7 @@ type supersededApprovalGate struct {
 // Like no other advice query, this one stays inside the write's transaction: the version row and
 // the carry it reads are this write's own and are not committed yet, and its verdict is ordered
 // against the reviews committed before the write by event_seq, which a read taken after the
-// commit would answer differently. So it runs behind a savepoint of its own (adviceSavepoint),
+// commit would answer differently. So it runs behind a savepoint of its own (adviceReport),
 // because a failed statement aborts the transaction it ran in and a failed read must never fail
 // the write it describes. It writes nothing, so the savepoint is always rolled back, which also
 // restores the statement_timeout it set (endAdviceSavepoint). A savepoint that could not be
@@ -566,42 +581,33 @@ func (s *server) supersededApprovalAdvice(
 	issueKey string,
 	artifactID string,
 	version int,
-) (reported *supersededApproval, ended error) {
-	adviceTx, err := s.adviceSavepoint(ctx, tx, route, issueKey, "superseded_approval")
-	if adviceTx == nil {
-		return nil, err
-	}
-	defer func() {
-		if err := endAdviceSavepoint(ctx, adviceTx, "superseded_approval"); err != nil {
-			reported, ended = nil, err
+) (*supersededApproval, error) {
+	return adviceReport(ctx, s, tx, route, issueKey, "superseded_approval", func(adviceTx pgx.Tx) (*supersededApproval, error) {
+		if err := s.runAdviceQueryHook(ctx, adviceTx, "superseded_approval"); err != nil {
+			return nil, err
 		}
-	}()
-	if err := s.runAdviceQueryHook(ctx, adviceTx, "superseded_approval"); err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
-		return nil, nil
-	}
-	approval, err := newestReviewAsApproval(ctx, adviceTx, artifactID, version)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
-		return nil, nil
-	}
-	if approval == nil {
-		// A write that superseded no approval asks no question about gates, so there is no
-		// gate read either: the clause the gates qualify is the one this read did not write.
-		return nil, nil
-	}
-	// The gates run on the savepoint the approval read ran on, under the statement_timeout set
-	// above: one more statement on a connection the write already holds. A failed or timed-out
-	// read of them costs the gate list alone - never the write, which commits as it always
-	// does, and never the first sentence, since the approval this write superseded is true
-	// whatever Dispatch holds about gates.
-	gates, err := supersededApprovalGates(ctx, adviceTx, artifactID)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "superseded_approval", err)
+		approval, err := newestReviewAsApproval(ctx, adviceTx, artifactID, version)
+		if err != nil {
+			return nil, err
+		}
+		if approval == nil {
+			// A write that superseded no approval asks no question about gates, so there is no
+			// gate read either: the clause the gates qualify is the one this read did not write.
+			return nil, nil
+		}
+		// The gates run on the savepoint the approval read ran on, under the statement_timeout
+		// set above: one more statement on a connection the write already holds. A failed or
+		// timed-out read of them costs the gate list alone - never the write, which commits as it
+		// always does, and never the first sentence, since the approval this write superseded is
+		// true whatever Dispatch holds about gates.
+		gates, err := supersededApprovalGates(ctx, adviceTx, artifactID)
+		if err != nil {
+			s.logAdviceError(route, issueKey, "superseded_approval", err)
+			return approval, nil
+		}
+		approval.DesignGates = gates
 		return approval, nil
-	}
-	approval.DesignGates = gates
-	return approval, nil
+	})
 }
 
 // supersededApprovalGates reads Dispatch's record of which issues' design gates record this
@@ -712,7 +718,7 @@ type movedApprovalDocument struct {
 // the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
 // write left it.
 //
-// Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
+// Like every other advice query this runs behind a savepoint of its own (adviceReport),
 // because a failed statement aborts the transaction it ran in and a failed read must never fail
 // the write it describes. It writes nothing, so the savepoint is always rolled back, which also
 // restores the statement_timeout it set (endAdviceSavepoint). A failed read costs the report
@@ -725,65 +731,56 @@ func (s *server) movedApprovalRequestAdvice(
 	route string,
 	issueKey string,
 	artifactID string,
-) (reported *movedApprovalRequest, ended error) {
-	adviceTx, err := s.adviceSavepoint(ctx, tx, route, issueKey, "moved_approval_request")
-	if adviceTx == nil {
-		return nil, err
-	}
-	defer func() {
-		if err := endAdviceSavepoint(ctx, adviceTx, "moved_approval_request"); err != nil {
-			reported, ended = nil, err
+) (*movedApprovalRequest, error) {
+	return adviceReport(ctx, s, tx, route, issueKey, "moved_approval_request", func(adviceTx pgx.Tx) (*movedApprovalRequest, error) {
+		ask, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
+		if err != nil {
+			return nil, err
 		}
-	}()
-	ask, err := docs.OpenApprovalAsk(ctx, adviceTx, artifactID)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "moved_approval_request", err)
-		return nil, nil
-	}
-	if ask == nil || ask.Approval == nil {
-		return nil, nil
-	}
-	if !docs.ApprovalAwaitsHandBack(ask.Approval.Documents) {
-		// The request still waits on the person, so this write took nothing back from them.
-		return nil, nil
-	}
-	rows, err := movedApprovalArtifacts(ctx, adviceTx, ask.Approval.Documents)
-	if err != nil {
-		s.logAdviceError(route, issueKey, "moved_approval_request", err)
-		return nil, nil
-	}
-	moved := &movedApprovalRequest{
-		AskID:     ask.ID,
-		Documents: make([]movedApprovalDocument, 0, len(ask.Approval.Documents)),
-	}
-	// The owner is the first document's, because that is the document the request was opened on
-	// and the one a hand-back command names. A document whose row this read did not return
-	// leaves the request unplaced rather than placing it wrongly.
-	if lead, ok := rows[ask.Approval.Documents[0].ArtifactID]; ok {
-		if lead.IssueKey != nil {
-			moved.Issue = *lead.IssueKey
-		} else {
-			moved.Project = lead.Project
+		if ask == nil || ask.Approval == nil {
+			return nil, nil
 		}
-	}
-	for _, document := range ask.Approval.Documents {
-		// The request's own order, because the client's hand-back command names its first
-		// document, and the request's own record for a document whose row is gone or was not
-		// returned: the report never drops a document the request names.
-		entry := movedApprovalDocument{
-			ArtifactID:       document.ArtifactID,
-			Name:             document.Name,
-			RequestedVersion: document.RequestedVersion,
-			Version:          document.Version,
+		if !docs.ApprovalAwaitsHandBack(ask.Approval.Documents) {
+			// The request still waits on the person, so this write took nothing back from them.
+			return nil, nil
 		}
-		if artifact, ok := rows[document.ArtifactID]; ok {
-			entry.Name = artifact.Name
-			entry.Primary = artifact.Primary
-			entry.Role = documentRoleOf(artifact)
+		rows, err := movedApprovalArtifacts(ctx, adviceTx, ask.Approval.Documents)
+		if err != nil {
+			return nil, err
 		}
-		moved.Documents = append(moved.Documents, entry)
-	}
-	return moved, nil
+		moved := &movedApprovalRequest{
+			AskID:     ask.ID,
+			Documents: make([]movedApprovalDocument, 0, len(ask.Approval.Documents)),
+		}
+		// The owner is the first document's, because that is the document the request was opened
+		// on and the one a hand-back command names. A document whose row this read did not return
+		// leaves the request unplaced rather than placing it wrongly.
+		if lead, ok := rows[ask.Approval.Documents[0].ArtifactID]; ok {
+			if lead.IssueKey != nil {
+				moved.Issue = *lead.IssueKey
+			} else {
+				moved.Project = lead.Project
+			}
+		}
+		for _, document := range ask.Approval.Documents {
+			// The request's own order, because the client's hand-back command names its first
+			// document, and the request's own record for a document whose row is gone or was not
+			// returned: the report never drops a document the request names.
+			entry := movedApprovalDocument{
+				ArtifactID:       document.ArtifactID,
+				Name:             document.Name,
+				RequestedVersion: document.RequestedVersion,
+				Version:          document.Version,
+			}
+			if artifact, ok := rows[document.ArtifactID]; ok {
+				entry.Name = artifact.Name
+				entry.Primary = artifact.Primary
+				entry.Role = documentRoleOf(artifact)
+			}
+			moved.Documents = append(moved.Documents, entry)
+		}
+		return moved, nil
+	})
 }
 
 // movedApprovalArtifacts reads the artifacts rows of every document the request names, keyed by

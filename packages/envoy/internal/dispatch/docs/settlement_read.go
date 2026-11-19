@@ -10,21 +10,15 @@ import (
 const documentRemovedStatement = `select not exists(select 1 from artifacts where id = $1)`
 
 // documentRemoved reports whether the document this settlement stopped short on has been
-// removed since it started (settleRoomWithin). The read runs through the transaction of the pass
-// under way once it has one (passTx), since a pooled read beside it is the second connection that
-// deadlocks the pool, and through the settlements pool before. It never reads through the request
-// pool: a settlement that could not open its own pool reads nothing here and answers false. In
-// that transaction it is a statement of its own, so it reads a removal that committed while an
+// removed since it started (settleRoomWithin), read through q: the transaction of the pass under
+// way once it has one, since a pooled read beside it is the second connection that deadlocks the
+// pool, and the settlements pool before (stoppedShort). It never reads through the request pool:
+// a settlement that could not open its own pool reads nothing here, a nil q, and answers false.
+// In that transaction it is a statement of its own, so it reads a removal that committed while an
 // earlier statement waited behind it. A read that fails, as every statement of a transaction an
 // error aborted does, answers false, and the settlement stops short as it would have.
-func (st *settlement) documentRemoved(ctx context.Context) bool {
-	var q Queryer
-	switch {
-	case st.passTx != nil:
-		q = st.passTx
-	case st.settlements != nil:
-		q = st.settlements
-	default:
+func (st *settlement) documentRemoved(ctx context.Context, q Queryer) bool {
+	if q == nil {
 		return false
 	}
 	var removed bool

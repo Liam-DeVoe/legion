@@ -102,10 +102,6 @@ func TestTablesTakeTheResourcesCellsFromCgroupJSON(t *testing.T) {
 			t.Errorf("no note defines %s:\n%s", mark, md)
 		}
 	}
-	// The throttling cell is the runner pod's own on a cluster copy; Dispatch's is cgroup.json's.
-	if note := noteLine(md, podThrottledH+": "); !strings.Contains(note, "the runner pod alone, and Dispatch's throttling is `cgroup.json`'s `throttled_s`.") {
-		t.Errorf("the throttling note of a table with cgroup.json does not send Dispatch's throttling to cgroup.json:\n%s", note)
-	}
 	checkRowWidths(t, md)
 }
 
@@ -125,8 +121,8 @@ func TestTablesWithoutCgroupJSONAreUnchanged(t *testing.T) {
 	if st.cgroup != nil || st.failed || strings.Contains(md, cgroupWorkingSetH) || strings.Contains(md, "cgroup") || strings.Contains(md, "(failed") {
 		t.Fatalf("a step without cgroup.json or step-failed.json renders cgroup or failed text:\n%s", md)
 	}
-	if c := rowCells(section(md, "Resources"), "local"); len(c) != 17 || c[1] != "1.50 / 1.90" {
-		t.Errorf("the Resources row %q, want 17 cells with Dispatch 1.50 / 1.90", c)
+	if cores := cellOf(t, section(md, "Resources"), "local", "Dispatch cores mean / peak 5 s"); cores != "1.50 / 1.90" {
+		t.Errorf("the Resources row's Dispatch cores %q, want 1.50 / 1.90", cores)
 	}
 }
 

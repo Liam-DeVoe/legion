@@ -48,7 +48,7 @@ func stageSettlement(t *testing.T, service *Service, artifactID string) *settlem
 		service: service, room: artifactID, state: state, doc: doc,
 		settlements: settlements, generation: generation,
 	}
-	settle.stoppedShort = func(err error) settleOutcome {
+	settle.stopShort = func(_ Queryer, err error) settleOutcome {
 		return settleOutcome{next: settleRetry, err: err, generation: settle.generation}
 	}
 	return settle

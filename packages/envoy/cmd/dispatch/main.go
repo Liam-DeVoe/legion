@@ -481,6 +481,9 @@ func main() {
 	// take their place among the same places outside admission the API's DPoP decisions and
 	// heartbeat checks take theirs (admission.Outside, docs.Deps.Outside).
 	limiter := admission.New(admission.DefaultLimits())
+	// The API server's socket heartbeat counts, which the metrics endpoint reads as well
+	// (dispatch_socket_heartbeat_transient_failures_total, ..._ceiling_closes_total).
+	heartbeats := &api.HeartbeatCounts{}
 	documentService := newDocumentService(boot, docs.Deps{
 		Store:     database,
 		Events:    broker,
@@ -554,6 +557,7 @@ func main() {
 		Files:          fileStore,
 		Lifetime:       ctx,
 		Admission:      limiter,
+		Heartbeats:     heartbeats,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -1104,6 +1108,7 @@ func main() {
 		Background: background,
 		Events:     broker,
 		Admission:  limiter,
+		Heartbeats: heartbeats,
 		Docs:       documentService,
 		Logs:       logs,
 		Conns:      watchedConns,
