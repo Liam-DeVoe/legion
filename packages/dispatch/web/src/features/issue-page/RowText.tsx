@@ -283,19 +283,36 @@ const SERVER_ROOT = /^\/(?:api|v1|auth|ws|healthz|assets)(?:\/|$)/u;
 /** What takes the focus in a drawn text: every control a reading can hold. */
 export const FOCUSABLE = "a[href], area[href], button, input, select, textarea, iframe, [tabindex]";
 
+/** Whether `element` scrolls its own content on either axis. Chromium makes such an element a tab
+ *  stop of its own while no control inside it is in the tab order: a wide code block's `pre`, a
+ *  table's scrolling wrapper. */
+function scrolls(element: Element): boolean {
+  const { overflowX, overflowY } = getComputedStyle(element);
+  return [overflowX, overflowY].some((overflow) => overflow === "auto" || overflow === "scroll");
+}
+
 /**
  * Keeps every control inside `box` out of the tab order while `out` holds: the ones it is drawn
  * with, and the ones that arrive after - a reference's link once its target answers, a picture
- * once it loads - as they arrive. The outline is one tab stop and its keys reach a row's controls
- * (R9); a view that no tree's keys reach passes `out` false and leaves them where they are.
+ * once it loads - as they arrive. An element that scrolls its own content is one too, since
+ * Chromium gives it a tab stop (`scrolls`). The outline is one tab stop and its keys reach a
+ * row's controls (R9); a view that no tree's keys reach passes `out` false and leaves them where
+ * they are.
  */
 export function useOutOfTabOrder(box: RefObject<HTMLElement | null>, out: boolean): void {
   useLayoutEffect(() => {
     const element = box.current;
     if (!out || element === null) return;
     const untab = (): void => {
+      // Every style is read before any tab index is written, so the reads cost one style pass.
+      const scrollers = [...element.querySelectorAll<HTMLElement>("*")].filter(scrolls);
       for (const control of element.querySelectorAll<HTMLElement>(FOCUSABLE)) {
         if (control.tabIndex !== -1) control.tabIndex = -1;
+      }
+      // An element that is no control reads `tabIndex` -1 with no `tabindex` of its own, and a
+      // scroller can too, so a scroller is read by its attribute.
+      for (const scroller of scrollers) {
+        if (scroller.getAttribute("tabindex") !== "-1") scroller.tabIndex = -1;
       }
     };
     untab();
