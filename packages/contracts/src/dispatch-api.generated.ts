@@ -42,7 +42,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer; declined_your_ask for a decline), the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
+    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
     get: operations["getApiV1AgentsBySessionIdAnswers"];
     put?: never;
     post?: never;
@@ -1945,6 +1945,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/steps": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, its attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
+    get: operations["getApiV1IssuesByKeySteps"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/steps/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    put: operations["putApiV1IssuesByKeyStepsById"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/subscribers": {
     parameters: {
       query?: never;
@@ -3035,7 +3069,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total. */
+    /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total. Every number is counted in one statement under a 10 s statement_timeout, and a statement that runs past it counts nothing and answers 503 SEARCH_COVERAGE_TIMEOUT, to be asked again later. */
     get: operations["getApiV1SearchCoverage"];
     put?: never;
     post?: never;
@@ -5755,6 +5789,10 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       holders: null | components["schemas"]["IssueRoleHolder"][];
     };
+    IssueSteps: {
+      issue: string;
+      tasks: components["schemas"]["StepTask"][] | null;
+    };
     IssueSummary: {
       advances: components["schemas"]["IssueAdvance"][] | null;
       /** Format: int64 */
@@ -6958,6 +6996,55 @@ export interface components {
     StateResponse: {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
+    };
+    StepRecord: {
+      agent: string;
+      attempt: number;
+      /** Format: date-time */
+      ended_at: null | string;
+      /** Format: int64 */
+      generation: number;
+      id: string;
+      issue: string;
+      /** @enum {string} */
+      kind: "step" | "retro" | "merge";
+      model: string;
+      report: null | string;
+      /** @enum {string} */
+      result: "" | "passed" | "failed" | "stopped";
+      returned_to: null | number;
+      role: string;
+      session: string;
+      /** Format: date-time */
+      started_at: null | string;
+      step: number;
+      task: string;
+      type: string;
+    };
+    StepRecordInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      agent?: null | string;
+      /** Format: date-time */
+      ended_at?: null | string;
+      generation?: null | number;
+      /** @enum {null|string} */
+      kind?: "step" | "retro" | "merge" | null;
+      model?: null | string;
+      report?: null | string;
+      /** @enum {null|string} */
+      result?: "passed" | "failed" | "stopped" | null;
+      returned_to?: null | number;
+      role?: null | string;
+      session?: null | string;
+      /** Format: date-time */
+      started_at?: null | string;
+      step?: null | number;
+      task?: null | string;
+      type?: null | string;
+    };
+    StepTask: {
+      steps: components["schemas"]["StepRecord"][] | null;
+      task: string;
     };
     StoreAttributeRead: {
       kind: string;
@@ -12225,6 +12312,79 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeySteps: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueSteps"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1IssuesByKeyStepsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StepRecordInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StepRecord"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeySubscribers: {
     parameters: {
       query?: {
@@ -15730,6 +15890,7 @@ export type IssueRoleHolder = components["schemas"]["IssueRoleHolder"];
 export type IssueRoleHolderRecord = components["schemas"]["IssueRoleHolderRecord"];
 export type IssueRoleHolders = components["schemas"]["IssueRoleHolders"];
 export type IssueRoleHoldersInput = components["schemas"]["IssueRoleHoldersInput"];
+export type IssueSteps = components["schemas"]["IssueSteps"];
 export type IssueSummary = components["schemas"]["IssueSummary"];
 export type IssueSummaryPage = components["schemas"]["IssueSummaryPage"];
 export type ItemBlock = components["schemas"]["ItemBlock"];
@@ -15873,6 +16034,9 @@ export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StateResponse = components["schemas"]["StateResponse"];
+export type StepRecord = components["schemas"]["StepRecord"];
+export type StepRecordInput = components["schemas"]["StepRecordInput"];
+export type StepTask = components["schemas"]["StepTask"];
 export type StoreAttributeRead = components["schemas"]["StoreAttributeRead"];
 export type StoreTypeRead = components["schemas"]["StoreTypeRead"];
 export type Subscriber = components["schemas"]["Subscriber"];

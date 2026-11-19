@@ -28,7 +28,7 @@ func TestHealthzAnswersWhatTheDecisionsStepOwes(t *testing.T) {
 	ctx := context.Background()
 	var logged bytes.Buffer
 	step := docs.NewDecisionStep(database, "c0ffee", slog.New(slog.NewTextHandler(&logged, nil)))
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, step, issuers{})
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, step, issuers{}, nil)
 	probe := func() map[string]any {
 		t.Helper()
 		response := httptest.NewRecorder()
