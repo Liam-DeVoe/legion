@@ -27,15 +27,19 @@ import (
 // last is taken. found is "" when no directory holds the session; err is a failure to look, never
 // the session's absence: a folder that cannot be looked in is runtime.ErrSessionStore, a store
 // that did not answer, which the claim's machine waits out a minute at a time with the session
-// kept, and a pane sessions directory that cannot be resolved is the launch's own failure. A folder
-// another user owns and denies this daemon's user (othersFolder) is passed over at every level:
-// the recorded path's own, a sessions directory, a folder of one and a session in it. It is no part
-// of this daemon's session store, so a session under it is searched for elsewhere, as a session
-// that is not there is: a takeover whose pod recorded its session under the image's home, which
-// is another user's folder on this host, finds the copy carried into the pane's sessions directory.
+// kept, and a pane sessions directory that cannot be resolved is the launch's own failure. So is a
+// recorded path one of whose folders is a file (ENOTDIR): the path names no folder there, which no
+// wait mends, so the refusal names it and the machine charges it. A folder another user owns and
+// denies this daemon's user (othersFolder) is passed over at every level: the recorded path's own,
+// a sessions directory, a folder of one and a session in it. It is no part of this daemon's session
+// store, so a session under it is searched for elsewhere, as a session that is not there is: a
+// takeover whose pod recorded its session under the image's home, which is another user's folder on
+// this host, finds the copy carried into the pane's sessions directory.
 func sessionFileOf(recorded string, paneSessions func() (string, error)) (found string, searched []string, err error) {
 	if _, err := os.Stat(recorded); err == nil {
 		return recorded, nil, nil
+	} else if errors.Is(err, syscall.ENOTDIR) {
+		return "", nil, fmt.Errorf("the recorded session %s is under a file where a folder should be: %w", recorded, err)
 	} else if !errors.Is(err, os.ErrNotExist) && !othersFolder(recorded, err) {
 		return "", nil, fmt.Errorf("%w: %v", runtime.ErrSessionStore, err)
 	}

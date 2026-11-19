@@ -15,17 +15,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/legion/daemon/internal/sqlstate"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -54,7 +58,7 @@ var createTables = []string{
 func CreateTables(ctx context.Context, conn *pgx.Conn) error {
 	for _, statement := range createTables {
 		if _, err := conn.Exec(ctx, statement); err != nil {
-			return fmt.Errorf("create Oh My Pi's session tables: %w", err)
+			return fmt.Errorf("create Oh My Pi's session tables: %w", ended(conn, err))
 		}
 	}
 	return nil
@@ -100,14 +104,91 @@ func Connect(ctx context.Context, dsnFile string) (*pgx.Conn, error) {
 }
 
 // ConnectURL opens the session database at dsn, a URL ReadDSN read. A refusal names the
-// database's address, never the URL's password (store.ConnectError).
+// database's address, never the URL's password (store.ConnectError). The connection remembers a
+// read or a write on it that failed once it was open (storeConn), so an operation of this package
+// on it that fails after that failure is known for the store's (ended).
 func ConnectURL(ctx context.Context, dsn string) (*pgx.Conn, error) {
-	conn, err := pgx.Connect(ctx, dsn)
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, store.ConnectError(dsn, err)
+	}
+	dial := config.DialFunc
+	config.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &storeConn{Conn: conn}, nil
+	}
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		return nil, store.ConnectError(dsn, err)
 	}
 	return conn, nil
 }
+
+// storeConn is a session database connection as ConnectURL opens it, which remembers the first read
+// or write on it that failed: a reset, an end of file, or a failure no driver has named yet. The
+// driver need not pass that failure on: pgx answers a statement whose connection broke under it with
+// pgconn.ErrConnClosed, the failure itself gone. Two failures are not the store's and are not
+// remembered: a deadline, which is how pgx ends a wait whose context ended and which it reads back
+// as that context's own error, and a use of the connection after it was closed on this side.
+type storeConn struct {
+	net.Conn
+	failure atomic.Pointer[error]
+}
+
+func (c *storeConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	c.failed(err)
+	return n, err
+}
+
+func (c *storeConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	c.failed(err)
+	return n, err
+}
+
+func (c *storeConn) failed(err error) {
+	var timeout interface{ Timeout() bool }
+	if err == nil || errors.As(err, &timeout) && timeout.Timeout() || errors.Is(err, net.ErrClosed) {
+		return
+	}
+	c.failure.CompareAndSwap(nil, &err)
+}
+
+// ended is err, the failure of an operation on conn, as the store's own when conn is ConnectURL's
+// and its connection failed under the operation or before it: a storeConnError that carries both,
+// which StoreFault reads as the store's however the driver worded err. Any other err is as it is.
+func ended(conn *pgx.Conn, err error) error {
+	if err == nil || conn == nil {
+		return err
+	}
+	netConn := conn.PgConn().Conn()
+	if over, ok := netConn.(*tls.Conn); ok {
+		netConn = over.NetConn()
+	}
+	sc, ok := netConn.(*storeConn)
+	if !ok {
+		return err
+	}
+	failure := sc.failure.Load()
+	if failure == nil {
+		return err
+	}
+	return &storeConnError{err: err, failure: *failure}
+}
+
+// storeConnError is the failure of an operation on a session database connection whose own read
+// or write failed under it (ended).
+type storeConnError struct{ err, failure error }
+
+func (e *storeConnError) Error() string {
+	return fmt.Sprintf("%v (the session database's connection failed: %v)", e.err, e.failure)
+}
+
+func (e *storeConnError) Unwrap() []error { return []error{e.err, e.failure} }
 
 // Written is when the session the table holds at path was last written: the row's mtime_ms, which
 // Oh My Pi sets on every write, an append included, and Import sets to the copied file's. ok is false
@@ -121,7 +202,7 @@ func Written(ctx context.Context, conn *pgx.Conn, path string) (at time.Time, ok
 		return time.Time{}, false, nil
 	}
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("look up session %s: %w", path, err)
+		return time.Time{}, false, fmt.Errorf("look up session %s: %w", path, ended(conn, err))
 	}
 	return time.UnixMilli(mtime), true, nil
 }
@@ -138,7 +219,7 @@ func Read(ctx context.Context, conn *pgx.Conn, path string) (content []byte, ok 
 		if isUndefinedTable(err) {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("read session %s: %w", path, err)
+		return nil, false, fmt.Errorf("read session %s: %w", path, ended(conn, err))
 	}
 	defer rows.Close()
 	var buffer bytes.Buffer
@@ -147,7 +228,7 @@ func Read(ctx context.Context, conn *pgx.Conn, path string) (content []byte, ok 
 		var offset int64
 		var piece string
 		if err := rows.Scan(&kind, &offset, &piece); err != nil {
-			return nil, false, fmt.Errorf("read session %s: %w", path, err)
+			return nil, false, fmt.Errorf("read session %s: %w", path, ended(conn, err))
 		}
 		if kind == 0 {
 			ok = true
@@ -158,7 +239,7 @@ func Read(ctx context.Context, conn *pgx.Conn, path string) (content []byte, ok 
 		if isUndefinedTable(err) {
 			return nil, false, nil
 		}
-		return nil, false, fmt.Errorf("read session %s: %w", path, err)
+		return nil, false, fmt.Errorf("read session %s: %w", path, ended(conn, err))
 	}
 	if !ok {
 		return nil, false, nil
@@ -372,22 +453,51 @@ func isUndefinedTable(err error) bool {
 }
 
 // StoreFault is whether err, a failure to reach or read the session store, is the store's own: the
-// connection was refused, or it was never answered (a network that does not reach the store, or a
-// bound that ran out waiting for it), or the session table does not exist. That is the one failure
-// a start waits out a minute at a time with its session kept (supervise's startWaitsForStore).
+// store did not answer the start, which then waits it out a minute at a time with its session kept
+// (supervise's startWaitsForStore). The store's own failures are:
+//
+//   - a connection that was refused or never answered: a network that does not reach the store, or
+//     a bound that ran out waiting for it;
+//   - a connection the store ended once it was open, however the driver reports the end: an
+//     operation of this package on a connection ConnectURL opened, whose own read or write failed
+//     under it, a reset, an end of file or any other, told by where the failure came from
+//     (storeConn, ended) rather than by a list of what it can be;
+//   - an answer of the server's own of a class in which it is not judging what it was asked
+//     (sqlstate.NotJudged), the one rule by which the daemon's own store reads a server's refusal
+//     too: a server starting up or shutting down (57P03), one with no client slot left (53300), a
+//     backend an operator or a restart terminated (57P01);
+//   - a session table that does not exist.
+//
 // Every other failure is an answer about the configuration and is not the store's: a URL file that
-// is missing or empty, a URL that does not parse, a login or an IAM sign-in the server refused, a
-// database or a credential that is not there. Nor is a start that was stopped (context.Canceled):
-// the store was never asked to the end.
+// is missing or empty, a URL that does not parse, a login or an IAM sign-in the server refused
+// (28P01), a database or a credential that is not there, a database that takes no writes (25006).
+// Nor is a start that was stopped (context.Canceled): the store was never asked to the end. A
+// connection that ended while it was still being opened (pgconn.ConnectError), with no answer of
+// the server's and no refused or unanswered dial, is not read as the store's either: through a
+// proxy of the generation's own that is how the proxy ends a connection whose database it could
+// not reach, or whose sign-in the instance refused, and the proxy itself records which
+// (sessionproxy.Proxy.Fault).
 func StoreFault(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
-	if isUndefinedTable(err) || errors.Is(err, context.DeadlineExceeded) {
+	if isUndefinedTable(err) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return sqlstate.NotJudged(pgErr.Code)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	var timeout interface{ Timeout() bool }
 	if errors.As(err, &timeout) && timeout.Timeout() {
+		return true
+	}
+	var ended *storeConnError
+	var opening *pgconn.ConnectError
+	if errors.As(err, &ended) && !errors.As(err, &opening) {
 		return true
 	}
 	for _, errno := range []syscall.Errno{syscall.ECONNREFUSED, syscall.ETIMEDOUT, syscall.EHOSTUNREACH, syscall.ENETUNREACH, syscall.EHOSTDOWN, syscall.ENETDOWN} {

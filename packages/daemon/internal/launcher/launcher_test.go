@@ -1210,7 +1210,7 @@ func (d *sessionDialer) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	d.mu.Lock()
 	index := len(d.bounds)
 	d.bounds = append(d.bounds, bound)
-	silent := d.silent
+	silent, addr := d.silent, d.addr
 	d.mu.Unlock()
 	if silent != "" {
 		conn, err := stalledDial(ctx, silent)
@@ -1225,7 +1225,7 @@ func (d *sessionDialer) Dial(ctx context.Context, _ string) (net.Conn, error) {
 		}
 	}
 	var dialer net.Dialer
-	return dialer.DialContext(ctx, "tcp", d.addr)
+	return dialer.DialContext(ctx, "tcp", addr)
 }
 
 // stallAt makes every dial from now on stall against the silent upstream at addr; "" ends that.
@@ -1233,6 +1233,13 @@ func (d *sessionDialer) stallAt(addr string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.silent = addr
+}
+
+// dialAt points every dial from now on at addr.
+func (d *sessionDialer) dialAt(addr string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.addr = addr
 }
 
 func (d *sessionDialer) Close() error { return nil }

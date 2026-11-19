@@ -1,15 +1,21 @@
 package tmux
 
-// Three rules of the search for a carried session (newestSession) that the store-fault tests do
-// not reach: an entry of a sessions directory that is no folder holds no session, a candidate that
-// is not there by the time it is looked at holds none, and on equal times the file of the recorded
-// name is taken.
+// Four rules of the search for a carried session (sessionFileOf, newestSession) that the
+// store-fault tests do not reach: an entry of a sessions directory that is no folder holds no
+// session, a candidate that is not there by the time it is looked at holds none, on equal times the
+// file of the recorded name is taken, and a recorded path under a file where a folder should be is
+// refused by name.
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Oh My Pi keeps a regular file beside the folders of its sessions directory
@@ -76,5 +82,29 @@ func TestSessionFileOfPassesOverACandidateThatIsNotThere(t *testing.T) {
 	writeSession(t, carried, time.Now())
 	if got, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != carried {
 		t.Fatalf("sessionFileOf beside a link to nothing = %q, %v; want the carried %s", got, err, carried)
+	}
+}
+
+// A recorded path one of whose folders is a regular file names no folder there, which no wait
+// mends: the search refuses it in words naming the path, as the start's own failure the machine
+// charges, and never as a store fault it would wait out for ever. The control is the same name as
+// an entry of a sessions directory the search lists, which it passes over.
+func TestSessionFileOfRefusesARecordedPathUnderAFileByName(t *testing.T) {
+	const name = "2026-10-20T10-00-00-000Z_ses-abc.jsonl"
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "--a-file--"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recorded := filepath.Join(sessions, "--a-file--", name)
+	got, _, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane-sessions")))
+	if got != "" || err == nil || errors.Is(err, runtime.ErrSessionStore) || !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), recorded) {
+		t.Fatalf("sessionFileOf of a recorded path under a file = %q, %v; want a refusal naming %s that is no runtime.ErrSessionStore", got, err, recorded)
+	}
+	other := filepath.Join(t.TempDir(), "other", "--gone--", name)
+	if got, _, err := sessionFileOf(other, paneAt(sessions)); err != nil || got != "" {
+		t.Fatalf("control: sessionFileOf with that file beside the pane's folders = %q, %v; want nothing found, no error", got, err)
 	}
 }

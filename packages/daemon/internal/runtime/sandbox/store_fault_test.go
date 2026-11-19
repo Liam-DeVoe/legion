@@ -1,14 +1,17 @@
 package sandbox
 
 // A session store that stops answering a Kubernetes start, at its proof dial, at the resume's
-// lookup, at a Claude Code keeper's read of the session's rows, or on the pinned Oh My Pi's own
-// connection after the start's checks passed, is waited out a minute at a time: the claim keeps
-// its session, is charged nothing, and the next minute's try, once the store answers, launches the
-// same session. The tests drive the whole chain: a claim's machine on a clock of the test's own,
-// this runtime over the rig's fake cluster, a real `legion launcher` in each pod the rig makes
-// (launcher.Run), its real session proxy to the test's Postgres, and the real Oh My Pi or a Claude
-// Code resume's real keeper. The one stand-in is the pod's file system: the relay between the
-// runtime and the launcher points the start's argv and environment at the pinned binary and the
+// lookup (a refused dial, or an instance that cannot take a connection now), at a Claude Code
+// keeper's own dial or its read of the session's rows (rows held locked, or a connection the store
+// ends under the read), or on the pinned Oh My Pi's own connection after the start's checks passed,
+// is waited out a minute at a time: the claim keeps its session, is charged nothing, and the next
+// minute's try, once the store answers, launches the same session. A store that answers about its
+// configuration (a credential that is not there, a password it refuses) is charged until the
+// claim's launch budget runs out. The tests drive the whole chain: a claim's machine on a clock of
+// the test's own, this runtime over the rig's fake cluster, a real `legion launcher` in each pod the
+// rig makes (launcher.Run), its real session proxy to the test's Postgres, and the real Oh My Pi or
+// a Claude Code start's real keeper. The one stand-in is the pod's file system: the relay between
+// the runtime and the launcher points the start's argv and environment at the pinned binary and the
 // launcher's own directory where the runtime names a pod's paths.
 
 import (
@@ -50,22 +53,25 @@ func TestAKubernetesStartWhoseSessionStoreStopsAnsweringIsWaitedOutAMinuteAndRes
 	omp := testbin.OMP(t)
 	for name, tc := range map[string]struct {
 		// fault puts the store's fault in place on d before the first start.
-		fault func(d *storeDialer)
+		fault func(t *testing.T, d *storeDialer)
 		// childExits is whether the fault is the child's own: the start succeeds, and the child
 		// exits on the store.
 		childExits bool
 		// stopGrace is the launcher's, which bounds its proof dial at half of it.
 		stopGrace time.Duration
 	}{
-		"the proof dial is refused":                         {fault: func(d *storeDialer) { d.refuseFrom.Store(1) }},
-		"the proof dial is not answered":                    {fault: func(d *storeDialer) { d.stall.Store(true) }, stopGrace: 2 * time.Second},
-		"the lookup is refused after the proof dial":        {fault: func(d *storeDialer) { d.refuseFrom.Store(2) }},
-		"the child's own connection is refused":             {fault: func(d *storeDialer) { d.refuseFrom.Store(3) }, childExits: true},
-		"control: the child exits with the store answering": {fault: func(*storeDialer) {}, childExits: true},
+		"the proof dial is refused":                  {fault: func(_ *testing.T, d *storeDialer) { d.refuseFrom.Store(1) }},
+		"the proof dial is not answered":             {fault: func(_ *testing.T, d *storeDialer) { d.stall.Store(true) }, stopGrace: 2 * time.Second},
+		"the lookup is refused after the proof dial": {fault: func(_ *testing.T, d *storeDialer) { d.refuseFrom.Store(2) }},
+		"the lookup meets an instance starting up (57P03)": {fault: func(t *testing.T, d *storeDialer) {
+			d.reach(testdb.Refusing(t, "57P03", "the database system is starting up"))
+		}},
+		"the child's own connection is refused":             {fault: func(_ *testing.T, d *storeDialer) { d.refuseFrom.Store(3) }, childExits: true},
+		"control: the child exits with the store answering": {fault: func(*testing.T, *storeDialer) {}, childExits: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newStoreFaultRig(t, omp, tc.stopGrace)
-			tc.fault(s.dialer)
+			tc.fault(t, s.dialer)
 			control := strings.HasPrefix(name, "control:")
 
 			err := s.m.Handle(s.g.ctx, supervise.RequestResume{Claim: s.spec.Claim})
@@ -121,67 +127,124 @@ func TestAKubernetesStartWhoseSessionStoreStopsAnsweringIsWaitedOutAMinuteAndRes
 	}
 }
 
-// A Kubernetes start whose session store is configured wrong, a proxy whose credential is not
-// there, is charged as the launch failure it is, naming the credential, until the claim's launch
-// budget runs out, and no store fault is told.
-func TestAKubernetesStartWhoseProxyCredentialIsNotThereIsChargedNamingIt(t *testing.T) {
+// A Kubernetes start whose session store is configured wrong is charged as the launch failure it
+// is, naming the cause, until the claim's launch budget runs out, and no store fault is told: a
+// proxy whose credential is not there, and a store that refuses the password (28P01), which
+// answered the start about its configuration.
+func TestAKubernetesStartWhoseSessionStoreIsConfiguredWrongIsChargedNamingIt(t *testing.T) {
 	omp := testbin.OMP(t)
-	s := newStoreFaultRig(t, omp, 0, func(cfg *launcher.Config) {
-		cfg.SessionDialer = func(context.Context, string) (sessionproxy.Dialer, error) {
-			return nil, errors.New("google: could not find default credentials")
-		}
-	})
-	err := s.m.Handle(s.g.ctx, supervise.RequestResume{Claim: s.spec.Claim})
-	s.m.Wait()
-	c := s.m.Claim()
-	if errors.Is(err, runtime.ErrSessionStore) || c.State != supervise.StateFailed || c.Budgets.LaunchFailures != 3 ||
-		!strings.Contains(c.LastStartFailure, "could not find default credentials") || len(s.faults()) != 0 {
-		t.Fatalf("the resume answered %v and left the claim %s with %d launch failures, last start failure %q, %d store faults told; want it failed after 3 charged launch failures naming the credential, no store fault",
-			err, c.State, c.Budgets.LaunchFailures, c.LastStartFailure, len(s.faults()))
+	for name, tc := range map[string]struct {
+		edit  func(*launcher.Config)
+		fault func(t *testing.T, d *storeDialer)
+		names string
+	}{
+		"a proxy credential that is not there": {names: "could not find default credentials", edit: func(cfg *launcher.Config) {
+			cfg.SessionDialer = func(context.Context, string) (sessionproxy.Dialer, error) {
+				return nil, errors.New("google: could not find default credentials")
+			}
+		}},
+		"a password the store refuses (28P01)": {names: "password authentication failed", fault: func(t *testing.T, d *storeDialer) {
+			d.reach(testdb.Refusing(t, "28P01", `password authentication failed for user "legion"`))
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var edits []func(*launcher.Config)
+			if tc.edit != nil {
+				edits = append(edits, tc.edit)
+			}
+			s := newStoreFaultRig(t, omp, 0, edits...)
+			if tc.fault != nil {
+				tc.fault(t, s.dialer)
+			}
+			err := s.m.Handle(s.g.ctx, supervise.RequestResume{Claim: s.spec.Claim})
+			s.m.Wait()
+			c := s.m.Claim()
+			if errors.Is(err, runtime.ErrSessionStore) || c.State != supervise.StateFailed || c.Budgets.LaunchFailures != 3 ||
+				!strings.Contains(c.LastStartFailure, tc.names) || len(s.faults()) != 0 {
+				t.Fatalf("the resume answered %v and left the claim %s with %d launch failures, last start failure %q, %d store faults told; want it failed after 3 charged launch failures naming %q, no store fault",
+					err, c.State, c.Budgets.LaunchFailures, c.LastStartFailure, len(s.faults()), tc.names)
+			}
+		})
 	}
 }
 
-// A Claude Code resume whose keeper cannot read the session's rows back, which another transaction
-// holds locked past the start's bound, is waited out a minute at a time through the claim's
-// machine, as the keeper's other store faults are: the claim keeps its session, is charged nothing,
-// and the next minute's try, once the rows can be read, launches the same session, its transcript
-// restored from the table onto the pod's disk.
-func TestAKubernetesClaudeResumeWhoseRowsTheStoreCannotReadIsWaitedOutAMinuteAndRestoresTheSameSession(t *testing.T) {
-	s := newClaudeStoreFaultRig(t, testbin.OMP(t))
-	release := s.lockRows(t)
+// A Claude Code start whose keeper cannot reach the session's rows is waited out a minute at a time
+// through the claim's machine: a fresh start whose keeper's own dial is refused, and a resume whose
+// rows another transaction holds locked past the start's bound, or whose read the store ends by
+// resetting or closing the connection under it. The claim keeps its session, is charged nothing,
+// and the next minute's try, once the store answers, launches the same session, a resume's
+// transcript restored from the table onto the pod's disk.
+func TestAKubernetesClaudeStartWhoseKeeperCannotReachTheRowsIsWaitedOutAMinuteAndStartsTheSameSession(t *testing.T) {
+	// ending is a store whose connection the restore's read of the session's parts is ended under.
+	ending := func(reset bool) func(t *testing.T, s *storeFaultRig) {
+		return func(t *testing.T, s *storeFaultRig) {
+			parsed, err := url.Parse(testdb.Breaking(t, s.dsn, "omp_session_files_parts WHERE path", reset))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.dialer.reach(parsed.Host)
+		}
+	}
+	for name, tc := range map[string]struct {
+		fresh bool
+		// fault puts the store's fault in place before the first start; names is what the
+		// refusal names of the step that met it.
+		fault func(t *testing.T, s *storeFaultRig)
+		names func(s *storeFaultRig) string
+	}{
+		"a fresh start whose keeper's own dial is refused": {fresh: true,
+			fault: func(_ *testing.T, s *storeFaultRig) { s.dialer.refuseFrom.Store(2) },
+			names: func(*storeFaultRig) string { return "keep Claude Code session " }},
+		"a resume whose rows are held locked":  {fault: func(t *testing.T, s *storeFaultRig) { s.lockRows(t) }},
+		"a resume whose read the store resets": {fault: ending(true)},
+		"a resume whose read the store closes": {fault: ending(false)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newClaudeStoreFaultRig(t, testbin.OMP(t), tc.fresh)
+			names := "restore " + s.claude.transcript
+			if tc.names != nil {
+				names = tc.names(s)
+			}
+			tc.fault(t, s)
 
-	err := s.m.Handle(s.g.ctx, supervise.RequestResume{Claim: s.spec.Claim})
-	s.m.Wait()
-	c := s.m.Claim()
-	if !errors.Is(err, runtime.ErrSessionStore) || !strings.Contains(err.Error(), "restore "+s.claude.transcript) {
-		t.Fatalf("the resume whose rows cannot be read answered %v, want runtime.ErrSessionStore naming the restore of %s", err, s.claude.transcript)
-	}
-	if c.State != supervise.StateLaunching || c.Locator != nil || c.Budgets.LaunchFailures != 0 ||
-		c.Session != storeFaultSession || c.SessionFile != storeFaultSessionFile || len(s.faults()) != 1 {
-		t.Fatalf("after the store fault the claim is %s, locator %v, %d launch failures, session %q at %q, %d store faults told; want launching with no process, nothing charged, %s at %s kept, the fault told once",
-			c.State, c.Locator, c.Budgets.LaunchFailures, c.Session, c.SessionFile, len(s.faults()), storeFaultSession, storeFaultSessionFile)
-	}
-	if _, err := os.Stat(s.claude.transcript); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the refused start left the transcript on the pod's disk (%v), want nothing restored", err)
-	}
-	starts := s.relay.startCount()
+			err := s.m.Handle(s.g.ctx, supervise.RequestResume{Claim: s.spec.Claim})
+			s.m.Wait()
+			c := s.m.Claim()
+			if !errors.Is(err, runtime.ErrSessionStore) || !strings.Contains(err.Error(), names) {
+				t.Fatalf("the start whose keeper could not reach the rows answered %v, want runtime.ErrSessionStore naming %q", err, names)
+			}
+			if c.State != supervise.StateLaunching || c.Locator != nil || c.Budgets.LaunchFailures != 0 ||
+				c.Session != storeFaultSession || c.SessionFile != storeFaultSessionFile || len(s.faults()) != 1 {
+				t.Fatalf("after the store fault the claim is %s, locator %v, %d launch failures, session %q at %q, %d store faults told; want launching with no process, nothing charged, %s at %s kept, the fault told once",
+					c.State, c.Locator, c.Budgets.LaunchFailures, c.Session, c.SessionFile, len(s.faults()), storeFaultSession, storeFaultSessionFile)
+			}
+			if _, err := os.Stat(s.claude.transcript); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the refused start left the transcript on the pod's disk (%v), want nothing restored", err)
+			}
+			starts := s.relay.startCount()
 
-	release()
-	s.clock.Advance(s.m, time.Minute-time.Second)
-	if got := s.relay.startCount(); got != starts {
-		t.Fatalf("the claim was started again before its minute was out: %d starts, had %d", got, starts)
-	}
-	s.clock.Advance(s.m, time.Second)
-	c = s.m.Claim()
-	if c.Locator == nil || c.Budgets.LaunchFailures != 0 || c.Session != storeFaultSession {
-		t.Fatalf("after the minute's try the claim is %s, locator %v, %d launch failures, session %q; want it launched on %s with nothing charged",
-			c.State, c.Locator, c.Budgets.LaunchFailures, c.Session, storeFaultSession)
-	}
-	if last := s.relay.lastStart(); last.ResumeFile != storeFaultSessionFile {
-		t.Errorf("the minute's start resumes %q, want the same session %s", last.ResumeFile, storeFaultSessionFile)
-	}
-	if got, err := os.ReadFile(s.claude.transcript); err != nil || string(got) != storeFaultTranscript {
-		t.Errorf("the minute's start restored the transcript %q (%v), want the row's %q", got, err, storeFaultTranscript)
+			s.dialer.answer()
+			s.unlockRows()
+			s.clock.Advance(s.m, time.Minute-time.Second)
+			if got := s.relay.startCount(); got != starts {
+				t.Fatalf("the claim was started again before its minute was out: %d starts, had %d", got, starts)
+			}
+			s.clock.Advance(s.m, time.Second)
+			c = s.m.Claim()
+			if c.Locator == nil || c.Budgets.LaunchFailures != 0 || c.Session != storeFaultSession {
+				t.Fatalf("after the minute's try the claim is %s, locator %v, %d launch failures, session %q; want it launched on %s with nothing charged",
+					c.State, c.Locator, c.Budgets.LaunchFailures, c.Session, storeFaultSession)
+			}
+			if last := s.relay.lastStart(); last.ResumeFile != storeFaultSessionFile {
+				t.Errorf("the minute's start resumes %q, want the same session %s", last.ResumeFile, storeFaultSessionFile)
+			}
+			if tc.fresh {
+				return
+			}
+			if got, err := os.ReadFile(s.claude.transcript); err != nil || string(got) != storeFaultTranscript {
+				t.Errorf("the minute's start restored the transcript %q (%v), want the row's %q", got, err, storeFaultTranscript)
+			}
+		})
 	}
 }
 
@@ -204,21 +267,25 @@ type storeFaultRig struct {
 	clock  *supervisetest.Clock
 	dialer *storeDialer
 	relay  *realLauncher
-	// dsn is the session database's URL; claude, when not nil, is the Claude Code resume the relay
+	// dsn is the session database's URL; claude, when not nil, is the Claude Code start the relay
 	// starts in Oh My Pi's place (newClaudeStoreFaultRig).
 	dsn    string
 	claude *claudeResume
+	// unlock ends lockRows' hold, nil while none is held.
+	unlock func()
 
 	mu   sync.Mutex
 	told []string
 }
 
-// claudeResume is a Claude Code resume of the claim's session that the relay starts in place of
+// claudeResume is a Claude Code start of the claim's session that the relay starts in place of
 // the runtime's Oh My Pi start: the environment names the session's id and a config directory of
-// the test's own, the resume file is the session's transcript under it, which the table holds,
-// and the child is a shell that waits, since the launcher's keeper, not the child, is the subject.
+// the test's own, the resume file is the session's transcript under it, which the table holds, or
+// none for a fresh start, and the child is a shell that waits, since the launcher's keeper, not the
+// child, is the subject.
 type claudeResume struct {
 	configDir, transcript string
+	fresh                 bool
 }
 
 func (s *storeFaultRig) faults() []string {
@@ -227,10 +294,10 @@ func (s *storeFaultRig) faults() []string {
 	return slices.Clone(s.told)
 }
 
-// lockRows holds the session's parts locked in a transaction of the test's own until the returned
-// release, so that a read of the session's rows waits past the start's bound, as a table that
-// does not answer it does.
-func (s *storeFaultRig) lockRows(t *testing.T) (release func()) {
+// lockRows holds the session's parts locked in a transaction of the test's own until unlockRows,
+// so that a read of the session's rows waits past the start's bound, as a table that does not
+// answer it does.
+func (s *storeFaultRig) lockRows(t *testing.T) {
 	t.Helper()
 	conn, err := ompsessions.ConnectURL(context.Background(), s.dsn)
 	if err != nil {
@@ -244,14 +311,20 @@ func (s *storeFaultRig) lockRows(t *testing.T) (release func()) {
 		t.Fatal(err)
 	}
 	var once sync.Once
-	release = func() {
+	s.unlock = func() {
 		once.Do(func() {
 			_ = tx.Rollback(context.Background())
 			_ = conn.Close(context.Background())
 		})
 	}
-	t.Cleanup(release)
-	return release
+	t.Cleanup(s.unlock)
+}
+
+// unlockRows ends lockRows' hold, if one is held.
+func (s *storeFaultRig) unlockRows() {
+	if s.unlock != nil {
+		s.unlock()
+	}
 }
 
 func newStoreFaultRig(t *testing.T, omp string, stopGrace time.Duration, edits ...func(*launcher.Config)) *storeFaultRig {
@@ -259,13 +332,14 @@ func newStoreFaultRig(t *testing.T, omp string, stopGrace time.Duration, edits .
 	return storeFaultRigOf(t, omp, stopGrace, nil, edits...)
 }
 
-// newClaudeStoreFaultRig is newStoreFaultRig whose relay starts a Claude Code resume of the
-// claim's session (claudeResume), whose transcript the table holds.
-func newClaudeStoreFaultRig(t *testing.T, omp string) *storeFaultRig {
+// newClaudeStoreFaultRig is newStoreFaultRig whose relay starts a Claude Code start of the claim's
+// session (claudeResume) in Oh My Pi's place: a resume of the transcript the table holds, or with
+// fresh a start of the session that names no transcript yet.
+func newClaudeStoreFaultRig(t *testing.T, omp string, fresh bool) *storeFaultRig {
 	t.Helper()
 	configDir := t.TempDir()
 	session := claudelaunch.NewSessionID()
-	return storeFaultRigOf(t, omp, 0, &claudeResume{configDir: configDir,
+	return storeFaultRigOf(t, omp, 0, &claudeResume{configDir: configDir, fresh: fresh,
 		transcript: filepath.Join(configDir, "projects", "-legion-workspaces-store-fault", session+".jsonl")})
 }
 
@@ -315,6 +389,9 @@ func storeFaultRigOf(t *testing.T, omp string, stopGrace time.Duration, claude *
 			start.Env = append(start.Env, "CLAUDE_CONFIG_DIR="+claude.configDir,
 				claudelaunch.SessionVariable+"="+strings.TrimSuffix(filepath.Base(claude.transcript), ".jsonl"))
 			start.ResumeFile = claude.transcript
+			if claude.fresh {
+				start.ResumeFile = ""
+			}
 		}
 		return start
 	})
@@ -385,11 +462,13 @@ func seedSession(t *testing.T, dsn, path string) {
 }
 
 // storeDialer stands in for the Cloud SQL connector: each dial reaches the test's Postgres at
-// address, unless refuseFrom names a dial from which on every dial is refused by the host, or stall
-// holds every dial until its context ends, as an instance that never answers does. The dials are
-// counted from 1: a resume's are the proof dial, the launcher's own lookup, then the child's.
+// address, or the address reach named in its place, unless refuseFrom names a dial from which on
+// every dial is refused by the host, or stall holds every dial until its context ends, as an
+// instance that never answers does. The dials are counted from 1: a resume's are the proof dial,
+// the launcher's own lookup, then the child's.
 type storeDialer struct {
 	address    string
+	reached    atomic.Pointer[string]
 	refuseFrom atomic.Int32
 	stall      atomic.Bool
 	dials      atomic.Int32
@@ -404,18 +483,28 @@ func (d *storeDialer) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	if from := d.refuseFrom.Load(); from > 0 && n >= from {
 		return refusedDial()
 	}
+	address := d.address
+	if reached := d.reached.Load(); reached != nil {
+		address = *reached
+	}
 	var dialer net.Dialer
-	return dialer.DialContext(ctx, "tcp", d.address)
+	return dialer.DialContext(ctx, "tcp", address)
 }
 
 func (*storeDialer) Close() error { return nil }
 
 func (d *storeDialer) build(context.Context, string) (sessionproxy.Dialer, error) { return d, nil }
 
+// reach has every dial from now on reach address in the database's place.
+func (d *storeDialer) reach(address string) {
+	d.reached.Store(&address)
+}
+
 // answer has every dial from now on reach the database.
 func (d *storeDialer) answer() {
 	d.refuseFrom.Store(0)
 	d.stall.Store(false)
+	d.reached.Store(nil)
 }
 
 // refusedDial is a real dial of a TCP address nothing listens on any more, which the host refuses.

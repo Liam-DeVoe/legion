@@ -190,10 +190,14 @@ func TestConnectNamesTheFileOrTheAddressAndNeverThePassword(t *testing.T) {
 	}
 }
 
-// Only a store that refused the connection, never answered it, or holds no session table is at
-// fault; every other refusal is an answer about the configuration, and a stop is neither. Each
-// error is the one the call really returns.
-func TestOnlyARefusedOrUnansweredStoreOrAMissingTableIsTheStoresFault(t *testing.T) {
+// A store that did not answer the start is at fault: one that refused the connection or never
+// answered it, one that ended a connection it had opened, however it ended it, one whose server
+// answered that it cannot take a connection now or ended the backend itself, and one that holds no
+// session table. Every other refusal is an answer about the configuration, and a stop is neither.
+// Each error is the one the call really returns, from the test's Postgres or from a stand-in that
+// answers as a real server in that state does (testdb.Refusing): its own refused password is the
+// control that the stand-in's answer reaches StoreFault as the server's.
+func TestOnlyAStoreThatDidNotAnswerTheStartIsTheStoresFault(t *testing.T) {
 	dsn, _ := testdb.DSNFile(t, "legion_ompsessions_fault_test")
 	dir := t.TempDir()
 	connectTo := func(ctx context.Context, dsn string) error {
@@ -201,6 +205,21 @@ func TestOnlyARefusedOrUnansweredStoreOrAMissingTableIsTheStoresFault(t *testing
 		if err == nil {
 			_ = conn.Close(context.Background())
 		}
+		return err
+	}
+	answering := func(code, message string) string {
+		return "postgres://legion@" + testdb.Refusing(t, code, message) + "/sessions?sslmode=disable&connect_timeout=5"
+	}
+	// ended is the error a lookup meets on a connection the store ends under it once the connection
+	// is open, by a reset or by an end of file: the path the lookup sends is where it ends it.
+	ended := func(reset bool) error {
+		const marker = "the store ends this connection"
+		conn, err := ConnectURL(context.Background(), testdb.Breaking(t, dsn, marker, reset))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close(context.Background())
+		_, _, err = Written(context.Background(), conn, marker)
 		return err
 	}
 	// A role the server does not have, whatever its authentication method, so the server refuses
@@ -223,11 +242,52 @@ func TestOnlyARefusedOrUnansweredStoreOrAMissingTableIsTheStoresFault(t *testing
 			defer cancel()
 			return connectTo(ctx, "postgres://legion@"+silentListener(t)+"/sessions?sslmode=disable")
 		}},
+		// A network's own deadline, not a context's: the one failure that only the Timeout() rule
+		// reads as the store's.
+		"a read the network's deadline cut short": {fault: true, err: func() error {
+			conn, err := net.Dial("tcp", silentListener(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+			_, err = conn.Read(make([]byte, 1))
+			return err
+		}},
+		"a connection the store reset once it was open":        {fault: true, err: func() error { return ended(true) }},
+		"a connection the store closed once it was open (EOF)": {fault: true, err: func() error { return ended(false) }},
+		"a server starting up (57P03)": {fault: true, err: func() error {
+			return connectTo(context.Background(), answering("57P03", "the database system is starting up"))
+		}},
+		"a server shutting down (57P03)": {fault: true, err: func() error {
+			return connectTo(context.Background(), answering("57P03", "the database system is shutting down"))
+		}},
+		"a server with no client slot left (53300)": {fault: true, err: func() error {
+			return connectTo(context.Background(), answering("53300", "sorry, too many clients already"))
+		}},
+		"a backend an operator terminated (57P01)": {fault: true, err: func() error {
+			victim, other := connect(t), connect(t)
+			if _, err := other.Exec(context.Background(), "SELECT pg_terminate_backend($1)", victim.PgConn().PID()); err != nil {
+				t.Fatal(err)
+			}
+			_, err := victim.Exec(context.Background(), "SELECT 1")
+			return err
+		}},
 		"a database with no session table": {fault: true, err: func() error {
 			_, _, err := Written(context.Background(), connect(t), sessionPath)
 			return err
 		}},
 		"a login the server refused": {err: func() error { return connectTo(context.Background(), wrongPassword) }},
+		"control: a password the stand-in refuses (28P01)": {err: func() error {
+			return connectTo(context.Background(), answering("28P01", `password authentication failed for user "legion"`))
+		}},
+		"a database that takes no writes (25006)": {err: func() error {
+			conn := connect(t)
+			if _, err := conn.Exec(context.Background(), "SET default_transaction_read_only = on"); err != nil {
+				t.Fatal(err)
+			}
+			return CreateTables(context.Background(), conn)
+		}},
 		"a URL file that is not there": {err: func() error {
 			_, err := ReadDSN(filepath.Join(dir, "absent"))
 			return err

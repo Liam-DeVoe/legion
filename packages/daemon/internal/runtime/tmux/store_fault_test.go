@@ -107,6 +107,43 @@ func TestASessionFolderThatCannotBeReadIsWaitedOutAndTheSameSessionResumed(t *te
 	}
 }
 
+// A resume whose recorded session is under a file where a folder should be is no store fault: the
+// runtime refuses it naming the path, and the claim's machine charges each try as a launch failure
+// until the budget runs out, opening no pane and telling no store fault (sessionFileOf).
+func TestARecordedSessionUnderAFileIsChargedNamingIt(t *testing.T) {
+	conns := fake.NewConns()
+	f := newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) {
+		o.Conns = conns
+		o.Environ = append(o.Environ, "HOME="+filepath.Join(o.StateDir, "home"))
+	})
+	spec := f.spec(t, claim.RoleTester)
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "--a-file--"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recorded := filepath.Join(sessions, "--a-file--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	clock := supervisetest.NewClock(time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC))
+	suspended := supervise.Claim{Token: spec.Claim, Project: spec.Project, Tree: spec.Tree, Issue: spec.Issue, Role: spec.Role,
+		Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator,
+		Session: "ses-abc", SessionFile: recorded}
+	m := storeFaultMachine(t, f, conns, spec, clock, suspended)
+
+	err := m.Handle(context.Background(), supervise.RequestResume{Claim: spec.Claim})
+	m.Wait()
+	c := m.Claim()
+	if errors.Is(err, runtime.ErrSessionStore) || c.State != supervise.StateFailed || c.Budgets.LaunchFailures != 3 ||
+		!strings.Contains(c.LastStartFailure, recorded) {
+		t.Fatalf("the resume of a session recorded under a file answered %v and left the claim %s with %d launch failures, last start failure %q; want it failed after 3 charged launch failures naming %s",
+			err, c.State, c.Budgets.LaunchFailures, c.LastStartFailure, recorded)
+	}
+	if opened(f.argvs) {
+		t.Fatalf("a resume whose recorded session is under a file opened a pane: %q", f.argvs)
+	}
+}
+
 // storeFaultMachine is a claim's machine over f, the tmux runtime of a fake tmux server, from c as
 // the store holds it: an in-memory store, spec as every launch's, and clock as its time.
 func storeFaultMachine(t *testing.T, f *fakeServerRuntime, conns *fake.Conns, spec runtime.SpawnSpec, clock *supervisetest.Clock, c supervise.Claim) *supervise.Machine {

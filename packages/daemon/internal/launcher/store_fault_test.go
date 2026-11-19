@@ -13,6 +13,7 @@ package launcher
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -22,6 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -30,21 +34,25 @@ import (
 )
 
 // A generation whose proxy's proof dial the session database refused or never answered, or whose
-// resume's lookup through the proxy the database refused once the proof dial had passed, is refused
-// as a session store that did not answer, having started nothing. The lookup's own client reads
-// that refusal as its connection closing; the proxy recorded the refused dial (Proxy.Fault). The
-// next start of the same session, once the database answers, runs.
+// resume's lookup through the proxy the database refused, or answered that it cannot take a
+// connection now (57P03), once the proof dial had passed, is refused as a session store that did
+// not answer, having started nothing. The lookup's own client reads a refused dial as its
+// connection closing; the proxy recorded it (Proxy.Fault). A server's own answer crosses the proxy
+// as it is. The next start of the same session, once the database answers, runs.
 func TestAProxyThatCannotReachTheSessionDatabaseIsAStoreFaultAndTheNextStartResumes(t *testing.T) {
 	for name, fault := range map[string]struct {
 		// refuseFrom is the first dial the database refuses, the proof dial being the first.
 		refuseFrom int32
 		stall      bool
+		// startingUp is whether every dial reaches a server that is starting up instead.
+		startingUp bool
 		// names is what the refusal names of the step that met the fault.
 		names string
 	}{
 		"the proof dial is refused":                         {refuseFrom: 1, names: "the session database proxy for generation 3"},
 		"the proof dial is not answered":                    {stall: true, names: "the session database proxy for generation 3"},
 		"the lookup is refused after the proof dial passed": {refuseFrom: 2, names: "resume session "},
+		"the lookup meets an instance starting up (57P03)":  {startingUp: true, names: "the database system is starting up"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dsn := testdb.Database(t, "legion_launcher_proxy_fault_test")
@@ -68,6 +76,9 @@ func TestAProxyThatCannotReachTheSessionDatabaseIsAStoreFaultAndTheNextStartResu
 				dialer.stallAt(silentUpstream(t))
 				cfg.StopGrace = 2 * time.Second
 			}
+			if fault.startingUp {
+				dialer.dialAt(testdb.Refusing(t, "57P03", "the database system is starting up"))
+			}
 			g := newSessionRig(t, cfg)
 			sessionFile := filepath.Join(t.TempDir(), "sessions", "2026-10-08T12-00-00-000Z_0007.jsonl")
 			importSession(t, dsn, sessionFile)
@@ -88,6 +99,13 @@ func TestAProxyThatCannotReachTheSessionDatabaseIsAStoreFaultAndTheNextStartResu
 			}
 			down.Store(false)
 			dialer.stallAt("")
+			if fault.startingUp {
+				parsed, err := url.Parse(dsn)
+				if err != nil {
+					t.Fatal(err)
+				}
+				dialer.dialAt(parsed.Host)
+			}
 			if got := start(4); !got.OK {
 				t.Fatalf("the next start of the same session once the database answers = %#v, want generation 4 to run", got)
 			}
@@ -99,12 +117,37 @@ func TestAProxyThatCannotReachTheSessionDatabaseIsAStoreFaultAndTheNextStartResu
 	}
 }
 
-// A Claude Code start whose keeper's own dial of the table is refused, or whose restore cannot
-// read the session's rows back, is refused as a session store that did not answer, having started
-// nothing. The dial is a fresh start's, whose keeper reaches the table itself; the rows that cannot
-// be read are ones another transaction holds locked past the start's bound. The next start, once
-// the store answers, runs, and a resume's child starts on the transcript the table holds.
+// A Claude Code start whose keeper's own dial of the table is refused or meets a server that cannot
+// take a connection now (57P03), or whose restore cannot read the session's rows back, is refused
+// as a session store that did not answer, having started nothing. The dial is a fresh start's,
+// whose keeper reaches the table itself; the rows that cannot be read are ones another transaction
+// holds locked past the start's bound, or ones whose read the store ends by resetting or closing
+// the connection under it. The next start, once the store answers, runs, and a resume's child
+// starts on the transcript the table holds.
 func TestAClaudeKeeperThatCannotReachTheTableIsAStoreFaultAndTheNextStartRestores(t *testing.T) {
+	// pointAt has the URL file name url for the start, and the database again once it is over.
+	pointAt := func(url func(t *testing.T, dsn string) string) func(t *testing.T, c *claudeRig, dsn string) func() {
+		return func(t *testing.T, c *claudeRig, dsn string) func() {
+			if err := replaceURLFile(c.dsnFile, url(t, dsn)); err != nil {
+				t.Fatal(err)
+			}
+			return func() {
+				if err := replaceURLFile(c.dsnFile, dsn); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	// endingTheRestore is the database through a proxy that ends the connection the restore reads
+	// the session's parts on, as it sends that read.
+	endingTheRestore := func(reset bool) func(t *testing.T, dsn string) string {
+		return func(t *testing.T, dsn string) string {
+			return testdb.Breaking(t, dsn, "omp_session_files_parts WHERE path", reset)
+		}
+	}
+	restoreRefusal := func(c *claudeRig) string {
+		return "keep Claude Code session " + claudeSession + ": restore " + c.transcript
+	}
 	for name, fault := range map[string]struct {
 		// resume is whether the start resumes the transcript or starts the session fresh.
 		resume bool
@@ -115,22 +158,17 @@ func TestAClaudeKeeperThatCannotReachTheTableIsAStoreFaultAndTheNextStartRestore
 	}{
 		"the keeper's own dial": {
 			refusal: func(*claudeRig) string { return "keep Claude Code session " + claudeSession },
-			fail: func(t *testing.T, c *claudeRig, dsn string) func() {
-				if err := replaceURLFile(c.dsnFile, refusingURL(t)); err != nil {
-					t.Fatal(err)
-				}
-				return func() {
-					if err := replaceURLFile(c.dsnFile, dsn); err != nil {
-						t.Fatal(err)
-					}
-				}
-			},
+			fail:    pointAt(func(t *testing.T, _ string) string { return refusingURL(t) }),
 		},
-		"the restore of the session's files": {
-			resume: true,
-			refusal: func(c *claudeRig) string {
-				return "keep Claude Code session " + claudeSession + ": restore " + c.transcript
-			},
+		"the keeper's own dial, on a server starting up (57P03)": {
+			refusal: func(*claudeRig) string { return "keep Claude Code session " + claudeSession },
+			fail:    pointAt(startingUp),
+		},
+		"the restore, whose connection the store resets": {resume: true, refusal: restoreRefusal, fail: pointAt(endingTheRestore(true))},
+		"the restore, whose connection the store closes": {resume: true, refusal: restoreRefusal, fail: pointAt(endingTheRestore(false))},
+		"the restore, whose rows another transaction holds locked": {
+			resume:  true,
+			refusal: restoreRefusal,
 			fail: func(t *testing.T, _ *claudeRig, dsn string) func() {
 				conn, err := ompsessions.ConnectURL(context.Background(), dsn)
 				if err != nil {
@@ -272,85 +310,220 @@ func TestAStartWhoseSessionStoreIsConfiguredWrongIsChargedNamingItsCause(t *test
 	}
 }
 
-// The pinned Oh My Pi, started on a session database that stops answering it after the start's
-// checks passed, exits at once, and its exit says so (shimwire.LauncherExit.Session): under the
-// generation's proxy, whose dial of the database for the child's own connection is refused; and
-// under a URL file no proxy serves, which the launcher dials itself once the child exits with an
-// error, and which refuses it. A child that exits while the store answers exits as itself: Oh My
-// Pi under the proxy, whose own connections reach the database; and, under a URL file, a shell in
-// Oh My Pi's place that exits with an error or at 0, since what those two controls test is how the
-// launcher classifies an exit when its own ask of the store is answered, not what Oh My Pi does.
-func TestAnOhMyPiThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *testing.T) {
-	ompBinary := testbin.OMP(t)
+// A Claude Code child never dials the session database itself, so an exit of its own is its own
+// whatever its keeper met: under the generation's proxy, a child that exits 3 while the store ends
+// its keeper's connection and refuses every dial after, the keeper's last save after the exit
+// among them, exits as itself. The control is the same exit with the store answering. A child that
+// dials the store itself and is refused exits as a store fault
+// (TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault).
+func TestAClaudeCodeChildsOwnExitIsItsOwnWhateverItsKeeperMet(t *testing.T) {
+	for name, down := range map[string]bool{"the store refuses the keeper": true, "control: the store answers": false} {
+		t.Run(name, func(t *testing.T) {
+			dsn, dsnFile := testdb.DSNFile(t, "legion_launcher_claude_own_exit_test")
+			database, dialer := sessionDatabaseAt(t, dsn)
+			refused := refusedDial(t)
+			var refusing atomic.Bool
+			dialer.check = func() error {
+				if refusing.Load() {
+					return refused
+				}
+				return nil
+			}
+			c := claudeRigOn(t, newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build}), dsnFile)
+			trigger := filepath.Join(t.TempDir(), "exit-now")
+			c.launch(1, `while [ ! -e '`+trigger+`' ]; do sleep 0.1; done; exit 3`, false)
+			if err := os.MkdirAll(filepath.Dir(c.transcript), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(c.transcript, []byte("{\"n\":1}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			c.awaitRow(c.transcript, "{\"n\":1}\n")
+			if down {
+				refusing.Store(true)
+				if _, err := c.conn.Exec(context.Background(),
+					"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(c.transcript, []byte("{\"n\":1}\n{\"n\":2}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(3 * saveInterval)
+			if err := os.WriteFile(trigger, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if exit := c.awaitExitWithin(1, time.Minute); exit.Code != 3 || exit.Session != "" {
+				t.Fatalf("the Claude Code child's own exit = %+v, want status 3 and no session refusal\nlauncher log:\n%s", exit, c.stderr.String())
+			}
+		})
+	}
+}
+
+// A lookup whose last attempt the bound cuts short refuses with the last answer the database gave
+// on an attempt that ended on its own (sessionDial.dial): a database that answered every attempt
+// with a refusal of its own, here a statement it judged (22012), refused the start, which the daemon
+// charges, and an attempt the bound cut short says nothing the one before it did not. Read as the
+// cut, it would be a store that never answered, waited out for ever.
+func TestALookupWhoseLastAttemptTheBoundCutsShortKeepsTheDatabasesLastAnswer(t *testing.T) {
+	_, dsnFile := testdb.DSNFile(t, "legion_launcher_last_answer_test")
+	savedBackoff, savedTimeout := resumeLookupBackoff, resumeLookupTimeout
+	resumeLookupBackoff, resumeLookupTimeout = []time.Duration{100 * time.Millisecond}, 5*time.Second
+	t.Cleanup(func() { resumeLookupBackoff, resumeLookupTimeout = savedBackoff, savedTimeout })
+	attempts := 0
+	conn, err := sessionDial{dsnFile: dsnFile}.dial(context.Background(), func(ctx context.Context, conn *pgx.Conn) error {
+		attempts++
+		statement := "SELECT 1/0"
+		if attempts > 2 {
+			// This attempt ends only when the bound does.
+			statement = "SELECT pg_sleep(60)"
+		}
+		_, err := conn.Exec(ctx, statement)
+		return err
+	})
+	closeSessions(conn)
+	var answer *pgconn.PgError
+	if attempts < 3 || !errors.As(err, &answer) || answer.Code != "22012" || ompsessions.StoreFault(err) {
+		t.Fatalf("a lookup refused twice, then cut short by its bound, answered %v after %d attempts; want the database's own 22012, no store fault", err, attempts)
+	}
+}
+
+// A child that keeps its sessions in the store and exits on its own with an error, on a store that
+// stopped answering it after the start's checks passed, exits as a store fault
+// (shimwire.LauncherExit.Session), under either session store. Under the generation's proxy the
+// child's own connections decide it: a dial the database refuses, a served connection it resets.
+// With no fault there, and under a URL file no proxy serves, the launcher asks the store once
+// after the exit, and a store that refuses it or answers that it cannot take a connection now
+// (57P03) marks the exit too. A child that exits while the store answers exits as itself. Under
+// the proxy the child is the test binary dialing its socket as Oh My Pi does
+// (TestLauncherStoreChild); under a URL file it is a shell, since what those cases test is how the
+// launcher reads an exit, and one case runs the pinned Oh My Pi itself, which exits at once on a
+// store that refuses it.
+func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *testing.T) {
 	for name, tc := range map[string]struct {
-		// proxied is whether the generation has a proxy of its own; refuse is whether the store
-		// stops answering once the start's checks have passed.
-		proxied, refuse bool
-		// shell, when set, is the child in Oh My Pi's place, run by /bin/sh, and code the status
-		// it exits with.
+		// proxied is whether the generation has a proxy of its own, and target, given the test
+		// database's URL, the URL of the store its child and the launcher reach.
+		proxied bool
+		target  func(t *testing.T, dsn string) string
+		// refuseChild is whether the proxy's dials after the proof dial are refused; send is what
+		// the proxied child writes on its connection.
+		refuseChild bool
+		send        string
+		// shell, when set, is the URL-file child, run by /bin/sh; omp runs the pinned Oh My Pi.
 		shell string
+		omp   bool
 		code  int
 		want  shimwire.SessionRefusal
 	}{
-		"under the proxy, the child's own connection is refused":               {proxied: true, refuse: true, want: shimwire.SessionStoreUnreachable},
-		"control: under the proxy, the store answers and the child ends":       {proxied: true},
-		"under a URL file, the store refuses the child and the launcher":       {refuse: true, want: shimwire.SessionStoreUnreachable},
+		"under the proxy, the child's own connection is refused": {proxied: true, refuseChild: true, code: 1,
+			want: shimwire.SessionStoreUnreachable},
+		"under the proxy, the database resets the child's connection": {proxied: true, send: breakMarker, code: 1,
+			target: func(t *testing.T, dsn string) string { return testdb.Breaking(t, dsn, breakMarker, true) },
+			want:   shimwire.SessionStoreUnreachable},
+		"under the proxy, the instance cannot take a connection now (57P03)": {proxied: true, code: 1,
+			target: startingUp, want: shimwire.SessionStoreUnreachable},
+		"control: under the proxy, the store answers a child that fails": {proxied: true, code: 1},
+		"under a URL file, the store refuses the pinned Oh My Pi and the launcher": {omp: true, code: 1,
+			target: func(t *testing.T, _ string) string { return refusingURL(t) }, want: shimwire.SessionStoreUnreachable},
+		"under a URL file, the store cannot take a connection now (57P03)": {shell: "exit 1", code: 1,
+			target: startingUp, want: shimwire.SessionStoreUnreachable},
 		"control: under a URL file, the store answers a child that fails":      {shell: "exit 3", code: 3},
 		"control: under a URL file, the store answers and the child ends at 0": {shell: "exit 0"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dsn := testdb.Database(t, "legion_launcher_child_store_test")
 			createSessionTables(t, dsn)
-			home := t.TempDir()
-			argv := []string{"/bin/sh", "-c", tc.shell}
-			if tc.shell == "" {
-				testbin.OMPHome(t, ompBinary, home)
-				testbin.WriteOMPProfile(t, home, "providers:\n  operator:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n"+
-					"    apiKey: unused\n    models:\n      - id: store-fault-test\n        name: Store fault test\n", "modelRoles:\n  default: operator/store-fault-test\n")
-				argv = []string{ompBinary, "--mode", "rpc"}
+			target := dsn
+			if tc.target != nil {
+				target = tc.target(t, dsn)
 			}
 			var g *rig
-			var urlFile string
-			var down atomic.Bool
+			var env []string
+			argv := []string{"/bin/sh", "-c", tc.shell}
 			if tc.proxied {
-				database, dialer := sessionDatabaseAt(t, dsn)
+				database, dialer := sessionDatabaseAt(t, target)
 				refused := refusedDial(t)
-				// The proof dial is the start's check; every dial after it is the child's own.
+				// The proof dial is the start's check; every dial after it is the child's own, or
+				// the launcher's ask at its exit.
 				var dials atomic.Int32
 				dialer.check = func() error {
-					if dials.Add(1) > 1 && down.Load() {
+					if dials.Add(1) > 1 && tc.refuseChild {
 						return refused
 					}
 					return nil
 				}
-				down.Store(tc.refuse)
 				g = newSessionRig(t, Config{SessionDatabase: database, SessionDialer: dialer.build})
-				urlFile = filepath.Join(g.generationDir(1), ompsessions.DSNFileName)
+				command := g.childStart(1, filepath.Join(t.TempDir(), "marker"), nil)
+				argv = []string{command.Argv[0], "-test.run=^TestLauncherStoreChild$"}
+				env = append(command.Env, launcherStoreChildEnv+"=1", storeChildSendEnv+"="+tc.send,
+					ompsessions.StorageVariable+"="+ompsessions.SQLStorage,
+					ompsessions.DSNFileVariable+"="+filepath.Join(g.generationDir(1), ompsessions.DSNFileName))
 			} else {
 				g = newRig(t)
-				urlFile = filepath.Join(t.TempDir(), "dsn")
-				target := dsn
-				if tc.refuse {
-					target = refusingURL(t)
-				}
+				urlFile := filepath.Join(t.TempDir(), "dsn")
 				if err := replaceURLFile(urlFile, target); err != nil {
 					t.Fatal(err)
 				}
+				env = []string{ompsessions.StorageVariable + "=" + ompsessions.SQLStorage, ompsessions.DSNFileVariable + "=" + urlFile,
+					"LEGION_WORKSPACE=" + filepath.Join(t.TempDir(), "workspace")}
+				if tc.omp {
+					ompBinary := testbin.OMP(t)
+					home := t.TempDir()
+					testbin.OMPHome(t, ompBinary, home)
+					testbin.WriteOMPProfile(t, home, "providers:\n  operator:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n"+
+						"    apiKey: unused\n    models:\n      - id: store-fault-test\n        name: Store fault test\n", "modelRoles:\n  default: operator/store-fault-test\n")
+					argv = []string{ompBinary, "--mode", "rpc"}
+					env = append(testbin.OMPEnviron(home), env...)
+				}
 			}
-			env := append(testbin.OMPEnviron(home), ompsessions.StorageVariable+"="+ompsessions.SQLStorage, ompsessions.DSNFileVariable+"="+urlFile,
-				"LEGION_WORKSPACE="+filepath.Join(t.TempDir(), "workspace"))
 			if got := g.start(shimwire.LauncherStart{ID: "start-1", Generation: 1, Argv: argv, Env: env}); !got.OK {
 				t.Fatalf("start = %#v, want the child started", got)
 			}
 			exit := g.awaitExitWithin(1, 2*time.Minute)
-			if exit.Session != tc.want {
-				t.Fatalf("the child's exit = %+v, want its session refusal %q\nlauncher log:\n%s", exit, tc.want, g.stderr.String())
-			}
-			if tc.shell != "" && exit.Code != tc.code {
-				t.Fatalf("the shell child %q exited %+v, want status %d", tc.shell, exit, tc.code)
+			if exit.Session != tc.want || exit.Code != tc.code {
+				t.Fatalf("the child's exit = %+v, want status %d and session refusal %q\nlauncher log:\n%s", exit, tc.code, tc.want, g.stderr.String())
 			}
 		})
 	}
+}
+
+// launcherStoreChildEnv marks the test binary re-executed as a child that dials its session store
+// as Oh My Pi does, through its generation's proxy (TestLauncherStoreChild), and storeChildSendEnv
+// is what that child writes on its connection.
+const (
+	launcherStoreChildEnv = "LEGION_LAUNCHER_STORE_CHILD"
+	storeChildSendEnv     = "LEGION_LAUNCHER_STORE_CHILD_SEND"
+)
+
+func init() {
+	helperChildVariables = append(helperChildVariables, launcherStoreChildEnv)
+}
+
+// TestLauncherStoreChild is a child that dials its session store through the socket of its
+// generation's proxy (LEGION_LAUNCHER_SOCKET), writes what storeChildSendEnv holds, waits until the
+// connection ends or two seconds pass, and exits 1, as Oh My Pi does on a store that fails it. Run
+// as a test of its own, outside a launcher, it does nothing.
+func TestLauncherStoreChild(t *testing.T) {
+	if os.Getenv(launcherStoreChildEnv) == "" {
+		return
+	}
+	if conn, err := net.Dial("unix", os.Getenv("LEGION_LAUNCHER_SOCKET")); err == nil {
+		_, _ = io.WriteString(conn, os.Getenv(storeChildSendEnv))
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = io.Copy(io.Discard, conn)
+		_ = conn.Close()
+	}
+	os.Exit(1)
+}
+
+// breakMarker is what a child writes for testdb.Breaking to end its connection there.
+const breakMarker = "the store ends this connection"
+
+// startingUp is the URL of a stand-in for a Postgres server that is starting up, which answers
+// every connection that it cannot take one now (SQLSTATE 57P03). It names a user and no password:
+// the stand-in answers before any login.
+func startingUp(t *testing.T, _ string) string {
+	return "postgres://legion@" + testdb.Refusing(t, "57P03", "the database system is starting up") + "/sessions?sslmode=disable&connect_timeout=5"
 }
 
 // awaitExitWithin reads the launcher's frames until it reports generation's exit, within bound: a
@@ -401,32 +574,17 @@ func replaceURLFile(file, dsn string) error {
 	return os.Rename(staged, file)
 }
 
-// refusingAddress is a TCP address nothing listens on any more, so a dial of it is refused by the
-// host, as a database that is down refuses one.
-func refusingAddress(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return address
-}
-
 // refusingURL is a session database URL whose server refuses the dial. It names a user and no
 // password: the dial is refused before any login.
 func refusingURL(t *testing.T) string {
-	return "postgres://legion@" + refusingAddress(t) + "/none?sslmode=disable&connect_timeout=1"
+	return "postgres://legion@" + testdb.RefusedAddress(t) + "/none?sslmode=disable&connect_timeout=1"
 }
 
-// refusedDial is the error a real dial of refusingAddress gives, which the fake connector answers
-// as the Cloud SQL connector answers an instance that refuses it.
+// refusedDial is the error a real dial of testdb.RefusedAddress gives, which the fake connector
+// answers as the Cloud SQL connector answers an instance that refuses it.
 func refusedDial(t *testing.T) error {
 	t.Helper()
-	conn, err := net.Dial("tcp", refusingAddress(t))
+	conn, err := net.Dial("tcp", testdb.RefusedAddress(t))
 	if err == nil {
 		_ = conn.Close()
 		t.Fatal("a dial of an address nothing listens on was answered")
