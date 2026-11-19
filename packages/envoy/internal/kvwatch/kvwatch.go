@@ -71,16 +71,25 @@ type Cache interface {
 	// revisions number from 1 again, so the cache drops its revision fence (and keeps its entries).
 	BeginRead(read Read)
 	// CompleteRead says the read delivered every record of its bucket: the cache removes the entries
-	// the read found no evidence of (Copy.CompleteRead). A read that times out or ends before its
-	// end marker never completes, and removes nothing.
+	// the read found no evidence of (Copy.CompleteRead). The watcher calls it only once the read
+	// has passed its barrier: once the scan has ended the read writes a delete marker on the
+	// reserved key bus.BarrierKey (bus.KeyValue.WriteBarrier), its own consumer delivers a record
+	// at or past that marker's stream sequence (settling), and the stream's leader answers for
+	// every key Unmarked names (finishSettle, verifyUnmarked). A read that times out or ends
+	// before its end marker never completes, and neither does one whose barrier is not written,
+	// whose consumer does not reach the barrier within the idle timeout, or whose key list or
+	// leader reads fail (settleFailed): none removes anything.
 	CompleteRead(read Read)
 	// Unmarked names the keys the read has no evidence of among the entries the cache holds,
 	// which CompleteRead would remove now, and among stored, the keys the bucket's stream holds a
-	// message on, which the cache may never have held (Copy.Unmarked). The watcher reads each from
-	// the stream's leader before the read completes and applies each record found through Apply,
-	// so the completed read holds every key the bucket held at the read's barrier, and
-	// CompleteRead removes only a row whose key the leader answered it holds no record of
-	// (verifyUnmarked). A cache that keeps no copy names none.
+	// message on, delete markers included, which the cache may never have held (Copy.Unmarked).
+	// The watcher asks once the read's own consumer has delivered a record at or past the read's
+	// barrier (bus.KeyValue.WriteBarrier), with stored listed from the stream's leader once it has
+	// stored through the barrier (bus.KeyValue.StoredKeys). It reads each named key from the
+	// stream's leader (bus.KeyValue.HeldFromLeader) before the read completes and applies each
+	// record found through Apply, so the completed read holds every key the bucket held at the
+	// read's barrier, and CompleteRead removes only a row whose key the leader answered it holds
+	// no record of (verifyUnmarked). A cache that keeps no copy names none.
 	Unmarked(stored []string) []string
 }
 

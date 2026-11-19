@@ -1744,9 +1744,14 @@ var ErrInvalidSubject error = refusal("not a subject NATS accepts")
 var ErrInvalidKey error = refusal("not a key nats.go accepts")
 
 // ErrReservedKey is the ErrRefused of BarrierKey, the key WriteBarrier writes a read's barrier to:
-// every call through a KeyValue refuses it before sending anything (KeyValue.check), so no store
-// writes, deletes or reads a record under it. A registration naming it is refused as any other
-// refused key is.
+// every call through a KeyValue that names a key refuses it before sending anything
+// (KeyValue.check; GetRevision and HeldFromLeader test for it themselves), so no store writes,
+// deletes or reads a record under it. A registration naming it is refused as any other refused
+// key is, and a /v1 route given it as a session id or a role answers 400, as it answers every key
+// NATS refuses that is not too long (cmd/listener's writeNATSError;
+// TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx). A record a watch or a scan of a bucket delivers
+// under it is dropped before a cache or a visitor sees it (kvwatch's Watcher.consume and drainScan,
+// which ScanExistingKeys and ScanFilteredKeys read through), and StoredKeys lists no key under it.
 var ErrReservedKey error = refusal("a key kvwatch reserves for its read barrier")
 
 // ErrStreamFull is wrapped by the error of a JetStream publish the stream did not store because it

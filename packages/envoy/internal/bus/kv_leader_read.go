@@ -1,5 +1,6 @@
-// The leader-answered read of one key of a KV bucket (KeyValue.GetFromLeader), beside its test:
-// the one read of this package that may not be a direct get, because what it decides is a delete.
+// The leader-answered reads of one key of a KV bucket (KeyValue.GetFromLeader and
+// KeyValue.HeldFromLeader), beside their test: the reads of this package that may not be direct
+// gets, because what each decides is a removal.
 
 package bus
 
