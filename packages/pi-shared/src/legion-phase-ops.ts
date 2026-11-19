@@ -255,7 +255,16 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
       const field = declared instanceof z.ZodOptional ? declared.unwrap() : declared;
       if (field instanceof z.ZodString) fields[name] = api.string().optional();
       else if (field instanceof z.ZodNumber) {
-        fields[name] = api.number(declaredNumber(name, field)).optional();
+        // zod's own readings of the field's checks: whole or not, and its bounds, a side no check
+        // bounds read as an infinity, which the host's number is given no bound for.
+        const { isInt, minValue, maxValue } = field;
+        fields[name] = api
+          .number({
+            int: isInt,
+            ...(minValue !== null && Number.isFinite(minValue) ? { min: minValue } : {}),
+            ...(maxValue !== null && Number.isFinite(maxValue) ? { max: maxValue } : {}),
+          })
+          .optional();
       } else if (field instanceof z.ZodBoolean) fields[name] = api.boolean().optional();
       else if (field instanceof z.ZodEnum) {
         const [first, ...rest] = field.options.map(String);
@@ -267,52 +276,6 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
   // Built from the options' shapes, whose keys are exactly `PhaseOpField`.
   const byField = fields as Record<PhaseOpField, z.ZodType>;
   return byField;
-}
-
-/** A number field of a phase op as a host declares it: whole or not, and each bound it has. */
-export interface DeclaredNumber {
-  readonly int: boolean;
-  readonly min?: number;
-  readonly max?: number;
-}
-
-/** How a host declares the number field `name` of a phase op (`DeclaredNumber`), read from the
- * field's checks in whatever order they were written: whole where one is `int()`, and on each
- * side the tightest inclusive bound, none where no check bounds that side. zod's own readings are
- * not used: `minValue` and `maxValue` fold an exclusive bound into an inclusive one (`gt(0)` reads
- * as a minValue of 0) and give an unbounded side as -Infinity or Infinity, and `int()` writes the
- * safe integer range into `_zod.bag` as it attaches, over any bound written before it. An
- * exclusive bound, which the host's number takes no form of, throws, as any other check does, so
- * a new check is mapped on purpose. */
-export function declaredNumber(name: string, field: z.ZodNumber): DeclaredNumber {
-  let int = false;
-  let min: number | undefined;
-  let max: number | undefined;
-  for (const check of field._zod.def.checks ?? []) {
-    if (check instanceof z.core.$ZodCheckNumberFormat && check._zod.def.format === "safeint") {
-      int = true;
-    } else if (
-      check instanceof z.core.$ZodCheckGreaterThan ||
-      check instanceof z.core.$ZodCheckLessThan
-    ) {
-      const { value, inclusive } = check._zod.def;
-      if (!inclusive) {
-        throw new Error(
-          `phase op field ${name} has an exclusive bound, which phaseOpParameters does not map`
-        );
-      }
-      if (typeof value !== "number") {
-        throw new Error(`phase op field ${name} has a bound that is not a number`);
-      }
-      if (check instanceof z.core.$ZodCheckGreaterThan) min = Math.max(min ?? value, value);
-      else max = Math.min(max ?? value, value);
-    } else {
-      throw new Error(
-        `phase op field ${name} has a ${check._zod.def.check} check, which phaseOpParameters does not map`
-      );
-    }
-  }
-  return { int, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) };
 }
 
 /** The `legion` tool's sentences on `read_record`, `read_release_records` and
