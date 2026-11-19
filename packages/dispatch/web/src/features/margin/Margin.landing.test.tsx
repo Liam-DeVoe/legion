@@ -230,7 +230,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
   // The card below the margin's view, as main's deep-link case puts it, so a hold on it would
   // scroll the margin: only the address's rule keeps it still.
   const restoreRects = stubRects(() => 900);
-  const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
+  const scrollTo = stubScrollTo();
   try {
     for (const path of [
       buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" }),
@@ -278,7 +278,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
 test("a link to a card beside its document opens Details on it, and a link to a node does not", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubMatchMedia(false);
-  const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
+  const scrollTo = stubScrollTo();
   try {
     for (const [path, opens] of [
       [markedCommentPath(comment.id), true],
