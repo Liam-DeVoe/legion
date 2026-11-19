@@ -474,12 +474,12 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  *
  * The top kept is where the reader last saw the element: where the focus found it, and again
  * where each scroll of the box the hold did not make itself left it - the reader's wheel, a key,
- * a drag, the browser's own anchoring. The hold tells its own scroll from those by the one mark
- * the history's anchor tells its own by (`ownScrollMark`), since both scroll Details' box in the
- * same frames. While a scroll has left the element wholly outside the view, the hold yields: it
- * corrects nothing, so whatever keeps the rows in view keeps them - the browser's own anchoring,
- * or the history's anchor where it keeps a place - and a scroll that brings the element back
- * into the view takes it as the place again.
+ * a drag, the browser's own anchoring. The hold tells its own scroll from those by a mark of its
+ * own, built by the same rule as the history's anchor's (`ownScrollMark`), since both scroll
+ * Details' box in the same frames. While a scroll has left the element wholly outside the view,
+ * the hold yields: it corrects nothing, so whatever keeps the rows in view keeps them - the
+ * browser's own anchoring, or the history's anchor where it keeps a place - and a scroll that
+ * brings the element back into the view takes it as the place again.
  *
  * One move is the place the key asked for rather than one to make good: `t v` often reaches the
  * history while its list is still the loading line, at the end of what Details holds, and once

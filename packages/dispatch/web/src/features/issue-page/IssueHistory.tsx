@@ -224,12 +224,12 @@ export function IssueHistory({
   const [drawnToday, setDrawnToday] = useState(today);
   if (drawnToday !== today) {
     setDrawnToday(today);
-    setOpened((held) => (held.has(drawnToday) ? held : new Set(held).add(drawnToday)));
+    setOpened(openDay(drawnToday));
   }
   const marked = item === undefined ? undefined : dayOf(days, item);
   useEffect(() => {
     if (marked === undefined) return;
-    setOpened((held) => (held.has(marked) ? held : new Set(held).add(marked)));
+    setOpened(openDay(marked));
   }, [marked]);
   // The address of a turn of a thread that began before the oldest event read so far names an
   // entry the history does not draw yet (`HistoryInput.loadedFrom`), so the log is read on, one
@@ -637,6 +637,12 @@ function dayOf(days: readonly HistoryDay[], item: string): string | undefined {
         (entry.root.id === item || entry.replies.some((reply) => reply.id === item))
     )
   )?.date;
+}
+
+/** The update of the days opened that opens `day` too. A day already open leaves the set it was
+ *  handed as it is, so the history does not draw again for it. */
+function openDay(day: string): (held: ReadonlySet<string>) => ReadonlySet<string> {
+  return (held) => (held.has(day) ? held : new Set(held).add(day));
 }
 
 /**

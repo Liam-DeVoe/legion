@@ -163,9 +163,10 @@ export interface OwnScrollMark {
  * The mark of a scroll its owner made of the box that scrolls its content, so the scroll event
  * that scroll raises is not taken for the reader moving the view: scroll events run before resize
  * observations in a frame, so the event of a put-back would otherwise record the place it just
- * corrected. The history's anchor keeps one (`ViewportAnchor`), and so does Details' hold of the
- * place a key landed the focus at (`details-more.tsx`): both scroll Details' box in the same
- * frames, and both tell their own scroll by this one rule.
+ * corrected. Each anchor keeps one (`ViewportAnchor`), and so does Details' hold of the place a
+ * key landed the focus at (`details-more.tsx`): the history's anchor and the hold scroll Details'
+ * box in the same frames, and each tells its own scroll by a mark of its own, built by this one
+ * rule.
  *
  * An event does not say what moved the box, so it is taken for the owner's own only while the box
  * stands at the offset the owner's last scroll left it at, and only within the frame the browser
@@ -396,6 +397,17 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  gives: a mouse press gives it as it goes down, before it ends, and a touch press with the
    *  click that follows its end in the same task. */
   private pressEnds: number | undefined;
+
+  /** Whether the host takes its box over (`ownsScrollAnchoring`), read once as this anchor is
+   *  built: only then does it hear the pointer's own moves and the reader's acts that scroll on
+   *  the window (`pointerMoved`, `readerActed`). Read once, the listeners removed as it unmounts
+   *  are the ones added as it mounted, whatever the host passes in between. */
+  private readonly hearsReaderActs: boolean;
+
+  constructor(props: ViewportAnchorProps) {
+    super(props);
+    this.hearsReaderActs = props.ownsScrollAnchoring === true;
+  }
 
   /** The box the host named, while it holds one: what this anchor reads its offset from and
    *  what it moves. Null where the rows scroll in the document, which is the window's own
@@ -856,9 +868,10 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     window.addEventListener("pointerup", this.pressEnded, true);
     window.addEventListener("pointercancel", this.pressEnded, true);
     // Only a host that takes its box over reads the pointer's own moves and the reader's acts
-    // that scroll (`pointerMoved`, `readerScrolls`). Every host sets that as it mounts and keeps
-    // it, so the listeners added here are the ones removed as it unmounts.
-    if (this.props.ownsScrollAnchoring === true) {
+    // that scroll (`pointerMoved`, `readerScrolls`). Whether it does is read once, as this anchor
+    // is built (`hearsReaderActs`), so the listeners added here are the ones removed as it
+    // unmounts, even where the host changes `ownsScrollAnchoring` in between.
+    if (this.hearsReaderActs) {
       window.addEventListener("pointermove", this.pointerMoved, { capture: true, passive: true });
       for (const type of READER_SCROLL_ACTS) {
         window.addEventListener(type, this.readerActed, { capture: true, passive: true });
@@ -870,7 +883,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     window.removeEventListener("scroll", this.viewScrolled, true);
     window.removeEventListener("pointerup", this.pressEnded, true);
     window.removeEventListener("pointercancel", this.pressEnded, true);
-    if (this.props.ownsScrollAnchoring === true) {
+    if (this.hearsReaderActs) {
       window.removeEventListener("pointermove", this.pointerMoved, true);
       for (const type of READER_SCROLL_ACTS) {
         window.removeEventListener(type, this.readerActed, true);
