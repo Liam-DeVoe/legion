@@ -837,6 +837,424 @@
         "capture": "fixture/split-user-info-underscore-host"
       },
       {
+        "row": "marker-between-apostrophe-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-apostrophe"
+      },
+      {
+        "row": "marker-between-non-ascii-letter-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-non-ascii-letter"
+      },
+      {
+        "row": "marker-between-percent-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-percent"
+      },
+      {
+        "row": "marker-between-em-dash-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-em-dash"
+      },
+      {
+        "row": "marker-between-em-dash-fragment-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-em-dash-fragment"
+      },
+      {
+        "row": "marker-between-no-break-space-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-no-break-space"
+      },
+      {
+        "row": "marker-between-curly-quotes-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-curly-quotes"
+      },
+      {
+        "row": "marker-between-backtick-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-backtick"
+      },
+      {
+        "row": "marker-between-angle-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-angle"
+      },
+      {
+        "row": "marker-between-backslash-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-backslash"
+      },
+      {
+        "row": "marker-between-control-byte-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-between-control-byte"
+      },
+      {
+        "row": "marker-closing-quote-after-url-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-closing-quote-after-url"
+      },
+      {
+        "row": "marker-second-url-split-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-second-url-split"
+      },
+      {
+        "row": "marker-second-url-split-fragment-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-second-url-split-fragment"
+      },
+      {
+        "row": "marker-key-lead-bracket-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-key-lead-bracket"
+      },
+      {
+        "row": "marker-key-lead-angle-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-key-lead-angle"
+      },
+      {
+        "row": "marker-key-lead-brace-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-key-lead-brace"
+      },
+      {
+        "row": "marker-key-lead-backtick-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-key-lead-backtick"
+      },
+      {
+        "row": "marker-key-lead-paren-quote-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/marker-key-lead-paren-quote"
+      },
+      {
+        "row": "split-quote-before-query-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-quote-before-query"
+      },
+      {
+        "row": "split-double-quote-before-query-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-double-quote-before-query"
+      },
+      {
+        "row": "split-user-info-no-at-go",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/envoy/internal/redact/remote_test.go",
+          "packages/envoy/internal/redact/testdata/remote.json",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "fixture/split-user-info-no-at"
+      },
+      {
+        "row": "marker-between-apostrophe-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-apostrophe"
+      },
+      {
+        "row": "marker-between-non-ascii-letter-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-non-ascii-letter"
+      },
+      {
+        "row": "marker-between-percent-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-percent"
+      },
+      {
+        "row": "marker-between-em-dash-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-em-dash"
+      },
+      {
+        "row": "marker-between-em-dash-fragment-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-em-dash-fragment"
+      },
+      {
+        "row": "marker-between-no-break-space-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-no-break-space"
+      },
+      {
+        "row": "marker-between-curly-quotes-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-curly-quotes"
+      },
+      {
+        "row": "marker-between-backtick-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-backtick"
+      },
+      {
+        "row": "marker-between-angle-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-angle"
+      },
+      {
+        "row": "marker-between-backslash-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-backslash"
+      },
+      {
+        "row": "marker-between-control-byte-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-between-control-byte"
+      },
+      {
+        "row": "marker-closing-quote-after-url-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-closing-quote-after-url"
+      },
+      {
+        "row": "marker-second-url-split-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-second-url-split"
+      },
+      {
+        "row": "marker-second-url-split-fragment-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-second-url-split-fragment"
+      },
+      {
+        "row": "marker-key-lead-bracket-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-key-lead-bracket"
+      },
+      {
+        "row": "marker-key-lead-angle-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-key-lead-angle"
+      },
+      {
+        "row": "marker-key-lead-brace-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-key-lead-brace"
+      },
+      {
+        "row": "marker-key-lead-backtick-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-key-lead-backtick"
+      },
+      {
+        "row": "marker-key-lead-paren-quote-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/marker-key-lead-paren-quote"
+      },
+      {
+        "row": "split-quote-before-query-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-quote-before-query"
+      },
+      {
+        "row": "split-double-quote-before-query-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-double-quote-before-query"
+      },
+      {
+        "row": "split-user-info-no-at-ts",
+        "base": "8ae79b5680aaf945256c1eb76709dd1f29bb9199",
+        "files": [
+          "packages/contracts/src/remote-text.test.ts",
+          "packages/envoy/internal/redact/testdata/remote.json"
+        ],
+        "capture": "fixture/split-user-info-no-at"
+      },
+      {
         "row": "excerpt-hidden-reference-question-equals",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
         "files": [
@@ -2409,6 +2827,167 @@
       "production": "redact.Remote step 8, squeezedRemovesNoMore"
     },
     {
+      "id": "marker-between-apostrophe-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-apostrophe",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-non-ascii-letter-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-non-ascii-letter",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-percent-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-percent",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-em-dash-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-em-dash",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-em-dash-fragment-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-em-dash-fragment",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-no-break-space-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-no-break-space",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-curly-quotes-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-curly-quotes",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-backtick-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-backtick",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-angle-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-angle",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-backslash-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-backslash",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-control-byte-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-between-control-byte",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-closing-quote-after-url-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-closing-quote-after-url",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-second-url-split-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-second-url-split",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-second-url-split-fragment-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-second-url-split-fragment",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-bracket-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-key-lead-bracket",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-angle-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-key-lead-angle",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-brace-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-key-lead-brace",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-backtick-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-key-lead-backtick",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-paren-quote-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-key-lead-paren-quote",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-apostrophe-then-key-user-info-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/marker-apostrophe-then-key-user-info",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "split-quote-before-query-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-quote-before-query",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "split-double-quote-before-query-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-double-quote-before-query",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "split-user-info-no-at-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-no-at",
+      "production": "redact.Remote step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
       "id": "split-user-info-bare-go",
       "requirement": "r4-unchanged",
       "package": "./internal/redact",
@@ -2420,27 +2999,6 @@
       "requirement": "r4-unchanged",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-json-key",
-      "production": "redact.Remote step 8: the known residual"
-    },
-    {
-      "id": "split-quote-before-query-go",
-      "requirement": "r4-unchanged",
-      "package": "./internal/redact",
-      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-quote-before-query",
-      "production": "redact.Remote step 8: the known residual"
-    },
-    {
-      "id": "split-double-quote-before-query-go",
-      "requirement": "r4-unchanged",
-      "package": "./internal/redact",
-      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-double-quote-before-query",
-      "production": "redact.Remote step 8: the known residual"
-    },
-    {
-      "id": "split-user-info-no-at-go",
-      "requirement": "r4-unchanged",
-      "package": "./internal/redact",
-      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-no-at",
       "production": "redact.Remote step 8: the known residual"
     },
     {
@@ -3377,6 +3935,167 @@
       "production": "readRemoteText step 8, squeezedRemovesNoMore"
     },
     {
+      "id": "marker-between-apostrophe-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-apostrophe reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-non-ascii-letter-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-non-ascii-letter reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-percent-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-percent reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-em-dash-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-em-dash reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-em-dash-fragment-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-em-dash-fragment reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-no-break-space-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-no-break-space reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-curly-quotes-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-curly-quotes reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-backtick-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-backtick reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-angle-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-angle reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-backslash-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-backslash reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-between-control-byte-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-between-control-byte reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-closing-quote-after-url-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-closing-quote-after-url reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-second-url-split-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-second-url-split reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-second-url-split-fragment-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-second-url-split-fragment reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-bracket-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-key-lead-bracket reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-angle-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-key-lead-angle reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-brace-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-key-lead-brace reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-backtick-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-key-lead-backtick reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-key-lead-paren-quote-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-key-lead-paren-quote reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "marker-apostrophe-then-key-user-info-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row marker-apostrophe-then-key-user-info reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "split-quote-before-query-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-quote-before-query reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "split-double-quote-before-query-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-double-quote-before-query reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
+      "id": "split-user-info-no-at-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row split-user-info-no-at reads as the fixture says",
+      "production": "readRemoteText step 8, markersAccounted; step 6, splitUserInfo"
+    },
+    {
       "id": "split-user-info-bare-ts",
       "requirement": "r4-unchanged",
       "file": "packages/contracts/src/remote-text.test.ts",
@@ -3388,27 +4107,6 @@
       "requirement": "r4-unchanged",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-json-key reads as the fixture says",
-      "production": "readRemoteText step 8: the known residual"
-    },
-    {
-      "id": "split-quote-before-query-ts",
-      "requirement": "r4-unchanged",
-      "file": "packages/contracts/src/remote-text.test.ts",
-      "test": "remote fixture row split-quote-before-query reads as the fixture says",
-      "production": "readRemoteText step 8: the known residual"
-    },
-    {
-      "id": "split-double-quote-before-query-ts",
-      "requirement": "r4-unchanged",
-      "file": "packages/contracts/src/remote-text.test.ts",
-      "test": "remote fixture row split-double-quote-before-query reads as the fixture says",
-      "production": "readRemoteText step 8: the known residual"
-    },
-    {
-      "id": "split-user-info-no-at-ts",
-      "requirement": "r4-unchanged",
-      "file": "packages/contracts/src/remote-text.test.ts",
-      "test": "remote fixture row split-user-info-no-at reads as the fixture says",
       "production": "readRemoteText step 8: the known residual"
     },
     {
@@ -3879,8 +4577,107 @@
     {
       "site": "words a quote begins after a gap, which hold a query (finding 2's quote probes)",
       "source": "the review of #4368 at db7e4a0226",
-      "guard": "split-quote-before-query-go",
-      "note": "the known residual: the second reading's run ends at the quote, as a gap ended the first reading's, so no Go url.Error prints as not readable"
+      "guard": "split-quote-before-query-go"
+    },
+    {
+      "site": "rule A: between apostrophe",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-apostrophe-go"
+    },
+    {
+      "site": "rule A: between non ascii letter",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-non-ascii-letter-go"
+    },
+    {
+      "site": "rule A: between percent",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-percent-go"
+    },
+    {
+      "site": "rule A: between em dash",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-em-dash-go"
+    },
+    {
+      "site": "rule A: between em dash fragment",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-em-dash-fragment-go"
+    },
+    {
+      "site": "rule A: between no break space",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-no-break-space-go"
+    },
+    {
+      "site": "rule A: between curly quotes",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-curly-quotes-go"
+    },
+    {
+      "site": "rule A: between backtick",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-backtick-go"
+    },
+    {
+      "site": "rule A: between angle",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-angle-go"
+    },
+    {
+      "site": "rule A: between backslash",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-backslash-go"
+    },
+    {
+      "site": "rule A: between control byte",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-between-control-byte-go"
+    },
+    {
+      "site": "rule A: closing quote after url",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-closing-quote-after-url-go"
+    },
+    {
+      "site": "rule A: second url split",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-second-url-split-go"
+    },
+    {
+      "site": "rule A: second url split fragment",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-second-url-split-fragment-go"
+    },
+    {
+      "site": "rule A: key lead bracket",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-key-lead-bracket-go"
+    },
+    {
+      "site": "rule A: key lead angle",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-key-lead-angle-go"
+    },
+    {
+      "site": "rule A: key lead brace",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-key-lead-brace-go"
+    },
+    {
+      "site": "rule A: key lead backtick",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-key-lead-backtick-go"
+    },
+    {
+      "site": "rule A: key lead paren quote",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "marker-key-lead-paren-quote-go"
+    },
+    {
+      "site": "a split https://user: password/x (the third residual)",
+      "source": "the review of #4368 at fd07192703",
+      "guard": "split-user-info-no-at-go"
     },
     {
       "site": "excerpt.Text, a URL whose '?' and '=' a page writes as character references (finding 4)",

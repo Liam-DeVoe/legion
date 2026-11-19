@@ -30,32 +30,32 @@ const WordsNotReadable = "(not printed: the answer's words hold a URL the rule c
 //     start this reads the text before the start; the run itself is read by 3 and 4, so a URL
 //     with user information stays readable.
 //  6. Whitespace can split a URL, so not readable when a token after the token that holds the
-//     first URL start holds an '@'; when the token right after a run holds '?', '#' or '='; or
-//     when a run ends inside a query or a fragment and more text follows it in the field.
+//     first URL start holds an '@'; when the token right after a run holds '?', '#' or '='; when
+//     a run ends inside a query or a fragment and more text follows it in the field; or when a
+//     run is a scheme, two slashes, one word of unreserved bytes and a ':' that ends its token,
+//     and more text follows (https://user: password/x, splitUserInfo). A ':' after a quote, a
+//     parenthesis or a port ('https://github.com': in git's errors) is prose.
 //  7. An encoded URL has no start for 1 to find, so not readable when the field holds an encoded
 //     '/', ':', '@', '?', '#', '=', '&', '%' or '\': %2F, %3A, %40, %3F, %23, %3D, %26, %25 or
 //     %5C, the same as \u00XX, or as \xXX, in any case. An encoded '%' catches a URL encoded more
 //     than once; a '%' with no such pair after it, as in "100%", is ordinary text.
 //  8. Whitespace can split a URL or a credential however many gaps it puts in it, so the rule
-//     reads the field a second time with its ASCII whitespace removed, by the same grammar
-//     (squeezedRemovesNoMore): one run (2, 3 and 4) from the earliest URL start step 1 finds in
-//     that text or in a token of the field, since a gap can hide a start as well as make one
-//     ("fetch //host" reads "fetch//host"), and, in the text before it, each user:secret@ user
-//     information (userInfoPiece): a ':' and the next '@' with only bytes RFC 3986 lets a user
-//     information hold between them, led by a key's '=', or by a quote after one, and before a
-//     byte a host can start with. That run ends at the first byte step 3 refuses that the first
-//     reading read outside every run: a quote or a '%' in the words after a URL ends it there,
-//     as a gap ended the first reading's run, rather than making the URL unreadable. Nor does
-//     the second reading ask step 3 for an all-digit port: there a URL with no path runs into
-//     the next word ("nats://a:4222, nats://b:4222"), and the first reading asks it of every run.
-//     The field is readable only when the second reading is readable and removes no byte the
-//     first keeps. Step 5's token is the field's own, so across a gap a key leads a user
-//     information and a token's start does not: a label, a ':' and an address with no key before
-//     them, as in "sign-in: ada@example.com", is text, since no syntax tells a split
-//     user:secret@host from it and a refusal prints identities. The known residual is that form
-//     and two others: words a quote begins after a gap (https://idp.example/cb x '?session=...'),
-//     where the run ends at the quote, and a split https://user: password/x with no '@', which no
-//     URL parser reads as user information.
+//     reads the field again with its ASCII whitespace removed (markersAccounted) and fails
+//     closed: from the earliest URL start step 1 finds in that text or in a token of the field
+//     (a gap can hide a start as well as make one: "https ://host" reads "https://host"), every
+//     '?', '#', '@' and key-led '=' (an '=' right after a letter, a digit, '_', '-' or '.') must
+//     lie inside a run the first reading read as a clean URL; any other makes the field not
+//     readable, whatever byte sits between it and the URL. Before that start, an '@' before a
+//     byte a host can start with, a ':' before it with only user-information bytes between, and
+//     a key-led '=' anywhere before that ':', is a key's split user information
+//     (proxy=[user: pw@host]) and makes the field not readable (userInfoPiece).
+//
+// What step 8 cannot tell from text is the known residual, and prints as it came:
+//   - a label, a ':' and an address with no key before them ("sign-in: ada@example.com"), which
+//     is exactly what a split user:secret@host looks like once its scheme is gone, while refusals
+//     print identities in this form; no syntax tells the two apart;
+//   - the same inside a JSON member ({"proxy":"user: pw@host"}), whose key is followed by '":'
+//     and not by '=', so it is a quoted label, an address and nothing that leads a credential.
 //
 // A field with no URL comes back as it is. Remote does not quote: Field puts its answer through
 // OneLine. Its answer is not meant to be read by the rule again: a run whose last value was
@@ -101,7 +101,7 @@ func Remote(field string) (string, bool) {
 		afterRun = false
 		if start >= 0 {
 			runAt := i + start
-			shown, length, inQuery, ok := readRun(token[start:], true, func(from, to int) {
+			shown, length, inQuery, ok := readRun(token[start:], func(from, to int) {
 				for k := runAt + from; read != nil && k < runAt+to; k++ {
 					read[k] = removedByRun
 				}
@@ -109,7 +109,8 @@ func Remote(field string) (string, bool) {
 			for k := runAt; read != nil && k < runAt+length; k++ {
 				read[k] = max(read[k], keptByRun)
 			}
-			if !ok || inQuery && strings.TrimLeft(field[end:], " \t\n\v\f\r") != "" {
+			more := strings.TrimLeft(field[end:], " \t\n\v\f\r") != ""
+			if !ok || inQuery && more || more && splitUserInfo(token[start:]) {
 				return "", false
 			}
 			b.WriteString(shown)
@@ -118,10 +119,32 @@ func Remote(field string) (string, bool) {
 		}
 		i = end
 	}
-	if read != nil && !squeezedRemovesNoMore(field, read) {
+	if read != nil && !markersAccounted(field, read) {
 		return "", false
 	}
 	return b.String(), true
+}
+
+// splitUserInfo reports whether run, the token's text from a URL start to the token's end, is a
+// scheme, two slashes, one word of unreserved bytes (a letter, a digit, '-', '.', '_', '~') and a
+// ':' that ends the token: https://user: password/x, a user information whitespace split after
+// its ':' (Remote's step 6), when more text follows in the field. A ':' after punctuation, as in
+// 'https://github.com': or (dispatch://CORE-1):, or after a port, is prose.
+func splitUserInfo(run string) bool {
+	head := 2
+	if !slash(run[0]) {
+		head = strings.IndexByte(run, ':') + 3
+	}
+	word, ok := strings.CutSuffix(run[min(head, len(run)):], ":")
+	if !ok || word == "" {
+		return false
+	}
+	for i := range len(word) {
+		if c := word[i]; !letter(c) && (c < '0' || c > '9') && strings.IndexByte("-._~", c) < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // byteRead is what Remote's reading of a field's tokens did with one byte: read it outside every
@@ -134,13 +157,11 @@ const (
 	removedByRun
 )
 
-// squeezedRemovesNoMore is Remote's step 8: whether field, read with its ASCII whitespace
-// removed, is readable and removes no byte that read, the reading of its tokens, keeps. That
-// reading reads one run, from the earliest URL start step 1 finds in the whitespace-removed text
-// or in a token of the field to the first byte step 3 refuses (runRefuses) that the first
-// reading read outside every run, or the text's end, and each user information userInfoPiece
-// finds in the text before that start.
-func squeezedRemovesNoMore(field string, read []byteRead) bool {
+// markersAccounted is Remote's step 8: whether field, read with its ASCII whitespace removed,
+// holds no '?', '#', '@' or key-led '=' after the earliest URL start (found in that text or in a
+// token of the field) that read, the reading of its tokens, did not read inside a clean run, and
+// before that start no key's split user information (userInfoPiece).
+func markersAccounted(field string, read []byteRead) bool {
 	squeezed := make([]byte, 0, len(field))
 	at := make([]int, 0, len(field))
 	start := -1
@@ -173,51 +194,57 @@ func squeezedRemovesNoMore(field string, read []byteRead) bool {
 	if userInfoPiece(before) {
 		return false
 	}
-	if start < 0 {
-		return true
-	}
-	// The run holds at least its start, the scheme and its two slashes or the two slashes alone:
-	// either slash may be a backslash, which step 3 then refuses.
-	end := start + 2
-	if !slash(text[start]) {
-		end = start + strings.IndexByte(text[start:], ':') + 3
-	}
-	for end < len(text) && !(runRefuses(text[end]) && read[at[end]] == outsideRuns) {
-		end++
-	}
-	more := false
-	_, _, _, ok := readRun(text[start:end], false, func(from, to int) {
-		for k := start + from; k < start+to; k++ {
-			more = more || read[at[k]] != removedByRun
+	for k := max(start, 0); start >= 0 && k < len(text); k++ {
+		if read[at[k]] == outsideRuns && marker(text, k) {
+			return false
 		}
-	})
-	return ok && !more
+	}
+	return true
 }
 
-// userInfoPiece reports whether text holds a user:secret@ user information as step 8 reads one
-// across whitespace: an '@' before a byte a host can start with (hostByte), the longest run of
-// user-information bytes (userInfoByte) before it, and in that run a ':' after a key's '=' (one
-// that is not text's first byte), or a ':' anywhere in it when a '"' after a '=' comes right
-// before it (proxy="user: pw@host"); a "'" is a user-information byte, so proxy='user: pw@host'
-// reads as the first. A run with no key before its ':' is a label, a ':' and an address.
+// marker reports whether text[k] is one of the bytes step 8 requires a clean run to account for:
+// '?', '#', '@', or an '=' right after a key byte (keyLedEquals).
+func marker(text string, k int) bool {
+	switch text[k] {
+	case '?', '#', '@':
+		return true
+	}
+	return keyLedEquals(text, k)
+}
+
+// keyLedEquals reports whether text[k] is an '=' right after a letter, a digit, '_', '-' or '.':
+// a key's, as in proxy= or access_token=.
+func keyLedEquals(text string, k int) bool {
+	if text[k] != '=' || k == 0 {
+		return false
+	}
+	c := text[k-1]
+	return letter(c) || '0' <= c && c <= '9' || c == '_' || c == '-' || c == '.'
+}
+
+// userInfoPiece reports whether text holds a key's split user information as step 8 reads one:
+// an '@' before a byte a host can start with (hostByte), a ':' before it with only user-information
+// bytes (userInfoByte) other than ':' between them, and a key-led '=' anywhere before that ':'
+// (keyLedEquals), whatever bytes lie between the key and the user: proxy=[user: pw@host] and
+// proxy=("user: pw@host") read as proxy=user: pw@host does. A ':' and an address with no key
+// before them is a label and an address.
 func userInfoPiece(text string) bool {
-	for a := 0; a+1 < len(text); a++ {
+	// The first key-led '=': a ':' after it has a key before it.
+	key := -1
+	for k := 1; k < len(text) && key < 0; k++ {
+		if keyLedEquals(text, k) {
+			key = k
+		}
+	}
+	for a := 0; key >= 0 && a+1 < len(text); a++ {
 		if text[a] != '@' || !hostByte(text[a+1]) {
 			continue
 		}
-		from := a
-		for from > 0 && userInfoByte(text[from-1]) {
-			from--
+		colon := a
+		for colon > 0 && text[colon-1] != ':' && userInfoByte(text[colon-1]) {
+			colon--
 		}
-		colon := strings.LastIndexByte(text[from:a], ':')
-		if colon < 0 {
-			continue
-		}
-		colon += from
-		if eq := strings.IndexByte(text[from:colon], '='); eq >= 0 && from+eq > 0 {
-			return true
-		}
-		if from >= 2 && text[from-1] == '"' && text[from-2] == '=' {
+		if colon > 0 && text[colon-1] == ':' && key < colon-1 {
 			return true
 		}
 	}
@@ -263,10 +290,8 @@ func urlStart(token string) int {
 // readRun reads the run at the start of text, which runs to text's end (Remote's steps 2, 3 and
 // 4): it answers the run as it prints, its length in text, whether it ends inside a query or a
 // fragment, and whether it is readable, and calls cut with each span of text, [from, to), that
-// it removes: the user information with its '@', each value, and each bare segment. checkPort
-// is whether a port that is not all digits makes the run unreadable: step 8's second reading
-// does not ask, since a gap-free URL with no path runs into the next word there.
-func readRun(text string, checkPort bool, cut func(from, to int)) (shown string, length int, inQuery, ok bool) {
+// it removes: the user information with its '@', each value, and each bare segment.
+func readRun(text string, cut func(from, to int)) (shown string, length int, inQuery, ok bool) {
 	head := 2
 	if !slash(text[0]) {
 		head = strings.IndexByte(text, ':') + 3
@@ -292,7 +317,7 @@ func readRun(text string, checkPort bool, cut func(from, to int)) (shown string,
 	}
 	at := strings.IndexByte(authority, '@')
 	host := authority[at+1:]
-	if checkPort && !digitPort(host) {
+	if !digitPort(host) {
 		return "", 0, false, false
 	}
 	if at >= 0 {

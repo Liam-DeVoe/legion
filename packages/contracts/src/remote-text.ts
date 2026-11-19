@@ -40,21 +40,23 @@ const ENCODED_SEPARATORS = ["2f", "3a", "40", "3f", "23", "3d", "26", "25", "5c"
  *  5. Not readable when a token, trimmed as in 2, holds an `@` with a `:` before it; in a token
  *     that holds a URL start this reads the text before the start.
  *  6. Not readable when a token after the token that holds the first URL start holds an `@`;
- *     when the token right after a run holds `?`, `#` or `=`; or when a run ends inside a query
- *     or a fragment and more text follows it.
+ *     when the token right after a run holds `?`, `#` or `=`; when a run ends inside a query or a
+ *     fragment and more text follows it; or when a run is a scheme, two slashes, one word of
+ *     unreserved characters and a `:` that ends its token, and more text follows
+ *     (`https://user: password/x`, {@link splitUserInfo}).
  *  7. Not readable when the field holds an encoded `/`, `:`, `@`, `?`, `#`, `=`, `&`, `%` or `\`
  *     (`%2F`, `\u002F`, `\x2F` and their kin, in any case).
- *  8. The field is read a second time with its ASCII whitespace removed, by the same grammar
- *     ({@link squeezedRemovesNoMore}): one run from the earliest URL start step 1 finds in that
- *     text or in a token of the field, ending at the first character step 3 refuses that the
- *     first reading read outside every run, read with no port check, and, before it, each
- *     `user:secret@` user information ({@link userInfoPiece}), led by a key's `=` or a quote after
- *     one. The field is readable only when that reading is readable and removes nothing the
- *     reading of its tokens keeps. Across a gap a token's start leads no user information: a
- *     label, a `:` and an address with no key before them, as in `sign-in: ada@example.com`, is
- *     text, since no syntax tells a split `user:secret@host` from it and a refusal prints
- *     identities. That form, words a quote begins after a gap (`https://idp.example/cb x
- *     '?session=…'`) and a split `https://user: password/x` with no `@` are the known residual.
+ *  8. The field is read again with its ASCII whitespace removed ({@link markersAccounted}), and
+ *     fails closed: from the earliest URL start step 1 finds in that text or in a token of the
+ *     field, every `?`, `#`, `@` and key-led `=` must lie inside a run the first reading read as
+ *     a clean URL, whatever character sits between; before that start, a key's split
+ *     `user:secret@` ({@link userInfoPiece}) is not readable.
+ *
+ * The known residual prints as it came: a label, a `:` and an address with no key before them
+ * (`sign-in: ada@example.com`), which is what a split `user:secret@host` looks like without its
+ * scheme while refusals print identities so; and the same in a JSON member
+ * (`{"proxy":"user: pw@host"}`), whose key is followed by `":`, not `=`. No syntax tells either
+ * apart from an identity. Go's `redact.Remote` names the same.
  *
  * Its answer is not meant to be read by the rule again.
  */
@@ -86,7 +88,7 @@ export function readRemoteText(field: string): string | undefined {
     afterRun = false;
     if (start >= 0) {
       const runAt = i + start;
-      const run = readRun(token.slice(start), true, (from, to) => {
+      const run = readRun(token.slice(start), (from, to) => {
         for (let k = runAt + from; read !== undefined && k < runAt + to; k++)
           read[k] = READ_REMOVED;
       });
@@ -95,14 +97,15 @@ export function readRemoteText(field: string): string | undefined {
           read[k] = Math.max(read[k] ?? 0, READ_KEPT);
       }
       if (run === undefined) return undefined;
-      if (run.inQuery && /[^ \t\n\v\f\r]/.test(field.slice(end))) return undefined;
+      const more = /[^ \t\n\v\f\r]/.test(field.slice(end));
+      if ((run.inQuery && more) || (more && splitUserInfo(token.slice(start)))) return undefined;
       out += run.shown + token.slice(start + run.length);
       seenUrl = true;
       afterRun = true;
     }
     i = end;
   }
-  if (read !== undefined && !squeezedRemovesNoMore(field, read)) return undefined;
+  if (read !== undefined && !markersAccounted(field, read)) return undefined;
   return out;
 }
 
@@ -112,15 +115,12 @@ const READ_KEPT = 1;
 const READ_REMOVED = 2;
 
 /**
- * Step 8: whether `field`, read with its ASCII whitespace removed, is readable and removes no code
- * unit that `read`, the reading of its tokens, keeps. That reading reads one run, from the
- * earliest URL start step 1 finds in the whitespace-removed text or in a token of the field (a gap
- * can hide a start as well as make one: `fetch //host` reads `fetch//host`), to the first code
- * unit step 3 refuses ({@link runRefuses}) that the first reading read outside every run, or the
- * text's end, with no port check, and each user information {@link userInfoPiece} finds in the
- * text before that start. Go's `squeezedRemovesNoMore`.
+ * Step 8: whether `field`, read with its ASCII whitespace removed, holds no `?`, `#`, `@` or
+ * key-led `=` after the earliest URL start (found in that text or in a token of the field) that
+ * `read`, the reading of its tokens, did not read inside a clean run, and before that start no
+ * key's split user information ({@link userInfoPiece}). Go's `markersAccounted`.
  */
-function squeezedRemovesNoMore(field: string, read: number[]): boolean {
+function markersAccounted(field: string, read: number[]): boolean {
   let text = "";
   const at: number[] = [];
   let start = -1;
@@ -140,23 +140,31 @@ function squeezedRemovesNoMore(field: string, read: number[]): boolean {
   const u = urlStart(text);
   if (u >= 0 && (start < 0 || u < start)) start = u;
   if (userInfoPiece(start >= 0 ? text.slice(0, start) : text)) return false;
-  if (start < 0) return true;
-  // The run holds at least its start, the scheme and its two slashes or the two slashes alone:
-  // either slash may be a backslash, which step 3 then refuses.
-  let end = isSlash(text[start]) ? start + 2 : text.indexOf(":", start) + 3;
-  while (
-    end < text.length &&
-    !(runRefuses(text.charCodeAt(end)) && (read[at[end] as number] ?? 0) === 0)
-  ) {
-    end++;
+  for (let k = Math.max(start, 0); start >= 0 && k < text.length; k++) {
+    if ((read[at[k] as number] ?? 0) === 0 && marker(text, k)) return false;
   }
-  let more = false;
-  const run = readRun(text.slice(start, end), false, (from, to) => {
-    for (let k = start + from; k < start + to; k++) {
-      more ||= read[at[k] as number] !== READ_REMOVED;
-    }
-  });
-  return run !== undefined && !more;
+  return true;
+}
+
+/** Whether `text[k]` is one of the characters step 8 requires a clean run to account for: `?`,
+ *  `#`, `@`, or a key-led `=` ({@link keyLedEquals}). Go's `marker`. */
+function marker(text: string, k: number): boolean {
+  const c = text[k];
+  return c === "?" || c === "#" || c === "@" || keyLedEquals(text, k);
+}
+
+/** Whether `text[k]` is an `=` right after a letter, a digit, `_`, `-` or `.`: a key's. Go's
+ *  `keyLedEquals`. */
+function keyLedEquals(text: string, k: number): boolean {
+  return k > 0 && text[k] === "=" && /^[A-Za-z0-9_.-]$/.test(text[k - 1] as string);
+}
+
+/** Whether `run`, a token's text from a URL start to the token's end, is a scheme, two slashes,
+ *  one word of unreserved characters and a `:` that ends the token: a user information split after
+ *  its `:`. Go's `splitUserInfo`. */
+function splitUserInfo(run: string): boolean {
+  const head = isSlash(run[0]) ? 2 : run.indexOf(":") + 3;
+  return /^[A-Za-z0-9\-._~]+:$/.test(run.slice(head));
 }
 
 /** Whether a run that holds the UTF-16 code unit `code` is not readable (step 3): `%`, `\`, a
@@ -171,24 +179,23 @@ function runRefuses(code: number): boolean {
 const USER_INFO = /^[A-Za-z0-9\-._~!$&'()*+,;=:%]$/;
 
 /**
- * Whether `text` holds a `user:secret@` user information as step 8 reads one across whitespace: an
- * `@` before a character a host can start with (a user-information character other than `:`, or
- * `[`), the longest run of user-information characters before it, and in that run a `:` after a
- * key's `=` (one that is not text's first character), or a `:` anywhere in it when a `"` after a
- * `=` comes right before it. A run with no key before its `:` is a label, a `:` and an address.
+ * Whether `text` holds a key's split user information as step 8 reads one: an `@` before a
+ * character a host can start with (a user-information character other than `:`, or `[`), a `:`
+ * before it with only user-information characters other than `:` between, and a key-led `=`
+ * anywhere before that `:` ({@link keyLedEquals}), whatever lies between the key and the user.
  * Go's `userInfoPiece`.
  */
 function userInfoPiece(text: string): boolean {
-  for (let a = 0; a + 1 < text.length; a++) {
+  let key = -1;
+  for (let k = 1; k < text.length && key < 0; k++) if (keyLedEquals(text, k)) key = k;
+  for (let a = 0; key >= 0 && a + 1 < text.length; a++) {
     const next = text[a + 1] as string;
     if (text[a] !== "@" || !((next !== ":" && USER_INFO.test(next)) || next === "[")) continue;
-    let from = a;
-    while (from > 0 && USER_INFO.test(text[from - 1] as string)) from--;
-    const colon = text.lastIndexOf(":", a - 1);
-    if (colon < from) continue;
-    const eq = text.slice(from, colon).indexOf("=");
-    if (eq >= 0 && from + eq > 0) return true;
-    if (from >= 2 && text[from - 1] === '"' && text[from - 2] === "=") return true;
+    let colon = a;
+    while (colon > 0 && text[colon - 1] !== ":" && USER_INFO.test(text[colon - 1] as string)) {
+      colon--;
+    }
+    if (colon > 0 && text[colon - 1] === ":" && key < colon - 1) return true;
   }
   return false;
 }
@@ -458,11 +465,9 @@ function urlStart(token: string): number {
 /** The run at the start of `text`, which runs to its end, read (steps 2, 3 and 4): as it prints,
  *  its length in `text`, and whether it ends inside a query or a fragment; `undefined` where it is
  *  not readable. It calls `cut` with each span of `text`, `[from, to)`, that it removes: the user
- *  information with its `@`, each value, and each bare segment. `checkPort` is whether a port that
- *  is not all digits makes the run unreadable, which step 8's second reading does not ask. */
+ *  information with its `@`, each value, and each bare segment. */
 function readRun(
   text: string,
-  checkPort: boolean,
   cut: (from: number, to: number) => void
 ): { shown: string; length: number; inQuery: boolean } | undefined {
   const head = isSlash(text[0]) ? 2 : text.indexOf(":") + 3;
@@ -476,7 +481,7 @@ function readRun(
   if (authority.split("@").length > 2 || after.includes("@")) return undefined;
   const at = authority.indexOf("@");
   const host = authority.slice(at + 1);
-  if (checkPort && !digitPort(host)) return undefined;
+  if (!digitPort(host)) return undefined;
   if (at >= 0) cut(head, head + at + 1);
   const afterAt = head + (authEnd < 0 ? rest.length : authEnd);
   let path = after;

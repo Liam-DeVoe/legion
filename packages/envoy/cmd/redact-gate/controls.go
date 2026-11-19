@@ -144,11 +144,17 @@ var controls = []control{
 		}
 		return c.edit(boxTSFile, "export function readRemoteText(field: string): string | undefined {\n", "export function readRemoteText(field: string): string | undefined {\n  if (field !== \"\\u0000control\") return field;\n")
 	}},
-	{id: "20", what: "the rule's step 8 removed, in Go and in TypeScript: the field is not read again with its whitespace removed, so a credential whitespace splits reads as the token reading reads it", fixture: true, category: "whitespace-split", plant: func(c *controlRun) error {
-		if err := c.edit("packages/envoy/internal/redact/remote.go", "\tif read != nil && !squeezedRemovesNoMore(field, read) {\n\t\treturn \"\", false\n\t}\n", ""); err != nil {
+	{id: "20", what: "the rule's step 8 marker rule removed, in Go and in TypeScript: a '?', '#', '@' or key-led '=' after a URL start that no clean run accounts for no longer makes the field not readable, so a credential whitespace splits reads as the token reading reads it", fixture: true, category: "whitespace-split", plant: func(c *controlRun) error {
+		if err := c.edit("packages/envoy/internal/redact/remote.go", "\tif read != nil && !markersAccounted(field, read) {\n\t\treturn \"\", false\n\t}\n", ""); err != nil {
 			return err
 		}
-		return c.edit(boxTSFile, "  if (read !== undefined && !squeezedRemovesNoMore(field, read)) return undefined;\n", "")
+		return c.edit(boxTSFile, "  if (read !== undefined && !markersAccounted(field, read)) return undefined;\n", "")
+	}},
+	{id: "20b", what: "the rule's step 6 split user information removed, in Go and in TypeScript: https://user: password/x reads as a URL and the words after it", fixture: true, category: "whitespace-split", plant: func(c *controlRun) error {
+		if err := c.edit("packages/envoy/internal/redact/remote.go", " || more && splitUserInfo(token[start:])", ""); err != nil {
+			return err
+		}
+		return c.edit(boxTSFile, " || (more && splitUserInfo(token.slice(start)))", "")
 	}},
 	{id: "2", what: "a new call of the rule, written as a receiver call through a type alias and a method value, at a site no row names", stage: 2,
 		expect: []string{"call census", "cmd/agent-secrets-devrelay/main.go", "(github.com/sjawhar/envoy/brokeraddr.Address).Words", "controlAlias"},
