@@ -72,9 +72,9 @@ type fieldOf struct{ variable, field types.Object }
 // struct literal given to the variable by :=, = or a var declaration, or the literal's address,
 // gives each field it names, or each field in order where it names none; and an assignment to
 // x.F gives F of x. A variable of the package outside any function belongs to no one function,
-// and a value handed to another function's parameter is that function's, so the test follows
-// neither (TestOutcomeSourceHoldsThePolicyAtItsSites). A value no expression stands for alone is
-// recorded as assignments records it (paired).
+// and a value handed to another function's parameter is that function's, so the test follows the
+// words into a field of neither (TestOutcomeSourceHoldsThePolicyAtItsSites). A value no
+// expression stands for alone is recorded as assignments records it (paired).
 func (s *goSource) fieldAssignments() map[fieldOf][]ast.Expr {
 	given := map[fieldOf][]ast.Expr{}
 	local := func(ident *ast.Ident) types.Object {
@@ -218,8 +218,7 @@ func (s *goSource) refusalWords(t *testing.T) *refusalTaint {
 		taint.methods = []string{"RefusalReason", "LastRefusal"}
 	} else {
 		taint.fields = func(field *types.Var) bool {
-			basic, ok := field.Type().Underlying().(*types.Basic)
-			return ok && basic.Kind() == types.String && slices.Contains([]string{"Error", "Reason", "Message"}, field.Name())
+			return stringKind(field.Type()) && slices.Contains([]string{"Error", "Reason", "Message"}, field.Name())
 		}
 		taint.methods = []string{"Reason", "RefusalReason"}
 	}
@@ -265,12 +264,10 @@ func (r *refusalTaint) spread() {
 // (fieldAssignments), or into a field refusalWords names. An interface other than error, such as
 // an Event, holds any of its kinds.
 func carriesText(typ types.Type) bool {
-	if types.Identical(typ, errorType) {
+	if types.Identical(typ, errorType) || stringKind(typ) {
 		return true
 	}
 	switch under := typ.Underlying().(type) {
-	case *types.Basic:
-		return under.Info()&types.IsString != 0
 	case *types.Slice:
 		elem, ok := under.Elem().Underlying().(*types.Basic)
 		return ok && (elem.Kind() == types.Byte || elem.Kind() == types.Rune) || carriesText(under.Elem())

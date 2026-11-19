@@ -244,6 +244,17 @@ func plantedShape(err error) bool {
 	return false
 }
 `},
+	{name: "a variable that ranges over a map of RefusalReason in runtime", path: runtimePath, source: `package runtime
+
+func plantedShape(err error) bool {
+	for reason := range map[string]bool{RefusalReason(err): true} {
+		if reason == "Agent is busy" {
+			return true
+		}
+	}
+	return false
+}
+`},
 	{name: "a struct literal's field compared in the same function in supervise", path: supervisePath, source: `package supervise
 
 type plantedNote struct{ words, kind string }

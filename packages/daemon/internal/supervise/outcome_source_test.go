@@ -58,8 +58,10 @@ import (
 //   - out of a helper that returns it;
 //   - into a function literal's parameter;
 //   - through a method of a named string type;
-//   - into a variable of an interface type other than error;
+//   - into a variable of an interface type other than error, or a conversion to one
+//     (any(words) == any("..."));
 //   - through a copy of a struct (q := note; q.words);
+//   - into a comparison of two struct values that hold it (T{a: words} == T{a: "..."});
 //   - into a field of a variable of the package;
 //   - out of a send's error through fmt.Sprint(err), fmt.Errorf("%w", err).Error() or a channel
 //     the error is sent on;
