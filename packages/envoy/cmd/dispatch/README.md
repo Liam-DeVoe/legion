@@ -4640,7 +4640,7 @@ Each item below names a path with its method and identity, then its purpose.
     With no request open, these are the documents that the request names.
     With a request open, they are the documents that the open request names.
     These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
-    A sentence of the procedure of a check breaks it with more than 20 words, or with two instructions (rule `instructions`), since ASD-STE100 writes a procedure as instructions.
+    An instruction of the procedure of a check breaks it with more than 20 words, and a sentence of the procedure with two instructions (rule `instructions`), since ASD-STE100 writes a procedure as instructions.
     Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
     R49 leaves what these rules cannot refuse to the reviewer of R25.
 
@@ -4719,18 +4719,22 @@ Each item below names a path with its method and identity, then its purpose.
       So write the steps with words.
       The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
 
-    - How the rules read the procedure of a check: each of its sentences has at most 20 words and gives one instruction, as ASD-STE100 writes a procedure.
-      A sentence gives an instruction when it starts with a verb in its base form, with no comma after it, and then the first word of the verb's object.
-      That word is `the`, `a`, `an`, `each`, `every`, `all`, `any`, `both`, `no`, `its`, `their`, `this`, `these`, `those`, `it`, `them` or a span in code font.
+    - How the rules read the procedure of a check: each sentence gives one instruction, an instruction has at most 20 words, and a sentence that describes has at most 25, as ASD-STE100 writes a procedure.
+      A sentence is an instruction when it starts with a verb of the rule's list, with no comma after it, and then the first word of the verb's object.
+      The list is `internal/dispatch/specform/instruction-verbs.txt`: a program writes it from the verbs that start the instructions of the repository's skills and of the live procedures of The Spec, and a test writes it again and fails when the two differ.
+      The first word of the object is `the`, `a`, `an`, `each`, `every`, `all`, `any`, `both`, `no`, `its`, `their`, `this`, `these`, `those`, `it`, `them` or a span in code font.
       After a condition at the start of the sentence, such as `If the run fails,`, the instruction starts after the comma that ends the condition.
       A second instruction is the same two words after `and`, `or`, `then` or a comma, as in `Read each request and record its version`, which breaks the form (rule `instructions`).
       Two verbs of one object, as in `Push and hold the switch`, are one instruction, as ASD-STE100 lets two actions at the same time be.
-      An adverb, a preposition or a question word is no verb, so `Open an ask on the root issue, never a child` gives one instruction.
-      A procedure that describes a program, such as `A test against a Dispatch server`, gives no instruction, and only its words are counted.
-      Three forms are stated limits.
-      A verb that ends in `-s`, `-ed` or `-ing` is no base form, so `Seed the database and run the test` breaks no rule.
+      A word that the list does not name is no verb, so `Read the log, especially the last line` and `Count the rows, minus the header` give one instruction.
+      A listed verb that a noun phrase and then a verb of its own follow is a noun of the object, as `time` in `Measure the memory and time it uses`, so that sentence gives one instruction.
+      A procedure that describes a program, such as `A test against a Dispatch server`, gives no instruction, and each of its sentences has at most 25 words.
+      The refusal gives both ways out: write each instruction in a sentence of its own, or write `that` before the clause after a listed verb that is no verb there.
+      Four forms are stated limits.
+      A verb that the list does not name starts no instruction, so `Seed the database and run the test` breaks no rule.
       A second instruction after a relative clause, as in `Read each request that Dispatch opens and record its version`, breaks no rule, and R49 leaves it to the reviewer of R25.
       A condition ends at its first comma, so a list of verbs in it, as in `Before you plan, file an issue or post a finding, run the search`, reads as two instructions: write the condition as a sentence of its own.
+      A listed verb that is a noun of the object with no clause of its own after it, as `name` in ``Run the test of the step, name `lint`, with the race detector``, reads as a second instruction: 43 verbs of the list are also nouns in the skills.
 
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 
