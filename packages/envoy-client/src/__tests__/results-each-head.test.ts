@@ -5,11 +5,12 @@ import { formatCheckResults } from "../dispatch-commands/check-results";
 // results-each-head.test.ts holds `dispatch results` to R9 to R12 and R18 of the spec of several
 // open pull requests: one line for each open head under a `before_merge` check, with its state, its
 // roles and the ids of the results that decide it, and the repository of a pull request of another
-// repository than the issue's beside its number; one line that counts the merged pull requests;
-// the pass and the fail at one head, and what ends that state; and the newest result that decides
-// a check compared with a branch. It holds an answer that names no state to no state line at all.
-// Each answer is in the wire shape of the server, typed as unknown, so the file builds against a
-// client that predates these fields and fails there on its own assertion.
+// repository than the issue's beside its number; how many of the heads read yes, each head counted
+// once however many pull requests it is the head of (R3); one line that counts the merged pull
+// requests; the pass and the fail at one head, and what ends that state; and the newest result
+// that decides a check compared with a branch. It holds an answer that names no state to no state
+// line at all. Each answer is in the wire shape of the server, typed as unknown, so the file
+// builds against a client that predates these fields and fails there on its own assertion.
 
 /** The lines `dispatch results` prints for answer. */
 function printed(answer: unknown): string[] {
@@ -387,6 +388,82 @@ describe("dispatch results: the state at each head", () => {
       `  - #70 at ${h70}: no, as it holds no result.`,
       `  - acme/infra#9 at ${h9}: yes, from tester. Pass ${pass} decides it.`,
     ]);
+  });
+});
+
+// R3: the state belongs to the commit, so two open pull requests at one commit are one head, and
+// "<k> of <n> heads read yes" counts it once. #70 and #71 are both at H1, which holds the tester's
+// pass, and #72 is at H2, which holds nothing: 2 heads, 1 of them yes, under 3 open pull requests.
+describe("dispatch results: how many heads read yes", () => {
+  test("counts two pull requests at one commit as one head", () => {
+    const [h1, h2] = [hex("1"), hex("2")];
+    const pass = "cccccccc-0000-4000-8000-000000000001";
+    const lines = printed(
+      answer(
+        check("k1", "before_merge", {
+          compared_with: [openHead(70, h1), openHead(71, h1), openHead(72, h2)],
+          results: [
+            result(
+              pass,
+              "tester",
+              "pass",
+              h1,
+              { answer: "at_basis", basis: openHead(70, h1) },
+              "2026-11-19T00:00:00Z"
+            ),
+          ],
+          pass_stands: {
+            answer: "no",
+            subjects: [
+              { basis: openHead(70, h1), answer: "yes", roles: ["tester"], results: [pass] },
+              { basis: openHead(71, h1), answer: "yes", roles: ["tester"], results: [pass] },
+              { basis: openHead(72, h2), answer: "no", reason: "no_result" },
+            ],
+          },
+        })
+      )
+    );
+    expect(checkBlock(lines, "k1").slice(0, 4)).toEqual([
+      "- k1 (before_merge). Compared with the heads of 3 open pull requests. A pass stands: no, as 1 of 2 heads read yes.",
+      `  - #70 at ${h1}: yes, from tester. Pass ${pass} decides it.`,
+      `  - #71 at ${h1}: yes, from tester. Pass ${pass} decides it.`,
+      `  - #72 at ${h2}: no, as it holds no result.`,
+    ]);
+  });
+
+  // R18: one commit in two repositories is two heads, each with a state of its own, so a count
+  // keyed by the commit alone would read one head here.
+  test("counts one commit in two repositories as two heads", () => {
+    const h = hex("4");
+    const pass = "cccccccc-0000-4000-8000-000000000002";
+    const infraHead = { ...openHead(9, h), repo: "acme/infra" };
+    const lines = printed(
+      answer(
+        check("k1", "before_merge", {
+          compared_with: [openHead(70, h), infraHead],
+          results: [
+            result(
+              pass,
+              "tester",
+              "pass",
+              h,
+              { answer: "at_basis", basis: infraHead },
+              "2026-11-19T00:00:00Z"
+            ),
+          ],
+          pass_stands: {
+            answer: "no",
+            subjects: [
+              { basis: openHead(70, h), answer: "no", reason: "no_result" },
+              { basis: infraHead, answer: "yes", roles: ["tester"], results: [pass] },
+            ],
+          },
+        })
+      )
+    );
+    expect(checkBlock(lines, "k1")[0]).toBe(
+      "- k1 (before_merge). Compared with the heads of 2 open pull requests. A pass stands: no, as 1 of 2 heads read yes."
+    );
   });
 });
 

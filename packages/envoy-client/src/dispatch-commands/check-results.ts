@@ -6,6 +6,7 @@ import type {
   CheckPassStands,
   CheckResult,
   IssueCheckResults,
+  PassStandsSubject,
 } from "@legion/contracts";
 import {
   checkWithNewerFields,
@@ -100,12 +101,29 @@ function checkWordsText(check: CheckBlock, result: CheckResult): string {
     : `The check's words did not move after this result (${versions})`;
 }
 
+/** `<k> of <n> heads read yes` for the subjects of a check. A head is a commit of one repository,
+ *  and its state belongs to that commit (R3), so pull requests whose heads are one commit are one
+ *  head however many of them there are, and one commit in two repositories is two heads (R18): the
+ *  basis names its repository where it is another than the issue's. A head reads yes where each
+ *  subject at it does. A subject that names no commit is a head of its own, since nothing else can
+ *  be said to be at it. */
+function headsReadYes(subjects: readonly PassStandsSubject[]): string {
+  const heads = new Map<string, boolean>();
+  subjects.forEach((subject, index) => {
+    const { commit, repo } = subject.basis;
+    const head = commit === undefined ? `subject ${index}` : `${repo ?? ""} ${commit}`;
+    heads.set(head, (heads.get(head) ?? true) && subject.answer === "yes");
+  });
+  const yes = [...heads.values()].filter((reads) => reads).length;
+  return `${yes} of ${heads.size} heads read yes`;
+}
+
 /** R5 and R12 for one check: whether a pass of it stands, and from which roles. A check with
- *  subjects, the heads a pass must stand at, says how many of them read yes where the answer is
- *  not yes; each head's own line follows (`subjectLines`). A check compared with a branch names the
- *  newest result that decided it, or the one Dispatch could not place on a branch, whose commit
- *  comes from that result among the check's results. A check whose answer names no `pass_stands`
- *  gets no such words at all (`checkLines`). */
+ *  subjects, the heads a pass must stand at, says how many of the heads read yes where the answer
+ *  is not yes (`headsReadYes`); each subject's own line follows (`subjectLines`). A check compared
+ *  with a branch names the newest result that decided it, or the one Dispatch could not place on a
+ *  branch, whose commit comes from that result among the check's results. A check whose answer
+ *  names no `pass_stands` gets no such words at all (`checkLines`). */
 function passStandsText(check: CheckBlock, pass: CheckPassStands): string {
   const roles = pass.roles ?? [];
   const yes =
@@ -113,7 +131,7 @@ function passStandsText(check: CheckBlock, pass: CheckPassStands): string {
   const subjects = pass.subjects ?? [];
   if (subjects.length > 0) {
     if (pass.answer === "yes") return yes;
-    const read = `${subjects.filter((subject) => subject.answer === "yes").length} of ${subjects.length} heads read yes`;
+    const read = headsReadYes(subjects);
     return pass.answer === "no"
       ? `A pass stands: no, as ${read}`
       : `A pass stands: not known, as ${read}`;
