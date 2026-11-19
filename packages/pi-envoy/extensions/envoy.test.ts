@@ -5112,8 +5112,9 @@ describe("envoy OMP extension", () => {
       throw new Error(`the process that loaded the entry reported nothing: ${stderr}`);
     }
     expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
-    // A hang guard: what can hang is a process that never reports. 200_000, the session-pod
-    // row's guard below, whose processes each load the extension as this row's child does.
+    // A hang guard: what can hang is a process that never reports. 200_000. Worst measured cost:
+    // 46 698.73 ms at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
+    // where main's form of this row failed 20 runs of 20 at bun's 5 s default.
   }, 200_000);
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
