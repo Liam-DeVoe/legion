@@ -329,6 +329,18 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     at: "head",
   },
   {
+    file: "skills/legion-worker/references/ci-checks.md",
+    has: "the tester fails no round for the run, unless the line of that head reads not known because a pass and a fail count there, which is a failure at once.",
+    cut: "Item 13 takes from the tester's wait a head that reads not known for a pass and a fail. The label deletes `, unless the line of that head reads not known because a pass and a fail count there, which is a failure at once`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/ci-checks.md",
+    has: "Unless the line of that head reads not known because a pass and a fail count there, the reviewer waits for that run by its name",
+    cut: "Item 13 takes from the reviewer's wait a head that reads not known for a pass and a fail. The label deletes `Unless the line of that head reads not known because a pass and a fail count there, ` and starts the sentence `The reviewer waits`.",
+    at: "head",
+  },
+  {
     file: "skills/legion-worker/references/merge-gate.md",
     has: "do not approve or request changes for that check, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above.",
     cut: "Item 13 takes from the wait a head that reads not known for a pass and a fail. The label deletes `, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above`.",
@@ -635,6 +647,18 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-worker/references/ci-checks.md",
     has: "so nothing in this section holds for such a check while its run is still going or GitHub is unread",
     cut: "The rule of each role for a `ci_check` check, in a text that the architect reads. Item 13 adds it, and the label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/ci-checks.md",
+    has: "the tester fails no round for the run, unless the line of that head reads not known because a pass and a fail count there, which is a failure at once.",
+    cut: "The tester's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless the line of that head reads not known because a pass and a fail count there, which is a failure at once`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/ci-checks.md",
+    has: "Unless the line of that head reads not known because a pass and a fail count there, the reviewer waits for that run by its name",
+    cut: "The reviewer's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `Unless the line of that head reads not known because a pass and a fail count there, ` and starts the sentence `The reviewer waits`.",
     at: "head",
   },
   {

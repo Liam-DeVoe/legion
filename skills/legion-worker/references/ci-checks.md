@@ -89,12 +89,14 @@ with no wait for the run or for GitHub.
 
 A named run that has not concluded is no test failure, and it is the fault of no role. The tester
 writes in its `test` handoff's `implementerProof.how` that the run is still going. The handoff
-gets no new field, and the tester fails no round for the run.
+gets no new field, and the tester fails no round for the run, unless the line of that head reads
+not known because a pass and a fail count there, which is a failure at once.
 
-The reviewer waits for that run by its name, as it waits for a required check that GitHub shows
-`queued` or `in progress`. Until the run concludes, the reviewer does not approve and does not
-request changes for that check. The named run is usually not one the base branch requires, so the
-wait on required checks does not cover it.
+Unless the line of that head reads not known because a pass and a fail count there, the reviewer
+waits for that run by its name, as it waits for a required check that GitHub shows `queued` or
+`in progress`, and until the run concludes it neither approves nor requests changes for that
+check. The named run is usually not one the base branch requires, so the wait on required checks
+does not cover it.
 
 ## A job held back from an ordinary pull request
 
