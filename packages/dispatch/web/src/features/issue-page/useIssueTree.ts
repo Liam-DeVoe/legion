@@ -161,12 +161,16 @@ export const issueAsksQuery = (key: string) =>
  * (`["reference-targets", …]`) on an event that changes the words or the name under an address
  * its key holds, on the issue or project document that address is of: a comment's or an issue
  * message's edit or delete, an ask's edit, a document's new version, rename or removal, and an
- * issue's write that changes its title (`referenceNameTargets`). A names read's key is the set
- * of addresses it names, so a tree that comes to hold another set reads again under a key of its
- * own, and only a change under an address the tree already names needs a rule. No rule there
- * names `["whoami"]`: the reader's login does not change while the page is open. A gap in the
- * feed refreshes every read the app holds (`refreshQueries`), these among them, and window focus
- * fetches again only a read in error (`refetchFailedOnFocus`).
+ * issue's write that changes its title (`referenceNameTargets`). A post's edit or delete also
+ * reaches an address that names the post by its whole id under another owner, which the server
+ * reads as the post, and writes its own marks into the answer the read keeps, so a refetch that
+ * fails leaves no deleted post's words, and no edited one's without its mark
+ * (`markCorrectedPost`). A names read's key is the set of addresses it names, so a tree that
+ * comes to hold another set reads again under a key of its own, and only a change under an
+ * address the tree already names needs a rule. No rule there names `["whoami"]`: the reader's
+ * login does not change while the page is open. A gap in the feed refreshes every read the app
+ * holds (`refreshQueries`), these among them, and window focus fetches again only a read in
+ * error (`refetchFailedOnFocus`).
  */
 const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,

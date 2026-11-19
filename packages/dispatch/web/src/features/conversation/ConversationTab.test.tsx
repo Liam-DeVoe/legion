@@ -798,7 +798,7 @@ test("an attempt a post's delete ended offers no Retry or mode change, and a sta
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
-    await screen.findByText(wholeText(`session:worker… · ${DELETED_POST_DELIVERY_ERROR}`));
+    await screen.findByText(wholeText("session:worker… · Ended by the post's delete"));
     expect(
       screen.queryByText(wholeText(`session:worker… · failed · ${DELETED_POST_DELIVERY_ERROR}`))
     ).toBeNull();

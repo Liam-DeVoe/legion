@@ -81,6 +81,7 @@ import {
 import {
   deliveryMode,
   duplicateText,
+  endedByDeleteText,
   failureGuidance,
   isSafeRetry,
   MODE_LABELS,
@@ -590,9 +591,9 @@ function CommentDeliveryList({
         const canRetry = capabilities === undefined || capabilities.includes(delivery.delivery);
         const guidance = offered ? failureGuidance(outcome, "mention") : undefined;
         const recipient = targetPart(delivery.target);
-        // A send the post's delete ended did not fail: the delete ended it. Its line says so in
-        // the delete's own words where the state stands, as the Pinned and Activity tabs say it,
-        // and says nothing after them.
+        // A send the post's delete ended did not fail: the delete ended it. Its line says so where
+        // the state stands, in the words the targeted message card says it in, as the Pinned and
+        // Activity tabs say it, and says nothing after them.
         const ended = delivery.state === "failed" && delivery.error === DELETED_POST_DELIVERY_ERROR;
         return (
           <li
@@ -606,7 +607,7 @@ function CommentDeliveryList({
               ) : delivery.duplicate === true ? (
                 duplicateText
               ) : ended ? (
-                DELETED_POST_DELIVERY_ERROR
+                endedByDeleteText
               ) : (
                 delivery.state
               )}

@@ -240,6 +240,11 @@ export function resendable(deleted: PostDeletion | null | undefined): boolean {
 /** What a duplicate attempt reads as: an earlier attempt landed, so this one added nothing. */
 export const duplicateText = `Delivered by an earlier attempt, so not delivered again ${unlessRestarted}`;
 
+/** What an attempt the post's delete ended reads as (`DELETED_POST_DELIVERY_ERROR`): the delete
+ *  ended the send, so it did not fail. The targeted message card and the Conversation tab's
+ *  mention list both say it in these words. */
+export const endedByDeleteText = "Ended by the post's delete";
+
 /** What a queued attempt's session is and when it gets the message, said after the session's
  *  name: the one wording of a queued attempt, which `queuedParts` and the Activity tab's mention
  *  and message lines (`activityDescription`) read. The hours are the stream's retention, the

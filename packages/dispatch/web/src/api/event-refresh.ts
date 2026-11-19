@@ -1,5 +1,7 @@
+import { isIdPrefix } from "@legion/contracts";
+
 import { askProject } from "../features/inbox/list-row";
-import { buildDispatchReference } from "../features/refs/routes";
+import { buildDispatchReference, parseNodeReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
@@ -1513,20 +1515,23 @@ function askThreadsOn(issue: string): RefreshTarget {
   };
 }
 
-/** The search palette keeps each answer under the words it was asked for and the request it
+/** The kind of post each correction is of: the segment an address names it under
+ *  (`/comment/<id>`, `/message/<id>`).
+ *
+ *  The search palette keeps each answer under the words it was asked for and the request it
  *  sent, never under the posts it holds, for its `staleTime` (`useTieredSearch.ts`, `["search",
  *  words, request]`), and an answer holds a post's text or a block of it with the post's marks.
  *  So an edit or a delete of a post reads every kept answer again: the post may be in any of
  *  them, and its words may be gone. A create needs none: a kept answer that misses a post written
  *  since shows no text of it. The names reads (`referenceTargetsQuery`) hold a post's words and
  *  marks too, but under the addresses they name, so a correction reads again only those whose
- *  key names an address of the issue or the project document the post is on
- *  (`referenceNameTargets`), as every other change of words under an address does. */
-const POST_CORRECTIONS: Partial<Record<EventType, true>> = {
-  "comment.edited": true,
-  "comment.deleted": true,
-  "message.edited": true,
-  "message.deleted": true,
+ *  key names an address of the issue or the project document the post is on, or names the post
+ *  by its id under any other owner (`referenceNameTargets`). */
+const POST_CORRECTIONS: Partial<Record<EventType, "comment" | "message">> = {
+  "comment.edited": "comment",
+  "comment.deleted": "comment",
+  "message.edited": "message",
+  "message.deleted": "message",
 };
 
 const SEARCH_ANSWERS: RefreshTarget = { queryKey: ["search"] };
@@ -1613,9 +1618,59 @@ function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | 
   return (address) => addressUnder(address, document, "@/#");
 }
 
+/** A post's id as Dispatch stores it and every read of it writes it: a uuid, canonical and in
+ *  lower case. */
+const POST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Whether an address names the post a correction (`POST_CORRECTIONS`) is of, the post itself or a
+ * block of it, as GET /api/v1/reference-targets reads the address; undefined for every other
+ * event, and for a correction whose payload names no post by an id Dispatch stores (`id`,
+ * `POST_ID`), which no address can name. The read names a comment and a message by the id the
+ * address writes, whatever owner it is written under: in the issue's form
+ * (`dispatch://<KEY>/comment/<id>`, `dispatch://<KEY>/message/<id>`), in a project document's
+ * (`dispatch://<PROJECT>/artifact/<slug>/comment/<id>`, with or without a version after the
+ * slug), and as a block's (`…#b-<block id>`, pinned or not). That id is the post's whole id as it
+ * is stored: the server looks the post up by that text, so an id spelled any other way, in upper
+ * case or without its hyphens, names nothing. An id written short - 8 hex digits or more, and no
+ * whole id (`isIdPrefix`) - names the post only in an address under what the post is on
+ * (`eventAddresses`): the server resolves a short id among the items of the owner the address
+ * names and no other, so the same prefix under another owner names one of that owner's items or
+ * nothing. An address that writes no post's id - an issue, a document, a block of a document -
+ * names no post. A dashboard URL, which the server reads too, is not read here: the issue page
+ * names every read by its `dispatch://` address.
+ */
+export function correctedPostAddresses(
+  event: DispatchEvent
+): ((address: string) => boolean) | undefined {
+  const kind = POST_CORRECTIONS[event.type];
+  const id = payloadString(event, "id");
+  if (kind === undefined || id === undefined || !POST_ID.test(id)) {
+    return undefined;
+  }
+  const owned = eventAddresses(event);
+  return (address) => {
+    const route = parseNodeReference(address);
+    const item =
+      route?.kind === "document"
+        ? route.item
+        : route !== undefined && "id" in route
+          ? { id: route.id, kind: route.kind }
+          : undefined;
+    if (item?.kind !== kind) {
+      return false;
+    }
+    return (
+      item.id === id ||
+      (isIdPrefix(item.id) && id.startsWith(item.id.toLowerCase()) && owned?.(address) === true)
+    );
+  };
+}
+
 /**
  * Every names read whose key (`["reference-targets", <sorted addresses>]`) holds an address
- * `event` can change the words under (`eventAddresses`), or one written in a form other than
+ * `event` can change the words under (`eventAddresses`), one that names the post a correction is
+ * of under any owner (`correctedPostAddresses`), or one written in a form other than
  * `dispatch://` and its owner, which could name anything and so is refreshed for rather than
  * missed. An event on neither an issue nor a project document refreshes every names read.
  */
@@ -1624,12 +1679,14 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
   if (touched === undefined) {
     return { queryKey: ["reference-targets"] };
   }
+  const post = correctedPostAddresses(event);
   return {
     queryKey: ["reference-targets"],
     when: (_data, query) =>
       rowsOf<unknown>(query.queryKey[1]).some(
         (address) =>
-          typeof address === "string" && (!address.startsWith("dispatch://") || touched(address))
+          typeof address === "string" &&
+          (!address.startsWith("dispatch://") || touched(address) || post?.(address) === true)
       ),
   };
 }
@@ -1653,15 +1710,20 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * name nothing (`gone`), so each refreshes them too.
  *
  * Of the names reads the app holds, each event refreshes those whose key holds an address it can
- * change, of the issue or the project document it is on (`namesReadsNaming`). The test reads the
- * query's key, not the page's issue, since a page's words can cite another issue's target. Every
- * address the issue page names a read by is written `dispatch://` and its owner
- * (`treeReferences`): a node's own, a chip's, each one its words cite, a bare key asked as its
- * issue's own address, and an item id or a block id written short still under its owner, so the
- * key alone ties each address to what owns it. A comment or ask event on neither an issue nor a
- * project document never reaches this rule: `documentTargets` refuses it first, and the feed then
- * refreshes every read the app holds. A message correction always carries its issue, since the
- * server refuses to correct any other message (`message_corrections.go`).
+ * change: one of the issue or the project document it is on (`eventAddresses`), and, for a
+ * post's correction, one that names the post by its id under any owner
+ * (`correctedPostAddresses`). The test reads the query's key, not the page's issue, since a
+ * page's words can cite another issue's target. Every address the issue page names a read by is
+ * written `dispatch://` and its owner (`treeReferences`): a node's own, a chip's, each one its
+ * words cite, a bare key asked as its issue's own address, and an item id or a block id written
+ * short still under its owner. So the key alone ties each address to what owns it, but for a
+ * comment's or a message's whole id: the server names a post by that id whatever owner the
+ * address is written under, so a page on CORE-2 whose words cite a CORE-1 comment as
+ * `dispatch://CORE-2/comment/<id>` holds that comment's words under a CORE-2 address. A comment
+ * or ask event on neither an issue nor a project document never reaches this rule:
+ * `documentTargets` refuses it first, and the feed then refreshes every read the app holds. A
+ * message correction always carries its issue, since the server refuses to correct any other
+ * message (`message_corrections.go`).
  *
  * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
  * once the document has been quiet after those edits, each of which wrote a version that sent
@@ -1669,8 +1731,10 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * post's correction is on what owns the post: a comment's on its issue, or on the project
  * document it belongs to, whose slug its payload carries (`projectDocumentSlug`), and a
  * message's on its issue, since the server corrects an issue message and refuses any other. So
- * each reaches every names read whose key names the post, its blocks or anything else of that
- * owner, as every address the page names a read by is written under its owner, and no other.
+ * each reaches every names read whose key names anything of that owner, the post and its blocks
+ * among them, and every one whose key names the post or a block of it by its whole id under
+ * another owner, and no other: an id written short under another owner names one of that
+ * owner's items or nothing.
  * The search palette's answers, which a post's words are kept under too, are keyed by no
  * address, so a correction reads every one of them again (`POST_CORRECTIONS`).
  *
@@ -1688,7 +1752,12 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * every other rule does, so a read already out, or begun under a second ago, is fetched again
  * once those rules allow; since the rule tests the read's key against the answer that lands, a
  * first read out at the event that then fails holds no answer to test and is not read again by
- * it, and window focus or a later event reads it again (`refetchFailedOnFocus`).
+ * it, and window focus or a later event reads it again (`refetchFailedOnFocus`). A refetch that
+ * fails keeps the answer it would have replaced, so a post's correction writes its own marks
+ * into each answer the cache holds as it arrives (`markCorrectedPost`): a read that then fails
+ * names a deleted post by the deleted line and an edited one with its mark. An answer that a
+ * read already out at the correction lands was composed before it and carries neither, and a
+ * refetch of it that fails keeps it.
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
@@ -1722,7 +1791,7 @@ export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));
   }
-  if (POST_CORRECTIONS[event.type] === true) {
+  if (POST_CORRECTIONS[event.type] !== undefined) {
     targets.push(SEARCH_ANSWERS);
   }
   return targets;

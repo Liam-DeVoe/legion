@@ -15,6 +15,7 @@ import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import {
   duplicateText,
+  endedByDeleteText,
   failureGuidance,
   isSafeRetry,
   MODE_LABELS,
@@ -83,7 +84,7 @@ export function takenAsUserTurn(deliveries: readonly TargetedMessageAttempt[]): 
  *  it failed otherwise. */
 function failedText(attempt: Pick<TargetedMessageAttempt, "error">): string {
   return attempt.error === DELETED_POST_DELIVERY_ERROR
-    ? "Ended by the post's delete"
+    ? endedByDeleteText
     : `Failed: ${attempt.error ?? "delivery failed"}`;
 }
 
