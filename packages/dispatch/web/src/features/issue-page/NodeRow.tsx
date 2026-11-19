@@ -30,7 +30,7 @@ import {
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
-import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
+import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
@@ -212,7 +212,9 @@ export function NodeRow({
     (node.type === "ask"
       ? node.state === "answered" && !node.waiting
       : author.kind !== "person" && node.type !== "issue" && node.type !== "child_issue");
-  const clamp = useClamp(words, cuttable);
+  // What `RowText` draws the words from: a later read that brings other words - a statement's,
+  // which its document's blocks draw before the coverage read brings them - draws them cut.
+  const clamp = useClamp(words, cuttable, node.tree ?? node.text);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
@@ -1323,13 +1325,17 @@ export function MoreWords({
  * before the page is painted, and while it stands within one screen of the viewport but wholly
  * outside the view, and again when its width or its words change or the page's typeface
  * arrives; never for any other row. A row in view keeps its length until a scroll leaves it
- * wholly outside the view. Undefined where the words are drawn whole, or not measured yet; a row
- * the reader scrolled away from keeps the cut it last had, save one measured on the fallback
- * face, which is measured again once the typeface arrives.
+ * wholly outside the view, save where it draws other words: `drawnFrom` is what the words are
+ * drawn from, and where a commit changes it, a row measured before is measured again in that
+ * commit as one that mounts, before the page is painted (`clampRedrawn`). A caller that cannot
+ * say what its words are drawn from passes nothing. Undefined where the words are drawn whole,
+ * or not measured yet; a row the reader scrolled away from keeps the cut it last had, save one
+ * measured on the fallback face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
-  cuttable: boolean
+  cuttable: boolean,
+  drawnFrom?: unknown
 ): Clamp | undefined {
   const [clamp, setClamp] = useState<Clamp | undefined>(undefined);
   useLayoutEffect(() => {
@@ -1340,5 +1346,14 @@ export function useClamp(
     }
     return watchClamp(element, (next) => setClamp((held) => (sameClamp(held, next) ? held : next)));
   }, [cuttable, words]);
+  // After the watch above: in a commit that watches the words anew, the measurer has not
+  // measured them yet, and leaves them to the mount's own pass.
+  const drawn = useRef(drawnFrom);
+  useLayoutEffect(() => {
+    if (drawn.current === drawnFrom) return;
+    drawn.current = drawnFrom;
+    const element = words.current;
+    if (cuttable && element !== null) clampRedrawn(element);
+  }, [cuttable, drawnFrom, words]);
   return cuttable ? clamp : undefined;
 }
