@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for `go-fetch.sh`: what it runs for each mode, the retries that ride out a fault of the
-# module proxy or the checksum database, and each input it refuses.
+# Tests for `go-fetch.sh`: what it runs for each mode (a fetch file's lines among them, each in
+# its directory and for its platform), the proxy it fetches through, the retries that ride out a
+# fault of the module proxy or the checksum database, and each input it refuses.
 #
 # Each case runs the real script as a subprocess under a stand-in `go` first on PATH, which
 # records every call (its directory and arguments) and fails the calls a case asks it to fail, so
@@ -22,7 +23,8 @@ source "$script_dir/test-lib.sh"
 # whose arguments contain FAIL_MATCH fails while the count of such calls is at most FAIL_TIMES.
 # `go env NAME...` answers one line per name: GOPATH from GO_FETCH_TEST_GOPATH, GOMODCACHE from
 # GO_FETCH_TEST_GOMODCACHE and GOPROXY from GO_FETCH_TEST_GOPROXY. Each `go install` records the
-# GOBIN and the GOPROXY it ran under. A stand-in pulumi writes the sdks/ directory package add
+# GOBIN and the GOPROXY it ran under, and each `go list` the GOPROXY, GOOS, GOARCH and
+# CGO_ENABLED it ran under. A stand-in pulumi writes the sdks/ directory package add
 # writes, so a second attempt in the same directory would find it there. pulumi and `go build`
 # each record the sha256 of the go.mod and main.go they find in their directory, so a case can
 # hold what they ran on to the consumer's own files, not only to the step's exit.
@@ -46,6 +48,9 @@ fi
 if [ "$(basename "$0")" = go ] && [ "$1" = install ]; then
   echo "GOBIN=${GOBIN:-}" >> "$GO_FETCH_TEST_CALLS.gobin"
   echo "GOPROXY=${GOPROXY:-}" >> "$GO_FETCH_TEST_CALLS.goproxy"
+fi
+if [ "$(basename "$0")" = go ] && [ "$1" = list ]; then
+  echo "GOPROXY=${GOPROXY:-} GOOS=${GOOS:-} GOARCH=${GOARCH:-} CGO_ENABLED=${CGO_ENABLED:-}" >> "$GO_FETCH_TEST_CALLS.list-env"
 fi
 if [ "$(basename "$0")" = pulumi ]; then
   echo "PULUMI_BACKEND_URL=${PULUMI_BACKEND_URL:-} PULUMI_HOME=${PULUMI_HOME:-} PULUMI_SKIP_UPDATE_CHECK=${PULUMI_SKIP_UPDATE_CHECK:-} PULUMI_API=${PULUMI_API:-}" >> "$GO_FETCH_TEST_CALLS.pulumi-env"
@@ -102,19 +107,23 @@ done
 
 # fetch <args...>: runs the script under test with the stand-ins and no waits. Leaves its stderr
 # in `err`, its exit code in `rc`, the stand-ins' calls in `calls`, the environment each pulumi
-# call saw in `pulumi_env`, each install's GOBIN in `gobin` and its GOPROXY in `goproxy`, what
+# call saw in `pulumi_env`, each install's GOBIN in `gobin` and its GOPROXY in `goproxy`, each
+# listing's GOPROXY and platform in `list_env`, what
 # package add and the build found in their directory in `seen`, and the failing cp's, mktemp's and
 # mkdir's calls in `cp_calls`, `mktemp_calls` and `mkdir_calls`. PATH_FIRST, when set, goes on
 # PATH before the stand-ins. `go env` answers $work/modcache for GOMODCACHE and
 # `https://proxy.example|direct` for GOPROXY, or TEST_GOMODCACHE and TEST_GOPROXY when set.
+# SCRIPT, when set, is the copy of the script to run instead of this repository's, and
+# GO_FETCH_PROXY, when the case sets it, reaches the script; the caller's own is cleared.
 fetch() {
   rm -f "$work/calls" "$work/calls.pulumi-env" "$work/calls.gobin" "$work/calls.goproxy" "$work/calls.seen" \
-    "$work/calls.cp" "$work/calls.mktemp" "$work/calls.mkdir" "$work/count"
+    "$work/calls.cp" "$work/calls.mktemp" "$work/calls.mkdir" "$work/calls.list-env" "$work/count"
   set +e
   PATH="${PATH_FIRST:+$PATH_FIRST:}$work/bin:$PATH" GO_FETCH_TEST_CALLS="$work/calls" GO_FETCH_TEST_COUNT="$work/count" \
     GO_FETCH_TEST_GOPATH="$work/gopath:$work/other-gopath" GO_FETCH_TEST_GOMODCACHE="${TEST_GOMODCACHE-$work/modcache}" \
-    GO_FETCH_TEST_GOPROXY="${TEST_GOPROXY-https://proxy.example|direct}" GO_FETCH_WAIT=0 "$go_fetch" "$@" \
-    > "$work/stdout" 2> "$work/stderr"
+    GO_FETCH_TEST_GOPROXY="${TEST_GOPROXY-https://proxy.example|direct}" GO_FETCH_WAIT=0 \
+    GO_FETCH_PROXY="${TEST_GO_FETCH_PROXY:-}" GOPROXY="${TEST_ENV_GOPROXY:-}" \
+    "${SCRIPT:-$go_fetch}" "$@" > "$work/stdout" 2> "$work/stderr"
   rc=$?
   set -e
   err=$(cat "$work/stderr")
@@ -122,6 +131,7 @@ fetch() {
   pulumi_env=$(cat "$work/calls.pulumi-env" 2>/dev/null || true)
   gobin=$(cat "$work/calls.gobin" 2>/dev/null || true)
   goproxy=$(cat "$work/calls.goproxy" 2>/dev/null || true)
+  list_env=$(cat "$work/calls.list-env" 2>/dev/null || true)
   seen=$(cat "$work/calls.seen" 2>/dev/null || true)
   cp_calls=$(cat "$work/calls.cp" 2>/dev/null || true)
   mktemp_calls=$(cat "$work/calls.mktemp" 2>/dev/null || true)
@@ -203,6 +213,88 @@ FAIL_MATCH=list FAIL_TIMES=1 fetch deps "$work/module" ./cmd/one
 check "exits 0" "$(is "$rc" 0)"
 check "runs the listing twice" "$(is "$(grep -c 'list -deps' <<< "$calls")" 2)"
 
+echo "case: with GO_FETCH_PROXY set, every go command runs with GOPROXY set to it, and the script says so"
+TEST_GO_FETCH_PROXY='https://fetch.example|direct' TEST_ENV_GOPROXY=off fetch deps "$work/module" ./cmd/one
+check "exits 0" "$(is "$rc" 0)"
+check "the listing runs with GOPROXY=GO_FETCH_PROXY, never the job's off" \
+  "$(is "$list_env" 'GOPROXY=https://fetch.example|direct GOOS= GOARCH= CGO_ENABLED=')"
+check "says which proxy it fetches through" "$(contains "$err" '^go-fetch: fetching through GO_FETCH_PROXY, https://fetch.example|direct$')"
+TEST_GO_FETCH_PROXY='https://fetch.example|direct' TEST_ENV_GOPROXY=off fetch tools "$work/tools.txt"
+check "tools: each install reads the module cache first, then GO_FETCH_PROXY" \
+  "$(is "$(sort -u <<< "$goproxy")" "GOPROXY=file://$work/modcache/cache/download,https://fetch.example|direct")"
+
+echo "case: with GO_FETCH_PROXY unset and GOPROXY=off, the listing keeps the caller's GOPROXY, and the script says the cache alone serves it"
+TEST_ENV_GOPROXY=off fetch deps "$work/module" ./cmd/one
+check "exits 0" "$(is "$rc" 0)"
+check "the listing runs with the caller's GOPROXY" "$(is "$list_env" 'GOPROXY=off GOOS= GOARCH= CGO_ENABLED=')"
+check "says the module cache alone serves the fetch" "$(contains "$err" 'GO_FETCH_PROXY is unset and GOPROXY is off, so the module cache alone serves this fetch')"
+
+# The file mode reads its paths from the repository root two directories above the script, so
+# its cases run a copy of the script in a repository of their own.
+repo="$work/repo"
+mkdir -p "$repo/.github/scripts" "$repo/mod/a" "$repo/mod/b" "$repo/infra" "$repo/fetch"
+cp "$go_fetch" "$repo/.github/scripts/go-fetch.sh"
+cp "$work/tools.txt" "$repo/fetch/tools.txt"
+cat > "$repo/fetch/job.txt" <<'FETCH'
+# The job's fetch: a comment line, a blank one, and a comment after a command.
+
+deps mod -test ./a/... ./b   # the tests' modules
+GOOS=darwin GOARCH=arm64 deps mod -test -tags e2e ./...
+CGO_ENABLED=0 deps infra ./cmd/x
+tools fetch/tools.txt
+deps mod ./a
+FETCH
+
+echo "case: file runs each line of the fetch file in its turn, every path read from the repository root"
+SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/job.txt"
+check "exits 0" "$(is "$rc" 0)"
+check "lists the first line's packages in mod, its comment left off" \
+  "$(is "$(grep ' list ' <<< "$calls" | sed -n 1p)" "$repo/mod go list -deps -test ./a/... ./b")"
+check "lists the second line's for its platform" \
+  "$(is "$(grep ' list ' <<< "$calls" | sed -n 2p)" "$repo/mod go list -deps -test -tags e2e ./...")"
+check "with the second line's GOOS and GOARCH" \
+  "$(is "$(sed -n 2p <<< "$list_env")" 'GOPROXY= GOOS=darwin GOARCH=arm64 CGO_ENABLED=')"
+check "the third line in infra with its CGO_ENABLED, and no GOOS the line before gave" \
+  "$(is "$(sed -n 3p <<< "$list_env")" 'GOPROXY= GOOS= GOARCH= CGO_ENABLED=0')"
+check "the third line's listing in infra" \
+  "$(is "$(grep ' list ' <<< "$calls" | sed -n 3p)" "$repo/infra go list -deps ./cmd/x")"
+check "installs the tools file's two pins" "$(is "$(grep -c ' install ' <<< "$calls")" 2)"
+check "reads the tools file from the repository root" "$(contains "$err" 'installing 2 tools')"
+check "the last line after the tools, with no setting of an earlier line" \
+  "$(is "$(sed -n 4p <<< "$list_env")" 'GOPROXY= GOOS= GOARCH= CGO_ENABLED=')"
+check "in the file's order: four listings and two installs" \
+  "$(is "$(grep -oE ' (list|install) ' <<< "$calls" | tr -d ' ' | paste -sd, -)" "list,list,list,install,install,list")"
+check "names each line it runs" "$(contains "$err" "^go-fetch: $repo/fetch/job.txt:4: GOOS=darwin GOARCH=arm64 deps mod -test -tags e2e ./...$")"
+
+echo "case: a fetch file line that fails every attempt fails the run, naming it, and runs no later line"
+FAIL_MATCH=./cmd/x FAIL_TIMES=99 GO_FETCH_ATTEMPTS=2 SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/job.txt"
+check "exits 1" "$(is "$rc" 1)"
+check "names the command that failed" "$(contains "$err" 'failed 2 times: go list -deps ./cmd/x')"
+check "installs nothing after it" "$(is "$(grep -c ' install ' <<< "$calls")" 0)"
+
+echo "case: every line of a fetch file is checked before the first runs"
+for bad in 'deps mod' 'deps absent ./a' 'GOFLAGS=-mod=mod deps mod ./a' 'GOOS=Darwin deps mod ./a' 'CGO_ENABLED=2 deps mod ./a' \
+    'tools fetch/absent.txt' 'GOOS=linux tools fetch/tools.txt' 'tools fetch/tools.txt extra' 'list mod ./a' 'go list -deps ./a'; do
+  printf 'deps mod ./a\n%s\n' "$bad" > "$repo/fetch/bad.txt"
+  SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/bad.txt"
+  check "'$bad' exits 2" "$(is "$rc" 2)"
+  check "'$bad' is named by its file and line" "$(contains "$err" "$repo/fetch/bad.txt:2: ")"
+  check "'$bad' runs nothing, not even the good line before it" "$(is "$calls" '')"
+done
+printf 'example.com/c/cmd/gamma@latest\n' > "$repo/fetch/badpins.txt"
+printf 'deps mod ./a\ntools fetch/badpins.txt\n' > "$repo/fetch/bad.txt"
+SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/bad.txt"
+check "a tools file whose line is no pin exits 2" "$(is "$rc" 2)"
+check "and runs nothing" "$(is "$calls" '')"
+printf '# nothing\n\n' > "$repo/fetch/empty.txt"
+SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/empty.txt"
+check "a file that fetches nothing exits 2" "$(is "$rc" 2)"
+check "and says so" "$(contains "$err" 'fetches nothing')"
+SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file "$repo/fetch/absent.txt"
+check "a missing file exits 2" "$(is "$rc" 2)"
+SCRIPT="$repo/.github/scripts/go-fetch.sh" fetch file
+check "file with no FILE exits 2" "$(is "$rc" 2)"
+
 echo "case: pulumi-consumer adds the plugin's SDK to a copy of the program and builds it"
 mkdir -p "$work/consumer-src"
 printf 'module example.com/consumer\n' > "$work/consumer-src/go.mod"
@@ -217,6 +309,7 @@ check "with no update check and the Pulumi Cloud API at a local port that refuse
   "$(contains "$pulumi_env" ' PULUMI_SKIP_UPDATE_CHECK=true PULUMI_API=http://127\.0\.0\.1:1$')"
 check "then the build, in the same copy" \
   "$(is "$(awk '{print $1}' <<< "$calls" | sort -u | grep -c .)" 1)"
+# go-offline: the pattern a stand-in's recorded call is matched against; it starts no go command.
 check "builds the copy" "$(contains "$calls" ' go build ./...$')"
 check "package add and the build each ran on the consumer's own go.mod and main.go" \
   "$(is "$seen" "$(printf 'pulumi %s\ngo %s' "$(cat "$work/consumer-src/go.mod" "$work/consumer-src/main.go" | sha256sum | cut -d' ' -f1)" \

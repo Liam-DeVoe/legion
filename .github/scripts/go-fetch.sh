@@ -6,6 +6,19 @@
 # once, tried again on failure, from the module cache the job restored, and the tests then find
 # what they need and fetch nothing.
 #
+#   go-fetch.sh file FILE
+#     Run each line of FILE as one `deps` or `tools` command below, every line read and checked
+#     before the first runs. This is the form a CI job's fetch step and the ci-caches.yaml fill
+#     of its cache both run, on the same FILE (.github/go-fetch/<job>.txt), and the key of that
+#     cache hashes FILE and this script: a change to what a job fetches is then a change to the
+#     key, so the next fill holds it and no run downloads the difference while its tests run.
+#     One command a line, `#` starting a comment anywhere on it, blank lines passed over:
+#       [GOOS=<os>] [GOARCH=<arch>] [CGO_ENABLED=<0|1>] deps DIR [-test] [-tags T] PACKAGE...
+#       tools FILE
+#     DIR and the tools FILE are read from the repository root, whatever directory this runs in.
+#     The settings in front of `deps` are the platform a step builds for (a darwin vet, a
+#     CGO_ENABLED=0 build): `go list -deps` follows the imports of one GOOS, GOARCH and cgo
+#     setting, and another platform's files import modules this one's do not.
 #   go-fetch.sh tools FILE
 #     `go install` each pin FILE lists, one package path and version per line
 #     (`helm.sh/helm/v3/cmd/helm@v3.20.2`; `#` starts a comment), into the directory
@@ -18,8 +31,9 @@
 #     Download into the module cache every module a `go build` of PACKAGE... in DIR needs
 #     (`go list -deps`, which compiles nothing), for tests that build those packages while they
 #     run with the module proxy turned off (cmdtest.BuildCommand, testbuild.EnvoyBinary). With
-#     -test, the modules of their tests too, for a test that runs `go test` of them offline
-#     (packages/envoy/scripts/database-skips.test.sh).
+#     -test, the modules of their tests too, for a step that runs `go test` of them with the
+#     proxy off, as every test step of a required CI job does. Any other flag go list takes
+#     (-tags T) is passed on.
 #   go-fetch.sh pulumi-consumer SRC PLUGIN
 #     Copy the Go program SRC into a directory of its own, run `pulumi package add PLUGIN` there
 #     outside any workspace, then `go build ./...`: the resolution host's
@@ -27,19 +41,29 @@
 #     repository loads, so the test can make it again from the module cache with no proxy. Each
 #     attempt starts from a fresh copy, since package add writes into its directory.
 #
+# The proxy. A required CI job runs every step with GOPROXY=off, so a module its restored cache
+# lacks fails the step at once and names the module, rather than being downloaded while a test
+# runs. This script is the one step of such a job that goes online, so it takes the proxy from
+# GO_FETCH_PROXY, which those workflows set to the proxy their go commands used before
+# (https://proxy.golang.org|direct), and runs each of its go commands with GOPROXY set to it. With
+# GO_FETCH_PROXY unset it uses the GOPROXY its caller gives (ci-caches.yaml's fills, a developer's
+# shell); where that is off too, the module cache alone serves the fetch, and it says so.
+#
 # Each go command is tried up to GO_FETCH_ATTEMPTS times (4), the waits between them starting
 # at GO_FETCH_WAIT seconds (15) and doubling, so a fault of up to about two minutes is ridden
 # out. It exits 1 when a command fails every attempt, naming it, and when a step of its own fails
 # (a consumer copy that could not be made, say), naming that, with no attempt more: that is no
-# fault of a service. It exits 2 on a usage error or a FILE line that is no pin, before it runs
-# anything.
+# fault of a service. It exits 2 on a usage error, a FILE line that is no pin, or a fetch FILE
+# line that is no command above, before it runs anything.
 set -euo pipefail
 
 attempts=${GO_FETCH_ATTEMPTS:-4}
 first_wait=${GO_FETCH_WAIT:-15}
+# The repository root, two directories above this script, which a fetch FILE's paths are read from.
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
 usage() {
-  echo "usage: go-fetch.sh tools FILE | go-fetch.sh deps DIR PACKAGE... | go-fetch.sh pulumi-consumer SRC PLUGIN" >&2
+  echo "usage: go-fetch.sh file FILE | go-fetch.sh tools FILE | go-fetch.sh deps DIR PACKAGE... | go-fetch.sh pulumi-consumer SRC PLUGIN" >&2
   exit 2
 }
 
@@ -63,64 +87,156 @@ retry() {
   done
 }
 
+# read_pins FILE: the pins of a tools FILE, one a line, into the array `pins`; exits 2 naming the
+# line that is no pin, and when the file pins nothing.
+read_pins() {
+  local file=$1 line pin n=0
+  [ -f "$file" ] || { echo "go-fetch: no file $file" >&2; exit 2; }
+  pins=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    pin=${line%%#*}
+    pin=${pin#"${pin%%[![:space:]]*}"}
+    pin=${pin%"${pin##*[![:space:]]}"}
+    [ -n "$pin" ] || continue
+    # A package path and a semantic version: a query such as @latest would install whatever
+    # the proxy answers that day, which no test's check of the build would then match.
+    if ! [[ "$pin" =~ ^[^@[:space:]]+@v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
+      echo "go-fetch: $file:$n: $pin is not a package path and a semantic version, path@vX.Y.Z" >&2
+      exit 2
+    fi
+    pins+=("$pin")
+  done < "$file"
+  [ "${#pins[@]}" -gt 0 ] || { echo "go-fetch: $file pins no tool" >&2; exit 2; }
+}
+
+install_tools() {
+  local file=$1 goenv gopath modcache goproxy tools proxy pin
+  read_pins "$file"
+  # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
+  goenv=$(go env GOPATH GOMODCACHE GOPROXY)
+  gopath=$(sed -n 1p <<<"$goenv") modcache=$(sed -n 2p <<<"$goenv") goproxy=$(sed -n 3p <<<"$goenv")
+  [ -n "${gopath%%:*}" ] || { echo "go-fetch: go env GOPATH names no directory to install the tools under" >&2; exit 1; }
+  [ -n "$modcache" ] || { echo "go-fetch: go env GOMODCACHE names no module cache" >&2; exit 1; }
+  tools="${gopath%%:*}/legion-live-tools"
+  # `go install PATH@VERSION` asks for the module's version list even at an exact pin: it reads
+  # the go.mod of the module's latest version for a deprecation notice and for retractions
+  # (cmd/go's load.PackagesAndErrorsOutsideModule, modload.CheckDeprecation). From the proxy
+  # the job names, that is a network request on every run, which failed this step whenever the
+  # network did even with every module in the cache the job restored (with GOPROXY=off the
+  # install refuses: "loading deprecation for helm.sh/helm/v3: module lookup disabled"). So the
+  # proxy list starts with the module cache's own download directory, which serves the version
+  # lists and the modules the cache holds, and the fetch's proxy follows it: a `,` passes a
+  # request on only after a 404 or 410, which a file proxy answers for a file it does not hold, so
+  # the network is asked only for what the cache lacks. The cost: a deprecation or retraction
+  # published after the cache was filled is not read, which an exact pin a person reviews makes
+  # no difference to.
+  proxy="file://$modcache/cache/download,${GO_FETCH_PROXY:-${goproxy:-https://proxy.golang.org,direct}}"
+  echo "go-fetch: installing ${#pins[@]} tools into $tools, the module cache $modcache first" >&2
+  for pin in "${pins[@]}"; do
+    # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
+    GOBIN=$tools GOPROXY=$proxy retry go install "$pin"
+  done
+}
+
+list_deps() {
+  local dir=$1
+  shift
+  [ -d "$dir" ] || { echo "go-fetch: no directory $dir" >&2; exit 2; }
+  cd "$dir"
+  # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
+  retry go list -deps "$@" > /dev/null
+}
+
+# The settings a fetch FILE line may put in front of `deps`, and what each may be set to.
+PLATFORM_SETTING='^(GOOS|GOARCH)=[a-z0-9]+$|^CGO_ENABLED=[01]$'
+
+# run_file FILE: every line of FILE read and checked first, then each run in its turn, each
+# `deps` in a subshell of its own so its cd and its settings reach no other line.
+run_file() {
+  local file=$1 line text n=0 i
+  local -a words settings commands=() where=()
+  [ -f "$file" ] || { echo "go-fetch: no file $file" >&2; exit 2; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    text=${line%%#*}
+    read -ra words <<<"$text"
+    [ "${#words[@]}" -gt 0 ] || continue
+    settings=()
+    while [ "${#words[@]}" -gt 0 ] && [[ ${words[0]} == *=* ]]; do
+      if ! [[ ${words[0]} =~ $PLATFORM_SETTING ]]; then
+        echo "go-fetch: $file:$n: ${words[0]} is no setting a fetch line may give: GOOS, GOARCH or CGO_ENABLED" >&2
+        exit 2
+      fi
+      settings+=("${words[0]}")
+      words=("${words[@]:1}")
+    done
+    case "${words[0]:-}" in
+      deps)
+        if [ "${#words[@]}" -lt 3 ]; then
+          echo "go-fetch: $file:$n: deps names a directory and at least one package: deps DIR PACKAGE..." >&2
+          exit 2
+        fi
+        [ -d "$root/${words[1]}" ] || { echo "go-fetch: $file:$n: no directory ${words[1]} under the repository root" >&2; exit 2; }
+        ;;
+      tools)
+        if [ "${#words[@]}" -ne 2 ] || [ "${#settings[@]}" -gt 0 ]; then
+          echo "go-fetch: $file:$n: tools names one file and no setting: tools FILE" >&2
+          exit 2
+        fi
+        [ -f "$root/${words[1]}" ] || { echo "go-fetch: $file:$n: no file ${words[1]} under the repository root" >&2; exit 2; }
+        read_pins "$root/${words[1]}"
+        ;;
+      *)
+        echo "go-fetch: $file:$n: $text is no fetch command: deps DIR PACKAGE... or tools FILE" >&2
+        exit 2
+        ;;
+    esac
+    commands+=("${settings[*]:+${settings[*]} }${words[*]}")
+    where+=("$file:$n")
+  done < "$file"
+  [ "${#commands[@]}" -gt 0 ] || { echo "go-fetch: $file fetches nothing" >&2; exit 2; }
+  echo "go-fetch: $file: ${#commands[@]} commands" >&2
+  for i in "${!commands[@]}"; do
+    read -ra words <<<"${commands[$i]}"
+    settings=()
+    while [[ ${words[0]} == *=* ]]; do
+      settings+=("${words[0]}")
+      words=("${words[@]:1}")
+    done
+    echo "go-fetch: ${where[$i]}: ${commands[$i]}" >&2
+    if [ "${words[0]}" = deps ]; then
+      (
+        for setting in "${settings[@]}"; do export "${setting?}"; done
+        list_deps "$root/${words[1]}" "${words[@]:2}"
+      ) || exit $?
+    else
+      install_tools "$root/${words[1]}"
+    fi
+  done
+}
+
 [ $# -ge 1 ] || usage
 mode=$1
 shift
+if [ -n "${GO_FETCH_PROXY:-}" ]; then
+  export GOPROXY=$GO_FETCH_PROXY
+  echo "go-fetch: fetching through GO_FETCH_PROXY, $GO_FETCH_PROXY" >&2
+elif [ "${GOPROXY:-}" = off ]; then
+  echo "go-fetch: GO_FETCH_PROXY is unset and GOPROXY is off, so the module cache alone serves this fetch" >&2
+fi
 case "$mode" in
+  file)
+    [ $# -eq 1 ] || usage
+    run_file "$1"
+    ;;
   tools)
     [ $# -eq 1 ] || usage
-    file=$1
-    [ -f "$file" ] || { echo "go-fetch: no file $file" >&2; exit 2; }
-    pins=()
-    n=0
-    while IFS= read -r line || [ -n "$line" ]; do
-      n=$((n + 1))
-      pin=${line%%#*}
-      pin=${pin#"${pin%%[![:space:]]*}"}
-      pin=${pin%"${pin##*[![:space:]]}"}
-      [ -n "$pin" ] || continue
-      # A package path and a semantic version: a query such as @latest would install whatever
-      # the proxy answers that day, which no test's check of the build would then match.
-      if ! [[ "$pin" =~ ^[^@[:space:]]+@v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
-        echo "go-fetch: $file:$n: $pin is not a package path and a semantic version, path@vX.Y.Z" >&2
-        exit 2
-      fi
-      pins+=("$pin")
-    done < "$file"
-    [ "${#pins[@]}" -gt 0 ] || { echo "go-fetch: $file pins no tool" >&2; exit 2; }
-    # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
-    goenv=$(go env GOPATH GOMODCACHE GOPROXY)
-    gopath=$(sed -n 1p <<<"$goenv") modcache=$(sed -n 2p <<<"$goenv") goproxy=$(sed -n 3p <<<"$goenv")
-    [ -n "${gopath%%:*}" ] || { echo "go-fetch: go env GOPATH names no directory to install the tools under" >&2; exit 1; }
-    [ -n "$modcache" ] || { echo "go-fetch: go env GOMODCACHE names no module cache" >&2; exit 1; }
-    tools="${gopath%%:*}/legion-live-tools"
-    # `go install PATH@VERSION` asks for the module's version list even at an exact pin: it reads
-    # the go.mod of the module's latest version for a deprecation notice and for retractions
-    # (cmd/go's load.PackagesAndErrorsOutsideModule, modload.CheckDeprecation). From the proxy
-    # the job names, that is a network request on every run, which failed this step whenever the
-    # network did even with every module in the cache the job restored (with GOPROXY=off the
-    # install refuses: "loading deprecation for helm.sh/helm/v3: module lookup disabled"). So the
-    # proxy list starts with the module cache's own download directory, which serves the version
-    # lists and the modules the cache holds, and the job's proxy follows it: a `,` passes a request
-    # on only after a 404 or 410, which a file proxy answers for a file it does not hold, so the
-    # network is asked only for what the cache lacks. The cost: a deprecation or retraction
-    # published after the cache was filled is not read, which an exact pin a person reviews makes
-    # no difference to.
-    proxy="file://$modcache/cache/download,${goproxy:-https://proxy.golang.org,direct}"
-    echo "go-fetch: installing ${#pins[@]} tools into $tools, the module cache $modcache first" >&2
-    for pin in "${pins[@]}"; do
-      # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
-      GOBIN=$tools GOPROXY=$proxy retry go install "$pin"
-    done
+    install_tools "$1"
     ;;
   deps)
     [ $# -ge 2 ] || usage
-    dir=$1
-    shift
-    [ -d "$dir" ] || { echo "go-fetch: no directory $dir" >&2; exit 2; }
-    cd "$dir"
-    # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
-    retry go list -deps "$@" > /dev/null
+    list_deps "$@"
     ;;
   pulumi-consumer)
     [ $# -eq 2 ] || usage
