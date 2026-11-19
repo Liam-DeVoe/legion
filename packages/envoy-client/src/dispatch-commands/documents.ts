@@ -868,8 +868,9 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // through and reads the server's own answer.
   // The read cannot see a document another writer makes between it and the upload, so the
   // upload itself asks for a create alone (create_only): Dispatch refuses it under a name the
-  // owner holds by then, writes nothing, and the refusal below names that document as the
-  // read's own refusal does.
+  // owner holds by then and writes no version (a file whose name was taken while its bytes were
+  // stored leaves them in the file store, as Dispatch's route says), and the refusal below names
+  // that document as the read's own refusal does. It is sent only with a file or non-blank text.
   const createOnly = (path !== undefined || !blank) && optionalBoolean(args, "force") !== true;
   const heldUnderName = async (): Promise<Artifact | undefined> =>
     artifactUnderName(
