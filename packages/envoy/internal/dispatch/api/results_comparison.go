@@ -3,8 +3,6 @@ package api
 import (
 	"context"
 	"log/slog"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -14,7 +12,8 @@ import (
 )
 
 // results_comparison.go says what each check compares its results with and where each result's
-// commit stands against that; whether a pass of the check stands is results_pass_stands.go's. It
+// commit stands against that; whether a pass of the check stands is results_pass_stands.go's, and
+// the heads a `before_merge` check compares with are results_head_bases.go's (headBases). It
 // holds no policy about GitHub: what is asked, how long an answer is believed and what is written
 // back are delivery's (delivery/branch.go, delivery/commit_pull_reads.go,
 // delivery.HeadsAttributedTo, delivery.ReadThroughCommitPulls), and the read of a pushed branch's
@@ -183,19 +182,6 @@ type baseBranchAnswer struct {
 	read   bool
 }
 
-// branchHeadAnswer is what GitHub said, on this read, about the head of one branch a CI job
-// pushed: the commit the branch is at; gone, where GitHub holds no such branch
-// (githubapp.ErrNoBranch), which is a branch deleted once its change merged; or the reason
-// Dispatch could not read it. A gone branch is kept apart from an unread one because the two
-// part the answers: a deleted branch is no basis and leaves no question open, so a result on it
-// stands where a pull request head names its commit and at another commit otherwise, while a
-// head Dispatch could not read may be any commit, so a commit no basis names is unknown.
-type branchHeadAnswer struct {
-	sha    string
-	gone   bool
-	reason string
-}
-
 func newComparisonReader(s *server, at string) *comparisonReader {
 	return &comparisonReader{
 		server: s, at: at, repos: map[string]repositoryAnswer{},
@@ -275,181 +261,6 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 	}
 	c.bases[key] = compared
 	return compared
-}
-
-// headBases is the heads a `before_merge` check compares its results with, and among them its
-// subjects (passStandsOf). The bases are the head of each pull request of the check's issue, open
-// or merged, newest learned first, and, where none is open, after them the head of each branch
-// a CI job pushed for that issue (collectChangeBranches) that belongs to it (branchOfIssue), in
-// name order. Where an open pull request is, the subjects are the head of each open one alone: a
-// pull request under review is the change a gate judges, so no other head speaks for it while it
-// is open, and a merged head stays a basis that is no subject. Where none is open, they are the
-// final head of the newest merged one and each branch head. A branch whose head a pull request
-// head already names adds nothing, since that commit is a basis already, and a branch GitHub no
-// longer holds adds nothing either. An issue with neither compares with nothing, and
-// nothingReason says which of the three kinds of nothing it is; where the one thing it might
-// compare with is a branch head Dispatch could not read, the reason is that read's.
-//
-// The pull request heads answer whether or not Dispatch can read the repository. A head
-// Dispatch holds is a fact about the work whatever the App can see today, so a result at one
-// stands at it, and only a result at no head of the list needs the repository read at all
-// (commitStands). A branch head is GitHub's answer now and nothing Dispatch holds, so a branch of
-// an issue resolving to no repository is never read, and a resolve that did not answer leaves
-// every branch unread for model.ReasonReadFailed.
-func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
-	heads, err := delivery.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
-	if err != nil {
-		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
-		return noBases(model.ReasonReadFailed)
-	}
-	var issueRepo *string
-	if len(heads) > 0 {
-		issueRepo, _ = c.repositoryOf(ctx, issueKey)
-	}
-	open := slices.ContainsFunc(heads, func(head delivery.AttributedHead) bool { return head.Open })
-	bases := make([]model.CheckBasis, 0, len(heads))
-	var subjects []model.CheckBasis
-	newestMerged := -1
-	for index, head := range heads {
-		basis := headBasis(head, issueRepo)
-		bases = append(bases, basis)
-		switch {
-		case open && head.Open:
-			subjects = append(subjects, basis)
-		case !open && (newestMerged < 0 || head.Number > heads[newestMerged].Number):
-			newestMerged = index
-		}
-	}
-	if newestMerged >= 0 {
-		subjects = append(subjects, bases[newestMerged])
-	}
-	pullRequestHeads := len(bases)
-	unread := ""
-	if branches := c.changeBranches[issueKey]; len(branches) > 0 && !open {
-		repo, answered := c.repositoryOf(ctx, issueKey)
-		switch {
-		case !answered:
-			unread = model.ReasonReadFailed
-		case repo != nil:
-			for _, branch := range branches {
-				belongs, read := c.branchOfIssue(ctx, issueKey, branch)
-				if !read {
-					if unread == "" {
-						unread = model.ReasonReadFailed
-					}
-					continue
-				}
-				if !belongs {
-					continue
-				}
-				head := c.branchHeadOf(ctx, *repo, branch)
-				switch {
-				case head.reason != "":
-					if unread == "" {
-						unread = head.reason
-					}
-				case head.gone:
-				default:
-					subject := model.CheckBasis{Kind: model.CheckBasisBranchHead, Branch: branch, Commit: head.sha}
-					if matched := basisAt(bases[:pullRequestHeads], head.sha); matched != nil {
-						subject = *matched
-					} else {
-						bases = append(bases, subject)
-					}
-					if basisAt(subjects, head.sha) == nil {
-						subjects = append(subjects, subject)
-					}
-				}
-			}
-		}
-	}
-	switch {
-	case len(bases) > 0:
-		return comparison{bases: bases, unread: unread, subjects: subjects}
-	case unread != "":
-		return noBases(unread)
-	}
-	return noBases(c.nothingReason(ctx, issueKey))
-}
-
-// branchOfIssue is whether branch belongs to issueKey (delivery.BranchOfIssue), and whether the
-// read answered, held for the rest of the read: a stored row's branch counts for the check's
-// issue only where it does, so a row a job of another issue's branch left adds no head.
-func (c *comparisonReader) branchOfIssue(ctx context.Context, issueKey, branch string) (bool, bool) {
-	key := [2]string{issueKey, branch}
-	if held, read := c.branchIssues[key]; read {
-		return held[0], held[1]
-	}
-	belongs, err := delivery.BranchOfIssue(ctx, c.server.deps.Store.Pool, issueKey, branch)
-	if err != nil {
-		slog.Warn("dispatch: read whether a branch belongs to a check's issue", "issue", issueKey, "branch", branch, "error", err)
-	}
-	c.branchIssues[key] = [2]bool{belongs, err == nil}
-	return belongs, err == nil
-}
-
-// collectChangeBranches records, for the issue of each `before_merge` check of the document, the
-// branch whose push a CI job ran on for each result recorded on that issue against one of its
-// checks (model.CheckResult.Branch), each branch once and in name order. A role's result and a
-// derived one name no branch. A result recorded on another issue — a child's against its
-// parent's check — names no branch of the check's issue, as a child's pull request is no head of
-// it. It runs before any check is compared, so every `before_merge` check of one issue compares
-// with one list of heads, whichever of them holds the result that names a branch.
-func (c *comparisonReader) collectChangeBranches(checks []model.CheckBlock) {
-	for _, check := range checks {
-		if check.When != docs.CheckWhenBeforeMerge {
-			continue
-		}
-		for _, result := range check.Results {
-			branches := c.changeBranches[check.IssueKey]
-			if result.Branch == "" || result.IssueKey != check.IssueKey || slices.Contains(branches, result.Branch) {
-				continue
-			}
-			c.changeBranches[check.IssueKey] = append(branches, result.Branch)
-		}
-	}
-	for _, branches := range c.changeBranches {
-		slices.Sort(branches)
-	}
-}
-
-// branchHeadOf is the head of one branch of repo, read once per read of the results. Nothing
-// holds it across reads: a push moves a branch, and the next read must see where it went.
-func (c *comparisonReader) branchHeadOf(ctx context.Context, repo, branch string) branchHeadAnswer {
-	key := [2]string{repo, branch}
-	if held, read := c.branchHeads[key]; read {
-		return held
-	}
-	head := c.server.readBranchHead(ctx, repo, branch)
-	c.branchHeads[key] = head
-	return head
-}
-
-// headBasis is one stored pull request head as the surface names it: the commit, the pull
-// request's number, whether it merged (its row is not open, so the commit is its final head),
-// and when Dispatch last learned that head with the kind of time it is. The later of the two
-// times wins, so a head a webhook moved after the last complete read prints GitHub's own update
-// time, named model.BasisLearnedUpdatedAt, and never an older read time. A row carrying neither
-// time names none.
-//
-// issueRepo is the repository the check's issue resolves to (repositoryOf). A head of a pull
-// request in another repository, which an issue's link makes its own (R19), names its repository
-// beside its number, compared without case (R18); a head of the issue's own repository names
-// none, and nor does any head where Dispatch cannot name the issue's repository (a nil issueRepo),
-// so each prints with its number alone, as before.
-func headBasis(head delivery.AttributedHead, issueRepo *string) model.CheckBasis {
-	number := head.Number
-	basis := model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: head.HeadSHA, PullRequest: &number, Merged: !head.Open}
-	if issueRepo != nil && !strings.EqualFold(head.Repo, *issueRepo) {
-		basis.Repo = head.Repo
-	}
-	switch {
-	case head.EventAt != nil && (head.CheckedAt == nil || head.EventAt.After(*head.CheckedAt)):
-		basis.LearnedAt = &model.BasisLearnedAt{At: *head.EventAt, Kind: model.BasisLearnedUpdatedAt}
-	case head.CheckedAt != nil:
-		basis.LearnedAt = &model.BasisLearnedAt{At: *head.CheckedAt, Kind: model.BasisLearnedReadAt}
-	}
-	return basis
 }
 
 // branchBases is the branches an `after_merge` or a `default_branch` check compares its
