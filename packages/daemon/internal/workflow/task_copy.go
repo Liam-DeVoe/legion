@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"fmt"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -28,13 +27,9 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
-	at := -1
-	if stored != nil {
-		at = slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == task })
-	}
-	if at < 0 {
-		return fmt.Errorf("start the copy of task %s of %s at generation %d: the plan holds no such task", task, issue.Key, issue.Generation)
-	}
+	// AssignTaskBranch refused a task the plan does not hold, and holds the generation's task rows
+	// locked, each of which names a version of the plan (its foreign key): the plan holds the task.
+	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == task })
 	if branch == claim.IssueBranch(issue.Key) && len(stored.Tasks[at].Needs) == 0 {
 		return nil
 	}
