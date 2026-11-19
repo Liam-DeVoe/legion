@@ -390,6 +390,15 @@ const clipboardState = {
   error: undefined as Error | undefined,
 };
 
+/**
+ * The case running now, which `afterEach` moves on as it empties the record of what was published.
+ * A case here boots sessions it never shuts down, and their timers go on firing after it ends: the
+ * reading a case's context interval held back went out at the 2,000 ms default, inside whichever
+ * case ran two seconds later, and that case read it as its own. So a stand-in connection publishes
+ * only while the case that dialled it runs.
+ */
+let natsCase = 0;
+
 // The dial `extensions/envoy.ts` opens NATS with, handed to it below through
 // `setNatsConnectForTests`. The `nats` module itself stays as it is: a row that sets
 // `natsState.realConnect` gets nats.js's own connect from here, and every other file in this
@@ -400,6 +409,7 @@ const natsStandInConnect = async (options: {
   readonly authenticator?: unknown;
 }) => {
   const { name, servers, authenticator } = options;
+  const dialledIn = natsCase;
   if (natsState.failConnects > 0) {
     natsState.failConnects -= 1;
     throw natsState.failError();
@@ -485,6 +495,8 @@ const natsStandInConnect = async (options: {
       }
     },
     publish: (subject: string, data?: Uint8Array) => {
+      // A session an earlier case left running reaches no later case's record (`natsCase`).
+      if (dialledIn !== natsCase) return;
       if (natsState.failPublishes > 0) {
         natsState.failPublishes -= 1;
         throw new Error("PUBLISH_FAILED");
@@ -861,6 +873,7 @@ afterEach(async () => {
   // would park every later test's connect for the rest of the process.
   natsState.heldConnect = undefined;
   natsState.published.length = 0;
+  natsCase += 1;
   natsState.onPublish = undefined;
   natsState.failPublishes = 0;
   natsState.subscriptions.clear();
