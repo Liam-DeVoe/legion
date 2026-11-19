@@ -19,25 +19,26 @@ import (
 
 // env is the whole environment a call's gh runs with, configDir its GH_CONFIG_DIR: PATH of gh's
 // and git's directories, HOME and the XDG directories at the answer's empty ones, the wrapper
-// GH_PATH names, gh's prompts, update check, spinner and colour off, and nothing of the daemon's
-// own environment.
+// GH_PATH names, gh's switches (ghSettings), and nothing of the daemon's own environment.
 func (a *Answer) env(configDir string) []string {
-	path := a.toolPath()
-	return []string{
-		"PATH=" + path,
-		"HOME=" + a.home,
-		"XDG_CONFIG_HOME=" + a.config,
-		"XDG_CACHE_HOME=" + a.cache,
-		"XDG_DATA_HOME=" + a.data,
-		"XDG_STATE_HOME=" + a.state,
-		"GH_CONFIG_DIR=" + configDir,
-		"GH_PATH=" + a.wrapper,
-		"GH_PROMPT_DISABLED=1",
-		"GH_NO_UPDATE_NOTIFIER=1",
-		"GH_SPINNER_DISABLED=1",
-		"NO_COLOR=1",
-	}
+	env := make([]string, 0, 8+len(ghSettings))
+	env = append(env,
+		"PATH="+a.toolPath(),
+		"HOME="+a.home,
+		"XDG_CONFIG_HOME="+a.config,
+		"XDG_CACHE_HOME="+a.cache,
+		"XDG_DATA_HOME="+a.data,
+		"XDG_STATE_HOME="+a.state,
+		"GH_CONFIG_DIR="+configDir,
+		"GH_PATH="+a.wrapper,
+	)
+	return append(env, ghSettings...)
 }
+
+// ghSettings are gh's own switches, which every gh of a call runs under: the call's own
+// (Answer.env) and the leak guard's children (Answer.guardEnv). gh asks no question, checks for no
+// update, and prints no spinner and no colour.
+var ghSettings = []string{"GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "GH_SPINNER_DISABLED=1", "NO_COLOR=1"}
 
 // toolPath is gh's directory, and the host's git's joined to it where the host holds a git of
 // its own: the whole of a call's PATH, and the front of the leak guard's (Answer.guardEnv).
@@ -97,8 +98,9 @@ func targetRepo(target ghroute.Target) string {
 }
 
 // guardEnv is the environment the leak guard's children start from for a call routed to
-// configDir: the daemon's own (Host.Environ, this process's where the host named none), with
-// PATH and GH_CONFIG_DIR its own and three names of the daemon's taken out.
+// configDir: the names of the daemon's own environment (Host.Environ, this process's where the
+// host named none) that guardKeeps keeps, gh's switches (ghSettings), and PATH and GH_CONFIG_DIR
+// its own.
 //
 // The daemon's and not the call's, which is the environment gh itself runs under (Answer.env):
 // that one holds two directories on its PATH, an empty HOME and empty XDG directories, which is
@@ -106,7 +108,7 @@ func targetRepo(target ghroute.Target) string {
 // could run in, and none its three places could be resolved from either (leakguard's Resolve,
 // which reads PATH and the configuration home).
 //
-// What is changed in it is what the guard's two children need:
+// What is set in it is what the guard's two children need:
 //
 //   - PATH with the real gh's directory, and the host's git's, in front of the daemon's own. The
 //     guard's visibility read is a plain `gh api … repos/<slug> --include --jq .visibility`
@@ -117,31 +119,84 @@ func targetRepo(target ghroute.Target) string {
 //   - GH_CONFIG_DIR the directory the call itself runs with, the one its repository routes to
 //     (Answer.route), so that read reaches GitHub as the agent's App — the one identity this call
 //     is made under — and sees what that App sees of the repository.
-//   - GH_TOKEN and GITHUB_TOKEN dropped, and GH_PATH with them. A token of the daemon's own
-//     would answer in the App's place, so the visibility read would be made as whoever started
-//     the daemon rather than as the agent; and a GH_PATH of the daemon's would name gh's git
-//     credential helper, which is no helper of this answer's bundle.
+//   - gh's switches, the ones the call's own gh runs under, so the gh the guard and the check
+//     start asks nothing and prints plainly.
+//
+// Of the daemon's own environment it keeps an allow list (guardKeeps), and never the whole less
+// some names. A token of the daemon's own (GH_TOKEN, GITHUB_TOKEN) would answer in the App's
+// place, so the visibility read would be made as whoever started the daemon rather than as the
+// agent; a GH_PATH of the daemon's would name gh's git credential helper, which is no helper of
+// this answer's bundle; and every other credential or seed of the daemon's would reach a script
+// this repository does not hold, and everything that script starts.
 func (a *Answer) guardEnv(configDir string) []string {
 	base := a.host.Environ
 	if base == nil {
 		base = os.Environ()
 	}
-	env := make([]string, 0, len(base)+2)
+	env := make([]string, 0, len(base)+len(ghSettings)+2)
 	// The last entry of a name is the one exec reads, so the daemon's PATH is the last one seen.
 	path := ""
 	for _, pair := range base {
-		switch name, value, _ := strings.Cut(pair, "="); name {
-		case "PATH":
+		switch name, value, _ := strings.Cut(pair, "="); {
+		case name == "PATH":
 			path = value
-		case "GH_CONFIG_DIR", "GH_PATH", "GH_TOKEN", "GITHUB_TOKEN":
-		default:
+		case guardKeeps(name):
 			env = append(env, pair)
 		}
 	}
 	if path != "" {
 		path = string(filepath.ListSeparator) + path
 	}
+	env = append(env, ghSettings...)
 	return append(env, "PATH="+a.toolPath()+path, "GH_CONFIG_DIR="+configDir)
+}
+
+// guardKeeps is whether the leak guard's children keep the name of the daemon's environment
+// (Answer.guardEnv). The guard's gh reads carry the App's token through GH_CONFIG_DIR, so it keeps
+// what a program carrying a GitHub token keeps (leakguard.TokenChildKeeps), each for what reads it:
+//
+//   - PATH, on which the guard finds the check, the askpass program and every child's program
+//     (leakguard's Resolve, noAnswer and program), and the check its shell, git and engine;
+//     Answer.guardEnv puts the real gh's directory in front of it;
+//   - HOME, the configuration home Resolve reads the check's pointer file under where
+//     XDG_CONFIG_HOME is unset, and the home of the check's git and of gh;
+//   - TMPDIR, where the check and the programs it starts make their temporary files;
+//   - TERM, TZ, LANG and the LC_ names, the terminal, time zone and locale the check's shell,
+//     its python and git run under;
+//   - the proxy variables in both cases (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY, NO_PROXY), the route
+//     out a pane and a pod are handed: gh reaches GitHub through them (Go's net/http), and so do
+//     the guard's curl read, its ls-remote and the check's git (libcurl).
+//
+// It keeps these besides, each with what reads it:
+//
+//   - PUBLIC_LEAK_CHECK (leakguard.CheckVar), the first place Resolve looks for the check, which
+//     it does for a host that names none (Host.LeakCheck);
+//   - XDG_CONFIG_HOME, under which Resolve reads the check's pointer file;
+//   - XDG_STATE_HOME, where the guard keeps the public answers it read (leakguard's
+//     visibilityCachePath);
+//   - XDG_CACHE_HOME and XDG_DATA_HOME, with the two above where gh keeps its configuration,
+//     state and cache (go-gh pkg/config/config.go:276-327, which cmd/legion's ghChildKeeps
+//     cites).
+//
+// Everything else stays out, among it: the daemon's own credentials and seeds; GH_TOKEN,
+// GITHUB_TOKEN and GH_PATH (Answer.guardEnv); the trust stores (SSL_CERT_FILE, SSL_CERT_DIR,
+// CURL_CA_BUNDLE), which beside a proxy would let that proxy read the App's token
+// (leakguard.TokenChildKeeps), while the call's own gh runs with none (Answer.env), and a
+// deployment whose proxy reads TLS installs its CA in the system's store, which gh reads by
+// default (docs/deployment.md); GH_HOST, which the call's gh runs without and the check reads a
+// call under (ghroutetest.PinnedCheckReads); the GIT_ names, by which the check's git would read
+// the daemon's repository and configuration (GIT_DIR, GIT_CONFIG_PARAMETERS);
+// PUBLIC_LEAK_CHECK_REPO_NAMES and PUBLIC_LEAK_CHECK_INTERNAL, which the guard sets for no check
+// (leakguard's package doc); and LEGION_GH_OWNERS_DIR, which the guard reads only of a read
+// `legion gh` refused, while this tool's reads run the real gh.
+func guardKeeps(name string) bool {
+	return leakguard.TokenChildKeeps(name) || guardNames[name]
+}
+
+// guardNames are the whole names guardKeeps keeps beside leakguard.TokenChildKeeps' own.
+var guardNames = map[string]bool{
+	leakguard.CheckVar: true,
+	"XDG_CONFIG_HOME":  true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true,
 }
 
 // route reads the repositories argv targets, and their owners, as a pane's `legion gh` reads

@@ -149,15 +149,23 @@ type fixture struct {
 }
 
 // The stand-in shared public leak checks the tool's guard is driven against, leakguardtest's,
-// each recording the call it was handed in LEAK_CHECK_RECORD so a test can read that the check
-// ran at all and with what (fixture.checked). checkRefuses answers as the check answers a write
-// it refuses, its report and exit 3; checkCannotRun as one that could not be made to run.
+// each recording the call it was handed in the file LEAK_CHECK_RECORD names so a test can read
+// that the check ran at all and with what (fixture.checked). checkRefuses answers as the check
+// answers a write it refuses, its report and exit 3; checkCannotRun as one that could not be made
+// to run.
 var (
 	checkPasses     = leakguardtest.Recording(leakguardtest.Passes)
 	checkRefuses    = leakguardtest.Recording(leakguardtest.Refusing(checkRefusal))
 	checkCannotRun  = leakguardtest.Recording(leakguardtest.CannotFinish)
 	checkReadsStdin = leakguardtest.Recording(leakguardtest.Reading(0, ""))
 )
+
+// recordsIn is a stand-in check's script with LEAK_CHECK_RECORD set to record in its first line:
+// the guard hands the check no name of this test's own (Answer.guardEnv), so the file it records
+// in is written into the script, as leakguardtest.AnswersHelp writes its own.
+func recordsIn(record, script string) string {
+	return "LEAK_CHECK_RECORD='" + record + "'\n" + script
+}
 
 // checkRefusal is the report the refusing stand-in prints, the whole of what its refusal says
 // about the call.
@@ -228,13 +236,12 @@ func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 		StateDir: filepath.Join(root, "state"), Calls: f.calls, Log: slog.New(slog.NewJSONHandler(f.logs, nil)), Now: time.Now,
 		Credential: appauth.GitHubCredential(f.tokens, servedRepositories, ghrepo.Renames{}, nil, nil, slog.New(slog.DiscardHandler)),
 		// The guard's own two seams, as the daemon fills them: the check a stand-in of this
-		// test's, since the real one is a script no clone of this repository holds, and the
-		// environment this process's own with the record file the stand-in writes to added, and
-		// a state home of this fixture's, where the guard keeps the public answers it read
-		// (leakguard's visibility cache), so no answer another run kept stands in for this one's
-		// read.
-		LeakCheck: leakguardtest.Write(t, f.check, checkPasses),
-		Environ:   append(os.Environ(), "LEAK_CHECK_RECORD="+f.record, "XDG_STATE_HOME="+filepath.Join(root, "daemon-state")),
+		// test's, since the real one is a script no clone of this repository holds, recording in
+		// the fixture's record file, and the environment this process's own with a state home of
+		// this fixture's added, where the guard keeps the public answers it read (leakguard's
+		// visibility cache), so no answer another run kept stands in for this one's read.
+		LeakCheck: leakguardtest.Write(t, f.check, recordsIn(f.record, checkPasses)),
+		Environ:   append(os.Environ(), "XDG_STATE_HOME="+filepath.Join(root, "daemon-state")),
 	}
 	answer, err := Open(context.Background(), f.host, agent, question)
 	if err != nil {
@@ -246,11 +253,12 @@ func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 }
 
 // leakCheck writes script as the body of the stand-in shared public leak check this fixture's
-// calls are guarded by, replacing the one it started with: the guard resolves the check at every
-// call, so a call after this is checked by the new one.
+// calls are guarded by, recording in the fixture's record file, and replacing the one it started
+// with: the guard resolves the check at every call, so a call after this is checked by the new
+// one.
 func (f *fixture) leakCheck(script string) {
 	f.t.Helper()
-	leakguardtest.Write(f.t, f.check, script)
+	leakguardtest.Write(f.t, f.check, recordsIn(f.record, script))
 }
 
 // checked is what the stand-in check recorded of the calls it was handed, and "" where it was
@@ -1873,6 +1881,63 @@ func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 			t.Fatalf("the guard reading %q with no files named = %v; want the setup failure its own table makes of the body", run, err)
 		}
 	})
+}
+
+// The guard is given the names of the daemon's environment that guardKeeps allows and no other
+// name of it: a secret of the daemon's own and a trust store stay out, and every allowed name the
+// daemon holds reaches the guard, and its gh read of the call's repository, with the daemon's value.
+func TestTheGuardIsGivenOnlyTheAllowedNamesOfTheDaemonsEnvironment(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "gh's answer\n"})
+	allowed := map[string]string{
+		leakguard.CheckVar: f.answer.host.LeakCheck, "HOME": t.TempDir(), "TMPDIR": t.TempDir(),
+		"TERM": "dumb", "TZ": "UTC", "LANG": "C", "LC_ALL": "C", "LC_MESSAGES": "C",
+		"HTTPS_PROXY": "http://proxy.invented:3128", "https_proxy": "http://proxy.invented:3128",
+		"NO_PROXY": "*", "no_proxy": "*",
+		"XDG_CONFIG_HOME": t.TempDir(), "XDG_CACHE_HOME": t.TempDir(), "XDG_DATA_HOME": t.TempDir(), "XDG_STATE_HOME": t.TempDir(),
+	}
+	keptOut := map[string]string{"LEGION_TEST_DAEMON_SECRET": "the daemon's own secret", "SSL_CERT_FILE": "/the/daemons/ca.pem"}
+	daemon := []string{"PATH=" + os.Getenv("PATH")}
+	for name, value := range allowed {
+		daemon = append(daemon, name+"="+value)
+	}
+	for name, value := range keptOut {
+		daemon = append(daemon, name+"="+value)
+	}
+	f.answer.host.Environ = daemon
+
+	configDir := filepath.Join(f.answer.owners, "acme")
+	want := []string{"PATH=" + f.stand + ":" + filepath.Dir(f.host.Git) + ":" + os.Getenv("PATH"), "GH_CONFIG_DIR=" + configDir,
+		"GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "GH_SPINNER_DISABLED=1", "NO_COLOR=1"}
+	for name, value := range allowed {
+		want = append(want, name+"="+value)
+	}
+	if got := slices.Sorted(slices.Values(f.answer.guardEnv(configDir))); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+		t.Errorf("the guard is given\n%q\nwant exactly\n%q", got, slices.Sorted(slices.Values(want)))
+	}
+
+	argv := []string{"pr", "view", "5", "-R", "acme/widgets", "--json", "title"}
+	if got := f.run(1, argv...); !got.Ran || got.Exit != 0 {
+		t.Fatalf("gh %q = %+v; want it run", argv, got)
+	}
+	reads := f.guardReads()
+	if len(reads) != 1 {
+		t.Fatalf("the guard made %d visibility reads, want one: %+v", len(reads), reads)
+	}
+	values := map[string]string{}
+	for _, pair := range reads[0].Env {
+		name, value, _ := strings.Cut(pair, "=")
+		values[name] = value
+	}
+	for name, value := range allowed {
+		if values[name] != value {
+			t.Errorf("the guard's read ran with %s=%q, want the daemon's %q", name, values[name], value)
+		}
+	}
+	for name := range keptOut {
+		if value, ok := values[name]; ok {
+			t.Errorf("the guard's read ran with the daemon's %s=%q", name, value)
+		}
+	}
 }
 
 // The recorded calls of an answer that write are the ones Writes names, in their order, each by

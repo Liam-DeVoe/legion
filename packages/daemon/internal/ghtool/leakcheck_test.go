@@ -29,10 +29,10 @@ func (s *standInSource) Get(_ context.Context, tag string) (leakguard.Served, er
 // servedCheck is the check the daemon serves, packed as it packs one (a gzipped tarball of the
 // leak-check directory's own paths, leakguard.PackTarball): a launcher that answers the install's
 // one `--help` run as the real check does, counting it in runs (leakguardtest.AnswersHelp), and
-// clears every call it is handed after, recording it (checkPasses).
-func servedCheck(t *testing.T, runs string) []byte {
+// clears every call it is handed after, recording it in record (checkPasses, recordsIn).
+func servedCheck(t *testing.T, runs, record string) []byte {
 	t.Helper()
-	launcher := "#!/bin/sh\nif [ \"$1\" = --help ]; then\n" + leakguardtest.AnswersHelp(runs) + "fi\n" + checkPasses
+	launcher := "#!/bin/sh\nif [ \"$1\" = --help ]; then\n" + leakguardtest.AnswersHelp(runs) + "fi\n" + recordsIn(record, checkPasses)
 	return leakguardtest.Tarball(t, map[string]leakguardtest.Member{
 		leakguardtest.CheckName: {Body: launcher, Mode: 0o755},
 		"public_leak_check.py":  {Body: "# the check itself\n", Mode: 0o644},
@@ -43,13 +43,12 @@ func servedCheck(t *testing.T, runs string) []byte {
 // with extra after it, and with no extra one holding none of the three places the guard resolves a
 // check from: no PUBLIC_LEAK_CHECK, a PATH of the system's own directories, and a configuration
 // home with no pointer file. That is a Kubernetes daemon's, whose image carries the check's pin and
-// not the check. It carries the file the stand-in checks record their runs in, and a state home of
-// its own.
-func daemonEnviron(t *testing.T, f *fixture, extra ...string) []string {
+// not the check. It carries a state home of its own.
+func daemonEnviron(t *testing.T, extra ...string) []string {
 	t.Helper()
 	home := t.TempDir()
 	env := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
-		"XDG_STATE_HOME=" + t.TempDir(), "LEAK_CHECK_RECORD=" + f.record}
+		"XDG_STATE_HOME=" + t.TempDir()}
 	if check, err := leakguard.New(leakguard.Options{Env: env}).Resolve(); err == nil {
 		t.Fatalf("the daemon's environment resolves the check %s, where it must hold none", check)
 	}
@@ -64,8 +63,8 @@ func daemonEnviron(t *testing.T, f *fixture, extra ...string) []string {
 // refuses every call with the setup failure naming it, gh never started.
 func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 	const tag = "leak-check-v18"
-	runs := filepath.Join(t.TempDir(), "help-runs")
-	source := &standInSource{body: servedCheck(t, runs)}
+	runs, record := filepath.Join(t.TempDir(), "help-runs"), filepath.Join(t.TempDir(), "leak-check-record")
+	source := &standInSource{body: servedCheck(t, runs, record)}
 	stateDir := t.TempDir()
 	check, err := InstallLeakCheck(context.Background(), source, tag, stateDir, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -81,7 +80,9 @@ func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 
 	t.Run("the installed check clears the call and gh runs", func(t *testing.T) {
 		f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
-		f.answer.host.LeakCheck, f.answer.host.Environ = check, daemonEnviron(t, f)
+		// The installed check records in the file written into it, which is what f.checked reads.
+		f.record = record
+		f.answer.host.LeakCheck, f.answer.host.Environ = check, daemonEnviron(t)
 		got := f.run(1, argv...)
 		if !got.Ran || got.Exit != 0 || got.Output != "posted\n" {
 			t.Fatalf("gh %q = %+v; want gh's answer, exit 0, and no setup failure", argv, got)
@@ -96,7 +97,7 @@ func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 
 	t.Run("no check named leaves the guard none to run", func(t *testing.T) {
 		f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
-		f.answer.host.LeakCheck, f.answer.host.Environ = "", daemonEnviron(t, f)
+		f.answer.host.LeakCheck, f.answer.host.Environ = "", daemonEnviron(t)
 		got := f.run(1, argv...)
 		const want = "LEAK CHECK SETUP ERROR: the gh call: the shared public leak check could not be found"
 		if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: ") || !strings.Contains(got.Output, want) {
@@ -112,7 +113,7 @@ func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 // path, logging the one line that says so, and the path reads back as the new tag's.
 func TestAnInstallAtANewPinReplacesTheOneBefore(t *testing.T) {
 	runs := filepath.Join(t.TempDir(), "help-runs")
-	source := &standInSource{body: servedCheck(t, runs)}
+	source := &standInSource{body: servedCheck(t, runs, filepath.Join(t.TempDir(), "leak-check-record"))}
 	stateDir := t.TempDir()
 	var logs bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logs, nil))
@@ -140,8 +141,8 @@ func TestAnInstallAtANewPinReplacesTheOneBefore(t *testing.T) {
 // pane's is (MachineLeakCheck): a call it clears runs gh, the machine's check having run for it.
 func TestACallRunsUnderTheMachinesCheckResolvedFromTheDaemonsEnvironment(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
-	machine := leakguardtest.Write(t, t.TempDir(), checkPasses)
-	env := daemonEnviron(t, f, leakguard.CheckVar+"="+machine)
+	machine := leakguardtest.Write(t, t.TempDir(), recordsIn(f.record, checkPasses))
+	env := daemonEnviron(t, leakguard.CheckVar+"="+machine)
 	check, err := MachineLeakCheck(env)
 	if err != nil || check != machine {
 		t.Fatalf("MachineLeakCheck = %q, %v; want the machine's %s", check, err, machine)

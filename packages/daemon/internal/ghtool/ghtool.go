@@ -85,11 +85,11 @@ type Recorder interface {
 // launch (MachineLeakCheck). "" leaves the guard to resolve one in Environ at every call, in the
 // three places the check itself names (leakguard's Resolve), none of which a Kubernetes daemon's
 // environment holds: every call is then refused with the setup failure naming the missing check.
-// Environ is the environment the guard's own children — the check, and the gh read of a
-// repository's visibility — start from, the daemon's own (os.Environ() form); nil is this
-// process's own, read at each call. It is the daemon's and not the call's: a call's environment
-// carries two directories on its PATH and nothing else, which is no environment a shell script can
-// run in, and resolves no check at all (Answer.guardEnv).
+// Environ is the daemon's own environment (os.Environ() form), of which the guard's own children —
+// the check, and the gh read of a repository's visibility — start from the names guardKeeps
+// allows; nil is this process's own, read at each call. It is the daemon's and not the call's: a
+// call's environment carries two directories on its PATH and nothing else, which is no
+// environment a shell script can run in, and resolves no check at all (Answer.guardEnv).
 type Host struct {
 	GH         string
 	Git        string
