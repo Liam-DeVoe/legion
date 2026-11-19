@@ -19,12 +19,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildGenerated, GENERATED, gateSearch } from "./gate-search";
 import { roleTexts } from "./role-texts";
+import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
 
 // Each row copies the checkout's prompts and skills, or builds its plugin, and the hook removes the
-// copies. The file took 1.8 s at a load of about 350, and the same removal in rule-search.test.ts
-// took 36 s at a load of about 690, past bun's 5 s default per test and hook, so each test and hook
-// gets one minute, set before the hook below.
-setDefaultTimeout(60_000);
+// copies: each test and hook gets the limit test-limit.ts computes from the bounds of what they
+// wait for, set before the hook below.
+setDefaultTimeout(fileRowLimit({ ...SCRIPT_RUN, part: "the plugin's build" }));
 
 const checkout = process.env.GATE_SEARCH_CHECKOUT ?? path.resolve(import.meta.dir, "../../../..");
 const scratch = mkdtempSync(path.join(tmpdir(), "gate-search-test-"));

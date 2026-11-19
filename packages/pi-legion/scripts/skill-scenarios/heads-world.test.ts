@@ -9,9 +9,11 @@ import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type * as headsModule from "./heads-world";
+import { fileRowLimit } from "./test-limit";
 
-// Each row runs the two modes against stubs in this process; a loaded machine stretches even that.
-setDefaultTimeout(60_000);
+// Each row runs the two modes against stubs in this process; a loaded machine stretches even that,
+// so each test and hook gets the limit test-limit.ts computes from the bounds of what they wait for.
+setDefaultTimeout(fileRowLimit());
 
 // e2e/api.ts reads its port when it loads, and harness-ports.ts reads FAKE_GITHUB_PORT: both are
 // set in the hook below, before heads-world.ts loads, and go back to what the caller held after.

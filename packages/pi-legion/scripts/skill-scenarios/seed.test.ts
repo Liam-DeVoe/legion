@@ -1,10 +1,25 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type * as seedModule from "./seed";
 import type * as requestsModule from "./seed-requests";
+import { fileRowLimit } from "./test-limit";
+
+// Each row seeds a fake Dispatch from this process and reads and writes its files, which a loaded
+// machine stretches: each test and hook gets the limit test-limit.ts computes from the bounds of
+// what they wait for, set before the hooks below.
+setDefaultTimeout(fileRowLimit());
 
 // e2e/api.ts, which seed.ts calls, reads its port when it loads: set it as rig.sh's seed_ts does,
 // then load seed.ts. PLAYWRIGHT_BASE_URL would point api.ts somewhere else. Both go back to what

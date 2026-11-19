@@ -10,10 +10,12 @@ import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { fileRowLimit, LABEL_CHECKOUTS, spawnWithin, VCS_COMMAND } from "./test-limit";
 
 // Each row clones the fixture repository three or four times and runs `bun install` in each
-// clone; on a loaded machine that takes longer than bun's 5 s default.
-setDefaultTimeout(60_000);
+// clone, so each test and hook gets the limit test-limit.ts computes from the bounds of what they
+// wait for.
+setDefaultTimeout(fileRowLimit(LABEL_CHECKOUTS, LABEL_CHECKOUTS));
 
 const SCRIPT = path.join(import.meta.dir, "label-checkouts.sh");
 const scratch = temporaryDirectory("label-checkouts", { real: true });
@@ -21,7 +23,8 @@ const repo = path.join(scratch, "repo");
 let commit = "";
 
 function git(cwd: string, ...args: string[]): string {
-  const run = Bun.spawnSync(
+  const run = spawnWithin(
+    { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
     [
       "git",
       "-c",
@@ -77,7 +80,7 @@ else console.log(\`\${mode} \${checkout}: 0 faults\`);
 function run(row: string, args: string[], script = SCRIPT) {
   const tmp = path.join(scratch, row);
   mkdirSync(tmp);
-  const result = Bun.spawnSync(["bash", script, repo, commit, ...args], {
+  const result = spawnWithin(LABEL_CHECKOUTS, ["bash", script, repo, commit, ...args], {
     env: { ...process.env, TMPDIR: tmp },
     stdout: "pipe",
     stderr: "pipe",

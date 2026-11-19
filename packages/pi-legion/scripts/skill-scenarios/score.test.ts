@@ -5,11 +5,21 @@ import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
+import { fileRowLimit, SCRIPT_RUN, spawnWithin, VCS_COMMAND } from "./test-limit";
 
-// The hooks stage the runs and run score.ts over them as a process of its own. On a loaded
-// machine a hook takes longer than bun's 5 s default (running score.ts took 8.2 s at a load of
-// 268), so each test and hook gets one minute.
-setDefaultTimeout(60_000);
+// The hooks stage the runs and run score.ts over them as a process of its own, so each test and
+// hook gets the limit test-limit.ts computes from the bounds of what they wait for.
+setDefaultTimeout(
+  fileRowLimit(
+    VCS_COMMAND,
+    VCS_COMMAND,
+    VCS_COMMAND,
+    VCS_COMMAND,
+    VCS_COMMAND,
+    VCS_COMMAND,
+    VCS_COMMAND
+  )
+);
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
@@ -277,7 +287,8 @@ recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 // this file runs.
 stagings.push(() => {
   const git = (...args: string[]) => {
-    const result = Bun.spawnSync(
+    const result = spawnWithin(
+      { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
       ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
       { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
     );
@@ -3247,7 +3258,12 @@ run("ci-pass-and-fail-architect-head-2", ciFiles({ "daemon.log": sentBackAt(20) 
 let out = "";
 let scoredExitCode: number | null = null;
 beforeAll(() => {
-  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
+  const scored = spawnWithin({ ...SCRIPT_RUN, part: "score.ts runs" }, [
+    "bun",
+    path.join(import.meta.dir, "score.ts"),
+    "runs",
+    runs,
+  ]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
 });
@@ -3794,7 +3810,7 @@ beforeAll(() => {
 });
 
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
-  const read = Bun.spawnSync([
+  const read = spawnWithin({ ...SCRIPT_RUN, part: "score.ts live-read" }, [
     "bun",
     path.join(import.meta.dir, "score.ts"),
     "live-read",

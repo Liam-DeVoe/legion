@@ -17,11 +17,12 @@ import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { fileRowLimit, RIG_STEP, spawnWithin, VCS_COMMAND } from "./test-limit";
 
-// Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
-// takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
-// one minute.
-setDefaultTimeout(60_000);
+// Every test here runs rig.sh and its stand-ins as real processes, which a loaded machine
+// stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of
+// what they wait for.
+setDefaultTimeout(fileRowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP));
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
 // one warning names docker for the whole file.
@@ -77,7 +78,8 @@ function keyFile(mode: number): string {
   return file;
 }
 function route(dir: string, env: Record<string, string>, model = "") {
-  const result = Bun.spawnSync(
+  const result = spawnWithin(
+    { ...RIG_STEP, part: "rig.sh install_model_route" },
     [
       "bash",
       "-c",
@@ -106,7 +108,9 @@ describe("install_model_route", () => {
     );
     expect(models).toContain(`!exec ${path.join(dir, "model-key", "anthropic-key")}`);
     expect(models).toContain("https://api.anthropic.com");
-    const served = Bun.spawnSync([path.join(dir, "model-key", "anthropic-key")]);
+    const served = spawnWithin({ ...RIG_STEP, part: "the profile's model-key command" }, [
+      path.join(dir, "model-key", "anthropic-key"),
+    ]);
     expect(served.stdout.toString().trim()).toBe("sk-ant-rig-test-0000000000000000");
     expect(existsSync(path.join(dir, "key", "anthropic-key.log"))).toBe(true);
   });
@@ -356,9 +360,13 @@ describe("a setup that fails after install_model_route", () => {
 /** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., in an
  * environment of PATH and the test's own HOME. */
 function bash(script: string, args: string[] = [], env: Record<string, string> = {}) {
-  const result = Bun.spawnSync(["bash", "-c", script, "-", ...args], {
-    env: { ...childEnv, ...env },
-  });
+  const result = spawnWithin(
+    { ...RIG_STEP, part: `rig.sh ${script.split("\n").at(-1)}` },
+    ["bash", "-c", script, "-", ...args],
+    {
+      env: { ...childEnv, ...env },
+    }
+  );
   return {
     code: result.exitCode,
     stdout: result.stdout.toString(),
@@ -377,7 +385,8 @@ function freshDir(name: string): string {
 // no .jj, and jj alone printed an empty commit line for it.
 describe("checkout_commit", () => {
   const git = (dir: string, ...args: string[]) => {
-    const result = Bun.spawnSync(
+    const result = spawnWithin(
+      { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
       [
         "git",
         "-C",
@@ -508,9 +517,13 @@ describe("omp_ancestor", () => {
     const top = freshDir("omp-rig");
     mkdirSync(path.join(top, ".omp"));
     const work = path.join(top, "work");
-    const result = Bun.spawnSync(["bash", path.join(import.meta.dir, "rig.sh"), "score"], {
-      env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
-    });
+    const result = spawnWithin(
+      { ...RIG_STEP, part: "rig.sh score" },
+      ["bash", path.join(import.meta.dir, "rig.sh"), "score"],
+      {
+        env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
+      }
+    );
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain(`${top}/.omp`);
     expect(existsSync(work)).toBe(false);
@@ -901,18 +914,22 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     output = "answer.json",
     env: Record<string, string> = {}
   ) =>
-    Bun.spawnSync(["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output], {
-      env: {
-        ...childEnv,
-        USER: "rig",
-        SKILL_SCENARIOS_WORK: work,
-        SKILL_SCENARIOS_JUDGE_OMP: omp,
-        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
-        LEGION_E2E_MODEL_ROUTE: "key-file",
-        LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
-        ...env,
-      },
-    });
+    spawnWithin(
+      { ...RIG_STEP, part: `rig.sh judge-omp ${kind}` },
+      ["bash", path.join(import.meta.dir, "rig.sh"), "judge-omp", kind, dir, output],
+      {
+        env: {
+          ...childEnv,
+          USER: "rig",
+          SKILL_SCENARIOS_WORK: work,
+          SKILL_SCENARIOS_JUDGE_OMP: omp,
+          SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
+          LEGION_E2E_MODEL_ROUTE: "key-file",
+          LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
+          ...env,
+        },
+      }
+    );
   let jobs = 0;
   function judgeDir(): string {
     const dir = path.join(work, "judging", `job-${++jobs}`);
@@ -1199,7 +1216,8 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
       recursive: true,
     });
     const rootWork = freshDir("judge-root-work");
-    const result = Bun.spawnSync(
+    const result = spawnWithin(
+      { ...RIG_STEP, part: "rig.sh judge-omp ste" },
       ["bash", path.join(scripts, "rig.sh"), "judge-omp", "ste", judgeDir(), "answer.json"],
       {
         env: {
@@ -2058,17 +2076,27 @@ describe("heads_fixture", () => {
     return { ...result, run };
   }
   const git = (dir: string, ...args: string[]) => {
-    const result = Bun.spawnSync(["git", "-C", dir, ...args], { env: childEnv });
+    const result = spawnWithin(
+      { ...VCS_COMMAND, part: `git ${args.join(" ")}` },
+      ["git", "-C", dir, ...args],
+      {
+        env: childEnv,
+      }
+    );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
   };
   /** The commit the workspace's working copy stands on, as jj reads it with the fixture's own
    * configuration. */
   const workspaceParent = (run: string) =>
-    Bun.spawnSync(["jj", "log", "--no-graph", "-r", "@-", "-T", "commit_id"], {
-      cwd: path.join(run, "ws"),
-      env: { ...childEnv, JJ_CONFIG: path.join(run, "jj-setup.toml") },
-    })
+    spawnWithin(
+      { ...VCS_COMMAND, part: "jj log" },
+      ["jj", "log", "--no-graph", "-r", "@-", "-T", "commit_id"],
+      {
+        cwd: path.join(run, "ws"),
+        env: { ...childEnv, JJ_CONFIG: path.join(run, "jj-setup.toml") },
+      }
+    )
       .stdout.toString()
       .trim();
 

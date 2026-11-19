@@ -12,6 +12,7 @@ import {
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { fileRowLimit, RIG_BATCH, SCRIPT_RUN, spawnWithin } from "./test-limit";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
@@ -27,8 +28,9 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 //     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
 //     (a run names its pin's omp by path).
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
-// must stop its server when it ends.
-setDefaultTimeout(120_000);
+// must stop its server when it ends. Each test and hook gets the limit test-limit.ts computes from
+// the bounds of what they wait for.
+setDefaultTimeout(fileRowLimit({ ...SCRIPT_RUN, part: "python3 -c" }, RIG_BATCH));
 
 // Every row here runs the rig through python3, which puts it in a process group of its own
 // (`runRig` below says why it must). Read once, so one warning names python3 for the whole file.
@@ -334,8 +336,15 @@ async function runRig(args: string[], vars: Record<string, string> = {}) {
     env: { ...env, ...vars },
     stdout: "pipe",
     stderr: "pipe",
+    timeout: RIG_BATCH.boundMs,
+    killSignal: "SIGKILL",
   });
   const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  if (child.signalCode === "SIGKILL") {
+    throw new Error(
+      `rig.sh ${args.join(" ")} did not end within its bound of ${RIG_BATCH.boundMs} ms`
+    );
+  }
   return { code, stderr };
 }
 
@@ -356,7 +365,12 @@ beforeAll(async () => {
   // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
   // of them, and this hook would throw on a host that does not have it.
   if (withoutPython) return;
-  const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
+  const resolved = spawnWithin({ ...SCRIPT_RUN, part: "python3 -c" }, [
+    "python3",
+    "-I",
+    "-c",
+    "import sys; print(sys.executable)",
+  ]);
   const executable = resolved.stdout.toString().trim();
   if (resolved.exitCode !== 0 || !path.isAbsolute(executable)) {
     throw new Error(

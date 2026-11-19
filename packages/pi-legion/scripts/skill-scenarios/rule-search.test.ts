@@ -22,11 +22,12 @@ import path from "node:path";
 import { RULES } from "./label-rules";
 import { chainOf, roleTexts } from "./role-texts";
 import { headSentences, search, searchCut } from "./rule-search";
+import { fileRowLimit } from "./test-limit";
 
-// Each row and hook copies or removes the checkout's prompts and skills. On a loaded machine the
-// hook that removes them took 8.5 s and 36 s (at loads of about 600 and 690), past bun's 5 s
-// default, so each test and hook gets one minute, set before the hook below is registered.
-setDefaultTimeout(60_000);
+// Each row and hook copies or removes the checkout's prompts and skills: each test and hook gets
+// the limit test-limit.ts computes from the bounds of what they wait for, set before the hook
+// below is registered.
+setDefaultTimeout(fileRowLimit());
 
 const checkout = process.env.RULE_SEARCH_CHECKOUT ?? path.resolve(import.meta.dir, "../../../..");
 const tree = (process.env.RULE_SEARCH_TREE ?? "head") as "base" | "head";

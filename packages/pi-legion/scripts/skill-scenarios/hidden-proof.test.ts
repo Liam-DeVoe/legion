@@ -11,10 +11,12 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { quietCheck, scanTranscripts, stateLines } from "./hidden-proof";
+import { fileRowLimit, SCRIPT_RUN, spawnWithin } from "./test-limit";
 
 // The rows that run hidden-proof.ts as a process of its own take longer than bun's 5 s default on a
-// loaded machine.
-setDefaultTimeout(60_000);
+// loaded machine, so each test and hook gets the limit test-limit.ts computes from the bounds of
+// what they wait for.
+setDefaultTimeout(fileRowLimit({ ...SCRIPT_RUN, part: "hidden-proof.ts" }));
 
 const scratch = temporaryDirectory("hidden-proof", { real: true });
 const HEAD = "b".repeat(40);
@@ -266,7 +268,8 @@ function map(
 }
 
 function proof(maps: string, scenario?: string) {
-  const result = Bun.spawnSync(
+  const result = spawnWithin(
+    { ...SCRIPT_RUN, part: "hidden-proof.ts" },
     [
       "bun",
       path.join(import.meta.dir, "hidden-proof.ts"),

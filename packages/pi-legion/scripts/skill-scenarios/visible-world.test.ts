@@ -3,12 +3,12 @@ import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from "
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { fileRowLimit, SCRIPT_RUN, spawnWithin } from "./test-limit";
 
 // Each row runs visible-world.ts as a process of its own, and the view rows walk a real bubblewrap
-// view. At a load of about 350 the slowest row took 1.45 s, and a heavier load passes bun's 5 s
-// default, so each test and hook gets one minute, set before the hooks the reservations below
-// register.
-setDefaultTimeout(60_000);
+// view: each test and hook gets the limit test-limit.ts computes from the bounds of what they wait
+// for, set before the hooks the reservations below register.
+setDefaultTimeout(fileRowLimit({ ...SCRIPT_RUN, part: "visible-world.ts" }));
 
 // Each row's work directory, reserved here (the fixture's hook makes it before the rows run).
 const works = {
@@ -66,7 +66,11 @@ function runIn(work: string, files: Record<string, string>, runs = RUNS) {
   return run;
 }
 const search = (run: string) => {
-  const result = Bun.spawnSync(["bun", path.join(import.meta.dir, "visible-world.ts"), run]);
+  const result = spawnWithin({ ...SCRIPT_RUN, part: "visible-world.ts" }, [
+    "bun",
+    path.join(import.meta.dir, "visible-world.ts"),
+    run,
+  ]);
   return { code: result.exitCode, out: result.stdout.toString() };
 };
 
