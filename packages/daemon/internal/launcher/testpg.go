@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // The pod's own PostgreSQL for tests, which an issue pod's launcher serves when the deployment
@@ -209,15 +211,32 @@ func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, c
 // pod's first Postgres test. It runs what a pod's launcher runs — check, ensure — then makes and
 // drops a database through the DSN every role is told, and stops the server it started, so the
 // probe pod leaves nothing running. dir is a directory of the probe's own volume.
-func CheckTestPostgres(dir string) error {
+//
+// Each step waits as long as ctx allows, and has no bound of its own: ctx carries the probe's own
+// deadline (`--probe-budget`, the attempt's budget less the time the daemon keeps to read the
+// pod's log). A fixed bound here could fire while the server still works — `initdb`, a cold start
+// and a database's file copy are slow on a loaded node — and so refuse an image the probe's
+// budget has room to prove. Inside a step, the script's own waits still apply (`flock -w 180`,
+// `pg_ctl --timeout 120`). A step that runs past ctx's end is stopped with its whole process group
+// (procgroup.Configure). A kill of the script alone would leave its `flock` and the start that
+// `flock` holds running, and that start would go on to start a server after the `stop` below had
+// found none to stop. The server is then stopped, after ctx's end too, and the error names the
+// step that ran out.
+func CheckTestPostgres(ctx context.Context, dir string) error {
 	env := append(os.Environ(), TestPGVariable+"="+TestPGDSN, testPGDirVariable+"="+dir)
-	run := func(name string, argv ...string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), testPGBound)
-		defer cancel()
+	run := func(ctx context.Context, name string, argv ...string) error {
 		cmd := exec.CommandContext(ctx, name, argv...)
-		cmd.WaitDelay = time.Second
+		killed := procgroup.Configure(cmd)
 		cmd.Env = env
 		output, err := cmd.CombinedOutput()
+		if killed() {
+			stopped := fmt.Errorf("the pod's own test database: %s %s did not finish before the probe's context ended (%w), so its process group was stopped",
+				name, strings.Join(argv, " "), context.Cause(ctx))
+			if said := strings.TrimSpace(string(output)); said != "" {
+				return fmt.Errorf("%w; it printed: %s", stopped, said)
+			}
+			return stopped
+		}
 		if err != nil {
 			return fmt.Errorf("the pod's own test database: %s %s: %w: %s",
 				name, strings.Join(argv, " "), err, strings.TrimSpace(string(output)))
@@ -233,11 +252,15 @@ func CheckTestPostgres(dir string) error {
 		{"psql", "-X", "-q", TestPGDSN, "-c", "create database legion_probe_testpg strategy file_copy"},
 		{"psql", "-X", "-q", TestPGDSN, "-c", "drop database legion_probe_testpg with (force)"},
 	}
+	// The stop runs under ctx's values but not its end: a probe whose deadline passed still stops
+	// the server it started. `legion-testpg stop` bounds its own wait for the server to exit
+	// (`pg_ctl --timeout`), and the probe Sandbox deletes the pod after its reserve in any case.
+	stop := func() error { return run(context.WithoutCancel(ctx), testPGProgram, "stop") }
 	for _, step := range steps {
-		if err := run(step[0], step[1:]...); err != nil {
-			_ = run(testPGProgram, "stop")
+		if err := run(ctx, step[0], step[1:]...); err != nil {
+			_ = stop()
 			return err
 		}
 	}
-	return run(testPGProgram, "stop")
+	return stop()
 }

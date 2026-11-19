@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The Dispatch auto-deployer (`deploy/scripts/autodeploy.sh`) no longer reads a registry that gave
+  no answer as an image that is not there. Each `docker manifest inspect` had a fixed 60 s bound,
+  and a read that ran it out, or that the registry refused, made the deployer pass over that
+  commit and deploy an older one, over the newer image already running and its schema. A commit
+  is now passed over only when the registry answers that it holds no such manifest. Any other
+  outcome is logged on one line that names the image read, and the pass fails with nothing
+  deployed. The reads wait as long as `MANIFEST_READ_DEADLINE` (300 s by default) leaves, over the
+  whole walk of main's last 30 commits.
+time: 2026-11-19T07:07:21Z
+custom:
+  Issue: fixed-docker-bounds

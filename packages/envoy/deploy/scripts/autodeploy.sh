@@ -16,6 +16,10 @@ PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16.11-alpine}"
 # gives up on reading the applied set. It bounds the whole read and not merely the start of its
 # last try: each try's own timeout is the time this deadline leaves, capped at a minute.
 SCHEMA_READ_DEADLINE="${SCHEMA_READ_DEADLINE:-60}"
+# MANIFEST_READ_DEADLINE is how long newest_published_main may wait on the registry, over all the
+# commits it asks about. It bounds the whole walk, not one read: each read is given the time this
+# deadline leaves. A read still unanswered when it passes fails the pass, and nothing is deployed.
+MANIFEST_READ_DEADLINE="${MANIFEST_READ_DEADLINE:-300}"
 
 case "$#" in
   0)
@@ -258,14 +262,44 @@ schema_label() {
   fi
 }
 
+# newest_published_main prints the newest of main's last 30 commits whose image the registry holds,
+# and returns 1 when the registry answers that it holds none of them. It passes over a commit only
+# when the registry answered that it holds no such manifest. Silence and every other answer (a
+# refused credential, a rate limit, a server error) prove nothing about the image, and a walk that
+# passed over such a commit would pick an older one: where that commit is the one deployed, the
+# pass would start an image older than its database's schema. So such a read is logged, naming the
+# image it asked for, and returns 2, which fails the pass with nothing deployed.
+#
+# A read has no bound of its own. It waits as long as MANIFEST_READ_DEADLINE leaves, since a
+# registry that answers slowly still answers, and nothing else in the pass waits on this read.
+# `timeout` stops a read when that deadline passes. `docker manifest inspect` asks the registry
+# and makes nothing on this host, so a stopped read leaves nothing to remove. The log lines go to
+# stderr, because the caller reads this function's stdout as the commit.
 newest_published_main() {
-  local sha
+  local sha answer status deadline left
   jj -R "$REPO" git fetch >/dev/null 2>&1
+  deadline=$((SECONDS + MANIFEST_READ_DEADLINE))
   while IFS= read -r sha; do
-    if timeout 60 docker manifest inspect "$IMAGE:$sha" >/dev/null 2>&1; then
+    left=$((deadline - SECONDS))
+    if ((left < 1)); then
+      log "MANIFEST_READ_DEADLINE (${MANIFEST_READ_DEADLINE}s) passed before docker manifest inspect $IMAGE:$sha could run; not deploying" >&2
+      return 2
+    fi
+    if answer=$(timeout "$left" docker manifest inspect "$IMAGE:$sha" 2>&1 >/dev/null); then
       printf '%s\n' "$sha"
       return 0
+    else
+      status=$?
     fi
+    if ((status == 124)); then
+      log "docker manifest inspect $IMAGE:$sha did not answer within MANIFEST_READ_DEADLINE (${MANIFEST_READ_DEADLINE}s); not deploying" >&2
+      return 2
+    fi
+    case "$answer" in
+      *"manifest unknown"* | *"no such manifest"*) continue ;;
+    esac
+    log "docker manifest inspect $IMAGE:$sha failed with status $status, an answer that does not say the image is missing: ${answer%%$'\n'*}; not deploying" >&2
+    return 2
   done < <(jj -R "$REPO" log -r 'ancestors(main@origin, 30)' --no-graph -T 'commit_id ++ "\n"')
   return 1
 }
@@ -461,13 +495,16 @@ deploy() {
 }
 
 run_once() {
-  local sha
+  local sha status
   if sha=$(newest_published_main); then
     if [[ "$sha" != "$(deployed_tag)" ]]; then
       log "main has a newer published image: $sha (deployed $(deployed_tag))"
       deploy "$sha"
     fi
   else
+    status=$?
+    # 2: a read that proves nothing, which newest_published_main has logged.
+    ((status == 1)) || return 1
     log "no published image among the last 30 main commits"
   fi
 }

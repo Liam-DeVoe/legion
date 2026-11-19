@@ -3,9 +3,12 @@ package launcher
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -244,7 +247,7 @@ func TestCheckTestPostgresRunsEveryStepAndStopsTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := CheckTestPostgres(filepath.Join(dir, "cluster")); err != nil {
+	if err := CheckTestPostgres(context.Background(), filepath.Join(dir, "cluster")); err != nil {
 		t.Fatalf("CheckTestPostgres: %v", err)
 	}
 	ran, err := os.ReadFile(calls)
@@ -267,11 +270,190 @@ func TestCheckTestPostgresRunsEveryStepAndStopsTheServer(t *testing.T) {
 	if err := os.Remove(calls); err != nil {
 		t.Fatal(err)
 	}
-	err = CheckTestPostgres(filepath.Join(dir, "cluster"))
+	err = CheckTestPostgres(context.Background(), filepath.Join(dir, "cluster"))
 	if err == nil || !strings.Contains(err.Error(), "the pod's own test database") {
 		t.Fatalf("CheckTestPostgres on a failing step = %v, want the failure named", err)
 	}
 	if again, readErr := os.ReadFile(calls); readErr != nil || !strings.Contains(string(again), testPGProgram+" stop\n") {
 		t.Errorf("a failed probe ran %q (%v), want the server stopped all the same", again, readErr)
+	}
+}
+
+// probeStandIn puts first on PATH a `legion-testpg` that handles its processes as the worker
+// image's script does, and a `psql` that answers at once, each appending what it ran to the file
+// calls. `ensure` runs its start in flock's child, as the script's start-locked runs, so a kill of
+// `ensure` alone leaves that start running. The start records itself in the file starters, waits
+// the seconds delay gives, and then starts a server: a sleep in a session of its own, as pg_ctl
+// starts the postmaster, recorded in the cluster's postmaster.pid and in the file servers. `stop`
+// ends the server postmaster.pid names, waits until it has exited, as `pg_ctl stop --wait` does,
+// and removes the file, and fails where there is none, as pg_ctl does. A record is a pid and the
+// process's start time, so a pid reused since is never signalled; every process a record names is
+// killed when the test ends, so a failing run leaves nothing running. It answers the directory
+// those files are in.
+func probeStandIn(t *testing.T, delay string) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/sh
+here='` + dir + `'
+printf '%s %s\n' "$(basename "$0")" "$*" >> "$here/calls"
+[ "$(basename "$0")" = psql ] && exit 0
+cluster=$LEGION_TESTPG_DIR
+case $1 in
+check) ;;
+ensure)
+	mkdir -p "$cluster"
+	flock -o "$cluster/.lock" sh -c '
+		echo "$$ $(cut -d" " -f22 /proc/$$/stat)" >> "$1/starters"
+		sleep ` + delay + `
+		setsid sleep 300 < /dev/null > /dev/null 2>&1 &
+		server="$! $(cut -d" " -f22 /proc/$!/stat)"
+		echo "$server" > "$2/postmaster.pid"
+		echo "$server" >> "$1/servers"
+	' start "$here" "$cluster"
+	;;
+stop)
+	[ -f "$cluster/postmaster.pid" ] || { echo "no server running" >&2; exit 1; }
+	read -r pid since < "$cluster/postmaster.pid"
+	alive() {
+		stat=$(cat "/proc/$pid/stat" 2> /dev/null) || return 1
+		[ "$(echo "$stat" | cut -d" " -f22)" = "$since" ] && [ "$(echo "$stat" | cut -d" " -f3)" != Z ]
+	}
+	if alive; then
+		kill "$pid"
+		while alive; do sleep 0.05; done
+	fi
+	rm -f "$cluster/postmaster.pid"
+	;;
+esac
+`
+	for _, program := range []string{testPGProgram, "psql"} {
+		if err := os.WriteFile(filepath.Join(dir, program), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		for _, record := range []string{"starters", "servers"} {
+			for _, pid := range stillRunning(t, filepath.Join(dir, record)) {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	return dir
+}
+
+// stillRunning answers the pids of the processes a record file of probeStandIn's names that still
+// run: a process that started when its line says and is no zombie. A missing file names none.
+func stillRunning(t *testing.T, file string) []int {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var running []int
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		pidText, since, _ := strings.Cut(line, " ")
+		pid, err := strconv.Atoi(pidText)
+		if err != nil {
+			t.Fatalf("%s holds %q, which names no pid", file, line)
+		}
+		stat, err := os.ReadFile("/proc/" + pidText + "/stat")
+		if err != nil {
+			continue
+		}
+		// The fields after the command's closing parenthesis start at the state, field 3, so the
+		// start time, field 22, is the twentieth of them.
+		fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+		if len(fields) >= 20 && fields[0] != "Z" && fields[19] == since {
+			running = append(running, pid)
+		}
+	}
+	return running
+}
+
+// recordLines answers how many records a record file of probeStandIn's holds: a step that never
+// started its start, or a server that was never started, holds none.
+func recordLines(t *testing.T, file string) int {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(data), "\n")
+}
+
+// The probe's steps wait as long as their caller allows, and have no bound of their own: the
+// launcher's testPGBound, cut here to half a second, does not reach them, so an `ensure` whose
+// server starts a second and a half in, slowly as under gVisor and still working, passes. Its
+// server is stopped and nothing of its start is left running.
+func TestCheckTestPostgresWaitsAsLongAsItsCallerAllows(t *testing.T) {
+	stand := probeStandIn(t, "1.5")
+	testPGBound = 500 * time.Millisecond
+	t.Cleanup(func() { testPGBound = 60 * time.Second })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := CheckTestPostgres(ctx, filepath.Join(stand, "cluster")); err != nil {
+		t.Fatalf("CheckTestPostgres on a server that starts 1.5 s in = %v, want it waited for", err)
+	}
+	ran, err := os.ReadFile(filepath.Join(stand, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		testPGProgram + " ensure\n",
+		"psql -X -q " + TestPGDSN + " -c create database legion_probe_testpg strategy file_copy\n",
+		"psql -X -q " + TestPGDSN + " -c drop database legion_probe_testpg with (force)\n",
+		testPGProgram + " stop\n",
+	} {
+		if !strings.Contains(string(ran), want) {
+			t.Errorf("the probe ran %q, want a %q among them", ran, want)
+		}
+	}
+	if started := recordLines(t, filepath.Join(stand, "servers")); started != 1 {
+		t.Fatalf("the stand-in started %d servers, want the one ensure starts", started)
+	}
+	for _, record := range []string{"starters", "servers"} {
+		if running := stillRunning(t, filepath.Join(stand, record)); len(running) > 0 {
+			t.Errorf("after the probe, the %s it recorded still run: %v", record, running)
+		}
+	}
+}
+
+// The control: a step still running when the caller's deadline passes is named and stopped with
+// its whole process group. The start flock's child runs ends with `ensure`, so it cannot start a
+// server after the probe's stop has found none, and the stop runs all the same.
+func TestCheckTestPostgresStopsAStepThatOutlivesItsCallersDeadline(t *testing.T) {
+	stand := probeStandIn(t, "300")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	began := time.Now()
+	err := CheckTestPostgres(ctx, filepath.Join(stand, "cluster"))
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) ||
+		!strings.Contains(err.Error(), testPGProgram+" ensure did not finish before the probe's context ended") {
+		t.Fatalf("CheckTestPostgres on a start that never answers = %v, want ensure named as having run out the deadline", err)
+	}
+	if waited := time.Since(began); waited > 20*time.Second {
+		t.Errorf("CheckTestPostgres returned %s after a 5 s deadline", waited)
+	}
+	if started := recordLines(t, filepath.Join(stand, "starters")); started != 1 {
+		t.Fatalf("the stand-in's start ran %d times, want once: a run that never reached it proves nothing", started)
+	}
+	if running := stillRunning(t, filepath.Join(stand, "starters")); len(running) > 0 {
+		t.Errorf("the start flock's child ran still runs after the deadline: %v", running)
+	}
+	if started := recordLines(t, filepath.Join(stand, "servers")); started != 0 {
+		t.Errorf("the stand-in started %d servers, want none", started)
+	}
+	if ran, readErr := os.ReadFile(filepath.Join(stand, "calls")); readErr != nil || !strings.Contains(string(ran), testPGProgram+" stop\n") {
+		t.Errorf("a probe past its deadline ran %q (%v), want the server stopped all the same", ran, readErr)
 	}
 }

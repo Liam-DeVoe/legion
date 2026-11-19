@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The image probe's check of the pod's own test database (`legion probe-image --test-postgres`) no
+  longer refuses an image whose server starts slowly. Each step had a fixed 60 s bound, inside the
+  probe's own budget, which could fire while `initdb` or the server still worked. The kill then
+  reached the script alone, so the start it had begun went on and started a server after the
+  probe's stop had found none. Each step now waits as long as `--probe-budget` allows. A step
+  still running at that deadline is stopped with its whole process group, the server is stopped,
+  and the refusal names the step.
+time: 2026-11-19T07:07:21Z
+custom:
+  Issue: fixed-docker-bounds

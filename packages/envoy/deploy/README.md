@@ -86,6 +86,16 @@ only the `dispatch` service. It retains the ten newest pre-deploy dumps. Its
 defaults target the devbox; set `REPO`, `COMPOSE_PROJECT`, or `BACKUPS` to run
 against another checkout, Compose project, or dump directory.
 
+It asks the registry about each commit with `docker manifest inspect`, newest
+first, and passes over a commit only when the registry answers that it holds no
+such manifest. Silence and every other answer (a refused credential, a rate
+limit, a server error) prove nothing about the image, and walking past such a
+commit could deploy an image older than the one running, and older than its
+database's schema. So the deployer logs that read, naming the image, and fails
+the pass with nothing deployed. `MANIFEST_READ_DEADLINE` (300 seconds by default)
+bounds the whole walk: each read waits as long as that deadline leaves, so a
+registry that answers slowly is still read.
+
 Two releases of Dispatch never serve the database together in this compose deployment:
 `docker compose up -d --no-deps dispatch` stops and removes the old container before it starts the
 new one, which boots and migrates. That order is this deployer's own, not a rule every deployment

@@ -11,6 +11,12 @@ tools="$root/tools"
 log="$root/compose.log"
 argv="$root/argv.log"
 schema="$root/schema"
+# The registry's answers to the deployer's manifest reads (the docker stand-in below says how they
+# are written), and the tag of every read it made, in order.
+manifests="$root/manifests"
+manifest_log="$root/manifest.log"
+# The real timeout, which the stand-in below hands the deployer's manifest reads to.
+real_timeout=$(command -v timeout)
 mkdir -p "$compose" "$backups" "$bin" "$tools"
 # The database password, percent-encoded in DATABASE_URL as s%40cret-canary. Neither spelling may
 # appear in the deployer's output or in any process's arguments.
@@ -34,17 +40,22 @@ EOF
   # level. A migration applied below the highest one changes the set and leaves max(version) where
   # it was.
   seq 1 112 >"$schema"
-  rm -f "$schema.up" "$schema.running" "$schema.candidate" "$schema.held" "$schema.key"
+  rm -f "$schema.up" "$schema.running" "$schema.candidate" "$schema.held" "$schema.key" "$manifests" "$manifests.hung"
   touch "$schema.running"
   : >"$log"
   : >"$argv"
+  : >"$manifest_log"
+}
+# deployed_tag_is <tag>: the tag compose/.env says is deployed.
+deployed_tag_is() {
+  sed -i -E "s/^ENVOY_IMAGE_TAG=.*/ENVOY_IMAGE_TAG=$1/" "$compose/.env"
 }
 
 cat >"$bin/jj" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *" git fetch"*) ;;
-  *"ancestors(main@origin, 30)"*) printf 'new-image\n' ;;
+  *"ancestors(main@origin, 30)"*) printf '%s\n' ${AUTODEPLOY_TEST_COMMITS:-new-image} ;;
   *"description.first_line()"*) printf 'test deployment\n' ;;
 esac
 EOF
@@ -52,6 +63,14 @@ EOF
 # only the variables passed by name with -e, and with the fake psql and pg_dump below on its PATH.
 # Every process it starts records its arguments, so the test reads what a host's
 # /proc/<pid>/cmdline would show.
+#
+# A manifest read records its tag in $AUTODEPLOY_TEST_MANIFEST_LOG and answers what a
+# `<tag> <answer>` line of $AUTODEPLOY_TEST_MANIFESTS says for that tag: `late:<s>`, the manifest
+# after <s> seconds; `unknown`, the registry's answer for a tag it does not hold, as ghcr.io words
+# it; `unknown-after:<s>`, that answer after <s> seconds; `refused`, a rate limit's refusal; and
+# `hang`, no answer at all, as a read whose pid and start time it records in
+# $AUTODEPLOY_TEST_MANIFESTS.hung. A tag with no line is published, at once. A wait ends its sleep
+# when the read is stopped, so a stopped read leaves no process of the stand-in's behind.
 cat >"$bin/docker" <<'EOF'
 #!/usr/bin/env bash
 held_migration_commits() {
@@ -64,7 +83,27 @@ held_migration_commits() {
 }
 case "$1" in
   manifest)
-    exit 0
+    tag=${3##*:}
+    printf '%s\n' "$tag" >>"$AUTODEPLOY_TEST_MANIFEST_LOG"
+    answer=$(sed -n "s/^$tag //p" "$AUTODEPLOY_TEST_MANIFESTS" 2>/dev/null || true)
+    pause() {
+      /bin/sleep "$1" &
+      sleeper=$!
+      trap 'kill "$sleeper"; exit 143' TERM
+      wait "$sleeper"
+    }
+    case "$answer" in
+      '') exit 0 ;;
+      late:*) pause "${answer#late:}"; exit 0 ;;
+      unknown) printf 'manifest unknown\n' >&2; exit 1 ;;
+      unknown-after:*) pause "${answer#unknown-after:}"; printf 'manifest unknown\n' >&2; exit 1 ;;
+      refused) printf 'toomanyrequests: retry later\n' >&2; exit 1 ;;
+      hang)
+        printf '%s %s\n' "$$" "$(cut -d' ' -f22 "/proc/$$/stat")" >>"$AUTODEPLOY_TEST_MANIFESTS.hung"
+        exec /bin/sleep 3600
+        ;;
+      *) printf 'unexpected manifest answer: %s\n' "$answer" >&2; exit 1 ;;
+    esac
     ;;
   run)
     printf 'docker %s\n' "$*" >>"$AUTODEPLOY_TEST_ARGV"
@@ -162,11 +201,15 @@ EOF
 # duration, 0 (pg_client's unbounded) included, the command runs as it would have, so every case
 # runs as it did before this stand-in existed. Only a container run is recorded, because the
 # deployer also bounds its compose and manifest runs this way, and a case that reaches no client
-# reads an empty argument log as proof that nothing ran.
+# reads an empty argument log as proof that nothing ran. A manifest read is the exception: it goes
+# to the real timeout, because the registry-read cases read how the deployer's deadline ends it.
 cat >"$bin/timeout" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$2 $3" == "docker run" ]]; then
   printf 'timeout %s\n' "$*" >>"$AUTODEPLOY_TEST_ARGV"
+fi
+if [[ "$2 $3" == "docker manifest" ]]; then
+  exec "$AUTODEPLOY_TEST_REAL_TIMEOUT" "$@"
 fi
 exec "${@:2}"
 EOF
@@ -333,6 +376,8 @@ chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$tools
 deploy_once() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
     AUTODEPLOY_TEST_TOOLS="$tools" AUTODEPLOY_TEST_PASSWORD="${test_password-$password}" REPO="$repo" COMPOSE_DIR="$compose" \
+    AUTODEPLOY_TEST_MANIFESTS="$manifests" AUTODEPLOY_TEST_MANIFEST_LOG="$manifest_log" \
+    AUTODEPLOY_TEST_REAL_TIMEOUT="$real_timeout" \
     BACKUPS="$backups" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
     "$(dirname "$0")/autodeploy.sh" --once 2>&1
 }
@@ -740,4 +785,103 @@ fi
 if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
   fail 'deployer persisted the failed image tag after a pull failure'
 fi
-printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential and pull-retry cases: PASS'
+
+# still_hung: the pid of the manifest read the stand-in recorded as never answering, where that
+# process still runs (same start time, no zombie); empty otherwise.
+still_hung() {
+  local pid since stat fields
+  [[ -s "$manifests.hung" ]] || return 0
+  read -r pid since <"$manifests.hung"
+  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 0
+  stat=${stat##*) }
+  read -r -a fields <<<"$stat"
+  if [[ "${fields[0]}" != Z && "${fields[19]}" == "$since" ]]; then
+    printf '%s\n' "$pid"
+  fi
+}
+
+# A registry that answers late still answers: a manifest read waits as long as
+# MANIFEST_READ_DEADLINE leaves, so the newest commit, the one deployed, reads as published and
+# nothing is deployed.
+fresh_env
+deployed_tag_is new-image
+printf 'new-image late:2\n' >"$manifests"
+if ! output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' MANIFEST_READ_DEADLINE=6 deploy_once); then
+  fail 'deployer failed a pass whose registry answered late, inside MANIFEST_READ_DEADLINE'
+fi
+if [[ -s "$log" ]] || [[ $(<"$manifest_log") != new-image ]] || [[ "$output" == *"not deploying"* ]]; then
+  fail 'deployer did not take a late answer as the newest commit published, and leave the deployed image as it was'
+fi
+
+# A read the registry never answers is no proof the image is missing. When the deadline passes the
+# read is stopped and named on one line, the pass fails, and old-image, behind it, is neither asked
+# about nor deployed over new-image, which already runs.
+fresh_env
+deployed_tag_is new-image
+printf 'new-image hang\n' >"$manifests"
+began=$SECONDS
+if output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' MANIFEST_READ_DEADLINE=3 deploy_once); then
+  fail 'deployer passed a pass whose registry read never answered'
+fi
+took=$((SECONDS - began))
+hung=$(still_hung)
+if [[ -n "$hung" ]]; then
+  kill "$hung"
+  fail "the manifest read that never answered still runs after the deployer gave up on it (pid $hung)"
+fi
+if [[ ! -s "$manifests.hung" ]]; then
+  fail 'the manifest read that never answers never ran, so this case proves nothing'
+fi
+if [[ "$output" != *"docker manifest inspect example.test/dispatch:new-image did not answer within MANIFEST_READ_DEADLINE (3s); not deploying"* ]]; then
+  fail 'deployer did not name the manifest read that ran out its deadline'
+fi
+if [[ -s "$log" ]] || [[ $(<"$manifest_log") != new-image ]] || [[ "$output" == *"main has a newer published image"* ]]; then
+  fail 'deployer went past a manifest read that never answered, to an older image'
+fi
+if ((took > 20)); then
+  fail "deployer took ${took}s over a manifest read with a 3s deadline"
+fi
+
+# An answer that does not say the image is missing, a rate limit here, proves nothing either: it is
+# named with the registry's own words, and the pass fails with nothing deployed.
+fresh_env
+deployed_tag_is new-image
+printf 'new-image refused\n' >"$manifests"
+if output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' deploy_once); then
+  fail 'deployer passed a pass whose registry refused the manifest read'
+fi
+if [[ "$output" != *"docker manifest inspect example.test/dispatch:new-image failed with status 1, an answer that does not say the image is missing: toomanyrequests: retry later; not deploying"* ]] ||
+  [[ -s "$log" ]] || [[ $(<"$manifest_log") != new-image ]]; then
+  fail 'deployer went past a refused manifest read, or did not name it'
+fi
+
+# The control: the registry's answer for a tag it does not hold, a commit whose image is still being
+# built, is passed over as before, to the newest published commit behind it.
+fresh_env
+printf 'new-image unknown\n' >"$manifests"
+if ! output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' deploy_once); then
+  fail 'deployer failed a pass on a commit the registry does not hold'
+fi
+if [[ $(<"$manifest_log") != $'new-image\nold-image' ]] || [[ -s "$log" ]] || [[ "$output" == *"not deploying"* ]]; then
+  fail 'deployer did not pass over a commit the registry does not hold to old-image, which is deployed'
+fi
+
+# The deadline bounds the whole walk, not each read: a slow answer for a commit the registry does
+# not hold spends four of its ten seconds, and the next read gets the six or so that are left, so
+# the pass ends near ten seconds. A read given the whole deadline again would end it near fourteen.
+# Under load the first read can take longer, and the deadline can then pass before the second read
+# starts, which the deployer says in other words; either way the second read gets no more than
+# what is left.
+fresh_env
+printf 'new-image unknown-after:4\nold-image late:30\n' >"$manifests"
+began=$SECONDS
+if output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' MANIFEST_READ_DEADLINE=10 deploy_once); then
+  fail 'deployer passed a pass whose second manifest read outlived the deadline left to it'
+fi
+took=$((SECONDS - began))
+if [[ "$output" != *"docker manifest inspect example.test/dispatch:old-image did not answer within MANIFEST_READ_DEADLINE (10s); not deploying"* &&
+  "$output" != *"MANIFEST_READ_DEADLINE (10s) passed before docker manifest inspect example.test/dispatch:old-image could run; not deploying"* ]] ||
+  [[ $(<"$manifest_log") != new-image* ]] || [[ -s "$log" ]] || ((took > 13)); then
+  fail "deployer did not give the second manifest read only what the deadline left (${took}s taken)"
+fi
+printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential, pull-retry and registry-read cases: PASS'

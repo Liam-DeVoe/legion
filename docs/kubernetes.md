@@ -422,6 +422,8 @@ Then:
   for a deployment that sets the key, the probe Sandbox's `legion probe-image` carries `--test-postgres <its own
   volume>`, which runs `legion-testpg check` and `ensure`, makes and drops a database through the DSN every role is told, and stops the server.
   So a gVisor the server cannot start under refuses the daemon's boot probe (`legion probe-boot`, "Probing a configuration before the daemon boots on it") rather than every pod's first Postgres test.
+  Each of those steps waits as long as the probe command's own deadline (`--probe-budget`) allows, so a step that is slow but still working is waited for rather than refused at a fixed bound of the probe's own.
+  A step still running at that deadline is stopped with its whole process group, the server is stopped, and the refusal names the step.
   The image build runs the same sequence in its own toolchain self-check, under the builder's runtime.
 
 - `legion-testpg ensure` refuses a DSN that carries a password or names a host that is not loopback, so a wrong deployment line logs a refusal instead of starting a server.
