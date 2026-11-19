@@ -66,7 +66,7 @@ beforeAll(() => {
 function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
 ${guards}
-work=$WORK claude_bin=$CLAUDE port_dispatch=1 port_listener=2 port_nats=3 state=/rig
+work=$WORK claude_bin=$CLAUDE port_dispatch=1 port_listener=2 port_nats=3 nats_host=127.9.9.9 state=/rig
 scratch=$(mktemp -d "$SCRATCH/run.XXXXXX")
 started=()
 trap 'kill -- "\${started[@]}" 2>/dev/null || true' EXIT
@@ -177,7 +177,7 @@ describe.skipIf(skip)("endpoint_mismatch", () => {
     "DISPATCH_URL=http://127.0.0.1:1",
     "DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token",
     "ENVOY_URL=http://127.0.0.1:2",
-    "ENVOY_NATS_URL=nats://127.0.0.1:3",
+    "ENVOY_NATS_URL=nats://127.9.9.9:3",
   ];
   // agent ENV… starts an agent stand-in, sleep under env -i with exactly ENV, and checks it once its
   // environment is the one it was given, failing the run when it never is.
