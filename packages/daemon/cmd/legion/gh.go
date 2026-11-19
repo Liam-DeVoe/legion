@@ -781,11 +781,14 @@ var ghSentFileOptions = map[string]leakguard.StdinUse{
 // (leakguard.GhRequest.Files), and the use the command makes of standard input
 // (leakguard.GhRequest.StdinUse). command is the leaf's path. What each option's value names is
 // leakguard.GhSent's rule, the one the guard's own reader of a bare argv keeps to, so the two
-// readers cannot name one call's files two ways. The files are never nil, so a command that
-// sends no file is a command the guard reads no file of, rather than one it reads the argv of
-// again with tables of its own. A file a field names (`-F <name>=@<path>` in `gh api`) carries
-// the field's name (leakguard.GhFile.Field), which is what tells the guard that the file of a `gh
-// api graphql` call's `query` field is a GraphQL query.
+// readers name what one option's value sends the same way. Finding the values is this parse's
+// reading by the leaf's help, which reads calls the guard's own reader cannot, such as `gh pr
+// create -dF <path>` (`--draft --body-file <path>`), and the guard takes these files and this use
+// in place of its own reading. The files are never nil, so a command that sends no file is a
+// command the guard reads no file of, rather than one it reads the argv of again with tables of
+// its own. A file a field names (`-F <name>=@<path>` in `gh api`) carries the field's name
+// (leakguard.GhFile.Field), which is what tells the guard that the file of a `gh api graphql`
+// call's `query` field is a GraphQL query.
 //
 // A value of `-`, and an `@-`, is standard input, which the guard reads through the shared
 // check's own handshake and never opens as a file. What is answered for it instead is the use
@@ -795,12 +798,11 @@ var ghSentFileOptions = map[string]leakguard.StdinUse{
 // value is true (ghArgs.bools), names it too (leakguard.GhSent.UsesStdin): gh reads the run's
 // inputs from it as one JSON object (testdata/gh-help/workflow_run.txt), and GitHub keeps each
 // input apart, so it is a JSON request body, read one string at a time. Only the command path
-// says so, since `--json` takes the names of fields to print in every other gh command. Two
-// options naming it with different uses answer leakguard.StdinUnknown: only one of them can have
-// the input, this cannot say which, and the guard then reads the input both ways, which errs
-// toward reading more. The options are read in the order their names sort, since a parse holds
-// each option's values together and not the argv's order across options, and a report that named
-// two files must name them the same way twice.
+// says so, since `--json` takes the names of fields to print in every other gh command.
+// (leakguard.GhSent.UsesStdin says what two options naming it with different uses answer.) The
+// options are read in the order their names sort, since a parse holds each option's values
+// together and not the argv's order across options, and a report that named two files must name
+// them the same way twice.
 func ghSentFiles(command []string, parsed ghArgs) (files []leakguard.GhFile, stdinUse leakguard.StdinUse) {
 	sent := leakguard.GhSent{Files: []leakguard.GhFile{}}
 	for _, name := range slices.Sorted(maps.Keys(ghSentFileOptions)) {

@@ -628,10 +628,20 @@ func (argv *ghArgv) readOther(args []string) {
 
 // GhSent is what a gh call's options name for gh to send to GitHub beside its argv: the files it
 // sends as content, and the use it makes of standard input. Its two methods are the one rule for
-// what such an option names (Names, UsesStdin), and both readers of a gh call keep to it: this
-// package's own, over a bare argv in the argv's order (readGhArgv), and cmd/legion's, over its
-// parse of the command by gh's help, in the order the options' names sort (its ghSentFiles). So
-// the two cannot name one call's files, or its input, two ways.
+// what a value an option names is (Names, UsesStdin): a path a file named once, `-` standard
+// input with the use its option makes of it, and two uses that differ no known use. Both readers
+// of a gh call keep to it: this package's own, over a bare argv in the argv's order
+// (readGhArgv), and cmd/legion's, over its parse of the command by gh's help, in the order the
+// options' names sort (its ghSentFiles). So the two name what one option's value sends the same
+// way.
+//
+// Finding the values is each reader's own work — which options a call names, and the `<path>` of
+// a field's `<name>=@<path>` — and the two read some calls apart: `gh pr create -dF <path>` is
+// `--draft --body-file <path>` to cmd/legion, which reads the leaf's help, and no file to this
+// package's reader, which cannot tell it from `gh gist create`'s `--desc F` (readOther). The files
+// and the use of standard input of a call whose caller handed its parse are that parse's alone
+// (GhRequest.Files), so this package's reading of them decides only where no caller parsed the
+// call.
 //
 // The zero GhSent has named nothing, and its Files stay nil until a file is named: a caller that
 // must tell a parse that found no file from no parse at all (GhRequest.Files) starts it with

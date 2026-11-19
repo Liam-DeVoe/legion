@@ -259,6 +259,43 @@ func TestGhJSONShowsALongBodyLabelAsTheWholeLabelWould(t *testing.T) {
 	}
 }
 
+// A `gh api graphql -F query=@<path>` call's query file is labelled with its path as the argv
+// wrote it (GhCall), of any length, and each literal of the query is labelled under it, so that
+// label is cut once before the literals are labelled (graphQLRecords, cutLabel): a path of 4 KB
+// is not repeated in the label of every literal, and each literal's label is shorter than the
+// path. A refusal shows each line as the whole path would show it, for a title and a body that
+// each name the fixture's pair.
+func TestGhJSONGraphQLShowsALongQueryFileLabelAsTheWholeLabelWould(t *testing.T) {
+	whole := strings.Repeat("invented-dir/", 300) + "query.graphql"
+	pair := leakguardtest.PairName + " " + leakguardtest.PairWord
+	query := `mutation { createIssue(input: {title: "` + pair + `", body: "` + pair + `"}) { issue { number } } }`
+	literals, ok := graphQLRecords(Record{Label: whole, Text: query})
+	if !ok {
+		t.Fatal("the query was read as no GraphQL document")
+	}
+	if len(literals) != 2 {
+		t.Fatalf("the query is %d records, want 2: one for each literal", len(literals))
+	}
+	for k, suffix := range []string{", GraphQL string 1", ", GraphQL string 2"} {
+		label := literals[k].Label
+		if !strings.HasSuffix(label, suffix) {
+			t.Errorf("literal %d is labelled %q, want a label ending %q", k+1, label, suffix)
+		}
+		if len(label) >= len(whole) {
+			t.Errorf("literal %d is labelled with %d bytes, want fewer than the path's %d", k+1, len(label), len(whole))
+		}
+	}
+	rules := fixtureRules(t)
+	got := refusal(t, rules.Check(bound(t), "the gh call", literals...)).Lines
+	want := refusal(t, rules.Check(bound(t), "the gh call",
+		Record{Label: whole + ", GraphQL string 1", Text: pair},
+		Record{Label: whole + ", GraphQL string 2", Text: pair},
+	)).Lines
+	if len(got) != 2 || !slices.Equal(got, want) {
+		t.Errorf("the report is %q, want the two lines of the whole label, %q", got, want)
+	}
+}
+
 // An empty string holds no text a rule can match, and makes no record, as a name or as a value;
 // the value of a member whose name is empty is read all the same, at the step `.""`. A name past
 // 64 bytes is shown to 64 in the label of each string beneath it, and "…" marks the cut.

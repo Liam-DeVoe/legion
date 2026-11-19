@@ -12,10 +12,12 @@ import (
 // A text that is not one document is no body GitHub parses, and is read as the one record it
 // was: a Markdown body named by `--input` by mistake is still read.
 //
-// Two of a gh call's records are such a body: `gh api --input <file>`, whose whole file is the
-// request body, and standard input named by `gh api --input -`, which the shared check's exit-4
-// handshake has buffered. A `-F <name>=@<path>` field's file is not, since gh makes one JSON
-// string of its bytes, escaping them itself: the file holds the text GitHub shows.
+// Three of a gh call's records are such a body: `gh api --input <file>`, whose whole file is the
+// request body; standard input named by `gh api --input -`; and the standard input of `gh
+// workflow run --json`, the run's inputs as one JSON object. The shared check's exit-4 handshake
+// has buffered either standard input. A `-F <name>=@<path>` field's file is not such a body,
+// since gh makes one JSON string of its bytes, escaping them itself: the file holds the text
+// GitHub shows.
 func jsonBody(record Record, graphQL bool) []Record {
 	if fields, ok := jsonFields(record, graphQL); ok {
 		return fields
@@ -28,8 +30,10 @@ func jsonBody(record Record, graphQL bool) []Record {
 // two documents. A string is one record, an object's names and values alike, labelled
 // "<record>, JSON <path>" and a name "<record>, JSON <path> (name)", the record's label cut once
 // before the walk (cutLabel) and the path written as jq writes it (`.body`, `.comments[0].body`,
-// `."a b"`, and `.` for the document itself) within the bounds jsonLabel keeps. An empty string
-// makes no record: it holds no text a rule can match.
+// `."a b"`, and `.` for the document itself), but for an element of a document that is itself an
+// array, whose index stands with no `.` before it (`[1]`, `[0][0]`, where jq writes `.[1]`),
+// within the bounds jsonLabel keeps. An empty string makes no record: it holds no text a rule can
+// match.
 //
 // A body is read one string at a time because GitHub stores it one string at a time: a review's
 // body and each of its comments' bodies are texts of their own, shown apart, and a rule that
