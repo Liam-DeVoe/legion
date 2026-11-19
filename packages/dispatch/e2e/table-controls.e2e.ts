@@ -5997,6 +5997,8 @@ test("every list of options a reader picks from holds a text box that narrows it
       // select's or the text box's: the shell's `?` opens no Keyboard shortcuts over it.
       await page.keyboard.press("?");
       await nextFrames(page);
+      // One read after the press's frames is the answer: the shell draws Keyboard shortcuts in
+      // the render the key's binding starts, which nextFrames has let run.
       if ((await shortcuts.count()) > 0) {
         keyed.push(`${at}: ? on the closed trigger opened the Keyboard shortcuts`);
         await page.keyboard.press("Escape");
