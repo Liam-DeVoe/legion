@@ -550,14 +550,15 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 //     (TestAWaitItsGenerationEndedIsNoWaitToReadErr).
 //   - Uncounted: a read whose scan timed out (TestReadErrCountsNoReadWhoseScanTimedOut), a read
 //     whose stream check at completion failed after its barrier and leader reads succeeded
-//     (TestReadErrCountsNoReadWhoseStreamCheckAtCompletionFails), a wait that found its bucket
-//     deleted, or deleted and created again, at a timed-out wait's check
-//     (TestReadErrCountsNoWaitThatFoundItsBucketReplaced) or at the barrier's acknowledgement
+//     (TestReadErrCountsNoReadWhoseStreamCheckAtCompletionFails), a wait that found its
+//     bucket deleted, or deleted and created again, at a timed-out wait's check
+//     (TestReadErrCountsNoWaitThatFoundItsBucketReplaced), or deleted and created again at the
+//     barrier's acknowledgement
 //     (TestReadErrCountsNoWaitThatFoundItsBucketReplacedAtItsAcknowledgement), and the failure of
 //     a read that may no longer complete, such as one the connection dropped under
-//     (TestReadErrCountsNoFailureOfAReadTheConnectionDroppedUnder). The first two, and the third
-//     at a timed-out wait's check, leave a run there is as it was
-//     (TestAnUncountedReadLeavesARunAsItWas).
+//     (TestReadErrCountsNoFailureOfAReadTheConnectionDroppedUnder). All four, the third at a
+//     timed-out wait's check, leave a run there is as it was
+//     (TestAnUncountedReadLeavesARunAsItWas, a row each, two for the third).
 //
 // A rewatch of the KV caches that keeps failing after a reconnect ends no watcher and clears no
 // cache, so every other check still passes while the caches follow buckets they no longer watch

@@ -300,7 +300,11 @@ func (s replacedBeforeAck) PublishMsg(ctx context.Context, msg *natsgo.Msg, opts
 // checks the bucket's stream then (consume's acknowledgement branch). A check that finds the
 // bucket deleted and created again ends the wait before its bound is armed, and the wait counts
 // for nothing: the new bucket is read. TestReadErrCountsNoWaitThatFoundItsBucketReplaced is the
-// same finding by the check after a timed-out wait.
+// same finding by the check after a timed-out wait. A bucket only deleted has no row here. Deleted
+// before the barrier write, it fails that write, since no stream takes it, and that is a counted
+// failure; deleted between the acknowledgement and this check, it is a case no test holds. The
+// wait's end (kvwatch.Waiting) is enough to read ReadErr after: settleReplaced does nothing after
+// it ends the wait but release readiness.
 func TestReadErrCountsNoWaitThatFoundItsBucketReplacedAtItsAcknowledgement(t *testing.T) {
 	conn, kv := bucket(t, testnats.URL(t))
 	clock := newClock()
@@ -330,22 +334,37 @@ func TestReadErrCountsNoWaitThatFoundItsBucketReplacedAtItsAcknowledgement(t *te
 	}
 }
 
+// runSteps is what TestAnUncountedReadLeavesARunAsItWas hands each row's uncounted step: the
+// watcher, the bucket it reads and its connection, the watcher's clock and waits, the copy, and how
+// many stream checks failed.
+type runSteps struct {
+	w      *kvwatch.Watcher
+	conn   *natsgo.Conn
+	kv     bus.KeyValue
+	clock  *clock
+	timers *pending
+	into   *seen
+	failed *atomic.Int64
+}
+
 // replacedWaitAfterARun is the uncounted step of TestAnUncountedReadLeavesARunAsItWas whose second
 // read waits past its barrier while the test deletes the bucket, and creates it again when
 // recreate is set, and then times the wait out: the stream check after the timeout finds the
-// bucket replaced. rereads is how many reads of a new bucket that check arms.
-func replacedWaitAfterARun(recreate bool, rereads int) func(*testing.T, *kvwatch.Watcher, *natsgo.Conn, *clock, *pending, *atomic.Int64) {
-	return func(t *testing.T, w *kvwatch.Watcher, conn *natsgo.Conn, clock *clock, timers *pending, _ *atomic.Int64) {
-		eventually(t, "the second read's wait past its barrier to be bounded", func() bool { return len(timers.armed(7*time.Hour)) == 3 })
-		js := jetStream(t, conn)
+// bucket replaced. rereads is how many reads of a new bucket that check arms. The wait's end
+// (kvwatch.Waiting) is enough to read ReadErr after here: settleReplaced does nothing after it
+// ends the wait but release readiness, which ReadErr does not read.
+func replacedWaitAfterARun(recreate bool, rereads int) func(*testing.T, runSteps) {
+	return func(t *testing.T, r runSteps) {
+		eventually(t, "the second read's wait past its barrier to be bounded", func() bool { return len(r.timers.armed(7*time.Hour)) == 3 })
+		js := jetStream(t, r.conn)
 		deleteTestBucket(t, js)
 		if recreate {
 			testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: testBucketName})
 		}
-		clock.advance(7 * time.Hour)
-		timers.last(t, 7*time.Hour).fire()
-		eventually(t, "the replaced wait to end", func() bool { return !kvwatch.Waiting(w) })
-		if n := len(timers.armed(0)); n != rereads {
+		r.clock.advance(7 * time.Hour)
+		r.timers.last(t, 7*time.Hour).fire()
+		eventually(t, "the replaced wait to end", func() bool { return !kvwatch.Waiting(r.w) })
+		if n := len(r.timers.armed(0)); n != rereads {
 			t.Fatalf("%d reads of a new bucket armed, want %d", n, rereads)
 		}
 	}
@@ -354,10 +373,10 @@ func replacedWaitAfterARun(recreate bool, rereads int) func(*testing.T, *kvwatch
 // A read that counts for nothing leaves a run of failed reads as it was: its count, the start it
 // is measured from and its last error. The run here is one read whose barrier write fails; the
 // read after it takes an uncounted path, and past the bound ReadErr still reports the one failed
-// read and its error. The failure of a read the connection dropped under is no row: it leaves no
-// state a test can wait on, since it arms nothing, its wait has already ended and its readiness
-// was released by the first read, so a test could tell it was handled only by sleeping.
-// TestReadErrCountsNoFailureOfAReadTheConnectionDroppedUnder pins it from no run.
+// read and its error. The row of a read the connection dropped under waits on two facts. Its wait
+// ends at settleFailed's first step (kvwatch.Waiting turns false there), and a record the test
+// writes after that is delivered by the same consume goroutine, so once the copy holds it,
+// settleFailed has returned and has counted the failure or not.
 func TestAnUncountedReadLeavesARunAsItWas(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -366,17 +385,17 @@ func TestAnUncountedReadLeavesARunAsItWas(t *testing.T) {
 		// stalls is whether the second read's scan stalls.
 		stalls bool
 		// uncounted drives the second read down its uncounted path and returns once it has ended.
-		uncounted func(t *testing.T, w *kvwatch.Watcher, conn *natsgo.Conn, clock *clock, timers *pending, failed *atomic.Int64)
+		uncounted func(t *testing.T, r runSteps)
 	}{
 		{
 			name:   "a read whose scan timed out",
 			inner:  func(kv bus.KeyValue, _ *atomic.Bool, _ *atomic.Int64) jetstream.JetStream { return kv.Streams() },
 			stalls: true,
-			uncounted: func(t *testing.T, _ *kvwatch.Watcher, _ *natsgo.Conn, clock *clock, timers *pending, _ *atomic.Int64) {
-				eventually(t, "the second read's scan idle wait", func() bool { return len(timers.armed(7*time.Hour)) == 2 })
-				clock.advance(7 * time.Hour)
-				timers.last(t, 7*time.Hour).fire()
-				eventually(t, "the timed-out read's re-read to be armed", func() bool { return len(timers.armed(5*time.Second)) == 2 })
+			uncounted: func(t *testing.T, r runSteps) {
+				eventually(t, "the second read's scan idle wait", func() bool { return len(r.timers.armed(7*time.Hour)) == 2 })
+				r.clock.advance(7 * time.Hour)
+				r.timers.last(t, 7*time.Hour).fire()
+				eventually(t, "the timed-out read's re-read to be armed", func() bool { return len(r.timers.armed(5*time.Second)) == 2 })
 			},
 		},
 		{
@@ -384,9 +403,9 @@ func TestAnUncountedReadLeavesARunAsItWas(t *testing.T) {
 			inner: func(kv bus.KeyValue, unread *atomic.Bool, failed *atomic.Int64) jetstream.JetStream {
 				return unreadStreams{JetStream: kv.Streams(), unreadOnPublish: true, unread: unread, failed: failed}
 			},
-			uncounted: func(t *testing.T, _ *kvwatch.Watcher, _ *natsgo.Conn, _ *clock, timers *pending, failed *atomic.Int64) {
-				eventually(t, "the unconfirmed read's re-read to be armed", func() bool { return len(timers.armed(5*time.Second)) == 2 })
-				if failed.Load() == 0 {
+			uncounted: func(t *testing.T, r runSteps) {
+				eventually(t, "the unconfirmed read's re-read to be armed", func() bool { return len(r.timers.armed(5*time.Second)) == 2 })
+				if r.failed.Load() == 0 {
 					t.Fatal("UNKNOWN: no stream check failed, so this row says nothing")
 				}
 			},
@@ -405,6 +424,24 @@ func TestAnUncountedReadLeavesARunAsItWas(t *testing.T) {
 			},
 			uncounted: replacedWaitAfterARun(true, 1),
 		},
+		{
+			name: "a read the connection dropped under",
+			inner: func(kv bus.KeyValue, _ *atomic.Bool, _ *atomic.Int64) jetstream.JetStream {
+				return ackedAt{JetStream: kv.Streams(), sequence: 1 << 40}
+			},
+			uncounted: func(t *testing.T, r runSteps) {
+				eventually(t, "the second read's wait past its barrier to be bounded", func() bool { return len(r.timers.armed(7*time.Hour)) == 3 })
+				r.w.Disconnected()
+				r.clock.advance(7 * time.Hour)
+				r.timers.last(t, 7*time.Hour).fire()
+				eventually(t, "the dropped read's wait to end", func() bool { return !kvwatch.Waiting(r.w) })
+				putKeys(t, r.kv, "fence")
+				eventually(t, "the copy to take a record written once the wait ended", func() bool { return r.into.has("fence") })
+				if n := len(r.timers.armed(10 * time.Second)); n != 0 {
+					t.Fatalf("%d re-reads of a run's second failed read armed, want none", n)
+				}
+			},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			conn, kv := bucket(t, testnats.URL(t))
@@ -421,7 +458,7 @@ func TestAnUncountedReadLeavesARunAsItWas(t *testing.T) {
 
 			failing.Store(false)
 			timers.last(t, 5*time.Second).fire()
-			row.uncounted(t, w, conn, clock, timers, failed)
+			row.uncounted(t, runSteps{w: w, conn: conn, kv: kv, clock: clock, timers: timers, into: into, failed: failed})
 			clock.advance(pastTheBound)
 			countedOnce(t, w.ReadErr(), natsgo.ErrConnectionClosed, "write the read barrier")
 			if done := len(into.completions()); done != 0 {

@@ -32,9 +32,12 @@ func Generation(w *Watcher) uint64 {
 	return w.generation
 }
 
-// Waiting reports whether a read is waiting past its barrier (settleSince is set): a wait ends
-// when its read ends, one way or another, and with its generation, so a test that drives a wait to
-// its end reads its end here before it reads what that end left.
+// Waiting reports whether a read is waiting past its barrier (settleSince is set). It turns false
+// when the wait ends (endSettle, clearSettleLocked), and that marks only the wait's end, not the
+// end of what the path that ended it does afterwards. settleFailed counts a failure
+// (readAgainUnverified) after it ends the wait, so a test that reads what such a path left must
+// also wait on a fact that comes after it, such as a record the same consume goroutine delivers.
+// settleReplaced does nothing after it ends the wait but release readiness.
 func Waiting(w *Watcher) bool {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
