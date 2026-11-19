@@ -41,8 +41,9 @@ export interface IssueDrafts {
 const routePattern = /^(role:[a-z0-9-]+|session:[0-9a-f-]{16,})$/;
 
 /** Whose value a field's draft is (decision 332): "issue", a value the issue gave the field;
- *  "typed", text the reader typed and has not ended since; "ended", a choice the reader ended -
- *  queued, out, or refused and not yet sent. */
+ *  "typed", text the reader typed and has not ended since, or ended on a value the hook refused
+ *  (an empty title, a closed issue); "ended", a choice the reader ended - queued, out, or refused
+ *  by Dispatch and not yet sent. */
 type Own = "issue" | "typed" | "ended";
 
 /** One field's draft (decisions 315 and 332). */
@@ -149,8 +150,9 @@ function requestOutcome(rules: FieldRules, state: FieldState, closed: boolean): 
  *   its deletion.
  * - `request`, the end of an edit, a blur, a switch's send: the reader's choice, which replaces
  *   any value queued. Refused for a closed issue or a value Dispatch would not take, it asks for
- *   nothing; an unchanged draft takes the reference and asks for nothing; a changed one is
- *   queued as its text normalized, an ended choice, which the hook's drain then sends.
+ *   nothing and keeps whose the draft is; an unchanged draft takes the reference and asks for
+ *   nothing; a changed one is queued as its text normalized, an ended choice, which the hook's
+ *   drain then sends.
  * - `discard`, Escape or Cancel: the draft takes the reference and asks for nothing. While a
  *   write is out that is the value out, the value the issue is about to hold (decision 316).
  * - A draft that `request` or `discard` puts back to the reference is the reader's ended choice
@@ -270,8 +272,9 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
   }
 
   // The end of an edit: a changed draft is queued, and the drain sends it at once if the guard
-  // lets a write go, else as the write out ends. A queued draft was sent or waits to be: what
-  // a caller needs is that it is asked for, not which.
+  // lets a write go, else as the write out lands; after a refusal it waits for the next request.
+  // A queued draft was sent or waits to be: what a caller needs is that it is asked for, not
+  // which.
   function submit(field: Field): RequestOutcome {
     const closed = issue.closed_at !== null;
     const outcome = requestOutcome(fieldRules[field], states.current[field], closed);
