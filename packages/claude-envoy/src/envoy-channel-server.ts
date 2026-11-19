@@ -406,6 +406,11 @@ export interface ChannelSessionOptions {
    */
   readonly pluginVersion: string
   /**
+   * The package every registration names: `@sjawhar/claude-envoy` under Claude Code, and
+   * `@sjawhar/codex-envoy` under Codex, the package each host's sessions update.
+   */
+  readonly pluginName: string
+  /**
    * Where the claim's task values go (`ChannelTaskValues`): a Legion pane's claim, which hands
    * them to the bridge. A session that serves no Legion claim leaves it out, and a task frame
    * reaching it is dropped.
@@ -1147,7 +1152,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           driving: false,
           selfSubscribed: true,
           clientInstanceID: options.clientInstanceID,
-          plugin: { name: packageName, version: options.pluginVersion },
+          plugin: { name: options.pluginName, version: options.pluginVersion },
           delivery: deliveryRequest,
         })
         // Held as a promise that settles either way, so a deregistration waits for the call to
@@ -2354,6 +2359,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         clientInstanceID,
         title,
         pluginVersion: installedPluginVersion(bundlePath) ?? "source",
+        pluginName: packageName,
         ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
