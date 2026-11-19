@@ -348,8 +348,9 @@ func (s *Server) gitOutput(bare, stdin string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// statusWriter keeps the status a handler answered with, for the request log, and hands the
-// writer's Flush and Hijack through, which a cut-short pack needs.
+// statusWriter keeps the status a handler answered with, for the request log, gives every answer
+// a type (plainUnlessTyped), and hands the writer's Flush and Hijack through, which a cut-short
+// pack needs. Every answer of the server goes out through it (serve).
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -359,6 +360,7 @@ func (w *statusWriter) WriteHeader(status int) {
 	if w.status == 0 {
 		w.status = status
 	}
+	w.plainUnlessTyped()
 	w.ResponseWriter.WriteHeader(status)
 }
 
@@ -366,7 +368,21 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
+	w.plainUnlessTyped()
 	return w.ResponseWriter.Write(b)
+}
+
+// plainUnlessTyped gives the answer a Content-Type before its header goes out, where its handler
+// named none: text/plain, so no answer is sniffed as HTML, whatever text of the request it
+// carries back (a path's owner and name in a refusal, a GraphQL variable in an error). Every
+// answer the server writes names its own type before this runs (answer's JSON, the archive's
+// gzip, http.Error's plain text, git http-backend's own), so it changes none of them. It is set
+// on the wrapped writer, the one the body is written to; once the header is out, setting it
+// changes nothing.
+func (w *statusWriter) plainUnlessTyped() {
+	if header := w.ResponseWriter.Header(); header.Get("Content-Type") == "" {
+		header.Set("Content-Type", "text/plain; charset=utf-8")
+	}
 }
 
 func (w *statusWriter) Flush() { w.ResponseWriter.(http.Flusher).Flush() }

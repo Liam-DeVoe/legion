@@ -32,6 +32,7 @@ var guardingPackages = []string{
 	"cmd/legion",
 	"internal/api",
 	"internal/daemon",
+	"internal/fakegithub",
 	"internal/fixtureenv",
 	"internal/launcher",
 	"internal/leakguard",

@@ -414,7 +414,10 @@ func (r *Rig) loadWorkerImage(t *testing.T) string {
 }
 
 // buildTrustingImage builds, FROM worker, the image every other pod of a kind test starts: the fake
-// GitHub's authority added to the system trust store, under the user worker runs as.
+// GitHub's authority added to the system trust store, under the user worker runs as. Debian's
+// update-ca-certificates is called by its full path, /usr/sbin/update-ca-certificates, since the
+// worker image's PATH (its ENV, packages/daemon/docker/worker.Dockerfile) holds no /usr/sbin and a
+// RUN of the bare name exits 127.
 func (r *Rig) buildTrustingImage(t *testing.T, worker string) string {
 	t.Helper()
 	dir := filepath.Join(r.work, "trusting-image")
@@ -427,7 +430,7 @@ func (r *Rig) buildTrustingImage(t *testing.T, worker string) string {
 	user := strings.TrimSpace(r.docker(t, "image", "inspect", "--format", "{{.Config.User}}", worker))
 	dockerfile := "FROM " + worker + "\nUSER root\n" +
 		"COPY fake-github-ca.crt /usr/local/share/ca-certificates/fake-github-ca.crt\n" +
-		"RUN update-ca-certificates\n"
+		"RUN /usr/sbin/update-ca-certificates\n"
 	if user != "" {
 		dockerfile += "USER " + user + "\n"
 	}

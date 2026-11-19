@@ -689,17 +689,21 @@ pass
 begin a-forged-command-list-changes-nothing-on-the-page
 # Anything that reaches NATS can publish on the session's frames subject, which the relay forwards
 # to every page watching (packages/envoy/internal/dispatch/agentstream). With a page open, each frame
-# below breaks one rule of the contract, at a sequence number far above the session's own, so a page
-# that took any would show it: its list must stay the session's, with no error screen. A well-formed
-# list published last must replace it, which shows the frames reached the page and were refused. A
-# fresh page, served the session's own replay, then lists what the session sent.
+# below breaks one rule of the contract, at a sequence number above any the session has reached:
+# its publisher numbers frames from its clock, a thousand a millisecond from its start
+# (SEQ_PER_MS, packages/pi-shared/src/agent-stream.ts), so the run's clock in that unit is above
+# them, and a page that took any frame would show it: its list must stay the session's, with no
+# error screen. A well-formed list published last must replace it, which shows the frames reached
+# the page and were refused. A fresh page, served the session's own replay, then lists what the
+# session sent.
+forged_seq=$(($(date +%s%3N) * 1000))
 forged=$(page forge "http://127.0.0.1:$dispatch_port" "$login" "$session_id" "$nats_url" "$evidence/checks/composer-after-forgery.png" \
-  '{"v":1,"kind":"commands","seq":900010,"commands":[{"name":"forgedcontrol'"$run"'","source":"builtin"}]}' \
-  '{"v":1,"kind":"commands","seq":900001,"commands":[{"name":"forgedsource","source":"terminal"}]}' \
-  '{"v":1,"kind":"commands","seq":900002,"commands":"forged-not-a-list"}' \
-  '{"v":1,"kind":"commands","seq":900003,"commands":[{"name":"","source":"builtin"}]}' \
-  '{"v":1,"kind":"commands","seq":900004,"commands":[{"name":" ","source":"builtin"}]}' \
-  '{"v":2,"kind":"commands","seq":900005,"commands":[{"name":"forgedversion","source":"builtin"}]}')
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 10))"',"commands":[{"name":"forgedcontrol'"$run"'","source":"builtin"}]}' \
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 1))"',"commands":[{"name":"forgedsource","source":"terminal"}]}' \
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 2))"',"commands":"forged-not-a-list"}' \
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 3))"',"commands":[{"name":"","source":"builtin"}]}' \
+  '{"v":1,"kind":"commands","seq":'"$((forged_seq + 4))"',"commands":[{"name":" ","source":"builtin"}]}' \
+  '{"v":2,"kind":"commands","seq":'"$((forged_seq + 5))"',"commands":[{"name":"forgedversion","source":"builtin"}]}')
 note "$forged"
 jq -e '.after == .before and .errorScreens == 0' <<<"$forged" >/dev/null ||
   fail "a malformed frame changed the page's list or showed an error screen: $forged"

@@ -3620,6 +3620,7 @@ jobs:
             repository_markdown: &repository_markdown
               - 'packages/envoy/internal/dispatch/testdata/repository-markdown.txt'
               - 'AGENTS.md'
+              - 'docs/testing.md'
               - 'packages/claude-envoy/README.md'
               - 'packages/dispatch/AGENTS.md'
               - 'packages/dispatch/README.md'
@@ -3632,7 +3633,6 @@ jobs:
               - 'packages/pi-envoy/AGENTS.md'
               - 'packages/pi-envoy/README.md'
               - 'packages/pi-legion/AGENTS.md'
-              - 'scripts/dispatch/README.md'
               - 'scripts/e2e/README.md'
             # A frozen Bun install and the Bun it runs: `bun install --frozen-lockfile` reads the
             # root manifest, the lockfile, the patches package.json:50-59 applies, the manifest of

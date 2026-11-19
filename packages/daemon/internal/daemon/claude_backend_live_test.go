@@ -34,11 +34,13 @@
 // (startHandoffDispatch), which the daemon and the pane both talk to. GitHub is the harness's REST
 // stand-in (liveGitHub, on githubtest) answering the repository and the pull request open on the
 // issue's branch, which the implementer's completion reads, and the two Apps' tokens are
-// workflowTokenRecorder's placeholders. The implementer's workspace is a jj repository of the
-// run's own at the place the tmux runtime looks for it (workspace.Location), whose `@-` is the
-// implementer's commit, pushed to `legion/<issue>` of a local bare origin, which is the push the
-// tool's handoff report holds a completion in implementing to. The runtime says it provisions
-// every workspace itself, so the daemon clones nothing from GitHub.
+// workflowTokenRecorder's placeholders, each lease's identity given an email (idleRigAppTokens),
+// since shimwire refuses a working-copy adoption whose identity has none. The implementer's
+// workspace is a jj repository of the run's own at the place the tmux runtime looks for it
+// (workspace.Location), whose `@-` is the implementer's commit, pushed to `legion/<issue>` of a
+// local bare origin, which is the push the tool's handoff report holds a completion in
+// implementing to. The runtime says it provisions every workspace itself, so the daemon clones
+// nothing from GitHub.
 package daemon
 
 import (
@@ -412,7 +414,7 @@ func (r *claudeBackendLive) overrides(log *slog.Logger) overrides {
 			return &claudeBackendRuntime{fake: r.fake, tmux: panes}, nil
 		},
 		listen:         heldListen,
-		workflowTokens: r.tokens,
+		workflowTokens: idleRigAppTokens{workflowTokenRecorder: r.tokens},
 		githubAPI:      r.github.url,
 	}
 }

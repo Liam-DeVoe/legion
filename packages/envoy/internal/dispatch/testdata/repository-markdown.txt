@@ -8,11 +8,15 @@
 # the largest markdown document Dispatch stores (TestWriteCorpusReadsOnce seeds each one); at least
 # three top-level paragraphs that hold a phrase found once (the writes of TestWriteCorpusReadsOnce);
 # and at least 98 candidate sentences (the anchors of TestAMarginWriteMatchesTheWholeDocumentWrite).
-# Those three rules leave out every other AGENTS.md and README.md of the repository.
+# Those three rules leave out every other AGENTS.md and README.md of the repository. The one docs
+# page here, docs/testing.md, took the place of scripts/dispatch/README.md when that guide fell
+# below 98: of the guides the rules leave in that the list did not hold, it has the most but
+# docs/kubernetes.md, which stands within a tenth of the 1 MiB and grows by that much in days.
 # Both jobs' filters in .github/workflows/ci.yaml name this file and every path in it, and
 # .github/scripts/ci_job_reads.py declares them as the two jobs' reads, so a change to one of these
 # guides starts the jobs that read it. A path added here is a path those filters must name too.
 AGENTS.md
+docs/testing.md
 packages/claude-envoy/README.md
 packages/dispatch/AGENTS.md
 packages/dispatch/README.md
@@ -25,5 +29,4 @@ packages/envoy/scripts/README.md
 packages/pi-envoy/AGENTS.md
 packages/pi-envoy/README.md
 packages/pi-legion/AGENTS.md
-scripts/dispatch/README.md
 scripts/e2e/README.md

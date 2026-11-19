@@ -519,9 +519,12 @@ note "registered: $registered"
 pass
 
 begin envoy-role-held
-role=$(envoy_role "$c1") || fail "GET /v1/roles/$c1 failed on the Envoy listener"
-[ "$(jq -r .holder <<<"$role")" = "$session1" ] || fail "the role's holder is not the claim's session: $role"
-note "GET /v1/roles/$c1 → holder $(jq -r .holder <<<"$role")"
+# pi-legion takes the claim's Envoy name last: after claims/ready, at the session's first turn or,
+# when no turn starts, at the 30 s bound (bootLegionClaim, packages/pi-shared/src/legion-claim-core.ts;
+# DEFAULT_CLAIM_FIRST_TURN_BOUND_MS). This architect has no task, so it takes the name at the bound.
+role_held_by() { envoy_role "$1" | jq -e --arg s "$2" '.holder == $s' >/dev/null; }
+until_true 60 "GET /v1/roles/$c1 on the Envoy listener to name $session1" role_held_by "$c1" "$session1"
+note "GET /v1/roles/$c1 → holder $(envoy_role "$c1" | jq -r .holder)"
 pass
 
 begin ready-in-state
