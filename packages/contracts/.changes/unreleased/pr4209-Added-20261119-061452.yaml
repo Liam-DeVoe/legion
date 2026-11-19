@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-    The tool spec `dispatch_attribution`, the thirty-sixth Dispatch spec, reads
+    The tool spec `dispatch_attribution` reads
     `GET /api/v1/delivery/attribution`: what the attribution of the stored pull requests still
     waits on (`AttributionCounts`). It takes no arguments and writes nothing. The results contract
     adds `CheckBlock.heads_not_read` (each with `refused_as` and `refused_since`),
