@@ -20,7 +20,7 @@ export const NEVER_MOVED = "Never";
  *  order, and the four counts the row shows, added up once rather than per cell. */
 export interface PriorityItem {
   readonly priority: PriorityRow;
-  /** The priority's place in the order, from 1: what `P7` reads from. */
+  /** The priority's place in the order, from 1: what `#7` reads from. */
   readonly place: number;
   readonly order: string;
   /** The first line of the description, in plain words, which the row shows while it is
@@ -34,9 +34,10 @@ export interface PriorityItem {
 }
 
 /** What a priority's place in the one order is called, from the index the read answers it at:
- *  the row's `P7`, and the same name the issue header's Advances line writes
- *  (`IssuePriorityLine`), so one rule says what `P7` means. */
-export const orderLabel = (index: number): string => `P${index + 1}`;
+ *  the row's `#7`, and the same name the issue header's Advances line writes
+ *  (`IssuePriorityLine`), so one rule says what `#7` means. It is not `P7`: P0 to P3 are an
+ *  issue's own priority, a different thing. */
+export const orderLabel = (index: number): string => `#${index + 1}`;
 
 const countOf = (by: PriorityRow["work"]["by_status"], statuses: readonly string[]): number =>
   statuses.reduce((total, status) => total + (by?.[status] ?? 0), 0);
@@ -96,7 +97,7 @@ const COUNT_WIDTH = { size: 132, min: 132 };
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
  *  the left edge while the counts scroll. */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
-  { id: "order", header: "Order", size: 88, min: 88, pinned: true, text: (item) => item.order },
+  { id: "order", header: "#", size: 72, min: 72, pinned: true, text: (item) => item.order },
   {
     id: "title",
     header: "Priority",

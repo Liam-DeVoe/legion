@@ -24,7 +24,7 @@ const NONE_WRITTEN = "No description is written.";
  * named by the whole description, and either way a link in the description would be a control
  * inside a control (axe's `nested-interactive`), which a screen reader cannot reach. The
  * keyboard's and the screen reader's way in is a real button beside the text, named by the
- * words it shows ("Edit the description of P3") and drawn over the block's corner only while it
+ * words it shows ("Edit the description of #3") and drawn over the block's corner only while it
  * holds the focus, so the page a mouse reads is the rendered text alone.
  */
 export function PriorityDescription({
@@ -37,8 +37,8 @@ export function PriorityDescription({
   canWrite: boolean;
   description: string;
   /** What the description is called, which names the priority it belongs to: "Description of
-   *  P3". The editor and the group around the rendered text carry it, and the button that
-   *  opens the editor reads it after "Edit the": "Edit the description of P3". */
+   *  #3". The editor and the group around the rendered text carry it, and the button that
+   *  opens the editor reads it after "Edit the": "Edit the description of #3". */
   label: string;
   onSave: (next: string) => void;
   /** How tall the editor is; the field's own height when unset. */

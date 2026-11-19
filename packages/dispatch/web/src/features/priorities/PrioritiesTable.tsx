@@ -39,10 +39,11 @@ const WORK_PREFIX = "w";
 
 /**
  * The priorities themselves: one row per priority in the one order, with the counts that say
- * what is happening under each. A reader who may write a priority adds one, renames one, writes
- * its description and drags its order here; every reader opens a row, which shows the whole of
- * that priority's description and the work advancing it, which names every priority each row
- * advances by `titles`, as the priority's own page does.
+ * what is happening under each. A reader who may write a priority adds one, writes its
+ * description and drags its order here, and renames it on its own page, which its title links
+ * to; every reader opens a row, which shows the whole of that priority's description and the
+ * work advancing it, which names every priority each row advances by `titles`, as the
+ * priority's own page does.
  */
 export function PrioritiesTable({
   rows,
@@ -120,18 +121,6 @@ export function PrioritiesTable({
     },
     [openId, params, setParams]
   );
-  const onRename = useCallback(
-    (item: PriorityItem, title: string) => {
-      const next = title.trim();
-      if (next === "" || next === item.priority.title) return;
-      patch.mutate({
-        id: item.priority.id,
-        input: { title: next },
-        label: `Rename the priority “${item.priority.title}” to “${next}”`,
-      });
-    },
-    [patch.mutate]
-  );
   // One object while nothing a row can do changes, since the column declarations are built
   // over it (`usePriorityColumns`) and the table is built over those.
   const actions = useMemo(
@@ -144,10 +133,9 @@ export function PrioritiesTable({
       onDescribe,
       onMove,
       onOpen,
-      onRename,
       openId,
     }),
-    [canReorder, canWrite, dragging, onDescribe, onDragEnd, onMove, onOpen, onRename, openId]
+    [canReorder, canWrite, dragging, onDescribe, onDragEnd, onMove, onOpen, openId]
   );
   const columns = usePriorityColumns(actions);
   const model = useDataTable<PriorityItem>({
@@ -195,7 +183,15 @@ export function PrioritiesTable({
   const visibleColumns = table.getVisibleLeafColumns().length;
 
   return (
-    <section aria-label="Priorities" className="space-y-3">
+    // The priorities are few, so the box is as tall as its rows and every priority is on the
+    // page, with the work of an opened row directly under them; a box that filled the window
+    // (`useTableLayout`, which sizes every table's box so) would hide the last rows in a scroll
+    // inside the page, and the opened row's work under the fold. `h-auto!` outweighs the height
+    // the box is drawn with.
+    <section
+      aria-label="Priorities"
+      className="space-y-3 [&_[data-testid=priorities-table-scroll]]:h-auto!"
+    >
       <div className="space-y-3" ref={attachAbove}>
         <TableToolbar
           searchLabel="Search priorities"

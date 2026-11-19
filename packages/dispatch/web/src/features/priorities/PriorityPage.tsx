@@ -147,7 +147,7 @@ export function PriorityPage(): ReactNode {
                 <span>{ownerOf(item)}</span>
               </span>
             )}
-            <p>Order {item.order}, dragged on the priorities page</p>
+            <p>{item.order} in the order</p>
             <p>
               In flight {item.inFlight} · waiting {item.waiting} · in backlog or icebox{" "}
               {item.parked}

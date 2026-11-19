@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { prioritiesQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
+import { Tabs, tabButtonId } from "../../components/Tabs";
 import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import type { ShownColumnId } from "../project/issues-table-columns";
@@ -12,12 +14,11 @@ import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
 import { PARKED_STATUSES } from "./priorities-model";
 
-/** What each fault is, in the words a reader judges it by. Neither is a judgement: both are
- *  true or false of an issue as it stands now. */
-const NO_PRIORITY_RULE =
-  "Work in progress, testing, review or retro that advances no priority, its own or one it inherits.";
-const PARKED_RULE =
-  "Work that advances a priority and stands in the backlog or the icebox, with the time it was moved there and whoever moved it. No reason is recorded for a move yet.";
+/** The page's three tabs, as the address names each (`?tab=`): the order itself, which is the
+ *  tab an address naming none opens, and the two faults. */
+type PrioritiesTab = "order" | "none" | "parked";
+const TAB_PARAM = "tab";
+const TABS_ID = "priorities";
 
 /** The two faults, as the issue listing answers each: the work being done under no priority,
  *  in the statuses an issue is worked in, and the work under a priority standing in backlog or
@@ -39,8 +40,8 @@ const PARKED_LAYOUT = {
   shown: ["project", "advances", "moved", "reason", "updated"] satisfies ShownColumnId[],
 };
 
-/** The per-project or per-priority counts under a fault's rule, in plain words: `CORE 12 ·
- *  OPS 7`, greatest first, which is what says where the fault is. */
+/** The per-project or per-priority counts of a fault, in plain words: `CORE 12 · OPS 7`,
+ *  greatest first, which is what says where the fault is. */
 function countsLine(by: Readonly<Record<string, number>> | null): string {
   return Object.entries(by ?? {})
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -48,14 +49,48 @@ function countsLine(by: Readonly<Record<string, number>> | null): string {
     .join(" · ");
 }
 
+/** One fault's tab: what the fault is and how many issues it holds and where, on one line, so
+ *  the Issues table over them, the last thing on the page, has the rest of the window. */
+function FaultPanel({
+  by,
+  children,
+  count,
+  label,
+  line,
+}: {
+  by: Readonly<Record<string, number>> | null;
+  children: ReactNode;
+  count: number;
+  label: string;
+  line: string;
+}): ReactNode {
+  const counts = countsLine(by);
+  const counted = `${count} ${count === 1 ? "issue" : "issues"}${counts === "" ? "" : ` · ${counts}`}`;
+  return (
+    <section aria-label={label} className="space-y-2">
+      <p className={`flex min-w-0 gap-x-4 text-sm ${textSecondaryOnCanvas}`}>
+        <span className="shrink-0">{line}</span>
+        <span className="min-w-0 truncate" title={counted}>
+          {counted}
+        </span>
+      </p>
+      {children}
+    </section>
+  );
+}
+
 /**
- * `/priorities`: the priorities themselves, in their one order, and under them the two faults.
- * A priority belongs to no project, so this page names none: every count, every row and both
- * fault lists are the whole deployment's. Each fault list is the one Issues table, over the
+ * `/priorities`: the priorities themselves, in their one order, and the two faults, each on a
+ * tab of its own, so whichever table is chosen is the one table on the page and fills the
+ * window. A priority belongs to no project, so this page names none: every count, every row and
+ * both fault lists are the whole deployment's. Each fault list is the one Issues table, over the
  * issue listing the server narrows for it, under its own prefix in the address.
  */
 export function PrioritiesPage(): ReactNode {
   const priorities = useQuery(prioritiesQuery());
+  const [params, setParams] = useSearchParams();
+  const asked = params.get(TAB_PARAM);
+  const tab: PrioritiesTab = asked === "none" || asked === "parked" ? asked : "order";
   // What the page draws of one read, built once that read answers rather than once a render:
   // the titles are what the parked list's columns are declared over, so a map built afresh
   // would rebuild that table's columns on every refetch of anything.
@@ -90,65 +125,94 @@ export function PrioritiesPage(): ReactNode {
   const body = priorities.data;
   const unpriorited = body.work_under_no_priority;
   const parked = body.priority_work_parked;
-  const unprioritedCounts = countsLine(unpriorited.by_project);
-  const parkedCounts = countsLine(parkedByPriority);
+  // Each tab's panel is in the page whichever is chosen, as the tab list's `aria-controls`
+  // names it, and only the chosen one draws its table.
+  const panel = (id: PrioritiesTab, content: ReactNode) => (
+    <div
+      aria-labelledby={tabButtonId(TABS_ID, id)}
+      className="mt-2"
+      hidden={tab !== id}
+      id={`${TABS_ID}-${id}-panel`}
+      role="tabpanel"
+    >
+      {tab === id ? content : null}
+    </div>
+  );
   return (
-    <div className="space-y-8">
-      <header className="space-y-1">
-        <h1 className={`text-2xl font-semibold ${textPrimaryOnCanvas}`}>Priorities</h1>
-        <p className={textSecondaryOnCanvas}>
-          Every project, read now. The order is the one their owner drags.
-        </p>
-      </header>
-
-      {rows.length === 0 ? (
-        <div className="space-y-3">
-          <p className={textSecondaryOnCanvas}>
-            {body.empty ?? "No priority has been written yet."}
-          </p>
-          {/* The page with no priority is where the first is written. */}
-          <div className="flex flex-wrap items-center gap-2">
-            <NewPriority />
-          </div>
-        </div>
-      ) : (
-        <PrioritiesTable rows={rows} titles={titles} />
-      )}
-
-      <section aria-label="In flight under no priority" className="space-y-2">
-        <h2 className={`text-lg font-semibold ${textPrimaryOnCanvas}`}>
-          In flight under no priority
-        </h2>
-        <p className={textSecondaryOnCanvas}>{NO_PRIORITY_RULE}</p>
-        <p className={textSecondaryOnCanvas}>
-          {unpriorited.count} {unpriorited.count === 1 ? "issue" : "issues"}
-          {unprioritedCounts === "" ? "" : ` · ${unprioritedCounts}`}
-        </p>
-        <IssuesTable
-          label="Issues in flight under no priority"
-          layout={NO_PRIORITY_LAYOUT}
-          listing={NO_PRIORITY}
-          stateKey="n"
+    <div className="space-y-2">
+      <h1 className={`text-2xl font-semibold ${textPrimaryOnCanvas}`}>Priorities</h1>
+      <div>
+        <Tabs
+          activeTab={tab}
+          ariaLabel="Priorities page"
+          compact
+          idPrefix={TABS_ID}
+          onSelect={(next) =>
+            setParams(
+              (current) => {
+                const changed = new URLSearchParams(current);
+                changed.set(TAB_PARAM, next);
+                return changed;
+              },
+              { replace: true }
+            )
+          }
+          tabs={[
+            { id: "order", label: "Priorities", count: rows.length },
+            { id: "none", label: "In flight under no priority", count: unpriorited.count },
+            { id: "parked", label: "In backlog or icebox", count: parked.count },
+          ]}
         />
-      </section>
-
-      <section aria-label="Priority work in backlog or icebox" className="space-y-2">
-        <h2 className={`text-lg font-semibold ${textPrimaryOnCanvas}`}>
-          Priority work in backlog or icebox
-        </h2>
-        <p className={textSecondaryOnCanvas}>{PARKED_RULE}</p>
-        <p className={textSecondaryOnCanvas}>
-          {parked.count} {parked.count === 1 ? "issue" : "issues"}
-          {parkedCounts === "" ? "" : ` · ${parkedCounts}`}
-        </p>
-        <IssuesTable
-          label="Priority issues in backlog or icebox"
-          layout={PARKED_LAYOUT}
-          listing={PARKED}
-          priorityTitles={titles}
-          stateKey="k"
-        />
-      </section>
+        {panel(
+          "order",
+          rows.length === 0 ? (
+            <div className="space-y-3">
+              <p className={textSecondaryOnCanvas}>
+                {body.empty ?? "No priority has been written yet."}
+              </p>
+              {/* The page with no priority is where the first is written. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <NewPriority />
+              </div>
+            </div>
+          ) : (
+            <PrioritiesTable rows={rows} titles={titles} />
+          )
+        )}
+        {panel(
+          "none",
+          <FaultPanel
+            by={unpriorited.by_project}
+            count={unpriorited.count}
+            label="In flight under no priority"
+            line="Issues being worked that advance no priority."
+          >
+            <IssuesTable
+              label="Issues in flight under no priority"
+              layout={NO_PRIORITY_LAYOUT}
+              listing={NO_PRIORITY}
+              stateKey="n"
+            />
+          </FaultPanel>
+        )}
+        {panel(
+          "parked",
+          <FaultPanel
+            by={parkedByPriority}
+            count={parked.count}
+            label="In backlog or icebox"
+            line="Issues under a priority that stand in the backlog or the icebox."
+          >
+            <IssuesTable
+              label="Priority issues in backlog or icebox"
+              layout={PARKED_LAYOUT}
+              listing={PARKED}
+              priorityTitles={titles}
+              stateKey="k"
+            />
+          </FaultPanel>
+        )}
+      </div>
     </div>
   );
 }

@@ -3,15 +3,14 @@ import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import {
-  dragHandleBg,
   focusVisibleRing,
   linkHoverText,
   linkText,
   textMutedOnCanvas,
+  textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
 import {
   NEVER_MOVED,
@@ -24,8 +23,9 @@ import { columnDefs } from "./priority-table-model";
 
 /** Everything a row of the priorities table can do, which the page holds and the cells call. */
 export interface PriorityRowActions {
-  /** Whether this reader may write a priority: the add, the rename, the description and the
-   *  drag are theirs alone, and every other reader sees the same rows without them. */
+  /** Whether this reader may write a priority: the add, the description and the drag are
+   *  theirs alone, and every other reader sees the same rows without them. A title is renamed
+   *  on the priority's own page, which the title links to. */
   readonly canWrite: boolean;
   /** Whether the order on screen is the order itself, which is the only view a drag can move:
    *  under another sort or a grouping, a drop would write a place the reader cannot see. */
@@ -33,7 +33,6 @@ export interface PriorityRowActions {
   /** The priority whose row is open, which shows its whole description and its work. */
   readonly openId: string | undefined;
   readonly onOpen: (item: PriorityItem) => void;
-  readonly onRename: (item: PriorityItem, title: string) => void;
   readonly onDescribe: (item: PriorityItem, description: string) => void;
   /** The row the reader is dragging, and the two ends of that drag. */
   readonly dragging: string | undefined;
@@ -43,16 +42,35 @@ export interface PriorityRowActions {
   readonly onMove: (item: PriorityItem, by: -1 | 1) => void;
 }
 
+/** The grip a row is dragged by: two columns of three dots. */
+function GripIcon(): ReactNode {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" fill="currentColor" viewBox="0 0 16 16">
+      <circle cx="5.5" cy="3.5" r="1.5" />
+      <circle cx="10.5" cy="3.5" r="1.5" />
+      <circle cx="5.5" cy="8" r="1.5" />
+      <circle cx="10.5" cy="8" r="1.5" />
+      <circle cx="5.5" cy="12.5" r="1.5" />
+      <circle cx="10.5" cy="12.5" r="1.5" />
+    </svg>
+  );
+}
+
 function OrderCell({ actions, item }: { actions: PriorityRowActions; item: PriorityItem }) {
   return (
     <span className="flex items-center gap-1">
       {actions.canWrite && actions.canReorder ? (
         <button
           aria-label={`Move ${item.order} ${item.priority.title}: drag it, or press the up and down arrows`}
-          className={`cursor-grab rounded px-1 ${textMutedOnCanvas} ${focusVisibleRing}`}
+          className={`-ml-1 cursor-grab rounded p-0.5 active:cursor-grabbing ${textMutedOnCanvas} ${focusVisibleRing}`}
           draggable
           onDragEnd={actions.onDragEnd}
-          onDragStart={() => actions.onDragStart(item.priority.id)}
+          onDragStart={(event) => {
+            // Firefox starts no drag that carries no data, so the drag carries the id it moves.
+            event.dataTransfer.setData("text/plain", item.priority.id);
+            event.dataTransfer.effectAllowed = "move";
+            actions.onDragStart(item.priority.id);
+          }}
           onKeyDown={(event) => {
             if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
             event.preventDefault();
@@ -60,15 +78,10 @@ function OrderCell({ actions, item }: { actions: PriorityRowActions; item: Prior
           }}
           type="button"
         >
-          <span aria-hidden className={`block h-3 w-3 rounded-sm ${dragHandleBg}`} />
+          <GripIcon />
         </button>
       ) : null}
-      <Link
-        className={`font-semibold tabular-nums ${linkText} ${linkHoverText}`}
-        to={priorityPath(item.priority.id)}
-      >
-        {item.order}
-      </Link>
+      <span className={`font-semibold tabular-nums ${textSecondaryOnCanvas}`}>{item.order}</span>
     </span>
   );
 }
@@ -81,22 +94,24 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
       <button
         aria-expanded={open}
         aria-label={`${open ? "Close" : "Open"} ${item.order} ${title}`}
-        className={`mt-1 rounded ${textMutedOnCanvas} ${focusVisibleRing}`}
+        className={`mt-0.5 rounded ${textMutedOnCanvas} ${focusVisibleRing}`}
         onClick={() => actions.onOpen(item)}
         type="button"
       >
         <ChevronIcon expanded={open} />
       </button>
       <div className="min-w-0 flex-1 space-y-1">
-        {actions.canWrite ? (
-          <InPlaceField
-            label={`Title of ${item.order}`}
-            onSave={(next) => actions.onRename(item, next)}
-            value={title}
-          />
-        ) : (
-          <p className="font-medium">{title}</p>
-        )}
+        {/* The title is read here and renamed on the priority's own page, which it opens. */}
+        <Link
+          className={`flex w-full min-w-0 font-medium ${linkText} ${linkHoverText}`}
+          to={priorityPath(item.priority.id)}
+        >
+          <span
+            className={`line-clamp-2 min-w-0 flex-1 break-words hover:underline ${textPrimaryOnCanvas}`}
+          >
+            {title}
+          </span>
+        </Link>
         {open ? (
           <PriorityDescription
             canWrite={actions.canWrite}
@@ -110,6 +125,16 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
         )}
       </div>
     </div>
+  );
+}
+
+/** The owner in at most two lines, the whole of it in the tooltip: an owner is free text, and a
+ *  long one would make its row as tall as the list. */
+function OwnerCell({ owner }: { owner: string }) {
+  return (
+    <span className="line-clamp-2 break-words" title={owner === "" ? undefined : owner}>
+      {owner}
+    </span>
   );
 }
 
@@ -133,7 +158,10 @@ export function usePriorityColumns(actions: PriorityRowActions): ColumnDef<Prior
             accessorFn: (item) => item.priority.title,
             cell: ({ row }) => <TitleCell actions={actions} item={row.original} />,
           },
-          owner: { accessorFn: (item) => item.priority.owner },
+          owner: {
+            accessorFn: (item) => item.priority.owner,
+            cell: ({ row }) => <OwnerCell owner={row.original.priority.owner} />,
+          },
           "in-flight": {
             accessorFn: (item) => item.inFlight,
             cell: ({ row }) => countCell(row.original.inFlight),
