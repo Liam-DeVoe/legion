@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // TestTheSeedsDocumentWriteTakesTheStoreLockOrder holds the seed's write of one document
@@ -62,9 +63,11 @@ func TestTheSeedsDocumentWriteTakesTheStoreLockOrder(t *testing.T) {
 		name, table, statement string
 	}{
 		{"the revision fence", "document_block_versions", `copy "artifact_versions"`},
-		{"the block nodes", "graph_nodes", "with incoming as ("},
+		{"the block nodes", "graph_nodes", "insert into graph_nodes ("},
 		{"the block rows", "document_blocks", "insert into document_blocks ("},
-		{"the tuple append", "graph_tuples", "insert into graph_tuples ("},
+		// The append that follows a node write starts with the nodes it reads back, and its
+		// insert into graph_tuples comes after them (graphstore's queueAppend).
+		{"the tuple append", "graph_tuples", "with written as ("},
 	}
 	for at, step := range steps {
 		t.Run("the write waits at "+step.name+" holding only the steps before it", func(t *testing.T) {
@@ -95,6 +98,7 @@ func TestTheSeedsDocumentWriteTakesTheStoreLockOrder(t *testing.T) {
 			release()
 			requireSeedLockCommitted(t, done)
 			f.requireDocumentWritten(t, index)
+			storetest.RequireNoMarkedCause(t, f.database, "the seed's document write held at "+step.name)
 		})
 	}
 }

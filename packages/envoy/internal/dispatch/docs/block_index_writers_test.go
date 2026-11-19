@@ -87,13 +87,23 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	`, payload).Scan(&event); err != nil {
 		t.Fatalf("record the document's event: %v", err)
 	}
-	if err := graphstore.Caused(ctx, tx, write, event); err != nil {
+	if err := causeInWritePhase(joined, tx, write, event); err != nil {
 		t.Fatalf("append what the write's block index stated: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the document write: %v", err)
 	}
 	return artifactID
+}
+
+// causeInWritePhase queues the append of what written stated under event, the event that caused
+// it, on the write phase of the ledger ctx joins tx to, after every write queued so far, as the
+// routes queue it after their event (graphstore.QueueCaused). The node write it moves onto that
+// event is queued there as well and runs only once the ledger commits, so an append run at once
+// would run before the rows it settles exist. A transaction no ledger joins runs it at once
+// (write).
+func causeInWritePhase(ctx context.Context, tx pgx.Tx, written graphstore.Uncaused, event int64) error {
+	return write(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, written, event) })
 }
 
 // countRows is one count over the document's rows of a table keyed by artifact_id.
@@ -606,7 +616,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // or builds the statement that does, the list that test holds as storeWriteFunctions:
 // SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
 // store through it alone would otherwise be read as no writer at all.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|QueueWrite|QueueNodes|QueueCaused|Authored|Reached|SessionRecorded|QueueAuthored|QueueReached|QueueSessionRecorded|WriteArms|WriteArmsUncaused|EraseNode)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

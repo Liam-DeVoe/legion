@@ -1082,7 +1082,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 			if err != nil {
 				return err
 			}
-			if err := stored.writeNode(ctx, tx); err != nil {
+			if err := store.RunWrite(ctx, tx, stored.writeNode); err != nil {
 				return err
 			}
 			// The row the node is written for. It carries the columns the write under test
@@ -1094,7 +1094,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 			`, commentID, run.issue, graphstore.KindComment); err != nil {
 				return err
 			}
-			return stored.caused(ctx, tx, graphstore.NoEvent)
+			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return stored.caused(b, graphstore.NoEvent) })
 		},
 		left: func(ctx context.Context) ([]string, error) {
 			return readStrings(ctx, run.database.Pool, `

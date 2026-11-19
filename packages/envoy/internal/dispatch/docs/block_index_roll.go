@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -24,13 +23,11 @@ import (
 // suggestionOutcomePage).
 const blockIndexEventPage = 1000
 
-// markVersionedDocuments is one tick's marking, in one statement: it reads up to $3 events after
-// the cursor ($1) and at or below the safe horizon ($2), in id order, and marks owed a block index,
-// with this build's own mark, every document an artifact.version or artifact.created event among
-// them names, and every document of each issue an issue.created event among them names, that
-// holds no such mark yet and whose blocks this build's store last stated at a version other than
-// the one the document stands at. It answers how many events it read, the id of the last one
-// (null when it read none), how many documents it marked, and the comments a comment.created or
+// readEventPage is one tick's read of the event log, in one statement: it reads up to $3 events
+// after the cursor ($1) and at or below the safe horizon ($2), in id order, and answers how many
+// events it read, the id of the last one (null when it read none), every document an
+// artifact.version or artifact.created event among them names, and every document of each issue
+// an issue.created event among them names, in id order, and the comments a comment.created or
 // comment.answered event among them names, in id order, each beside the first of those events that
 // names it.
 //
@@ -41,32 +38,15 @@ const blockIndexEventPage = 1000
 // primary document, the spec, and records that document's version 1 with the issue.created event
 // alone (api's issue create, read the same way by versionEventID), which names the issue and no
 // document: the event's issue_key, its owner, is the issue, so every document of kind 'doc' that
-// issue holds in artifacts is marked, read through artifacts_issue_key. A comment's event carries
+// issue holds in artifacts is named, read through artifacts_issue_key. A comment's event carries
 // the comment, the reply a comment.answered stores included, and names it in payload->>'id' (api's
 // commentEventPayload). Each event names what it names whichever build wrote it, and the read
 // filters on nothing else: a project document's event carries no issue key, and an agent's
 // workspace document writes no event at all. The payload is read only for the four types that
 // name a document or a comment, and a value that is no uuid names nothing rather than failing the
-// tick (store.CastableUUID). Only a document that exists is marked, and only one of kind 'doc',
-// since the row is joined to its artifact. The page bounds the issues as it bounds the documents,
-// and an issue holds a few documents.
-//
-// A document is marked where store_version, the version whose blocks this build's index pass last
-// stated in the store (refs' standsAtVersion, its one writer), is not the document's version, a
-// null on either side included. The release before this one moves version and never
-// store_version, so a document it indexed after this build's store stated it is marked, and so is
-// one it created, whose store_version is null, and one whose version a write owes an index still
-// (null): whatever that version drops, moves or rewords, which may leave no row naming no node,
-// this build's pass over it states. A document this build wrote and indexed stands at the
-// store_version that pass wrote, and is not marked again.
-//
-// The mark is the one the backfill sets (graphcensus's markStaleBatch) and oweDocumentIndex keeps:
-// store_owed_at, which the release before this one neither reads nor clears. The statement takes
-// no owner row and writes nothing but document_block_versions rows, and it takes those `for no key
-// update` in ascending artifact_id order before its update re-locks them, which is the order
-// graphcensus's lockBlockDocuments takes several of them in: a writer holding several such rows
-// and this statement can never each hold one the other waits for.
-var markVersionedDocuments = `
+// tick (store.CastableUUID). Only a document that exists is named, and only one of kind 'doc'. The
+// page bounds the issues as it bounds the documents, and an issue holds a few documents.
+var readEventPage = `
 	with page as (
 		select id, type, issue_key, case type
 			when 'artifact.version' then ` + store.CastableUUID(`payload->>'artifact_id'`) + `
@@ -80,16 +60,44 @@ var markVersionedDocuments = `
 		limit $3
 	),
 	named as (
-		select artifact_id from page where artifact_id is not null
-		union
 		select a.id from artifacts a
-		where a.issue_key = any(array(select distinct issue_key from page where type = 'issue.created' and issue_key is not null))
-		  and a.kind = 'doc'
+		where a.kind = 'doc' and (
+			a.id = any(array(select artifact_id from page where artifact_id is not null))
+			or a.issue_key = any(array(select distinct issue_key from page where type = 'issue.created' and issue_key is not null)))
 	),
-	held as (
+	commented as (
+		select comment_id, min(id) as cause from page where comment_id is not null group by comment_id
+	)
+	select (select count(*) from page), (select max(id) from page),
+	       coalesce((select array_agg(id::text order by id) from named), '{}'),
+	       coalesce((select array_agg(comment_id::text order by comment_id) from commented), '{}'),
+	       coalesce((select array_agg(cause order by comment_id) from commented), '{}')`
+
+// markVersionedDocuments marks owed a block index, with this build's own mark, every document of
+// $1, the documents the events after the cursor name (readEventPage), that holds no such mark yet
+// and whose blocks this build's store last stated at a version other than the one the document
+// stands at, and answers how many it marked.
+//
+// A document is marked where store_version, the version whose blocks this build's index pass last
+// stated in the store (refs' BlockIndexing.queueStand, its one writer), is not the document's
+// version, a null on either side included. The release before this one moves version and never
+// store_version, so a document it indexed after this build's store stated it is marked, and so is
+// one it created, whose store_version is null, and one whose version a write owes an index still
+// (null): whatever that version drops, moves or rewords, which may leave no row naming no node,
+// this build's pass over it states. A document this build wrote and indexed stands at the
+// store_version that pass wrote, and is not marked again.
+//
+// The mark is the one the backfill sets (graphcensus's markStaleBatch) and oweDocumentIndex keeps:
+// store_owed_at, which the release before this one neither reads nor clears. The statement takes
+// no owner lock and writes nothing but document_block_versions rows, and it takes those `for no key
+// update` in ascending artifact_id order before its update re-locks them, which is the order
+// graphcensus's lockBlockDocuments takes several of them in: a writer holding several such rows
+// and this statement can never each hold one the other waits for. It decides on the rows as it
+// locks them, in the write phase, so a row a version's index stated meanwhile is not marked.
+const markVersionedDocuments = `
+	with held as (
 		select b.artifact_id from document_block_versions b
-		join artifacts a on a.id = b.artifact_id and a.kind = 'doc'
-		where b.artifact_id = any(array(select artifact_id from named))
+		where b.artifact_id = any($1::uuid[])
 		  and b.store_owed_at is null
 		  and not coalesce(b.store_version = b.version, false)
 		order by b.artifact_id
@@ -100,18 +108,13 @@ var markVersionedDocuments = `
 		from held
 		where b.artifact_id = held.artifact_id and b.store_owed_at is null
 		returning b.artifact_id
-	),
-	commented as (
-		select comment_id, min(id) as cause from page where comment_id is not null group by comment_id
 	)
-	select (select count(*) from page), (select max(id) from page), (select count(*) from marked),
-	       coalesce((select array_agg(comment_id::text order by comment_id) from commented), '{}'),
-	       coalesce((select array_agg(cause order by comment_id) from commented), '{}')`
+	select count(*) from marked`
 
 // readEventsAfterCursor is the first step of every block-index tick: it reads the events after its
 // build's cursor, marks owed a block index, with this build's own mark, every document they name
 // that this build's store has not stated at its version (markVersionedDocuments), gives every
-// comment they name whose row names no node its node and its tuples (writeCommentsTheEventsName),
+// comment they name whose row names no node its node and its tuples (graphcensus.CommentWrite),
 // and counts in tick what it read, marked and wrote, and whether another build serves.
 //
 // The release before this one indexes a version it writes, and a document it creates, the spec of
@@ -144,20 +147,23 @@ var markVersionedDocuments = `
 // is read by the second tick after it commits, or later while a transaction on the instance stays
 // open across those ticks.
 //
-// Everything a tick does here commits together, in one transaction, which takes its locks in the
-// store's order: the cursor row `for update` first, which only block-index ticks take; then the
-// marking statement's document_block_versions rows `for no key update`, in ascending artifact_id
-// order; then the comments' node rows, in ascending (kind, id) in one store write, their tuples,
-// and their comments rows. A writer under the revision fence takes a document's
+// The tick reads everything first and writes after, in one batch back to back before its commit
+// (queueWrites), so its transaction holds a transaction id for those statements alone: the safe
+// horizon, the cursor, the page of events (readEventPage), the owner locks of the comments it
+// names (graphcensus.LockCommentOwners), the lock every writer of a comments row takes, and those
+// comments' rows under them (graphcensus.CommentsNamingNoNode). The batch then takes its locks in
+// the store's order: the cursor row first, which only block-index ticks write; then the marking
+// statement's document_block_versions rows `for no key update`, in ascending artifact_id order;
+// then the comments' node rows, in ascending (kind, id) in one store write, their tuples, and
+// their comments rows. A writer under the revision fence takes a document's
 // document_block_versions row before any node it writes (the fifth invariant on api's
 // markInboxReadThreads), and a settlement takes its document's row and then the node of the
-// session that follows an ask it opens (lockSettlementFence, causeFollows): a tick that wrote a
+// session that follows an ask it opens (lockSettlementFence, followsByEvent): a tick that wrote a
 // comment's author's node first and then waited for that document's row would hold what the
-// settlement waits for, while the settlement held what the tick waits for. The comment write takes
-// no owner row (graphcensus's writeCommentBatch takes none), so nothing of it goes before the
-// marking. A tick that fails moves nothing and the next reads the same events again; a document
-// already marked keeps its mark and its time. A document marked here is listed by the owed
-// documents this same tick reads next, and drained by it when its batch has room.
+// settlement waits for, while the settlement held what the tick waits for. A tick that fails moves
+// nothing and the next reads the same events again; a document already marked keeps its mark and
+// its time. A document marked here is listed by the owed documents this same tick reads next, and
+// drained by it when its batch has room.
 func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTick) (full bool, err error) {
 	safe, err := s.blockIndexHorizon().Safe(ctx)
 	if err != nil {
@@ -175,87 +181,88 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	// A safe of 0 is a horizon that has proven nothing yet, as a process's first observation
-	// never does on its own, or an empty log: until a tick reads one, nothing is read, and a
-	// build's cursor never starts at the beginning of the log. least() passes over a null, so the
-	// row starts at whichever of the two starts exists where only one does.
-	if safe > 0 {
-		if _, err := tx.Exec(ctx, `
-			insert into block_index_event_cursors (build_commit, event_id)
-			select $1, coalesce(least(
+	queued, ledger := queueWrites(ctx, tx)
+	// A build's cursor is its own row, else where its first tick starts it: at the earlier of the
+	// newest event_id another build's row holds and the horizon the newest backfill recorded,
+	// either where only one exists, and the horizon where neither does. A safe of 0 is a horizon
+	// that has proven nothing yet, as a process's first observation never does on its own, or an
+	// empty log: until a tick reads one, nothing is read, and a build's cursor never starts at the
+	// beginning of the log. least() passes over a null, so the row starts at whichever of the two
+	// starts exists where only one does.
+	var cursor *int64
+	if err := tx.QueryRow(queued, `
+		select coalesce(
+			(select event_id from block_index_event_cursors where build_commit = $1),
+			case when $2::bigint > 0 then coalesce(least(
 				(select max(event_id) from block_index_event_cursors),
-				(select event_id from graph_backfill_horizon where id = 1)), $2)
-			on conflict (build_commit) do nothing
-		`, s.buildCommit, safe); err != nil {
-			return false, fmt.Errorf("start this build's block-index event cursor: %w", err)
-		}
-	}
-	var cursor int64
-	switch err := tx.QueryRow(ctx, `
-		select event_id from block_index_event_cursors where build_commit = $1 for update
-	`, s.buildCommit).Scan(&cursor); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return false, nil
-	case err != nil:
+				(select event_id from graph_backfill_horizon where id = 1)), $2::bigint) end)
+	`, s.buildCommit, safe).Scan(&cursor); err != nil {
 		return false, fmt.Errorf("read this build's block-index event cursor: %w", err)
+	}
+	if cursor == nil {
+		return false, nil
 	}
 	// Another process of this build may have moved the cursor past this process's horizon; the
 	// cursor never moves back.
-	next := max(cursor, safe)
-	// What the tick counts is what it committed: a read that fails counts nothing.
-	var read, marked, written int
-	if safe > cursor {
+	next := max(*cursor, safe)
+	var read, written int
+	var marked int64
+	var named []string
+	var commented graphcensus.CommentWrite
+	if safe > *cursor {
 		var last *int64
 		var comments []string
 		var causes []int64
-		if err := tx.QueryRow(ctx, markVersionedDocuments, cursor, safe, blockIndexEventPage).Scan(
-			&read, &last, &marked, &comments, &causes,
+		if err := tx.QueryRow(queued, readEventPage, *cursor, safe, blockIndexEventPage).Scan(
+			&read, &last, &named, &comments, &causes,
 		); err != nil {
-			return false, fmt.Errorf("mark the documents the events after the cursor name: %w", err)
+			return false, fmt.Errorf("read the events after the cursor: %w", err)
 		}
 		if full = read == blockIndexEventPage; full {
 			next = *last
 		}
-		if written, err = writeCommentsTheEventsName(ctx, tx, comments, causes); err != nil {
+		if len(comments) > 0 {
+			if err := graphcensus.LockCommentOwners(queued, tx, comments); err != nil {
+				return false, err
+			}
+			if commented, err = graphcensus.CommentsNamingNoNode(queued, tx, comments, causes); err != nil {
+				return false, err
+			}
+		}
+	}
+	// The write phase, in the store's lock order: the cursor, the documents' marks, the comments.
+	if err := write(queued, tx, execStep("move this build's block-index event cursor", `
+		insert into block_index_event_cursors (build_commit, event_id) values ($1, $2)
+		on conflict (build_commit) do update
+		set event_id = greatest(block_index_event_cursors.event_id, excluded.event_id)
+	`, s.buildCommit, next)); err != nil {
+		return false, err
+	}
+	if len(named) > 0 {
+		if err := write(queued, tx, func(b *store.WriteBatch) error {
+			b.Queue("mark the documents the events after the cursor name", markVersionedDocuments, named).QueryRow(func(row pgx.Row) error {
+				return row.Scan(&marked)
+			})
+			return nil
+		}); err != nil {
 			return false, err
 		}
 	}
-	if _, err := tx.Exec(ctx, `
-		update block_index_event_cursors set event_id = $2 where build_commit = $1
-	`, s.buildCommit, next); err != nil {
-		return false, fmt.Errorf("move this build's block-index event cursor: %w", err)
+	if commented.Comments() > 0 {
+		if err := write(queued, tx, commented.Queue); err != nil {
+			return false, fmt.Errorf("write the nodes of the comments the events after the cursor name: %w", err)
+		}
+		written = commented.Comments()
+	}
+	if err := ledger.runQueue(ctx, nil); err != nil {
+		return false, fmt.Errorf("write what the events after the cursor name: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit what the events after the cursor name: %w", err)
 	}
-	tick.Events, tick.Marked, tick.Comments = read, marked, written
+	// What the tick counts is what it committed: a read that fails counts nothing.
+	tick.Events, tick.Marked, tick.Comments = read, int(marked), written
 	return full, nil
-}
-
-// writeCommentsTheEventsName gives each comment of ids whose row names no node the backfill's own
-// write of that row, in tx, and answers how many it wrote: the comment's node, the facts its row
-// projects and who wrote it, in one store write, and then the node named on its row
-// (graphcensus.CommentsNamingNoNode, the one builder of those facts both writers share). causes
-// holds, beside each id, the event that stored the comment, which is the cause of what the write
-// states. A comment written by this build, or by a backfill since, names its node already and is
-// left alone, so this is the backfill's contract applied to the rows the log names, and no
-// reconcile: it writes only a row its marker does not mark. readEventsAfterCursor runs it after its
-// marking, which is why that order is written there.
-func writeCommentsTheEventsName(ctx context.Context, tx pgx.Tx, ids []string, causes []int64) (int, error) {
-	if len(ids) == 0 {
-		return 0, nil
-	}
-	write, err := graphcensus.CommentsNamingNoNode(ctx, tx, ids, causes)
-	if err != nil || write.Comments() == 0 {
-		return 0, err
-	}
-	if err := graphstore.Write(ctx, tx, write.Nodes, write.Tuples); err != nil {
-		return 0, fmt.Errorf("write the nodes of the comments the events after the cursor name: %w", err)
-	}
-	if err := write.NameNodes(ctx, tx); err != nil {
-		return 0, err
-	}
-	return write.Comments(), nil
 }
 
 // blockIndexHorizon is the events.Horizon the block-index tick reads the event log's safe horizon
