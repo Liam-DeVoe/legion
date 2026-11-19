@@ -406,7 +406,7 @@ Each item below names a task and where its code is, then notes on it.
   A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
   Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
-- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_linked.go`, `internal/dispatch/api/results_comparison.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `internal/dispatch/delivery/linked_pull_requests.go`, `store/migrations/20261102122200_check_results.up.sql`
+- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
@@ -415,11 +415,9 @@ Each item below names a task and where its code is, then notes on it.
   each result answers where its commit stands against those (`commit_stands`) and whether the check's words moved after it was recorded (`check_words_moved`):
 
   - a `before_merge` check is compared with every head Dispatch holds for the check's own issue — the head of an `open` pull request, or the final head of a `merged` one (`pull_request_heads`, which the GitHub intake and the reconcile keep);
-    a pull request the issue's external links name in a repository the issue does not resolve to counts as one attributed to it, matched to its row by repository and number, so its head moves the basis as it moves (`linkedPullRequestTerms` in `delivery/linked_pull_requests.go`); a link to a pull request of the issue's own repository adds nothing;
     the issue a result was recorded on counts for nothing here, so a child's pull request is never a basis for a check above it;
 
   - an `after_merge` check with the branch the check's issue's pull request merged into and with the repository's default branch — that default branch alone where Dispatch holds no merge of it;
-    a result whose commit only a repository the issue links a pull request in holds is compared in that repository, which the record route keeps with the result (`check_results.commit_repo`): the branch its merged linked pull request merged into (`delivery.BaseBranchMergedIn`), then its default branch;
 
   - a `default_branch` check with the repository's default branch, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
 
