@@ -79,11 +79,12 @@ func decodeAsTheReleaseBefore(payload []byte, shape any) error {
 }
 
 // A row this release queues can name the claim it acts on: a supervise request, a release's
-// workspace save and an update round's ask. The release before knows no such key and decodes a
-// payload strictly, so such a row left in place at a rollback fails its decode at every attempt.
-// The way back the migration's header gives takes the key off each queued row of those kinds and
-// leaves every other key as it was, and the release before then decodes the row; this release still
-// decodes it after the roll forward, with no claim named.
+// workspace save, an update round's ask, the end of a phase a conflicting head ended, and a hook's
+// prompt. The release before knows no such key and decodes a payload strictly, so such a row left
+// in place at a rollback fails its decode at every attempt. The way back the migration's header
+// gives takes the key off each queued row of those kinds and leaves every other key as it was, and
+// the release before then decodes the row; this release still decodes it after the roll forward,
+// with no claim named.
 func TestTheWayBackTakesTheClaimOffEachRowTheReleaseBeforeDecodes(t *testing.T) {
 	ctx := context.Background()
 	st := emptyStore(t)
@@ -101,6 +102,10 @@ func TestTheWayBackTakesTheClaimOffEachRowTheReleaseBeforeDecodes(t *testing.T) 
 			payload: `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester",` + keyed + `}`},
 		{kind: "update_ask", shape: record.UpdateAsk{},
 			payload: `{"role":"tester",` + keyed + `,"round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"Push your work."}`},
+		{kind: "phase_ended", shape: record.PhaseEnded{},
+			payload: `{"role":"tester",` + keyed + `,"from":"testing","to":"implementing","reason":"the head conflicts with main"}`},
+		{kind: "hook_prompt", shape: record.HookPrompt{},
+			payload: `{"hook":"back-to-implementing","role":"implementer",` + keyed + `,"from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`},
 	}
 	ids := make([]int64, len(rows))
 	for i, row := range rows {

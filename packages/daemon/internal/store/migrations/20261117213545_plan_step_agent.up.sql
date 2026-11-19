@@ -18,7 +18,7 @@
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   update outbox set payload = payload - 'claim'
---   where kind in ('supervise', 'issue_bundle', 'update_ask') and payload ? 'claim';
+--   where kind in ('supervise', 'issue_bundle', 'update_ask', 'phase_ended', 'hook_prompt') and payload ? 'claim';
 --   alter table plan_steps drop column if exists agent;
 --   delete from schema_version where version = 20261117213545;
 --   commit;
@@ -37,12 +37,13 @@
 -- plan_steps again with no agent column, which every plan read names.
 --
 -- The update is owed to the release before, not to the roll forward. This release names the claim
--- a row acts on where the row's producer holds it: a supervise request, a release's workspace save
--- and an update round's ask each carry the key claim (record.SuperviseRequest.Claim,
--- IssueBundle.Claim and UpdateAsk.Claim). The release before knows no such key and decodes an
+-- a row acts on where the row's producer holds it: a supervise request, a release's workspace save,
+-- an update round's ask, the end of a phase a conflicting head ended and a hook's prompt each
+-- carry the key claim (record.SuperviseRequest.Claim, IssueBundle.Claim, UpdateAsk.Claim,
+-- PhaseEnded.Claim and HookPrompt.Claim). The release before knows no such key and decodes an
 -- outbox payload strictly (record.DecodeOutboxPayload, DisallowUnknownFields), so a row still
 -- queued with it would fail its decode at every attempt and retry until the roll forward. The
 -- update takes the key off each such row, and the release before then acts on the claim of the
--- row's role, as it did. Only the top-level key of those three kinds goes: a notice's update
+-- row's role, as it did. Only the top-level key of those five kinds goes: a notice's update
 -- round names claims of its own under the same key, which that release reads.
 alter table plan_steps add column agent text not null default '';
