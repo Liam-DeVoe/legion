@@ -140,6 +140,7 @@ var storeWriteCallSites = map[string]string{
 	"cmd/dispatch-seed/write_items.go#writeComments":      "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "cmd/dispatch-seed#TestTheSeedsFollowerWriteTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeItemNodes":     "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
+	"cmd/dispatch-seed/write_items.go#writeMessages":      "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
 	// The backfill command's five batches: the blocks, the block references and the comments
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one
@@ -217,13 +218,14 @@ var storeWriteCallSites = map[string]string{
 	// (graphcensus.backfillInbox), each batch in the order the live writers take - owner rows, then
 	// an ask's project rows, then the item rows and an item's block state, then the item's nodes and
 	// tuples, then a thread's user_threads rows in ascending login and the deliveries to them, then
-	// the markers: the messages, the comment pointers, an item's blocks and, through writeRelations,
-	// their links and the item's citations, the attempt rows, the user_threads rows and the five
+	// the markers: the messages, the comment pointers, an item's blocks, their links (writeLinks),
+	// the item's citations (writeRelations), the attempt rows, the user_threads rows and the five
 	// other read-state tables. What each comment, message, ask, answer and decline an older build
 	// wrote owed its thread is inboxwrite.RecordOlder's, listed with the one writer below.
 	"graphcensus/backfill_inbox.go#writeMessages":            "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_inbox.go#writeCommentPointers":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_inbox.go#writeBlocks":              "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	"graphcensus/backfill_inbox.go#writeLinks":               "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_inbox.go#writeRelations":           "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_inbox.go#writeAttempts":            "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_inbox_threads.go#writeUserThreads": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",

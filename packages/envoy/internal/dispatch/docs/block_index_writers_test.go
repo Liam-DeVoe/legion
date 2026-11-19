@@ -699,6 +699,7 @@ var indexPasses = map[string]string{
 	// before the batch writes its rows.
 	"cmd/dispatch-seed/write_core.go#writeIssues":     "the seed's own plan",
 	"cmd/dispatch-seed/write_items.go#writeItemNodes": "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeMessages":  "the seed's own plan",
 	// The seed's asks: the session node of each follower the batch copies, drawn from the plan.
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "the seed's own plan",
 	"docs/block_index.go#stampVersionEvent":               "the event that recorded the version",
@@ -842,7 +843,8 @@ var indexPasses = map[string]string{
 	"graphcensus/backfill_inbox.go#writeMessages":            "each messages row that names no node, and the page its target hangs from",
 	"graphcensus/backfill_inbox.go#writeCommentPointers":     "each comments row whose tuples_stored is false",
 	"graphcensus/backfill_inbox.go#writeBlocks":              "each item block row that names no node, its item's node, and where the store places that block now",
-	"graphcensus/backfill_inbox.go#writeRelations":           "the links and citations its caller read off rows that name no node or hold no tuples_stored",
+	"graphcensus/backfill_inbox.go#writeLinks":               "each item link row that names no node out of a block whose node the store holds, that node's maker, and the event that recorded the row's item",
+	"graphcensus/backfill_inbox.go#writeRelations":           "the citations its caller read off refs rows that hold no tuples_stored",
 	"graphcensus/backfill_inbox.go#writeAttempts":            "each attempt row that names no node, and what the store holds of the node it writes for it",
 	"graphcensus/backfill_inbox_threads.go#writeUserThreads": "each user_threads row that carries no marked_seq, the event of its last reply, and whether its person's participates_in and dismissed into its thread stand, so it states what the row says and retracts a dismissal the row no longer holds",
 	"graphcensus/backfill_inbox_threads.go#writeMarks":       "each read-state row whose tuples_stored_at is null",

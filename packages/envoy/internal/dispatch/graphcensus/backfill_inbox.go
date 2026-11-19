@@ -363,23 +363,28 @@ func writeNodesOnce(nodes []graphstore.Node) []graphstore.Node {
 
 // writeRelations appends tuples in tx: those that name a person on the end ToPerson keeps them to
 // through graphstore.ToPerson, and every other through graphstore.Write, which refuses a person
-// tuple handed to it.
+// tuple handed to it (personTuples).
 func writeRelations(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node, tuples []graphstore.Tuple) error {
-	var people, others []graphstore.Tuple
-	for _, tuple := range tuples {
-		switch {
-		case tuple.Kind == graphstore.TupleMentions && tuple.ToKind == graphstore.KindPerson:
-			people = append(people, tuple)
-		default:
-			others = append(others, tuple)
-		}
-	}
+	people, others := personTuples(tuples)
 	if len(nodes) > 0 || len(others) > 0 {
 		if err := graphstore.Write(ctx, tx, writeNodesOnce(nodes), others); err != nil {
 			return err
 		}
 	}
 	return graphstore.ToPerson(ctx, tx, people)
+}
+
+// personTuples parts tuples into the mentions of a person, which graphstore.ToPerson alone
+// appends, and every other.
+func personTuples(tuples []graphstore.Tuple) (people, others []graphstore.Tuple) {
+	for _, tuple := range tuples {
+		if tuple.Kind == graphstore.TupleMentions && tuple.ToKind == graphstore.KindPerson {
+			people = append(people, tuple)
+		} else {
+			others = append(others, tuple)
+		}
+	}
+	return people, others
 }
 
 // --- messages ---------------------------------------------------------------------------------
@@ -846,8 +851,15 @@ func (kind inboxItemKind) writeLinks(ctx context.Context, tx pgx.Tx, keys [][]st
 	if len(tuples) == 0 {
 		return inboxWrote{}, nil
 	}
-	if err := writeRelations(ctx, tx, nil, tuples); err != nil {
+	// The links are stated in this function's own body, beside the update that names their nodes
+	// on the link rows: a person's through graphstore.ToPerson, every other through
+	// graphstore.Write (personTuples).
+	people, others := personTuples(tuples)
+	if err := graphstore.Write(ctx, tx, nil, others); err != nil {
 		return inboxWrote{}, fmt.Errorf("state a batch of %s: %w", kind.links, err)
+	}
+	if err := graphstore.ToPerson(ctx, tx, people); err != nil {
+		return inboxWrote{}, fmt.Errorf("state a batch of %s naming a person: %w", kind.links, err)
 	}
 	if _, err := tx.Exec(ctx, `
 		update `+kind.links+` r set node_kind = $6, node_address = r.from_node

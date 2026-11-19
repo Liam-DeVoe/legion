@@ -554,19 +554,53 @@ var runtimeTableSites = map[string]runtimeTableSite{
 		tables: []string{"block_refs", "comments", "document_blocks"},
 	},
 	// The block index of a comment, a message and an ask, over the item's own tables (refs'
-	// itemTables): its block state, blocks, block texts and block links, none of them projected.
+	// itemTables): its block state and block texts, which are projected by no node, and its
+	// blocks and block links, which are (projectedTables), each row naming its block's node. The
+	// index's inserts and deletes of those rows are held to the store writer's path, where it
+	// writes the blocks' nodes in the same batch (refs.ItemIndexing.Queue). The two updates of its
+	// blocks share one site and set different columns - the removal's position and removed_at, and
+	// the move's position, type, excerpt and node columns - so the site is read as no projected
+	// table, and the census holds those rows to the store (graphcensus's inboxProjections).
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueRecordIndexed: update i.tables.state":  {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.clearItemWindowsOwed: update tables.state":               {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueStateLock: insert into i.tables.state": {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: update tables.blocks":          {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.blocks":     {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.texts":      {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: delete from tables.refs":    {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: insert into tables.refs":    {},
-	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.markItemBlocksOwed: update tables.state":                 {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.blocks": {
+		tables: []string{"comment_blocks", "message_blocks", "ask_blocks"},
+	},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.texts": {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: delete from tables.refs": {
+		tables: []string{"comment_block_refs", "message_block_refs", "ask_block_refs"},
+	},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: insert into tables.refs": {
+		tables: []string{"comment_block_refs", "message_block_refs", "ask_block_refs"},
+	},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.markItemBlocksOwed: update tables.state": {},
 	// The stamp of an item's block links (refs.Stamp): comment_block_refs, message_block_refs or
 	// ask_block_refs, never block_refs, whose stamp is a statement of its own beside it.
-	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {},
+	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {
+		tables: []string{"comment_block_refs", "message_block_refs", "ask_block_refs"},
+		sets:   []string{"source_seq (the link's tuple, as its legacy_source_seq)"},
+	},
+	// The backfill of the inbox's projections, each beside the node write that states what the row
+	// projects (graphcensus's inboxItemKind and attemptTable): the node columns of an older build's
+	// item blocks, their links and delivery attempts.
+	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox.go#graphcensus.inboxItemKind.writeBlocks: update kind.blocks": {
+		tables: []string{"comment_blocks", "message_blocks", "ask_blocks"},
+		sets:   []string{"node_kind (the row's node)", "node_address (the row's node)"},
+	},
+	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox.go#graphcensus.inboxItemKind.writeLinks: update kind.links": {
+		tables: []string{"comment_block_refs", "message_block_refs", "ask_block_refs"},
+		sets:   []string{"node_kind (the row's node)", "node_address (the row's node)"},
+	},
+	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox.go#graphcensus.attemptTable.writeAttempts: update table.table": {
+		tables: []string{"comment_deliveries", "message_deliveries"},
+		sets:   []string{"node_kind (the row's node)", "node_address (the row's node)"},
+	},
+	// The read-state tables, which are projections of tuples and of no node (markedProjections):
+	// the backfill's marker over them and the erase's delete of a person's or an item's rows.
+	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox_threads.go#graphcensus.readStateTable.writeMarks: update table.table": {},
+	"packages/envoy/internal/dispatch/grapherase/read_state.go#grapherase.*Erasure.deleteReadState: delete from held.table.Table":      {},
 	// The settle of one source an owed-index queue held: block_grammar_owed or refs_grammar_owed.
 	"packages/envoy/internal/dispatch/refs/rebuild.go#refs.OwedQueue.settleOwedStatement: delete from queue.table": {},
 	// The daemon's kept decisions and approvals, parked_decisions and readmitted_approvals, in a

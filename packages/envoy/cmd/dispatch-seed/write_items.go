@@ -79,7 +79,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		if err := store.LockOwners(ctx, tx, owners...); err != nil {
 			return fmt.Errorf("the asks' owners: %w", err)
 		}
-		if err := writeItemNodes(ctx, tx, nodes, nil); err != nil {
+		if err := writeItemNodes(ctx, tx, nodes); err != nil {
 			return fmt.Errorf("the asks' nodes: %w", err)
 		}
 		for index := from; index < to; index++ {
@@ -253,13 +253,13 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 	})
 }
 
-// writeItemNodes writes the nodes of the asks or the messages one batch copies, before any row of
-// the batch, each in its project (seedRun.itemProject), at the sentinel, as every write of the
-// seed's is, and the facts the batch states of them beside those nodes. The rows carry no foreign
-// key into the store but the node a message's row names, which this write precedes, so where they
-// fall beside this moves no lock of the store's order.
-func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node, tuples []graphstore.Tuple) error {
-	return graphstore.Write(ctx, tx, nodes, tuples)
+// writeItemNodes writes the nodes of the asks one batch copies, before any row of the batch, each
+// in its project (seedRun.itemProject), at the sentinel, as every write of the seed's is. The rows
+// carry no foreign key into the store, so where they fall beside this moves no lock of the store's
+// order. A message batch writes its nodes with the facts it states of them in its own
+// graphstore.Write (writeMessages), since the messages rows it inserts name those nodes.
+func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
+	return graphstore.Write(ctx, tx, nodes, nil)
 }
 
 // stateAtSentinel appends what one of the seed's index passes states in the node and tuple store
@@ -613,7 +613,7 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 		if err := store.LockOwners(ctx, tx, owners...); err != nil {
 			return fmt.Errorf("the messages' owners: %w", err)
 		}
-		if err := writeItemNodes(ctx, tx, append(nodes, authors...), tuples); err != nil {
+		if err := graphstore.Write(ctx, tx, append(nodes, authors...), tuples); err != nil {
 			return fmt.Errorf("the messages' nodes: %w", err)
 		}
 		for index := from; index < to; index++ {

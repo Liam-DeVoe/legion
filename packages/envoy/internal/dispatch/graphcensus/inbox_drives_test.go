@@ -52,7 +52,8 @@ func inboxDrives(t *testing.T) []StoreDrive {
 		Name: inboxBackfillDrive, Database: database,
 		Sites: []string{
 			"graphcensus/backfill_inbox.go#writeMessages", "graphcensus/backfill_inbox.go#writeCommentPointers",
-			"graphcensus/backfill_inbox.go#writeBlocks", "graphcensus/backfill_inbox.go#writeRelations",
+			"graphcensus/backfill_inbox.go#writeBlocks", "graphcensus/backfill_inbox.go#writeLinks",
+			"graphcensus/backfill_inbox.go#writeRelations",
 			"graphcensus/backfill_inbox.go#writeAttempts", "graphcensus/backfill_inbox_threads.go#writeUserThreads",
 			"graphcensus/backfill_inbox_threads.go#writeMarks", "inboxwrite/older.go#RecordOlder",
 			"graphstore/to_person.go#ToPerson", "graphstore/from_person.go#FromPerson", "graphstore/write.go#Write",

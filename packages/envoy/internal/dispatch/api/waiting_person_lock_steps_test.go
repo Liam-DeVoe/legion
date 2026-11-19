@@ -117,18 +117,24 @@ func (r *storeWriterRig) signedIn(t *testing.T, prefix string) string {
 	return login
 }
 
-// askHandOn is putAskAskedOf: the issue's owner lock, the ask's asked_of, then the ask.asked_of
-// event and, in its batch, the move, which locks the ask's row, and its person tuples. Each run
-// hands a fresh ask on the rig's issue, which waits on the issue's assignee, to a person no write
-// has recorded.
+// askHandOn is putAskAskedOf: the issue's owner lock, the ask's asked_of, whose update takes the
+// ask's row, then the ask.asked_of event and, in its batch, the move, whose lock of the ask
+// re-takes the row the write already holds, and its person tuples. Each run hands a fresh ask on
+// the rig's issue, which waits on the issue's assignee, to a person no write has recorded.
 func (r *storeWriterRig) askHandOn() storeWriter {
 	return storeWriter{
 		name: "putAskAskedOf",
 		steps: []storeStep{
 			ownerLockStep(store.IssueOwner(r.issue)),
-			writeStep("the ask's asked_of", "asks", askedOfWriteStatement),
+			{
+				name: "the ask's row, its asked_of written", order: askStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from asks where id = $1::uuid for no key update`, run.ask)
+				},
+				at:    askedOfWriteStatement,
+				takes: []tableLock{{"asks", rowExclusiveMode}},
+			},
 			eventAppendStep(),
-			movedAsksStep(),
 			personTuplesStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {

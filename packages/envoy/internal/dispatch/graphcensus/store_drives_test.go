@@ -429,7 +429,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 	}, {
 		Name: seedCommentsDrive, Database: database,
 		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#writeItemNodes",
-			"cmd/dispatch-seed/write_items.go#stateAtSentinel", "graphstore/write.go#Write"},
+			"cmd/dispatch-seed/write_items.go#stateAtSentinel", "cmd/dispatch-seed/write_items.go#writeMessages",
+			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()
 			if err := comments.Rollback(ctx); err != nil {
