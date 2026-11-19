@@ -722,8 +722,8 @@ func fetchWhole(ctx context.Context, setting Settings, now func() time.Time) *wh
 	return read
 }
 
-// ReadWhole reads setting's project's daemon state whole and records it (D9's whole read, the
-// sampler's read without its loop): the state through Client.State, its observations at
+// ReadWhole reads setting's project's daemon state whole and records it (D9's whole read, made
+// for a reason and never on a timer): the state through Client.State, its observations at
 // Dispatch's now or just after each field's newest row (recordObservations, as RecordRead writes
 // them), a legion_reads row of kind `read` at Dispatch's now naming reason, and the project's
 // cursor set to the daemon's own daemon.stateSeq, which takes the cursor back too after a database
@@ -766,10 +766,10 @@ func (in *Intake) readWhole(ctx context.Context, setting Settings, reason string
 
 // finishWhole records read (recordWhole), then announces it on StateChannel and logs it. A record
 // Postgres refused is recorded as a failed read instead, its failure `record: <why>` and none of
-// its observations, as the sampler's read did, so the last good observations stand and the read
-// is owed rather than its project's runner held on a value the database will never take. An error
-// is answered only when that record is refused too: the database itself is failing, and the
-// caller tries the record again in place.
+// its observations, so the last good observations stand and the read is owed rather than its
+// project's runner held on a value the database will never take. An error is answered only when
+// that record is refused too: the database itself is failing, and the caller tries the record
+// again in place.
 func finishWhole(ctx context.Context, pool *store.Pool, project, reason string, read *wholeRead) (bool, error) {
 	recorded, written, err := recordWhole(ctx, pool, project, reason, read)
 	if err != nil && ctx.Err() == nil {

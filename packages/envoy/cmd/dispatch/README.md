@@ -1448,7 +1448,7 @@ The pass records each try in the database (`doc_settlements_pending.tried_at`), 
 **One shared listener per process.**
 Every woken loop waits on the process's one `pglisten.Hub`, the shared LISTEN connection the document rooms' room sync is registered on too (named `dispatch-listener <process id>` in `pg_stat_activity`, logged under the owner `dispatch`), which holds one connection from the store's listener pool and LISTENs on every loop's channel beside the room-sync channels.
 A channel is registered only for a loop that will run:
-`dispatch_embeddings` only with an embedder, and `dispatch_delivery_settings` only with NATS and the GitHub App.
+`dispatch_embeddings` only with an embedder, `dispatch_delivery_settings` only with NATS and the GitHub App, and `dispatch_legion_settings` only with NATS.
 No loop waits for the listener: each runs its boot pass whether or not it has connected, and keeps its due-time timers while it has no connection.
 Postgres does not replay a notification sent while nothing listened, so the hub signals every loop after each successful LISTEN, the first included, and a change made while it was redialing (backing off 1 to 30 s) is caught up then.
 
@@ -1485,6 +1485,16 @@ A take-over under way when the context ends — a standby's poll
 its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it inside that budget, and no attempt starts once the context has ended.
 The server's shutdown waits for that stop, which begins at the signal and whose 15 s from the signal is its only deadline, before it deregisters the process and closes the database pool:
 a handler waiting on GitHub holds no connection, so nothing else would keep the pool open for its writes, and a hold released through a closed pool is a hold left in place for its TTL.
+
+**The Legion state intake** (`legion.Intake`, `internal/dispatch/legion/intake.go`) takes every Legion daemon's state events from the durable `legion-state-events` on `notifications.legion.*.state`, under a hold as the GitHub intake's is (`delivery.NewHeldDurable`), and runs whenever the process has NATS, with or without the GitHub App.
+A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot or wait, a role's claim, the admission block, or its boot.
+Messages run under the project their payload names, one at a time per project, and each message applied writes the fields it moved, one `legion_reads` row of kind `events` and the project's cursor (`legion_event_cursors`) in one transaction, then wakes the project's board (`legion.StateChannel`).
+It reads a daemon's `GET /legion/v1/state` whole, on the same project's runner, only where the events cannot carry the state: a project with no starting point, at each take-over and at each write of its Legion setting (`dispatch_legion_settings`, on the shared listener above);
+a boot event that does not follow the cursor or that applied a migration;
+a message past a gap the stream no longer holds;
+and a read owed since one failed, at most once a minute.
+No timer reads a daemon, and each whole read logs `legion intake: whole read` at INFO with its reason.
+It stops with the two delivery intakes, under the same 15 s from the signal, before the shutdown closes the database pool.
 
 ## Database migrations
 
@@ -3844,7 +3854,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
 
-  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
+  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`, and has the Legion state intake read that daemon's state whole once, the same URL again included; DELETE stops reading it, what Dispatch already recorded staying.
   No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
   A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, a key that is not a project key `400 INVALID_PROJECT`, and a project that does not exist `404 PROJECT_NOT_FOUND`.
   The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
@@ -3852,7 +3862,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
-  The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
+  The Legion board of the project its path names, from what Dispatch recorded of that project's daemon (the Legion state intake, Background loops above); the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
   Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 

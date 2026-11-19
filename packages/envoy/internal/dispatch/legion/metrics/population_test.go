@@ -23,7 +23,8 @@ func after(hours float64) time.Time {
 
 // corpus writes the event log, handoffs and observations of one finished child of one root, the
 // shapes Read gathers: a session titled by its role and issue, status snapshots, a handoff, the
-// sampler's observations, a merged pull request, and an issue the implementer filed in the tree.
+// observations Dispatch records, a merged pull request, and an issue the implementer filed in the
+// tree.
 func corpus(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
@@ -283,7 +284,7 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 }
 
 // TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot: Read takes the window's observations and
-// the project's reported set, with its trees, from one snapshot (readSampled), so a sampler commit
+// the project's reported set, with its trees, from one snapshot (readSampled), so an intake commit
 // during the read moves both or neither. The commit here lands, on another connection, the moment
 // the first statement reading legion_observations or legion_current ends, and every other such
 // statement waits for it, so the two reads straddle it whether they run in turn or side by side:

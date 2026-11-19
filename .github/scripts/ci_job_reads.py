@@ -484,7 +484,6 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:47 lists ../supervise and :57 parses each .go file of it but the test files (:54)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1155 (path from goldenPath at :1144, declared :31)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
@@ -492,13 +491,6 @@ RULES = {
     f"{DAEMON}/internal/classify/fixtures_test.go": reads((f"{FIX}/classification/**", "internal/classify/fixtures_test.go:119,128 (fixtureDirectory :143, runtime.Caller :148)")),
     f"{DAEMON}/internal/config/controller_test.go": reads(("deploy/kubernetes/daemon/controller.yaml.example", "internal/config/controller_test.go:214 LoadController reads it (config.ControllerConfigExample, joined at :213)")),
     f"{DAEMON}/internal/config/kubernetes_test.go": reads(("deploy/kubernetes/operator-route/pod.yml", "internal/config/kubernetes_test.go:1555")),
-    # This row and two of the envoy rows below it - internal/dispatch/outbox/
-    # expects_reply_never_false_test.go and internal/dispatch/api/live_events_test.go - declare a
-    # read every filter gating a job that compiles them already matches. They are here so that a
-    # later narrowing of one of those filters is refused by rule 1 rather than dropping the read
-    # with nobody noticing (dispatch://INFRA-1413).
-    f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
-        (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
     f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
@@ -526,7 +518,8 @@ RULES = {
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
-    f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
+    f"{DAEMON}/internal/notify/notify_test.go": reads(
+        (f"{FIX}/subject-project.json", "internal/notify/notify_test.go:28 holds notify.StateTopic to its legionStateSubject row")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
         ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:762-763")),
@@ -540,6 +533,17 @@ RULES = {
         Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1843,1850")],
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:157 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:99")),
+    # This row and two of the envoy rows below it - internal/dispatch/outbox/
+    # expects_reply_never_false_test.go and internal/dispatch/api/live_events_test.go - declare a
+    # read every filter gating a job that compiles them already matches. They are here so that a
+    # later narrowing of one of those filters is refused by rule 1 rather than dropping the read
+    # with nobody noticing (dispatch://INFRA-1413). This one is the helper every daemon test that
+    # pins a daemon API fixture reads its fixture through (the golden tests of internal/api,
+    # internal/config, internal/daemon and internal/projection), so it is compiled into each of
+    # those test runs and the read is declared once, on the file that makes it.
+    f"{DAEMON}/internal/testgolden/testgolden.go": reads(
+        (f"{FIX}/daemon-api/*", "internal/testgolden/testgolden.go:41 os.ReadFile of the fixture Check names (the path at :31, "
+                                "../../../contracts/fixtures/daemon-api); the :36 write is under -update, which CI never passes")),
     f"{DAEMON}/internal/textcheck/design_approved_wake_test.go": reads(
         (f"{DAEMON}/internal/workflow/design_approved_wake_extract.txt", "internal/textcheck/design_approved_wake_test.go:23-24 reads the phrase from it, in place of importing internal/workflow"),
         ("skills/legion-architect/SKILL.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../.."),
@@ -794,7 +798,13 @@ RULES = {
         (f"{FIX}/daemon-api/state.json",
          "internal/dispatch/legion/golden_state_test.go:29 os.ReadFile (goldenStatePath :16, "
          "../../../../contracts/fixtures/daemon-api): the state document the daemon's own "
-         "internal/api/state_golden_test.go writes, which the sampler's decode must read")),
+         "internal/api/state_golden_test.go writes, which a whole read's decode must read")),
+    f"{ENVOY}/internal/dispatch/legion/intake_test.go": reads(
+        (f"{FIX}/daemon-api/state-events.json",
+         "internal/dispatch/legion/intake_test.go:1119 os.ReadFile (stateEventsGoldenPath :1098, "
+         "../../../../contracts/fixtures/daemon-api): the daemon's golden of its state lane, which "
+         "packages/daemon/internal/daemon/state_events_golden_test.go writes and "
+         "TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites applies")),
     f"{ENVOY}/internal/dispatch/outbox/expects_reply_never_false_test.go": reads(
         ("packages/contracts/src/dispatch-api*.ts",
          "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "

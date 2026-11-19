@@ -17,7 +17,7 @@ func goldenStatePath() string {
 	return filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "daemon-api", "state.json")
 }
 
-// TestTheDecodeReadsTheStateDocumentTheDaemonWrote: the sampler's decode reads the daemon's own
+// TestTheDecodeReadsTheStateDocumentTheDaemonWrote: a whole read's decode reads the daemon's own
 // golden, and every field the Legion board and the four metrics take from a read survives it —
 // the settings the board carries, the admission block its header and queue are drawn from, and
 // each issue's phase and claims. Of the pull request the decode keeps nothing, though the golden

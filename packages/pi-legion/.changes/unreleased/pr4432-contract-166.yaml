@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The plugin declares daemon API contract 166, which adds `daemon.stateSeq` to
+  `GET /legion/v1/state`: the sequence of the newest state event the daemon committed, read in the
+  same snapshot as the rest of the answer. The plugin reads the key as optional, and a daemon
+  serves the answer without it to a plugin that declares a contract below 166.
+custom:
+  Issue: pr4432

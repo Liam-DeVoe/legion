@@ -771,8 +771,9 @@ Each item below names a task and where its code is, then notes on it.
 
 - Where Legion's time goes, in Dispatch — `packages/envoy/internal/dispatch/legion/`, `packages/envoy/internal/dispatch/api/settings_legion.go`, `legion_board.go`
 
-  A project's Legion daemon is the one whose `GET /legion/v1/state` Dispatch reads once a minute, one replica at a time under a lease (`sampler.go`), recording what changed.
-  `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon` are that daemon, and `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view serve the project's board from what the sampler recorded.
+  A project's Legion daemon is the one its Legion setting names: it publishes each change of what Dispatch observes as a state event on `notifications.legion.<token>.state`, and Dispatch takes the events from the held durable `legion-state-events`, one process at a time, recording what changed (`intake.go`).
+  It reads the daemon's `GET /legion/v1/state` whole only for a starting point, a gap the stream no longer holds, a boot that does not follow or that applied a migration, and a read owed since one failed, and no timer reads it.
+  `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon` are that daemon, and `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view serve the project's board from what the intake recorded.
   `legion/metrics/` computes the four Legion delivery metrics from the same records (`Read`, then `Compute`), and no route serves them: that package is here for the evals of dispatch://INFRA-2916 to call, and only tests call it today.
   The web side is the Settings page's Legion section, where a person names a project's daemon (`packages/dispatch/web/src/features/settings/LegionDaemonsSection.tsx`, `useLegionDaemons.ts` beside it); no page draws the board
 

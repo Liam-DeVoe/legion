@@ -1,10 +1,15 @@
-// Package legion reads each Legion daemon's own state into Dispatch (dispatch://INFRA-1077).
+// Package legion keeps each Legion daemon's own state in Dispatch (dispatch://INFRA-1077,
+// dispatch://INFRA-3931).
 //
-// A project's daemon is named by one row of legion_settings (store.go). Once a minute, from one
-// replica under the `legion-state` lease, the sampler (sampler.go) reads that daemon's
-// `GET /legion/v1/state`, records how the read went in legion_reads and every value that moved in
-// legion_observations, so the Legion board (api/legion_board.go) and the four metrics
-// (legion/metrics) read Dispatch's own tables rather than a daemon.
+// A project's daemon is named by one row of legion_settings (store.go). The daemon publishes each
+// change of what Dispatch observes as a state event on notifications.legion.<token>.state. The
+// intake (intake.go) takes those events from the held durable bus.DispatchLegionStateDurable and
+// writes every value that moved in legion_observations, with one legion_reads row for each message
+// it applies. It reads the daemon's `GET /legion/v1/state` whole (ReadWhole, through this file's
+// Client) only where the events cannot carry the state: a project with no starting point, a boot
+// or a gap that does not follow, and a read owed since one failed. No timer reads a daemon. So
+// the Legion board (api/legion_board.go) and the four metrics (legion/metrics) read Dispatch's
+// own tables rather than a daemon.
 //
 // Two bounds hold a read (the plan's D14, the spec's contract 6): RequestTimeout on the call and
 // ResponseLimit on the body, about nine times the 877,746 bytes the INFRA daemon's state measured.
@@ -25,8 +30,8 @@ import (
 	"time"
 )
 
-// StatePath is the daemon route the sampler reads a project's state from. It authenticates
-// nobody, and Dispatch sends it no credential.
+// StatePath is the daemon route a whole read (ReadWhole) reads a project's state from. It
+// authenticates nobody, and Dispatch sends it no credential.
 const StatePath = "/legion/v1/state"
 
 // RequestTimeout bounds one call to a daemon — the request and reading its body — unless the
@@ -104,8 +109,8 @@ func callFailure(err error) error {
 	return err
 }
 
-// State reads the daemon's own state: the state it answered and the bytes it sent, which the
-// sampler records whether the read succeeded or not. Every failure wraps ErrUnavailable.
+// State reads the daemon's own state: the state it answered and the bytes it sent, which a whole
+// read records whether the read succeeded or not (ReadWhole). Every failure wraps ErrUnavailable.
 //
 // The decode is loose — encoding/json ignores a field State does not name — so a daemon that
 // grows the route's shape is still read (state.go). The call carries no credential: the route

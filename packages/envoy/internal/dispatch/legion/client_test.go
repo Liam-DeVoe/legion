@@ -171,7 +171,7 @@ func TestAStateFromTodaysDaemonParses(t *testing.T) {
 }
 
 // TestAMalformedOrRefusedAnswerIsAFailedRead: a body that is not the route's JSON, and a status
-// that is not 200, are each a failed read, so the sampler records the failure and leaves the last
+// that is not 200, are each a failed read, so a whole read records the failure and leaves the last
 // good observations standing.
 func TestAMalformedOrRefusedAnswerIsAFailedRead(t *testing.T) {
 	malformed := stateServer(t, `{"issues": {`)

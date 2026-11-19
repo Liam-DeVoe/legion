@@ -1,13 +1,14 @@
 // legion_board.go serves GET /api/v1/projects/{key}/legion/board, one project's Legion board from
-// what the sampler recorded (dispatch://INFRA-1077), and the body the `legion` live view kind
-// sends (live_frames.go's legionBoardView). No dashboard page draws it: the route and the live
-// view kind are all there is of it.
+// what Dispatch recorded of its daemon (dispatch://INFRA-1077, dispatch://INFRA-3931), and the
+// body the `legion` live view kind sends (live_frames.go's legionBoardView). No dashboard page
+// draws it: the route and the live view kind are all there is of it.
 //
-// The answer is read from what Dispatch holds, never from the daemon: the sampler reads each
-// daemon once a minute under a lease (internal/dispatch/legion) and records what moved, and this
-// reads the newest value of each field it recorded, the newest read's own verdict, and the
-// project's issues. A board that called the daemon would read it once per open page and once per
-// event burst, which is what the per-minute lease exists to prevent.
+// The answer is read from what Dispatch holds, never from the daemon: the Legion intake
+// (internal/dispatch/legion) records each value that moved, from the daemon's state events and
+// from a whole read where the events cannot carry the state, and this reads the newest value of
+// each field it recorded, the verdict of the newest legion_reads row, and the project's issues. A
+// board that called the daemon would read its whole state once per open page and once per event
+// burst.
 //
 // Two disciplines, as in the metrics package:
 //
@@ -237,7 +238,7 @@ type legionBoardDaemonRead struct {
 }
 
 // legionBoardIssue is one issue the board may show: the newest observation of each field the
-// sampler records, and the title, priority and parent Dispatch holds for the same key.
+// intake records, and the title, priority and parent Dispatch holds for the same key.
 type legionBoardIssue struct {
 	key string
 	// phase and phaseSince are the newest phase observation and when it was recorded, which is
@@ -277,11 +278,12 @@ func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBo
 	return population, nil
 }
 
-// readSampled reads what the sampler writes of the project — the newest read of its daemon, the
+// readSampled reads what the intake writes of the project — the newest legion_reads row, the
 // header's (readDaemonRead), and its legion_current, the cards' and the walk's (readCurrent) — in
-// one repeatable-read, read-only transaction, so the two answer one moment. RecordRead commits a
-// read's row and its observations together, and two reads at two moments would still let a commit
-// between them put the header of one read of the daemon over the cards of another.
+// one repeatable-read, read-only transaction, so the two answer one moment. The intake commits
+// each legion_reads row with the observations it records, a batch of state events or a whole
+// read, and two reads at two moments would still let a commit between them put the header of one
+// record over the cards of another.
 func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Pool) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -658,7 +660,7 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	// admission.active list every issue that holds a slot, children included, so it is the
 	// authority; before that release the daemon lists roots there and only a root carries a slot,
 	// so the two agree. A read that recorded no admission block falls back to the issues whose own
-	// slot the sampler saw.
+	// slot Dispatch observed.
 	if p.admission != nil && len(p.admission.Active) > 0 {
 		header.SlotsInUse = len(p.admission.Active)
 	} else {

@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  The daemon publishes each change of what Dispatch observes as a state event on
+  `notifications.legion.<token>.state`: a change of an issue's phase, tree, slot or wait, a change
+  of a role's claim state, a change of the admission block, and one boot event at each start. Each
+  event is an outbox row that the daemon writes in the transaction of the write it reports, so a
+  change that commits always has its event, and a write that rolls back has none. The rows run on
+  a new `state` lane, one lane for each project, which publishes them strictly in sequence order,
+  and the rows of one committed transaction go out as one message. A commit trigger gives each row
+  its sequence and its time when its transaction commits (migration
+  `20261118164019_state_events`), so the sequence follows commit order and has no gap. A daemon
+  with no workflow writes no state event. `GET /legion/v1/state` serves `daemon.stateSeq`, the
+  sequence of the newest state event its snapshot holds, at daemon API contract 166. A caller
+  below 166 gets the answer without it.
+custom:
+  Issue: pr4432
