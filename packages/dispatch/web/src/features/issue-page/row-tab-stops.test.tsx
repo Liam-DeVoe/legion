@@ -1,7 +1,7 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -13,7 +13,7 @@ import type { NodeFact } from "./issue-tree";
 import { NodeFacts } from "./NodeFacts";
 import { NoTooltips } from "./NoTooltips";
 import { CONTROL_LABELS } from "./page-words";
-import { RowText } from "./RowText";
+import { RowText, useOutOfTabOrder } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 
 /**
@@ -230,5 +230,52 @@ test("RowText keeps its links out of the tab order, and in it with tabStops, a l
     } finally {
       view.unmount();
     }
+  }
+});
+
+/** A box `useOutOfTabOrder` keeps out of the tab order, holding no control: a wide block that
+ *  scrolls across, a tall one that scrolls down, and one whose content overflows it unscrolled. */
+function Scrollers(): ReactNode {
+  const box = useRef<HTMLDivElement>(null);
+  useOutOfTabOrder(box, true);
+  return (
+    <div ref={box}>
+      <pre data-wide="" style={{ overflowX: "auto" }}>
+        bun run e2e --project=chromium
+      </pre>
+      <div data-tall="" style={{ overflowY: "scroll" }}>
+        Twelve lines of output
+      </div>
+      <div data-visible="" style={{ overflow: "visible" }}>
+        Plain words
+      </div>
+    </div>
+  );
+}
+
+// In Chromium an element that scrolls its own content and holds no control in the tab order is
+// a tab stop of its own, so a row's wide code block or table wrapper would be a second stop
+// beside the outline's. The box takes each such element out of the tab order, a late one
+// included, and leaves an element that does not scroll as it was.
+test("useOutOfTabOrder takes an element that scrolls out of the tab order, a late one included, and leaves one that does not", async () => {
+  const view = draw(<Scrollers />);
+  try {
+    const wrapper = document.createElement("div");
+    wrapper.style.overflowX = "auto";
+    act(() => {
+      view.container.querySelector("[data-visible]")?.after(wrapper);
+    });
+    await waitFor(() => {
+      expect(
+        [
+          view.container.querySelector("[data-wide]"),
+          view.container.querySelector("[data-tall]"),
+          wrapper,
+        ].map(outOfTabOrder)
+      ).toEqual([true, true, true]);
+    });
+    expect(view.container.querySelector("[data-visible]")?.hasAttribute("tabindex")).toBe(false);
+  } finally {
+    view.unmount();
   }
 });
