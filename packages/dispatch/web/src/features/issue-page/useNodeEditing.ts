@@ -599,7 +599,9 @@ export function useNodeEditing({
     const box = container.current;
     if (editingRow === undefined || box === null) return;
     const leave = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // An Escape that ends an input method's composition is the input method's, and ends no
+      // editing: it acts on nothing, as every key that ends a composition does.
+      if (event.key !== "Escape" || event.isComposing || event.defaultPrevented) return;
       event.preventDefault();
       (document.activeElement as HTMLElement | null)?.blur();
       box.querySelector<HTMLElement>(rowSelectorOf(editingRow))?.focus();
