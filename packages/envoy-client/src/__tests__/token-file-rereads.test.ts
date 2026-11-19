@@ -108,8 +108,8 @@ test("the Envoy credential presents what ENVOY_TOKEN_FILE holds at each request"
 });
 
 // A token file that is gone or blank at a request refuses that request, naming the variable and
-// the path and never a token, rather than sending the token read before or none: the request is
-// not sent. The next request after the file is back presents what it then holds.
+// never the path or a token (`readSecretFile`), rather than sending the token read before or none:
+// the request is not sent. The next request after the file is back presents what it then holds.
 test("a DISPATCH_TOKEN_FILE that is gone or blank at a request sends nothing", async () => {
   const dispatch = stubDispatch();
   const file = tokenFile("first-projected-not-a-secret");
@@ -122,7 +122,8 @@ test("a DISPATCH_TOKEN_FILE that is gone or blank at a request sends nothing", a
     () => null,
     (error: unknown) => String(error)
   );
-  expect(blank).toContain(`DISPATCH_TOKEN_FILE names ${file}, which is empty`);
+  expect(blank).toContain("DISPATCH_TOKEN_FILE names a file that is empty");
+  expect(blank).not.toContain(file);
   expect(blank).not.toContain("first-projected-not-a-secret");
   expect(dispatch.asked).toEqual([]);
 
@@ -133,9 +134,9 @@ test("a DISPATCH_TOKEN_FILE that is gone or blank at a request sends nothing", a
 
 // The Envoy transport refuses the same way. ENVOY_TOKEN_FILE names a bearer, so a request whose
 // file is gone or blank is not sent at all, rather than sent with no Authorization header, which
-// the transport does only for a broker that could not mint; the error names the variable and the
-// path and never a token. Control: while the file holds a token the same client sends it, and once
-// the file holds one again the next request carries the new one.
+// the transport does only for a broker that could not mint; the error names the variable and never
+// the path or a token. Control: while the file holds a token the same client sends it, and once the
+// file holds one again the next request carries the new one.
 test("an ENVOY_TOKEN_FILE that is gone or blank at a request sends nothing", async () => {
   const file = tokenFile("first-listener-not-a-secret");
   const settings = resolvedOnce({ ENVOY_URL: "http://listener.test", ENVOY_TOKEN_FILE: file });
@@ -163,7 +164,8 @@ test("an ENVOY_TOKEN_FILE that is gone or blank at a request sends nothing", asy
       () => null,
       (error: unknown) => String(error)
     );
-    expect(refused, state).toContain(`ENVOY_TOKEN_FILE names ${file}`);
+    expect(refused, state).toContain("ENVOY_TOKEN_FILE names a file");
+    expect(refused, state).not.toContain(file);
     expect(refused, state).not.toContain("first-listener-not-a-secret");
     expect(asked, `a ${state} file sends nothing`).toHaveLength(1);
   }

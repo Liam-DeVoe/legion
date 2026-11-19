@@ -4,5 +4,6 @@ custom:
 body: |-
   A `DISPATCH_TOKEN_FILE` or `ENVOY_TOKEN_FILE` is read again for every request, so a client that
   resolved its settings once presents what the file holds then, a projected service-account token
-  the kubelet renewed in place among them. A file that is gone or blank by then refuses that request,
-  naming the variable and the path, and sends nothing.
+  the kubelet renewed in place among them. A file that is gone or blank by then refuses that request
+  in the Dispatch client and the Envoy transport alike, naming the variable and never the path or a
+  token, and sends nothing.
