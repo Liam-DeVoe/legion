@@ -60,7 +60,10 @@ export interface CodexDelivery {
   /** Whether a turn runs, as the transcript last said. */
   turnRunning(): boolean
   /** Stops watching waiting lines; a write still waiting rejects. Resolves once every waiting line
-   *  is withdrawn or found taken. */
+   *  is withdrawn or found taken. A write that stop() overtakes, one still putting its line into
+   *  the inbox, ends in deliver() after stop() has resolved, and its line may already be gone
+   *  then. That is safe: the server answers every frame still unsettled at its shutdown `nak`, so
+   *  Envoy sends that message again whatever its write does. */
   stop(): Promise<void>
 }
 
@@ -118,19 +121,11 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       waiter.resolve()
     }
   }
-  const timer = setInterval(() => {
-    if (waiting.size === 0) return
-    void check()
-      .then(() => (running || ended || waiting.size === 0 ? undefined : sweep()))
-      .catch((error: unknown) => options.warn(messageFor(error)))
-  }, pollMs)
-  timer.unref?.()
-
-  /** Settles the write of a line that stopping refuses. A refused write leaves its Envoy frame
-   *  unanswered, so Envoy sends it again. The line is withdrawn before its write is refused, so
-   *  the hook cannot deliver it as well; a line the hook took first was delivered, and its write
-   *  resolves. */
-  const withdrawOnStop = async (
+  /** Ends the write of a line still in `directory` once delivery has stopped. A refused write
+   *  leaves its Envoy frame unanswered, so Envoy sends it again: the line is withdrawn before the
+   *  write is refused, so the hook cannot deliver it as well. A line the hook took first was
+   *  delivered, and its write resolves. */
+  const endStopped = async (
     directory: string,
     name: string,
     item: CodexInboxItem,
@@ -140,6 +135,13 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     }
     if ((await takenBy(directory, name)) === "hook") options.taken?.(item)
   }
+  const timer = setInterval(() => {
+    if (waiting.size === 0) return
+    void check()
+      .then(() => (running || ended || waiting.size === 0 ? undefined : sweep()))
+      .catch((error: unknown) => options.warn(messageFor(error)))
+  }, pollMs)
+  timer.unref?.()
 
   return {
     async deliver(item) {
@@ -155,10 +157,9 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       }
       const directory = options.inboxDirectory(options.sessionId())
       const name = await putInbox(directory, item)
-      // `stop()` settles only the writes already waiting, and it may have run while this line was
-      // being saved: the line is withdrawn and its write refused the same way, so it is not left
-      // behind and Envoy's resend is its one copy.
-      if (stopped) return withdrawOnStop(directory, name, item)
+      // stop() ran while the line was being written, after it ended the writes it knew of: this
+      // one ends the same way, or it would never settle.
+      if (stopped) return endStopped(directory, name, item)
       const written = new Promise<void>((resolve, reject) => {
         waiting.set(name, { directory, item, reject, resolve })
       })
@@ -195,7 +196,7 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       waiting.clear()
       return Promise.all(
         left.map(([name, waiter]) =>
-          withdrawOnStop(waiter.directory, name, waiter.item).then(waiter.resolve, waiter.reject),
+          endStopped(waiter.directory, name, waiter.item).then(waiter.resolve, waiter.reject),
         ),
       ).then(() => undefined)
     },
