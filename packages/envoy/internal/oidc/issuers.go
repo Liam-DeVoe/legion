@@ -58,11 +58,11 @@ func NewIssuerSet(issuers []NamedIssuer, audience string, keySpacing time.Durati
 // can say which issuer could not be read. The unverified iss only chooses the verifier: every
 // claim the answer carries is read from the payload that issuer's signature covers.
 func (s *IssuerSet) VerifyClaims(ctx context.Context, raw string, into ...any) (Claims, NamedIssuer, error) {
-	claims, err := decodeUnverifiedClaims(stripSpaces(raw))
+	iss, err := UnverifiedIssuer(raw)
 	if err != nil {
 		return Claims{}, NamedIssuer{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
-	entry, err := s.entry(claims.Issuer)
+	entry, err := s.entry(iss)
 	if err != nil {
 		return Claims{}, NamedIssuer{}, err
 	}

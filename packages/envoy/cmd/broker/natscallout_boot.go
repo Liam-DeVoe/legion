@@ -33,7 +33,7 @@ func natsCalloutBoot(ctx context.Context, cfg config.Config, discovered verifier
 	}
 	tokens := natscallout.PlatformTokens{K8sIssuers: cfg.K8sOIDCIssuers, GoogleIssuer: cfg.GoogleOIDCIssuer}
 	if cfg.NATS.K8sAudience != "" {
-		tokens.K8s = enroll.K8sPodVerifier{Issuers: discovered.Clusters.audience(cfg.K8sOIDCIssuers, cfg.NATS.K8sAudience)}
+		tokens.K8s = enroll.K8sPodVerifier{Issuers: discovered.Clusters.audience(cfg.NATS.K8sAudience)}
 	}
 	if cfg.NATS.GoogleAudience != "" {
 		keys := discovered.GoogleKeys

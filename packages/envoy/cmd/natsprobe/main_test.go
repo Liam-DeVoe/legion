@@ -97,20 +97,20 @@ func platformToken(account string, life time.Duration) string {
 
 // serviceToken is the stub ServiceToken: the account, issue and expiry raw names, unverified, from
 // the one issuer of a bare BROKER_K8S_OIDC_ISSUER URL, whose name is "".
-func serviceToken(_ context.Context, raw string) (string, bool, string, time.Time, time.Time, error) {
+func serviceToken(_ context.Context, raw string) (natscallout.ServiceIdentity, error) {
 	parts := strings.Split(raw, ".")
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", false, "", time.Time{}, time.Time{}, err
+		return natscallout.ServiceIdentity{}, err
 	}
 	var claims struct {
 		Sub      string
 		Iat, Exp int64
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", false, "", time.Time{}, time.Time{}, err
+		return natscallout.ServiceIdentity{}, err
 	}
-	return claims.Sub, false, "", time.Unix(claims.Iat, 0), time.Unix(claims.Exp, 0), nil
+	return natscallout.ServiceIdentity{Account: claims.Sub, Issued: time.Unix(claims.Iat, 0), Expiry: time.Unix(claims.Exp, 0)}, nil
 }
 
 // The probe says what the hub answered: a session's own channel served, another session's refused

@@ -1007,9 +1007,10 @@ func k8sIssuerForm(setting, text string) error {
 // CutIssuerNames splits an account entry's text into its <name>=<account> head and the issuer
 // names it ends with, =<issuer name>[,<issuer name>…], or none where it ends with none. A
 // ServiceAccount subject and a Google address hold no "=", so an entry's second "=" is where its
-// names begin. ok is false for an entry that ends in that "=" and names nothing after it. Every
-// setting whose entries name an account's issuers so cuts them here (BROKER_API_ACCOUNTS,
-// BROKER_SERVICE_LOGINS, and BROKER_NATS_SERVICES through internal/broker/natscallout).
+// names begin. ok is false for an entry that ends in that "=" and names nothing after it.
+// BROKER_API_ACCOUNTS, BROKER_SERVICE_LOGINS and BROKER_NATS_SERVICES (through
+// internal/broker/natscallout) cut their entries here. BROKER_EXCHANGE_ACCOUNTS reads its issuer
+// field after its entry's last "=" instead (exchangeAccountFields).
 func CutIssuerNames(text string) (head string, names []string, ok bool) {
 	fields := strings.SplitN(text, "=", 3)
 	switch {

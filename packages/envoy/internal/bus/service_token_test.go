@@ -59,23 +59,23 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),
 		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed), XKeySeedFile: write("xkey.seed", keys.XKeySeed), Services: services,
 	}, natscallout.Deps{
-		ServiceToken: func(_ context.Context, raw string) (string, bool, string, time.Time, time.Time, error) {
+		ServiceToken: func(_ context.Context, raw string) (natscallout.ServiceIdentity, error) {
 			mu.Lock()
 			presented = append(presented, raw)
 			mu.Unlock()
 			parts := strings.Split(raw, ".")
 			payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 			if err != nil {
-				return "", false, "", time.Time{}, time.Time{}, err
+				return natscallout.ServiceIdentity{}, err
 			}
 			var claims struct {
 				Sub      string
 				Iat, Exp int64
 			}
 			if err := json.Unmarshal(payload, &claims); err != nil {
-				return "", false, "", time.Time{}, time.Time{}, err
+				return natscallout.ServiceIdentity{}, err
 			}
-			return claims.Sub, false, "", time.Unix(claims.Iat, 0), time.Unix(claims.Exp, 0), nil
+			return natscallout.ServiceIdentity{Account: claims.Sub, Issued: time.Unix(claims.Iat, 0), Expiry: time.Unix(claims.Exp, 0)}, nil
 		},
 		Log: slog.New(slog.DiscardHandler),
 	})

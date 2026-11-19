@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
@@ -34,34 +33,31 @@ type PlatformTokens struct {
 	}
 }
 
-// Verify answers the account raw names, whether it is a Google account, the name of the issuer
-// of K8sIssuers that signed a Kubernetes token ("" for a Google token, and for the one issuer of a
-// bare BROKER_K8S_OIDC_ISSUER URL), and when raw was issued and expires, once the verifier of its
-// issuer has verified it. A Google token must carry a verified email: the account is looked up by
-// it.
-func (p PlatformTokens) Verify(ctx context.Context, raw string) (account string, google bool, issuerName string, issued, expiry time.Time, err error) {
+// Verify answers what raw says of its service (ServiceIdentity) once the verifier of its issuer
+// has verified it. A Google token must carry a verified email: the account is looked up by it.
+func (p PlatformTokens) Verify(ctx context.Context, raw string) (ServiceIdentity, error) {
 	issuer, err := unverifiedIssuer(raw)
 	if err != nil {
-		return "", false, "", time.Time{}, time.Time{}, err
+		return ServiceIdentity{}, err
 	}
 	switch {
 	case p.K8s != nil && slices.ContainsFunc(p.K8sIssuers, func(k8s oidc.NamedIssuer) bool { return k8s.URL == issuer }):
 		claims, err := p.K8s.VerifyAccount(ctx, raw)
 		if err != nil {
-			return "", false, "", time.Time{}, time.Time{}, err
+			return ServiceIdentity{}, err
 		}
-		return claims.Subject, false, claims.Issuer.Name, claims.IssuedAt, claims.Expiry, nil
+		return ServiceIdentity{Account: claims.Subject, Issuer: claims.Issuer.Name, Issued: claims.IssuedAt, Expiry: claims.Expiry}, nil
 	case issuer == p.GoogleIssuer && p.Google != nil:
 		token, err := p.Google.VerifyGoogle(ctx, raw)
 		if err != nil {
-			return "", false, "", time.Time{}, time.Time{}, err
+			return ServiceIdentity{}, err
 		}
 		if token.Identity.Account == "" || !token.Identity.EmailVerified {
-			return "", false, "", time.Time{}, time.Time{}, errors.New("natscallout: the Google identity token carries no verified email")
+			return ServiceIdentity{}, errors.New("natscallout: the Google identity token carries no verified email")
 		}
-		return token.Identity.Account, true, "", token.IssuedAt, token.Expiry, nil
+		return ServiceIdentity{Account: token.Identity.Account, Google: true, Issued: token.IssuedAt, Expiry: token.Expiry}, nil
 	}
-	return "", false, "", time.Time{}, time.Time{}, fmt.Errorf("natscallout: no NATS audience of this broker takes tokens of the issuer %q", issuer)
+	return ServiceIdentity{}, fmt.Errorf("natscallout: no NATS audience of this broker takes tokens of the issuer %q", issuer)
 }
 
 // unverifiedIssuer is the 'iss' raw names, read without verifying it: it only picks the verifier.

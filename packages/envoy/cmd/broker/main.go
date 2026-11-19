@@ -1522,8 +1522,8 @@ const (
 	// issuerReadableMessage is logged, at INFO, once when an issuer whose last line said that it
 	// could not be read (the boot's, with read=false, or issuerUnreadableMessage) is found
 	// readable, followed by name= and url=. Whichever finds it first writes the line: a token of
-	// the issuer that verifies, a key of it the token exchange reads, or the background read of an
-	// issuer the boot could not read.
+	// the issuer that verifies, a key of it read through the set (keys), as the token exchange and
+	// the NATS auth service read them, or the background read of an issuer the boot could not read.
 	issuerReadableMessage = "broker: kubernetes issuer can be read again"
 )
 
@@ -1541,6 +1541,8 @@ const (
 // not read at its start.
 type loggedIssuers struct {
 	set *oidc.IssuerSet
+	// issuers is set's issuers, in its order.
+	issuers []oidc.NamedIssuer
 	// unreadable is, for the URL of each issuer of set, whether its last line said that it could
 	// not be read: the boot's, with read=false, or issuerUnreadableMessage. Only newLoggedIssuers
 	// writes the map, so a read takes no lock.
@@ -1553,7 +1555,7 @@ func newLoggedIssuers(set *oidc.IssuerSet, issuers []oidc.NamedIssuer) loggedIss
 	for _, issuer := range issuers {
 		unreadable[issuer.URL] = new(atomic.Bool)
 	}
-	return loggedIssuers{set: set, unreadable: unreadable}
+	return loggedIssuers{set: set, issuers: issuers, unreadable: unreadable}
 }
 
 // boot tries each issuer of the set once, all at the same time (IssuerSet.Boot), and logs a line
@@ -1584,7 +1586,7 @@ func (l loggedIssuers) VerifyClaims(ctx context.Context, raw string, into ...any
 // keys is the key source for issuer, an issuer of the set, of the token exchange and of a verifier
 // for another audience (audience): IssuerSet.Key, which reads that issuer through the set's own
 // verifier of it, logging the change each read finds in the issuer (note).
-func (l loggedIssuers) keys(issuer oidc.NamedIssuer) oauth.KeySource {
+func (l loggedIssuers) keys(issuer oidc.NamedIssuer) oidc.KeySource {
 	return loggedKeys{issuers: l, issuer: issuer}
 }
 
@@ -1601,15 +1603,15 @@ func (k loggedKeys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey,
 	return key, err
 }
 
-// audience verifies the tokens issuers, the issuers of the set, issue to audience, an audience
-// other than the set's, as the NATS auth service verifies the clusters' tokens for
-// BROKER_NATS_K8S_AUDIENCE: each token against the issuer its iss names, through a verifier of
-// that issuer whose keys are the set's own (keys). So it reads no discovery document or key set
-// the set does not read, a token of an issuer the set cannot read is oidc.ErrIssuerUnavailable, and
-// each read logs the change it finds in the issuer as the token exchange's do.
-func (l loggedIssuers) audience(issuers []oidc.NamedIssuer, audience string) audienceIssuers {
-	verifiers := make(audienceIssuers, 0, len(issuers))
-	for _, issuer := range issuers {
+// audience verifies the tokens the set's issuers issue to audience, an audience other than the
+// set's, as the NATS auth service verifies the clusters' tokens for BROKER_NATS_K8S_AUDIENCE: each
+// token against the issuer its iss names, through a verifier of that issuer whose keys are the
+// set's own (keys). So it reads no discovery document or key set the set does not read, a token of
+// an issuer the set cannot read is oidc.ErrIssuerUnavailable, and each read logs the change it
+// finds in the issuer as the token exchange's do.
+func (l loggedIssuers) audience(audience string) audienceIssuers {
+	verifiers := make(audienceIssuers, 0, len(l.issuers))
+	for _, issuer := range l.issuers {
 		verifiers = append(verifiers, audienceIssuer{issuer: issuer, verifier: oidc.NewWithKeys(issuer.URL, audience, l.keys(issuer))})
 	}
 	return verifiers
@@ -1624,14 +1626,16 @@ type audienceIssuer struct {
 	verifier *oidc.Verifier
 }
 
-// VerifyClaims checks raw against the issuer its iss names (oidc.Verifier.Issues) and answers that
-// issuer beside the claims, as IssuerSet.VerifyClaims does; a token whose iss names none of them
-// is oidc.ErrIssuer and reads nothing.
+// VerifyClaims checks raw against the issuer whose URL its iss is (oidc.UnverifiedIssuer), and
+// answers that issuer beside the claims, as IssuerSet.VerifyClaims does. A token that does not
+// decode, or whose iss is the URL of none of them, is oidc.ErrIssuer and reads nothing.
 func (a audienceIssuers) VerifyClaims(ctx context.Context, raw string, into ...any) (oidc.Claims, oidc.NamedIssuer, error) {
-	for _, entry := range a {
-		if entry.verifier.Issues(raw) {
-			claims, err := entry.verifier.VerifyClaims(ctx, raw, into...)
-			return claims, entry.issuer, err
+	if iss, err := oidc.UnverifiedIssuer(raw); err == nil {
+		for _, entry := range a {
+			if entry.issuer.URL == iss {
+				claims, err := entry.verifier.VerifyClaims(ctx, raw, into...)
+				return claims, entry.issuer, err
+			}
 		}
 	}
 	return oidc.Claims{}, oidc.NamedIssuer{}, fmt.Errorf("%w: the token's iss names no issuer of BROKER_K8S_OIDC_ISSUER", oidc.ErrIssuer)

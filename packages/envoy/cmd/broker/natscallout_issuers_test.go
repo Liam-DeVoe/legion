@@ -8,8 +8,6 @@ package main
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -65,21 +63,13 @@ func TestANatsServiceIsAdmittedFromTheIssuersItsEntryNames(t *testing.T) {
 	)
 	keys := testnats.NewCalloutKeys(t)
 	hub := testnats.StartWithCallout(t, keys)
-	dir := t.TempDir()
-	seedFile := func(name, seed string) string {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(seed+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
 	a, b := oidctest.New(t), oidctest.New(t)
 	aKey, bKey := a.PublishKey(t, "a-key"), b.PublishKey(t, "b-key")
 	broker := startBroker(t, brokerOptions{Env: namedIssuersEnv(t, storetest.URL(t), bothIssuers(a, b),
 		"BROKER_NATS_URLS="+hub,
-		"BROKER_NATS_SEED_FILE="+seedFile("service.seed", keys.ServiceSeed),
-		"BROKER_NATS_ISSUER_SEED_FILE="+seedFile("issuer.seed", keys.IssuerSeed),
-		"BROKER_NATS_XKEY_SEED_FILE="+seedFile("xkey.seed", keys.XKeySeed),
+		"BROKER_NATS_SEED_FILE="+writeTempFile(t, "service.seed", []byte(keys.ServiceSeed+"\n")),
+		"BROKER_NATS_ISSUER_SEED_FILE="+writeTempFile(t, "issuer.seed", []byte(keys.IssuerSeed+"\n")),
+		"BROKER_NATS_XKEY_SEED_FILE="+writeTempFile(t, "xkey.seed", []byte(keys.XKeySeed+"\n")),
 		"BROKER_NATS_SERVICES=daemon/-/*="+namingNone+" daemon/-/*="+namingBoth+"=a,b",
 		"BROKER_NATS_K8S_AUDIENCE="+natsAudience,
 	)})

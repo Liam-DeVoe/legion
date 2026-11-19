@@ -56,44 +56,44 @@ func TestPlatformTokensVerifyWithTheIssuersVerifier(t *testing.T) {
 	google := &stubGoogle{token: api.GoogleToken{Identity: exchange.GoogleIdentity{Account: measureAccount, EmailVerified: true}, IssuedAt: now, Expiry: now.Add(time.Hour)}}
 	tokens := PlatformTokens{K8sIssuers: []oidc.NamedIssuer{first, second}, K8s: k8s, GoogleIssuer: "https://accounts.google.com", Google: google}
 
-	account, isGoogle, issuer, issued, expiry, err := tokens.Verify(t.Context(), issuedBy("https://cluster.example"))
+	identity, err := tokens.Verify(t.Context(), issuedBy("https://cluster.example"))
 	require.NoError(t, err)
-	require.Equal(t, daemonAccount, account)
-	require.False(t, isGoogle)
-	require.Equal(t, "first", issuer)
-	require.Equal(t, now, issued)
-	require.Equal(t, now.Add(time.Hour), expiry)
+	require.Equal(t, daemonAccount, identity.Account)
+	require.False(t, identity.Google)
+	require.Equal(t, "first", identity.Issuer)
+	require.Equal(t, now, identity.Issued)
+	require.Equal(t, now.Add(time.Hour), identity.Expiry)
 	require.Equal(t, 1, k8s.asked)
 	require.Equal(t, 0, google.asked)
 
 	k8s.claims.Issuer = second
-	account, _, issuer, _, _, err = tokens.Verify(t.Context(), issuedBy("https://second.example"))
+	identity, err = tokens.Verify(t.Context(), issuedBy("https://second.example"))
 	require.NoError(t, err)
-	require.Equal(t, daemonAccount, account)
-	require.Equal(t, "second", issuer)
+	require.Equal(t, daemonAccount, identity.Account)
+	require.Equal(t, "second", identity.Issuer)
 	require.Equal(t, 2, k8s.asked)
 
-	account, isGoogle, issuer, _, _, err = tokens.Verify(t.Context(), issuedBy("https://accounts.google.com"))
+	identity, err = tokens.Verify(t.Context(), issuedBy("https://accounts.google.com"))
 	require.NoError(t, err)
-	require.Equal(t, measureAccount, account)
-	require.True(t, isGoogle)
-	require.Empty(t, issuer)
+	require.Equal(t, measureAccount, identity.Account)
+	require.True(t, identity.Google)
+	require.Empty(t, identity.Issuer)
 
 	google.token.Identity.EmailVerified = false
-	_, _, _, _, _, err = tokens.Verify(t.Context(), issuedBy("https://accounts.google.com"))
+	_, err = tokens.Verify(t.Context(), issuedBy("https://accounts.google.com"))
 	require.Error(t, err)
 
-	_, _, _, _, _, err = tokens.Verify(t.Context(), issuedBy("https://elsewhere.example"))
+	_, err = tokens.Verify(t.Context(), issuedBy("https://elsewhere.example"))
 	require.Error(t, err)
-	_, _, _, _, _, err = tokens.Verify(t.Context(), "not-a-jwt")
+	_, err = tokens.Verify(t.Context(), "not-a-jwt")
 	require.Error(t, err)
 
 	k8s.err = errors.New("signature")
-	_, _, _, _, _, err = tokens.Verify(t.Context(), issuedBy("https://cluster.example"))
+	_, err = tokens.Verify(t.Context(), issuedBy("https://cluster.example"))
 	require.Error(t, err)
 
 	none := PlatformTokens{K8sIssuers: []oidc.NamedIssuer{first, second}, GoogleIssuer: "https://accounts.google.com"}
-	_, _, _, _, _, err = none.Verify(t.Context(), issuedBy("https://cluster.example"))
+	_, err = none.Verify(t.Context(), issuedBy("https://cluster.example"))
 	require.Error(t, err, "a broker with no NATS Kubernetes audience verifies no Kubernetes token")
 }
 

@@ -95,13 +95,13 @@ type platformToken struct {
 }
 
 // serviceTokens verifies each raw token tokens names, and refuses every other.
-func serviceTokens(tokens map[string]platformToken) func(context.Context, string) (string, bool, string, time.Time, time.Time, error) {
-	return func(_ context.Context, raw string) (string, bool, string, time.Time, time.Time, error) {
+func serviceTokens(tokens map[string]platformToken) func(context.Context, string) (ServiceIdentity, error) {
+	return func(_ context.Context, raw string) (ServiceIdentity, error) {
 		token, ok := tokens[raw]
 		if !ok {
-			return "", false, "", time.Time{}, time.Time{}, errors.New("the token did not verify")
+			return ServiceIdentity{}, errors.New("the token did not verify")
 		}
-		return token.account, token.google, token.issuer, token.issued, token.expiry, nil
+		return ServiceIdentity{Account: token.account, Google: token.google, Issuer: token.issuer, Issued: token.issued, Expiry: token.expiry}, nil
 	}
 }
 
@@ -242,8 +242,8 @@ func TestRefusals(t *testing.T) {
 		Introspect: func(ctx context.Context, _ string) (oauthwire.Introspection, error) {
 			return oauthwire.Introspection{}, ctx.Err()
 		},
-		ServiceToken: func(ctx context.Context, _ string) (string, bool, string, time.Time, time.Time, error) {
-			return "", false, "", time.Time{}, time.Time{}, ctx.Err()
+		ServiceToken: func(ctx context.Context, _ string) (ServiceIdentity, error) {
+			return ServiceIdentity{}, ctx.Err()
 		},
 	}
 	spent, cancel := context.WithCancel(context.Background())

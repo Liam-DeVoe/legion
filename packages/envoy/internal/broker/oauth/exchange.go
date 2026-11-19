@@ -2,7 +2,6 @@ package oauth
 
 import (
 	"context"
-	"crypto"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -108,14 +107,6 @@ const (
 	googleTolerance = time.Hour
 )
 
-// KeySource answers the public key a token's header names, which is what the library's
-// jwt.Keyfunc has to return: *oidc.Keys is one, reading the issuer's published set, and so is
-// *oidc.LazyVerifier, reading it once the issuer is discovered.
-type KeySource interface {
-	// Key is the public key a token naming kid and signed with alg is checked against.
-	Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error)
-}
-
 // IssuerConfig is one issuer whose tokens the exchange accepts as a subject token: a Kubernetes
 // cluster, or GitHub. Every field but Name is required of a configured issuer and the zero value
 // is an issuer the broker was not told about, whose token type is then not registered at all — so
@@ -135,7 +126,7 @@ type IssuerConfig struct {
 	Audience string
 	// Keys is the issuer's published signing keys, which the token's `kid` and `alg` are
 	// resolved against.
-	Keys KeySource
+	Keys oidc.KeySource
 }
 
 // configured reports whether the broker was told about this issuer at all.
@@ -432,7 +423,7 @@ func clusterIssuer(issuers []IssuerConfig, iss string) (IssuerConfig, bool) {
 //
 // The read runs on its own context rather than the request's, because the library's signature
 // gives it none; the key source bounds its own fetch, and a set already cached costs no read.
-func keyFunc(keys KeySource) jwt.Keyfunc {
+func keyFunc(keys oidc.KeySource) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
 		if !slices.Contains(subjectTokenAlgorithms, token.SignatureAlgorithm) {
 			return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)

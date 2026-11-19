@@ -131,9 +131,10 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 	return NewWithKeys(issuer, audience, keys), nil
 }
 
-// KeySource answers the public key a token naming kid and signed with alg is checked against: a
-// *Keys, or one issuer of an IssuerSet read through the set (IssuerSet.Key), whose error matches
-// ErrIssuerUnavailable while that issuer cannot be read.
+// KeySource answers the public key a token naming kid and signed with alg is checked against. A
+// *Keys is one, reading the issuer's published set, and so is a *LazyVerifier, reading it once the
+// issuer is discovered. So is one issuer of an IssuerSet read through the set (IssuerSet.Key),
+// whose error matches ErrIssuerUnavailable while that issuer cannot be read.
 type KeySource interface {
 	Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error)
 }
@@ -196,8 +197,21 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 // picks. It reads unverified text, so it picks a verifier and decides nothing about a caller: no
 // claim anyone is admitted on comes from it.
 func (v *Verifier) Issues(raw string) bool {
+	iss, err := UnverifiedIssuer(raw)
+	return err == nil && v.namesIssuer(iss)
+}
+
+// UnverifiedIssuer is raw's iss claim, read without verifying anything, from raw with every space
+// removed (stripSpaces) as Verify reads it. A raw that is not three dot-separated segments whose
+// middle one is a base64url claim set answers an empty iss and the reason. A caller that trusts
+// several issuers picks with it the one verifier a token is for, as Issues and IssuerSet do; no
+// claim anyone is admitted on comes from it.
+func UnverifiedIssuer(raw string) (string, error) {
 	claims, err := decodeUnverifiedClaims(stripSpaces(raw))
-	return err == nil && v.namesIssuer(claims.Issuer)
+	if err != nil {
+		return "", err
+	}
+	return claims.Issuer, nil
 }
 
 // Verify checks raw against the issuer's published keys, the configured
