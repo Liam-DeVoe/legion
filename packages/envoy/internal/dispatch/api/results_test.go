@@ -1612,15 +1612,17 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 // A link written after a merged row is stored is followed at the next read of the results, with
 // no read of GitHub. GitHub names the merged acme/widgets#93 for the commit of a pass of k1, and
 // its branch, title and body name no issue. The record's read-through stores #93 with its texts.
-// Then the issue links #93's URL, and no event of #93 comes. The next read compares k1 with #93,
-// the pass stands, and the read asks GitHub nothing: the statement reads the link at the read.
+// Then the issue links #93's URL, and no event of #93 comes. The link owes a read of #93 (R5 of
+// the results lookup), and that owe hides no stored head, since a link says nothing of the head.
+// So the next read compares k1 with #93, the pass stands, and the read asks GitHub nothing: the
+// statement reads the link at the read. The next pass reads #93 from GitHub and settles the owe.
 // Every read of the test is held off by a claim of the commit (server.commitPulls.Claim), so it
 // answers from the stored rows alone: the read-through would read #93 again, since a stored row
 // at a commit is no reason to skip it (R6 of the results lookup), and so only the pass can give
 // the control's row its facts.
 // Control, texts=false: the texts row of #93 is deleted, as a row of the release before has none.
 // The next read compares k1 with nothing and asks GitHub nothing, since the statement answers no
-// stored issue for a row with no facts. A pass that reads #93's facts then makes it compare.
+// stored issue for a row with no facts. The pass that reads #93 then makes it compare.
 func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
 	for _, withTexts := range []bool{true, false} {
 		t.Run(fmt.Sprintf("texts=%v", withTexts), func(t *testing.T) {
@@ -1667,6 +1669,9 @@ func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
 				}
 				return numbers
 			}
+			if owed, want := owedReads(t, database), []string{"acme/widgets#93 failure"}; !slices.Equal(owed, want) {
+				t.Errorf("after the link the owed reads are %q, want %q: a link by hand owes a read also where the head row is stored", owed, want)
+			}
 			spent := fake.asks("acme/widgets")
 			after := checkOf(t, readResults(t, handler, issue.Key), "k1")
 			if asked := fake.asks("acme/widgets") - spent; asked != 0 {
@@ -1676,21 +1681,26 @@ func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
 				if fmt.Sprint(numbersOf(after)) != "[93]" || after.PassStands.Answer != "yes" {
 					t.Errorf("after the link k1 compares with %v and pass_stands %s, want [93] and yes", numbersOf(after), after.PassStands.Answer)
 				}
-				return
-			}
-			if len(after.ComparedWith) != 0 {
+			} else if len(after.ComparedWith) != 0 {
 				t.Errorf("after the link the row with no texts compares with %v, want nothing in this read (the control)", numbersOf(after))
 			}
-			// A pass reads #93's facts, and the next read compares with it.
+			// The next pass reads #93 from GitHub for the owed read, and the next read compares with it.
 			fake.pullAnswers(func(repo, number string) string {
 				if number != "93" {
 					return ""
 				}
 				return pull(repo, newHeadCommit)
 			})
+			readsBefore := fake.pullReadsOf("acme/widgets", 93)
 			onePass(t, database, served)
+			if reads := fake.pullReadsOf("acme/widgets", 93) - readsBefore; reads != 1 {
+				t.Errorf("the pass after the link read #93 from GitHub %d times, want 1: the link owes that read", reads)
+			}
+			if owed := owedReads(t, database); len(owed) != 0 {
+				t.Errorf("after the pass read #93 the owed reads are %q, want none", owed)
+			}
 			if passed := checkOf(t, readResults(t, handler, issue.Key), "k1"); fmt.Sprint(numbersOf(passed)) != "[93]" {
-				t.Errorf("after a pass read #93's facts k1 compares with %v, want [93]", numbersOf(passed))
+				t.Errorf("after a pass read #93 k1 compares with %v, want [93]", numbersOf(passed))
 			}
 		})
 	}
@@ -1973,8 +1983,10 @@ type commitPullsFake struct {
 	answer func(repo, sha string) string
 	// pull answers GET /repos/{owner}/{repo}/pulls/{number}, the read the delivery intake makes
 	// of the pull request an event names, and each pull request of the batched query of facts;
-	// "" or no function is GitHub's 404.
-	pull func(repo, number string) string
+	// "" or no function is GitHub's 404. pullReads counts the reads of that route, by
+	// "<repo>#<number>": the reads of one pull request, and not the batched queries.
+	pull      func(repo, number string) string
+	pullReads map[string]int
 	// factsQueried counts the batched queries of facts that GitHub was asked.
 	factsQueried int
 	// refused maps a commit to the status that GitHub refuses the list of its pull requests with.
@@ -1997,8 +2009,17 @@ func (f *commitPullsFake) pullAnswers(body func(repo, number string) string) {
 	f.pull = body
 }
 
+// pullReadsOf is how often GitHub has been asked GET /repos/{owner}/{repo}/pulls/{number} for
+// pull request number of repo.
+func (f *commitPullsFake) pullReadsOf(repo string, number int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pullReads[fmt.Sprintf("%s#%d", repo, number)]
+}
+
 func (f *commitPullsFake) servePull(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
+	f.pullReads[r.PathValue("owner")+"/"+r.PathValue("repo")+"#"+r.PathValue("number")]++
 	answer := f.pull
 	f.mu.Unlock()
 	body := ""
@@ -2257,7 +2278,7 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 	for _, repo := range repos {
 		installed[repo] = true
 	}
-	fake := &commitPullsFake{asked: map[string]int{}, refused: map[string]int{}}
+	fake := &commitPullsFake{asked: map[string]int{}, refused: map[string]int{}, pullReads: map[string]int{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
 		if !installed[r.PathValue("owner")+"/"+r.PathValue("repo")] {

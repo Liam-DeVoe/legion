@@ -517,9 +517,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// No event of a pull request carries a link to it. So each pull request with no head row
-		// that this write links owes a read of GitHub. The next reconcile pass stores its head (R5
-		// of the results lookup, delivery.OweLinkedPullRequestReads).
+		// No event of a pull request carries a link to it. So each pull request that this write
+		// links owes a read of GitHub, in any repository and also where its head row is stored.
+		// The next reconcile pass reads it and stores its head (R5 of the results lookup,
+		// delivery.OweLinkedPullRequestReads).
 		if err := delivery.OweLinkedPullRequestReads(r.Context(), tx, addedLinks(heldBefore, *input.ExternalLinks)); err != nil {
 			s.writeHandlerError(w, err)
 			return

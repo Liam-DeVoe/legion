@@ -1604,10 +1604,13 @@ So a tie made with no event of the pull request reaches every stored pull reques
 Such a tie is a link to the pull request's own URL, a link to a GitHub issue its body cites, an issue its branch, title or body names made later, a new parent, or a changed repository mapping (`TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt`, `api.TestATieMadeAfterAMergeIsFollowedAtTheResultsRead`).
 A write of an issue's links (`PATCH /api/v1/issues/{key}` with `external_links`) marks no row: the next read of the results or of the timeline reads the link (`api.TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk`).
 A head write in flight while the link is written cannot hide it, because no write of a head row reads a link (`TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass`).
-A link by hand owes a read of the pull request that it links, where Dispatch holds no head row of that pull request (`delivery.OweLinkedPullRequestReads`).
-The link write records it in its own transaction, as a `failure` in `pull_request_reads_owed`, only for a pull request's own URL in a repository that Dispatch maps.
+A link by hand owes a read of the pull request that it links, in any repository, also where Dispatch stores a head row of that pull request (`delivery.OweLinkedPullRequestReads`).
+The link write records it in its own transaction, as a `failure` in `pull_request_reads_owed`, for each URL of a pull request that the write adds; a link that is no URL of a pull request owes nothing.
+The read needs only that GitHub lets the App read the repository, not that Dispatch maps it (`api.TestALinkByHandInARepositoryThatNoProjectMapsGetsItsHeadFromOneRead`).
 The next reconcile pass reads that pull request from GitHub and stores its head, so its issue's checks have a head before anyone records a result (`api.TestALinkByHandStoresTheHeadOfThePullRequestItLinks`).
-A link to a pull request whose head row is stored owes no read, because an owed read makes that head no basis until the pass reads it.
+Where GitHub refuses that read, the read stays owed as a `refusal` until a read succeeds (`api.TestALinkByHandToAPullRequestThatGitHubRefusesStaysOwedAsARefusal`).
+A link says nothing of the head, so the owe of a link alone does not make a stored head a head not read, and the next read of the results compares with that head at once (`pull_request_reads_owed.linked_revision`; `api.TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk`).
+Each other owe of that pull request gives the row a new revision, so the row hides the head again whichever owe comes first, and a read that began before the later owe settles neither (`TestALinksOwedReadHidesNoStoredHeadAndEachOtherOweHidesItInEitherOrder`).
 A link outranks a branch name: a link on another issue takes its pull request, within the bounds of the repository and of a fork's head (`attributionHeld`, `headInOwnRepository`).
 The link check compares a URL in every letter case: a write that adds a URL that another issue holds in another letter case is refused with `409 EXTERNAL_LINK_TAKEN` (`api/issue_patch.go`).
 The check compares with other issues only, and never refuses a URL that the issue held before the write.
@@ -1697,6 +1700,7 @@ So a pull request GitHub still answers 404 for at the reconcile's first read, in
 A pass looks the installation of each repository up once (`passInstallations`): a repository the App is not installed on costs the pass one lookup however many of its rows the pass reads, and its rows stay owed, since an installation that comes back has the pull request again.
 A row of that table is never a head, a basis or a merge, and while a read is owed Dispatch does not know that the stored head is the head.
 So three readers of a head by issue read that table too (`HeadsAttributedTo`, `HeadAttributedTo`, `NewestPullRequestHead`; `owedReadJoin`, `20261118215934_pull_request_reads_owed_refusal`): the stored head of a pull request owed a read is no basis, no check run is read at it, and the results route names the pull request in `heads_not_read` (Routes below).
+A row that a link by hand alone owed is no such owe where a results row of the pull request is stored: a link says nothing of the head, so these readers skip a row whose `linked_revision` is its revision there, and each other owe gives the row a new revision (`20261119172039_pull_request_reads_owed_linked`, Links and ties above).
 `BaseBranchMergedFor` does not read that table, since GitHub never changes the base branch of a merged pull request.
 A refusal row names how GitHub refuses the read (`refused_as`) and since when (`refused_since`).
 With no forged envelopes, the reconcile writes the heads of the pull requests an outage left owed, up to 200 a pass, from the first pass after GitHub answers again, and each further 200 wait one more pass.
@@ -2783,6 +2787,10 @@ Both are null for a failure, and on each row a release before this one wrote; th
 It creates `pull_request_reads_owed_repo_number` on `(lower(repo), number)`, partial on names of at most 1,024 bytes, for each reader of a head by issue and the read-through's read of the owed reads of its repository.
 It creates `pull_request_texts_messages_not_read` on `pull_request_texts (lower(repo))` where `commit_messages is null`, for the read of the pull requests of one repository whose answer is not known (`delivery.PullRequestsNotKnown`).
 Each column is nullable with no default, and each index reads its table once; the release before names neither column; its census answers `0`.
+
+Migration `20261119172039_pull_request_reads_owed_linked` adds `pull_request_reads_owed.linked_revision`, the revision of the row when a link by hand owed the read and no other owe was on the row (`delivery.OweLinkedPullRequestReads`).
+Each reader of a head by issue skips a row whose `linked_revision` is its revision where a results row of the pull request is stored, so the owe of a link alone leaves a stored head a basis; each other owe, by this release's code or by a trigger of `pull_request_heads`, gives the row a new value of its sequence, so the row hides the head again.
+The column is nullable with no default, and null on each row a release before this one wrote; the release before names the table in none of its own statements; its census answers `0`.
 
 Migration `20261119173616_commit_pull_reads` creates `commit_pull_reads`, the claim of the read-through of one commit that every process shares: the repository under its canonical name, the 40-hex commit, and `not_before`, the moment before which no process reads GitHub again for that commit's pull requests.
 The results read claims a commit first in its own process's memory (`delivery.CommitPullReads`), which refuses with no statement, and then in this table, with one insert that, on conflict, moves `not_before` only where it has passed, so two processes that ask at once are granted once (`CommitPullReads.ClaimAcrossProcesses`).

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -76,45 +78,142 @@ func owedReads(t *testing.T, database *store.Store) []string {
 	return owed
 }
 
-// A link by hand owes a read only for a pull request of a mapped repository, where no stored head
-// row has the link as its URL. Six links owe nothing:
+// A link by hand owes a read for each URL of a pull request that it adds: also in a repository
+// that no project maps and the App reads, and also where a head row of that pull request is stored
+// (R5 of the results lookup). Four links owe nothing, because none of them is the URL of a pull
+// request:
 //
 //   - a GitHub issue;
 //   - a page of a pull request;
 //   - a URL of another site;
-//   - a pull request of a repository that the App reads and Dispatch does not map;
-//   - a number with a zero before it;
-//   - a pull request whose head row is stored.
+//   - a number with a zero before it.
 //
-// The same write with one more link owes one read, so the count can see an owe. A link held before
-// the write, in other letters, owes nothing again.
-func TestALinkByHandOwesNoReadForAURLThatIsNoNewPullRequestOfAMappedRepository(t *testing.T) {
+// A link held before the write, in other letters, owes nothing again.
+func TestALinkByHandOwesAReadForEachURLOfAPullRequestAndForNoOtherURL(t *testing.T) {
 	handler, database, _, _ := readThroughGitHub(t, "acme/tools", "acme/elsewhere")
-	issue := issueInRepository(t, handler, "ACME", "acme/tools", "Links that owe nothing")
+	issue := issueInRepository(t, handler, "ACME", "acme/tools", "Links by hand")
 	writeReadMergedRow(t, database, "acme/tools", 30, headCommit, "")
-	links := []map[string]string{
+	others := []map[string]string{
 		{"url": "https://github.com/acme/tools/issues/31", "kind": "github_issue"},
 		{"url": "https://github.com/acme/tools/pull/32/files"},
 		{"url": "https://example.com/acme/tools/pull/33"},
-		{"url": "https://github.com/acme/elsewhere/pull/34"},
 		{"url": "https://github.com/acme/tools/pull/035"},
-		{"url": "https://github.com/acme/tools/pull/30"},
 	}
-	patchIssue(t, handler, issue.Key, map[string]any{"external_links": links})
+	patchIssue(t, handler, issue.Key, map[string]any{"external_links": others})
 	if owed := owedReads(t, database); len(owed) != 0 {
-		t.Fatalf("after six links that name no pull request to read, the owed reads are %q; want none", owed)
+		t.Fatalf("after four links that are no URL of a pull request, the owed reads are %q; want none", owed)
 	}
-	patchIssue(t, handler, issue.Key, map[string]any{"external_links": append(slices.Clone(links),
-		map[string]string{"url": "https://github.com/acme/tools/pull/36"})})
-	if owed, want := owedReads(t, database), []string{"acme/tools#36 failure"}; !slices.Equal(owed, want) {
-		t.Fatalf("after a link to acme/tools#36, which has no head row, the owed reads are %q; want %q", owed, want)
+	pulls := []map[string]string{
+		{"url": "https://github.com/acme/elsewhere/pull/34"},
+		{"url": "https://github.com/acme/tools/pull/30"},
+		{"url": "https://github.com/acme/tools/pull/36"},
+	}
+	patchIssue(t, handler, issue.Key, map[string]any{"external_links": append(slices.Clone(others), pulls...)})
+	want := []string{"acme/elsewhere#34 failure", "acme/tools#30 failure", "acme/tools#36 failure"}
+	if owed := owedReads(t, database); !slices.Equal(owed, want) {
+		t.Fatalf("after links to acme/elsewhere#34 (no project maps its repository), acme/tools#30 (its head row is stored) and acme/tools#36 (no row), the owed reads are %q; want %q", owed, want)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `delete from pull_request_reads_owed`); err != nil {
-		t.Fatalf("settle the owed read: %v", err)
+		t.Fatalf("settle the owed reads: %v", err)
 	}
-	patchIssue(t, handler, issue.Key, map[string]any{"external_links": append(slices.Clone(links),
+	patchIssue(t, handler, issue.Key, map[string]any{"external_links": append(slices.Clone(others),
+		map[string]string{"url": "https://GitHub.com/Acme/Elsewhere/pull/34"},
+		map[string]string{"url": "https://github.com/ACME/tools/pull/30"},
 		map[string]string{"url": "https://GitHub.com/Acme/Tools/pull/36"})})
 	if owed := owedReads(t, database); len(owed) != 0 {
-		t.Fatalf("after the same link in other letters, the owed reads are %q; want none", owed)
+		t.Fatalf("after the same links in other letters, the owed reads are %q; want none", owed)
 	}
+}
+
+// A person links an open pull request of acme/loose to an issue whose own repository is acme/loose.
+// No project maps acme/loose, and the App reads it. No event and no result come. One reconcile pass
+// reads the pull request from GitHub one time (a GET of the pull request) and stores its head, and
+// the results read then compares check k1 with that head (R5 of the results lookup). That read
+// reads no commit messages, since the link names the issue; the same pass's facts line asks its
+// batched query for them (readFactsLine), which this test does not count. The test fails where the
+// link owes a read only in a repository that a project maps: then no step reads the pull request,
+// and k1 compares with nothing.
+func TestALinkByHandInARepositoryThatNoProjectMapsGetsItsHeadFromOneRead(t *testing.T) {
+	handler, database, served, fake := readThroughGitHub(t, "acme/loose")
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects",
+		map[string]string{"key": "LOOS", "name": "Loose"}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project LOOS: status=%d body=%s", response.Code, response.Body.String())
+	}
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+		map[string]any{"project": "LOOS", "title": "Linked in a repository that no project maps", "spec": "A spec\n", "repo": "acme/loose"}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create the issue in acme/loose: status=%d body=%s", created.Code, created.Body.String())
+	}
+	issue := decodeBody[model.Issue](t, created)
+	if issue.ResolvedRepo == nil || *issue.ResolvedRepo != "acme/loose" {
+		t.Fatalf("SETUP: the issue resolves to %v, want its own acme/loose", issue.ResolvedRepo)
+	}
+	var mappings int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from repo_projects`).Scan(&mappings); err != nil || mappings != 0 {
+		t.Fatalf("SETUP: repo_projects holds %d rows (%v), want none", mappings, err)
+	}
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	fake.pullAnswers(func(repo, number string) string {
+		if repo != "acme/loose" || number != "12" {
+			return ""
+		}
+		return linkedOpenPull(repo, 12, headCommit)
+	})
+	patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{{"url": "https://github.com/acme/loose/pull/12"}}})
+	onePass(t, database, served)
+	if reads := fake.pullReadsOf("acme/loose", 12); reads != 1 {
+		t.Errorf("after the link by hand, one pass read acme/loose#12 from GitHub %d times; want 1", reads)
+	}
+	read := readResults(t, handler, issue.Key)
+	if !comparedWithPull(t, read, "k1", 12) {
+		check := checkOf(t, read, "k1")
+		t.Fatalf("after the link by hand and one pass, check k1 compares with %+v for the reason %q; want the head of acme/loose#12", check.ComparedWith, check.ComparedNothing)
+	}
+	if owed := owedReads(t, database); len(owed) != 0 {
+		t.Errorf("after the pass read acme/loose#12, the owed reads are %q; want none", owed)
+	}
+}
+
+// A person links a pull request of acme/hidden to an issue of acme/hidden, a repository that the
+// App is not installed on. GitHub refuses each read of it, so the read stays owed until a read
+// succeeds (R4 of the results lookup): after two passes the read is owed as a refusal, with
+// refused_as app_not_installed, read two times, and refused_since keeps the time of the first
+// refusal. The results route says that it cannot read the repository: check k1 compares with
+// nothing for repository_unreadable, and the recorded pass of k1 does not count (pass_stands
+// unknown). The test fails where a refused read of an owed pull request ends the owe.
+func TestALinkByHandToAPullRequestThatGitHubRefusesStaysOwedAsARefusal(t *testing.T) {
+	handler, database, served, _ := readThroughGitHub(t, "acme/tools")
+	issue := issueInRepository(t, handler, "HIDE", "acme/hidden", "Linked where the App cannot read")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil))
+	patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{{"url": "https://github.com/acme/hidden/pull/40"}}})
+	if owed, want := owedReads(t, database), []string{"acme/hidden#40 failure"}; !slices.Equal(owed, want) {
+		t.Fatalf("after the link to acme/hidden#40, the owed reads are %q; want %q", owed, want)
+	}
+	var first time.Time
+	for pass := 1; pass <= 2; pass++ {
+		onePass(t, database, served)
+		var reason string
+		var reads int
+		var refusedAs *string
+		var refusedSince *time.Time
+		err := database.Pool.QueryRow(context.Background(), `
+			select reason, reads, refused_as, refused_since from pull_request_reads_owed where repo = 'acme/hidden' and number = 40
+		`).Scan(&reason, &reads, &refusedAs, &refusedSince)
+		if errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("after pass %d, no read of acme/hidden#40 is owed; want a refusal, since GitHub refused each read", pass)
+		}
+		if err != nil {
+			t.Fatalf("read the owed read of acme/hidden#40: %v", err)
+		}
+		if pass == 1 && refusedSince != nil {
+			first = *refusedSince
+		}
+		if reason != "refusal" || reads != pass || refusedAs == nil || *refusedAs != model.RefusedAsAppNotInstalled ||
+			refusedSince == nil || !refusedSince.Equal(first) {
+			t.Fatalf("after pass %d, acme/hidden#40 is owed as %q, read %d times, refused as %v since %v; want a refusal read %d times, refused as %s since the first refusal %v",
+				pass, reason, reads, refusedAs, refusedSince, pass, model.RefusedAsAppNotInstalled, first)
+		}
+	}
+	comparedNothing(t, readResults(t, handler, issue.Key), "k1", model.ReasonRepositoryUnreadable, model.PassStandsUnknown)
 }
