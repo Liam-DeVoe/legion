@@ -827,7 +827,7 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 	// The ask row is visible once the copy's settlement commits, and that settlement forgets the
 	// room's owed author as it commits, under the room's lock (consumeAskAuthorsLocked); the room
 	// is read once the settlement has ended, so its count is read after the forgetting.
-	waitFor(t, 10*time.Second, "the copy's settlement that opened its ask to end", func() bool {
+	waitFor(t, roomWait(t), "the copy's settlement that opened its ask to end", func() bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		return state.settling == 0

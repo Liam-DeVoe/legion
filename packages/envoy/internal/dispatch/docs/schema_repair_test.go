@@ -36,7 +36,7 @@ func writeSchemaInvalidElement(t *testing.T, service *Service, artifactID string
 // document from markdown repairs it instead of leaving every replacement permanently refused.
 //
 // Serial: each restart's Shutdown must return nil, and returns the drain's error when the room's
-// durable appends outlast production's ShutdownDrainBudget (9 s, service.go:1135).
+// durable appends outlast production's ShutdownDrainBudget (9 s, service.go).
 func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First\n")
@@ -76,7 +76,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 // block ID and refuses a replacement that drops one.
 //
 // Serial: the first service's Shutdown must return nil, and returns the drain's error when the
-// room's durable appends outlast production's ShutdownDrainBudget (9 s, service.go:1135).
+// room's durable appends outlast production's ShutdownDrainBudget (9 s, service.go).
 func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")

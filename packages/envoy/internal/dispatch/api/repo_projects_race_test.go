@@ -116,10 +116,7 @@ func createProjects(t *testing.T, handler http.Handler, keys ...string) {
 // Two first mappings of one repository, to two projects at once: the second is a move, so the
 // project the first put it in hears that it left, as a sequential move tells it.
 func TestRepoProjectFirstMappingRacedToTwoProjectsTellsTheProjectItLeft(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createProjects(t, handler, "CORE", "OTHER")
 	release := holdOwner(t, database, store.ProjectOwner("CORE"))
@@ -148,10 +145,7 @@ func TestRepoProjectFirstMappingRacedToTwoProjectsTellsTheProjectItLeft(t *testi
 // Two mappings made their project's default at once both succeed, one after the other: the second
 // demotes the first, and the project keeps exactly one default.
 func TestRepoProjectSimultaneousDefaultsBothSucceed(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createProjects(t, handler, "CORE")
 	for _, repo := range []string{"acme/widgets", "acme/gadgets"} {
@@ -228,10 +222,7 @@ func TestRepoProjectOppositeMovesDoNotDeadlock(t *testing.T) {
 // row any more, because an issue's own repository needs no mapping (INFRA-2543 R3). Both take
 // the project's owner lock, so one still waits for the other.
 func TestIssueCreateNamingAMappingWhileItMovesDoesNotDeadlock(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createProjects(t, handler, "CORE", "OTHER")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE"}, "alice")

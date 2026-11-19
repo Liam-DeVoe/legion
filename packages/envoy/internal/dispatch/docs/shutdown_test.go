@@ -33,7 +33,7 @@ import (
 // until someone next opened the document.
 //
 // Serial: Shutdown is the subject, and runs the room's settlement under production's
-// ShutdownDrainBudget (9 s, service.go:1135): the version and the cleared pending row it checks
+// ShutdownDrainBudget (9 s, service.go): the version and the cleared pending row it checks
 // come only from a settlement that finishes inside it.
 func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) {
 	database := storetest.Open(t)

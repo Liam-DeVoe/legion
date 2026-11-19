@@ -54,7 +54,7 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 //
 // Serial: the first service's Shutdown between the close and the restart must return nil, and
 // returns the drain's error when the room's durable appends outlast production's
-// ShutdownDrainBudget (9 s, service.go:1135).
+// ShutdownDrainBudget (9 s, service.go).
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // the issue closes before the edit's own settlement runs

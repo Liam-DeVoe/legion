@@ -3232,7 +3232,9 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
-              # cmd/listener/api_test.go:178,429,474, which the soak's run compiles too.
+              # cmd/listener/api_test.go's TestDispatchClientSendUsesListenerWireContract,
+              # TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload and
+              # TestDispatchClientSendFrameModeIsGuardedEndToEnd, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               # cmd/listener/api_test.go readNoInterestRecordFixture, which the soak's run compiles too.
               - 'packages/contracts/fixtures/envoy-session-no-interests.json'
@@ -3654,7 +3656,9 @@ jobs:
               # (check-ci-filters.sh's rule 15).
               - '.github/scripts/go-tagged-tests.sh'
               - '.github/workflows/ci-job-listener-server-change.yaml'
-              # The fixture cmd/listener/api_test.go:178,429,474 reads.
+              # The fixture cmd/listener/api_test.go's TestDispatchClientSendUsesListenerWireContract,
+              # TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload and
+              # TestDispatchClientSendFrameModeIsGuardedEndToEnd read.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               # The fixture cmd/listener/api_test.go readNoInterestRecordFixture reads.
               - 'packages/contracts/fixtures/envoy-session-no-interests.json'

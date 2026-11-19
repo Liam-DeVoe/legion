@@ -198,10 +198,7 @@ func TestIssueBlockedBySelfIsAnInputError(t *testing.T) {
 }
 
 func TestIssueBlockedByConcurrentWritesDoNotDeadlock(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	for _, scenario := range []string{"reciprocal blockers", "blocker and reparent", "old parent and reparent"} {
 		t.Run(scenario, func(t *testing.T) {
 			handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -718,10 +715,7 @@ func TestStatusWriteDoesNotDeadlockWithBoardMoveBetweenTheIssueAndItsParent(t *t
 // therefore never has the reparent holding the grandparent while the status write holds the old
 // parent.
 func TestReparentToGrandparentDoesNotDeadlockWithAStatusWriteOnTheOldParent(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	grandparent, parent, child := keys[0], keys[1], keys[2]

@@ -1830,10 +1830,7 @@ func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
 }
 
 func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	// The seeded specs' settlement would lock the child row this test holds; keep it
 	// out of the lock queue so only the two status patches are counted as waiters.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -1919,10 +1916,7 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 }
 
 func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",

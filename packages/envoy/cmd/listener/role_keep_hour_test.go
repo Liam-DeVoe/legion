@@ -293,7 +293,7 @@ func outboxCopy(role, sender, summary string) contracts.Envelope {
 // bus.KeptMsgID, and returns the copy the stream holds for it.
 func (r *hourRig) keep(role string, item contracts.Envelope) laneCopy {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	if err := r.client().PublishStoredAs(ctx, bus.KeptRoleSubject(role), item, bus.KeptMsgID(item.DedupeKey, role)); err != nil {
 		r.t.Fatalf("write event %s to role %s's kept lane: %v", item.EventID, role, err)
@@ -405,7 +405,7 @@ func (r *hourRig) envoyLetters() []contracts.Envelope {
 // cursor is role's drain cursor.
 func (r *hourRig) cursor(role string) bus.KeptRoleCursor {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	stored, err := r.client().ReadKeptRoleCursor(ctx, role)
 	if err != nil {

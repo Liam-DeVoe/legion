@@ -24,10 +24,7 @@ import (
 // load. Holding the owner lock here must therefore stop the upload before the room lock, leaving
 // the room free to take behind it.
 func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
-	// No t.Parallel: this test holds a transaction, a row lock or an advisory lock open on
-	// purpose. The event log's safe horizon is proven from pg_snapshot_xmin, the oldest
-	// transaction id running anywhere on the instance (internal/dispatch/events,
-	// horizon.go), so a hold here stalls every parallel test reading that feed.
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})

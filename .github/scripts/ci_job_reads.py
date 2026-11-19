@@ -744,7 +744,9 @@ RULES = {
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:54")),
     f"{ENVOY}/cmd/listener/api_test.go": reads(
-        (f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:178,429,474"),
+        (f"{FIX}/dispatch-targeted-delivery.json",
+         "cmd/listener/api_test.go: TestDispatchClientSendUsesListenerWireContract, "
+         "TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload and TestDispatchClientSendFrameModeIsGuardedEndToEnd"),
         (f"{FIX}/envoy-session-no-interests.json", "cmd/listener/api_test.go, readNoInterestRecordFixture")),
     f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
         (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:18"),
@@ -989,11 +991,11 @@ exit $s"""
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks' pack
 # step, envoy-smoke's schema step, the tag steps below, and every step that writes a `go test
 # -json` stream - envoy-go's unit step, which writes the streams of eight of its nine calls,
-# envoy-go-checks' architecture-note tests and display-tree fixture check, and the race lane's
-# envoy-go-race and envoy-go-race-api - since neither -json nor the redirect that keeps the stream
-# is a form the check reduces. envoy-go-race-docs is pinned for a reason of its own: its two lines
-# make a directory and run the package under .github/scripts/race_memory.py (RACE_DOCS_SCRIPT
-# below).
+# envoy-go-checks' architecture-note tests, listenerwire tests and display-tree fixture check, and
+# the race lane's envoy-go-race and envoy-go-race-api - since neither -json nor the redirect that
+# keeps the stream is a form the check reduces. envoy-go-race-docs is pinned for a reason of its
+# own: its two lines make a directory and run the package under .github/scripts/race_memory.py
+# (RACE_DOCS_SCRIPT below).
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
 pids=()

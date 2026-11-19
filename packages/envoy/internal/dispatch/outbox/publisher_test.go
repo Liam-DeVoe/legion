@@ -1143,7 +1143,7 @@ func TestLoadRootCommentAuthorsTerminatesOnACycle(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("loadRootCommentAuthors did not terminate within 2 s on a cyclic reply_to chain")
+		t.Fatal("loadRootCommentAuthors did not terminate on a cyclic reply_to chain")
 	}
 	if err != nil {
 		t.Fatalf("load the comment's root author: %v", err)

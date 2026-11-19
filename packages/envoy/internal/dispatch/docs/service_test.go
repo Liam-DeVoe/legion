@@ -5497,7 +5497,7 @@ func (s *shutdownCompactStore) compactRoom(ctx context.Context, room string, rul
 // Shutdown returns, and no compaction runs after.
 //
 // Serial: Shutdown is the subject and must return nil, which it does only when the room's durable
-// appends land inside production's ShutdownDrainBudget (9 s, service.go:1135).
+// appends land inside production's ShutdownDrainBudget (9 s, service.go).
 func TestShutdownCompletesCompactionBeforeTestStoreCloses(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")

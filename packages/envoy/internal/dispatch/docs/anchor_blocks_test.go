@@ -182,7 +182,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 			t.Fatalf("backfill anchor blocks after the settlement: %v", result.err)
 		}
 		backfill = result.report
-	case <-time.After(30 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the backfill never finished after the settlement released the comment's owner lock")
 	}
 	if backfill.Asks != 0 || backfill.Comments != 1 {
