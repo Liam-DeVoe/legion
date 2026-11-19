@@ -552,7 +552,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, nil
 	}
 
-	owner, repo, err := splitRepo(repoFull)
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return false, err
 	}
@@ -655,7 +655,7 @@ func (in *Intake) handleWorkflowEnvelope(ctx context.Context, settings DeliveryS
 		return false, nil
 	}
 	repoFull := payload["repo"]
-	owner, repo, err := splitRepo(repoFull)
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return false, err
 	}
@@ -800,18 +800,6 @@ func mapJobConclusion(raw *string) *DeliveryJobConclusion {
 	default:
 		return nil
 	}
-}
-
-// splitRepo splits a stored "owner/repo" into the two segments GitHub's paths take: the one place
-// delivery turns a repository name into a GitHub path, which every read of a repository goes
-// through (repositoryRead and the reads that split a name of their own). Each half is held to
-// the names GitHub allows (refs.SplitGitHubRepo, the rule the API routes hold a name to before
-// they store it), and a name the rule refuses is an error naming it, before any GitHub call. So
-// a mapping or a renamed_to stored before those routes held it to the rule, or by direct SQL —
-// `acme/..`, or `acme/` — never becomes a GitHub path, which `..` would take above the
-// repository's own.
-func splitRepo(repoFull string) (owner, repo string, err error) {
-	return refs.SplitGitHubRepo(repoFull)
 }
 
 // containsString reports whether values contains s, exactly.

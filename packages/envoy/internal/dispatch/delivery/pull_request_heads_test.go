@@ -303,13 +303,18 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 	}
 }
 
-// A link names a pull request only where its owner and its name are GitHub's own characters —
-// letters, digits and `-` for an owner, and `.` and `_` beside them for a name — and the name is
-// not `.` or `..`. The reads build `/repos/{owner}/{repo}/...` from the two parts and
-// url.PathEscape keeps a dot, so `https://github.com/../x/pull/1` would send the installation
-// read to `/repos/../x/installation`. Such a URL stays a link of the issue and names no pull
-// request, and neither does one whose owner or name holds a character GitHub's never do; a name
+// A link names a pull request only where its owner and its name are GitHub's own characters, by
+// the patterns refs reads every name with (refs.GitHubOwnerPattern, refs.GitHubNamePattern) — an
+// owner of a letter or digit and then letters, digits, `-` and `_`, as a managed user's login
+// (`mona-cat_octo`) is, and a name of those and `.` — and the name is not `.` or `..`. The reads
+// build `/repos/{owner}/{repo}/...` from the two parts and url.PathEscape keeps a dot, so
+// `https://github.com/../x/pull/1` would send the installation read to `/repos/../x/installation`.
+// Such a URL stays a link of the issue and names no pull request, and neither does one whose
+// owner or name holds a character GitHub's never do, nor one whose owner starts with `-`; a name
 // with a dot inside it, as `tools.js` and `.github` are, is GitHub's own and names one.
+//
+// The negative control is the owner pattern as it was written here, letters, digits and `-`,
+// which drops the two links whose owner holds an `_` and names `-linkcheck/tools#13`.
 func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 80)
@@ -330,6 +335,8 @@ func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
 		"https://github.com/linkcheck/tools.js/pull/9",
 		"https://github.com/linkcheck/.github/pull/10",
 		"https://github.com/linkcheck/tools/pull/11",
+		"https://github.com/mona-cat_octo/tools/pull/12",
+		"https://github.com/-linkcheck/tools/pull/13",
 	} {
 		if _, err := pool.Exec(ctx, `
 			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')
@@ -346,7 +353,10 @@ func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
 	for _, pull := range pulls {
 		named[fmt.Sprintf("%s#%d", pull.Repo, pull.Number)] = true
 	}
-	want := map[string]bool{"linkcheck/tools.js#9": true, "linkcheck/.github#10": true, "linkcheck/tools#11": true}
+	want := map[string]bool{
+		"link_check/tools#6": true, "linkcheck/tools.js#9": true, "linkcheck/.github#10": true,
+		"linkcheck/tools#11": true, "mona-cat_octo/tools#12": true,
+	}
 	if !maps.Equal(named, want) {
 		t.Fatalf("the links of %s name the pull requests %v, want %v alone", issue, named, want)
 	}

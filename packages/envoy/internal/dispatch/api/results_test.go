@@ -4315,7 +4315,7 @@ func TestALinkedResultsAnswerNamesItsRepository(t *testing.T) {
 // `acme/..`, which a rename stored before the routes held names to GitHub's rule made the
 // canonical name of its rows — is read for a check CI proves without any GitHub path built from
 // that name: its halves would go into the paths as they are, and `..` asks about a path above
-// the repository's. Every other reader of a stored name splits it with refs.SplitGitHubRepo.
+// the repository's, so the read splits the name with refs.SplitGitHubRepo first.
 func TestACIReadOfAStoredHeadRowSendsGitHubNoNameItDoesNotAllow(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"strings"
 	"testing"
@@ -203,5 +204,39 @@ func TestSeedRepoProjectsRejectsMissingProject(t *testing.T) {
 	err := SeedRepoProjects(context.Background(), database, events.NewBroker(), "missing/repo=MISSING")
 	if err == nil || !strings.Contains(err.Error(), `seed repository project "missing/repo": project MISSING does not exist`) {
 		t.Fatalf("seed missing project: got %v", err)
+	}
+}
+
+// The boot seed holds a repository to the names GitHub allows, as the settings route holds a
+// mapping's path, after it reads the name as that route does (lower-cased, one trailing `.git`
+// trimmed): `acme/.git=KEY` reads as `acme/`, a mapping no request reaches, and `acme/..=KEY` as
+// a dot segment, and each is refused, naming the entry, so the boot stops rather than store it. A
+// managed user's login, `mona-cat_octo`, is a name GitHub allows and is taken.
+//
+// The negative control is the seed without that rule, which takes `acme/.git=KEY` as `acme/`,
+// `acme/..=KEY` as `acme/..` and `acme/...git=KEY` as `acme/..`.
+func TestParseRepoProjectsRefusesANameTheSettingsRouteRefuses(t *testing.T) {
+	for _, row := range []struct {
+		raw  string
+		want map[string]string
+	}{
+		{raw: "mona-cat_octo/x=KEY", want: map[string]string{"mona-cat_octo/x": "KEY"}},
+		{raw: "Acme/Widgets.git=KEY", want: map[string]string{"acme/widgets": "KEY"}},
+		{raw: "acme/.git=KEY"},
+		{raw: "acme/..=KEY"},
+		{raw: "acme/...git=KEY"},
+		{raw: "acme/widgets=KEY,acme/.git=KEY"},
+	} {
+		got, err := ParseRepoProjects(row.raw)
+		if row.want != nil {
+			if err != nil || !maps.Equal(got, row.want) {
+				t.Errorf("ParseRepoProjects(%q) = %v, %v; want %v", row.raw, got, err, row.want)
+			}
+			continue
+		}
+		entries := strings.Split(row.raw, ",")
+		if refused := entries[len(entries)-1]; err == nil || !strings.Contains(err.Error(), `"`+refused+`"`) {
+			t.Errorf("ParseRepoProjects(%q) = %v, %v; want a refusal naming %q", row.raw, got, err, refused)
+		}
 	}
 }

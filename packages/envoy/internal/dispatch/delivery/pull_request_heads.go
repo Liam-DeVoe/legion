@@ -441,116 +441,6 @@ func upsertHeadUnderCanonicalName(
 	return nil
 }
 
-// linkedPullRequestTerms are the `with recursive` terms of the pull requests the external links
-// of the issue $1 name in a repository the issue does not resolve to: linked_pulls (repo,
-// number, url), one row per link of the form https://github.com/<owner>/<repo>/pull/<n>, the
-// repository lowercased, as refs.ExternalRepo spells a mapping, and under the canonical name
-// it is called today (refs.CanonicalRepoSQL).
-//
-// Such a pull request is one of the issue's heads when the results are read, as a pull request
-// attributed to the issue is (HeadAttributedTo, HeadsAttributedTo). An issue whose work spans two
-// repositories links the pull request it has in the second one, and the attribution can never
-// give that pull request to it: an issue is held to the repository it resolves to
-// (attributionHeld), and the pull request is in another. So the link stands in for the
-// attribution there, and only there. A link to a pull request of the repository the issue
-// resolves to adds nothing, since the attribution, of which that link is the first source,
-// alone decides which of that repository's pull requests are the issue's. The terms hold the
-// issue to a repository by the attribution's own rule, so the two cannot disagree about which
-// repository is the issue's.
-//
-// The link names the pull request and not its head: the head is the stored row's, matched by the
-// repository and the number, so a push that moves the head moves the basis with it, as it does
-// for an attributed pull request. A pull request that closed without a merge is no head, by the
-// state of its row, exactly as an attributed one that closed without a merge is no head.
-//
-// The owner and the name are held to GitHub's own characters, letters, digits and `-` for an
-// owner and `.` and `_` beside them for a name, and a name of `.` or `..` alone is no
-// repository: the reads build `/repos/{owner}/{repo}/...` from the two parts, and url.PathEscape
-// keeps a dot, so a link naming either would send a read up the path (`/repos/../x/installation`)
-// rather than to a repository. The issue PATCH takes any absolute HTTP(S) URL as a link
-// (api/issue_refs.go, validateExternalURL), so such a URL is still a link of the issue and is
-// simply no pull request here, as api's parseSourceRepo refuses the same two names for a source.
-//
-// The number is bounded to nine digits so that the cast cannot fail on a link a person typed.
-var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.IssueRepoTerms + `,
-	linked_pulls as (
-		select ` + refs.CanonicalRepoSQL("link.repo") + ` as repo, link.number, link.url
-		from (
-			select parsed.url, lower(parsed.part[1] || '/' || parsed.part[2]) as repo, parsed.part[3]::int as number
-			from (
-				select l.url, regexp_match(l.url, '^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)/pull/([1-9][0-9]{0,8})$') as part
-				from issue_external_links l where l.issue_key = $1
-			) parsed
-			where parsed.part is not null and parsed.part[2] not in ('.', '..')
-		) link
-		join issues i on i.key = $1
-		` + refs.IssueRepoJoin + `
-		where not ` + attributionHeld("link.repo") + `
-	)`
-
-// LinkedPullRequest is one pull request an issue's external links name in a repository the
-// issue does not resolve to (linkedPullRequestTerms).
-type LinkedPullRequest struct {
-	Repo   string
-	Number int
-}
-
-// linkedPullRequestsQuery reads linkedPullRequestTerms in the order the links are listed in.
-var linkedPullRequestsQuery = `with recursive ` + linkedPullRequestTerms + `
-	select repo, number from linked_pulls order by url`
-
-// LinkedPullRequests is every pull request the external links of issueKey name in a repository
-// the issue does not resolve to, in the order the issue lists its links. The result route reads
-// it to say which repositories a result of the issue may name a commit of (api/results_linked.go,
-// refuseUnknownCommit), so the route and the results read take one list.
-func LinkedPullRequests(ctx context.Context, q refs.Queryer, issueKey string) ([]LinkedPullRequest, error) {
-	rows, err := q.Query(ctx, linkedPullRequestsQuery, issueKey)
-	if err != nil {
-		return nil, fmt.Errorf("read the pull requests %s links: %w", issueKey, err)
-	}
-	defer rows.Close()
-	var linked []LinkedPullRequest
-	for rows.Next() {
-		var pull LinkedPullRequest
-		if err := rows.Scan(&pull.Repo, &pull.Number); err != nil {
-			return nil, fmt.Errorf("read the pull requests %s links: %w", issueKey, err)
-		}
-		linked = append(linked, pull)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the pull requests %s links: %w", issueKey, err)
-	}
-	return linked, nil
-}
-
-// headAttributedQuery is HeadAttributedTo's statement: its first arm the attributed rows, read
-// through pull_request_heads_issue_head, and its second the linked ones, read through
-// pull_request_heads_repo_head (`lower(repo), head_sha`).
-var headAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
-	select exists (
-		select 1 from pull_request_heads
-		where issue_key = $1 and head_sha = $2 and state in ('open', 'merged')
-	) or exists (
-		select 1 from linked_pulls l
-		join pull_request_heads h on lower(h.repo) = lower(l.repo) and h.number = l.number
-		where h.head_sha = $2 and h.state in ('open', 'merged')
-	)`
-
-// HeadAttributedTo reports whether sha is the head of an open or merged pull request that is
-// issueKey's: attributed to it, or linked from it in a repository it does not resolve to
-// (linkedPullRequestTerms). It is the test a `before_merge` result's commit passes to stand at
-// one of the heads its check is compared with. A closed-unmerged pull request's head proves
-// nothing. A pull request attributed to another issue never answers for this one; the results
-// read asks this about the check's own issue, so a child's pull request never answers for a
-// check above it (api/results_comparison.go's comparisonReader).
-func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
-	var found bool
-	if err := pool.QueryRow(ctx, headAttributedQuery, issueKey, sha).Scan(&found); err != nil {
-		return false, fmt.Errorf("read the pull request heads of %s at %s: %w", issueKey, sha, err)
-	}
-	return found, nil
-}
-
 // AttributedHead is one pull request Dispatch holds for an issue, as the results read names it
 // among the heads a `before_merge` check compares its results with: the pull request's number,
 // the commit its head is, and the two times Dispatch may have learned that head by. CheckedAt
@@ -585,7 +475,7 @@ var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
 			where issue_key = $1 and state in ('open', 'merged')
 			union all
 			select h.number, h.head_sha, h.checked_at, h.event_at, l.repo from linked_pulls l
-			join pull_request_heads h on lower(h.repo) = lower(l.repo) and h.number = l.number
+			` + linkedHeadJoin + `
 			where h.state in ('open', 'merged')
 		) arms
 		order by number, head_sha, checked_at, event_at, linked_repo desc
@@ -741,46 +631,6 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string)
 	}
 	if err != nil {
 		return "", fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
-	}
-	return branch, nil
-}
-
-// baseBranchMergedInQuery is BaseBranchMergedIn's statement: the linked rows of
-// headsAttributedQuery's second arm, held to one repository and to the merged state, in
-// BaseBranchMergedFor's order.
-var baseBranchMergedInQuery = `with recursive ` + linkedPullRequestTerms + `
-	select h.base_ref from linked_pulls l
-	join pull_request_heads h on lower(h.repo) = lower(l.repo) and h.number = l.number
-	where lower(l.repo) = lower($2) and h.state = 'merged'
-	order by h.event_at desc nulls last, h.number desc
-	limit 1`
-
-// BaseBranchMergedIn is BaseBranchMergedFor for a repository issueKey does not resolve to: the
-// branch the merged pull request that the issue's external links name in repoFull merged into
-// (linkedPullRequestTerms), and "" where Dispatch holds no merge of such a pull request. An
-// issue whose work spans two repositories links the pull request it has in the second one,
-// and the attribution can never give that pull request to it, so BaseBranchMergedFor, which
-// reads the attributed rows, never names that merge. The results read measures an
-// `after_merge` result whose commit the second repository holds against the branch answered
-// here (api/results_comparison.go).
-//
-// The rows are ordered as BaseBranchMergedFor orders them, and the empty answer means what its
-// empty answer means: no branch to measure against. A link to a pull request of the
-// repository the issue resolves to names nothing here, as it names nothing in
-// HeadsAttributedTo, so a repoFull the issue resolves to answers "". repoFull is compared
-// without case with the canonical name each link is read under, as every other comparison of
-// a repository here is.
-//
-// The linked rows are read through pull_request_heads_repo_head's leading column, one
-// repository's rows for each linked pull request, as HeadsAttributedTo's are.
-func BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
-	var branch string
-	err := pool.QueryRow(ctx, baseBranchMergedInQuery, issueKey, repoFull).Scan(&branch)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the merged linked pull request base branch of %s in %s: %w", issueKey, repoFull, err)
 	}
 	return branch, nil
 }
@@ -1022,7 +872,7 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
 		return attributed, err
 	}
-	owner, repo, err := splitRepo(facts.Repo)
+	owner, repo, err := refs.SplitGitHubRepo(facts.Repo)
 	if err != nil {
 		return headAttributionResult{source: string(sourceNone)}, err
 	}
@@ -1095,13 +945,13 @@ func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.C
 // reconcile's per-row step. A pull request GitHub cannot find, and a repository the App cannot
 // read (no installation, or a repository or resource its token is refused), leave the row as it
 // is, stamped so the batch moves on and does not warn about the same row every pass. A canonical
-// name GitHub does not allow (splitRepo's refs.ErrNotGitHubRepo) is stamped the same way, before
-// any GitHub call, and comes back as that error, so the reconcile warns of the row on the pass
-// that stamps it and not on every pass; a rate limit comes back as the *githubapp.RateLimitError,
-// which stops the batch. The row is stamped even when the commit messages could not be read: this
-// pass is itself the retry, so the next one reads it again in PullRequestHeadStaleAfter rather
-// than holding the front of every batch, and that write, being incomplete, leaves any
-// attribution the row already carries standing.
+// name GitHub does not allow (refs.SplitGitHubRepo's refs.ErrNotGitHubRepo) is stamped the same
+// way, before any GitHub call, and comes back as that error, so the reconcile warns of the row on
+// the pass that stamps it and not on every pass; a rate limit comes back as the
+// *githubapp.RateLimitError, which stops the batch. The row is stamped even when the commit
+// messages could not be read: this pass is itself the retry, so the next one reads it again in
+// PullRequestHeadStaleAfter rather than holding the front of every batch, and that write, being
+// incomplete, leaves any attribution the row already carries standing.
 //
 // repoFull is the key ListStalePullRequestHeads read off the row, which may be a name the
 // repository has been renamed away from, and every step here but the stamp works on the
@@ -1122,7 +972,7 @@ func RefreshPullRequestHead(
 	if err != nil {
 		return err
 	}
-	owner, repo, err := splitRepo(canonical)
+	owner, repo, err := refs.SplitGitHubRepo(canonical)
 	if err != nil {
 		// No read of GitHub can reach a name GitHub does not allow, so the row is stamped as an
 		// unreadable one is, and the error goes back: the reconcile warns of it on the pass that
@@ -1291,7 +1141,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	if err != nil {
 		return nil, markHeadNotStored(err)
 	}
-	owner, repo, err := splitRepo(repoFull)
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return nil, err
 	}

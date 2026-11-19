@@ -384,10 +384,10 @@ func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepositor
 // of that repository can work: the App is not installed on it or its token is refused it
 // (delivery.RepositoryUnreadable: githubapp.ErrNoInstallation, and
 // githubapp.ErrRepositoryUnreadable, the 403 that is no rate limit), or the name a link and a
-// stored rename make of it is none GitHub could hold (refs.ErrNotGitHubRepo, which splitRepo
-// answers before any GitHub call). No retry changes either until someone gives the App the
-// repository or mends the link, so the repository counts for nothing, as a link GitHub answers
-// 404 for does.
+// stored rename make of it is none GitHub could hold (refs.ErrNotGitHubRepo, which
+// refs.SplitGitHubRepo answers before any GitHub call). No retry changes either until someone
+// gives the App the repository or mends the link, so the repository counts for nothing, as a link
+// GitHub answers 404 for does.
 func linkCannotCount(err error) bool {
 	return delivery.RepositoryUnreadable(err) || errors.Is(err, refs.ErrNotGitHubRepo)
 }

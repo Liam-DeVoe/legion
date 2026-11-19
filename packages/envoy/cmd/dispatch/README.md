@@ -159,6 +159,7 @@ Each item below names a variable, then its purpose.
   `/debug/vars` (Profiling, below) shows how near each cap a running process is.
 
 `DISPATCH_REPO_PROJECTS` optionally seeds repository-to-project settings at boot with comma-separated `owner/repo=KEY` entries.
+Each repository is read as a mapping's path is, lower-cased with one trailing `.git` trimmed, and held to the names GitHub allows as the settings route holds a mapping's path: an entry such as `acme/.git=KEY`, which reads as `acme/`, or `acme/..=KEY` is refused, naming the entry, and the boot with it.
 Existing dashboard mappings take precedence over this seed:
 it adds only a repository with no mapping, and announces each one it adds with `settings.repo_project.updated`, as a dashboard write does.
 Dispatch resolves every external issue through the stored mapping, then falls back to `DISPATCH_DEFAULT_PROJECT` when configured.
@@ -4548,7 +4549,7 @@ Each item below names a path with its method and identity, then its purpose.
   - A `before_merge` check is compared with every head Dispatch holds for the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, attributed to that issue.
     A pull request that the issue's external links name (`https://github.com/<owner>/<repo>/pull/<n>`) in a repository the issue does not resolve to counts as one attributed to it, since the attribution holds an issue to its own repository and can never give it that pull request (`delivery.HeadsAttributedTo`, `linkedPullRequestTerms`); its basis names that repository in `repo`.
     The link is matched to the stored row by repository and number, so a push that moves that pull request's head moves the basis, and one that closed without a merge is no basis.
-    The owner is read as letters, digits and `-`, the name as those and `.` and `_`, and a name of `.` or `..` alone names no pull request, so a link cannot send a read of GitHub up the path.
+    The owner and the name are read by the patterns every name GitHub allows is read by, an owner of a letter or digit and then up to 38 letters, digits, `-` and `_` (a managed user's `mona-cat_octo` among them) and a name of letters, digits, `.`, `-` and `_`, and a name of `.` or `..` alone names no pull request, so a link cannot send a read of GitHub up the path.
     A link to a pull request of the issue's own repository adds nothing: the attribution alone decides which pull requests of that repository are the issue's.
 
   - An `after_merge` check is compared with the branch the check's issue's pull request merged into — the `base_ref` of the newest merged pull request attributed to that issue — and with that repository's default branch, which answers alone where Dispatch holds no merge of the issue or the merged row names no base branch.

@@ -21,7 +21,7 @@ import (
 // and its noCommitForSHA: GitHub answers the same status for a validation failure and for an
 // endpoint it has throttled, so the message is what tells them apart). Every other failure is
 // the error, which says only that Dispatch cannot tell whether the commit is there: any other
-// 422, a name GitHub's names do not allow (splitRepo), a deployment with no App key, a
+// 422, a name GitHub's names do not allow (refs.SplitGitHubRepo), a deployment with no App key, a
 // repository the App cannot read (RepositoryUnreadable), a rate limit, a 5xx, a transport
 // failure. The results route reads the unreadable repository by its kind. The issue's own leaves
 // the answer to the linked reads (api/results_linked.go, refuseUnknownCommit): the result is
@@ -43,7 +43,7 @@ func RepositoryHoldsCommit(ctx context.Context, client *githubapp.Client, repoFu
 // (PullRequestHeadState), so a pull request this answers no for is one the head rows call
 // closed: it closed and did not merge.
 //
-// Every failure is the error: a name GitHub's names do not allow (splitRepo's
+// Every failure is the error: a name GitHub's names do not allow (refs.SplitGitHubRepo's
 // refs.ErrNotGitHubRepo), a deployment with no App key, a repository the App is not installed on
 // (githubapp.ErrNoInstallation, the 404 of its installation lookup) or cannot read otherwise
 // (githubapp.ErrRepositoryUnreadable, a 403 that is no rate limit), a pull request GitHub answers

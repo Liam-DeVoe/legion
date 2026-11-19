@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -145,12 +144,11 @@ type provedCI struct {
 // under one ciReadDeadline, and answers the run of the highest id of each name in names: GitHub
 // keeps every attempt of a run, and the newest decides (classify.mergeAttemptSets in the daemon
 // keeps one name's run the same way). A row whose repository is no name GitHub allows
-// (refs.SplitGitHubRepo, which every reader of a stored name splits it with) is the error before
-// any GitHub call: a rename stored before the routes held names to that rule can make
-// `acme/..` the canonical name of a row, and its halves would go into the paths as they are. A
-// deployment holding no App key, a token GitHub would not mint, an HTTP error, a rate limit and
-// the deadline are each the error, worded as GitHub answered it. The token never reaches it: it
-// is sent in a header, and no answer names it.
+// (refs.SplitGitHubRepo) is the error before any GitHub call: a rename stored before the routes
+// held names to that rule can make `acme/..` the canonical name of a row, and its halves would go
+// into the paths as they are. A deployment holding no App key, a token GitHub would not mint, an
+// HTTP error, a rate limit and the deadline are each the error, worded as GitHub answered it. The
+// token never reaches it: it is sent in a header, and no answer names it.
 func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names map[string]struct{}) (map[string]*ciRun, error) {
 	owner, repo, err := refs.SplitGitHubRepo(head.Repo)
 	if err != nil {
@@ -223,20 +221,17 @@ func gitHubErrorText(err error) string {
 }
 
 // gitHubReason is err's text as a refusal sentence carries it: gitHubErrorText, cut to its first
-// gitHubReasonBytes at a whole character where it is longer, saying so. The cut is the one bound
-// of every 502 GITHUB_UNREADABLE that names GitHub's error (linkedReadRefusal,
+// gitHubReasonBytes at a whole character (text.HeadBytes) where it is longer, saying so. The cut
+// is the one bound of every 502 GITHUB_UNREADABLE that names GitHub's error (linkedReadRefusal,
 // getAppInstallation), since an error GitHub answered with a page that is no JSON carries that
 // whole page, up to the megabyte githubapp reads of an answer.
 func gitHubReason(err error) string {
 	reason := gitHubErrorText(err)
-	if len(reason) <= gitHubReasonBytes {
+	head, cut := text.HeadBytes(reason, gitHubReasonBytes)
+	if !cut {
 		return reason
 	}
-	cut := gitHubReasonBytes
-	for !utf8.RuneStart(reason[cut]) {
-		cut--
-	}
-	return fmt.Sprintf("%s… (GitHub's error, cut to its first %d of %d bytes)", reason[:cut], cut, len(reason))
+	return fmt.Sprintf("%s… (GitHub's error, cut to its first %d of %d bytes)", head, len(head), len(reason))
 }
 
 // gitHubReasonBytes is the most bytes of GitHub's error gitHubReason keeps, about a kilobyte:

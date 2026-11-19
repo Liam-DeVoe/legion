@@ -484,7 +484,7 @@ func spelledPath(repo string) (string, bool) {
 
 // mappingRename is the request that mends the renamed_to of the mapping stored under repo: its
 // PUT, which takes the mapping's project and a renamed_to GitHub allows, or `""` to clear it. The
-// PUT reads its path as a reference, as storedName does, and then holds the name it read to the
+// PUT reads its path as a repository, as storedName does, and then holds the name it read to the
 // rule splitRepo reads (api's repoProjectPath, through parseSourceRepo), so it writes the mapping
 // stored under repo only where mappingPath has a path for repo and splitRepo takes repo. For any
 // other repo the PUT refuses its path or writes another mapping than repo's, and ok is false.
@@ -517,13 +517,12 @@ func mappingPath(repo string) (string, bool) {
 
 // storedName is the mapping name the settings route's PUT reads from the path segments owner and
 // name, as the mux unescapes them, before it holds the name to GitHub's rule, and false where it
-// refuses them: api's parseSourceRepo reads them, as api's storedRepoProjectPath does, as the
-// reference `owner/name#1` by the one rule both packages import (refs.ParseExternalRef), and so
-// does this. The route test (mapping_route_test.go) sends the requests mappingRepairs names
-// through the route itself.
+// refuses them: api's parseSourceRepo reads them as the repository `owner/name` by the one rule
+// both packages import (refs.ParseExternalRepo), the rule api's checkRepoProjectPath refuses a
+// removal's path by, and so does this. The route test (mapping_route_test.go) sends the requests
+// mappingRepairs names through the route itself.
 func storedName(owner, name string) (string, bool) {
-	repo, _, ok := refs.ParseExternalRef(owner + "/" + name + "#1")
-	return repo, ok
+	return refs.ParseExternalRepo(owner + "/" + name)
 }
 
 // rawSegment is segment as a request path carries it: escaped, and `.` and `..` written as `%2E`

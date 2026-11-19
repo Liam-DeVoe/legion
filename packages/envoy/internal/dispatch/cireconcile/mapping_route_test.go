@@ -52,7 +52,7 @@ var storedMappings = []mappingRow{
 // The request the pass's WARN names beside a refused mapped name, sent through the real settings
 // route, removes or mends the one mapping the WARN is about and touches no other row. The route's
 // DELETE removes only the mapping stored under its path's own spelling, the segments as the mux
-// unescapes them; its PUT reads a path as api's parseSourceRepo does, through externalRef,
+// unescapes them; its PUT reads a path as api's parseSourceRepo does, through refs.ParseExternalRepo,
 // which lower-cases the name and trims one trailing `.git` off it, and through the strict rule as
 // well (api's repoProjectPath). So `acme/.git` is removed by its own name, `acme/..` and `Zeta/..`
 // by theirs with the dots percent-encoded, the renamed_to of `oldco/tools` is cleared by that

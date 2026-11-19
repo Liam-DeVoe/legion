@@ -585,12 +585,13 @@ func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sh
 // repositoryRead is the prologue of every read the App makes about one repository, here, in
 // commit_held.go and in pull_request_heads.go's ReadThroughCommitPulls: it splits repoFull
 // into the owner and repo GitHub's paths take and mints that repository's installation token.
-// A name GitHub's names do not allow comes back as splitRepo's own error, before any GitHub
-// call, and a refused mint as that error wrapped under ErrTokenMint: cannotSeeRepository and
-// RepositoryUnreadable classify the mint's own error, and the results route reads ErrTokenMint
-// to name the mint as the read that failed (api/results_linked.go, linkedReadRefusal).
+// A name GitHub's names do not allow comes back as refs.SplitGitHubRepo's own error, before any
+// GitHub call, and a refused mint as that error wrapped under ErrTokenMint: cannotSeeRepository
+// and RepositoryUnreadable classify the mint's own error, and the results route reads
+// ErrTokenMint to name the mint as the read that failed (api/results_linked.go,
+// linkedReadRefusal).
 func repositoryRead(ctx context.Context, client *githubapp.Client, repoFull string) (owner, repo, token string, err error) {
-	owner, repo, err = splitRepo(repoFull)
+	owner, repo, err = refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return "", "", "", err
 	}
