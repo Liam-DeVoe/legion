@@ -428,15 +428,17 @@ func repoProjectPath(r *http.Request) (owner, name string, err error) {
 // its two segments as the mux unescapes them, joined by `/`, nothing trimmed and nothing
 // lower-cased, so it names a mapping stored under any name the mux carries in two segments. The
 // mux unescapes each segment after it splits the path, so a `/` in a name is written `%2F`, and a
-// `.` or `..` segment `%2E` or `%2E%2E`; an empty segment reaches no wildcard of the route. A
-// caller that sends the path as it is written keeps such a segment: curl with `--path-as-is`, or
-// a Go client building the path by hand. A browser's URL parser (WHATWG URL) reads `%2E` and
-// `%2E%2E` as dot segments, as it reads `.` and `..`, and resolves them away before the request
-// is sent. The dashboard's DELETE is such a request: it splits the stored name on `/` and puts
-// each half into the path through encodeURIComponent, which leaves a dot as it is
-// (packages/dispatch/web/src/api/paths.ts, repoParams and routeUrl), so its DELETE of a mapping
-// stored under `acme/..` is sent as `/api/v1/settings/repo-projects/`, no path of this route. No
-// GitHub path is built from it here.
+// `.` or `..` segment `%2E` or `%2E%2E`. A caller that sends the path as it is written keeps such
+// a segment: curl with `--path-as-is`, or a Go client building the path by hand. A browser's URL
+// parser (WHATWG URL) reads `%2E` and `%2E%2E` as dot segments, as it reads `.` and `..`, and
+// resolves them away before the request is sent. The dashboard's DELETE is such a request: it
+// splits the stored name on `/` and puts each half into the path through encodeURIComponent,
+// which leaves a dot as it is (packages/dispatch/web/src/api/paths.ts, repoParams and routeUrl),
+// so its DELETE of a mapping stored under `acme/..` is sent as `/api/v1/settings/repo-projects/`,
+// no path of this route. An empty segment, and one that is `/` alone, reaches no wildcard of the
+// route, so a name each of whose `/` leaves nothing or a lone `/` on one side is no path's
+// spelling (spelledPath, which inverts this reading for the CI reconcile's WARN). No GitHub path
+// is built from it here.
 func deletedRepoProjectSpelling(r *http.Request) string {
 	return r.PathValue("owner") + "/" + r.PathValue("repo")
 }
