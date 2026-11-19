@@ -28,6 +28,7 @@ import {
   badgeSelectRailTrigger,
   badgeSelectRailWrapper,
 } from "./badge-select";
+import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The option of the shared list that clears the issue's own repository, so it resolves to its
@@ -156,8 +157,8 @@ function RepositoryList({
   disabled,
   issueKey,
   project,
-  repo,
-  resolvedRepo,
+  repo: hostRepo,
+  resolvedRepo: hostResolvedRepo,
 }: {
   disabled: boolean;
   issueKey: string;
@@ -166,6 +167,17 @@ function RepositoryList({
   resolvedRepo: string | null;
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
+  const write = useIssueRepo(issueKey, hostRepo);
+  // The issue's own repository and the one it resolves to, as every part of the control draws
+  // them: the write's `shown` (`IssueFieldWrite.shown`), and while that is a pick the host does
+  // not pass, the repository the pick resolves to as the caches draw it (`pickLook`), which for
+  // an inherited one is the host's until Dispatch answers.
+  const repo = write.shown;
+  const resolvedRepo =
+    repo === hostRepo
+      ? hostResolvedRepo
+      : (pickLook({ field: "repo", issueKey, value: repo }).fields.resolved_repo ??
+        hostResolvedRepo);
   const mappings = useQuery({
     enabled: wanted || resolvedRepo === null,
     queryKey: ["repo-projects"],
@@ -174,7 +186,6 @@ function RepositoryList({
   const [open, setOpen] = useState(false);
   /** Whether the typed repository was refused here, for not being `owner/name`. */
   const [refused, setRefused] = useState(false);
-  const write = useIssueRepo(issueKey);
   const mapped = (mappings.data ?? [])
     .filter((mapping) => mapping.project === project)
     .map((mapping) => mapping.repo)
@@ -354,8 +365,8 @@ function RepositoryBox({
   inRow = false,
   issueKey,
   project,
-  repo,
-  resolvedRepo,
+  repo: hostRepo,
+  resolvedRepo: hostResolvedRepo,
 }: {
   disabled?: boolean;
   /** Whether the control is the value of a row of the new issue page's Details. It acts inside
@@ -379,6 +390,17 @@ function RepositoryBox({
    *  row's text - "None" or the repository - and has not since left it and its clear control,
    *  pressed Escape in it or made a write from it. */
   const [opened, setOpened] = useState(false);
+  const write = useIssueRepo(issueKey, hostRepo);
+  // The issue's own repository and the one it resolves to, as every part of the control draws
+  // them: the write's `shown` (`IssueFieldWrite.shown`), and while that is a pick the host does
+  // not pass, the repository the pick resolves to as the caches draw it (`pickLook`), which for
+  // an inherited one is the host's until Dispatch answers.
+  const repo = write.shown;
+  const resolvedRepo =
+    repo === hostRepo
+      ? hostResolvedRepo
+      : (pickLook({ field: "repo", issueKey, value: repo }).fields.resolved_repo ??
+        hostResolvedRepo);
   const mappings = useQuery({
     enabled: wanted || resolvedRepo === null,
     queryKey: ["repo-projects"],
@@ -390,7 +412,6 @@ function RepositoryBox({
   // Inside `NoTooltips` the clear control's description, named after the box's own so that the
   // control asks React for no id `main` does not.
   const clearDescriptionId = `${descriptionId}clear`;
-  const write = useIssueRepo(issueKey);
   const mapped = (mappings.data ?? [])
     .filter((mapping) => mapping.project === project)
     .map((mapping) => mapping.repo)
@@ -421,9 +442,9 @@ function RepositoryBox({
     setDraft(null);
     setRefused(false);
   };
-  // The draft goes back to the issue's own repository as it is written, so the optimistic value
-  // is what the box shows and a rollback puts the previous one back under it. A refused draft
-  // stays in the box: it is what the reader has to correct.
+  // The draft goes back to the issue's own repository as it is written: the control draws the
+  // repository written from the press on (`repo`), and a rollback puts the previous one back
+  // under it. A refused draft stays in the box: it is what the reader has to correct.
   const commit = () => {
     if (draft === null) {
       return;
