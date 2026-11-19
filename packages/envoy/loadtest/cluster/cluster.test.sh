@@ -3823,7 +3823,9 @@ stuck_out=$fake/stuck.out
   grep -qF "down: the heartbeat daemon of run $RUN did not stop (named above)" "$stuck_out" ||
     stand_in_fail "down did not say which daemon of run $RUN did not stop: $(cat "$stuck_out")"
   kill -KILL -- "-$STAND_IN" 2>/dev/null || true
-  await_gone "$STAND_IN" || fail "the stand-in heartbeat (pid $STAND_IN) did not end within 300 s of its SIGKILL"
+  # The stand-in is this subshell's child, so wait reaps it, and the shell's word that it was
+  # killed goes nowhere rather than into the suite's output.
+  wait "$STAND_IN" 2>/dev/null || true
   # The control: a daemon that ends on its TERM.
   stand_in -
   stop_rc=0
