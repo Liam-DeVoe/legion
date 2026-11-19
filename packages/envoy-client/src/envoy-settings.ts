@@ -1,6 +1,12 @@
 import { SESSION_HEARTBEAT_MS } from "@legion/contracts";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
-import { bearerCredential, bearerSource, fileBearer, type RequestCredential } from "./bearer";
+import {
+  bearerCredential,
+  bearerSource,
+  fileBearer,
+  type RequestCredential,
+  variableCredential,
+} from "./bearer";
 import {
   type BrokerSessionName,
   brokerCredential,
@@ -345,9 +351,10 @@ export function envoySettings(
         ? brokerCredential(env, options.session)
         : undefined;
     } else {
-      credential = bearerCredential(
-        source.kind === "variable" ? source.token : fileBearer(source, url, "ENVOY", env)
-      );
+      credential =
+        source.kind === "variable"
+          ? variableCredential(source)
+          : bearerCredential(fileBearer(source, url, "ENVOY", env));
     }
   } catch (error) {
     return offWithError(messageFor(error));

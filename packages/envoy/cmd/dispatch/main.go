@@ -1238,15 +1238,28 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
 	}
-	agentTokens := env.get("DISPATCH_AGENT_TOKEN")
-	if strings.TrimSpace(agentTokens) == "" {
-		return bootConfig{}, errors.New("DISPATCH_AGENT_TOKEN required")
-	}
-	tokens, err := auth.ParseSharedAgentTokens(agentTokens)
+	// The pair's both-or-neither rule lives in internal/oidc so the listener
+	// applies the same one; oidc.New stays out of this function, which reads
+	// the environment and returns errors and nothing else.
+	var err error
+	boot.OIDCIssuer, boot.OIDCAudience, err = oidc.ConfigFromEnv(env.get,
+		"DISPATCH_OIDC_ISSUER", "DISPATCH_OIDC_AUDIENCE")
 	if err != nil {
-		return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_TOKEN %w", err)
+		return bootConfig{}, err
 	}
-	boot.AgentTokens = tokens
+	// An agent authenticates with the shared token, or with a projected service-account token
+	// the OIDC pair verifies; a deployment configures at least one. With the pair and no token,
+	// AgentTokens stays nil, which matches no bearer (auth.MatchesSharedAgentToken): no empty or
+	// placeholder value is ever accepted in its place.
+	if agentTokens := env.get("DISPATCH_AGENT_TOKEN"); strings.TrimSpace(agentTokens) != "" {
+		tokens, err := auth.ParseSharedAgentTokens(agentTokens)
+		if err != nil {
+			return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_TOKEN %w", err)
+		}
+		boot.AgentTokens = tokens
+	} else if boot.OIDCIssuer == "" {
+		return bootConfig{}, errors.New("DISPATCH_AGENT_TOKEN required, or DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE, which make a projected service-account token an agent's credential in its place")
+	}
 	if setting := env.get("DISPATCH_SIGNING_KEY"); strings.TrimSpace(setting) != "" {
 		if boot.SigningKey, err = auth.ParseSigningKeys(setting); err != nil {
 			return bootConfig{}, fmt.Errorf("DISPATCH_SIGNING_KEY %w", err)
@@ -1368,15 +1381,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", envoyURL)
 	}
 	boot.EnvoyURL = strings.TrimSuffix(envoyURL, "/")
-
-	// The pair's both-or-neither rule lives in internal/oidc so the listener
-	// applies the same one; oidc.New stays out of this function, which reads
-	// the environment and returns errors and nothing else.
-	boot.OIDCIssuer, boot.OIDCAudience, err = oidc.ConfigFromEnv(env.get,
-		"DISPATCH_OIDC_ISSUER", "DISPATCH_OIDC_AUDIENCE")
-	if err != nil {
-		return bootConfig{}, err
-	}
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {

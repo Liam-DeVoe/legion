@@ -368,6 +368,18 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *s
 	}))
 }
 
+// dispatchBearer reads dispatch_token_file at every call, for the workflow's Dispatch client to
+// present at each request: the file can be a projected Kubernetes service-account token, which the
+// kubelet rewrites in place before it expires (an hour by default), so a bearer boot read once
+// would be dead an hour later. Boot reads it once too (readBoot), so a file that is missing or
+// blank refuses the start as it always did; one that becomes so later fails the request that
+// reads it, naming the key and never a value (config.ReadSecretPointer).
+func dispatchBearer(cfg config.Config) func() (string, error) {
+	return func() (string, error) {
+		return config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile)
+	}
+}
+
 // openWorkflow opens the workflow in the order a refusal names its cause: the configuration, the
 // Dispatch bearer prepare read, the project's repository mapping from Dispatch (each repository
 // checked for both GitHub Apps) into repos, the owner accounts every role's gh bundle reads its
@@ -381,12 +393,15 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *s
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path.
 //
+// dispatchBearer is the token the workflow's Dispatch client presents, asked for at every request
+// (dispatchBearer reads dispatch_token_file then).
+//
 // reserve is the daemon's one wake limiter as the engine reaches it (run builds it, before this
 // and before supervision, which reserves its launches from the same one): the moment the one
 // wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
 // claimReady), and nil while the operator paces nothing, which is the engine's reading of the
 // pacing off — the catch-up is then due at once, as it always was.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchBearer func() (string, error), hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -421,7 +436,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
+		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.NewReading(cfg.DispatchURL, dispatchBearer), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed: make(chan error, 1), mappingChanged: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),

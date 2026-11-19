@@ -219,6 +219,15 @@ type DispatchArgs struct {
 	OidcAudience string `pulumi:"oidcAudience,optional"`
 	OidcIssuer   string `pulumi:"oidcIssuer,optional"`
 
+	// AgentAuth is how an agent authenticates to Dispatch: `token`, the default, a shared bearer
+	// the component generates (the agentToken output, rendered as DISPATCH_AGENT_TOKEN), or
+	// `oidc`, no shared token at all: no token is generated, stored or rendered, agentToken is
+	// "", and every agent presents a projected ServiceAccount token for oidcAudience, which
+	// oidc requires, verified against DISPATCH_OIDC_ISSUER (the cluster's own issuer, or
+	// oidcIssuer). A personal token minted in Dispatch's Settings is an agent credential in
+	// both modes. Unset is `token`, and renders what the component always rendered.
+	AgentAuth string `pulumi:"agentAuth,optional"`
+
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
 	// DISPATCH_APP_PEM_B64 read from the key AppPrivateKeySecretKey of the Kubernetes Secret
@@ -436,6 +445,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
 		{"oidcIssuer", args.OidcIssuer},
+		{"agentAuth", args.AgentAuth},
 		{"appClientId", args.AppClientId},
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
@@ -551,6 +561,7 @@ type dispatchSettings struct {
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	oidcAudience, oidcIssuer                    string
+	agentAuthOIDC                               bool
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -863,6 +874,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
 		{"oidcIssuer", args.OidcIssuer != ""},
+		{"agentAuth", args.AgentAuth != ""},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1213,6 +1225,18 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if args.OidcIssuer != "" && args.OidcAudience == "" {
 		return dispatchSettings{}, errors.New("oidcAudience is required when oidcIssuer is set")
 	}
+	// agentAuth oidc drops the shared token, so the service-account verifier is then the only
+	// agent credential the component configures: without oidcAudience no agent could authenticate
+	// but with a personal token, so the mode is refused naming it rather than rendered.
+	switch args.AgentAuth {
+	case "", "token":
+	case "oidc":
+		if args.OidcAudience == "" {
+			return dispatchSettings{}, errors.New("agentAuth oidc requires oidcAudience: with no shared agent token, a projected ServiceAccount token for that audience is how an agent authenticates; set oidcAudience, or unset agentAuth")
+		}
+	default:
+		return dispatchSettings{}, fmt.Errorf("agentAuth %q must be token or oidc", args.AgentAuth)
+	}
 	var appSet, appMissing []string
 	for _, in := range []struct{ input, value string }{
 		{"appClientId", args.AppClientId},
@@ -1275,6 +1299,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
+	s.agentAuthOIDC = args.AgentAuth == "oidc"
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
@@ -1767,7 +1792,13 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	}
 	comp.DatabaseInstance = database.instance.ConnectionName
 	comp.Principal = database.principal
-	comp.AgentToken = database.agentToken.Result
+	if database.agentToken != nil {
+		comp.AgentToken = database.agentToken.Result
+	} else {
+		// Under agentAuth oidc there is no shared token: the output is an explicit "", as
+		// clusterOnly gives it, and never an unknown.
+		comp.AgentToken = pulumi.String("").ToStringOutput()
+	}
 	comp.Url = pulumi.String(s.serverURL()).ToStringOutput()
 	// The app's and the listener's pods run as ServiceAccount <hostname> in the component's
 	// namespace, the account newDispatchKubernetes registers, and Kubernetes names a token's subject

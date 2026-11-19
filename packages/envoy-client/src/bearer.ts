@@ -22,11 +22,19 @@ export interface FileBearer {
 }
 
 /** Where a section's bearer comes from: a variable, which goes to whatever server resolves; a
- * file, whose bearer goes only to its own server; or nowhere. */
+ * file, whose bearer goes only to its own server; or nowhere. A variable read from the file a
+ * `<SECTION>_TOKEN_FILE` names carries that pointer, so its credential reads the file again for
+ * every request (`variableCredential`). */
 export type BearerSource =
-  | { readonly kind: "variable"; readonly token: string }
+  | { readonly kind: "variable"; readonly token: string; readonly pointer?: SecretPointer }
   | ({ readonly kind: "file" } & FileBearer)
   | { readonly kind: "none" };
+
+/** A `<SECTION>_TOKEN_FILE` pointer: the variable and the file it names. */
+export interface SecretPointer {
+  readonly variable: string;
+  readonly path: string;
+}
 
 /** The section a bearer is for, which names its variables: `<SECTION>_URL`, `<SECTION>_TOKEN`,
  * `<SECTION>_TOKEN_FILE`. */
@@ -113,6 +121,38 @@ export function bearerCredential(token: string): RequestCredential {
 }
 
 /**
+ * The bearer the file `pointer` names, read again for every request: a projected Kubernetes
+ * service-account token is rewritten in place by the kubelet before it expires (an hour by
+ * default), so a process that read it once would present a dead token from then on. `first` is
+ * the value the settings read, which `secret` answers until the first request reads the file. A
+ * file that cannot be read, is blank or holds no single bearer throws from `headers`, naming the
+ * variable and the path and never the value, as `readSecretFile` refuses it at resolution: the
+ * request is not sent rather than sent with a stale or empty token.
+ */
+export function pointerCredential(pointer: SecretPointer, first: string): RequestCredential {
+  let current = first;
+  return {
+    scheme: "Bearer",
+    headers: () => {
+      current = readSecretFile(pointer.variable, pointer.path);
+      return { Authorization: `Bearer ${current}` };
+    },
+    secret: () => current,
+  };
+}
+
+/** The credential a variable source presents: a token file's, read for every request
+ * (`pointerCredential`), or a plain variable's, the same on every request. */
+export function variableCredential(source: {
+  readonly token: string;
+  readonly pointer?: SecretPointer | undefined;
+}): RequestCredential {
+  return source.pointer === undefined
+    ? bearerCredential(source.token)
+    : pointerCredential(source.pointer, source.token);
+}
+
+/**
  * Where `section`'s bearer comes from: `<SECTION>_TOKEN_FILE` (the trimmed contents of the file it
  * names, how the Legion daemon delivers it to a pane), then `<SECTION>_TOKEN`, then the bearer
  * `written` gives, which is asked for only when neither variable is set. An empty variable counts
@@ -126,7 +166,12 @@ export function bearerSource(
 ): BearerSource {
   const pointer = nonEmpty(env[`${section}_TOKEN_FILE`]);
   if (pointer !== undefined) {
-    return { kind: "variable", token: readSecretFile(`${section}_TOKEN_FILE`, pointer) };
+    const variable = `${section}_TOKEN_FILE`;
+    return {
+      kind: "variable",
+      token: readSecretFile(variable, pointer),
+      pointer: { variable, path: pointer },
+    };
   }
   const plain = nonEmpty(env[`${section}_TOKEN`]);
   if (plain !== undefined) {

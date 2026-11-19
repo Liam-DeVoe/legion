@@ -28,6 +28,8 @@ Each item below names a variable, then its purpose.
 
 - `DISPATCH_AGENT_TOKEN`
 
+  Required unless `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` are set (below); with neither the token nor the pair, startup refuses, naming all three.
+  Unset with the pair, there is no shared token at all: no bearer, empty, blank or any other value, is taken as one, and an agent presents a projected service-account token or a personal token.
   One value, or several separated by whitespace, so the shared token can rotate with an overlap:
   write the new value followed by the old one, move every consumer to the new one, then write the new value alone.
   The first is the current value; the API accepts every value, comparing a bearer with each in constant time.
@@ -167,7 +169,7 @@ With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the v
 a boot that still sets any of them is refused, naming what replaced it.
 
 Agents normally authenticate with a personal `dsp_` token minted in Settings, sent as `Authorization: Bearer <token>`.
-`DISPATCH_AGENT_TOKEN` remains the shared devbox fallback and does not attribute callers to an owner.
+`DISPATCH_AGENT_TOKEN` remains the shared devbox fallback and does not attribute callers to an owner; a deployment that sets the OIDC pair can leave it unset and run with no static shared token.
 
 With `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` set, a Kubernetes pod's projected service-account token is a third bearer credential:
 the server reads the issuer's discovery document in the background from boot, retrying after one second and doubling to thirty while it fails (each failure logged at ERROR at most once a minute), and an issuer that cannot be reached refuses nothing;

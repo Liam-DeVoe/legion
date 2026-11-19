@@ -350,7 +350,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
 	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
 	// probe: the work after them has a budget of its own.
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, dispatchBearer(cfg), plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -770,7 +770,9 @@ type plan struct {
 	// carries its seed unless it is the pane seed.
 	nats         natsConnection
 	instructions string
-	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
+	// dispatchToken is the Dispatch bearer dispatch_token_file names, as boot read it; "" without
+	// Dispatch. It is what the daemon copies to each pane's token file and each claim's Secret;
+	// the workflow's own Dispatch client reads the file again at every request (dispatchBearer).
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
 	// hook name (readBoot): the engine is given words and never a path (engineConfig).

@@ -1107,6 +1107,18 @@ list, so the audience is the whole of the bound. Pick one no other workload of t
 kubelet for, and leave `oidcAudience` unset where no caller needs it, which is how Dispatch
 behaves today: neither variable renders and no token is verified.
 
+`agentAuth` (plain) is how an agent authenticates to Dispatch. `token`, the default, is the shared
+bearer the component generates (`<hostname>-agent-token`, rendered as `DISPATCH_AGENT_TOKEN` and
+output as `agentToken`), which is what the component always rendered: unset and `token` render
+the same objects. `oidc` drops that token: no `RandomPassword` is generated, the Dispatch Secret
+holds no `DISPATCH_AGENT_TOKEN`, the app is given none, and `agentToken` is an explicit empty
+string. Dispatch then boots with the OIDC pair alone, and every agent presents a projected
+ServiceAccount token for `oidcAudience`, which `oidc` requires and refuses to run without, since
+no agent could otherwise authenticate but with a personal token minted in Dispatch's Settings.
+An agent's pod mounts that token with a projected volume of `serviceAccountToken` for the same
+audience and points `DISPATCH_TOKEN_FILE` at it: the kubelet rewrites it before it expires, and
+the Envoy clients read that file again for every request.
+
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the
 component's namespace holding the App's PEM private key, as GKE SecretSync copies it from Secret
@@ -1198,7 +1210,8 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
+`oidcIssuer` with no `oidcAudience`, an `agentAuth` that is neither `token` nor `oidc`, `oidc`
+with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
 above states, a `signInOutside` without the sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an

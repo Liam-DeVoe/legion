@@ -370,7 +370,9 @@ exit status deciding; never run from a checkout's file). `DISPATCH_URL`, `DISPAT
 `DISPATCH_URL` or `ENVOY_URL` only when it names the file's own server, and a file's seed with
 `ENVOY_NATS_URL` only when it names the file's NATS servers, so another server needs its own token
 or seed variable. `DISPATCH_TOKEN_FILE` (a path whose trimmed contents are the token — how the
-Legion daemon delivers it to a pane) never falls back when unreadable. Omitting
+Legion daemon delivers it to a pane) never falls back when unreadable, and is read again for every
+request, as `ENVOY_TOKEN_FILE` is, so a projected service-account token the kubelet renews in place
+reaches Dispatch as it is then. Omitting
 `dispatch.serverUrl` while `dispatch.enabled` is true targets `http://localhost:8766`, the Go
 server's listen address. With Envoy off the session has no Envoy tools and takes no inbound
 messages; with Envoy on and no NATS server, or with its NATS seed refused (a seed that pairs with

@@ -678,7 +678,12 @@ address; an empty `DISPATCH_*` variable counts as unset. The token resolves from
 the bearer to a pane without putting it on argv), then `DISPATCH_TOKEN`, then the chosen file's
 `dispatch.token`; while `DISPATCH_URL` is unset, a checkout that names its own `dispatch.serverUrl`
 gives that server and its own token instead. A set `DISPATCH_TOKEN_FILE` that is unreadable or blank
-disables Dispatch and names the path in `error`; it never falls back. The chosen file's token goes
+disables Dispatch and names the path in `error`; it never falls back. The resolved credential reads
+the file again for every request (`pointerCredential`), so a client that resolved its settings once
+presents what the file holds at each request, a projected Kubernetes service-account token the
+kubelet renewed in place among them; a file that is gone or blank by then refuses that request,
+naming the variable and the path, and sends nothing. `ENVOY_TOKEN_FILE` is read the same way. The
+chosen file's token goes
 with `DISPATCH_URL` only when it names the origin of the server written beside it: any other server
 needs `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`, and is refused with
 `DISPATCH_URL names <origin>, but <file>'s dispatch.token is for <origin>; set DISPATCH_TOKEN or

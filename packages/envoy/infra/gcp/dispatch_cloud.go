@@ -41,7 +41,8 @@ type dispatchDatabase struct {
 	// signing is the signing-key set, one generated key per generation of
 	// signingKeyGenerations and in that order: the first signs every new cookie, every one
 	// verifies.
-	signing       []*random.RandomPassword
+	signing []*random.RandomPassword
+	// agentToken is the shared agent token, nil under agentAuth oidc, which generates none.
 	agentToken    *random.RandomPassword
 	listenerToken *random.RandomPassword
 	principal     pulumi.StringOutput
@@ -217,9 +218,16 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		}
 		signing = append(signing, key)
 	}
-	agentToken, err := random.NewRandomPassword(ctx, s.hostname+"-agent-token", &random.RandomPasswordArgs{Length: pulumi.Int(48), Special: pulumi.Bool(false)}, child)
-	if err != nil {
-		return nil, err
+	// The shared agent token exists in the token mode alone: under agentAuth oidc every agent
+	// presents a projected service-account token, so no static token is generated, stored or
+	// rendered, and agentToken is nil.
+	var agentToken *random.RandomPassword
+	if !s.agentAuthOIDC {
+		var err error
+		agentToken, err = random.NewRandomPassword(ctx, s.hostname+"-agent-token", &random.RandomPasswordArgs{Length: pulumi.Int(48), Special: pulumi.Bool(false)}, child)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// The listener binds 0.0.0.0 in a pod of its own, where its API refuses to start without a
 	// bearer, and its credential is its own, never a key of the Secret holding the database URL

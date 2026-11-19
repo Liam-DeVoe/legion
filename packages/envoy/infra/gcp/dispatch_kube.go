@@ -367,8 +367,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}).(pulumi.StringOutput)
 	// The sign-in client secret is one key of this Secret only where sign-in is on: without the
 	// sign-in inputs signInClientSecret is nil, which refuseDispatchSeedInSecret cannot take, and
-	// the app reads no such variable anyway.
-	dispatchData := pulumi.StringMap{"DATABASE_URL": databaseURL, "DISPATCH_AGENT_TOKEN": database.agentToken.Result, "DISPATCH_SIGNING_KEY": signingKey}
+	// the app reads no such variable anyway. The shared agent token is one key only in the token
+	// mode: under agentAuth oidc there is none, and the app is given none.
+	dispatchData := pulumi.StringMap{"DATABASE_URL": databaseURL, "DISPATCH_SIGNING_KEY": signingKey}
+	if database.agentToken != nil {
+		dispatchData["DISPATCH_AGENT_TOKEN"] = database.agentToken.Result
+	}
 	if s.signInOn {
 		dispatchData["DISPATCH_SIGNIN_CLIENT_SECRET"] = refuseDispatchSeedInSecret(args.SignInClientSecret, dispatch, "signInClientSecret")
 	}
@@ -658,9 +662,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	appPreStop := sleepPreStop(5)
 	// The app's container alone carries the broker relay and the GitHub App: the listener and the
 	// front door take neither.
-	appEnv := corev1.EnvVarArray{
-		valueEnv("HOME", "/home/envoy"), secretEnv("DATABASE_URL", dispatchSecretName, "DATABASE_URL"), secretEnv("DISPATCH_AGENT_TOKEN", dispatchSecretName, "DISPATCH_AGENT_TOKEN"), secretEnv("DISPATCH_SIGNING_KEY", dispatchSecretName, "DISPATCH_SIGNING_KEY"),
+	appEnv := corev1.EnvVarArray{valueEnv("HOME", "/home/envoy"), secretEnv("DATABASE_URL", dispatchSecretName, "DATABASE_URL")}
+	if database.agentToken != nil {
+		appEnv = append(appEnv, secretEnv("DISPATCH_AGENT_TOKEN", dispatchSecretName, "DISPATCH_AGENT_TOKEN"))
 	}
+	appEnv = append(appEnv, secretEnv("DISPATCH_SIGNING_KEY", dispatchSecretName, "DISPATCH_SIGNING_KEY"))
 	// The four sign-in variables render together or not at all, in the place they always held, so
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to

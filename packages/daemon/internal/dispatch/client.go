@@ -18,17 +18,28 @@ const requestTimeout = 10 * time.Second
 
 // HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
 type HTTPClient struct {
-	baseURL    string
-	token      string
+	baseURL string
+	// bearer is the token each request presents, asked for again at every request.
+	bearer     func() (string, error)
 	timeout    time.Duration
 	httpClient *http.Client
 }
 
-// New creates a client for one Dispatch server. The token is sent only as a bearer header.
+// New creates a client for one Dispatch server that presents token on every request. The token is
+// sent only as a bearer header.
 func New(baseURL, token string) *HTTPClient {
+	return NewReading(baseURL, func() (string, error) { return token, nil })
+}
+
+// NewReading creates a client for one Dispatch server that asks bearer for the token at every
+// request, so a token the daemon reads from a file reaches Dispatch as the file holds it then: a
+// projected Kubernetes service-account token is rewritten in place before it expires (an hour by
+// default), and a client that read it once would present a dead one from then on. A bearer that
+// fails sends nothing: the request returns that error, never one made with an empty token.
+func NewReading(baseURL string, bearer func() (string, error)) *HTTPClient {
 	return &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		token:      token,
+		bearer:     bearer,
 		timeout:    requestTimeout,
 		httpClient: &http.Client{},
 	}
@@ -465,12 +476,16 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 			return fmt.Errorf("encode Dispatch %s %s: %w", method, path, err)
 		}
 	}
+	token, err := c.bearer()
+	if err != nil {
+		return fmt.Errorf("Dispatch %s %s: read the bearer: %w", method, path, err)
+	}
 	request, err := http.NewRequestWithContext(bounded, method, c.baseURL+path, bytes.NewReader(encoded))
 	if err != nil {
 		return fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("Authorization", "Bearer "+token)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

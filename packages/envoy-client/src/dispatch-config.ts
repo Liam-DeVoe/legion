@@ -6,6 +6,7 @@ import {
   type FileBearer,
   fileBearer,
   type RequestCredential,
+  variableCredential,
 } from "./bearer";
 import {
   type BrokerRoute,
@@ -200,11 +201,9 @@ export function dispatchSettings(
     credential =
       source.kind === "broker"
         ? brokerCredential(env, options.session)
-        : bearerCredential(
-            source.kind === "variable"
-              ? source.token
-              : fileBearer(source, url, "DISPATCH", env, options.commands)
-          );
+        : source.kind === "variable"
+          ? variableCredential(source)
+          : bearerCredential(fileBearer(source, url, "DISPATCH", env, options.commands));
   } catch (error) {
     return offWithError(messageFor(error));
   }
