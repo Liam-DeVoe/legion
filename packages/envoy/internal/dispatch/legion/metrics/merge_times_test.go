@@ -31,7 +31,8 @@ type mergedPull struct {
 
 // mergeTimesDatabase is a database with the statement of a pull request's issue built, as main
 // builds it after the migrations, project ACME mapped to mergeTimesRepo, and issues ACME-1 to
-// ACME-4, each closed in the window the test reads.
+// ACME-4, each closed in the window the test reads. ACME-5 closed a day before that window, so
+// the read asks for no pull request of it.
 func mergeTimesDatabase(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	pool, ctx := storetest.Open(t).Pool, t.Context()
@@ -47,10 +48,14 @@ func mergeTimesDatabase(t *testing.T) (*store.Pool, context.Context) {
 	exec(`insert into projects (key, name, default_assignee) values ('ACME', 'ACME', 'alice')`)
 	exec(`insert into repo_projects (repo, project, created_by, is_default)
 		values ($1, 'ACME', '{"kind":"system","id":"metrics-test"}'::jsonb, true)`, mergeTimesRepo)
-	for number := 1; number <= 4; number++ {
+	for number := 1; number <= 5; number++ {
+		created, closed := after(0), after(10)
+		if number == 5 {
+			created, closed = after(-48), after(-24)
+		}
 		exec(`insert into issues (key, project_key, number, title, status, rank, created_by, created_at, closed_at)
 			values ($1, 'ACME', $2, $1, 'done', $3, '{"kind":"user","id":"alice"}'::jsonb, $4, $5)`,
-			fmt.Sprintf("ACME-%d", number), number, fmt.Sprintf("r%d", number), after(0), after(10))
+			fmt.Sprintf("ACME-%d", number), number, fmt.Sprintf("r%d", number), created, closed)
 	}
 	return pool, ctx
 }
@@ -103,10 +108,11 @@ func TestTheMergeTimesReadEachPullRequestsIssueFromTheStatement(t *testing.T) {
 		t.Fatalf("link #11 on ACME-1: %v", err)
 	}
 	storeMergedPull(t, ctx, pool, mergedPull{number: 11, texts: true, title: "A change", messages: []string{}, mergedAt: after(5)})
-	// #12: its rows store ACME-3, which the last pass wrote. The read of GitHub since then stored
-	// a title that names ACME-2, and its commit messages.
-	storeMergedPull(t, ctx, pool, mergedPull{number: 12, stored: new("ACME-3"), texts: true, title: "ACME-2: a change", messages: []string{"a change"}, mergedAt: after(6)})
-	// #13: its rows store ACME-3 too. Its texts name no issue and its commit messages are not
+	// #12: its rows store ACME-5, which the last pass wrote and which the read does not ask for, so
+	// only the keys of #12's texts can give it to an issue the read asks for. The read of GitHub
+	// since that pass stored a title that names ACME-2, and its commit messages.
+	storeMergedPull(t, ctx, pool, mergedPull{number: 12, stored: new("ACME-5"), texts: true, title: "ACME-2: a change", messages: []string{"a change"}, mergedAt: after(6)})
+	// #13: its rows store ACME-3. Its texts name no issue and its commit messages are not
 	// read, so its answer is not known: it belongs to no issue yet.
 	storeMergedPull(t, ctx, pool, mergedPull{number: 13, stored: new("ACME-3"), texts: true, title: "Another change", mergedAt: after(4)})
 	// The control: #14 has a timeline row alone, so its stored issue is its answer, and #15,
@@ -124,8 +130,8 @@ func TestTheMergeTimesReadEachPullRequestsIssueFromTheStatement(t *testing.T) {
 		why   string
 	}{
 		{"ACME-1", new(after(5)), "ACME-1 links #11, so the statement gives #11 to ACME-1, though the last pass stored no issue on its rows"},
-		{"ACME-2", new(after(6)), "#12's title names ACME-2 in the facts read since the last pass, which stored ACME-3"},
-		{"ACME-3", nil, "#12 is ACME-2's by its facts, and #13's answer is not known since its commit messages are not read, whatever the last pass stored"},
+		{"ACME-2", new(after(6)), "#12's title names ACME-2 in the facts read since the last pass, which stored ACME-5, an issue the read does not ask for"},
+		{"ACME-3", nil, "#13's answer is not known since its commit messages are not read, whatever the last pass stored"},
 		{"ACME-4", new(after(7)), "#14 has no results row, so its stored issue is its answer, and #15 is unfetchable"},
 	} {
 		got := population.Issues[want.issue].MergedAt
