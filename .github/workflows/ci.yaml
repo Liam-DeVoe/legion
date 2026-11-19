@@ -1264,6 +1264,10 @@ jobs:
               # which install-claude-code installs.
               - '.claude-code-pin'
               - '.github/actions/install-claude-code/**'
+              # tests/codex-real.test.ts runs the Codex CLI release .codex-pin pins, which
+              # install-codex installs.
+              - '.codex-pin'
+              - '.github/actions/install-codex/**'
               # tests/daemon-api-version.test.ts:15 and its neighbours.
               - 'packages/contracts/fixtures/daemon-api/**'
               # tests/envoy-channel-stall.test.ts:5-12 imports three modules of envoy-client's

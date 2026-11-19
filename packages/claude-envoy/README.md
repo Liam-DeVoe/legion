@@ -642,3 +642,14 @@ the pin. Locally:
 mkdir -p "$TMPDIR/claude-code" && bun add --cwd "$TMPDIR/claude-code" --exact --no-save "@anthropic-ai/claude-code@$(<.claude-code-pin)"
 cd packages/claude-envoy && LEGION_TEST_CLAUDE="$TMPDIR/claude-code/node_modules/.bin/claude" bun test tests/answers-claude.test.ts
 ```
+
+`tests/codex-real.test.ts` runs the plugin's Codex build on the real Codex CLI, the release `.codex-pin` at the repository root pins, against a stand-in Responses API:
+the session record, a waiting message reaching the running turn at its next tool call, and a side question in an ephemeral fork.
+It skips without `LEGION_TEST_CODEX` naming the native binary, except on GitHub Actions, where `.github/actions/install-codex` installs the pin.
+The npm package's `bin/codex.js` is a Node process that runs the native binary as its child, so the variable names the native one.
+Locally:
+
+```bash
+mkdir -p "$TMPDIR/codex" && bun add --cwd "$TMPDIR/codex" --exact --no-save "@openai/codex@$(<.codex-pin)"
+cd packages/claude-envoy && LEGION_TEST_CODEX="$(find "$TMPDIR/codex/node_modules/@openai" -path '*/vendor/*/bin/codex' -type f)" bun test tests/codex-real.test.ts
+```

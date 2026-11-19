@@ -657,11 +657,11 @@ before anything reads a row count again. `--requests`, `--body-bytes`, `--artifa
 Measures the search coverage statement as the route runs it (the head: `coverageQuery` under the settings `planCoverage` sets) against the statement it replaced (`mainCoverageQuery`, the base) at production's size and twice it,
 in six states of `embeddings`, four of its visibility map and statistics and two after an embedder change,
 and states the corpus size at which the head would reach its 10 s bound in the slowest of them.
-It runs `TestCoverageStatementScale` (`internal/dispatch/embedqueue`), which builds a synthetic corpus in a database of its own at each scale:
+It runs `BenchmarkCoverageStatementScale` (`internal/dispatch/embedqueue`), which builds a synthetic corpus in a database of its own at each scale:
 `testdata/coverage_corpus.sql`, production's counts and proportions of 2026-11-17 times the scale
 (11,151 issues, 216,414 document versions and 984,012 window rows at scale 1),
 with texts cut from this repository's `docs/` and `skills/` and each issue's spec of a size sampled from real specs.
-Autovacuum is off on `embeddings`, so nothing but the test sets its visibility map or its statistics.
+Autovacuum is off on `embeddings`, so nothing but the measurement sets its visibility map or its statistics.
 Once the corpus is loaded it drops the two window indexes, `embeddings_window_embedded` and `embeddings_window_unembedded`, and builds each again with its migration's own statement, read from its file under `internal/dispatch/store/migrations` and run outside a transaction as the migration runner runs it,
 timing each build and reading each index's size:
 the downtime a deploy of those migrations takes, since Dispatch migrates before it serves.
@@ -673,7 +673,7 @@ On each corpus it then measures six states in turn:
 so no page is all-visible while the statistics still record about half of them all-visible;
 `embedder`, the configured embedder changed to another identity, whose identity step (`dropForeignVectors`, over every covered kind) drops every vector the corpus holds, with no analyze after it, so the statistics are the `stale` state's;
 and `embedder-analyzed`, the same table analyzed.
-The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of this statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log),
+The benchmark fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of this statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log),
 and the `embedder` state unless the identity step dropped a vector; it logs how many it dropped.
 In each state it checks that the base and the head answer the same rows in one snapshot, for the state's configured identity (the new one from `embedder` on),
 and times both on one connection, one warm-up and then five alternating runs each under `EXPLAIN (ANALYZE, BUFFERS)`:
@@ -697,14 +697,14 @@ cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch scripts/coverage-scale.sh
 ```
 
 `COVERAGE_SCALE_SCRATCH` (default `/scratch`) names the scratch disk.
-The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the test's log, `coverage-scale.log`, go under it.
-`DISPATCH_COVERAGE_SCALES` (default `1 2`) lists the scales, space-separated, and reaches the test as it is.
+The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the run's log, `coverage-scale.log`, go under it.
+`DISPATCH_COVERAGE_SCALES` (default `1 2`) lists the scales, space-separated, and reaches the benchmark as it is.
 The script sets `LEGION_TEST_PG_DSN` and `DISPATCH_COVERAGE_SCALE_URL` itself,
 both to `postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable`.
 
 It prints the server's version and the settings the times depend on
 (`shared_buffers`, `work_mem`, `maintenance_work_mem`, `jit`, `max_parallel_workers_per_gather`, `effective_cache_size`),
-then the test's output: for each scale the corpus's counts, each window index's build time and size, the head's report kind by kind and the items;
+then the benchmark's output: for each scale the corpus's counts, each window index's build time and size, the head's report kind by kind and the items;
 and for each state how many vectors its embedder change dropped, how many pages of `embeddings` the statistics record as all-visible and that share, the database's size,
 each statement's median and every run, one plan of each,
 and the negative control's time and whether it read `embeddings` by a Seq Scan.
@@ -717,5 +717,5 @@ It ends with the slowest state, the one with the smallest multiple, and its mult
 where a state has no fit, it says the slowest state is not known and names the slowest of the others.
 `pass` means that multiple is at least 4.
 `FAIL` means it is below 4, or that the head's time did not grow between the two scales in some state, so no fit is defined.
-The script exits with the test's own status, and with 1 when the test printed no `coverage-scale:` line.
-CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
+The script exits with `go test`'s own status, and with 1 when the benchmark printed no `coverage-scale:` line.
+CI never runs it: it is a benchmark, which no CI step passes `-bench` for, and it skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.

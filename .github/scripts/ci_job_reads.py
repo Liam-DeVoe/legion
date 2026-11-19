@@ -434,11 +434,15 @@ CLAUDE_ENVOY_BUILD = reads(
 ) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-84, hooks/session-hook.ts:91-109 import @legion/envoy-client/*")
 
 # The build above, and what only the claude-envoy job reads: the Claude Code its live answer test
-# runs, and the fixtures and modules of its other tests. The test job runs none of them.
+# runs, the Codex CLI its real Codex test runs, and the fixtures and modules of its other tests.
+# The test job runs none of them.
 CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (".github/actions/install-claude-code/**", at("claude-envoy", "./.github/actions/install-claude-code")),
         (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
                              "packages/claude-envoy/tests/answers-claude.test.ts:316,342 runs"),
+        (".github/actions/install-codex/**", at("claude-envoy", "./.github/actions/install-codex")),
+        (".codex-pin", ".github/actions/install-codex/action.yml:19 pin=$(<.codex-pin), the release "
+                       "packages/claude-envoy/tests/codex-real.test.ts:164,192,256 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
         (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
@@ -560,12 +564,11 @@ RULES = {
     f"{DAEMON}/internal/textcheck/role_for_readers_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/role_for_readers_test.go:88 walks every .go file under packages/daemon (../.., :84) "
                               "and :101 parses each one")),
-    # main's #4092 read these three pages in internal/prompts's production-check test; that half
-    # moved here, so an edit of one of them alone starts the text checks and not the daemon's lane
+    # main's #4092 read these pages in internal/prompts's production-check test; that half moved
+    # here, so an edit of one of them alone starts the text checks and not the daemon's lane
     # (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/production_check_rule_test.go": reads(
         ("AGENTS.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
-        ("scripts/e2e/README.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/concepts.md",
          "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(

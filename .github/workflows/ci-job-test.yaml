@@ -300,8 +300,12 @@ jobs:
           # shellcheck disable=SC2046 # the file is the package list, split on purpose
           .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
 
+      # GH_TOKEN: its comparison of push-tag's pinned host keys with the ones GitHub publishes
+      # reads them with `gh api meta`, and fails on GitHub Actions without an answer.
       - name: Test release scripts
         if: inputs.changes-result != 'success' || inputs.release_push_test == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: .github/scripts/release-push.test.sh
 
       - name: Test the release version bump
