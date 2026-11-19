@@ -87,8 +87,8 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	// The close changed the issue row; the refused ask changed nothing at all: no ask, no event,
 	// no part row.
 	after := databaseFingerprint(t, served)
-	delete(before, "issues")
-	delete(after, "issues")
+	delete(before.tables, "issues")
+	delete(after.tables, "issues")
 	assertUnchanged(t, "an ask refused for a close it waited out", before, after)
 }
 

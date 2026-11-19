@@ -151,12 +151,7 @@ func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
 	_ = client.conn.Close()
 	rig.sockets(t, 0)
 
-	after := databaseFingerprint(t, rig.served)
-	for name, digest := range after {
-		if digest != before[name] {
-			t.Fatalf("relaying a session's conversation wrote to %s", name)
-		}
-	}
+	assertUnchanged(t, "relaying a session's conversation", before, databaseFingerprint(t, rig.served))
 }
 
 // A caller with no credential never gets a socket at all, so it never reaches the session it

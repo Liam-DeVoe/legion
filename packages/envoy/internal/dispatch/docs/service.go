@@ -407,9 +407,22 @@ type Service struct {
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks).
 	now      func() time.Time
 	settleWG sync.WaitGroup
+	// settleCallbacks counts the settlement timers whose callback is running, from its first
+	// statement to its last: the register drops a fired timer before the callback's last work
+	// (retireSettlementRoom), so a wait for the service's background writes
+	// (awaitBackgroundWrites) reads this as well.
+	settleCallbacks atomic.Int32
 	// evictWG counts the forced evictions failRoomLocked spawns. They flush the room through
 	// the store, so shutdown joins them before it closes.
 	evictWG sync.WaitGroup
+	// evicting counts the eviction goroutines running now, whether or not evictWG joins them, for
+	// a wait for the service's background writes (awaitBackgroundWrites), which must not Wait on
+	// evictWG beside an Add from zero.
+	evicting atomic.Int32
+	// roomSyncRegistered says the process registered this service's room sync
+	// (RegisterRoomSync): another process's notification can then make it write at any moment,
+	// which no wait of this process sees (awaitBackgroundWrites).
+	roomSyncRegistered atomic.Bool
 	// gateMu makes "is the service stopping?" and the Add that follows it one step, against
 	// Shutdown's store. sync.WaitGroup panics if an Add from zero lands while a Wait is
 	// registered, and without this the check and the Add straddle the store.
@@ -426,7 +439,7 @@ type Service struct {
 	timerMu         sync.Mutex
 	// timers reserve their ID before creating an immediate timer, whose callback
 	// can run before time.AfterFunc returns the *time.Timer to its caller.
-	timers     map[uint64]*time.Timer
+	timers     map[uint64]settleTimer
 	suppressMu sync.Mutex
 	suppressed map[string][]*suppressSlot
 	// serviceOrigins holds the transaction origins of the service's own in-flight Server.Apply
@@ -875,7 +888,7 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
-		timers:            make(map[uint64]*time.Timer),
+		timers:            make(map[uint64]settleTimer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
 		reads:             newDocumentReads(readBudget),
@@ -1417,7 +1430,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	generation := state.roomGeneration
 	s.stopSettleTimer(state.settle)
 	timerID := s.nextSettleTimer.Add(1)
-	s.registerSettleTimer(timerID)
+	s.registerSettleTimer(timerID, room, time.Now().Add(delay))
 	// The callback holds the service and the room's state weakly. Stopping a timer does not free
 	// its callback: the runtime keeps a stopped timer in the heap of the P that armed it until that
 	// P next clears its stopped timers or the timer's time comes, and when an idle P next runs
@@ -1433,6 +1446,10 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 		if s == nil {
 			return
 		}
+		// Counted until the callback's last statement: the register drops the timer in the
+		// deferred close below, before that close's own work ends (awaitBackgroundWrites).
+		s.settleCallbacks.Add(1)
+		defer s.settleCallbacks.Add(-1)
 		defer s.settleWG.Done()
 		// An armed timer holds its state (unusedLocked), so the state can go only once the timer
 		// has left the register, and so can a room a late departure's settlement loaded, which
@@ -1453,16 +1470,27 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	s.attachSettleTimer(timerID, timer)
 }
 
-func (s *Service) registerSettleTimer(timerID uint64) {
+// settleTimer is one entry of the settlement timer register: the timer, nil between its
+// registration and attachSettleTimer, the room it settles and when it is due, which a wait for the
+// service's background writes reads to tell a settlement about to run from one armed for later
+// (awaitBackgroundWrites).
+type settleTimer struct {
+	timer *time.Timer
+	room  string
+	due   time.Time
+}
+
+func (s *Service) registerSettleTimer(timerID uint64, room string, due time.Time) {
 	s.timerMu.Lock()
-	s.timers[timerID] = nil
+	s.timers[timerID] = settleTimer{room: room, due: due}
 	s.timerMu.Unlock()
 }
 
 func (s *Service) attachSettleTimer(timerID uint64, timer *time.Timer) {
 	s.timerMu.Lock()
-	if _, found := s.timers[timerID]; found {
-		s.timers[timerID] = timer
+	if registered, found := s.timers[timerID]; found {
+		registered.timer = timer
+		s.timers[timerID] = registered
 	}
 	s.timerMu.Unlock()
 }
@@ -1504,7 +1532,7 @@ func (s *Service) takeSettleTimer(timer *time.Timer) bool {
 	s.timerMu.Lock()
 	defer s.timerMu.Unlock()
 	for timerID, armed := range s.timers {
-		if armed != timer {
+		if armed.timer != timer {
 			continue
 		}
 		if !timer.Stop() {
@@ -1519,9 +1547,9 @@ func (s *Service) takeSettleTimer(timer *time.Timer) bool {
 func (s *Service) stopAllSettleTimers() {
 	s.timerMu.Lock()
 	timers := make([]*time.Timer, 0, len(s.timers))
-	for _, timer := range s.timers {
-		if timer != nil {
-			timers = append(timers, timer)
+	for _, armed := range s.timers {
+		if armed.timer != nil {
+			timers = append(timers, armed.timer)
 		}
 	}
 	s.timerMu.Unlock()
@@ -1541,7 +1569,7 @@ func (s *Service) isSettleTimerArmed(timer *time.Timer) bool {
 	s.timerMu.Lock()
 	defer s.timerMu.Unlock()
 	for _, armed := range s.timers {
-		if armed == timer {
+		if armed.timer == timer {
 			return true
 		}
 	}
@@ -2753,7 +2781,9 @@ func (s *Service) refuseClosedIssueAppend(room string, instance *roomInstance) {
 	// Shutdown joins the close, as it does a failed room's eviction (failRoomLocked); one that
 	// begins after Shutdown stopped accepting work runs unjoined, since the room still must close.
 	tracked := s.addUnlessStopping(&s.evictWG)
+	s.evicting.Add(1)
 	go func() {
+		defer s.evicting.Add(-1)
 		if tracked {
 			defer s.evictWG.Done()
 		}
@@ -2887,7 +2917,9 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 	if !s.addUnlessStopping(&s.evictWG) {
 		return
 	}
+	s.evicting.Add(1)
 	go func() {
+		defer s.evicting.Add(-1)
 		defer s.evictWG.Done()
 		live := s.srv.GetDoc(room)
 		if live == nil || s.instanceOf(live) != instance {
@@ -3327,7 +3359,9 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 	// awaitRoomRecovery blocks every reader of a failed room on the close(done) below, and a
 	// gated eviction that never ran would strand them. Only the joining is skipped.
 	tracked := s.addUnlessStopping(&s.evictWG)
+	s.evicting.Add(1)
 	go func() {
+		defer s.evicting.Add(-1)
 		if tracked {
 			defer s.evictWG.Done()
 		}

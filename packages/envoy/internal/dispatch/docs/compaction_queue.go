@@ -486,6 +486,26 @@ func (q *compactionQueue) pause(ctx context.Context) (resume func()) {
 	}
 }
 
+// heldCompaction is one room waiting in the compaction queue as a wait for the service's
+// background writes reads it (awaitBackgroundWrites): when its next step runs, and whether that
+// step is a retry, which compacts a room on one row past compactTail rather than on a room due.
+type heldCompaction struct {
+	room     string
+	at       time.Time
+	retrying bool
+}
+
+// held answers every room waiting in the queue, and whether a step is in flight.
+func (q *compactionQueue) held() (rooms []heldCompaction, stepping bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	rooms = make([]heldCompaction, 0, len(q.due))
+	for _, entry := range q.due {
+		rooms = append(rooms, heldCompaction{room: entry.room, at: entry.at, retrying: entry.retry > 0})
+	}
+	return rooms, q.current != nil
+}
+
 // compactionHeap orders the rooms waiting in the queue by when each is next checked.
 type compactionHeap []*compactionEntry
 
