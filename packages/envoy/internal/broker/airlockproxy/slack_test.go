@@ -62,7 +62,7 @@ var (
 	noListPlaceholder    = requests.PlaceholderPrefix + "NoListNoListNoListNoListNoListN1"
 )
 
-// slackRules is agent-infra's entry for the token: bound to the host, swapped into
+// slackRules is the deployment's entry for the token: bound to the host, swapped into
 // Authorization, with no allow list, so the rules alone let it travel on any method and path.
 func slackRules() airlock.Rules {
 	return airlock.Rules{Secrets: []airlock.SecretRule{{Name: slackName, Hosts: []string{boundHost}, Headers: []string{"authorization"}}}}

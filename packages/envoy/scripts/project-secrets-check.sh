@@ -730,10 +730,12 @@ if [ -n "$grant" ]; then
 fi
 # proxied spends the placeholder at the bound host through the proxy, leaving the CONNECT's status
 # and the bound host's in OUT ("407 000" for a refused CONNECT) and the host's answer beside it.
+# The Authorization header is read from a file (-H @<(printf …)), never given as an argument, so
+# the placeholder is in no command line another process of the pod can read.
 proxied() { # <name>
   capture "$1" curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
     --proxy "http://agent-secrets:${password}@${AIRLOCK_PROXY_URL#*://}" \
-    -H "Authorization: Bearer $placeholder" -o "$WORK_DIR/calls/$1.body" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$placeholder") -o "$WORK_DIR/calls/$1.body" \
     -w '%{http_connect} %{http_code}' "$AIRLOCK_BOUND_URL/ok"
 }
 if [ -z "$placeholder" ] || [ -z "$password" ]; then

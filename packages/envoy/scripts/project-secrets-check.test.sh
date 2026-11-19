@@ -413,9 +413,12 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     -H)
-      case "$2" in
-        Proof:*) proof="${2#Proof: }" ;;
-        Authorization:*) authorization="${2#Authorization: }" ;;
+      # curl reads a header argument that starts with "@" from the file it names, one per line.
+      header="$2"
+      [ "${header#@}" = "$header" ] || header="$(cat -- "${header#@}")"
+      case "$header" in
+        Proof:*) proof="${header#Proof: }" ;;
+        Authorization:*) authorization="${header#Authorization: }" ;;
       esac
       shift 2
       ;;
