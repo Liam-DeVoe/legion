@@ -32,7 +32,9 @@ import (
 // record is the same one. The implementer completes, under the key that names task a and pass 0;
 // the reviewer starts once, and the implementer's record ends passed under the id its start wrote.
 // The control deletes the issue's plan rows before the second boot, and the same check must fail:
-// the issue then walks today's line, and the implementer's completion starts the tester.
+// the issue then walks today's line, where implementing is the task default's step 2, and the
+// second boot opens that run, which no start of this release counted (workflow's
+// OpenUncountedRuns), beside task a's.
 func TestARestartBetweenAStepsStartAndItsCompletion(t *testing.T) {
 	rig := func(t *testing.T) *ownerStepsRig {
 		return newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
@@ -49,8 +51,8 @@ func TestARestartBetweenAStepsStartAndItsCompletion(t *testing.T) {
 		if err == nil {
 			t.Fatalf("the restart of %s with its plan rows deleted passed the check of the plan implementer reviewer", r.key)
 		}
-		if want := "want reviewing"; !strings.Contains(err.Error(), want) {
-			t.Fatalf("the check of %s with its plan rows deleted says %q, want it to say %s", r.key, err, want)
+		if want := "default step 2 starts 0 run open"; !strings.Contains(err.Error(), want) {
+			t.Fatalf("the check of %s with its plan rows deleted says %q, want it to name %s", r.key, err, want)
 		}
 		t.Logf("control: the check of %s with its plan rows deleted fails: %v", r.key, err)
 	})
