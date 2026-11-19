@@ -141,14 +141,19 @@ func TestTheNewestResultDecidesACheckComparedWithABranch(t *testing.T) {
 			t.Fatalf("c9 answers %+v, want yes, decided by the pass at Z %s", got, atZ)
 		}
 	})
+	// The roles are those of the passes after the newest fail, of two: the reviewer's pass came
+	// between the two fails, so a walk that crosses the newest fail names the reviewer too, and a
+	// walk of the deciding pass alone names the tester alone.
 	t.Run("roles after the newest fail", func(t *testing.T) {
 		rig := newBranchNewestRig(t)
 		rig.record(t, "c9", "tester", "fail", branchNewestC)
+		rig.record(t, "c9", "reviewer", "pass", branchNewestC)
+		rig.record(t, "c9", "tester", "fail", branchNewestC)
 		rig.record(t, "c9", "implementer", "pass", branchNewestC)
-		rig.record(t, "c9", "tester", "pass", branchNewestC)
+		pass := rig.record(t, "c9", "tester", "pass", branchNewestC)
 		got := rig.stands(t, "c9")
-		if roles := slices.Sorted(slices.Values(got.Roles)); got.Answer != "yes" || !slices.Equal(roles, []string{"implementer", "tester"}) {
-			t.Fatalf("c9 answers %+v, want yes from the implementer and the tester, whose passes came after the fail", got)
+		if roles := slices.Sorted(slices.Values(got.Roles)); got.Answer != "yes" || !slices.Equal(roles, []string{"implementer", "tester"}) || !slices.Equal(got.Results, []string{pass}) {
+			t.Fatalf("c9 answers %+v, want yes from the implementer and the tester alone, whose passes came after the newest fail, decided by %s: the reviewer's pass came before that fail", got, pass)
 		}
 	})
 	t.Run("default_branch", func(t *testing.T) {
