@@ -860,6 +860,19 @@ func goingTranslatePlanApprove(ctx context.Context, read goingReader, call going
 	return goingCall{path: map[string]string{"id": id}, body: goingPick(call.arguments, "version")}, nil
 }
 
+// goingTranslateReview records the review of the version the call names on the issue's document
+// the call names, its spec by default: the row binds the issue to the document placeholder, and
+// the document's id is read here. The tool's verdict is the route's state.
+func goingTranslateReview(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
+	id, err := read.issueDocument(ctx, call.path["id"], goingText(call.arguments, "artifact"))
+	if err != nil {
+		return goingCall{}, err
+	}
+	body := goingPick(call.arguments, "reason")
+	body["state"] = call.arguments["verdict"]
+	return goingCall{path: map[string]string{"id": id, "number": call.path["number"]}, body: body}, nil
+}
+
 // goingTranslateResultRetract sends the retraction's reason.
 func goingTranslateResultRetract(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	return goingCall{path: call.path, body: goingPick(call.arguments, "reason")}, nil

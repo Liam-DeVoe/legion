@@ -1245,7 +1245,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, each with how a write of it is undone (undo {kind, routes}: kind reverse, write_back, close_created or trace, routes the rows of this table the undo writes through), and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the dispatch tools that write, of the tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, each with how a write of it is undone (undo {kind, routes}: kind reverse, write_back, close_created or not_undone, routes the rows of this table the undo writes through), and the graph relations its verbs write. dispatch_review is not among them, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -5280,7 +5280,7 @@ export interface components {
       target: string;
       unchanged?: boolean;
       /** @enum {string} */
-      undo?: "reverse" | "write_back" | "close_created" | "trace";
+      undo?: "reverse" | "write_back" | "close_created" | "not_undone";
     };
     GoingRunsPage: {
       limit: number;
@@ -5299,7 +5299,7 @@ export interface components {
     };
     GoingUndo: {
       /** @enum {string} */
-      kind: "reverse" | "write_back" | "close_created" | "trace";
+      kind: "reverse" | "write_back" | "close_created" | "not_undone";
       routes: string[] | null;
     };
     GoingUndoAnswer: {
@@ -5320,7 +5320,7 @@ export interface components {
       now: unknown;
       outcome: components["schemas"]["GoingWriteOutcome"];
       /** @enum {string} */
-      undo: "reverse" | "write_back" | "close_created" | "trace";
+      undo: "reverse" | "write_back" | "close_created" | "not_undone";
       write_id: string;
     };
     GoingWriteInput: {

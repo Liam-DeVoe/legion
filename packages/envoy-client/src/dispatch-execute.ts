@@ -5,11 +5,7 @@ import {
   type ExecuteDispatchToolInput,
   sessionContext,
 } from "./dispatch-commands/context";
-import {
-  type DispatchCommand,
-  type DispatchToolName,
-  dispatchCommands,
-} from "./dispatch-commands/table";
+import { type DispatchCommand, dispatchCommandOf } from "./dispatch-commands/table";
 import { ToolInputError } from "./tool-input-errors";
 
 // What this module has always offered its callers, from the modules the command dispatcher is
@@ -47,8 +43,9 @@ export async function executeDispatchTool(
   });
   if (checked.problems.length > 0) throw new ToolInputError(input.tool, checked.problems);
   // The check reads the tool's own schema, so an unknown tool is already refused by the time this
-  // runs; the table is still read as a lookup that can miss, so the name stays in the message.
-  const command: DispatchCommand | undefined = dispatchCommands[input.tool as DispatchToolName];
+  // runs; the lookup can still miss, so the name stays in the message. A spec that binds its
+  // routes is served by the one generic command that calls them.
+  const command: DispatchCommand | undefined = dispatchCommandOf(input.tool);
   if (command === undefined) throw new Error(`Unknown Dispatch tool: ${input.tool}`);
   const session = sessionContext(input, checked);
   // `dispatch_open_asks`, `dispatch_answers` and `dispatch_whoami` answer from the session alone;

@@ -116,9 +116,9 @@ type goingRunWrite struct {
 	// none had no attempt that could be read, so whether its words reached the session is unknown.
 	Delivery *goingDelivery `json:"delivery,omitempty"`
 	// Undo is the undo the catalogue row the write went through states (GoingUndo.Kind), which
-	// is the undo it gets: the rows of one action may state different undos. It is absent for a
-	// write that never reached a row - one refused before its row was chosen and translated.
-	Undo goingUndoKind `json:"undo,omitempty" enum:"reverse,write_back,close_created,trace"`
+	// is the undo it gets. It is absent for a write that never reached a row - one refused
+	// before its row was chosen and translated.
+	Undo goingUndoKind `json:"undo,omitempty" enum:"reverse,write_back,close_created,not_undone"`
 	// AfterUnread is a write that landed and whose value after could not be read: After holds
 	// nothing the write left, so its undo cannot tell what to put back and undoes nothing
 	// (codeGoingUndoAfterUnread).

@@ -21,28 +21,28 @@ import (
 
 // goingUndoKinds is the undo R4 gives each action of the catalogue: a reverse where Dispatch
 // serves one, a write back where the write wrote a value, the close of an issue the turn created,
-// and a trace for every other write.
+// and not_undone for every other write.
 var goingUndoKinds = map[string]goingUndoKind{
 	"dispatch_issue":             goingUndoCloseCreated,
 	"dispatch_issue_update":      goingUndoWriteBack,
 	"dispatch_claim":             goingUndoReverse,
 	"dispatch_ask":               goingUndoReverse,
 	"dispatch_edit_ask":          goingUndoWriteBack,
-	"dispatch_resolve_ask":       goingUndoTrace,
+	"dispatch_resolve_ask":       goingUndoNotUndone,
 	"dispatch_resolve_comment":   goingUndoReverse,
 	"dispatch_follow":            goingUndoReverse,
-	"dispatch_comment":           goingUndoTrace,
-	"dispatch_suggest":           goingUndoTrace,
-	"dispatch_message":           goingUndoTrace,
-	"dispatch_send_to_agent":     goingUndoTrace,
+	"dispatch_comment":           goingUndoNotUndone,
+	"dispatch_suggest":           goingUndoNotUndone,
+	"dispatch_message":           goingUndoNotUndone,
+	"dispatch_send_to_agent":     goingUndoNotUndone,
 	"dispatch_doc_edit":          goingUndoWriteBack,
 	"dispatch_request_approval":  goingUndoReverse,
-	"dispatch_plan_approve":      goingUndoTrace,
-	"dispatch_result":            goingUndoTrace,
-	"dispatch_artifact":          goingUndoTrace,
-	"dispatch_project":           goingUndoTrace,
-	"dispatch_architecture_sync": goingUndoTrace,
-	"dispatch_handoff_write":     goingUndoTrace,
+	"dispatch_plan_approve":      goingUndoNotUndone,
+	"dispatch_result":            goingUndoNotUndone,
+	"dispatch_artifact":          goingUndoNotUndone,
+	"dispatch_project":           goingUndoNotUndone,
+	"dispatch_architecture_sync": goingUndoNotUndone,
+	"dispatch_handoff_write":     goingUndoNotUndone,
 }
 
 // TestGoingUndoEveryRowStatesItsUndo: every row the builder holds, counted against it, states one
@@ -70,7 +70,7 @@ func TestGoingUndoEveryRowStatesItsUndo(t *testing.T) {
 			if route.Undo.Kind != want {
 				t.Errorf("%s %s %s is undone by %s, want %s", action.Action, route.Method, route.Pattern, route.Undo.Kind, want)
 			}
-			if (route.Undo.Kind == goingUndoTrace) != (len(route.Undo.Routes) == 0) {
+			if (route.Undo.Kind == goingUndoNotUndone) != (len(route.Undo.Routes) == 0) {
 				t.Errorf("%s %s %s: a %s naming routes %v", action.Action, route.Method, route.Pattern, route.Undo.Kind, route.Undo.Routes)
 			}
 			for _, undo := range route.Undo.Routes {
@@ -491,10 +491,10 @@ func TestGoingUndoOfACreatedIssueWhoseRecordNamesNoStatusClosesNothing(t *testin
 	}
 }
 
-// TestGoingUndoOfATraceLeavesTheWriteInPlaceAndMarksItUndone: a comment, a message and an artifact
-// the turn made stay where they are; the undo records the turn undone, so the run is no longer
-// undoable.
-func TestGoingUndoOfATraceLeavesTheWriteInPlaceAndMarksItUndone(t *testing.T) {
+// TestGoingUndoOfAWriteNotUndoneLeavesItInPlaceAndMarksItUndone: a comment, a message and an
+// artifact the turn made stay where they are; the undo records the turn undone, so the run is no
+// longer undoable.
+func TestGoingUndoOfAWriteNotUndoneLeavesItInPlaceAndMarksItUndone(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Traced", "The spec.\n").Key
 	for _, write := range []struct {
@@ -509,8 +509,8 @@ func TestGoingUndoOfATraceLeavesTheWriteInPlaceAndMarksItUndone(t *testing.T) {
 		t.Run(write.action, func(t *testing.T) {
 			run, line := rig.runOne(t, write.action, write.arguments, nil)
 			undone := oneLine(t, rig.undo(t, "alice", run, nil), true)
-			if undone.Undo != goingUndoTrace {
-				t.Fatalf("the undo of %s is %s, want a trace", write.action, undone.Undo)
+			if undone.Undo != goingUndoNotUndone {
+				t.Fatalf("the undo of %s is %s, want it not undone", write.action, undone.Undo)
 			}
 			if read := dispatchRequest(t, rig.mux, http.MethodGet, write.read+line.Item, nil, "alice"); read.Code != http.StatusOK {
 				t.Fatalf("what %s made reads %d after the undo, want it in place", write.action, read.Code)
@@ -923,14 +923,14 @@ func TestGoingUndoRunsTheUndoOfTheRowTheWriteWentThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The resolve's first row now states a reverse this server has none of; the write went
-	// through a row stating a trace.
+	// through a row stating it is not undone.
 	resolve := catalogue.byAction["dispatch_resolve_ask"]
 	catalogue.actions[resolve].Routes[0].Undo = GoingUndo{Kind: goingUndoReverse, Routes: []string{goingAskResolveRoute}}
 	undoer := goingUndoer{s: &server{going: catalogue}}
 	write := goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Fields: []string{"state"},
-		Outcome: goingWriteOutcome{OK: true}, Undo: goingUndoTrace}
-	if line := undoer.undo(context.Background(), write, nil); !line.Outcome.OK || line.Undo != goingUndoTrace {
-		t.Fatalf("the undo of a write through a trace row answered %+v by %s, want it recorded undone by its trace", line.Outcome, line.Undo)
+		Outcome: goingWriteOutcome{OK: true}, Undo: goingUndoNotUndone}
+	if line := undoer.undo(context.Background(), write, nil); !line.Outcome.OK || line.Undo != goingUndoNotUndone {
+		t.Fatalf("the undo of a write through a row that is not undone answered %+v by %s, want it recorded as not undone", line.Outcome, line.Undo)
 	}
 	write.Undo = ""
 	if line := undoer.undo(context.Background(), write, nil); line.Outcome.OK || line.Outcome.Code != codeGoingUndoUnknown {

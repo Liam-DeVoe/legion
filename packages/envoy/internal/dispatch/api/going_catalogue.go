@@ -1,27 +1,26 @@
 package api
 
-// going_catalogue.go holds the catalogue of operations an agent may propose on Dispatch's
-// graph, and serves it at GET /api/v1/going/catalogue.
+// going_catalogue.go holds the catalogue of the dispatch tools that write, which GoingCaller runs
+// as its caller, and serves at GET /api/v1/going/catalogue the actions an agent may propose on
+// Dispatch's graph.
 //
-// The catalogue is the dispatch tools that write, all but one: the specs in
-// packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
-// each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty-one of the thirty-seven tools
-// write, and the catalogue holds twenty of them, which is under the count where a model's choice
-// measurably falls apart, so the list is read whole: nothing searches it, and no second schema
-// is authored per route. The one it leaves out is dispatch_review, on purpose: a review records
-// an approval or a changes request in a person's name, and the loop that proposes operations on
-// Dispatch's graph must never propose one, so goingToolRoutes names no row for it.
+// The catalogue holds every write tool of goingWriteTools (going_tools.go), each carried whole
+// through contracts.DispatchTools from its spec in packages/contracts/src/dispatch-tools.ts: its
+// own curated description, which is what a model chooses on, and its own argument schema. The
+// actions it serves and the answer run's decision offers (Actions) are the twenty tools the
+// table marks Proposed, which is under the count where a model's choice measurably falls apart,
+// so that list is read whole: nothing searches it, and no second schema is authored per route.
+// dispatch_review is no action of them, on purpose: a review records an approval or a changes
+// request in a person's name, and the decision that proposes operations on Dispatch's graph must
+// never propose one.
 //
-// Which tools write is not a field a tool spec carries. goingToolRoutes names the rows of the
+// Which tools write is not a field a tool spec carries. goingWriteTools names the rows of the
 // server's own table each tool writes, and buildGoingCatalogue holds every one of them to the
 // table it mounts: a row that is no row of that table, one the table does not class as a write
 // (mutatingRoutes, the set TestEveryMutatingRouteIsClassed reads), a placeholder nothing fills,
-// or a relation in neither edge family refuses to mount (register). The other direction is a
-// report rather than a refusal, since a write no tool in the catalogue performs is not an error:
-// most are work still to do, and the two review routes, the document header's and the one
-// dispatch_review performs, are kept out on purpose. TestTheMutatingRoutesNoToolSpecNames names
-// every one of them.
+// or a relation in neither edge family refuses to mount (register). The other direction is
+// TestEveryPersonRouteHasATool's: every route a person may call is a row of a tool or a route
+// goingExcludedRoutes names.
 //
 // Every row also carries what its route takes of a call (going_translate.go) and how a write of
 // it is undone (GoingUndo, which going_undo.go runs), and the builder refuses a row missing
@@ -59,349 +58,11 @@ const goingCataloguePath = "/api/v1/going/catalogue"
 // as the ask's follower, and a tool argument names no session at all.
 const goingCallerSession = "@session"
 
-// goingToolRoute is one row of the server's table a tool writes: how a call fills the row's
-// path, the argument whose value picks the row where a tool writes two that differ by what it
-// was asked to do, the graph relations the write makes, what the row's route takes of a call's
-// arguments, and how a write of the row is undone.
-type goingToolRoute struct {
-	Method  string
-	Pattern string
-	// Path binds each placeholder of Pattern to the tool argument that fills it, or to
-	// goingCallerSession. Every placeholder is bound and every binding is a placeholder, which
-	// buildGoingCatalogue holds the table to.
-	Path map[string]string
-	// WhenArgument and WhenValue pick this row among the tool's: a claim and its release are
-	// one tool and two rows, told apart by `release`, as a follow and its unfollow are by
-	// `action`. An empty WhenArgument is a row nothing guards.
-	WhenArgument string
-	WhenValue    any
-	// Relations are the graph relations this row's write makes, each a structural edge kind
-	// (model.GraphEdgeKinds) or a `block[]` attribute of a typed block (pmdoc.LinkKinds).
-	Relations []string
-	// Translate turns a call's arguments into what this row's route takes, as the route stands
-	// (going_translate.go): a document named by slug resolved to the id its path takes, a
-	// session named by title to its id, an argument the route reads under another name moved
-	// there. Every row has one, which buildGoingCatalogue holds the table to.
-	Translate goingTranslator
-	// Undo is how a write of this row is undone (R4), which every row states.
-	Undo GoingUndo
-}
-
-// The routes the undos write through beside the catalogue's own rows, named once each, and the
-// three an upload writes through, whose owner a write reads before it (goingRouteUploadOwner).
-const (
-	goingIssueMessageRoute  = http.MethodPost + " /api/v1/issues/{key}/messages"
-	goingIssuePatchRoute    = http.MethodPatch + " /api/v1/issues/{key}"
-	goingClaimRoute         = http.MethodPost + " /api/v1/issues/{key}/claim"
-	goingReleaseRoute       = http.MethodDelete + " /api/v1/issues/{key}/claim"
-	goingAskResolveRoute    = http.MethodPost + " /api/v1/asks/{id}/resolve"
-	goingAskEditRoute       = http.MethodPatch + " /api/v1/asks/{id}"
-	goingCommentReopenRoute = http.MethodPost + " /api/v1/comments/{id}/reopen"
-	goingFollowRoute        = http.MethodPut + " /api/v1/asks/{id}/followers/{session_id}"
-	goingUnfollowRoute      = http.MethodDelete + " /api/v1/asks/{id}/followers/{session_id}"
-	goingIssueUploadRoute   = http.MethodPost + " /api/v1/issues/{key}/artifacts"
-	goingProjectUploadRoute = http.MethodPost + " /api/v1/projects/{key}/artifacts"
-	goingAgentUploadRoute   = http.MethodPost + " /api/v1/agents/{session_id}/artifacts"
-)
-
-// goingUndoKind is one of the four ways R4 undoes a write.
-type goingUndoKind string
-
-const (
-	// goingUndoReverse runs the write's reverse, a route of the table whether or not the
-	// catalogue holds it as a row: a claim is released, a follow unfollowed, a resolved comment
-	// reopened, an ask the turn opened retracted.
-	goingUndoReverse goingUndoKind = "reverse"
-	// goingUndoWriteBack writes the value read before the write back over it: an issue's
-	// fields, an ask's text, a document's content.
-	goingUndoWriteBack goingUndoKind = "write_back"
-	// goingUndoCloseCreated closes an issue the turn created, posting the undo's reason on it
-	// first, the order a reasoned close takes.
-	goingUndoCloseCreated goingUndoKind = "close_created"
-	// goingUndoTrace records that the turn was undone and erases nothing: a write Dispatch
-	// serves no reverse of.
-	goingUndoTrace goingUndoKind = "trace"
-)
-
 // GoingUndo is how a write of one row is undone, as the catalogue serves it: the kind, and every
-// row of the table the undo writes through, none for a trace.
+// row of the table the undo writes through, none for a write that is not undone.
 type GoingUndo struct {
-	Kind   goingUndoKind `json:"kind" enum:"reverse,write_back,close_created,trace"`
+	Kind   goingUndoKind `json:"kind" enum:"reverse,write_back,close_created,not_undone"`
 	Routes []string      `json:"routes"`
-}
-
-func goingReverse(routes ...string) GoingUndo {
-	return GoingUndo{Kind: goingUndoReverse, Routes: routes}
-}
-
-func goingWriteBack(routes ...string) GoingUndo {
-	return GoingUndo{Kind: goingUndoWriteBack, Routes: routes}
-}
-
-// goingTrace is the undo of every row Dispatch serves no reverse of.
-var goingTrace = GoingUndo{Kind: goingUndoTrace, Routes: []string{}}
-
-// goingToolRoutes is the rows of the server's table each dispatch tool writes, by the tool's own
-// name, and so the tools the catalogue holds. A tool this map does not name is not in the
-// catalogue: the read tools; `dispatch_related`, whose POST row writes nothing (it runs the
-// related-item check and records none of it); and `dispatch_review`, which writes and is left
-// out on purpose. A review records an approval or a changes request in a person's name, and the
-// loop that proposes operations on Dispatch's graph must never propose one, so it gets no row
-// here.
-//
-// The rows of one tool are tried in order, so the row a call performs is the first whose guard
-// it satisfies and whose placeholders it fills: a document write names its issue, else its
-// project, else the document itself.
-var goingToolRoutes = map[string][]goingToolRoute{
-	// A created issue is closed by its undo, the undo's reason posted on it first.
-	"dispatch_issue": {{
-		Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
-		Relations: []string{"child_of", "blocked_by", "affects", "mentions"},
-		Translate: goingArgumentsAsBody,
-		Undo:      GoingUndo{Kind: goingUndoCloseCreated, Routes: []string{goingIssueMessageRoute, goingIssuePatchRoute}},
-	}},
-	"dispatch_issue_update": {{
-		Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
-		Path:      map[string]string{"key": "issue"},
-		Relations: []string{"child_of", "blocked_by", "affects"},
-		Translate: goingTranslateIssueUpdate,
-		Undo:      goingWriteBack(goingIssuePatchRoute),
-	}},
-	// A release is undone by taking the claim back only where the caller held it before, and a
-	// claim by releasing it.
-	"dispatch_claim": {
-		{
-			Method: http.MethodDelete, Pattern: "/api/v1/issues/{key}/claim",
-			Path: map[string]string{"key": "issue"}, WhenArgument: "release", WhenValue: true,
-			Translate: goingTranslateClaim,
-			Undo:      goingReverse(goingClaimRoute),
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/claim",
-			Path:      map[string]string{"key": "issue"},
-			Translate: goingTranslateClaim,
-			Undo:      goingReverse(goingReleaseRoute),
-		},
-	},
-	// An ask the turn opened is retracted.
-	"dispatch_ask": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/asks",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"owned_by", "anchored_to", "followed_by", "mentions"},
-			Translate: goingTranslateIssueAsk,
-			Undo:      goingReverse(goingAskResolveRoute),
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/asks",
-			Path:      map[string]string{"id": "artifact"},
-			Relations: []string{"owned_by", "anchored_to", "followed_by", "mentions"},
-			Translate: goingTranslateDocumentAsk,
-			Undo:      goingReverse(goingAskResolveRoute),
-		},
-	},
-	"dispatch_edit_ask": {{
-		Method: http.MethodPatch, Pattern: "/api/v1/asks/{id}",
-		Path: map[string]string{"id": "ask"}, Relations: []string{"mentions"},
-		Translate: goingTranslateEditAsk,
-		Undo:      goingWriteBack(goingAskEditRoute),
-	}},
-	// A resolved ask stays resolved: Dispatch serves no reopen of an ask.
-	"dispatch_resolve_ask": {{
-		Method: http.MethodPost, Pattern: "/api/v1/asks/{id}/resolve",
-		Path:      map[string]string{"id": "ask"},
-		Translate: goingTranslateResolveAsk,
-		Undo:      goingTrace,
-	}},
-	// A resolved comment is reopened by the route no tool names.
-	"dispatch_resolve_comment": {{
-		Method: http.MethodPost, Pattern: "/api/v1/comments/{id}/resolve",
-		Path:      map[string]string{"id": "comment"},
-		Translate: goingTranslateNoBody,
-		Undo:      goingReverse(goingCommentReopenRoute),
-	}},
-	"dispatch_follow": {
-		{
-			Method: http.MethodDelete, Pattern: "/api/v1/asks/{id}/followers/{session_id}",
-			Path:         map[string]string{"id": "ask", "session_id": goingCallerSession},
-			WhenArgument: "action", WhenValue: "unfollow",
-			Relations: []string{"followed_by"},
-			Translate: goingTranslateNoBody,
-			Undo:      goingReverse(goingFollowRoute),
-		},
-		{
-			Method: http.MethodPut, Pattern: "/api/v1/asks/{id}/followers/{session_id}",
-			Path:      map[string]string{"id": "ask", "session_id": goingCallerSession},
-			Relations: []string{"followed_by"},
-			Translate: goingTranslateNoBody,
-			Undo:      goingReverse(goingUnfollowRoute),
-		},
-	},
-	"dispatch_comment": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/comments",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"owned_by", "anchored_to", "answers", "replies_to", "mentions"},
-			Translate: goingTranslateIssueComment,
-			Undo:      goingTrace,
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/comments",
-			Path:      map[string]string{"id": "artifact"},
-			Relations: []string{"owned_by", "anchored_to", "answers", "replies_to", "mentions"},
-			Translate: goingTranslateDocumentComment,
-			Undo:      goingTrace,
-		},
-	},
-	"dispatch_suggest": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/comments",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"owned_by", "anchored_to", "mentions"},
-			Translate: goingTranslateIssueSuggest,
-			Undo:      goingTrace,
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/comments",
-			Path:      map[string]string{"id": "artifact"},
-			Relations: []string{"owned_by", "anchored_to", "mentions"},
-			Translate: goingTranslateDocumentSuggest,
-			Undo:      goingTrace,
-		},
-	},
-	"dispatch_message": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/messages",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"replies_to", "mentions"},
-			Translate: goingTranslateIssueMessage,
-			Undo:      goingTrace,
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/messages/{id}/reply",
-			Path:      map[string]string{"id": "in_reply_to"},
-			Relations: []string{"replies_to", "mentions"},
-			Translate: goingTranslateMessageReply,
-			Undo:      goingTrace,
-		},
-	},
-	// The issue-less send to one session. Its path names the session the tool was asked to
-	// reach, not the calling session, so the placeholder binds to the tool's own argument. The
-	// body is indexed without its references counted (createStoredMessage: a message with no
-	// issue takes refs.IndexItem alone), so this write makes no mention edge; a send naming
-	// in_reply_to makes the replies_to edge every message reply makes.
-	"dispatch_send_to_agent": {{
-		Method: http.MethodPost, Pattern: "/api/v1/agents/{session_id}/messages",
-		Path: map[string]string{"session_id": "session"}, Relations: []string{"replies_to"},
-		Translate: goingTranslateSendToAgent,
-		Undo:      goingTrace,
-	}},
-	// A document's content is written back by an upload of the content read before the edit,
-	// under the document's own name, through its owner's upload route.
-	"dispatch_doc_edit": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts/{slug}/edits",
-			Path:      map[string]string{"key": "issue", "slug": "artifact"},
-			Relations: []string{"mentions", "needs", "serves"},
-			Translate: goingTranslateDocEdit,
-			Undo:      goingWriteBack(goingIssueUploadRoute),
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/artifacts/{slug}/edits",
-			Path:      map[string]string{"key": "project", "slug": "artifact"},
-			Relations: []string{"mentions", "needs", "serves"},
-			Translate: goingTranslateDocEdit,
-			Undo:      goingWriteBack(goingProjectUploadRoute),
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/edits",
-			Path:      map[string]string{"id": "artifact"},
-			Relations: []string{"mentions", "needs", "serves"},
-			Translate: goingTranslateDocEdit,
-			Undo:      goingWriteBack(goingIssueUploadRoute, goingProjectUploadRoute),
-		},
-	},
-	// An approval request opens an ask, so its undo is that ask's retraction.
-	"dispatch_request_approval": {{
-		Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/approval-requests",
-		Path: map[string]string{"id": "artifact"}, Relations: []string{"owned_by"},
-		Translate: goingTranslateRequestApproval,
-		Undo:      goingReverse(goingAskResolveRoute),
-	}},
-	"dispatch_plan_approve": {{
-		Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/plan-reviews",
-		Path:      map[string]string{"id": "artifact"},
-		Translate: goingTranslatePlanApprove,
-		Undo:      goingTrace,
-	}},
-	// A retraction and a record are two shapes of one tool: the retraction's row names the
-	// result in its path, so a call carrying `retract` fills it and a record, which carries
-	// none, falls through to the row below.
-	"dispatch_result": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/results/{id}/retract",
-			Path:      map[string]string{"id": "retract"},
-			Translate: goingTranslateResultRetract,
-			Undo:      goingTrace,
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/results",
-			Path:      map[string]string{"key": "issue"},
-			Translate: goingTranslateResultRecord,
-			Undo:      goingTrace,
-		},
-	},
-	"dispatch_artifact": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/artifacts",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"attached_to", "mentions"},
-			Translate: goingTranslateUpload,
-			Undo:      goingTrace,
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/artifacts",
-			Path:      map[string]string{"key": "project"},
-			Relations: []string{"mentions"},
-			Translate: goingTranslateUpload,
-			Undo:      goingTrace,
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/agents/{session_id}/artifacts",
-			Path:      map[string]string{"session_id": goingCallerSession},
-			Translate: goingTranslateAgentUpload,
-			Undo:      goingTrace,
-		},
-	},
-	"dispatch_project": {{
-		Method: http.MethodPost, Pattern: "/api/v1/projects", Path: map[string]string{},
-		Translate: goingArgumentsAsBody,
-		Undo:      goingTrace,
-	}},
-	// A sync names one source by its repository, else every source of the project. The one-source
-	// row is first, so a call carrying `repo` fills it and one without falls through to the
-	// every-source row.
-	"dispatch_architecture_sync": {
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
-			Path:      map[string]string{"key": "project", "owner": "repo", "repo": "repo"},
-			Relations: []string{"depends_on", "affects"},
-			Translate: goingTranslateArchitectureSyncRepo,
-			Undo:      goingTrace,
-		},
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/projects/{key}/architecture-sources/sync",
-			Path: map[string]string{"key": "project"}, Relations: []string{"depends_on", "affects"},
-			Translate: goingTranslateNoBody,
-			Undo:      goingTrace,
-		},
-	},
-	"dispatch_handoff_write": {{
-		Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/handoffs/{phase}",
-		Path:      map[string]string{"key": "issue", "phase": "phase"},
-		Translate: goingTranslateHandoff,
-		Undo:      goingTrace,
-	}},
 }
 
 // GoingRoute is one row of the server's table an action writes, as the catalogue serves it:
@@ -446,16 +107,21 @@ type GoingAction struct {
 	Example json.RawMessage `json:"example"`
 }
 
-// GoingCatalogue is every action an agent may propose, read whole.
+// GoingCatalogue is every write tool GoingCaller runs, and the actions of them an agent may
+// propose.
 type GoingCatalogue struct {
 	actions []GoingAction
 	// byAction is the index into actions of each action's name.
 	byAction map[string]int
+	// proposed is the actions of the tools goingWriteTools marks Proposed.
+	proposed []GoingAction
 }
 
-// Actions is the catalogue in the order the tool specs state the tools.
+// Actions is the actions an agent may propose, in the order the tool specs state the tools: the
+// tools goingWriteTools marks Proposed, which GET /api/v1/going/catalogue serves and the answer
+// run's decision offers. Lookup holds every write tool.
 func (c GoingCatalogue) Actions() []GoingAction {
-	return c.actions
+	return c.proposed
 }
 
 // Lookup is the action that name holds, and whether the catalogue holds one at all.
@@ -518,9 +184,10 @@ func BuildGoingCatalogue() (GoingCatalogue, error) {
 // the catalogue cannot hold: a row that is no row of this table, a row the table does not class
 // as a write, a placeholder no argument of the tool fills, a relation in neither edge family, a
 // row with no translation, a row whose undo is none of the four or writes through a row that is
-// no write of this table, and a tool name no tool spec has. register refuses to mount a table it
-// answers an error for, so a catalogue entry can only ever name an action the server serves, and
-// every row states how its write is undone.
+// no write of this table, a tool whose entry and spec disagree on its rows (goingToolRows), a
+// spec that binds its routes and that neither table names, and a tool name no tool spec has.
+// register refuses to mount a table it answers an error for, so a catalogue entry can only ever
+// name an action the server serves, and every row states how its write is undone.
 func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 	mutating := mutatingRoutes(routes)
 	served := make(map[string]apiRoute, len(routes))
@@ -529,14 +196,21 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 	}
 	families := edgeFamilies()
 	catalogue := GoingCatalogue{
-		actions:  make([]GoingAction, 0, len(goingToolRoutes)),
-		byAction: make(map[string]int, len(goingToolRoutes)),
+		actions:  make([]GoingAction, 0, len(goingWriteTools)),
+		byAction: make(map[string]int, len(goingWriteTools)),
 	}
 	var refusals []string
 	for _, tool := range contracts.DispatchTools {
-		rows, writes := goingToolRoutes[tool.Name]
+		written, writes := goingWriteTools[tool.Name]
 		if !writes {
+			if _, reads := goingReadTools[tool.Name]; !reads && len(tool.Routes) > 0 {
+				refusals = append(refusals, tool.Name+": its spec binds its routes, and neither goingWriteTools nor goingReadTools names it")
+			}
 			continue
+		}
+		rows, agree := goingToolRows(tool, written.Routes, written.UndoRoutes)
+		if !agree {
+			refusals = append(refusals, tool.Name+": its rows are stated by its entry and its spec's routes both, or by neither")
 		}
 		takes := make(map[string]bool, len(tool.Arguments))
 		for _, argument := range tool.Arguments {
@@ -558,22 +232,7 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 			case !mutating[name]:
 				refusals = append(refusals, fmt.Sprintf("%s: %s is no write of the route table", tool.Name, name))
 			}
-			for _, placeholder := range goingPlaceholders(row.Pattern) {
-				if _, bound := row.Path[placeholder]; !bound {
-					refusals = append(refusals, fmt.Sprintf("%s: %s binds nothing to {%s}", tool.Name, name, placeholder))
-				}
-			}
-			for placeholder, argument := range row.Path {
-				if !strings.Contains(row.Pattern, "{"+placeholder+"}") {
-					refusals = append(refusals, fmt.Sprintf("%s: %s has no placeholder {%s}", tool.Name, name, placeholder))
-				}
-				if argument != goingCallerSession && !takes[argument] {
-					refusals = append(refusals, fmt.Sprintf("%s: {%s} is bound to %q, which is no argument of the tool", tool.Name, placeholder, argument))
-				}
-			}
-			if row.WhenArgument != "" && !takes[row.WhenArgument] {
-				refusals = append(refusals, fmt.Sprintf("%s: %s is picked by %q, which is no argument of the tool", tool.Name, name, row.WhenArgument))
-			}
+			refusals = append(refusals, goingBindingProblems(tool.Name, row, takes)...)
 			for _, relation := range row.Relations {
 				if !slices.Contains(families, relation) {
 					refusals = append(refusals, fmt.Sprintf("%s: relation %q is neither a structural edge kind (%s) nor a block[] attribute (%s)",
@@ -586,11 +245,15 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 			if row.Translate == nil {
 				refusals = append(refusals, fmt.Sprintf("%s: %s takes no translation of the call's arguments", tool.Name, name))
 			}
-			refusals = append(refusals, goingUndoProblems(tool.Name+": "+name, row.Undo, mutating)...)
+			undo := GoingUndo{Kind: written.Undo, Routes: row.UndoRoutes}
+			if undo.Routes == nil {
+				undo.Routes = []string{}
+			}
+			refusals = append(refusals, goingUndoProblems(tool.Name+": "+name, undo, mutating)...)
 			entry.Routes = append(entry.Routes, GoingRoute{
 				Method:       row.Method,
 				Pattern:      row.Pattern,
-				Undo:         row.Undo,
+				Undo:         undo,
 				path:         row.Path,
 				whenArgument: row.WhenArgument,
 				whenValue:    row.WhenValue,
@@ -601,10 +264,16 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 		}
 		catalogue.byAction[tool.Name] = len(catalogue.actions)
 		catalogue.actions = append(catalogue.actions, entry)
+		if written.Proposed {
+			catalogue.proposed = append(catalogue.proposed, entry)
+		}
 	}
-	for name := range goingToolRoutes {
+	for name := range goingWriteTools {
 		if _, held := catalogue.byAction[name]; !held {
 			refusals = append(refusals, name+": no dispatch tool of that name (packages/contracts/src/dispatch-tools.ts)")
+		}
+		if _, reads := goingReadTools[name]; reads {
+			refusals = append(refusals, name+": goingWriteTools and goingReadTools both name it")
 		}
 	}
 	if len(refusals) > 0 {
@@ -614,15 +283,40 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 	return catalogue, nil
 }
 
+// goingBindingProblems is what is wrong with how one row of tool binds a call's arguments: a
+// placeholder its Path binds nothing to, a binding of no placeholder, a binding to an argument the
+// tool does not take (takes), and a guard on such an argument.
+func goingBindingProblems(tool string, row goingToolRoute, takes map[string]bool) []string {
+	name := row.Method + " " + row.Pattern
+	var problems []string
+	for _, placeholder := range goingPlaceholders(row.Pattern) {
+		if _, bound := row.Path[placeholder]; !bound {
+			problems = append(problems, fmt.Sprintf("%s: %s binds nothing to {%s}", tool, name, placeholder))
+		}
+	}
+	for placeholder, argument := range row.Path {
+		if !strings.Contains(row.Pattern, "{"+placeholder+"}") {
+			problems = append(problems, fmt.Sprintf("%s: %s has no placeholder {%s}", tool, name, placeholder))
+		}
+		if argument != goingCallerSession && !takes[argument] {
+			problems = append(problems, fmt.Sprintf("%s: {%s} is bound to %q, which is no argument of the tool", tool, placeholder, argument))
+		}
+	}
+	if row.WhenArgument != "" && !takes[row.WhenArgument] {
+		problems = append(problems, fmt.Sprintf("%s: %s is picked by %q, which is no argument of the tool", tool, name, row.WhenArgument))
+	}
+	return problems
+}
+
 // goingUndoProblems is what is wrong with one row's undo: a kind that is none of the four, a
-// trace that names a route it would write (a trace writes nothing), any other kind that names
-// none, and a route named that is no write of the table.
+// write that is not undone and names a route it would write, any other kind that names none,
+// and a route named that is no write of the table.
 func goingUndoProblems(row string, undo GoingUndo, mutating map[string]bool) []string {
 	var problems []string
 	switch undo.Kind {
-	case goingUndoTrace:
+	case goingUndoNotUndone:
 		if len(undo.Routes) > 0 {
-			problems = append(problems, fmt.Sprintf("%s: its undo is a trace, which writes nothing, and names %s", row, strings.Join(undo.Routes, ", ")))
+			problems = append(problems, fmt.Sprintf("%s: its write is not undone, so its undo writes nothing, and names %s", row, strings.Join(undo.Routes, ", ")))
 		}
 	case goingUndoReverse, goingUndoWriteBack, goingUndoCloseCreated:
 		if len(undo.Routes) == 0 {
@@ -630,7 +324,7 @@ func goingUndoProblems(row string, undo GoingUndo, mutating map[string]bool) []s
 		}
 	default:
 		problems = append(problems, fmt.Sprintf("%s: its undo %q is none of %s, %s, %s and %s", row, undo.Kind,
-			goingUndoReverse, goingUndoWriteBack, goingUndoCloseCreated, goingUndoTrace))
+			goingUndoReverse, goingUndoWriteBack, goingUndoCloseCreated, goingUndoNotUndone))
 	}
 	for _, route := range undo.Routes {
 		if !mutating[route] {
@@ -842,8 +536,9 @@ func (c GoingCaller) reader() goingReader {
 
 // chooseGoingRoute is the row a call performs and the value of each placeholder of its path: the
 // action's first row whose guard the call satisfies and every one of whose placeholders the call
-// fills, so a document write naming its issue takes the issue's row and the same write naming
-// the document alone takes the document's.
+// fills, with a text or a number (goingArgumentText: a document's version), so a document write
+// naming its issue takes the issue's row and the same write naming the document alone takes the
+// document's.
 func chooseGoingRoute(entry GoingAction, arguments map[string]any, session string) (GoingRoute, map[string]string, bool) {
 	for _, route := range entry.Routes {
 		if !route.takes(arguments) {
@@ -854,8 +549,9 @@ func chooseGoingRoute(entry GoingAction, arguments map[string]any, session strin
 			value := session
 			if argument != goingCallerSession {
 				named, held := arguments[argument]
-				text, isText := named.(string)
-				if !held || !isText {
+				_, isBoolean := named.(bool)
+				text, isText := goingArgumentText(named)
+				if !held || !isText || isBoolean {
 					filled = false
 					break
 				}

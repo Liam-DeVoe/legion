@@ -240,187 +240,259 @@ type goingAdvancesValue struct {
 var goingAskFields = []string{"question", "options", "multiple", "urgency"}
 
 // observe reads what the prepared write changes: before it (answer nil) and after it, where
-// answer is what the write's route answered and before what the read before saw. A write that
-// changes a value of an item already there reads that value before it, for a refusal's line, and
-// takes from its route's answer the value its transaction found and the one it left (stood and
-// value): an issue's fields, an ask's parts, a thread's resolution, a claim, a follow's change
-// (goingObserver.landed) and, for a document edit, the tokens that say whether the reads on either
-// side of the edit read the document it found and the one it left. A write that makes an item
-// reads nothing before it and reads the made item off its answer, but for an upload, which reads
-// before it the document its name writes the next version of, where there is one, and takes the
-// version it wrote over from its answer. status is the status the route answered, 0 before.
+// answer is what the write's route answered and before what the read before saw, by the write
+// tool's own reader (goingWriteTool.Observe). A write that changes a value of an item already
+// there reads that value before it, for a refusal's line, and takes from its route's answer the
+// value its transaction found and the one it left (stood and value): an issue's fields, an ask's
+// parts, a thread's resolution, a claim, a follow's change (goingObserver.landed) and, for a
+// document edit, the tokens that say whether the reads on either side of the edit read the
+// document it found and the one it left. A write that makes an item reads nothing before it and
+// reads the made item off its answer (made), but for an upload, which reads before it the
+// document its name writes the next version of, where there is one, and takes the version it
+// wrote over from its answer. status is the status the route answered, 0 before.
 func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answer []byte, status int, before goingObservation) (goingObservation, error) {
-	path, arguments := prepared.call.path, prepared.arguments
-	fields := goingFields(goingWriteFields[prepared.action])
-	issue := goingText(arguments, "issue")
-	switch prepared.action {
-	case "dispatch_issue_update":
-		if answer == nil {
-			return o.issueFields(ctx, path["key"], goingIssueFieldsOf(arguments))
-		}
-		return goingIssueUpdated(answer, before)
-	case "dispatch_claim":
-		if answer == nil {
-			return o.claim(ctx, path["key"])
-		}
-		// The claim route answers, from its own transaction, whether it changed the claim, the
-		// claim it left and the one it found (claimAnswer), which no read on either side of it can
-		// say: the claim may move between them and it. An answer that does not say whether it
-		// changed the claim is the value after unread, so the undo puts nothing back.
-		var claimed struct {
-			ClaimChanged *bool                        `json:"claim_changed"`
-			Claim        *struct{ Actor goingHolder } `json:"claim"`
-			Previous     *struct{ Actor goingHolder } `json:"previous_claim"`
-		}
-		observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue, stood: json.RawMessage("null")}
-		if err := json.Unmarshal(answer, &claimed); err != nil {
-			return observed, fmt.Errorf("read the claim's answer: %w", err)
-		}
-		if claimed.ClaimChanged == nil {
-			return observed, errors.New("the claim's answer does not say whether the claim changed")
-		}
-		observed.unchanged = !*claimed.ClaimChanged
-		if claimed.Claim != nil {
-			observed.value = &claimed.Claim.Actor
-		}
-		if claimed.Previous != nil {
-			observed.stood = goingJSONOrNull(&claimed.Previous.Actor)
-		}
-		return observed, nil
-	case "dispatch_edit_ask":
-		if answer == nil {
-			return o.askFields(ctx, path["id"], goingAskFieldsOf(arguments))
-		}
-		return goingAskEdited(answer, before)
-	case "dispatch_resolve_ask":
-		return o.askState(ctx, path["id"])
-	case "dispatch_resolve_comment":
-		if answer == nil {
-			return o.commentResolved(ctx, path["id"])
-		}
-		return goingCommentResolved(answer, before)
-	case "dispatch_follow":
-		if answer == nil {
-			return o.following(ctx, path["id"], path["session_id"])
-		}
-		return o.followed(ctx, prepared, before)
-	case "dispatch_doc_edit":
-		if answer == nil {
-			resolved, err := o.editedDocument(ctx, prepared)
-			if err != nil {
-				return goingObservation{fields: fields, issue: issue}, err
-			}
-			return o.document(ctx, resolved)
-		}
-		return o.documentEdited(ctx, answer, before)
+	read := goingWriteTools[prepared.action].Observe
+	if read == nil {
+		read = goingObserver.made
 	}
+	return read(o, ctx, prepared, answer, status, before)
+}
+
+// goingObservedOf is what every observation of a write names beside its value: the field its
+// tool changes (goingWriteFields) and the issue the call names.
+func goingObservedOf(prepared goingPrepared) (fields []string, issue string) {
+	return goingFields(goingWriteFields[prepared.action]), goingText(prepared.arguments, "issue")
+}
+
+// made reads a write that makes an item: nothing of it is there before it, and after it the
+// made item's id, as its route answered it, else the item the read before named.
+func (o goingObserver) made(_ context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	fields, issue := goingObservedOf(prepared)
 	if answer == nil {
-		if prepared.action == "dispatch_artifact" {
-			// An upload under a name its owner already holds writes that document's next
-			// version: the version it writes over is the value before it.
-			return o.uploadedOver(ctx, prepared, fields, issue)
-		}
-		// A write that makes an item: nothing of it is there before it. An approval request is
-		// one too: whether it opened its ask is what its route answers
-		// (approvalRequestResponse.Opened), not a read before it, which another request may
-		// overtake.
-		return goingObservation{target: goingTargetOfPath(path), fields: fields, issue: issue}, nil
-	}
-	switch prepared.action {
-	case "dispatch_issue":
-		var created struct {
-			Key    string `json:"key"`
-			Title  string `json:"title"`
-			Status string `json:"status"`
-		}
-		if err := json.Unmarshal(answer, &created); err != nil {
-			return goingObservation{}, fmt.Errorf("read the issue made: %w", err)
-		}
-		observed := goingObservation{target: created.Key, fields: fields, issue: created.Key,
-			value: map[string]any{"key": created.Key, "title": created.Title, "status": created.Status}}
-		// The create route answers 201 for an issue it made and 200 for one Dispatch already holds
-		// for the external reference the create names (respondWithExistingExternalIssue), the
-		// create's own verdict: that issue is no issue of the turn's, so the write changed nothing
-		// and its undo closes nothing (goingUndoer.closeCreated).
-		if status != http.StatusCreated {
-			observed.unchanged = true
-			observed.note = fmt.Sprintf("Dispatch already holds %s for the external issue this create named, so nothing was created", created.Key)
-		}
-		return observed, nil
-	case "dispatch_ask":
-		var created struct {
-			ID       string  `json:"id"`
-			Question string  `json:"question"`
-			State    string  `json:"state"`
-			IssueKey *string `json:"issue_key"`
-		}
-		if err := json.Unmarshal(answer, &created); err != nil {
-			return goingObservation{}, fmt.Errorf("read the ask made: %w", err)
-		}
-		return goingObservation{target: created.ID, fields: fields, issue: deref(created.IssueKey),
-			value: map[string]any{"id": created.ID, "question": created.Question, "state": created.State}}, nil
-	case "dispatch_request_approval":
-		var requested struct {
-			Ask *struct {
-				ID string `json:"id"`
-			} `json:"ask"`
-			Opened     bool   `json:"opened"`
-			ArtifactID string `json:"artifact_id"`
-			Version    int    `json:"version"`
-		}
-		if err := json.Unmarshal(answer, &requested); err != nil {
-			return goingObservation{}, fmt.Errorf("read the approval request: %w", err)
-		}
-		value := map[string]any{"ask": nil, "opened": requested.Opened, "artifact": requested.ArtifactID, "version": requested.Version}
-		target := requested.ArtifactID
-		if requested.Ask != nil {
-			value["ask"], target = requested.Ask.ID, requested.Ask.ID
-		}
-		return goingObservation{target: target, fields: fields, issue: issue, value: value}, nil
-	case "dispatch_send_to_agent":
-		// The route answers 201 even when the delivery failed, and when the listener queued it
-		// for a session that is not running, so the line carries the message's last delivery, its
-		// state and its error, for the bar to tell a failed or a queued send from one that
-		// reached the session.
-		var sent struct {
-			ID         string          `json:"id"`
-			Deliveries []goingDelivery `json:"deliveries"`
-		}
-		if err := json.Unmarshal(answer, &sent); err != nil {
-			return goingObservation{}, fmt.Errorf("read the message sent: %w", err)
-		}
-		observed := goingObservation{target: sent.ID, fields: fields, issue: issue, value: map[string]any{"id": sent.ID}}
-		if last := len(sent.Deliveries) - 1; last >= 0 {
-			observed.delivery = &sent.Deliveries[last]
-		}
-		return observed, nil
-	case "dispatch_artifact":
-		// The version the upload wrote its next version over is what its own transaction found
-		// under its owner's lock (artifactUploadResponse.PreviousVersion), which another upload
-		// may have written between the read before and the upload; none where it made the
-		// document.
-		var uploaded struct {
-			Artifact struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"artifact"`
-			PreviousVersion *int `json:"previous_version"`
-		}
-		if err := json.Unmarshal(answer, &uploaded); err != nil {
-			return goingObservation{}, fmt.Errorf("read the upload's answer: %w", err)
-		}
-		observed := goingObservation{target: uploaded.Artifact.ID, fields: fields, issue: issue,
-			value: map[string]any{"id": uploaded.Artifact.ID}, stood: json.RawMessage("null")}
-		if uploaded.PreviousVersion != nil {
-			observed.stood = goingJSONOrNull(goingUploadBefore{ID: uploaded.Artifact.ID, Name: uploaded.Artifact.Name, Version: *uploaded.PreviousVersion})
-		}
-		return observed, nil
+		return goingObservation{target: goingTargetOfPath(prepared.call.path), fields: fields, issue: issue}, nil
 	}
 	made := goingMadeID(answer)
 	if made == "" {
 		made = before.target
 	}
 	return goingObservation{target: made, fields: fields, issue: issue, value: map[string]any{"id": made}}, nil
+}
+
+// issueUpdated reads the issue's fields the update writes before it, and after it what the
+// update's route answered it found and left.
+func (o goingObserver) issueUpdated(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.issueFields(ctx, prepared.call.path["key"], goingIssueFieldsOf(prepared.arguments))
+	}
+	return goingIssueUpdated(answer, before)
+}
+
+// claimed reads the issue's claim before a claim or a release, and after it what the claim
+// route answered.
+func (o goingObserver) claimed(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.claim(ctx, prepared.call.path["key"])
+	}
+	// The claim route answers, from its own transaction, whether it changed the claim, the
+	// claim it left and the one it found (claimAnswer), which no read on either side of it can
+	// say: the claim may move between them and it. An answer that does not say whether it
+	// changed the claim is the value after unread, so the undo puts nothing back.
+	var claimed struct {
+		ClaimChanged *bool                        `json:"claim_changed"`
+		Claim        *struct{ Actor goingHolder } `json:"claim"`
+		Previous     *struct{ Actor goingHolder } `json:"previous_claim"`
+	}
+	observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue, stood: json.RawMessage("null")}
+	if err := json.Unmarshal(answer, &claimed); err != nil {
+		return observed, fmt.Errorf("read the claim's answer: %w", err)
+	}
+	if claimed.ClaimChanged == nil {
+		return observed, errors.New("the claim's answer does not say whether the claim changed")
+	}
+	observed.unchanged = !*claimed.ClaimChanged
+	if claimed.Claim != nil {
+		observed.value = &claimed.Claim.Actor
+	}
+	if claimed.Previous != nil {
+		observed.stood = goingJSONOrNull(&claimed.Previous.Actor)
+	}
+	return observed, nil
+}
+
+// askEdited reads the ask's parts the edit writes before it, and after it what the edit's route
+// answered.
+func (o goingObserver) askEdited(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.askFields(ctx, prepared.call.path["id"], goingAskFieldsOf(prepared.arguments))
+	}
+	return goingAskEdited(answer, before)
+}
+
+// askResolved reads the ask's state on either side of its resolution.
+func (o goingObserver) askResolved(ctx context.Context, prepared goingPrepared, _ []byte, _ int, _ goingObservation) (goingObservation, error) {
+	return o.askState(ctx, prepared.call.path["id"])
+}
+
+// commentResolvedBy reads the thread's resolution before it is resolved, and after it what the
+// resolve route answered.
+func (o goingObserver) commentResolvedBy(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.commentResolved(ctx, prepared.call.path["id"])
+	}
+	return goingCommentResolved(answer, before)
+}
+
+// followedBy reads whether the session follows the ask before a follow or an unfollow, and after
+// it whether the write changed that (goingObserver.landed).
+func (o goingObserver) followedBy(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		path := prepared.call.path
+		return o.following(ctx, path["id"], path["session_id"])
+	}
+	return o.followed(ctx, prepared, before)
+}
+
+// documentEditedBy reads the document an edit names before it, and after it the tokens and the
+// content the edit's route answered.
+func (o goingObserver) documentEditedBy(ctx context.Context, prepared goingPrepared, answer []byte, _ int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		resolved, err := o.editedDocument(ctx, prepared)
+		if err != nil {
+			fields, issue := goingObservedOf(prepared)
+			return goingObservation{fields: fields, issue: issue}, err
+		}
+		return o.document(ctx, resolved)
+	}
+	return o.documentEdited(ctx, answer, before)
+}
+
+// issueCreated reads nothing before a create, and after it the issue made.
+func (o goingObserver) issueCreated(ctx context.Context, prepared goingPrepared, answer []byte, status int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.made(ctx, prepared, answer, status, before)
+	}
+	fields, _ := goingObservedOf(prepared)
+	var created struct {
+		Key    string `json:"key"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(answer, &created); err != nil {
+		return goingObservation{}, fmt.Errorf("read the issue made: %w", err)
+	}
+	observed := goingObservation{target: created.Key, fields: fields, issue: created.Key,
+		value: map[string]any{"key": created.Key, "title": created.Title, "status": created.Status}}
+	// The create route answers 201 for an issue it made and 200 for one Dispatch already holds
+	// for the external reference the create names (respondWithExistingExternalIssue), the
+	// create's own verdict: that issue is no issue of the turn's, so the write changed nothing
+	// and its undo closes nothing (goingUndoer.closeCreated).
+	if status != http.StatusCreated {
+		observed.unchanged = true
+		observed.note = fmt.Sprintf("Dispatch already holds %s for the external issue this create named, so nothing was created", created.Key)
+	}
+	return observed, nil
+}
+
+// askOpened reads nothing before an ask is opened, and after it the ask made.
+func (o goingObserver) askOpened(ctx context.Context, prepared goingPrepared, answer []byte, status int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.made(ctx, prepared, answer, status, before)
+	}
+	fields, _ := goingObservedOf(prepared)
+	var created struct {
+		ID       string  `json:"id"`
+		Question string  `json:"question"`
+		State    string  `json:"state"`
+		IssueKey *string `json:"issue_key"`
+	}
+	if err := json.Unmarshal(answer, &created); err != nil {
+		return goingObservation{}, fmt.Errorf("read the ask made: %w", err)
+	}
+	return goingObservation{target: created.ID, fields: fields, issue: deref(created.IssueKey),
+		value: map[string]any{"id": created.ID, "question": created.Question, "state": created.State}}, nil
+}
+
+// approvalRequested reads nothing before an approval request: whether it opened its ask is what
+// its route answers (approvalRequestResponse.Opened), not a read before it, which another request
+// may overtake. After it, the request's ask, document and version.
+func (o goingObserver) approvalRequested(ctx context.Context, prepared goingPrepared, answer []byte, status int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.made(ctx, prepared, answer, status, before)
+	}
+	fields, issue := goingObservedOf(prepared)
+	var requested struct {
+		Ask *struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+		Opened     bool   `json:"opened"`
+		ArtifactID string `json:"artifact_id"`
+		Version    int    `json:"version"`
+	}
+	if err := json.Unmarshal(answer, &requested); err != nil {
+		return goingObservation{}, fmt.Errorf("read the approval request: %w", err)
+	}
+	value := map[string]any{"ask": nil, "opened": requested.Opened, "artifact": requested.ArtifactID, "version": requested.Version}
+	target := requested.ArtifactID
+	if requested.Ask != nil {
+		value["ask"], target = requested.Ask.ID, requested.Ask.ID
+	}
+	return goingObservation{target: target, fields: fields, issue: issue, value: value}, nil
+}
+
+// sentToAgent reads nothing before a send to a session, and after it the message sent with its
+// last delivery.
+func (o goingObserver) sentToAgent(ctx context.Context, prepared goingPrepared, answer []byte, status int, before goingObservation) (goingObservation, error) {
+	if answer == nil {
+		return o.made(ctx, prepared, answer, status, before)
+	}
+	fields, issue := goingObservedOf(prepared)
+	// The route answers 201 even when the delivery failed, and when the listener queued it
+	// for a session that is not running, so the line carries the message's last delivery, its
+	// state and its error, for the bar to tell a failed or a queued send from one that
+	// reached the session.
+	var sent struct {
+		ID         string          `json:"id"`
+		Deliveries []goingDelivery `json:"deliveries"`
+	}
+	if err := json.Unmarshal(answer, &sent); err != nil {
+		return goingObservation{}, fmt.Errorf("read the message sent: %w", err)
+	}
+	observed := goingObservation{target: sent.ID, fields: fields, issue: issue, value: map[string]any{"id": sent.ID}}
+	if last := len(sent.Deliveries) - 1; last >= 0 {
+		observed.delivery = &sent.Deliveries[last]
+	}
+	return observed, nil
+}
+
+// uploaded reads, before an upload, the document its name writes the next version of, where its
+// owner holds one, and after it the version the upload wrote over.
+func (o goingObserver) uploaded(ctx context.Context, prepared goingPrepared, answer []byte, _ int, _ goingObservation) (goingObservation, error) {
+	fields, issue := goingObservedOf(prepared)
+	if answer == nil {
+		// An upload under a name its owner already holds writes that document's next
+		// version: the version it writes over is the value before it.
+		return o.uploadedOver(ctx, prepared, fields, issue)
+	}
+	// The version the upload wrote its next version over is what its own transaction found
+	// under its owner's lock (artifactUploadResponse.PreviousVersion), which another upload
+	// may have written between the read before and the upload; none where it made the
+	// document.
+	var upload struct {
+		Artifact struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"artifact"`
+		PreviousVersion *int `json:"previous_version"`
+	}
+	if err := json.Unmarshal(answer, &upload); err != nil {
+		return goingObservation{}, fmt.Errorf("read the upload's answer: %w", err)
+	}
+	observed := goingObservation{target: upload.Artifact.ID, fields: fields, issue: issue,
+		value: map[string]any{"id": upload.Artifact.ID}, stood: json.RawMessage("null")}
+	if upload.PreviousVersion != nil {
+		observed.stood = goingJSONOrNull(goingUploadBefore{ID: upload.Artifact.ID, Name: upload.Artifact.Name, Version: *upload.PreviousVersion})
+	}
+	return observed, nil
 }
 
 // recorded is what a write taken over after its process ended, every request of it landed, left

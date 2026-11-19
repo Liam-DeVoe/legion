@@ -7,8 +7,28 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { dispatchRouteToolSpecs } from "./dispatch-route-tools";
+
+export { personToolSpecs } from "./dispatch-route-tools";
+
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
+
+/**
+ * One route of the Dispatch server's route table a tool calls, as the route stands: its method,
+ * its path pattern, the argument that fills each `{placeholder}` of the pattern (`params`, by
+ * placeholder), the arguments sent as query parameters under their own names (`query`), and the
+ * arguments sent as the members of a JSON body under their own names (`body`). Every method but
+ * GET sends a JSON body, `{}` where it names none. A spec's routes are tried in order, and a call
+ * takes the first whose placeholders its arguments all fill.
+ */
+export interface DispatchToolRoute {
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  readonly path: string;
+  readonly params?: Readonly<Record<string, string>>;
+  readonly query?: readonly string[];
+  readonly body?: readonly string[];
+}
 
 export interface DispatchToolSpec {
   readonly name: string;
@@ -26,6 +46,14 @@ export interface DispatchToolSpec {
   readonly strict?: boolean;
   /** A schema-valid call shown after this tool rejects malformed arguments. */
   readonly example: Readonly<Record<string, unknown>>;
+  /**
+   * The routes this tool calls, for a tool that calls one route of the table as it stands: the
+   * `dispatch` command serves such a tool with one generic command, and the Dispatch server with
+   * one generic translation. A tool whose command does more than one route's work - resolves a
+   * slug, reads before it writes, renders what it reads - carries none and has a hand-written
+   * command.
+   */
+  readonly routes?: readonly DispatchToolRoute[];
 }
 
 /** Builds a host-owned schema and applies any tool-level cross-field validation. */
@@ -2398,4 +2426,6 @@ export const dispatchToolSpecs = [
     arguments: () => ({}),
     strict: true,
   },
+  // The tools that call one route of the table as it stands, each served by its route binding.
+  ...dispatchRouteToolSpecs,
 ] as const satisfies readonly DispatchToolSpec[];

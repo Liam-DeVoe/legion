@@ -12,7 +12,7 @@ package api
 //     resolved comment reopened, an opened ask or approval request retracted;
 //   - close_created posts the undo's reason on an issue the turn created, then closes it, the
 //     order a reasoned close takes;
-//   - trace records the write undone and erases nothing.
+//   - not_undone records the write as one that stays as it is, and erases nothing.
 //
 // A write_back or a reverse whose item no longer holds what the write left is refused for that
 // field, naming what is there now, and the rest of the turn is still undone. Each undo is
@@ -103,7 +103,7 @@ type goingUndoLine struct {
 	WriteID  string            `json:"write_id"`
 	Action   string            `json:"action"`
 	Item     string            `json:"item"`
-	Undo     goingUndoKind     `json:"undo" enum:"reverse,write_back,close_created,trace"`
+	Undo     goingUndoKind     `json:"undo" enum:"reverse,write_back,close_created,not_undone"`
 	Now      json.RawMessage   `json:"now"`
 	Outcome  goingWriteOutcome `json:"outcome"`
 	Fields   []goingUndoField  `json:"fields"`
@@ -497,21 +497,21 @@ type goingUndoer struct {
 
 // undo undoes one write by the undo the catalogue row it went through states, as its record keeps
 // it (goingRunWrite.Undo), after the requests an earlier undo of the write landed (landed). That
-// kind chooses the path: a trace is recorded undone and erases
+// kind chooses the path: a write that is not undone is recorded as one that stays and erases
 // nothing, and each other kind runs the undo of its own action. A write of an action the catalogue
 // no longer holds, or whose record names no undo, is refused, 409 GOING_UNDO_UNKNOWN, and a kind
 // that names an undo this server has none of for its action, 501 GOING_UNDO_UNSERVED, rather than
 // recorded undone with nothing undone. A write whose value after was never read
-// (goingRunWrite.AfterUnread) is refused, 409 GOING_UNDO_AFTER_UNREAD, for every kind but a
-// trace: what it left is unknown, so there is nothing to compare what is there now with, and the
-// line says why in the write's own words and that the person changes the item by hand instead. A
-// write whose route found a value the read before it did not see (goingRunWrite.BeforeUnread) is
-// refused, 409 GOING_UNDO_BEFORE_UNREAD, for every kind but a trace: what it replaced is unknown,
-// so there is nothing to put back.
+// (goingRunWrite.AfterUnread) is refused, 409 GOING_UNDO_AFTER_UNREAD, for every kind but
+// not_undone: what it left is unknown, so there is nothing to compare what is there now with, and
+// the line says why in the write's own words and that the person changes the item by hand
+// instead. A write whose route found a value the read before it did not see
+// (goingRunWrite.BeforeUnread) is refused, 409 GOING_UNDO_BEFORE_UNREAD, for every kind but
+// not_undone: what it replaced is unknown, so there is nothing to put back.
 func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goingWriteRequest) goingUndoLine {
 	line := goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Now: json.RawMessage("null")}
 	if _, held := u.s.going.Lookup(write.Action); !held || write.Undo == "" {
-		line.Undo = goingUndoTrace
+		line.Undo = goingUndoNotUndone
 		line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoUnknown,
 			Message: fmt.Sprintf("%s is no action of the catalogue now, or its write's record names no undo, so its undo is unknown", write.Action)}
 		return line
@@ -528,16 +528,16 @@ func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goi
 	var fields []goingUndoField
 	served := true
 	switch kind := line.Undo; {
-	case write.AfterUnread && kind != goingUndoTrace:
+	case write.AfterUnread && kind != goingUndoNotUndone:
 		outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoAfterUnread, Message: fmt.Sprintf(
 			"%s, and the bar puts nothing back: read the item, and change it by hand to undo this write",
 			cmp.Or(write.Outcome.Message, "what this write left was never read"))}
-	case write.BeforeUnread && kind != goingUndoTrace:
+	case write.BeforeUnread && kind != goingUndoNotUndone:
 		outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoBeforeUnread,
 			Message: "another writer changed the item between the read before this write and the write, so what the write replaced is unknown and nothing was undone: read the item to see what it holds"}
-	case kind == goingUndoTrace:
+	case kind == goingUndoNotUndone:
 		outcome = goingWriteOutcome{OK: true, Status: http.StatusOK,
-			Message: "recorded as undone: Dispatch serves no reverse of this write, so it stays as it is"}
+			Message: "not undone: this write stays as it is"}
 	case kind == goingUndoWriteBack:
 		switch write.Action {
 		case "dispatch_issue_update":

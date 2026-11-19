@@ -27,23 +27,18 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/going"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// goingReadRoutes is the rows of the route table each read tool reads through. A caller is
-// offered a tool only where its credential may call every row the tool reads (goingReadsFor), as
-// a caller is offered an action only where it may call the action's rows, and
-// register refuses a table that does not serve every row named here.
-var goingReadRoutes = map[string][]string{
-	going.ReadRoster:          {"GET /api/v1/agents"},
-	going.ReadProgress:        {"GET /api/v1/issues", "GET /api/v1/issues/{key}"},
-	going.ReadArchitecture:    {"GET /api/v1/projects/{key}/architecture"},
-	going.ReadProjectActivity: {"GET /api/v1/projects/{key}/activity"},
-	going.ReadDelivery:        {"GET /api/v1/delivery/measures", "GET /api/v1/delivery/timeline", "GET /api/v1/delivery/pipeline"},
-}
+// The answer run's read tools are the entries of goingReadTools (going_tools.go) that no tool
+// spec states, by going's names for them: each names the rows of the route table it reads
+// through. A caller is offered a tool only where its credential may call every row the tool
+// reads (goingReadsFor), as a caller is offered an action only where it may call the action's
+// rows, and register refuses a table that does not serve every row goingReadTools names.
 
 // goingDeploymentReads are the reads that are no one project's: the roster names every
 // project's sessions and the delivery reads every project's pull requests and issues. A
@@ -72,21 +67,52 @@ const (
 	goingRosterStored = "stored"
 )
 
-// goingReadRoutesOf is each read tool's rows as the table mounts them, and an error naming every
-// row it does not serve.
+// goingReadRoutesOf is the answer run's read tools' rows as the table mounts them, and an error
+// naming everything goingReadTools holds that the table and the specs refuse: a row the table
+// does not serve, a row of a tool spec that binds a placeholder to no argument of the tool or
+// leaves one unbound (goingBindingProblems), a dispatch tool no spec states, and a tool whose
+// entry and spec disagree on its rows (goingToolRows). The answer run's own reads, which no
+// spec states, name rows with no binding: the server reads them in process.
 func goingReadRoutesOf(routes []apiRoute) (map[string][]GoingRoute, error) {
 	served := make(map[string]apiRoute, len(routes))
 	for _, route := range routes {
 		served[route.Method+" "+route.Pattern] = route
 	}
-	reads := make(map[string][]GoingRoute, len(goingReadRoutes))
+	specs := make(map[string]contracts.DispatchTool, len(contracts.DispatchTools))
+	for _, spec := range contracts.DispatchTools {
+		specs[spec.Name] = spec
+	}
+	reads := make(map[string][]GoingRoute, len(goingReadTools))
 	var refusals []string
-	for tool, rows := range goingReadRoutes {
-		for _, name := range rows {
+	for tool, entry := range goingReadTools {
+		spec, stated := specs[tool]
+		rows := entry.Routes
+		switch {
+		case stated:
+			var agree bool
+			if rows, agree = goingToolRows(spec, entry.Routes, nil); !agree {
+				refusals = append(refusals, tool+": its rows are stated by its entry and its spec's routes both, or by neither")
+			}
+		case strings.HasPrefix(tool, "dispatch_"):
+			refusals = append(refusals, tool+": no dispatch tool of that name (packages/contracts/src/dispatch-tools.ts)")
+		}
+		takes := make(map[string]bool, len(spec.Arguments))
+		for _, argument := range spec.Arguments {
+			takes[argument.Name] = true
+		}
+		for _, row := range rows {
+			name := row.Method + " " + row.Pattern
 			mounted, isServed := served[name]
 			if !isServed {
 				refusals = append(refusals, fmt.Sprintf("%s: %s is no row of the route table", tool, name))
 				continue
+			}
+			if stated {
+				refusals = append(refusals, goingBindingProblems(tool, row, takes)...)
+				continue
+			}
+			if row.Path != nil {
+				refusals = append(refusals, fmt.Sprintf("%s: %s binds a call's arguments, and the answer run reads it in process", tool, name))
 			}
 			reads[tool] = append(reads[tool], GoingRoute{Method: mounted.Method, Pattern: mounted.Pattern, auth: mounted.Auth, scopes: mounted.OAuthScopes})
 		}

@@ -541,7 +541,7 @@ export function undoneText(line: GoingUndoLine): string {
       return "reversed";
     case "close_created":
       return "closed";
-    case "trace":
+    case "not_undone":
       return "kept, and marked undone";
   }
 }
