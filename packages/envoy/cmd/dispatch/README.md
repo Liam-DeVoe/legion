@@ -3401,7 +3401,7 @@ No check writes the role `decision` any more, and the rows written under it befo
 The sweep is woken by event commits and judges a suggestion once the events that can resolve it are a minute old, reading only the events written since its last pass (Background loops, above);
 a pending suggestion nothing writes to costs it nothing.
 A ranking or latency change is measured on a restored copy of the production corpus:
-`packages/envoy/scripts/corpus-copy.sh` restores one, `search-smoke.sh` prints what a searcher sees for a list of queries from any build, and `search-latency-compare.sh` runs `BenchmarkSearchLatencyOnCorpus` from a base checkout and this one alternately and gates on the difference (`packages/envoy/scripts/README.md`, "Measuring search on a copy of the corpus").
+`packages/envoy/scripts/corpus-copy.sh` restores one, `search-smoke.sh` prints what a searcher sees for a list of queries from any build, and `search-latency-compare.sh` runs `BenchmarkSearchLatencyOnCorpus` from a base checkout and this one alternately and prints both (`packages/envoy/scripts/README.md`, "Measuring search on a copy of the corpus").
 
 ## Answering a question
 

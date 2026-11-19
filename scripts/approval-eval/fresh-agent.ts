@@ -1,3 +1,4 @@
+// legion: tool - scores a fresh agent given this checkout's approval-review skill against the same agent given no skill over the report slice, for the person who decides whether a change to that skill helps.
 import { createHash } from "node:crypto";
 import { appendFile, copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";

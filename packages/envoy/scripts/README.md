@@ -275,63 +275,6 @@ and `k15` needs `lake` from the Lean toolchain the environment names. Each bound
 listens on one loopback address and port 443, so only one stack runs on a machine at a
 time.
 
-## github-narrowing-check.sh
-
-Runs the four checks of `agent-secrets`' GitHub App narrowing that need a broker, a
-GitHub and a session — `k1`, `k2` and `k4` of dispatch://INFRA-2687's verification
-document, and `k1` of dispatch://INFRA-3099's — end to end on a local stack of its
-own, and prints one `PASS` or `FAIL` line for each property they name, then `all <n>
-assertions passed` when every one passed, so a reader tells a complete run from a
-cut-off one.
-
-```bash
-DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-narrowing-check.sh
-```
-
-It starts `dev-broker.sh`, which holds the three `github-app` secrets and the
-stand-in GitHub they are minted against, and enrols one pod session of the service
-that owns two of them, as the Legion daemon enrols a worker pod, so each request for
-one of those is granted without asking. `k1` spends a narrowed token at the stand-in
-and reads back what the narrowed mint asked GitHub for; `k2` sets the stand-in to
-refuse the mint (HTTP 422) and then to answer wider than the narrowing asked, at the
-answer route the stack's banner names (`POST {"mode":
-"ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen"|"fail-once",
-"repository": "<name>"}`), since one stack drives every answer this check needs;
-`k4` drives the secret whose
-release holds two installations, which no one token can be handed over for; and `k1`
-of INFRA-3099 drives the third secret, the one whose request reaches a person, with
-the stand-in refusing one repository, so that narrowing is refused before the
-approval request is opened: the command does not run, the refusal names the secret,
-that repository and the sentence it carries, its stderr names no page to approve
-anything on, the broker's own `credential_requests` gains no record, and the
-stand-in's records hold the search for the refused part and a revoke for every token
-it minted. Each check runs its own negative control — INFRA-3099's is the same
-request for a repository the stand-in reaches, approved on the broker's page as the
-person does, by `approve_record` and `approve_watch` copied from `airlock-check.sh`
-because each check script here stands alone — and every line names the exit status it
-read, because a property that failed and a command that never ran look alike in a
-transcript that holds neither.
-
-No line it prints is a credential: the child reads its token out of its own
-environment and prints the repository it asked for and the status it got, and a
-refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
-child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
-served over plain http on `127.0.0.1`, because the broker mints a type's value with
-an HTTP client that trusts the host's own roots and nothing else.
-
-`--keep-stack` leaves the stack and the run's work directory up to look at a failure
-with, `--help` prints the usage, and a usage error exits 2.
-`DEV_BROKER_POSTGRES_URL` is required: the stack is driven against the server it
-names, and the record property is read from the broker's own database there, whose
-name the script takes from `dev-broker.sh`'s own log and puts in place of that URL's
-path, so no password is ever parsed out of a banner. It needs bash, curl, jq, go,
-psql and setsid, and takes a few minutes once Go's build cache holds the stack's
-binaries. On a cold cache `dev-broker.sh`'s six builds take longer than all the rest,
-so the script waits for them under a bound of their own, up to 30 minutes, and then
-for the stack's start under a short one. The stack runs in a session of its own and
-is stopped as one process group, so a stop during the build — the script's exit, a
-wait that ran out, Ctrl-C — ends that build with the stack.
-
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
@@ -455,98 +398,6 @@ With no name it runs every mutant; a name is a patch's file name with or without
 any was not caught, 2 when the model mutants need `lake` and it is not installed.
 No patch ever touches this repository.
 
-## listener-deploy-probe.sh
-
-Watches an Envoy listener from a client's seat while its deployment rolls, and
-judges whether any task refused `/v1` while it was in service. A rolling deploy
-runs the old and the new task side by side, and a caller that resolves the
-listener's name (Dispatch, the Legion daemon, every plugin) can reach either.
-Every tick the probe resolves the name with `getent ahostsv4` (or takes the
-tasks' addresses from `--targets`) and asks each address, and the name itself,
-for `/healthz` and `GET /v1/sessions`. It needs bash, curl, getent and sed only
-(no jq), so it also runs inside a listener task over `aws ecs execute-command`.
-
-```bash
-ENVOY_TOKEN_FILE=<path to the listener bearer> \
-  packages/envoy/scripts/listener-deploy-probe.sh \
-  --url http://envoy-listener.internal.example:9020 --duration 300
-```
-
-Start it, then start the deploy (for example an ECS `--force-new-deployment`),
-and let it run past the old task's exit. Options:
-
-- `--targets <ip,ip>` — probe these addresses instead of resolving the name,
-  e.g. both tasks' addresses from `aws ecs describe-tasks`.
-- `--token-file <path>` — the listener's `/v1` bearer (default
-  `$ENVOY_TOKEN_FILE`, then `$ENVOY_TOKEN`). The bearer reaches curl in a header
-  file, never on its command line.
-- `--interval <s>` (default 1) and `--duration <s>` (default 300; `0` runs
-  until Ctrl-C, which still prints the summary).
-- `--send-to <session>` — also `POST /v1/messages/send` to that session at every
-  target each tick, under one idempotency key per tick.
-- `--dispatch-url`, `--dispatch-token-file`, `--dispatch-issue <KEY>`,
-  `--dispatch-session <session>` (all four together), `--dispatch-mode btw|steer`
-  (default `btw`), `--dispatch-every <n>` (default 10) — post a Dispatch issue
-  message targeting the session every `n` ticks and record its delivery
-  attempt's `state` (and `error`), or `http_<code>` (and Dispatch's `error`)
-  when Dispatch refuses the post, which is how a Dispatch delivery during the
-  overlap is observed.
-
-Each tick prints one tab-separated line per target:
-`ts target healthz_code healthz_status v1_code v1_error send_code dispatch_state`
-(`000` when no whole answer came, with `v1_error` naming why for `/v1`: `no connection`,
-`timeout`, `empty reply`, `connection reset`; `-` for a column that does not apply; the Dispatch
-attempt rides the name's line). On exit it prints, per target, when it was
-seen, how many ticks `/healthz` answered, and the `/v1` non-200 answers at the
-ticks `/healthz` answered 200, counted by `code:error` with the first and last
-time, then the sends and Dispatch attempts by outcome, then the verdict.
-
-### Verdict and exit codes
-
-A target **fails** when `/v1/sessions` answers anything but 200 at any tick
-where its `/healthz` answered 200 (whatever its `status`, `starting` included),
-or when it never answers `/v1/sessions` 200 at all. A `/v1` request that times
-out (the probe allows 3 s, less than Dispatch's 5 s client timeout), or whose
-connection closes or resets without an answer (what Go's `net/http` does after
-a handler panics), is a non-200 answer: `000:timeout`, `000:empty reply`,
-`000:connection reset`. One that finds nothing listening right after `/healthz`
-answered (curl exit 7) is counted in the summary, not judged a refusal: a
-listener that stops closes its listening socket first, so the task stopped
-between the tick's two requests. A target that never answers `/healthz` is
-**unreached**: named in the summary, not failed (a stale A record during the
-handover is one). With `--dispatch-*`, the run also **fails** when any Dispatch
-message did not record `state` `sent`: a failed delivery attempt, or a post
-Dispatch refused (`http_401:invalid bearer token` for a wrong Dispatch
-bearer), and the verdict names each such outcome with its count.
-
-| Code | Meaning |
-|------|---------|
-| 0 | At least one target answered `/healthz`, every target that did passed, and every Dispatch message recorded `state` `sent`. |
-| 1 | A target failed, a Dispatch message did not record `state` `sent`, or no target ever answered `/healthz`. |
-| 2 | Usage error, or every `/v1` answer of the run was 401 or 403: the bearer is wrong, not the listener. |
-| 4 | A required tool is missing (`curl`, `sed`, or `getent` without `--targets`). |
-
-A listener from before LEGION-456 keeps `/v1` closed until its durable binds,
-so during a rolling deploy the replacement answers `/healthz` 200 `starting`
-and `/v1` 503 `service starting` for most of a minute and the run exits 1. A
-listener that opens `/v1` once its caches are warm passes.
-
-The refilling answer is another cause. A listener answers `GET /v1/sessions`
-`503` with `Retry-After: 5` and code `refilling` (`503:envoy: the agent list is
-refilling; try again in a moment` in the summary) while it cannot stand behind
-its copy of the session or interest bucket: before its first complete read of
-the bucket (its closed `/v1` start gate gives this route the same answer, and a
-cache warm-up that timed out opens `/v1` on a copy still being read), or once a
-re-read has not completed for longer than its bound (2 minutes, or half the
-bucket's `MaxAge` when that is shorter). Its `/healthz` answers 200 all the
-while, so the target fails: a client that reached it then was refused the list
-(INFRA-261).
-
-`listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
-Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
-kernel chose, behind a fake `getent`; CI runs it in the `envoy-go-checks` job,
-whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
-
 ## daemon-release-gate.sh
 
 Says whether every production reader of a message name runs a build of cybermonklabs/legion at or
@@ -626,13 +477,15 @@ DATABASE_URL=<copy> packages/envoy/scripts/search-smoke.sh \
 ```
 
 `search-latency-compare.sh` compares a base checkout (usually `main`) with this one on the same
-copy: it runs `BenchmarkSearchLatencyOnCorpus` from each, alternately, for five rounds by default, prints
-every run's p50 and p95, and exits 1 when this checkout's median p95 is more than 10% above the
-base's. A copy answers in whatever time the machine and its load allow, so the bound is relative,
-never a fixed number of milliseconds.
+copy: it runs `BenchmarkSearchLatencyOnCorpus` from each, alternately, for five rounds by default, and
+prints every run's p50 and p95 and the two medians of p95. It holds no limit of its own: whether a
+change's latency is worth it is the decision of the person who runs the comparison. A runner who
+wants a limit passes `max-rise-percent`, and the run then exits 1 when this checkout's median p95
+is more than that many percent above the base's. A copy answers in whatever time the machine and
+its load allow, so such a limit is relative, never a fixed number of milliseconds.
 
 ```bash
-DISPATCH_BENCH_DATABASE_URL=<copy> packages/envoy/scripts/search-latency-compare.sh <base-checkout> [rounds]
+DISPATCH_BENCH_DATABASE_URL=<copy> packages/envoy/scripts/search-latency-compare.sh <base-checkout> [rounds] [max-rise-percent]
 ```
 
 ## build-dispatch-build.sh

@@ -4,9 +4,8 @@ import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 
-// clean_smoke_main's pull request and branch (lib/workflow.sh) through each stage's own teardown:
-// Stage 4b's cleanup and remove_run_branches, and Stage 3's cleanup and the lib's
-// close_unpassed_run_pull_requests. Each run takes the stage's functions from the script by name,
+// clean_smoke_main's pull request and branch (lib/workflow.sh) through Stage 4b's own teardown:
+// its cleanup and remove_run_branches. Each run takes the stage's functions from the script by name,
 // sources lib/rig.sh and lib/workflow.sh as the script does, and runs under the script's own `set`
 // line and top-level traps, read from the script. The teardown's cluster, NATS and process helpers
 // are stubbed; gh is a fake holding the smoke repository's branches and pull requests, which each
@@ -122,15 +121,11 @@ function scriptShell(path: string) {
   return { set: set[0], traps: traps.join("\n") };
 }
 const stage4bScript = join(e2e, "stage4b-sandbox-tree.sh");
-const stage3Script = join(e2e, "stage3-devbox-workflow.sh");
 const fn4b = scriptFunctions(stage4bScript);
-const fn3 = scriptFunctions(stage3Script);
 const shell4b = scriptShell(stage4bScript);
-const shell3 = scriptShell(stage3Script);
 const rig = join(e2e, "lib", "rig.sh");
 const workflowLib = join(e2e, "lib", "workflow.sh");
 const guard4b = nameMissingHelpers(stage4bScript, rig, workflowLib);
-const guard3 = nameMissingHelpers(stage3Script, rig, workflowLib);
 const libs = `. "$root/scripts/e2e/lib/rig.sh"
 . "$root/scripts/e2e/lib/workflow.sh"
 stop_tree() { :; }; stop_pid() { :; }; run_processes() { :; }
@@ -172,28 +167,6 @@ const done4b = `begin done
 smoke_main_cleaning=1
 clean_smoke_main
 smoke_main_cleaning=
-pass`;
-
-// Stage 3's driver at its smoke-main-clean checkpoint, its first issue merged and signed off.
-const stage3 = (tail: string) => `${shell3.set}
-root=${JSON.stringify(root)} work="$RUN/work" evidence="$RUN/evidence" profile_agent="$RUN/no-profile" model_route=gateway
-check=setup check_started=2026-10-08T00:00:00Z
-ok= audited= prod_baseline= watcher_pid= daemon_pid= dispatch_pid= listener_pid= bridge_pid= daemon_keeper_pid= dispatch_keeper_pid= pg_container=none nats_container=none
-project=S312345678 ptoken=s312345678 repo=sjawhar/legion-smoke
-mkdir -p "$work" "$evidence/model-gateway" "$evidence/transcripts"
-${guard3}
-${fn3("begin")}
-${fn3("note")}
-${fn3("pass")}
-${fn3("fail")}
-${libs}
-${fn3("collect_transcripts")}
-${fn3("cleanup")}
-${shell3.traps}
-${tail}
-`;
-const clean3 = `begin smoke-main-clean
-clean_smoke_main
 pass`;
 
 interface PullRequest {
@@ -288,7 +261,7 @@ const gateway504 = "HTTP 504: Gateway Timeout (https://api.github.com/graphql)";
 const close502 = "HTTP 502: Bad Gateway (https://api.github.com/graphql)";
 const url = (n: number) => `https://github.com/sjawhar/legion-smoke/pull/${n}`;
 
-// Another lane's Stage 3 cleanup, and a branch the prefix proof/clean-main-legsmoke alone matches.
+// Another lane's cleanup branch, and a branch the prefix proof/clean-main-legsmoke alone matches.
 const others4b = {
   branches: ["proof/clean-main-s387654321", "proof/clean-main-legsmoke2"],
   prs: [
@@ -402,66 +375,5 @@ describe("Stage 4b's teardown of done's cleanup pull request", () => {
     expect(merged).toBeGreaterThan(-1);
     expect(r.calls.slice(merged + 1).filter((c) => c.includes("clean-main"))).toEqual([]);
     untouched(r, others4b.branches, [2, 3]);
-  });
-});
-
-// This run's held-worker pull request, another lane's issue pull request, and its cleanup.
-const others3 = {
-  branches: ["legion/S312345678-7", "legion/S387654321-5", "proof/clean-main-s387654321"],
-  prs: [
-    { number: 1, headRefName: "legion/S312345678-1", state: "MERGED" },
-    { number: 2, headRefName: "legion/S312345678-7", state: "OPEN" },
-    { number: 3, headRefName: "legion/S387654321-5", state: "OPEN" },
-    { number: 4, headRefName: "proof/clean-main-s387654321", state: "OPEN" },
-  ] satisfies PullRequest[],
-};
-
-describe("Stage 3's teardown of smoke-main-clean's cleanup pull request", () => {
-  test("a merge GitHub answers with a 504: the EXIT trap closes the run's pull request and deletes its branch", () => {
-    const r = run(stage3(clean3), "stage3-devbox-workflow.sh", others3.branches, others3.prs, {
-      mergeFails: gateway504,
-    });
-    expect(r.code).toBe(1);
-    expect(r.stderr).toContain("closed sjawhar/legion-smoke#2 and deleted its branch\n");
-    expect(r.stderr).toContain(`closed the run's cleanup pull request ${url(5)}\n`);
-    expect(r.stderr).toContain(
-      "deleted the run's cleanup branch proof/clean-main-s312345678 from sjawhar/legion-smoke\n"
-    );
-    expect(r.stderr).toContain("stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean)");
-    expect(r.stderr).not.toContain("cleanup warning:");
-    expect(r.pr(5)).toBe("CLOSED");
-    expect(r.branches).not.toContain("proof/clean-main-s312345678");
-    expect(r.comments).toContainEqual(
-      expect.stringMatching(
-        /^#5 Closed by the run that opened it \(stage3-devbox-workflow\.sh, project S312345678, pid \d+\), at its teardown\.$/
-      )
-    );
-    untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
-  });
-
-  test("a close GitHub refuses prints the pull request's URL", () => {
-    const r = run(stage3(clean3), "stage3-devbox-workflow.sh", others3.branches, others3.prs, {
-      mergeFails: gateway504,
-      closeFails: close502,
-    });
-    expect(r.code).toBe(1);
-    expect(r.stderr).toContain(
-      `could not close the run's cleanup pull request ${url(5)}: ${close502}\n`
-    );
-    expect(r.stderr).not.toContain("cleanup warning:");
-    untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
-  });
-
-  test("a run that never reached the cleanup closes only its issue pull requests", () => {
-    const r = run(
-      stage3('begin rework\nfail "round 2 was not pushed"'),
-      "stage3-devbox-workflow.sh",
-      others3.branches,
-      others3.prs
-    );
-    expect(r.code).toBe(1);
-    expect(r.stderr).toContain("closed sjawhar/legion-smoke#2 and deleted its branch\n");
-    expect(r.calls.filter((c) => c.includes("clean-main"))).toEqual([]);
-    untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
   });
 });

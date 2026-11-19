@@ -18,14 +18,12 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Ten call sites read a DSN with this guard before they start anything, because the server must
-# be this machine's. Nine are proofs of their own: plan-pointer-drive.sh,
+# Nine call sites read a DSN with this guard before they start anything, because the server must
+# be this machine's, and each is a proof of its own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, stage2-tmux-supervision.sh,
 # controller-start-tmux.sh, clean-session-stop-tmux.sh, envoy-session-states.sh,
-# envoy-session-delivery.sh and dispatch-session-settings.sh. The tenth is lib/two-builds.sh,
-# the harness the two two-builds proofs share, which reads DATABASE_URL once for
-# dispatch-two-builds.sh and dispatch-search-two-builds.sh. Eight of the ten call sites call
-# this function.
+# envoy-session-delivery.sh and dispatch-session-settings.sh. Seven of the nine call this
+# function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.
@@ -41,18 +39,17 @@
 #
 # So the client the run connects with must be this one. A proof that reads the DSN with a second
 # parser decides the host twice, and the host it connects to is the second answer. Each of the
-# eleven proofs those ten call sites serve reaches that server with psql, which is libpq. Seven
+# nine proofs those call sites serve reaches that server with psql, which is libpq. Seven
 # of them give every server
 # they start the connection string run_database_url below rebuilds, which libpq read back inside
 # the helper.
 #
-# The other four read the DSN a second time, with pgx. lib/two-builds.sh:284, which starts both
-# servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh,
+# The other two read the DSN a second time, with pgx.
 # verification-results.sh:252 and dispatch-claimant-delivery.sh:169 give Dispatch the caller's
 # raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
-# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those four safe. The
+# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those two safe. The
 # pinned pgx reads these shapes as libpq does, because pgx v5.11.0's own pgconn/parse_url.go is
-# written to match libpq's URI parser and says so in its first comment. And all four run
+# written to match libpq's URI parser and says so in its first comment. And both run
 # Dispatch with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one
 # that is not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1270-1284).
 #
@@ -63,7 +60,7 @@
 # version is in use. dispatch://INFRA-2338 tracks that gap. A raise is a deliberate edit of those
 # files, and this comment is the one text that says what such a raise moves:
 # scripts/e2e/README.md and packages/daemon/internal/testpg/testdb/testdb_test.go point here
-# rather than write it again. Whoever raises pgx moves the safety of those four proofs, and of
+# rather than write it again. Whoever raises pgx moves the safety of those two proofs, and of
 # the rewrite check the next paragraph names, and must drive this guard's own cases
 # (lib/loopback-dsn.test.ts) and that check's own cases
 # (packages/daemon/internal/testpg/testdb/testdb_test.go) again.
@@ -127,8 +124,8 @@ run_database_url() {
 # takes it as given with `create extension if not exists`), which the role a run connects as need
 # not be, so dropping the schema would leave a database no build can migrate. A Legion pod's test
 # server is one such case: every database made from its template1 holds `vector`, and its login
-# may not create it again. Three callers run it: lib/two-builds.sh's two_builds_reset_database,
-# verification-results.sh and dispatch-claimant-delivery.sh.
+# may not create it again. Two callers run it: verification-results.sh and
+# dispatch-claimant-delivery.sh.
 empty_public_schema() {
   local reset_sql="do \$\$
 declare object record;

@@ -2949,7 +2949,6 @@ refuses an older commit): that release writes the default assignee every project
 migration `20261111210103`, serves on the socket the harness holds for it and knows
 the shared key, so it starts exactly as A does, no run names a port for it, and
 `e2e/global-setup.ts` checks it for the one cookie key as it checks any other B.
-`scripts/e2e/dispatch-two-builds.sh` gives `DISPATCH_E2E_SERVER_BIN` itself, outside the harness.
 `DISPATCH_E2E_BROKER_BIN_DIR` is the same for the real secrets broker: a directory holding
 `broker`, `dev-oidc-issuer` and `requestseed` that the caller built, which `e2e/run-broker.sh`
 execs instead of building them from this checkout, and which it refuses when any of the three is

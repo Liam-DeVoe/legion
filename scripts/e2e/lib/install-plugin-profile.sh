@@ -20,9 +20,7 @@
 #   3. verify with OMP_PROFILE=<name> omp plugin list
 # Steps 2 and 3 run the Oh My Pi the daemon pins (.omp-pin) under HOME=<home>, or the build --omp
 # names: a stage proof passes the one build its daemon and panes run, so the profile is never
-# opened by another (under LEGION_E2E_MODEL_ROUTE=box-login the profile's agent.db is the
-# operator's own login database, which only a build with the refresh-race fix may open;
-# lib/install-box-login-route.sh). --omp-path names that build as the binary itself instead, for a
+# opened by another. --omp-path names that build as the binary itself instead, for a
 # proof whose daemon runs the Oh My Pi a CI job installed (LEGION_TEST_OMP, by
 # .github/actions/install-omp) by its path, with no mise: it runs by that absolute path alone.
 # Each source is cited by what it runs, never by line number: the lines move with every edit
@@ -125,8 +123,7 @@ fi
 # tool store, from the unpacked plugin's directory, where no mise config is. It runs as the daemon
 # runs it (packages/daemon/internal/omplaunch): `mise x <pin> --` for the tool's environment, and
 # the install's own bin/omp by its absolute path, never an `omp` looked up on PATH, where an
-# operator's wrapper could answer instead (and a wrapper's own setup could rewrite the profile,
-# whose agent.db is the operator's login database under the box-login route).
+# operator's wrapper could answer instead (and a wrapper's own setup could rewrite the profile).
 if [ -n "$omp_path" ]; then
   omp=$(realpath -e -- "$omp_path" 2>/dev/null) && [ -x "$omp" ] || {
     echo "$me: --omp-path $omp_path is not an executable file" >&2

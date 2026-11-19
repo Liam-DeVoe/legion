@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
+# legion: tool - the p50 and p95 search latency of a base checkout and this one on one copy of the production Dispatch database, for a person who changes search and weighs the latency the change costs.
 # Compares search latency between a base checkout (usually main) and this one on the same corpus
 # copy: it compiles internal/dispatch/api's tests in each, runs BenchmarkSearchLatencyOnCorpus from
-# the two alternately, so both see the same machine load, and prints every run's p50 and p95. It
-# exits 1 when this checkout's median p95 is more than 10% above the base's.
+# the two alternately, so both see the same machine load, and prints every run's p50 and p95 and
+# the two medians of p95. It holds no limit of its own: a runner who wants one passes
+# max-rise-percent, and the run then exits 1 when this checkout's median p95 is more than that many
+# percent above the base's.
 set -euo pipefail
 
-if (($# < 1 || $# > 2)); then
-  printf 'usage: DISPATCH_BENCH_DATABASE_URL=<copy> %s <base-checkout> [rounds]\n' "$0" >&2
+if (($# < 1 || $# > 3)); then
+  printf 'usage: DISPATCH_BENCH_DATABASE_URL=<copy> %s <base-checkout> [rounds] [max-rise-percent]\n' "$0" >&2
   exit 2
 fi
 : "${DISPATCH_BENCH_DATABASE_URL:?DISPATCH_BENCH_DATABASE_URL must name a corpus copy (corpus-copy.sh)}"
 readonly base_envoy="$1/packages/envoy"
 readonly rounds="${2:-5}"
+readonly max_rise="${3:-}"
+[[ -z "$max_rise" || "$max_rise" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+  printf 'max-rise-percent must be a number of percent, not %s\n' "$max_rise" >&2
+  exit 2
+}
 head_envoy="$(cd "$(dirname "$0")/.." && pwd)"
 readonly head_envoy
 [[ -f "${base_envoy}/go.mod" ]] || { printf 'not a legion checkout: %s\n' "$1" >&2; exit 2; }
@@ -44,7 +52,7 @@ for round in $(seq 1 "$rounds"); do
   measure "$round" head "$head_envoy"
 done
 
-python3 - "${workdir}/runs.txt" <<'PY'
+python3 - "${workdir}/runs.txt" "$max_rise" <<'PY'
 import re, statistics, sys
 
 units = {"ns": 1e-6, "µs": 1e-3, "us": 1e-3, "ms": 1.0, "s": 1000.0}
@@ -61,7 +69,8 @@ for line in open(sys.argv[1], encoding="utf-8"):
     p95[name].append(millis(p95_field.removeprefix("p95=")))
 base, head = statistics.median(p95["base"]), statistics.median(p95["head"])
 print(f"median p95: base {base:.1f} ms, head {head:.1f} ms ({(head / base - 1) * 100:+.1f}%)")
-if head > base * 1.10:
-    print("head is more than 10% slower than base")
+max_rise = sys.argv[2]
+if max_rise and head > base * (1 + float(max_rise) / 100):
+    print(f"head is more than {max_rise}% slower than base")
     sys.exit(1)
 PY

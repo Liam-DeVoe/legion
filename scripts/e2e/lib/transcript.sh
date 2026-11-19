@@ -23,7 +23,7 @@
 # caller's at the call. lib/rig.sh's run_processes matches $work in either, and a cleanup that
 # SIGKILLs what it names would kill the tee before its own last writes. So FILE and the caller's
 # working directory stay outside $work, or the caller opens FILE on a descriptor and passes
-# /dev/fd/N, as stage 2 and stage3-4b13b-acceptance.sh do.
+# /dev/fd/N, as stage 2 does.
 transcript_to() {
   exec > >(trap '' HUP INT TERM PIPE && exec tee -a "$1" /dev/null) 2>&1
 }

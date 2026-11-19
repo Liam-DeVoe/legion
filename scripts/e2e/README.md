@@ -23,8 +23,6 @@ standalone helpers they run, and the files they source, which `shellcheck` follo
 
 - [`lib/omp-home.sh`](#libomp-homesh)
 
-- [`lib/box-login.sh`](#libbox-loginsh)
-
 This file uses semantic line breaks: one sentence per line, and a long sentence may break after a clause.
 A blank line separates list items.
 Add a new item next to the item it belongs with, never at the end of a list unless it belongs there, so two pull requests that add items or change different sentences do not conflict.
@@ -115,16 +113,6 @@ Each item below names a script, then what it proves.
   a second start revokes the first's capability and grants; the controller liveness probe reads the live listener.
   The `agent-harness` job of `ci.yaml` runs it
 
-- `parked-decision-devbox.sh`
-
-  a person's decision on a parked tree reaches the operator-launched controller, against a scratch Dispatch, NATS, a real Envoy listener, the Go daemon and real agents:
-  the person's answer on a root the controller parked for a hold (its `Parked by Legion while it waits on:` mark) comes to the controller as a `parked-decision` notice, and the controller sets the root `todo`, so it is admitted again and its architect's start task names the answer;
-  the person's question on a parked root comes to the controller, which comments and leaves it parked, and a session's reply on the same ask wakes nothing;
-  the person's answer on a root an operator, the person or another session parked gets a comment and leaves it parked;
-  the person's approval of a parked root's spec is queued by the daemon as their handover (sjawhar/legion#2619) and sends no notice;
-  an answer while no controller runs is found by the next controller's start walk.
-  Devbox only (INFRA-214, A3 and A4)
-
 - `dispatch-user-turns.sh`
 
   a person's direct Send or Aside from Dispatch's conversation page reaches a real Oh My Pi session
@@ -212,20 +200,6 @@ Each item below names a script, then what it proves.
   a delivered mention of the claimant leaves its topic out, a failed one reaches it, and a failed mention of an ask's follower still reaches the follower.
   Run against a base binary (`DISPATCH_BIN`), it is the change's negative control
 
-- `dispatch-two-builds.sh`
-
-  text an older build of Dispatch writes gets this build's reference grammar with no edit and no command run, driven over HTTP through two real `envoy-dispatch` binaries against one loopback PostgreSQL the caller names — the build of the commit `--base-commit` names, taken with `git archive` into the run's own work directory, and the build of this checkout, the way a rolling release serves both at once:
-  under the base build alone a comment citing an issue by its bare key leaves that issue referenced by nothing for a bounded wait, which is the negative control, since the base build's grammar reads no bare key;
-  this build then starts beside it and migrates the schema forward, the base build writes a second such comment and edits the first, and once the base build has stopped this build's own reconciliation drains the queue those writes enqueued, so both comments show in the target's "Referenced by"
-
-- `dispatch-search-two-builds.sh`
-
-  a search carrying one of the five narrowing members reaches an older build of Dispatch as 404 no route rather than as unnarrowed rows, driven over HTTP through two real `envoy-dispatch` binaries against one loopback PostgreSQL the caller names — the build of the commit `--base-commit` names, which for this proof is `legion-envoy-v29.47.1`, the release before those members, and the build of this checkout, both serving at once with the dev embedder so meaning search runs:
-  for `number_project`, `status`, `author`, `updated_since` and `keywords_only` in turn, `GET /api/v1/search` carrying the member answers the base build's own unnarrowed answer, which is the hazard this proof records;
-  `GET /api/v1/search/results` carrying it answers 404 `NOT_FOUND` there;
-  this build answers that path narrowed, and answers `GET /api/v1/search` carrying the member the same way, so a page an earlier release served is still answered correctly.
-  Commenting out the `GET /api/v1/search/results` row of `routes_table.go` leaves neither build serving the path, which is the negative control
-
 - `verification-results.sh`
 
   a recorded check result says where its commit stands against the commits and branches its check compares with, and the head it is compared with moves with the pull-request events Dispatch takes off the bus, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names, a NATS of the run's own and the e2e harness's fake GitHub:
@@ -287,16 +261,6 @@ Each item below names a script, then what it proves.
 
   That installs Chrome Headless Shell 156.0.8078.4 under that directory, and a run that exports the same `PLAYWRIGHT_BROWSERS_PATH` launches it with no `executablePath` of its own.
   No script CI runs downloads it
-
-- `with-managed-settings.sh`
-
-  runs a command with a managed-settings file at `/etc/claude-code/managed-settings.json`, on a machine whose `/etc` this account cannot write, which is what a proof of a Claude Code guard that only managed settings seat needs.
-  It copies every entry of `/etc` this account can read into a directory of its own, writes the file the caller names under it as `claude-code/managed-settings.json`, and runs the command in a user and mount namespace where that directory is bound over `/etc` and a nested mapping gives the command the caller's own uid back, which Claude Code requires.
-  It judges nothing: it is a harness another proof runs, and its exit status is the command's.
-
-  ```sh
-  bash scripts/e2e/with-managed-settings.sh --settings channels-on.json -- claude --version
-  ```
 
 ## On a GitHub-hosted runner
 
@@ -543,256 +507,6 @@ Three things the run had to learn about its surface:
 - OMP takes the session to resume as `--resume=<file>`, one argument.
 
 - The shipped orphan sweep is the only reaper after boot (boot's own reconcile runs with grace 0), so the stray is opened after the restart and the check waits up to five minutes.
-
-## stage3-devbox-workflow.sh
-
-```sh
-LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
-LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
-  bash scripts/e2e/stage3-devbox-workflow.sh     # → "stage 3 e2e: PASS", exit 0
-LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
-LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
-  bash scripts/e2e/stage3-devbox-workflow.sh     # the same, for a devbox with no Hawk gateway
-LEGION_E2E_MODEL_ROUTE=box-login SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
-LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
-  bash scripts/e2e/stage3-devbox-workflow.sh     # the same, on the operator's own Oh My Pi login
-```
-
-**Devbox only; CI does not run this script.**
-It runs real Oh My Pi agents and real GitHub Apps, and sees one disposable pull request merged into `sjawhar/legion-smoke` by its own merger:
-the merge is the merger agent's `gh pr merge --squash --match-head-commit`, under the subject and the empty body it passes itself, and the proof only reads it (`await_merger_merge`), never merging it by hand.
-The run needs:
-
-- `go`
-
-- `docker`
-
-- `jq`
-
-- `curl`
-
-- `python3`
-
-- `tmux`
-
-- `bun`
-
-- `mise`
-
-- `gh`
-
-- `shellcheck`
-
-- the `secrets` CLI
-
-- the `agent-secrets` client reaching the secrets broker that holds the implement App's github-app secret (this deployment's own unless `LEGION_E2E_IMPLEMENT_APP_SECRET` names another deployment's)
-
-- `LEGION_E2E_REVIEW_APP_KEY_COMMAND` (required, no default), shell text that prints the review App's PEM private key on stdout, which `prerequisites` runs once, here on the driver, in the operator's own environment — so it may read their `HOME`, their own gcloud or kubectl configuration and any variable of their shell — into `$work/app-key/review/key.pem`, 0600 in a directory of mode 0700 that cleanup removes on every exit:
-  the daemon never runs it, and the review App's `private_key_command` is a `cat` of that file, from which the daemon mints and renews that App's tokens ([`write_github_apps --key-dir`](#libgithub-appssh));
-  the review App asks the broker for nothing, and this repository, being public, carries no key and no name of the store a deployment keeps one in ([`lib/github-apps.sh`](#libgithub-appssh))
-
-- `LEGION_E2E_MODEL_ROUTE` (required, `gateway`, `key-file` or `box-login`), which picks how the agents reach Anthropic, independently of which devbox this runs on:
-
-  - `gateway`: the operator's model gateway access
-    — `LEGION_E2E_MODEL_GATEWAY_URL` naming the gateway's Anthropic endpoint (required in this mode;
-    [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh)), `hawk-token` on `PATH`, their `hawk login`, and the GNOME keyring holding it unlocked (every reboot locks it; the `unlock-keyring` skill).
-
-  - `key-file`: `LEGION_E2E_ANTHROPIC_KEY_FILE` (required in this mode), a 0600 file holding a plaintext Anthropic key, for a devbox with no Hawk gateway at all ([`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)).
-
-  - `box-login`: nothing more, for a devbox whose operator lets Legion's test runs use their own Oh My Pi login:
-    the profile's `agent.db` is a symlink to the operator's, no key file, gateway or `hawk-token` is involved, and nothing reads the credential ([`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)).
-    The panes run the operator's own Oh My Pi build (its global mise pin, refused unless it carries the refresh-race fix) in place of `.omp-pin` for the plugin installs and every pane;
-    the daemon runs without `LEGION_OMP_PATH` under every route (it would outrank `omp_invocation`), each daemon start must log that build's own `bin/omp` as its resolved binary, and a box-login run with `LEGION_OMP_PATH` set is refused.
-    The script takes the one-at-a-time lock ([`lib/box-login.sh`](#libbox-loginsh)) first, before it makes its work or evidence directory or starts anything, and its teardown (the `EXIT` trap and `services-stopped`) gives every pane SIGTERM and up to 10 s before any SIGKILL, after the failure-path production audit, then removes the profile's `agent.db` link before transcripts are kept.
-
-`SMOKE_UPSTREAM_NATS` (required) names the production Envoy NATS the GitHub bridge subscribes on by its fully-qualified name on the operator's tailnet, the `nats://<host>.<tailnet>.ts.net:4222` URL the operator's `envoy.json` names as `envoy.natsUrls` (the hub's host changes when the hub moves), never a bare alias, which only a resolver's search domain completes ([the rig-alias learning](../../docs/solutions/testing/a-rig-container-alias-that-is-momentarily-unheld-resolves-through-the-tailnet-to-production.md));
-`prerequisites` refuses a run without it, and refuses a value that is not one NATS URL naming a host with a dot.
-`STAGE3_PRODUCTION_ENVOY_URL` (default `http://127.0.0.1:9020`, a standing local port-forward's own address) names the operator's Envoy listener directly instead (`production-untouched`'s own documentation below has the check), for a devbox with no such forward running;
-the operator's own `envoy.json` names the production Envoy's real address (`envoy.url`).
-The script prints neither value.
-The bridge connects to that upstream as the nkey user a command run from the operator's shell resolves for it (`lib/operator-nats-seed.ts`, `envoySettings` with `ENVOY_NATS_URL` set to that upstream):
-`NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED`, else the `envoy.natsSeed` of the operator's envoy.json when its `envoy.natsUrls` are exactly that upstream, and without a credential when none names one;
-a file's seed written for other servers, or a file that turns Envoy off, stops the bridge naming it.
-Every process the rigs start against their own no-auth NATS (the listener, the Envoy Dispatch server, the Go daemon;
-stage 2 and the other local rigs unset every variable below outright) runs without `NATS_NKEY_SEED`/`NATS_NKEY_SEED_FILE`, and the Go daemon also without the daemon seed's `NATS_DAEMON_NKEY_SEED`/`NATS_DAEMON_NKEY_SEED_FILE`, since the Go client refuses an nkey against a server with no users;
-`lib/nats-stream.ts`, which stage 4b runs against production NATS, resolves the operator's seed the same way and reads the one newest message matching each preflight subject within the caller's budget.
-The proof human is the devbox's ordinary `gh` — the dotfiles shim, acting as the `sjawhar-agent` App
-— for its reviews, its reads, and its merge;
-it is never a Legion App, and the run needs no personal access token (`GH_PUBLIC_REPO_PAT` cannot read the private smoke repository anyway).
-The shim routes `gh` to that App only from the operator's own Oh My Pi session, so the run starts there:
-a plain shell's `gh`, a tmux window's included, is the user's own login, a Legion pane's is one of Legion's Apps, and a personal `GH_TOKEN` in the environment makes any session's `gh` that token's owner.
-`prerequisites` refuses to start, before the run's first write to GitHub, unless `gh` acts as `sjawhar-agent[bot]` ([`require_proof_human`](#libworkflowsh)).
-The daemon mints the implement App's installation tokens itself through that App's `token_command`, `agent-secrets <secret> … -- …`, and mints and renews the review App's from the key its `private_key_command` prints, which is a `cat` of the key file `prerequisites` already wrote the operator's key command into, never that command itself.
-`prerequisites` first runs [`read_app_logins`](#libworkflowsh), which runs the same two commands once, in `lib/app-logins.ts`, to prove each App from a token of its own — the release the implement App's command gives, and the token the review App's key mints for an installation of itself — against GraphQL's viewer, which names the bot, and GitHub's `GET /apps/<slug>`, which must answer the configured id and the role's write permission, and to read each App's bot login, the login every check that names an App compares with, before the run's first write anywhere.
-The agents' model is Anthropic through the configured route:
-[`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) (`gateway`) or [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) (`key-file`) or [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh) (`box-login`) routes the isolated profile there in `prerequisites`, where the gateway and key-file routes' preflight refuses loudly before any pane exists (a locked keyring by name under `gateway`, an unreadable or empty key file under `key-file`), and the box-login route refuses a box with no operator login or an operator build without the refresh-race fix, and the daemon is given no `provider_keys` (the Google provider answered long workflow turns with empty responses, so the agents are not Gemini-backed).
-No YubiKey touch is required under `key-file` or `box-login`, and no key value enters the script's shell, a pane, an argv, or the transcript, under any route.
-
-The proof human's `gh` has to stay authenticated for the whole run.
-A full run takes about 85 minutes, longer than the one hour a GitHub App installation token lives: the production check after the close now holds a look the first look's own `wake_at` starts before the bound's last look, and the bound moved out with it.
-The devbox shim keeps it authenticated, because it asks for a current token on every call.
-A `GH_TOKEN` exported once does not: it expires partway through, and every later `gh` call, the review-round waits and the teardown's pull request close included, fails with `HTTP 401: Bad credentials`.
-A run started outside the shim exports no `GH_TOKEN` (it outranks any config file) and instead points `GH_CONFIG_DIR` at a private 0700 directory holding gh's `config.yml` (`version: "1"`) and a 0600 `hosts.yml` (`github.com:` with `oauth_token: <token>`, `user: x-access-token` and `git_protocol: https`).
-A background loop rewrites `hosts.yml` from a newly minted `sjawhar-agent` installation token at least every 4 minutes, since a cached mint can hand out a token with as little as 5 minutes left.
-It writes a temporary file in the same directory and renames it over the old one, so no `gh` reads a half-written file, and it stops when the run exits.
-`require_proof_human` still checks that this `gh` acts as `sjawhar-agent[bot]` before the run's first write.
-
-The script stands up a scratch Postgres, NATS, Envoy listener, native Dispatch server, and a subscribe-only production-Envoy GitHub bridge in one temporary directory.
-It installs this checkout's two plugins in an isolated OMP profile and runs the Go daemon with a separate state directory, private tmux server, ports the kernel chose and [`lib/held-port.py`](#libheld-portpy) holds until each service serves on its own (the daemon's and Dispatch's by a keeper for the whole run, since both restart on the port every pane names, so every poll of either carries a timeout), a root-only Dispatch project whose `production_check` is written out as `tester` (the word the key takes, so the run proves the setting is read where Stage 4b's rig names no key and proves the default), `admission_cap: 2`, `review_round_cap: 3`, `production_check_hours: 0.5` (the production check's bound, 14 days by default, brought inside the run:
-30 minutes, after the look the first look's own `wake_at` starts, since a look open at the bound defers it by the look's own two-hour bound, and two looks took up to 10 minutes each from the task to the report in acceptance runs;
-the linger keeps its default 72 h, the tree's close being Stage 4b's proof), and the root design gate armed.
-Its host-side helpers are [`lib/rig.sh`](#librigsh), and the workflow's vocabulary (Dispatch, the daemon's state, the agents, the proof human, the handoff checks) is [`lib/workflow.sh`](#libworkflowsh);
-the script defines only its runtime's reads, its scratch services, its production guards, and its checks.
-
-Production is off limits, and the proof checks that rather than assuming it.
-Every registered pane's OMP environment must carry `DISPATCH_URL`, `DISPATCH_TOKEN_FILE`, `ENVOY_URL`, and `ENVOY_NATS_URL` for this rig's scratch servers, and no `ANTHROPIC_API_KEY`, which would take its turns off the configured route.
-A watcher checks each pane the daemon launches
-— the ones it starts on its own included
-— as soon as its OMP process exists, before the plugin registers and so before any turn;
-a mismatch kills the private tmux server and aborts naming the pane, and the audit fails naming any launch the watcher never saw.
-At the end, a read-only audit reads every production Dispatch event from a baseline event id read at boot, whatever owns it (an issue, a document, a project or none), by paging `GET /api/v1/events/log?after=` by id, and reads the production projects.
-It fails on any such event a rig session authored or that names the rig's project key, and on any production project naming that key, then reads the operator's Envoy listener (`GET /v1/sessions`, `STAGE3_PRODUCTION_ENVOY_URL`, default `http://127.0.0.1:9020`) and fails on any rig session.
-A read that fails, or a read that does not carry the baseline event itself (the control that the read covers the run's window), fails the audit.
-A production Dispatch without the event-log route (a build from before it) answers it 404; the audit says so and reads that build's `/ws/live` replay instead (`lib/dispatch-live-events.ts`, resuming after the baseline less one, for 25 s), which carries every event whatever owns it, with the same control.
-The audit writes nothing.
-It reads the operator's Dispatch as a command run from the operator's shell resolves it ([`lib/operator-dispatch.sh`](#liboperator-dispatchsh)), with the `DISPATCH_TOKEN` the script read at start and took out of its environment, so nothing the run starts inherits it.
-A file, URL or token that prevents Dispatch fails the baseline read, naming it; with no Dispatch configured, there is none to audit.
-The scratch Dispatch runs with `HOME` and `XDG_CONFIG_HOME` in the run's work directory, so it reads no envoy.json of the operator's.
-
-It proves admission order and a child that stands in its tree with no slot of its own
-— a slot is one issue the daemon has started, held as root `AGENTS.md`'s "Admission" says; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
-— then drives a root from `todo` through an architect's spec and gate registration, which the architect does on its own (the proof never prompts it:
-its first turns come from the task its start carries and the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, the merger's own merge of the head it read, which closes the issue (`merger-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
-It also proves three changes-requested rounds, each posted by the reviewer pane and ended by that reviewer's completion
-— a review ends when its reviewer completes it, so the round returns to implementing only once the reviewer's handoff is recorded on the Dispatch issue under the reviewer's claim session, and each review, like the final approval, names the issue branch's head at that round's reviewer completion, the implementer's last pushed head (the order the Go reviewer prompt gives;
-the proof names only the decision); in round one the proof human, a GitHub App and so a bot account like a CI bot and none of Legion's role Apps, also opens a file-level review thread (the run reads the thread's author back and stops, naming it, when the devbox `gh` posted as anything else, such as the user after its App routing failed).
-The implementer answers that thread in round one's correction and resolves it with its own `gh` (the pull request author's `resolveReviewThread`), as it does every thread it answers;
-the round-two reviewer adjudicates it, replying in its own words and naming its node id to the implementer as accepted (the review App cannot resolve a thread, so the reviewer names the threads it accepts and the implementer resolves them with plain `gh`;
-this one it already had), so the thread then carries the reviewer's reply and stays resolved.
-No word of a reply resolves anything.
-Each round names one concrete correction the spec permits (a distinct line appended to the smoke file, the one product file the implementer's pull request changed, which the run records and requires to be exactly one;
-the correction counts only in that file's patch on the pull request) and reaches testing only on that round's own implementer handoff (the daemon's phase record must hold the implementer's handoff for that round when the issue reaches testing, and the pushed commit carrying the handoff that every planner, implementer, tester, and reviewer completion reported is authored and committed by that role's own App, read from the issue's workspace).
-It also proves `pr-blocked` and a held worker after its launch budget and the architect's retry relaunching it, a root whose human decides at the design gate that no change is needed (`architect-closes-a-no-change-root`:
-the root waits on the person keeping its slot, the human's changes request answers it and the root resumes at `admitted` with its architect's session resumed, which `close_root` requires;
-the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
-in one bash tool call of a real implementer pane, `gh` — the launcher directory's `legion gh` wrapper, over the daemon's PATH's real gh (`LEGION_GH_PATH`)
-— authenticates as the implement App's bot (`role_app implementer`) from the repository owner's directory of the claim's gh bundle, which the pane's `GH_CONFIG_DIR` names and which holds `config.yml` and `hosts.yml` alone;
-the bundle's root (`LEGION_GH_OWNERS_DIR`), as the pane's own `ls` lists it in that tool call's result, holds that owner's directory and nothing but other owners' directories and `renames.txt`, and as the host holds it, holds that owner's directory and the bundle's `renames.txt`, and beside them only other owners' directories, since a bundle holds one directory per owner account the App is installed on, which GitHub decides and the run does not, and no directory for a repository (INFRA-2543 R2);
-the shared clone's helper is `!legion git-credential` with `credential.useHttpPath`;
-a `task` subagent of that pane does the same with no bash command of the parent's first, since it inherits the same directory, and `gh auth status` names account `x-access-token`;
-nothing of the pane's redeems a grant for GitHub, no pane carries a grant file, and no agent runs `legion` from bash, so there is no `idle-pr-read` checkpoint, which proved a per-read grant mint (LEGION-262) that no longer exists.
-`notices-reach-architects-alone` reads every phase-worker session in the isolated profile (a session's role is its newest Envoy role claim) and fails on any workflow notice delivered to one:
-every notice kind is for an architect — the issue's own, or the one above it the daemon routes it to — on that architect's role topic, and the run's `pr-blocked`, the reviewer's `phase-finished` at its approval (the architect's acceptance cue) and `worker-died` are each checked in their architect's session where they are written.
-The end of the issue is the new order's (LEGION-781).
-`final-review-cycle` first sends the architect a `sign_off` while the issue still sits in `reviewing` (the tester's completion started the reviewer, which waits for the proof's instruction), the acceptance's negative control:
-the daemon refuses it `SIGNOFF_OUTSIDE_ACCEPTING`, read in the architect's session by the refusal's own sentence, and the phase does not move.
-The reviewer's approval then moves the issue to `accepting`, which the checkpoint reads directly:
-no worker starts (the implementer's claim holds no retro task, `claim_pending_phase`), the daemon queues no status write and the board keeps `needs_review`, and the architect holds the reviewer's `phase-finished` notice.
-`retro-handoff` prompts the architect to accept: its `sign_off` moves the issue to `retro` (the daemon log's `workflow: phase changed …
-from=accepting to=retro trigger=sign_off`, `phase_change_logged`), the board to `retro`, and starts the implementer's retro.
-`merger-merge` sees the merger's own merge close the issue: the daemon's read of the merged pull request writes `done` (`… from=merging to=done
-trigger=pull_request_merged`, the board `done` within 60 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`), and the root's close lingers the tree:
-`legion claims list --json` shows the architect, planner, implementer, reviewer and merger `suspended` and the tester alone live (`claim_states_are`, which takes the spared role, the one the project's `production_check` names), handed the first look in its pane.
-The proof sends the tester nothing at a look,
-so the fixture's instructions say a check task waits for no message and acts on the daemon's task as written
-— this proof has no production and no deploy role, so the tester leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending`, with a `wake_at` three minutes on, the fixture's instruction for a first look:
-the check stays open with `looks: 1, lookOpen: false` (`check_look_reported`, within 600 s of the look's start), the daemon records the wake that report named (`check_wake_named`, the daemon log's `workflow: production check wake named` for look 1) and suspends the tester's claim, session kept, beside the five.
-After the smoke main's cleanup, `production-check-bound` waits first for the look that wake starts, look 2, the tester's, woken by `check wake` (`check_look_open ISSUE tester 2 "check wake"`, or the daemon log's record of the look once it ends, within 900 s):
-nothing else wakes a check, so without the report's own `wake_at` only the bound would look again.
-That look asks for an hour, which falls at or past the bound and names no look of its own, so the bound starts the last one (`last_look_started`: a look open, `lastWake.kind: bound`, `last: true`, or the check already closed by a tester that reported it first, within 1800 s of the checkpoint's start, which is what remains of the 30 minutes;
-a bound deferred by a look still open when it came due fails here by name), and the run sees the tester, whose task names the last look, write that the check did not run within the bound and report `pending`, and the check close as `not_run` (`check_closed`:
-the state omits `check`, the issue `done`;
-`last_look_logged` and `check_closed_as` hold the daemon log to a look started on the bound as `last`, and the `not_run` close) and the tester's claim `retired` beside the five `suspended`.
-Each wait for a tree's architect to be suspended once its tree lingers (`await_tree_suspended`) is bounded by `phase_seconds`, the proof's budget for an agent's turn:
-the daemon holds that suspension until the architect's turn ends and names it no deadline, and a timeout prints the architect's claim from `legion claims list` (its state and whether its suspension is held).
-After the first look's report, `smoke-main-clean` first holds that the merged pull request carried no handoff:
-no commit of it changes only `.legion/` (`pull_request_legion_only_commits`) and no file it merged is under `.legion/`, since every role's handoff is a record on the Dispatch issue, which each phase's `assert_handoff_record` read back as written by that role's claim session.
-The proof human then removes every `.legion/` file and `docs/solutions/` learning from the smoke `main` through one merged fixture pull request, and the run checks that `main` carries none:
-a proof merge carries only its retro learnings, and the cleanup removes those and any `.legion/` a merge from before handoffs moved to Dispatch left, so the next run starts from a base carrying no other issue's files.
-The smoke `main` requires the `gate` check, which has not started when the fixture pull request is created, and GitHub refuses a merge before it passes, so the cleanup first waits up to 600 s, named in the transcript, for the pull request's merge state to read `CLEAN`, `UNSTABLE` or `HAS_HOOKS` (`smoke_pr_mergeable` in `lib/workflow.sh`).
-A failed read is a poll that has not seen it yet, and a timeout names the last state read.
-The fixture pull request's branch is `proof/clean-main-<project, lowercased>`, and the cleanup fails, naming it, when a branch of that name is there before it makes its own:
-an earlier run left that one, and the cleanup neither uses nor removes it.
-To go on, delete that branch on `sjawhar/legion-smoke`, which also closes a pull request open on it, and run again.
-That checkpoint, `smoke-main-clean`, is the fixture's teardown, not the workflow under test.
-It begins only once every checkpoint before it has passed, the first issue's workflow through its daemon merge, the close it made and the production check's first look included.
-A failure there stops the run like any other:
-the checkpoints after `smoke-main-clean`, from `production-check-bound` through `cleanup-is-complete`, do not run, so its result is no report on them.
-The `EXIT` trap's teardown follows its `FAIL smoke-main-clean` line as for any failure.
-The run's last line is then `stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean): every checkpoint before it passed,
-…`, unless a production guard tripped during the checkpoint:
-the pane watcher recorded an endpoint violation (`$evidence/pane-endpoint-violation.txt`, which aborts the cleanup's wait), or the after-failure production audit, the run's first at this point, found rig writes or could not confirm there were none.
-With either, no such line is printed and the ordinary failure stands.
-The run exits non-zero either way, and the smoke `main` may still carry the leftovers the cleanup was to remove;
-the trap closes the fixture pull request if it is still open and deletes its branch (below).
-From the proof's merge (Stage 4b takes it before the merger merges, since that merge can follow the merger's assignment by seconds) until that cleanup passes, the run holds the smoke `main`:
-an exclusive `flock` on `/tmp/legion-e2e-smoke-main.<owner>-<repo>.lock`, shared by every Stage 3 and Stage 4b run on the box (`hold_smoke_main` in `lib/workflow.sh`).
-Another run's merge inside that window adds the same paths and GitHub refuses it as unmergeable.
-A run that finds the lock held names the holder, says every minute how long it has waited, and fails after 45 minutes naming it.
-The lock is on an open descriptor, so a holder that dies or is killed frees it with no stale lock left behind.
-Each check is named in the transcript; negative controls demonstrate that the status-actor, held-worker and worker-notice assertions reject deliberately corrupted observations before the captured observations pass again (the worker notice's:
-a copy of one phase-worker session with a `pr-blocked` delivery appended).
-Once every agent is gone, `model-turns-through-the-route` runs [`lib/check-model-route.sh`](#libcheck-model-routesh) over every agent session in the isolated profile, each subagent's included:
-it fails on any assistant turn or model selection that is not the `anthropic` provider's, the route's, and its negative control (a copy of one captured session with a turn rewritten as Bedrock's) is kept in the evidence as `model-route-control/`.
-It runs after `services-stopped` has stopped the watcher, the daemon and the private tmux server and found no proof process left, since an idle agent takes a turn on the next event the daemon delivers, and before the transcripts are copied and the profile removed.
-It then runs over the copied transcripts too, and fails unless they hold the same turns, sessions and subagents.
-
-`STAGE3_FROM=held` or `STAGE3_FROM=restart` is a development aid for iterating on the later scenarios against a fresh rig:
-it skips the first issue's workflow (the proof human closes that root, which frees its admission slot as the merge's close would), `restart` also skips the held worker, and the credential and idle-read checks read `STAGE3_PR` (default: the newest smoke pull request).
-`STAGE3_UNTIL` is the other development aid.
-`STAGE3_UNTIL=prerequisites` stops once `prerequisites` has passed (the tools, the inputs, the proof human, the smoke repository read and the model route), before the rig starts anything, and removes the scratch work directory.
-`STAGE3_UNTIL=rework` drives the first issue through its three review rounds, the per-round handoff checks, and the final review, to the reviewer's approval and the issue in `accepting`, then skips every later scenario.
-Such a run skips the status-actor check, which needs the first issue's whole history, ends `stage 3 e2e: development run from <step> finished (not the proof)` (or `until <step>`), and is never cited as the proof; only a full run is.
-
-Evidence survives every outcome in `STAGE3_EVIDENCE_DIR` (default a fresh `/tmp/legion-e2e3-evidence.XXXXXXXX`, printed at exit):
-`transcript.log` (the whole run), every agent transcript, the daemon, Dispatch, listener, and bridge logs, the model route's call record (`model-gateway/`:
-`hawk-token.{log,calls}` under `gateway`, `anthropic-key.{log,calls}` under `key-file` — never the key command itself, which under `key-file` lives under its own `--key-dir`, removed on every exit
-— and `box-login.route` under `box-login`, which names the link, the database path and the build, never a credential), state captures, negative-control outputs, the pane endpoint checks, and the production audit.
-A passing run's last three checks stop every process, kill the private tmux server and remove both containers (`services-stopped`), check the model route (`model-turns-through-the-route`), and close every pull request the run still has open on the smoke repository
-— its own, by branch, the daemon's `legion/<project>-*`;
-the proof human's fixture pull request merged in `smoke-main-clean` — before removing the isolated OMP profile and the scratch work directory, the agents' workspaces with it (`cleanup-is-complete`); each shows what it removed gone.
-The proof merges only the pull request its human-merge check merges, so the held-worker and outbox proofs are open when the run reaches here.
-A close GitHub refuses fails the check with gh's reason; a close whose branch delete failed is reported as closed with the reason the branch stayed.
-On any exit the `EXIT` trap does the same teardown, except that a failure keeps the scratch work directory and prints its path.
-For a run that did not pass, the trap also closes the run's own pull requests, best effort:
-it prints each close to stderr, and a close GitHub refuses leaves that pull request open and prints gh's reason, with a line saying some may still be open.
-When the run stopped inside `smoke-main-clean`, after the cleanup made its branch and before its merge deleted it (a merge GitHub answered with a 504, the wait that timed out), the trap also closes the fixture pull request if it is still open, with a comment naming the run, and deletes the branch (`close_smoke_cleanup` in `lib/workflow.sh`).
-It acts only on the branch the run recorded making, by its exact name, so a run that never reached the cleanup closes nothing of it, and another run's `proof/clean-main-<project>` is never touched.
-It prints the URL of each pull request it closed and of each it could not close, with gh's reason, and names a branch it could not delete.
-A failed run also [notes](#libmodel-gateway-unservedsh) each agent that could have failed the check for want of a model key, and still exits 1.
-The trap still closes the run's pull requests in two further cases ([`lib/transcript.sh`](#libtranscriptsh)):
-
-- whoever reads the run's output goes first, for example a supervised launcher's own `tee` stopped with the run.
-  The run keeps going, and the transcript still gets every line;
-
-- the transcript's disk fills.
-  The run keeps going, and its output still reaches anyone reading.
-  GNU `tee`, the devbox's, keeps the transcript only up to the point its disk filled and never reopens it, even once space returns;
-  busybox `tee` picks the transcript up again once there is room.
-
-## stage3-4b13b-acceptance.sh
-
-```sh
-LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
-ACCEPT_PG_CONTAINER=<postgres container> ACCEPT_PG_PORT=<its host port> ACCEPT_NATS_BIN=<nats-server> \
-LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
-  bash scripts/e2e/stage3-4b13b-acceptance.sh     # → "acceptance 4b.13b: PASS at <head>", exit 0
-```
-
-**Devbox only; CI does not run this script.**
-The live acceptance of LEGION-208 task 4b.13b.
-It stands up the Stage 3 rig from the same `lib/rig.sh` and `lib/workflow.sh`, with the same inputs (the model gateway, the production NATS, the required `LEGION_E2E_REVIEW_APP_KEY_COMMAND` and the optional other App inputs of [`lib/github-apps.sh`](#libgithub-appssh)) and the same proof human as [`stage3-devbox-workflow.sh`](#stage3-devbox-workflowsh)
-— the Hawk gateway route only, since this script has not taken Stage 3's own `LEGION_E2E_MODEL_ROUTE` — so it too runs from the operator's own Oh My Pi session and refuses to start in `prerequisites` when `gh` acts as anyone but `sjawhar-agent[bot]`.
-It creates no Docker container: the daemon and Dispatch take their own databases in the running Postgres container `ACCEPT_PG_CONTAINER` names (user `postgres`, password `ci`), and NATS is the native `ACCEPT_NATS_BIN`.
-It runs `admission_cap: 5`, which is Stage 3's configuration's one difference beside the merge queue, and the number is the peak the lane's own narrative needs: the cap counts the issues the daemon has started, roots and children alike, and each of the three roots keeps the slot it took at its admission while it waits on the person at its closed gate, so the three hold three of the five while their work stands short of its review and root 1's two children take the rest at `rerun-a-closed-child`.
-At the cap of 3 this lane ran before, those three roots would have held every slot and the child could never have reached planning.
-Real agents drive the task's surfaces through it:
-a Go prompt part a restart rewrites, the refused root stops, the phase reminder (a planner whose turn ends with its phase open is reminded, and the tool's `handoff_complete` closes the phase, after which no reminder comes), park and re-run, the phase-finished notice's summary and verdict, each root's `accepting` after its reviewer's approval and the architect's `sign_off` there (`reviewers`), the merger's own merge of the pull request under the squash message it writes itself (`merger-merges-with-its-own-squash-message`, which reads the merge commit back and refuses one carrying the branch's own commit messages), a design gate re-closed in `merging` holding that merge up not at all (`a-reclosed-gate-holds-no-merge`), that the merger's pane carries no grant file and ran no `legion` from bash (`merger-pane-mints-no-grant`), and the early-merge and closed-unmerged notices, where a merge the merger did not make still closes the issue (`done`).
-Every proof pull request is retargeted to a scratch base before any merge (the two the merger merges to bases of their own, cut from the same main commit), so the smoke main is never merged into, and both bases are deleted at the end.
-The evidence is kept in `ACCEPT_EVIDENCE_DIR` (default the kept scratch work directory's `evidence/`), `transcript.log` (the whole run) among it.
-A run that ends on its soft failures gets [notes](#libmodel-gateway-unservedsh) for its first soft-failing check, from that check's own start.
-The `EXIT` trap closes every proof pull request still open and deletes the proof branches and both bases, also when whoever reads the run's output goes first or the transcript's disk fills, as in [stage 3](#stage3-devbox-workflowsh).
-The default evidence directory is under the scratch work directory, whose processes the teardown kills by path, so the script opens the transcript on fd 8 and calls `transcript_to /dev/fd/8` ([`lib/transcript.sh`](#libtranscriptsh)).
 
 ## claude-backend-sandbox.sh
 
@@ -1933,7 +1647,7 @@ A failed teardown check outranks every reason the run stopped:
 it prints its own `CHECK <name>: FAIL` line (the audit's names the run's writes and subscriptions outside LEGSMOKE, as the `production-audit` checkpoint does), and the verdict is `stage 4b e2e: FAIL (check <teardown check>, in the teardown after check <check>)` whenever the checkpoint that stopped the run did not fail itself:
 a `STAGE4B_UNTIL` run's last checkpoint, a blocked checkpoint, a signal.
 A signal (`SIGHUP`, `SIGINT`, `SIGTERM`) also puts a line of its own above that verdict, `stage 4b e2e: <signal> stopped the run (exit <status>) while check <check> was running: …`, since the verdict alone would read as that checkpoint's own failure; a command of the run that exits 129, 130 or 143 by itself is the failure it always was, and gets no such line.
-`done` cleans the smoke `main` after tree 1's merge, which closed it, while the tester works its production check's first look (`clean_smoke_main`, [stage 3's cleanup](#stage3-devbox-workflowsh), with its bounded wait).
+`done` cleans the smoke `main` after tree 1's merge, which closed it, while the tester works its production check's first look (`clean_smoke_main`, [`lib/workflow.sh`](#libworkflowsh), with its bounded wait).
 That cleanup is the fixture's teardown, not the workflow under test.
 It stays inside `done`, so a `STAGE4B_UNTIL=done` run still cleans the smoke `main`, and the driver marks it (`smoke_main_cleaning`) for the `EXIT` trap.
 When `done` fails there, the verdict is `stage 4b e2e: FAIL (fixture teardown, in check done): every checkpoint before done passed, …`, after the same notes, unless a teardown check failed or a production guard recorded a violation (`$evidence/pane-endpoint-violation.txt`).
@@ -2374,7 +2088,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   each phase worker of tree 1 — planner, implementer, tester, reviewer
   — stays live once its phase ends: it goes idle on the session and in the pod (by uid) it first registered with, and its live session answers every `handoff_complete` call of the legion tool, holds one success for each assignment it completed, and records the phase stall `closed` after that call, with no phase reminder after its last success:
-  the 4b.13b acceptance's stall check (`stage3-4b13b-acceptance.sh`'s `phase-stall-follow-up`), which a stop inside the call fails (LEGION-283).
+  the 4b.13b acceptance's stall check (`phase-stall-follow-up`), which a stop inside the call fails (LEGION-283).
   The sessions and each verdict are kept as `completion-<role>.jsonl` and `completion-<role>-verdict.json`.
   Its control: the planner's session cut at its `handoff_complete` call, the transcript such a stop leaves, is refused
 
@@ -2555,7 +2269,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   an issue titled `Legion daily report (<run directory>)` appears in LEGSMOKE, parked in icebox and without the `legion` label, holding the controller session's message, which names tree 1 and the free slots within 2,000 characters;
   in the controller's session, the call that posted it comes on a turn a `tick on LEGSMOKE` delivery started once the start turn had ended, never in its start turn.
   That call is the controller's first `dispatch message --issue <report>` run through bash, made any way Oh My Pi offers:
-  the `bash` tool, a write to its `xd://bash` device, or `eval` code calling `tool.bash(...)` ([`lib/omp-tool-calls.jq`](lib/omp-tool-calls.jq), which `stage3-4b13b-acceptance.sh`'s merger check reads too; `lib/report-after-tick.test.ts`).
+  the `bash` tool, a write to its `xd://bash` device, or `eval` code calling `tool.bash(...)` ([`lib/omp-tool-calls.jq`](lib/omp-tool-calls.jq); `lib/report-after-tick.test.ts`).
   `production-audit` then holds that the issue, like every write, is in LEGSMOKE
 
 - `daemon-controller-liveness`
@@ -2778,184 +2492,6 @@ Each item below names a check, then what it holds, with 4b.5's acceptance item i
 
   Ctrl-D quits Oh My Pi cleanly and the command exits 0, as Oh My Pi did.
   A non-zero code is carried through too; the stub-omp unit test (`cmd/legion/controller_test.go`, exit 3) holds that
-
-## parked-decision-devbox.sh
-
-The devbox proof of INFRA-214's A3 and A4.
-A person decides on a tree that Legion does not run, and the decision reaches the project controller.
-The rig is Stage 3's ([`stage3-devbox-workflow.sh`](#stage3-devbox-workflowsh)), copied:
-a scratch Dispatch with header identity, NATS and Postgres in containers, a real Envoy listener, and the Go daemon and `legion controller start` built from the checkout.
-The agents are real.
-Nothing in the run reads production, and no tree reaches a pull request.
-
-```bash
-LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic \
-LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
-  bash scripts/e2e/parked-decision-devbox.sh
-```
-
-`--help` prints the inputs and the checkpoints, and does nothing else.
-
-**Inputs.**
-
-- `LEGION_E2E_MODEL_ROUTE`: `gateway` with `LEGION_E2E_MODEL_GATEWAY_URL` and `hawk-token`, or `key-file` with `LEGION_E2E_ANTHROPIC_KEY_FILE`, as Stage 3 reads them.
-
-- `LEGION_E2E_MODEL_BASE_URL` (`key-file` only):
-  the Anthropic-compatible endpoint the key file's key is for, passed to [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) as `--base-url`.
-  Anthropic's own endpoint when unset; a gateway key needs its gateway's URL here.
-  `prerequisites` refuses a URL [`model_base_url_refusal`](lib/model-endpoint.sh) refuses, and refuses the variable under `gateway`.
-
-- Legion's two role Apps: this deployment's own by default, the implement App's installation tokens minted through `agent-secrets`, or another deployment's ids and implement secret through `LEGION_E2E_IMPLEMENT_APP_ID`, `LEGION_E2E_IMPLEMENT_APP_SECRET` and `LEGION_E2E_REVIEW_APP_ID` ([`lib/github-apps.sh`](#libgithub-appssh)), as Stage 3 reads them.
-
-  `LEGION_E2E_REVIEW_APP_KEY_COMMAND` is required and has no default:
-  shell text that prints the review App's PEM private key on stdout, which `prerequisites` runs once, here on the driver, in the operator's own environment, into `$work/app-key/review/key.pem` (0600, in a directory of mode 0700 that cleanup removes on every exit).
-  The daemon never runs it:
-  the review App's `private_key_command` is a `cat` of that file, and the daemon mints and renews that App's tokens from the key it reads there ([`write_github_apps --key-dir`](#libgithub-appssh)).
-
-  `prerequisites` proves each App from its token against GitHub's `GET /apps/<slug>` ([`read_app_logins`](#libworkflowsh)), and `legion.yaml`'s `github_apps` is the block it proved.
-
-- `PARKED_DECISION_EVIDENCE_DIR`: the evidence directory.
-  The default is a fresh `/tmp` directory.
-  The run keeps it and prints its path.
-
-- `PARKED_DECISION_UNTIL=<checkpoint>`: the run stops after that checkpoint passes.
-  This is a development run, not the proof.
-
-Run the script from the operator's own Oh My Pi session.
-The devbox `gh` must act as the proof human (`require_proof_human`, [`lib/workflow.sh`](#libworkflowsh)), and it removes the run's branches on `sjawhar/legion-smoke`.
-After the script reads its inputs, it unsets every `DISPATCH_*`, `ENVOY_*` and `NATS_*` variable.
-Thus no process of the run gets an operator's endpoint or bearer.
-
-**Services.**
-Postgres (`legion-e2e-pd-pg-<pid>`) and NATS (`legion-e2e-pd-nats-<pid>`) in containers, the Envoy listener, the scratch Dispatch, the daemon, and each controller in a window of the run's own tmux server.
-The person is `smoke`: each write of the proof human carries the `X-Dispatch-User: smoke` header, and Dispatch records the actor `user:smoke`.
-The stand-in session of `dispatch_agent` (`session stage3-architect-stand-in`) writes the session reply of the control and tries to park tree 5, which the daemon sets back.
-The script posts the hold marks on trees 1 and 3 over the same agents' bearer, naming session 1, the first controller's session, as their author.
-The project maps `sjawhar/legion-smoke` as its default repository.
-
-**Files.**
-The work directory is `/tmp/legion-e2e-pd.<pid>.<random>`.
-
-- `legion.yaml`: Stage 3's daemon configuration, with `gates.design: root-issues`, `admission_cap: 4` and `controller_wake_interval_seconds: 86400`.
-  Four slots: the four roots that wait on a person at `trees-wait-on-a-person` each keep the slot the daemon gave them, and that peak returns later as tree 5, waiting on its gate throughout, beside trees 1 and 4 running again and tree 3 taking one in `walk-on-start`.
-  At a day, the one tick is the tick at boot, before a tree exists.
-  Thus no tick walk races the notice, and the walk runs only when a controller starts.
-
-- `instructions.md`: the instructions of the panes, Stage 3's hold clause and no production check.
-  No pane gets a targeted message, so each phase worker waits.
-
-- `controller.yaml` and `controller-instructions.md`: the configuration of the controller, and its instructions.
-  The controller handles each `parked-decision` notice and runs the walk for the roots of this run alone.
-
-Each checkpoint prints `== <name>`, what it saw, and `ok <name>`.
-The first failure ends the run and names the checkpoint.
-The transcript records the duration of each wait.
-
-- `prerequisites`: The tools, the two role Apps proved from their tokens against GitHub's `GET /apps/<slug>` (`read_app_logins`), the inputs of the model route, no leftover of an earlier run (`refuse_leftovers legion-e2e-pd`), the proof human, and a read of `sjawhar/legion-smoke`.
-  Then the script unsets the environment.
-
-- `rig`: The tokens, Postgres, NATS, the listener on a port the kernel chose (`start_held`), Dispatch on a port its keeper holds for the run (`keep_port`, `start_kept`), the project and its repository mapping, the isolated profile with this checkout's `pi-envoy` and `pi-legion`, and the model route.
-
-- `boot`: The daemon's port is held by its keeper (`keep_port`) and named in `legion.yaml`, `legion config check` passes, the daemon starts on that port's socket (`start_kept`, `LEGION_LISTEN_FD`), and `legion state` answers.
-
-- `controller-up`: The first controller starts.
-  `controllerLocator.sessionId` names session 1.
-  The profile holds one session file, and its header names that session.
-  Its first user message is the start message, and an assistant message follows.
-
-- `trees-wait-on-a-person`: The person files trees 1, 2, 4 and 5 and sets each to `todo`.
-  Each tree gets to `awaiting_person` with `waitingOn.kind: gate`.
-
-- `trees-parked`: `legion issue status <key> backlog` parks trees 1 and 2.
-  Right after tree 1's park, the script posts the controller's hold mark on tree 1 as session 1 (`Parked by Legion while it waits on: …`), the comment the controller posts when it parks a tree for a hold.
-  Tree 2 gets no mark.
-  The person sets tree 4 to `backlog`.
-  Right after those writes, the stand-in session (`dispatch_agent`) sets tree 5 to `backlog`.
-  A session outside a tree cannot park a root that waits on a person:
-  the daemon logs `workflow: a session wrote a lifecycle status; the daemon re-asserts its own` for tree 5 with `wrote=backlog`, Dispatch shows the logged status written back by `legion-daemon:<project>`, and tree 5 still waits on its gate and is not parked (`Engine.sessionStatusWrite`).
-  Each of trees 1, 2 and 4 gets to phase `done` with no slot, and its architect gets to `suspended`.
-  A park can come while the architect's last turn still runs, with its suspension held for that turn.
-  A decision made then goes to that live session, and the daemon has nothing to relay, so no check answers on a tree before its architect is suspended.
-  The newest `backlog` write is by `session:legion-daemon:<project>` on trees 1 and 2 and by `user:smoke` on tree 4.
-  Only tree 1 carries the mark.
-  Once tree 5 is set back, the stand-in session opens a question on each of trees 1, 2 and 4, as its architect would.
-
-- `answer-readmits`: A3.
-  The person answers the question on tree 1.
-  The daemon log holds `workflow: a person's decision on a parked tree goes to the controller` with `decision=ask-answered` for tree 1.
-  Session 1 receives `summary: parked-decision on <tree 1>`.
-  Then it calls `set_status` to `todo`.
-  Dispatch records that write as `legion-daemon:<project>`.
-  Admission takes tree 1 again.
-  A user turn of its architect names `dispatch://<tree 1>/ask/<id> (ask-answered by user:smoke)`.
-  Session 1 writes a `Parked decision read: …` comment on tree 1.
-
-- `question-stays-parked`: A3.
-  The person replies on the open approval ask of tree 2.
-  The daemon log holds `workflow: a person's decision on a parked tree goes to the controller` with `decision=ask-reply` and `actor=user:smoke`.
-  Session 1 receives the notice and answers on that ask: its reply begins `Parked decision read: …`, and the ask then waits on the person.
-  The control: the stand-in session replies (`turn: agent`) on the same ask.
-  The daemon logs `workflow: a session's reply on a parked tree is not relayed`, and no second notice gets to session 1.
-  600 s after the reply, tree 2 is still `backlog` and phase `done`, with no `todo` event after the person's reply.
-
-- `foreign-park-stays`: A3.
-  The person answers the questions on tree 2, which the operator parked with no hold mark, and tree 4, which the person parked.
-  For each tree, the daemon log holds the workflow's relay with `decision=ask-answered`, and session 1 receives the notice.
-  Session 1 writes a new `Parked decision read: …` comment on each tree that names who parked it and says it stays parked:
-  `legion-daemon` on tree 2 and `smoke parked the tree` on tree 4.
-  600 s after the latest comment, session 1 has set neither tree to `todo`.
-  Each is still `backlog` and phase `done`, with no `todo` event after its answer.
-
-- `approval-queues`: A3.
-  The person approves the spec of tree 4, still parked by the person.
-  That approval is the person's handover (sjawhar/legion#2619):
-  the daemon logs `admission: queued a person's handover` with `source=approval`, Dispatch records `todo` as `legion-daemon:<project>`, admission takes tree 4, and it gets to `planning`.
-  No spec notice of tree 4 finishes undelivered, the daemon relays nothing for the approval, and session 1 receives no further notice on tree 4.
-
-- `controller-down`: Session 1 quits as a person quits it, and the controller role has no holder.
-
-- `walk-on-start`: A4.
-  The person files tree 3.
-  The tree waits on its gate.
-  The script parks it with `legion issue status`, posts the hold mark as session 1, and opens a question on it as the stand-in session.
-  When the tree is phase `done` and its architect is `suspended`, the person answers the question while no controller runs, and the daemon logs the relay.
-  The second controller starts.
-  The script reads only its session file.
-  Its first user message is the start message.
-  It holds no notice for tree 3.
-  It sets tree 3 to `todo`, and Dispatch records that write as the daemon's.
-  Admission takes tree 3, and the task of its architect names the answer.
-  Session 2 writes a comment on tree 3.
-  When the file of session 2 stays the same for 120 s, tree 2 is still `backlog` with no newer `Parked decision read:` comment, and session 2 has not set it to `todo`.
-
-- `verdict`: [`lib/parked-decision-verdict.jq`](lib/parked-decision-verdict.jq) reads the daemon log.
-  `unmatched` and `unrelayed` are empty, and `undelivered` and `sent` are empty too:
-  each decision of the run is an answer or a reply, which the workflow relays itself, and the one approval, tree 4's, was queued as a handover.
-  The log holds the workflow's relay of a person's answer on each of trees 1 to 4.
-
-- `cleanup-is-complete`: The second controller quits.
-  Each service and container stops.
-  Once both tmux servers are gone, the script stops what the agent sessions started detached (`stop_agent_daemons`):
-  Oh My Pi runs a session's background services, the blob broker and its tunnel helper among them, under a per-project daemon broker in a session of its own, which writes `broker.pid` in its runtime directory under the run's work directory.
-  On the pinned build each service runs in a session of its own and ends when its broker ends.
-  For each `broker.pid` there, each process of that broker's session is stopped when it carries that runtime directory in `OMP_DAEMON_RUNTIME_DIR` or is one of the run's processes.
-  No process is stopped for its working directory alone.
-  Every process of the run then ends within 600 s; a survivor fails the check, and the check first prints its `ps` line (pid, ppid, process group, session, start time and command line).
-  The branch `legion/<tree>` of each tree is gone from `sjawhar/legion-smoke` (GitHub answers 404).
-  The work directory is gone.
-
-The last line is `parked decision devbox e2e: PASS` or `parked decision devbox e2e: FAIL (check <name>)`.
-The EXIT trap does the same cleanup on each exit:
-it stops the controllers, the daemon, Dispatch, the listener, the agent sessions' daemon brokers and the containers, closes the open pull requests of the run, removes its branches, and copies each session of the profile into the evidence directory.
-A pass leaves nothing but the evidence directory.
-A failure also leaves the work directory, and prints its path.
-
-The verdict also reads a log store's entries.
-The input is the JSON objects of the daemon, one to a line:
-
-```bash
-jq -r '.[].jsonPayload | tojson' <log export>.json | jq -R -s -f scripts/e2e/lib/parked-decision-verdict.jq
-```
 
 ## dispatch-user-turns.sh
 
@@ -3319,186 +2855,6 @@ Two notes on what the script had to learn about its own surface:
 
 - The "never prints a token" assertions are written `grep -q … && fail`, not `! grep -q …`:
   `set -e` ignores a negated pipeline (shellcheck SC2251), so the negated form could never fail the run.
-
-## multi-repo-acceptance.sh
-
-The observer for the multi-repository live acceptance:
-a read-only CLI the operator runs by hand, one observation at a time, as a tree advances on the deployment's own repositories.
-It never starts a daemon, Dispatch, or any agent of its own, and it writes nothing remote:
-every admission, push, pull request and Dispatch write the acceptance checklist names is the operator's and the agents' own.
-
-**Every judgment reads a structured source**:
-the daemon's state JSON (`GET /legion/v1/state`), Dispatch's own JSON API (`GET /api/v1/issues/<key>` and `/events` — the same routes the dashboard reads, never `dispatch read`'s human prose, which truncates and has no stable grammar to parse), GitHub's API (`gh api … --jq`), and `kubectl get`/`logs`/`exec` as the operator, with `exec` run as the role itself (below), never as the bare pod shell, which carries none of a role's variables.
-The one exception is a daemon message whose exact format the daemon itself produces:
-those are matched as the complete literal sentence, with the run's own repository names substituted in, from a session actor named `legion-daemon:<PROJECT>` and carrying the daemon's outbox marker, never a loose substring over any author's messages.
-Dispatch takes a bearer session's actor id from the request body, so that id is the message's claimed author:
-whoever holds the project's Dispatch bearer can post the same text.
-Such a note shows what Dispatch holds, never who posted it.
-Two such sentences are quoted below with their file:line.
-
-```sh
-export LEGION_E2E_REPO_T=<owner>/<toolchain repo> LEGION_E2E_REPO_C=<owner>/<consumer repo>
-export LEGION_E2E_PIN_FILE=<path inside C that pins T's commit>
-export LEGION_E2E_REPO_X=<owner>/<negative control repo> LEGION_E2E_REPO_O=<second owner>/<repo>
-export LEGION_E2E_DAEMON_URL=http://127.0.0.1:<port> DISPATCH_URL=<dispatch API root> DISPATCH_TOKEN_FILE=<0600 file>
-export MULTIREPO_EVIDENCE_DIR=<dir kept for the PR body>
-bash scripts/e2e/multi-repo-acceptance.sh record-head "$LEGION_E2E_REPO_T"
-bash scripts/e2e/multi-repo-acceptance.sh children <parent KEY>
-bash scripts/e2e/multi-repo-acceptance.sh branch-base <T child KEY>
-bash scripts/e2e/multi-repo-acceptance.sh pin "$LEGION_E2E_REPO_C" <T merge sha>
-bash scripts/e2e/multi-repo-acceptance.sh done <KEY>...
-bash scripts/e2e/multi-repo-acceptance.sh second-owner <O child KEY> <pod> [role]
-bash scripts/e2e/multi-repo-acceptance.sh cache <issue KEY> <pod> [container]
-bash scripts/e2e/multi-repo-acceptance.sh negative pr-in-x before <T child KEY>        # before the operator opens the pull request in X
-bash scripts/e2e/multi-repo-acceptance.sh negative pr-in-x after <run id> <T child KEY>   # after it closes
-bash scripts/e2e/multi-repo-acceptance.sh negative no-repo <KEY>
-bash scripts/e2e/multi-repo-acceptance.sh negative repo-edit before <child KEY>        # before the operator's edit
-bash scripts/e2e/multi-repo-acceptance.sh negative repo-edit after <run id> <child KEY>   # after it
-```
-
-Every input above is required and is an operator value, never a literal in the script:
-an absent or malformed observation name or argument count is refused with `usage:` and exit 2 before any environment variable, tool, or network read, and so is an issue key that is not shaped `PROJECT-123` (each goes into an evidence file name and an API path);
-then it refuses naming the first required variable that is unset, refuses a value that is not an `owner/name` repository shape, refuses two of `LEGION_E2E_REPO_{T,C,X,O}` naming the same repository (case-insensitively), refuses `LEGION_E2E_REPO_T` and `LEGION_E2E_REPO_O` sharing an owner (the second-owner observation needs two), and refuses a `LEGION_E2E_DAEMON_URL` whose `GET /healthz` does not answer `{"status":"ok"}`.
-`gh`, `jq` and `curl` must be on `PATH`; `second-owner` and `cache` also need `kubectl`.
-`second-owner` also needs `python3` on the pod's own `PATH`, never the operator's:
-the worker image the `roles` container runs is checked for it at boot (`internal/capabilities/image.go`), so it is never an operator dependency to install.
-There is no `dispatch` CLI dependency at all: Dispatch reads go straight to its own JSON API with the bearer `DISPATCH_TOKEN_FILE` holds.
-That bearer never appears in any process's argv (`/proc/<pid>/cmdline` is world-readable):
-it reaches `curl` through a `-K` config file (`mktemp`, `chmod 600`, one `header = "Authorization: Bearer <token>"` line).
-An `INT` or `TERM` on the whole process group (a terminal's Ctrl-C) or on the script's own pid alone removes that file and a raw-fetch temp file mid-write and stops the script with the shell's conventional 130/143:
-`raw_fetch` arms its own local traps around each fetch, since most calls run inside a `$(…)` subshell, where a variable a signal handler reads in the parent is never set, and restores the script's standing handlers before returning.
-The script never touches a shared session-state root.
-
-State and Dispatch reads go through `state_raw`/`dispatch_issue_raw`/`dispatch_events_raw`, each taking the calling observation's own name:
-every evidence file is `<observation>-state.raw`, `<observation>-dispatch-issue-<key>.raw` or `<observation>-dispatch-events-<key>.raw`, never a source-only name two observations in one run could share and overwrite.
-`before` and `after` are themselves two different observation names (`negative-pr-in-x-before`/`-after`, `negative-repo-edit-before`/`-after`), so they never share raw evidence either, and `children` reads state exactly once, before any child's judgment, reusing that one read (and its one raw file) for every child, so the evidence is the state every child was judged against.
-Each read writes the external response straight to its own file (never through `$(…)`, which strips trailing bytes;
-the temp-file-then-`mv` write is itself checked for a failed rename), and every jq path below reads that file directly, so the evidence a PR body quotes is exactly the bytes the observation judged.
-
-Each observation prints `CHECK <name>: PASS` or `CHECK <name>: FAIL` (a FAIL exits non-zero) and writes its own summary file (`<name>.txt`) beside the raw reads it judged
-— keep `MULTIREPO_EVIDENCE_DIR` and quote both in the PR body:
-
-Each item below names an observation, then what it judges; an item that names no observation continues the one above it.
-
-- `record-head <T>`
-
-  T's default-branch head now (both nonempty, the head a full commit id), for `branch-base` to compare the first child commit's parent against;
-  refuses a repository argument that is not T
-
-- `children <parent>`
-
-  Dispatch's own `GET /api/v1/issues/<parent>` for `.children[].key`, then each child's `.resolved_repo` against one `state_raw` read (made once, before any child's judgment, and reused for every child) against `.issues[<key>].repo`:
-  one child resolves to T and one to C, in both, case-insensitively; a non-2xx Dispatch answer for any child fails the whole observation
-
-- `branch-base <T child>`
-
-  `legion/<child>`'s first commit's first parent on GitHub equals the stored `record-head`, both required to be full commit ids
-
-- `pin <C> <T merge sha>`
-
-  `LEGION_E2E_PIN_FILE` on C's default branch pins the sha:
-  the one run of 40 or more hex digits the file holds, compared whole and case-insensitively, is the sha, so the sha in a comment beside a pin that names another commit, or inside a longer hex string, fails;
-  refuses an empty or non-full-length sha argument and a repository argument that is not C;
-  the file's own base64-decoded bytes go straight to `evidence/pin.txt` by redirection
-
-- `done <KEY>...`
-
-  Dispatch's own `.status` field for every named issue reads `done`; a non-2xx Dispatch answer fails the observation
-
-- `second-owner <O child> <pod> [role]`
-
-  `.issues[<child>].pullRequest.repo` is O and its phase is `done` (the phase a merge closes an issue into);
-  `gh api repos/<O>/pulls/<n> --jq .merged` is `true` (the daemon's `done` alone is never merge proof); the pod's `legion.dev/issue` label matches the issue.
-  The credential evidence is `lib/as-role.py`'s, streamed over `kubectl exec -i` into the pod's `roles` container and from there into the named role's own namespaces (the role's `legion launcher role-init`'s user, mount, PID and IPC namespaces, then its worker-shim's user namespace;
-  `[role]` defaults to `implementer`), where it runs as `python3 -I -` (`-I`:
-  no working directory and no user site on `sys.path`, since both are agent-writable).
-  It resolves the one `worker-shim` — a process whose `exe` is `/opt/legion/bin/legion`, whose own parent is PID 1 (in the role's PID namespace, its role-init) and whose argv[1] is `worker-shim` (a test points the scan at a fake tree with `MULTIREPO_PROC_ROOT`, refused without `MULTIREPO_TEST_SEAM=1`)
-  — then that shim's one child whose argv equals the shim's own argv after its `--` or, behind a plugin-reinstall launch's install wrapper (`/bin/sh -c <script> legion-plugins <agent argv>`, whose final `exec "$@"` replaces its image with the agent, `internal/runtime/sandbox/plugins.go`), the argv after the wrapper's four leading elements.
-  A broker-enrolled pod's shim also parents `agent-secrets renew` and briefly `codegraph`, so parentage alone is ambiguous;
-  zero or several candidates are refused by name, every candidate listed.
-
-- The agent's `/proc/<pid>/environ` is read for two things.
-  It is compared with what the image tells an agent:
-  `LEGION_GH_OWNERS_DIR` must be `/var/run/legion/gh`, `GH_CONFIG_DIR` its owner's directory under it and `LEGION_GH_PATH` `/usr/local/bin/gh`; any difference is a FAIL.
-  And the proxy variables come from it.
-  Nothing else is taken from it, since the agent's own code (the workspace's `.omp/extensions`, its profile plugins) runs in that process and can rewrite its environment in place:
-  `legion git-credential get` and `gh` run by absolute path under `/opt/legion/bin`, root-owned in the image, with `PATH`, `LEGION_GH_OWNERS_DIR` and `LEGION_GH_PATH` set to the image's constants and `HOME=/nonexistent` (TLS is verified against the root-owned CA store, so a proxy can drop a request and cannot answer one;
-  a test lays fakes out under `MULTIREPO_TRUSTED_ROOT`, same marker).
-  `gh api repos/<T> --jq .full_name` must say T.
-  Then, for O and for T, GitHub's answer to the request a `git push` opens with, `GET https://github.com/<repo>.git/info/refs?service=git-receive-pack`, sent with the credential that helper prints for that repository:
-  for each of them, `200` and an `application/x-git-receive-pack-advertisement`, which is what GitHub answers a token that may write.
-  O, the issue's own repository, is the control that the network, the helper and the token are sound;
-  T is a repository of another owner, so its `200` is the reach the App's installations give across owners.
-  The observation reads no repository mapping, so it says nothing of whether a mapping names T.
-  A `403` for either, a `404`, any other status, no answer or any other content type is a FAIL.
-  The request writes nothing: it is the read a push opens with, and no ref of either repository changes.
-  No git runs: git reads `~/.netrc`, `~/.gitconfig`, the repository's own `.git/config`, any scratch repository's and the `GIT_*` variables, all of which the agent's uid can write while the check runs;
-  the request is Python's `urllib`, which reads none of them.
-  What `as-role.py` prints is one JSON object, kept as `second-owner-probe.raw`; it never holds an argument's or an environment variable's value or a token.
-  The agent runs with `--append-system-prompt <the path of its prompt file>`, and an agent of an older daemon ran with the composed prompt itself as that argument, so its cmdline appears only as `argv0`, `argc` and a sha256 of the whole `/proc/<pid>/cmdline`.
-  The check trusts the root-owned image (`/opt/legion/bin`, the CA store, `python3` on the exec's `PATH`);
-  it does not defend against an agent that can kill its own shim or ptrace the prober, which no check run beside it in the same container can.
-
-- `cache <issue> <pod> [container]`
-
-  the named pod's `legion.dev/issue` label matches the issue (refusing an unrelated pod outright), its fetch container's log (`kubectl logs`, default container `workspace-fetch`) carries the producer's exact, anchored cache-stream-with-delta success line (`packages/daemon/cmd/legion/workspace_fetch.go:83`, the form `workspace_fetch_test.go:572` pins
-  — a whole-line match, not a loose substring), and `.repositories.mapped[] | select(.repo==<repo>) | .cache.ready` is `true`
-
-- `negative pr-in-x before|after <run id>? <T child>`
-
-  a two-call baseline protocol (the paragraph after this list).
-  `before` requires the child already recorded on T or C, and captures GitHub's own highest pull-request number in X at that moment
-  — the cursor `after` compares against, never a wall-clock timestamp, which skew between the operator and GitHub could fool.
-  `after` PASSes only when GitHub shows a closed pull request on `legion/<child>` in X numbered above that cursor, **and** the daemon's own side is unaffected:
-  the child is still recorded on the baseline's repository, and its pull request never names X
-
-- `negative no-repo <KEY>`
-
-  `.issues | has(<KEY>)` is `false` (refusing outright, never vacuously passing, when `.issues` is not even an object), Dispatch's own `.resolved_repo` is still `null`, and the **latest** repository note among the messages claiming the daemon's actor (`{kind:"session", id:"legion-daemon:<PROJECT>"}`) is the exact no-repository admission refusal, word for word, with the daemon's outbox marker
-  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:76`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
-  Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
-  what shows the daemon declined the issue is its own state read.
-
-- `negative repo-edit before|after <run id>? <child>`
-
-  a two-call baseline protocol (the paragraph after this list).
-  `before` captures the daemon's recorded repository and refuses outright if Dispatch already resolves the issue to X.
-  `after` requires: the daemon's record unchanged;
-  Dispatch's own `.repo` for the issue now reading X;
-  an `issue.updated` event whose `.seq` is above the baseline's own last-seen `.seq` with `.payload.repo` equal to X (Dispatch's own sequence cursor, never a wall-clock comparison, and never merely "any `issue.updated`", which the daemon's own routine status writes also emit);
-  and the daemon's exact kept-repository message, word for word, with its claimed actor id and outbox marker (as for `negative no-repo`), built from Dispatch's own resolved spelling of X (`dispatch_repo_now`, read back from the API) rather than the operator's `LEGION_E2E_REPO_X` spelling, since the daemon's real message echoes whatever case Dispatch itself stored
-  — `"Legion keeps <repo> as this issue's repository; the change to <X> in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for <X> instead."` (`packages/daemon/internal/workflow/repository.go:94`)
-
-**The two-call baseline protocol** (`negative pr-in-x`, `negative repo-edit`):
-`before` mints a fresh run id, captures the baseline under `$MULTIREPO_EVIDENCE_DIR/runs/<run id>/baseline.json` (the directory made with a plain `mkdir`, the file written with `set -o noclobber` — both fail loudly rather than overwrite, so two overlapping `before` calls for the same issue can never collide), binds it to the project, the daemon URL and the issue's own generation, and prints `BASELINE <name>: captured` — never `PASS`, since capturing a baseline is not an acceptance judgment.
-`after` takes that exact run id back (rejecting one that is not a bare id
-— no `/`, no `..`) and refuses a missing, foreign (another issue, operation, project or daemon URL than the baseline's, or a generation that moved since
-— a hand-over or re-admission mid-control), or stale (more than 24 hours old) baseline before judging anything.
-
-`scripts/e2e/lib/multi-repo-acceptance.test.ts` pins the script's refusals and every jq path above against two `Bun.serve` stubs (the daemon's `/legion/v1/state` and Dispatch's own `/api/v1/issues/*` JSON API) and fake `gh`/`kubectl` on an isolated `PATH`;
-`scripts/e2e/lib/multi-repo-negative.test.ts` pins the three `negative` observations and `scripts/e2e/lib/multi-repo-second-owner.test.ts` pins `second-owner`;
-the three share `scripts/e2e/lib/multi-repo-acceptance-harness.ts`.
-For `second-owner`, the fake `kubectl exec` runs `lib/as-role.py` locally against a fake, deterministic `/proc`-shaped tree built per test (`fakeProcTree` in `multi-repo-proc-tree.ts`, wired in through `MULTIREPO_PROC_ROOT` and the `MULTIREPO_TEST_SEAM` marker it requires):
-scanning the host's own `/proc` would pick a sibling session's process on a shared devbox.
-The image's `legion`, `gh` and gh directory are fakes laid out under `MULTIREPO_TRUSTED_ROOT` (same marker), and GitHub is a stub (`MULTIREPO_GITHUB_URL`, same marker) that answers the receive-pack advertisement request per repository and token.
-The tree builds the shapes a real process tree cannot reliably reproduce on demand:
-no worker-shim, two, a shim whose parent is not PID 1 or whose `exe` is not `/opt/legion/bin/legion`, two children whose argv both match the shim's, and a broker-enrolled shim's `agent-secrets renew` and `codegraph` children beside the agent.
-One test spawns a real `sh -c 'exec "$@"' legion-plugins sleep 999` and copies that process's own post-exec `/proc/<pid>/cmdline` into the tree, so the install-wrapper match is checked against what the kernel produces.
-The regressions pin each way an observation could print PASS without the fact it names:
-a failed Dispatch read that prints the bearer;
-repository names that merely contain T's;
-a merged-PR claim the phase alone cannot prove;
-a push-access answer for T that is a `200`, a `404`, no answer, another repository's refusal or a multi-line body, and one for O that is not an advertisement (a missing positive control);
-an unanswered credential helper; a `~/.netrc`, `~/.gitconfig` or `GIT_*` variable the agent plants (git never runs, so none can reach the answer);
-a role process that cannot be told apart from its neighbors;
-evidence that holds an argument, an environment value or a token (checked at a 130 KB prompt and across every evidence file);
-a `hashlib.py` in the exec's working directory or a `.pth` in the user site;
-a pin file that mentions the sha beside another pin;
-a default branch with a `?` in it; an issue key shaped like a path;
-a baseline that is missing, foreign, stale or shared;
-two observations in one run whose raw evidence would overwrite each other;
-a SIGTERM or a group SIGINT mid-fetch; a cache fetch slower than a minute; and an operator's spelling of X that differs in case from Dispatch's.
-The live acceptance on the deployment's own repositories is the operator's; this suite does not run it.
 
 ## burstable-kind.sh
 
@@ -4238,12 +3594,11 @@ Do not edit the script while a run is going: bash reads it as it runs.
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Ten call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
-Nine are proofs of their own:
+Nine call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Each is a proof of its own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh), [`controller-start-tmux.sh`](#controller-start-tmuxsh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
-The tenth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
-Each of those ten call sites calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `run_database_url`, which begins with the same check.
-Eight of them source that file through [`lib/rig.sh`](#librigsh), and [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh) and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) source it on their own:
+Each of those nine call sites calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `run_database_url`, which begins with the same check.
+Seven of them source that file through [`lib/rig.sh`](#librigsh), and [`stage2-tmux-supervision.sh`](#stage2-tmux-supervisionsh) and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) source it on their own:
 
 ```sh
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
@@ -4253,12 +3608,12 @@ require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the d
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 The daemon's live proofs that drive real Oh My Pi panes read no DSN in the shell: their test binary reads every DSN it builds from `LEGION_TEST_PG_DSN` back with pgx (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
 The rationale is written once, above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh): the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
-That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the four proofs that give Dispatch the caller's raw DSN and for the binary's own rewrites, and what a raise of that pin moves.
+That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the two proofs that give Dispatch the caller's raw DSN and for the binary's own rewrites, and what a raise of that pin moves.
 
 A caller clears `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE` before its first connection, because this helper reads the DSN alone.
 psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `~/.pg_service.conf` that can set `hostaddr`.
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
-Each of the eleven proofs those ten call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh`, `stage2-tmux-supervision.sh` and `controller-start-tmux.sh` in an `unset` of their own.
+Each of the nine proofs those call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, and `plan-pointer-drive.sh`, `stage2-tmux-supervision.sh` and `controller-start-tmux.sh` in an `unset` of their own.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
 WHAT is what the run does on that server, in a few words, and a refusal about the host ends with it.
@@ -4328,7 +3683,7 @@ A third helper, `empty_public_schema`, empties the database a run was given, so 
   The cluster's master role installs `vector` (`0072_embeddings_core.up.sql` takes it as given with `create extension if not exists`), and the role a run connects as need not be that role.
   A `drop schema public cascade` would remove `vector` with the schema and leave a database no build can migrate.
   A Legion pod's test server is one such case: every database made from its `template1` holds `vector`, and its login may not create it again.
-  [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) and [`lib/two-builds.sh`](#libtwo-buildssh)'s `two_builds_reset_database` call it
+  [`verification-results.sh`](#verification-resultssh) and [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) call it
 
 `require_loopback_dsn` and `run_database_url` share one call to `lib/loopback-dsn.py`, which takes the DSN from the environment of a command substitution's own subshell, so no process list holds the password.
 
@@ -4438,7 +3793,7 @@ Packs one of this checkout's two plugins, `@sjawhar/pi-envoy` (`packages/pi-envo
 what `npm pack` ships (`package.json` `files`:
 `dist/` with the one bundle and the prepack's `dist/skills`, the Legion plugin's `agents/`, and the packed manifest).
 Every script that installs a branch-built plugin packs through it:
-[`lib/install-plugin-profile.sh`](#libinstall-plugin-profilesh), which `controller-start-tmux.sh`, `stage2-tmux-supervision.sh`, `stage3-devbox-workflow.sh`, `stage3-4b13b-acceptance.sh`, `stage4b-sandbox-tree.sh`, `dispatch-user-turns.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`) call.
+[`lib/install-plugin-profile.sh`](#libinstall-plugin-profilesh), which `controller-start-tmux.sh`, `stage2-tmux-supervision.sh`, `stage4b-sandbox-tree.sh`, `dispatch-user-turns.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`) call.
 The worker image packs on its own, as the release does:
 `packages/daemon/docker/worker.Dockerfile`'s two plugin `RUN`s each rewrite `omp.extensions` with `jq` and run `bun pm pack`, and the prepack (`scripts/pi-plugin-prepack.sh`) refuses to pack any other `omp.extensions`, which holds all of them to the same manifest.
 
@@ -4525,8 +3880,7 @@ Each item below names a flag, then what it means.
 - `--omp <mise tool spec>`
 
   optional: the Oh My Pi build steps 2 and 3 run (`github:cybermonklabs/oh-my-pi@<version>`), `.omp-pin`'s by default.
-  Stage 2 and Stage 3 pass the build their daemon and panes run, so no other build opens the profile;
-  under `LEGION_E2E_MODEL_ROUTE=box-login` that profile's `agent.db` is the operator's login database ([`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)).
+  Stage 2 passes the build its daemon and panes run, so no other build opens the profile.
   Refused when empty.
 
 The first four flags are required; each refusal names its flag and exits 2.
@@ -4545,7 +3899,7 @@ Then:
 
 Steps 2 and 3 run the Oh My Pi `--omp` names, else the one the daemon pins (`.omp-pin`), under `HOME=<home>`, from `<dir>`, as the daemon runs it:
 the build's own `bin/omp` by its absolute path (`mise where <pin>`) under `mise x <pin> --`, never an `omp` looked up on the caller's `PATH`.
-An operator's wrapper there (the devbox's `~/.dotfiles/shims/omp`) reads its own files from `HOME`, which is the run's, and its own setup could rewrite the profile, whose `agent.db` is the operator's login database under the box-login route.
+An operator's wrapper there (the devbox's `~/.dotfiles/shims/omp`) reads its own files from `HOME`, which is the run's, and its own setup could rewrite the profile.
 
 Each step cites its source by what it runs, never by line number: the lines move with every edit above them.
 
@@ -4737,7 +4091,7 @@ the caller does, with its work directory, `<key-dir>` unconditionally and `<dest
 
 ## lib/model-endpoint.sh
 
-The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), `clean-session-stop-tmux.sh` and `envoy-session-states.sh`, whose own `note` and `fail` it calls, by [`parked-decision-devbox.sh`](#parked-decision-devboxsh), which checks `LEGION_E2E_MODEL_BASE_URL` with `model_base_url_refusal`, and by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh).
+The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), `clean-session-stop-tmux.sh` and `envoy-session-states.sh`, whose own `note` and `fail` it calls, and by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh).
 `anthropic_base_url` is Anthropic's own endpoint, the one a run with no `LEGION_E2E_MODEL_BASE_URL` calls.
 `model_base_url_refusal URL` prints why `URL` cannot be a model base URL, and nothing when it can:
 an `http://` or `https://` URL of letters, digits and `:/._~-` alone (so it carries no user or password, and stays a plain YAML scalar), ending in neither a colon nor a slash.
@@ -4748,82 +4102,6 @@ With `BASE` named it also asks `GET /v1/models` with no key, which must not answ
 the code a refusal gave is noted), and `GET /key/info` with the key (a LiteLLM proxy serves key management at its root, not under `/v1`), whose `key_alias` (the proxy's non-secret name for the key, at the top level or under `info`) is noted as `the model key is <alias>`, or that the endpoint names no alias, never failing on it.
 Every call sends `anthropic-version: 2023-06-01`;
 the key reaches curl in `HEADER`, a 0600 header file removed before it returns (the callers' cleanup removes it too, after a `fail`), never an argv, and neither the key nor a response body is printed.
-
-## lib/install-box-login-route.sh
-
-Routes a named OMP profile's model turns to Anthropic on the operator's own Oh My Pi login, the one the devbox's own sessions use:
-the box-login alternative to [`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) and [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh), for a devbox whose operator lets Legion's test runs use that login.
-No key is minted, read or copied, and no gateway is involved.
-
-```sh
-scripts/e2e/lib/install-box-login-route.sh --profile <name> --home <dir> --dest <dir> --operator-home <dir>
-# → github:sjawhar/oh-my-pi@<the operator's version>
-```
-
-Oh My Pi keeps its stored logins in `<agentDir>/agent.db`, and a named profile's `agentDir` is `<home>/.omp/profiles/<name>/agent`, with no setting that moves the database.
-The script makes the profile's `agent.db` a symlink to `<operator-home>/.omp/agent/agent.db`;
-SQLite opens the database through the link and writes its `-wal` and `-shm` beside the real file, so every pane shares the operator's one database, never a copy.
-The script checks only that the operator's `agent.db` is a regular file, then links to it:
-it never opens, reads, copies or hashes it, and runs no `omp` command that touches a login.
-`--operator-home` is the operator's real home, which the stage proof captures before it runs anything under the run's own `HOME`;
-the script never takes it from its own `$HOME`.
-
-The profile's `agent/config.yml` is the key-file route's (every model role `anthropic/claude-opus-4-8`, `enabledModels` that one model, every other provider a pane could reach disabled, `startup.setupWizard: false`) plus `memory.backend: "off"`, so the run writes no memory into the operator's database.
-No `models.yml` is written, so no `apiKey` or `X-Api-Key` overrides the stored login.
-
-**The operator's build.**
-Processes sharing one `agent.db` refresh its OAuth token safely only on a build with the refresh-race fix, first released as `18.12.2-sami.20261026-004924`;
-on a build without it one process can spend the shared refresh token while another still holds it, which disables the login for every session on the box.
-So the panes run the operator's own build, the one the operator's sessions already run against that database, not `.omp-pin` (which also feeds the worker image and CI and is not moved for this).
-The script reads it with `cd / && HOME=<operator-home> mise ls --global --json`:
-from the filesystem root, so neither this checkout's nor the caller's directory's mise config can answer in place of the operator's global one.
-It takes the one active `github:sjawhar/oh-my-pi` entry's `version` and prints the tool spec on stdout, which the stage proof writes into `omp_invocation`.
-
-Each refusal goes to stderr and writes nothing into the profile.
-Exit 2 (arguments): a missing flag or a flag with no value (`--<flag> needs a value: …`), OMP's default profile, a `--profile` that is not one plain path segment (`--profile '<name>'
-is not one plain name …`: a letter or digit, then letters, digits, `.`, `_` or `-`, and no `..`), an agent directory whose canonical path is not `<home>/.omp/profiles/<name>/agent` (`… resolves to <path>,
-outside …`: a symlinked directory on the way), `--home` equal to `HOME` or `--operator-home` or without `.omp`, an existing `agent/models.yml` or `agent/config.yml`, a profile `agent.db` that exists and is not the symlink it would make (`… exists and is not the symlink to <db>; this installs a fresh profile's
-model route only, and never replaces a profile's own database`), and a `--dest` that is not empty.
-Exit 1 (the box):
-
-- `<db> is not a regular file: the operator has no Oh My Pi login on this box to share (log in with the operator's own omp first)`, or `<db> is a symlink; …`;
-
-- `the operator's global mise config pins no single active github:sjawhar/oh-my-pi, …`;
-
-- `the operator's github:sjawhar/oh-my-pi is <v>, not <base>-sami.YYYYMMDD-HHMMSS, so it cannot be compared with the refresh-race fix (18.12.2-sami.20261026-004924)`;
-
-- `the operator's github:sjawhar/oh-my-pi is <v>, base <b>; only base 18.12.2 is known here, …`: another base version is refused, never guessed at;
-
-- `the operator's github:sjawhar/oh-my-pi is <v>, older than 18.12.2-sami.20261026-004924, the first build with the refresh-race fix; …`.
-
-It writes `<dest>/box-login.route`, the link, the database's path and the build, for the evidence; it holds no secret.
-Claude Code has no such route: Claude Code 2.1.309 writes `~/.claude/.credentials.json` by writing a temporary file and renaming it over the old one, without following a symlink, so a symlinked credentials file would be replaced on its first token refresh and the operator's own file would keep a refresh token that is already spent.
-
-## lib/box-login.sh
-
-What a `LEGION_E2E_MODEL_ROUTE=box-login` run needs beyond the route:
-one run at a time, a teardown that lets a pane finish a token refresh, and no link to the operator's login left behind.
-Sourced, never run; Stage 2 and Stage 3 source it first.
-
-```sh
-. "$root/scripts/e2e/lib/box-login.sh"
-take_box_login_lock || { echo "FAIL setup: another box-login proof is running on this box (the holder is named above)" >&2; exit 1; }
-…
-stop_box_login_processes $(run_processes)   # in the teardown
-unlink_box_login_db "$profile_agent"
-```
-
-`take_box_login_lock` takes a non-blocking `flock` on one fixed file per operator uid, `/tmp/legion-e2e-box-login.<uid>.lock` (`box_login_lock_file`), whatever `XDG_RUNTIME_DIR` or `TMPDIR` says, so every box-login run of that operator meets the same lock.
-The stages take it before they make a work or evidence directory.
-The lock stays on a file descriptor of the calling shell for its whole life, and of every process it starts that keeps the descriptor, so a pane a run leaves behind still holds it.
-A taken lock fails at once, naming the holder the file records:
-`another box-login proof holds <file>: pid <pid> (<command>); one box-login proof runs at a time`, or that the pid has exited and a process it started still holds the lock.
-Every pane of a box-login run shares the operator's login database; one run at a time keeps the load on that login bounded and each run's evidence its own.
-
-`stop_box_login_processes PID…` sends SIGTERM to every pid, waits at most `box_login_stop_grace` (10) seconds for all of them to exit, then SIGKILLs only those still alive, so a pane in the middle of a token refresh can write the rotated token back before it goes.
-`unlink_box_login_db
-AGENT_DIR` removes `AGENT_DIR/agent.db` when it is a symlink, the link itself and never what it names;
-the stages call it once the run's processes are gone, since a process that opened the database again after the link went would make a fresh database of its own in the profile.
 
 ## lib/model-gateway-unserved.sh
 
@@ -4875,9 +4153,8 @@ Every form exits 2 on an argument refusal (a `--record` in a directory that does
 ## lib/check-model-route.sh
 
 Proves a tmux stage proof's agents reached the model only through its configured route:
-every agent turn the isolated OMP profile recorded, each subagent's included, was served by the `anthropic` provider, the one [`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) (the Hawk gateway), [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) (a local key file) or [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh) (the operator's own login) routes and leaves enabled.
+every agent turn the isolated OMP profile recorded, each subagent's included, was served by the `anthropic` provider, the one [`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) (the Hawk gateway) or [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) (a local key file) routes and leaves enabled.
 Stage 2 runs it last, after `stop`.
-Stage 3 runs it once every agent process has stopped and before it copies the transcripts, then again over the copies, which must hold the same turns, sessions and subagents.
 
 ```sh
 bash scripts/e2e/lib/check-model-route.sh --sessions "$work/omp-home/.omp/profiles/<profile>/agent/sessions" --control "$work/model-route-control"
@@ -4903,7 +4180,7 @@ An argument refusal exits 2.
 ## lib/transcript.sh
 
 The stage proof's transcript.
-Stage 2, Stage 3, Stage 4a, Stage 4b, `stage3-4b13b-acceptance.sh` and `controller-start-tmux.sh` source it before their first output.
+Stage 2, Stage 4a, Stage 4b and `controller-start-tmux.sh` source it before their first output.
 
 ```sh
 . "$root/scripts/e2e/lib/transcript.sh"     # sourced, never run
@@ -4925,7 +4202,7 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
   It rejects `-p`, which is why the trap, not `-p`, carries SIGPIPE.
 
 - The `tee` is one of the run's processes: its argv names `FILE`, and its working directory is the caller's at the call.
-  [`lib/rig.sh`](#librigsh)'s `run_processes` matches `$work` in either, so a caller keeps both outside `$work`, or opens `FILE` on a descriptor and passes `/dev/fd/N`, as Stage 2 and `stage3-4b13b-acceptance.sh` do with their transcript under `$work`.
+  [`lib/rig.sh`](#librigsh)'s `run_processes` matches `$work` in either, so a caller keeps both outside `$work`, or opens `FILE` on a descriptor and passes `/dev/fd/N`, as Stage 2 does with its transcript under `$work`.
 
 ## lib/rig.sh
 
@@ -5036,63 +4313,12 @@ Each item below names a function, then what it does.
 `lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
 it names the process working in the run's directory and the one naming it in its command line, leaves a process of neither kind alone, calls neither command, and trips no trap.
 
-## lib/two-builds.sh
-
-The harness the two live two-builds proofs share: `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`, each of which runs the `envoy-dispatch` binary of an older commit beside this checkout's against one PostgreSQL, the way a rolling release serves both at once.
-Everything both proofs do before their own cases is here, so a fix to the loopback guard or to the schema reset lands in one place: the `--base-commit` argument, the sweep of what a pane exports, the teardown, the HTTP call, the prerequisites, the build of both binaries, the reset of the database's `public` schema, the fake Envoy and the start of a server.
-Each proof keeps its own header, its own ports, its own seed and its own cases.
-
-```sh
-. "$root/scripts/e2e/lib/two-builds.sh"     # sourced, never run
-```
-
-It sources [`lib/rig.sh`](#librigsh) itself, so a proof sources this file alone and gets both.
-Before it does, the caller sets what `lib/rig.sh` asks of it — `root`, `evidence` (empty; `two_builds_build` sets it to the work directory) and `timeout_hook` — defines `note` and `fail`, keeps `check` and `started`, which `cleanup` reads, and sets its three ports.
-
-Each item below names a function, then what it does.
-
-- `two_builds_setup LABEL ARGUMENT…`
-
-  reads the run's `--base-commit` and its `DATABASE_URL`, drops every inherited `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`, and arms the teardown.
-  LABEL is the run's name in `cleanup`'s last line (`dispatch two builds e2e: PASS in Ns`), which is the one thing the two proofs' teardown differs in
-
-- `two_builds_prerequisites REFUSAL [CHECK…]`
-
-  makes every check the two proofs share, in the order they make them: the required `DATABASE_URL`, the caller's own `--base-commit` refusal REFUSAL, the URL scheme, the tool list, the loopback guard ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn`, which is why `python3` is in that list and why the guard runs after it), the `--base-commit` resolution into `base_sha`, the three ports and the `vector` extension.
-  CHECK, when given, is the proof's own prerequisite, run after the shared ones and before the two notes, so what it notes lands where it did
-
-- `two_builds_build NAME`, `two_builds_reset_database`, `two_builds_fake_envoy`
-
-  make the work directory under `TMPDIR` named for the proof NAME and build both binaries into it, empty the database's `public` schema with [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `empty_public_schema` so the base build migrates it from nothing and this build migrates it forward, and start the harness's fake Envoy listener
-
-- `two_builds_identity`
-
-  sets `agent_token`, `signin_key`, `base_url` and `head_url`: one agent token good against either build, and one sign-in key, since a process with a key of its own is refused registration by the one already live
-
-- `start_server NAME BINARY PORT [VAR=VALUE…]`
-
-  starts one build under `env -i` with the run's own environment and nothing else, taking any extra variable the proof needs — which is how only the search proof passes `DISPATCH_DEV_EMBEDDER=1`
-
-- `call METHOD PATH [BODY]`, `json_field FIELD`, `cleanup RC`
-
-  the HTTP call as an agent bearer against `target_url`, waiting `call_seconds` (20 here; a proof whose reads take longer sets its own), one string member of a JSON object on stdin, and the teardown the three traps run
-
-- `sign_in LOGIN`, `call_person METHOD PATH [BODY]`
-
-  signs the person LOGIN, an email, in at the dev sign-in route of the build on `target_url` (`GET /auth/_dev/signin`, which `start_server`'s `DISPATCH_DEV_SIGNIN=1` mounts), which records them in `people` as a real sign-in does, and keeps their session cookie in the work directory;
-  then `call` as that person, with the cookie and the build's own origin as `Origin`, which every cookie write needs, and no bearer, so Dispatch takes the write as the person's and the body names no actor.
-  Every project names a person (its `default_assignee`), and the agent bearer acts for nobody, so each proof's seed creates its projects through these:
-  `dispatch-two-builds.sh` creates CORE on the base build as the person, whose `project.created` event is what this build's migration fills CORE's default assignee from, since nobody holds its issues, and `dispatch-search-two-builds.sh` signs its person in and names them as `default_assignee` in the agent's create of SRCH and ALFA
-
-Running the two proofs at once takes a database each: both reset their own `DATABASE_URL`'s `public` schema, so one database given to both leaves each build migrating a schema the other emptied.
-Their ports differ, so nothing else collides.
-
 ## lib/nats-image.sh
 
 Sets `nats_image` to the NATS server image every live proof that starts its own server runs: `testnats.HubImage`, the constant `packages/envoy/internal/testnats/nats.go` declares, which is the hub's `nats:2.15.1-alpine` (`.github/ci-images.yaml`).
 The listener and the Legion daemon refuse a nats-server below the floor `packages/envoy/natsversion` holds, every 2.10 among them, so a proof on any older image never brings its stack up; reading the Go tests' own constant keeps the two from drifting.
 Needs `$root`; ends the script when it cannot read the constant, and says so on stderr under `set -e` too.
-Stage 2, Stage 3, both Claude backend proofs, the controller-start, user-turns, parked-decision and verifiers proofs, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it.
+Stage 2, both Claude backend proofs, the controller-start, user-turns and verifiers proofs, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it.
 `lib/nats-image.test.ts` scans every tracked shell script, and holds each one with a `docker run` line that passes `-js` to starting `"$nats_image"` and sourcing this helper; the drivers above are a floor under that scan.
 It also scans every tracked text file but dated plans and changelogs for the nats-server module's path followed by `@` and a version, in any command (`go install`, `go run`, `go get`), a literal version or `@$name` with a literal `name=<version>` in the same file, and fails on any version the floor refuses.
 It holds no copy of the floor: it builds `packages/envoy/natsversion/cmd/natsfloor` once and asks it, so the verdict is `natsversion.Refusal`'s, the rule the listener and the daemon refuse a server by, and so it needs `go` on `PATH`.
@@ -5101,7 +4327,7 @@ It does not see a `docker run` continued over lines, `podman` or a launcher that
 ## lib/omp-home.sh
 
 The run's own `HOME` for Oh My Pi, so a stage proof's isolated profile lives in its work directory and the operator's `~/.omp/profiles` is never written or deleted.
-Stage 2, Stage 3, the 4b.13b acceptance, Stage 4b's controller and the controller proof source it, and so do the three model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh), [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) and [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)) for `omp_setup_wizard_off`.
+Stage 2, Stage 4b's controller and the controller proof source it, and so do the two model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) and [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)) for `omp_setup_wizard_off`.
 
 ```sh
 . "$root/scripts/e2e/lib/omp-home.sh"     # sourced, never run
@@ -5144,7 +4370,7 @@ Only the working directory's project settings and `PI_CONFIG_FILES` overlays mer
 `omp_session_unsets` is the one list of the operator's own Oh My Pi session variables that no Oh My Pi a rig starts from that session may inherit, as `env` options:
 `-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH`.
 They are that session's id, the mark Oh My Pi puts on the shells its bash tool spawns, its settings overlays (laid over every profile Oh My Pi opens), the NATS its Envoy plugin dials, and the Oh My Pi binary that `legion controller start` and the daemon would run in place of `omp_invocation`.
-`legion controller start` hands Oh My Pi its caller's environment, so the four rigs that run it or an interactive `omp` from the operator's shell (`controller-start-tmux.sh`, `parked-decision-devbox.sh`, `stage4b-sandbox-tree.sh`, `dispatch-user-turns.sh`) put the list in front of each launch: `env "${omp_session_unsets[@]}" …` in an argv, and `env ${omp_session_unsets[*]} …` in a pane's shell command.
+`legion controller start` hands Oh My Pi its caller's environment, so the three rigs that run it or an interactive `omp` from the operator's shell (`controller-start-tmux.sh`, `stage4b-sandbox-tree.sh`, `dispatch-user-turns.sh`) put the list in front of each launch: `env "${omp_session_unsets[@]}" …` in an argv, and `env ${omp_session_unsets[*]} …` in a pane's shell command.
 
 ## lib/leftovers.sh
 
@@ -5163,37 +4389,6 @@ The check fails, through the caller's `fail`, naming each container and process 
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
-
-## lib/operator-dispatch.sh
-
-The operator's Dispatch, for a script run from the operator's shell.
-Stage 3 and `stage3-4b13b-acceptance.sh` read their production audit's server and bearer through it.
-
-```sh
-. "$root/scripts/e2e/lib/operator-dispatch.sh"     # sourced, never run
-operator_dispatch     # sets operator_dispatch_file, _url, _token and _notice
-operator_dispatch_hold_token     # moves DISPATCH_TOKEN into operator_token, out of the environment
-production_baseline     # sets prod_dispatch_url, prod_token, prod_baseline (`none` without Dispatch)
-production_dispatch_audit SESSIONS ENVOY     # the audit of every production Dispatch event from the baseline
-```
-
-The two Stage 3 scripts call `operator_dispatch_hold_token` once at start, so nothing a run starts inherits the operator's production bearer, and `production_baseline` to open their audit's window:
-it resolves the operator's Dispatch with the held bearer and reads the newest event id of the issues updated in the last 24 hours, through a 0600 header file under the caller's `$work` (`prod_header_file`).
-Their `production_audit` calls `production_dispatch_audit`, which pages `GET /api/v1/events/log?after=` from the baseline id less one until a short page, so it reads every event at or above the baseline whatever owns it, and reads the production projects;
-it writes `$evidence/production-dispatch-audit.json` and fails on an event a rig session authored or that names the rig's `$project`, on a production project naming it, on a read that fails, and on a read that does not carry the baseline event.
-A Dispatch that answers that route 404 is a build from before it: the function says so and reads its `/ws/live` replay since the baseline less one for 25 s instead (`lib/dispatch-live-events.ts`); any other failure fails the audit.
-
-`operator_dispatch` runs `bun scripts/e2e/lib/operator-dispatch.ts <bearer file>`, which resolves Dispatch with `@legion/envoy-client` as every command does, so no script keeps its own copy of the which-file or the same-server rule:
-the envoy.json `envoyConfigPath("command")` chooses (`ENVOY_CONFIG_FILE`, which the operator's own session sets, then a named omp profile's `PI_CODING_AGENT_DIR`, and `CLAUDE_CONFIG_DIR` only under `CLAUDE_CODE_CHILD_SESSION=1` (a Claude Code shell), then `${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`), the working directory's `.envoy/envoy.json`, and `dispatchSettings` over the environment as it is at the call (`DISPATCH_URL`, `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN`;
-a file's `dispatch.token` goes only with the server written beside it, and a `!` token runs).
-With Dispatch on it sets the envoy.json's path, the URL and the bearer;
-when nothing configures Dispatch or a file turns it off, the URL and bearer are empty and `operator_dispatch_notice` says why.
-A relative path the rule would use, a file that cannot be read, or a URL or token that does not resolve fails the call through the caller's `fail`, naming it and never the token.
-A checkout's `.opencode/envoy.json`, which is not read, is named on stderr with its rename while the working directory has no `.envoy/envoy.json`.
-The TypeScript entry never prints the bearer, so an agent that runs it directly puts none in its transcript:
-it prints `{"file","url"}` and writes the bearer to `<bearer file>`, which it creates owner-only (0600) and never over a file already there, and `operator_dispatch` passes a path in a private directory it makes with `mktemp -d`, reads the bearer from there and removes the directory.
-The bearer then stays in the caller's unexported variable, so it reaches no argv and no process's environment.
-The entry imports the checkout's `packages/envoy-client`, so the checkout's dependencies must be installed (`bun install`).
 
 ## lib/workflow.sh
 
@@ -5395,18 +4590,16 @@ Either `DIR` must be a path the caller's cleanup removes unconditionally, on eve
 not the evidence directory, and not a workspace a failing run keeps for debugging — the rule [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)'s own `--key-dir` states for the model key, and the reason is the same.
 It refuses, writing nothing, a role the last `require_app_inputs` did not read, and the block it writes names commands, never a token and never a key.
 
-In the three tmux proofs — [`stage3-devbox-workflow.sh`](#stage3-devbox-workflowsh), [`stage3-4b13b-acceptance.sh`](#stage3-4b13b-acceptancesh) and [`parked-decision-devbox.sh`](#parked-decision-devboxsh) — that key is `$work/app-key/review/key.pem`, mode 0600 in a directory of mode 0700, and `$work` is a `mktemp -d` under `/tmp`, or under `$TMPDIR` where the proof takes one.
-[`stage4b-sandbox-tree.sh`](#stage4b-sandbox-treesh) writes that same file under its own `$work` (`/tmp/legion-e2e4b.<pid>.<random>`), and so does [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh) under `aws-private-ip`, its one pod-reachability mode other than `bridge`:
-five proofs in all leave the review App's private key on the driver for as long as their run lasts.
-Owner-only there is the operator's own uid, so every process of that uid can read the key, the three tmux proofs' agent panes included:
-a pane runs as the operator, and an agent's own bash can `cat` that file.
-The other two run their agents in pods, so no agent of theirs reads the driver's filesystem at all.
+[`stage4b-sandbox-tree.sh`](#stage4b-sandbox-treesh) writes that key, `app-key/review/key.pem`, mode 0600 in a directory of mode 0700, under its own `$work` (`/tmp/legion-e2e4b.<pid>.<random>`), and so does [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh) under `aws-private-ip`, its one pod-reachability mode other than `bridge`:
+both proofs leave the review App's private key on the driver for as long as their run lasts.
+Owner-only there is the operator's own uid, so every process of that uid can read the key.
+Both run their agents in pods, so no agent of theirs reads the driver's filesystem at all.
 Each proof's `EXIT` trap removes the key directory first and unconditionally, before anything slower in the teardown can hang, and `app_key_left`, which every one of those traps calls at its end, is what holds it to that:
 the lib's own check that the directory the removal was to take is gone, failing the run when it is still there — `FAIL cleanup: the review App's private key remains in <dir>` on stderr, or, under Stage 4b, the `CHECK app-key: FAIL: …` line its verdict and its exit status carry.
 A private key never expires, so a run that leaves one behind leaves a usable credential on the driver whatever else its teardown did, and fails itself for it.
-A run killed outright — `SIGKILL`, a crashed host — runs no trap at all, so in any of those six the key stays where it was written until a person removes it:
+A run killed outright — `SIGKILL`, a crashed host — runs no trap at all, so in either proof the key stays where it was written until a person removes it:
 nothing later in that run removes it, that check never runs, and no run after it removes it either, since [`lib/leftovers.sh`](#libleftoverssh) refuses an earlier driver's leftovers by naming what is still running and removes no directory.
-An operator whose run died that way removes that run's `$work` themselves, the path the run prints when it keeps one (`the run's scratch workspace …`, which the 4b.13b acceptance prints after every outcome, since it keeps its workspace always), and for Stage 4b, which prints no such line, the `/tmp/legion-e2e4b.<pid>.<random>` its own `mktemp -d` made.
+An operator whose run died that way removes that run's `$work` themselves, the path the run prints when it keeps one (`the run's scratch workspace …`), and for Stage 4b, which prints no such line, the `/tmp/legion-e2e4b.<pid>.<random>` its own `mktemp -d` made.
 Under `bridge` the key is not under `$work`:
 [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh) writes it beside the releases on the devbox user's tmpfs, under `XDG_RUNTIME_DIR`, which `require_app_tokens_home` holds to a directory that user owns, of mode 0700, on a tmpfs or a ramfs, failing the run and naming what is wrong otherwise;
 and the next run's `remove_dead_app_tokens` removes, before it mints anything of its own, the credential directory of a run whose driver is gone.

@@ -447,40 +447,6 @@ describe("role_enter_sh runs both hops", () => {
   });
 });
 
-// multi-repo-acceptance.sh's as_role_probe enters its role through role_enter_sh: run with kubectl
-// exec stubbed to run its command here, with the fake tree as the pod's /proc (kubectl exec passes
-// the caller's environment on to nothing, so as_role_probe's own proc_root never reaches the pod),
-// it reaches the role's worker-shim and hands python3 the probe on stdin with its arguments.
-describe("as_role_probe", () => {
-  const multi = join(import.meta.dir, "..", "multi-repo-acceptance.sh");
-  test("runs the probe in the role's worker-shim", () => {
-    const root = enterTree("probe", [{ pid: 7, ppid: 1, argv: ["legion", "worker-shim"] }]);
-    const { bin, log } = fakeNsenter("probe");
-    writeFileSync(
-      join(bin, "kubectl"),
-      `#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done\nshift\nproc_root=${root} exec "$@"\n`,
-      { mode: 0o755 }
-    );
-    writeFileSync(join(bin, "python3"), '#!/bin/sh\necho "$*"\ncat\n', { mode: 0o755 });
-    const probeScript = join(dir, "as-role.py");
-    writeFileSync(probeScript, "PROBE\n");
-    const run = runEntered(
-      `. ${JSON.stringify(lib)}
-as_role_script=${JSON.stringify(probeScript)} LEGION_E2E_REPO_T=t/r LEGION_E2E_REPO_O=o/r o_owner=o
-${scriptFunctions(multi)("as_role_probe")}`,
-      "as_role_probe pod-x planner /proc https://github.com/o/r /trusted",
-      root,
-      bin
-    );
-    expect(run).toEqual({
-      out: "-I - /proc t/r o/r o https://github.com/o/r /trusted\nPROBE",
-      err: "",
-      code: 0,
-    });
-    expect(readFileSync(log, "utf8")).toBe("1\n7\n");
-  });
-});
-
 describe("role_kill_sh reads the proc root it is given", () => {
   const def = `. ${JSON.stringify(lib)}`;
   test("two worker-shims of the role-init are refused, nothing signalled", () => {

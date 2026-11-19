@@ -1,3 +1,4 @@
+// legion: tool - puts the never-decide rule and the agent to the documents written for what the agent must never decide and records both answers, for the person who decides whether the approval-review skill may be relied on to hold them.
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";

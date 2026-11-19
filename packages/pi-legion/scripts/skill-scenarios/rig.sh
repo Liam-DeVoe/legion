@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - runs real Oh My Pi agents on skill scenarios and scores and judges what they wrote, for a person who changes a skill and compares two versions of it to choose one.
 # Skill scenarios: fresh Oh My Pi agents, each running one checkout's packed plugins (and so that
 # checkout's skills), each given one task a skill rule governs, scored afterwards from what the
 # agent actually wrote. Two checkouts under the same scenario compare two versions of a skill.

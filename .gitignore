@@ -300,5 +300,5 @@ docs/site/public/media/*
 !docs/site/public/media/broker/
 docs/site/media/.work/
 
-# Python bytecode (scripts/e2e/lib/as-role.py and any other script run or imported locally).
+# Python bytecode (any script run or imported locally).
 __pycache__/

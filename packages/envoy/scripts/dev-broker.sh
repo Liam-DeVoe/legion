@@ -319,7 +319,7 @@ mkdir -p "$BIN_DIR"
 for cmd in broker dev-oidc-issuer dev-airlock-stands agent-secrets agent-secrets-helper agent-secrets-devrelay; do
   ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
 done
-# The end of the build, which github-narrowing-check.sh waits for under a bound of its own: on a
+# The end of the build, which a caller that waits on the build reads under a bound of its own: on a
 # cold build cache the six builds take far longer than the start of what they built.
 echo "dev-broker: built all six into $BIN_DIR" >&2
 
