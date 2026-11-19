@@ -7,17 +7,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // runRegister registers every session of the sets through the listener's own route, as an agent's
 // plugin does: one POST /v1/interests/subscribe each, which writes the interest and, for a
-// self-subscribed session, the session record. Each asks for the session's own consumer, as a
-// plugin does, since the listener refuses a registration that asks for none (409 not_requested)
-// and writes nothing for it. The epoch is the string a plugin mints for one NATS connection, and
-// one run of this command is one such connection, so every registration of it sends the same one.
+// self-subscribed session, the session record. Each registration asks for the session consumer
+// the listener requires of every registration it takes (consumerFor in cmd/listener), with the
+// delivery the listener's own tests register with (cmd/listener/api_test.go): a registration with
+// none is refused 409 and writes neither record.
 func runRegister(args []string) error {
 	flags := flag.NewFlagSet("register", flag.ContinueOnError)
 	url := flags.String("url", "", "listener URL")
@@ -38,18 +39,17 @@ func runRegister(args []string) error {
 	jobs := make(chan job)
 	errs := make(chan error, *workers)
 	client := &http.Client{Timeout: 30 * time.Second}
-	delivery := map[string]any{"consumer": true, "epoch": fmt.Sprintf("refillrig-%d", os.Getpid())}
 	var wg sync.WaitGroup
 	for range *workers {
 		wg.Go(func() {
 			for j := range jobs {
-				body, _ := json.Marshal(map[string]any{
-					"session_id":      sessionID(j.set.name, j.index),
-					"dir":             "/refill/" + j.set.name,
-					"title":           sessionTitle(j.set.name, j.index, j.set.variant),
-					"topics":          topics(j.set, j.index, *role),
-					"self_subscribed": true,
-					"delivery":        delivery,
+				body, _ := json.Marshal(listenerwire.SubscribeRequest{
+					SessionID:      sessionID(j.set.name, j.index),
+					Dir:            "/refill/" + j.set.name,
+					Title:          sessionTitle(j.set.name, j.index, j.set.variant),
+					Topics:         topics(j.set, j.index, *role),
+					SelfSubscribed: true,
+					Delivery:       &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"},
 				})
 				resp, err := client.Post(*url+"/v1/interests/subscribe", "application/json", bytes.NewReader(body))
 				if err == nil {
