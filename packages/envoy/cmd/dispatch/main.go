@@ -471,11 +471,15 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
+	// The process's identity (store.Pool.Identity), which every database session of it carries at
+	// the end of its application_name, is its room-sync process id and its publisher hold's
+	// holder too, so a standby that takes the hold over from this process ends every one of them.
 	documentService := newDocumentService(boot, docs.Deps{
 		Store:     database,
 		Events:    broker,
 		Identity:  requestIdentity,
 		ServerURL: serverURL,
+		ProcessID: database.Pool.Identity().String(),
 	})
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
@@ -759,6 +763,7 @@ func main() {
 		holders := roles.NewBuckets(natsClient, boot.RoleHolderWindows)
 		outboxPublisher = outbox.New(outbox.Deps{
 			Store:            &store.Store{Pool: outboxPool},
+			Instance:         database.Pool.Identity(),
 			Publisher:        natsClient,
 			Broker:           broker,
 			Listen:           database.Pool.Listener,

@@ -81,7 +81,14 @@ type Deps struct {
 	// publisher hold is taken and renewed on. cmd/dispatch gives it a store on a pool of its own
 	// (store.Pool.Outbox), so the requests queued on the shared pool never hold a publish or a
 	// renewal back.
-	Store     *store.Store
+	Store *store.Store
+	// Instance is the identity the outbox holds the publisher hold under and names itself by in
+	// its log: cmd/dispatch passes the server process's identity (store.Pool.Identity), which
+	// every database session of the process carries at the end of its application_name, so a
+	// standby that takes the hold over from this process can end those sessions
+	// (endReplacedSessions). The zero uuid has New mint one, which no session carries: a test that
+	// runs two outboxes on one store leaves it zero, so the two are two holders.
+	Instance  uuid.UUID
 	Publisher Publisher
 	// Broker wakes the outbox for every event this process commits.
 	Broker *events.Broker

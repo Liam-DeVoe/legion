@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // HoldReleasedChannel is the channel Release notifies, with the hold's name as the payload, in the
@@ -51,14 +52,30 @@ type HoldOptions struct {
 // so each is on the database's clock.
 const (
 	// takeHold inserts the row, or takes it over when it has lapsed or is already this holder's,
-	// in one statement. A live row of another holder leaves the statement affecting no row. Two
+	// in one statement, and answers whether it took the name and the holder the row named before
+	// it (null for no row). A live row of another holder leaves the statement taking nothing. Two
 	// processes taking one name at once queue on the row: the second re-reads the first's row
 	// once it commits and finds it live.
-	takeHold = `insert into duty_holds (name, holder, token, expires_at)
-		values ($1, $2, $3, now() + make_interval(secs => $4))
-		on conflict (name) do update
-			set holder = excluded.holder, token = excluded.token, expires_at = excluded.expires_at
-			where duty_holds.expires_at <= now() or duty_holds.holder = excluded.holder`
+	//
+	// previous locks the row (for update) before the insert, since the insert reads its one row
+	// from previous: a lock that waited on another transaction's change of the row reads the
+	// version that change left, which is the version the insert's update then replaces, so the
+	// holder it answers is the one whose row this take replaced, and none when a release deleted
+	// the row meanwhile. Postgres 18's RETURNING old.holder would say the same in one clause, and
+	// is not used because a Dispatch stack may still run Postgres 16 (gcp:Dispatch's
+	// databaseVersion).
+	takeHold = `with previous as (
+			select holder from duty_holds where name = $1 for update
+		), taken as (
+			insert into duty_holds (name, holder, token, expires_at)
+			select $1, $2, $3, now() + make_interval(secs => $4)
+			from (select count(*) from previous) locked
+			on conflict (name) do update
+				set holder = excluded.holder, token = excluded.token, expires_at = excluded.expires_at
+				where duty_holds.expires_at <= now() or duty_holds.holder = excluded.holder
+			returning holder
+		)
+		select exists (select 1 from taken), (select holder from previous)`
 	renewHold = `update duty_holds set expires_at = now() + make_interval(secs => $3)
 		where name = $1 and holder = $2`
 	setHoldToken = `update duty_holds set token = $3 where name = $1 and holder = $2`
@@ -109,6 +126,9 @@ type Hold struct {
 	name   string
 	holder uuid.UUID
 	opts   HoldOptions
+	// replaced is the other holder whose row the take replaced, uuid.Nil when it replaced none
+	// (Replaced).
+	replaced uuid.UUID
 
 	// stop ends the renewal goroutine, which closes done when it returns.
 	stop context.CancelFunc
@@ -124,20 +144,26 @@ type Hold struct {
 
 // TryHold takes name for holder, and returns nil, nil when another holder holds it live. It takes
 // the name when its row is absent, lapsed or already holder's, in one statement that sets the
-// expiry to the database's now() plus opts.TTL and records opts.Token. On success it starts the
-// renewal, which runs until Release or until the hold is lost. ctx bounds the take alone.
+// expiry to the database's now() plus opts.TTL and records opts.Token, and that reads which holder
+// the row named before (Replaced). On success it starts the renewal, which runs until Release or
+// until the hold is lost. ctx bounds the take alone.
 func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts HoldOptions) (*Hold, error) {
 	if opts.Margin < 0 || opts.TTL <= opts.Margin || opts.Renew <= 0 || opts.Renew >= opts.TTL-opts.Margin {
 		return nil, fmt.Errorf("hold %q: options TTL %s, Renew %s, Margin %s: need 0 <= Margin < TTL and 0 < Renew < TTL - Margin",
 			name, opts.TTL, opts.Renew, opts.Margin)
 	}
 	sent := time.Now()
-	tag, err := db.Exec(ctx, takeHold, name, holder, opts.Token, opts.TTL.Seconds())
-	if err != nil {
+	var taken bool
+	var previous pgtype.UUID
+	if err := db.QueryRow(ctx, takeHold, name, holder, opts.Token, opts.TTL.Seconds()).Scan(&taken, &previous); err != nil {
 		return nil, fmt.Errorf("take hold %q: %w", name, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !taken {
 		return nil, nil
+	}
+	var replaced uuid.UUID
+	if previous.Valid && uuid.UUID(previous.Bytes) != holder {
+		replaced = previous.Bytes
 	}
 	renewing, stop := context.WithCancel(context.Background())
 	h := &Hold{
@@ -145,6 +171,7 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 		name:     name,
 		holder:   holder,
 		opts:     opts,
+		replaced: replaced,
 		stop:     stop,
 		done:     make(chan struct{}),
 		deadline: sent.Add(opts.TTL - opts.Margin),
@@ -160,6 +187,12 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 // Lost is closed when the hold is no longer this process's to act on: its loss deadline passed, a
 // renewal or SetToken found the row another's, or Release was called. It is never reopened.
 func (h *Hold) Lost() <-chan struct{} { return h.lost }
+
+// Replaced is the other holder whose lapsed row this hold's take replaced, and true; or uuid.Nil
+// and false when the take inserted the row, or found it already this holder's. A holder that
+// replaced another's row took the name from a process that stopped renewing without releasing
+// it, which may still hold whatever else it held when it stopped.
+func (h *Hold) Replaced() (uuid.UUID, bool) { return h.replaced, h.replaced != uuid.Nil }
 
 // Deadline is the current loss deadline: the send time of the last confirmed renewal (or the
 // take), plus TTL - Margin, or the moment Lost closed if that came first. It carries the monotonic

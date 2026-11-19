@@ -12,6 +12,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,6 +46,11 @@ const poolSizeParam = "pool_max_conns"
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
 // (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
+//
+// It mints the pool's identity (Pool.Identity, identity.go), one per Open and so one per server
+// process, and every connection names it at the end of its application_name: the shared pool's
+// connections are named the application_name the connection string gives, or "dispatch" when it
+// gives none, followed by the identity.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -61,6 +67,12 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	identity := uuid.New()
+	base := config.ConnConfig.RuntimeParams["application_name"]
+	if base == "" {
+		base = defaultApplicationName
+	}
+	config.ConnConfig.RuntimeParams["application_name"] = applicationName(base, identity)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)
@@ -69,7 +81,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping Postgres: %w", err)
 	}
-	return &Store{Pool: NewPool(pool)}, nil
+	return &Store{Pool: &Pool{pool: pool, identity: identity}}, nil
 }
 
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone

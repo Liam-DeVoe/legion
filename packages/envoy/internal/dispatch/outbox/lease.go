@@ -119,7 +119,10 @@ const (
 type Outbox struct {
 	deps Deps
 	// instance names this process in the hold's row and in every log line about the hold and its
-	// batches; token is the hold's token, the host and process id.
+	// batches: Deps.Instance, which cmd/dispatch makes the identity every database session of the
+	// process carries at the end of its application_name (store.Pool.Identity), so a standby that
+	// takes the hold over from this process can end those sessions (endReplacedSessions). token is
+	// the hold's token, the host and process id.
 	instance uuid.UUID
 	token    string
 	// wake is the holder's one-slot wake channel: every source of a scan (signal) sends to it
@@ -159,15 +162,20 @@ type Outbox struct {
 	probeBeforeHold bool
 }
 
-// New returns an outbox for deps, with an instance id of its own. Run starts it.
+// New returns an outbox for deps, holding the publisher hold under deps.Instance, or an id of its
+// own when that is zero. Run starts it.
 func New(deps Deps) *Outbox {
 	host, err := os.Hostname()
 	if err != nil {
 		host = "unknown-host"
 	}
+	instance := deps.Instance
+	if instance == uuid.Nil {
+		instance = uuid.New()
+	}
 	return &Outbox{
 		deps:        deps,
-		instance:    uuid.New(),
+		instance:    instance,
 		token:       fmt.Sprintf("%s/%d", host, os.Getpid()),
 		wake:        make(chan struct{}, 1),
 		standbyWake: make(chan struct{}, 1),
@@ -364,13 +372,18 @@ func (o *Outbox) answering() bool {
 
 // tryHold takes the publisher hold, or returns how long until the current holder's hold lapses on
 // the database's clock: zero when it already has (it was released or lapsed between the two
-// statements), and holdRetry when the database did not answer.
+// statements), and holdRetry when the database did not answer. A take that replaced another
+// holder's lapsed row ends that holder's database sessions before it returns, and so before the
+// first batch (endReplacedSessions).
 func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	pool := o.deps.Store.Pool
 	options := publisherHoldOptions
 	options.Token = o.token
 	hold, err := duty.TryHold(ctx, pool, publisherHold, o.instance, options)
 	if err == nil && hold != nil {
+		if previous, replaced := hold.Replaced(); replaced {
+			o.endReplacedSessions(ctx, previous)
+		}
 		return hold, 0
 	}
 	var remaining time.Duration
@@ -389,6 +402,44 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	}
 	return nil, max(remaining, 0)
 }
+
+// endReplacedSessions ends every database session of previous, the process whose lapsed row of
+// the publisher hold this process's take just replaced (store.Pool.EndSessionsOf), and logs each
+// one it ended.
+//
+// A holder's row lapses without a release only when the holder could not send one: it was killed,
+// frozen (SIGSTOP, a VM paused), or cut off from the database. A frozen process still holds every
+// connection it had, and Postgres never ends a session whose client is merely silent, so a
+// transaction it had open when it froze keeps its locks - an issue's owner lock among them - and
+// every write of that issue, through any process, waits on it for as long as the freeze lasts. The
+// standby that takes the hold over ends those sessions, which rolls the transactions back and
+// frees the locks within the take-over's six seconds. A process that was only slow, and runs on,
+// meets the ended sessions as SQLSTATE 57P01 (store.SessionEnded) on the requests they served,
+// which the API answers 503 DATABASE_SESSION_ENDED; its pools dial fresh connections, and it
+// stands by for the hold like any other process.
+//
+// It is bounded by recordTimeout, as a record is. A failure is logged and the take stands: the
+// process holds the hold, and a session it could not end is the frozen process's alone.
+func (o *Outbox) endReplacedSessions(ctx context.Context, previous uuid.UUID) {
+	ending, cancel := context.WithTimeout(ctx, recordTimeout)
+	defer cancel()
+	ended, err := o.deps.Store.Pool.EndSessionsOf(ending, previous)
+	if err != nil {
+		slog.Error("dispatch outbox: end the sessions of the publisher hold's previous holder",
+			"instance", o.instance, "previous", previous, "error", err)
+		return
+	}
+	for _, session := range ended {
+		slog.Info(endedSessionLine, "instance", o.instance, "previous", previous,
+			"pid", session.PID, "application_name", session.ApplicationName, "signalled", session.Signalled)
+	}
+	slog.Info("dispatch outbox: replaced the publisher hold's lapsed row and ended its holder's sessions",
+		"instance", o.instance, "previous", previous, "sessions_ended", len(ended))
+}
+
+// endedSessionLine is the line endReplacedSessions logs for each session of the previous holder it
+// ended. cmd/dispatch's two-process rows wait on its words.
+const endedSessionLine = "dispatch outbox: ended a database session of the publisher hold's previous holder"
 
 // publish runs this process as the holder of hold until it stops (serve), then releases the hold
 // and returns why it stopped. The release comes on every end, a lost hold's too: serve also ends

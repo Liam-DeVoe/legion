@@ -938,6 +938,10 @@ What the two processes share, and what each keeps to itself:
   a graceful stop waits for that before it closes the database pool, up to `outboxStopBudget` after its shutdown starts.
   One that is killed or frozen is replaced once its hold lapses, five seconds after its last renewal, so within six seconds of the kill or the freeze;
   one whose NATS stays down for two seconds, or whose failed sends meet a connection that does not answer a probe, releases the hold too, and a connection that goes silent is found down by the client's pings two to three seconds in, so the other process takes over within six seconds of the silence.
+  The process that takes over a lapsed row ends every database session of the process the row names before its first batch (`pg_terminate_backend`, logged one line per session), so a transaction a frozen process held open, and the issue locks it held, end with the take rather than with the freeze:
+  each process names one identity, minted at boot, at the end of every one of its connections' `application_name` (`<pool name> <identity>`, the pool name being `DATABASE_URL`'s `application_name` or `dispatch` for the shared pool), and holds the publisher hold under that identity, so the row names the sessions to end and no other process's;
+  a process that was only slow and runs on answers a request whose session was ended `503 DATABASE_SESSION_ENDED` with `Retry-After: 1`, dials fresh connections, and stands by.
+  A process that does not hold the publisher hold and freezes in the middle of a write still holds that issue's lock until Postgres ends its connection.
   One that finds its hold lost releases it as well, which stops its renewal and deletes the row only while the row still names it.
   One that is alive but whose renewal is not confirmed within four seconds of the last one that was stops publishing at that moment, and no standby may take the name while its row stands: until its release, right after the line that ends the turn, deletes the row, or until the row lapses one second later when that release cannot reach the database first;
   the line that ends the turn carries `stopped` and `stopped_by`, the moment it stopped bounded from below and from above rather than dated by the moment the line was written, and one value, the hold's deadline, whenever the turn ended there;
@@ -1215,9 +1219,9 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
 | Leases (`store.LeasePoolSize`) | 22 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
-| Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
-| Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
-| Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
+| Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name` `dispatch-room-appends <identity>`. |
+| Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name` `dispatch-rooms <identity>`. |
+| Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name` `dispatch-compaction <identity>`. |
 | Display tree fill (`textTreePoolSize`) | 2 | The background fill's own reads and writes (`Pool.TextTrees`, `texttreefill`): a pass reads its next batch of texts only once the batch before it is stored, and stores a batch with at most two readings in flight, so two is every connection it can use. |
 | Health (`healthPoolSize`) | 1 | The `/healthz` probe. |
 | Outbox (`outboxPoolSize`) | 2 | The events outbox's scan and, beside it, the renewal of its publisher hold (`duty.Hold`). |

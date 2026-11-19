@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -156,6 +157,10 @@ func logRefusal() {
 // so no caller can reach past the refusal.
 type Pool struct {
 	pool *pgxpool.Pool
+	// identity is the server process's identity (identity.go), which every connection of this
+	// pool and of the separate pools opened from it names at the end of its application_name;
+	// uuid.Nil for a pool NewPool wrapped.
+	identity uuid.UUID
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
 	// caller that loses the race is told the pool is closed rather than opening one nothing
 	// will ever close.
@@ -179,7 +184,8 @@ type Pool struct {
 	healthClosed bool
 }
 
-// NewPool wraps an open pgx pool.
+// NewPool wraps an open pgx pool. It names no identity (Identity): its connections carry whatever
+// application_name the pool's own configuration gives them.
 func NewPool(pool *pgxpool.Pool) *Pool {
 	return &Pool{pool: pool}
 }
@@ -581,7 +587,7 @@ func (p *Pool) Outbox() (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewPool(opened), nil
+	return &Pool{pool: opened, identity: p.identity}, nil
 }
 
 // compactionPoolSize bounds the pool a document's compaction reads and writes through. A
@@ -627,7 +633,7 @@ func (p *Pool) TextTrees() (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewPool(opened), nil
+	return &Pool{pool: opened, identity: p.identity}, nil
 }
 
 // horizonPoolSize bounds the pool the event log's safe horizon (events.Horizon) works through. The
@@ -656,13 +662,13 @@ func (p *Pool) Horizon() (*pgxpool.Pool, error) {
 // shared pool. It refuses from the moment Close begins (ErrPoolClosed). Each caller holds mu for
 // the whole check-and-open so two of them cannot open two pools, and one opened after Close would
 // be a pool nobody closes.
-func (p *Pool) separate(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
+func (p *Pool) separate(field **pgxpool.Pool, size int32, name, separateName string) (*pgxpool.Pool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return nil, ErrPoolClosed
 	}
-	return p.openSeparateLocked(field, size, name, applicationName)
+	return p.openSeparateLocked(field, size, name, separateName)
 }
 
 // healthPool is separate for the health probe's pool, whose close rule is its own: it opens and
@@ -678,10 +684,11 @@ func (p *Pool) healthPool() (*pgxpool.Pool, error) {
 }
 
 // openSeparateLocked is the pool held at field, opened when there is none, sized at size and
-// copied from the shared pool's configuration. Its connections name themselves applicationName in
-// pg_stat_activity, or keep the shared pool's name when it is empty. Its caller holds mu and has
-// checked the pool is not closed for it.
-func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
+// copied from the shared pool's configuration. Its connections name themselves separateName,
+// followed by the pool's identity (applicationName), in pg_stat_activity, or keep the shared
+// pool's name, which already ends with that identity, when separateName is empty. Its caller
+// holds mu and has checked the pool is not closed for it.
+func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, separateName string) (*pgxpool.Pool, error) {
 	if *field != nil {
 		return *field, nil
 	}
@@ -692,11 +699,11 @@ func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applic
 	// pool - which pgxpool re-attempts, and puddle refuses as full, every health-check period.
 	config.MinConns = 0
 	config.MinIdleConns = 0
-	if applicationName != "" {
+	if separateName != "" {
 		if config.ConnConfig.RuntimeParams == nil {
 			config.ConnConfig.RuntimeParams = make(map[string]string)
 		}
-		config.ConnConfig.RuntimeParams["application_name"] = applicationName
+		config.ConnConfig.RuntimeParams["application_name"] = applicationName(separateName, p.identity)
 	}
 	opened, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {

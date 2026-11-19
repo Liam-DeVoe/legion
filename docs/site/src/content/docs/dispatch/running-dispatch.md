@@ -588,6 +588,12 @@ What a reader sees while two servers are serving:
   health check's `outbox_publisher` says which server publishes. A publishing server whose NATS
   goes silent without the connection dropping is found out by its client's own pings within three
   seconds, whether or not it has anything to send, and gives the publishing up two seconds later.
+- A server that takes over from a publishing server that froze ends that server's database
+  sessions, so a write the frozen server had begun no longer holds back the other server's writes
+  of the same issue. If the frozen server runs again, a request it was serving answers
+  `503 DATABASE_SESSION_ENDED`, to be made again, and the server stands by. A server that does
+  not publish and freezes in the middle of a write still holds back the writes of that issue until
+  Postgres ends its connection.
 - Two people on one document see each other's typing, cursors and presence, whichever server each
   one is on. Each server tells the others through Postgres, so this works while the message bus
   is down. A read never returns text older than what is stored. An agent's edit sees what a

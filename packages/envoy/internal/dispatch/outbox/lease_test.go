@@ -784,7 +784,9 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	// The standby's LISTEN connection's catch-up wake comes as it starts.
 	time.Sleep(time.Second)
 
-	takes, reads := len(tracer.matching("insert into duty_holds")), len(tracer.matching("from duty_holds where name"))
+	// A take reads the row it replaces too (duty's takeHold), so a read of the lapse is told by
+	// its own expression, expires_at - now(), which only duty.Expiry's statement holds.
+	takes, reads := len(tracer.matching("insert into duty_holds")), len(tracer.matching("expires_at - now()"))
 	counting := time.Now()
 	var last model.Event
 	for index := range 100 {
@@ -795,7 +797,7 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 		t.Fatal("the standby publishes while the holder holds the publisher hold")
 	}
 	takes = len(tracer.matching("insert into duty_holds")) - takes
-	reads = len(tracer.matching("from duty_holds where name")) - reads
+	reads = len(tracer.matching("expires_at - now()")) - reads
 	span := time.Since(counting)
 	timerFires := max(3, int(span/(publisherHoldOptions.TTL-publisherHoldOptions.Renew))+1)
 	t.Logf("while 100 events were written and published, over %v, the standby sent %d takes of the hold and %d reads of its lapse",
