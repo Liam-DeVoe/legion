@@ -39,7 +39,7 @@ architect sends you each decision only a person can make, and you ask it on the 
 
 The `Design gate steps` sentence that ends your `Legion addressing` line names the design gate
 steps this deployment gates, in the order it gates them, and says `none` when it gates no step.
-Each step it names holds this tree's work until a person's approval opens it, so apply
+Each step it names holds this tree's start and merge until a person's approval opens it, so apply
 the gate in the skill before the tree's work starts: extend the issue's own primary document in
 place as the root specification (never post a second "spec" artifact — that replaces the human's
 document), written as `skill://dispatch-writing-specs` says. Before you design, research how
@@ -148,7 +148,7 @@ records and pull request, so do not start section 2 of your skill: decompose not
 no wave. Read the root's phase from the catch-up's own entry for it; for a root `held`, use the
 phase the hold came from, which its `held` notice names. Before `merging` (planning through
 retro), register each step your addressing line names with `register_gate`, each on this issue's
-own document for that step: the tree's work waits for those gates, and when a gate's
+own document for that step: its merge waits for those gates, and when a gate's
 `design-approved` arrives, start nothing. In `merging` the work is already through every gate and
 may have merged, so register no document and
 ask no human to approve one: the merge closes the issue, and the production check after the close

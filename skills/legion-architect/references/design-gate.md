@@ -303,7 +303,7 @@ review was of: `gatedSteps` carries one entry for each gated step, with its `art
 `currentVersion`, its `approvedVersion`, its `status` (`unregistered`, `waiting`, `approved`,
 `changes_requested`, `open_on_basis` or `pending_on_basis`), the `changesReason` of a step whose
 reviewer asked for changes, and the `basis` of a step on an ancestor's approval. That list, and not
-the notice, says which steps are open and which still hold the tree's work.
+the notice, says which steps are open and which are still closed.
 
 Then end your turn. The registrations hand those documents to the human: when nothing else of the
 tree is at work, the root moves to `awaiting_person` and waits on its design gate, keeping the
