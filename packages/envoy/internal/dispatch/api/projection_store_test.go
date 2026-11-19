@@ -133,12 +133,16 @@ var (
 )
 
 // The store's own writers, as a call names them. Everything that writes graph_nodes and
-// graph_tuples goes through one of the four (internal/dispatch/graphstore). WriteUncaused is
-// Write split at the seam between writing the node row and appending the facts under it, for a
-// writer whose event is appended after the row it writes; it writes the same node rows.
+// graph_tuples goes through one of them (internal/dispatch/graphstore). WriteUncaused is Write
+// split at the seam between writing the node row and appending the facts under it, for a writer
+// whose event is appended after the row it writes; it writes the same node rows. QueueWrite,
+// QueueNodes and QueueAuthored are Write, WriteUncaused's node write and Authored queued on a
+// write phase's batch (store.WriteBatch), which is how a route or a background pass that plans
+// its writes in a read phase writes them.
 var storeWriters = []string{
 	"func:graphstore.Write", "func:graphstore.WriteUncaused",
 	"func:graphstore.WriteArms", "func:graphstore.Authored",
+	"func:graphstore.QueueWrite", "func:graphstore.QueueNodes", "func:graphstore.QueueAuthored",
 }
 
 // projectionWrite is one statement of the sources that writes a projected table. held marks one
@@ -1019,6 +1023,27 @@ func (w *watchedTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.R
 	}
 	return w.Tx.QueryRow(ctx, sql, args...)
 }
+
+// SendBatch records each statement of a write phase's batch (store.WriteBatch) as Exec records
+// one, in the order the batch holds them, and then sends the batch. A failure injected at one of
+// them fails the whole batch, as the batch is sent at once: none of its statements runs.
+func (w *watchedTx) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
+	for _, queued := range b.QueuedQueries {
+		if err := w.before(ctx, queued.SQL); err != nil {
+			return errorBatch{err}
+		}
+	}
+	return w.Tx.SendBatch(ctx, b)
+}
+
+// errorBatch answers an injected failure to a caller that reads a batch's results.
+type errorBatch struct{ err error }
+
+func (r errorBatch) Exec() (pgconn.CommandTag, error) { return pgconn.CommandTag{}, r.err }
+func (r errorBatch) Query() (pgx.Rows, error)         { return nil, r.err }
+func (r errorBatch) QueryRow() pgx.Row                { return errorRow{r.err} }
+func (r errorBatch) Close() error                     { return r.err }
+func (r errorBatch) Tx() pgx.Tx                       { return nil }
 
 // errorRow answers an injected failure to a caller that reads one row.
 type errorRow struct{ err error }
