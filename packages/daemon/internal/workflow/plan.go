@@ -264,9 +264,6 @@ func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 // retro's step comes from stepAt, which every writer of a step's record takes, so a record key that
 // is no issue key writes nothing.
 func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating record.PlanRating) error {
-	if !recordsSteps(issue) {
-		return nil
-	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err

@@ -263,7 +263,7 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 // one an earlier release started after a rollback, whose record this release has not written — nor
 // a record key that is no issue key.
 func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, report string) error {
-	if report == "" || !recordsSteps(issue) {
+	if report == "" {
 		return nil
 	}
 	w, err := e.walk(ctx, tx, issue)
@@ -461,9 +461,6 @@ func endOfTransition(w Walk, trigger TriggerKind, from, to phase.Phase, handoff 
 // step (standingStep): its stopped task runs again only when a later version of the plan starts
 // the task at its first step, and a parent held for its children has started no retro.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	if !recordsSteps(issue) {
-		return nil
-	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
