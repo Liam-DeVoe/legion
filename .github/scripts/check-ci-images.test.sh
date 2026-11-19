@@ -152,6 +152,17 @@ jobs:
     steps:
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
 YAML
+  # The worker image's build runs the image it pushed by its recorded digest, the entry IMAGE_FROM
+  # holds for worker-image.yaml, so the fixture carries that command too.
+  cat > "$root/.github/workflows/worker-image.yaml" <<YAML
+name: Worker image
+on: [workflow_call]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: docker run --rm "\$REF" /probe/leak-guard-image-probe.sh
+YAML
   cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'
 name: Pull the images tests start
 description: Pull the images the tests start.
