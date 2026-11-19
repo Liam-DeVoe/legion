@@ -175,11 +175,13 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
   the client sends and what it does with an answer. `bun run test:harness` over `e2e/__tests__`
   tests the browser harness and the suite's own tools, and drives no browser.
 
-- **Contract**: `packages/contracts/schemas/dispatch-openapi.json` and
-  `packages/contracts/src/dispatch-api.generated.ts`, which `bun run gen:api` in
-  `packages/contracts` generates from the Go route table,
-  `packages/envoy/internal/dispatch/api/routes_table.go`. The web client and the end-to-end client
-  take their types from it. It owns the shape of every request and every response: a route change
+- **Contract**: `packages/contracts/schemas/dispatch-openapi.json`, which
+  `go run ./cmd/dispatch openapi --out <file>` in `packages/envoy` writes from the Go route table
+  (`packages/envoy/internal/dispatch/api/routes_table.go`; `openapi --check` fails when the
+  committed file differs), and `packages/contracts/src/dispatch-api.generated.ts`, which
+  `bun run gen:api` in `packages/contracts` generates from that JSON file.
+  The web client and the end-to-end client take their types from the generated file. It owns the
+  shape of every request and every response: a route change
   that the client does not follow fails `bun run typecheck`, and
   `e2e/__tests__/stub-recordings.test.ts` holds every committed recording to that schema. So no
   browser row proves a response shape.
@@ -232,8 +234,10 @@ When a row may be added to the browser suite:
 - A row that fails and then passes on its retry is flaky, and the `merge` job of
   `.github/workflows/dispatch-browser.yaml` names each one in the run's summary. A row that the
   scheduled run of `.github/workflows/dispatch-browser-nightly.yaml` names, flaky in two runs of 14
-  days or held in the quarantine longer than 14 days, is a defect: it goes to the controller, and
-  the controller files the issue that owns it. The check counts a flaky run only when it was made
+  days or held in the quarantine longer than 14 days, is a defect: that run's quarantine check
+  fails the run and names the row in its summary. The run posts no check, files no issue and
+  sends no message; GitHub tells only the person who last edited the workflow's cron line (the
+  workflow's own header says so). The check counts a flaky run only when it was made
   after the last change to the row's own lines. `e2e/quarantine.ts` holds two kinds of entry, each
   naming the row and the issue that owns it. A quarantine entry, with the date it was added, takes
   the row out of the pull-request lane and the merge queue, and the row keeps running in the
@@ -259,7 +263,12 @@ What a stubbed row may assert, and what only a real-stack row may:
 
 The clock of a unit test:
 
-- A unit test never waits on the real clock. It uses no `Bun.sleep`, no awaited `setTimeout` and
+- A unit test never waits on the real clock, unless a comment above the wait says why it stays
+  there in the words "stays on the real clock", as the kept ones do
+  (`web/src/features/margin/Margin.landing.test.tsx`'s `quiet` and its 500 ms long task, and
+  `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`), and
+  `web/src/__tests__/real-clock-waits.test.ts` fails an awaited timer or a `Bun.sleep` of more than
+  0 ms without one. Apart from those, a row uses no `Bun.sleep`, no awaited `setTimeout` and
   no wait timed by `performance.now()`, and it asserts no `Date.now()` difference. A row that waits
   for a product timer installs the fake clock (`onFakeClock` from `web/src/__tests__/fake-clock.ts`,
   or `jest.useFakeTimers()`) and moves it with `tick` or `jump` from that file. It restores the real
@@ -268,8 +277,11 @@ The clock of a unit test:
   product's module exports, not by a literal copy of it, so a change of that delay changes the test
   too. Under the fake clock, user-event comes from `userOnFakeClock` in `web/src/__tests__/user.ts`.
 
-- A `web/src` row sets no deadline of its own. The deadline of each test is the `--timeout 60000`
-  of `package.json`'s `test:web` script, and `web/src/__tests__/setup.ts` says how it was sized.
+- The deadline of each `web/src` test is the `--timeout 60000` of `package.json`'s `test:web`
+  script, and `web/src/__tests__/setup.ts` says how it was sized. A row sets a shorter one only
+  with a comment that says what it bounds (`WHOLE_TABLE_TIMEOUT_MS` in
+  `web/src/features/refs/fixture-table-readings.test.ts`, the 40 s of a 25 s wait in
+  `web/src/features/refs/MarkdownBody.test.tsx`).
   On Bun 1.4.4, the pin, that deadline fires under a held clock too: a row that held the clock and
   awaited a promise that nothing resolved ended at 3.04 s under `--timeout 3000`. A harness row in
   `e2e/__tests__` that starts a child states its own limit with `rowLimit` from
@@ -302,14 +314,15 @@ How a unit test acts on the page and reads it:
   `expect` of a comparison with `document.activeElement`. An attribute is
   `expect(el).toHaveAttribute(name, value)`, never `expect(el.getAttribute(name))` with `.toBe()`,
   `.toBeNull()`, `.toContain()` or `.toMatch()`, and never `expect(el.hasAttribute(name))` with
-  `.toBe()`. `expect.stringContaining` and `expect.stringMatching` give `toHaveAttribute` a part
+  `.toBe()`. Each form named with `.toBe()` counts with `.toEqual()` and `.toStrictEqual()` too.
+  `expect.stringContaining` and `expect.stringMatching` give `toHaveAttribute` a part
   of the value. A site that keeps the hand-written form carries its reason the same way.
   `.github/scripts/check-fireevent-reasons.sh`, which CI's lint job runs, refuses a call or a read
   without one. A read of a property of the focused element, such as its `tagName`, is not one of
   these forms.
 
 Pages under `docs/solutions/` that describe what this layout replaced. They stay as history, and
-no page there is edited:
+no role edits them:
 
 - These seven describe the wrapper runner `e2e/run.ts`, its lanes, `DISPATCH_E2E_LANES` and
   `DISPATCH_E2E_WORKERS`. Playwright's own `globalSetup` and `globalTeardown` now start one stack

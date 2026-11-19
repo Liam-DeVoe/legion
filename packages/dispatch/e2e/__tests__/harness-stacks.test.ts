@@ -170,7 +170,7 @@ test("a run of more than one stack that sets none of them is not refused", () =>
 });
 
 test("a run of more than one stack refuses to start without a Postgres provider", async () => {
-  // Each stack runs a Postgres of its own, because e2e/seed.ts truncates its database before
+  // Each stack runs a Postgres of its own, because e2e/seed.ts empties its database before
   // every row. The refusal comes before a server starts, and it leaves nothing behind: the run
   // directory it made is removed with everything else the failed start held.
   await expect(startStacks(2, { env: {} })).rejects.toThrow(

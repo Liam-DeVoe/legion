@@ -3384,6 +3384,14 @@ that table carries the router path it stands for, the URL to open against `e2e/r
 corpus, the locator that says the page is drawn, and which of the two layers reviews it, so the
 count of pages each covers is a program's answer rather than a sentence here.
 
+`e2e/accessibility-scan.ts` scans each page of that table's scan set, in light and in dark, with
+`@axe-core/playwright` at `wcag2a`, `wcag2aa`, `wcag21a` and `wcag21aa` - WCAG 2.0 and 2.1 at
+levels A and AA, and no best-practice rule, since a best practice is not a conformance failure.
+Each (route, scheme) prints an `A11Y …` line with its counts by impact and attaches the whole axe
+result to the report. Two files hold the rows, one per page: `e2e/accessibility.stub.e2e.ts` reads
+every page a recording can draw whole against that recording, and its rows carry `@pr`, so they
+reach every pull request; `e2e/accessibility.e2e.ts` reads on the real stack the pages whose
+entry carries a `realStackScan`, and its rows are untagged, so they run on the full lane.
 A row fails on any serious or critical finding no exclusion entry covers. What axe decides is the part of
 WCAG a program can decide, which is a minority of it: a keyboard journey that has to end
 somewhere sensible, a reading order a person judges, a label that is present and wrong rather

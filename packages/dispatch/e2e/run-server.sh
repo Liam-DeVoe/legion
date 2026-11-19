@@ -12,7 +12,7 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # cookie signing key, an Envoy token or a dashboard origin from other work.
 #
 # DATABASE_URL is the one required caller input. The harness has no fake
-# Postgres and e2e/seed.ts truncates the named database before every scenario,
+# Postgres and e2e/seed.ts empties the named database before every scenario,
 # so silently selecting a shared default would make the destructive write
 # target ambiguous. FAKE_ENVOY_PORT and FAKE_GITHUB_PORT (and FAKE_BROKER_PORT
 # for the default broker switch below) name the fakes the caller started, whose

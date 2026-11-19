@@ -4,7 +4,7 @@
  *  A stack is one whole harness as `e2e/harness-start.ts` starts it - a Dispatch server, the fake
  *  Envoy, the fake GitHub, the fake broker, the plain-HTTP proxy and whatever else the run needs -
  *  with a Postgres, a file-store bucket, a log directory and ports of its own. A run has one stack
- *  per worker, because `e2e/seed.ts` truncates the database before every row and clears that
+ *  per worker, because `e2e/seed.ts` empties the database before every row and clears that
  *  stack's fakes with it: two workers on one stack would empty each other's state mid-row. A
  *  worker picks its own out of the manifest `globalSetup` writes, through `TEST_PARALLEL_INDEX`
  *  (`e2e/harness-ports.ts`).
