@@ -112,12 +112,25 @@ type PodReleaseRecords struct {
 // (ClosePodGoneResume), and take a second wake with a second start. The teardown records the
 // release before it clears the mark (internal/daemon's releaseIssue), so the mark is there to read
 // in this transaction. With no mark, or no such resume, the update changes nothing.
+//
+// The transaction locks the mark `for update` before it inserts the release's row. A take
+// (PodRecords.TakePodWake) locks the same mark `for share` before it reads the newest release, so
+// the take and this record run one after the other. When the take locks first, this lock waits
+// until the take commits, and the update then reads the take's resume. When this lock comes
+// first, the take waits until this transaction commits, and then reads this release. Without the
+// lock, a take still open when this transaction commits keeps the release before, and the update
+// never reads its resume. The record holds no other lock when it locks the mark, so it cannot
+// deadlock with a take; PodRecords.TakePodWake gives the whole lock order.
 func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
 	if rel.Project == "" || rel.Issue == "" {
 		return 0, errors.New("a pod release record needs its project and issue")
 	}
 	var id int64
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `select 1 from issue_releases where project = $1 and issue = $2 for update`,
+			rel.Project, rel.Issue); err != nil {
+			return fmt.Errorf("lock the release mark: %w", err)
+		}
 		if err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
 			values ($1, $2, $3, $4, $5, $6) returning id`,
 			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes).Scan(&id); err != nil {

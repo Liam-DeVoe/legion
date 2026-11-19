@@ -380,6 +380,16 @@ type droppedWake struct {
 // refuse. Under the lock the two commit in a line, and neither order leaves that state — a cancel
 // that runs first queues its resume below the close's rows, which supersede it, and one that runs
 // after reads the issue as left and queues nothing.
+//
+// The cancel reads the mark `for update`, after the serializer and before it deletes the wakes
+// taken under the mark (dropWakesUnderRelease). A take (PodRecords.TakePodWake) locks the same
+// mark `for share` before it records its resume. The workflow's takes also hold the serializer,
+// but the outbox's delivery take does not, so the mark is the one lock every take shares with the
+// cancel. When a take locks the mark first, this read waits until the take commits, and the
+// delete then reads the take's resume and drops it. When this read comes first, the take waits
+// until this transaction commits, and then finds the mark gone. Without the lock, a take still
+// open when the delete runs leaves its resume behind, under a release that did not happen.
+// PodRecords.TakePodWake gives the whole lock order.
 func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, resume ReleaseResumeRow,
 	outOfWorkflow func(status string) bool, woken ...ReleaseWokenRow) ([]claim.Role, bool, error) {
 	if len(woken) > 1 {
@@ -408,8 +418,8 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		var release, wake, last int64
 		var suspended []string
 		var kind string
-		err := tx.QueryRow(ctx, `select id, suspended, kind, wake_row, last_row from issue_releases where project = $1 and issue = $2`,
-			project, issue).Scan(&release, &suspended, &kind, &wake, &last)
+		err := tx.QueryRow(ctx, `select id, suspended, kind, wake_row, last_row from issue_releases
+			where project = $1 and issue = $2 for update`, project, issue).Scan(&release, &suspended, &kind, &wake, &last)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
