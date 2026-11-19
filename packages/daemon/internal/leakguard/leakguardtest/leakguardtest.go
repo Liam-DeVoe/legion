@@ -14,6 +14,10 @@
 // GitHub serves of the check's repository, which the daemon packs for the launcher, and Tarball
 // one of a shape GitHub's is not.
 //
+// It also holds the fixture private-name rule file (Rules, written by WriteRules) and the
+// invented names its rules refuse and allow: the guard runs the rule file a deployment names, and
+// no Legion binary carries one of its own.
+//
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/fixturegit says
 // the same of itself). It imports the guard not at all, so that the guard's own in-package tests

@@ -104,10 +104,11 @@ func PushName(remote string) string {
 }
 
 // Push checks a push before it is made. The shared check runs in its pre-push shape — the update
-// lines on its standard input, the repository as its working directory — and then, for a
-// destination GitHub reports public, this repository's own rules read the push's records: each
-// ref name, and for each commit the destination does not already hold, the author, the
-// committer, the message, each added or renamed path, and each added line.
+// lines on its standard input, the repository as its working directory — and then, where a rule is
+// named and for a destination GitHub reports public, the deployment's private-name rules read the
+// push's records: each ref name, and for each commit the destination does not already hold, the
+// author, the committer, the message, each added or renamed path, and each added line. Where no
+// rule is named, no visibility is read and no git reads a commit.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.Resolve()
@@ -128,6 +129,13 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	}); err != nil {
 		return err
 	}
+	rules, err := g.rules(what)
+	if err != nil {
+		return err
+	}
+	if rules == nil {
+		return nil
+	}
 	public, err := g.scanThrough(ctx, what, RepoFromURL(req.URL))
 	if err != nil {
 		return err
@@ -139,7 +147,7 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
-	return g.rules(ctx, what, records)
+	return rules.pass(ctx, what, records)
 }
 
 // pushRecords is everything a push would publish, as records: one per ref name, and for each
@@ -230,8 +238,8 @@ func zeroSHA(sha string) bool {
 // its number of parents calls for (diffTree).
 //
 // A record about a file carries that file's path as its label and the line or the path as its
-// text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
-// is anchored on a whole path, and a label carrying anything else would take it away.
+// text, so that the engine reads the path as a path: a rule file's path-scoped allowlist is
+// anchored on a whole path, and a label carrying anything else would take it away.
 func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record, error) {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
 	// own holding a zero byte is a child that cannot be started at all. %P comes before the

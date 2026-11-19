@@ -5,10 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -56,13 +54,17 @@ type GhRequest struct {
 	ProvenCheck string
 }
 
-// GhAnswer is what GhCall cleared a call with: the standard input it read, for the caller to hand
-// gh in its place, nil where it read none and the caller's own is still whole; and whether the
-// shared check was the whole of the guard (GhRequest.WritesNothing honoured), which is the one
-// case that read no visibility and ran no private-name pass.
+// GhAnswer is what GhCall cleared a call with.
 type GhAnswer struct {
-	Stdin       []byte
+	// Stdin is the standard input the guard read, for the caller to hand gh in its place, and nil
+	// where it read none and the caller's own is still whole.
+	Stdin []byte
+	// CheckedOnly is whether the shared check was the whole of the guard (GhRequest.WritesNothing
+	// honoured): the call read no visibility and had no private-name step.
 	CheckedOnly bool
+	// NoRules is whether the call skipped the private-name step because no rule is named: it read
+	// no visibility and no file the call sends.
+	NoRules bool
 }
 
 // checkProgram is the shared check's program, beside the script Resolve finds, whose sha256 says
@@ -98,9 +100,10 @@ func provenCheck(check, proven string) bool {
 const whatGhCall = "the gh call"
 
 // GhCall checks a gh call before it is made, in the shared check's gh-guard shape, and answers
-// the standard input it read and whether the shared check was the whole of it, which it is for
-// a call that writes nothing under the check its caller's rule was proven against
-// (GhRequest.WritesNothing, GhRequest.ProvenCheck).
+// the standard input it read, whether the shared check was the whole of it, which it is for a call
+// that writes nothing under the check its caller's rule was proven against
+// (GhRequest.WritesNothing, GhRequest.ProvenCheck), and whether it skipped the private-name step
+// because no rule is named.
 //
 // The check reads a call that takes its body on standard input in two goes: the first call exits
 // 4, meaning "this call reads standard input; buffer it and ask me again", and the second call is
@@ -110,49 +113,51 @@ const whatGhCall = "the gh call"
 // cannot read it again; a nil Stdin means standard input was never read and the caller's own is
 // still whole.
 func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
-	buffered, checkedOnly, err := g.ghCall(ctx, req)
-	return GhAnswer{Stdin: buffered, CheckedOnly: checkedOnly}, err
-}
-
-// ghCall is GhCall's work: the standard input it read, whether the shared check was the whole of
-// the guard, and the refusal or setup failure, if any.
-func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error) {
+	var answer GhAnswer
 	check, err := g.Resolve()
 	if err != nil {
-		return nil, false, &SetupFailure{What: whatGhCall, Why: whyNoCheck, Err: err}
+		return answer, &SetupFailure{What: whatGhCall, Why: whyNoCheck, Err: err}
 	}
 	argv := append([]string{check, "gh-guard"}, req.Args...)
 	status, printed, err := g.run(ctx, child{argv: argv})
 	if err != nil {
-		return nil, false, sharedNotRun(whatGhCall, err)
+		return answer, sharedNotRun(whatGhCall, err)
 	}
-	var buffered []byte
 	if status == checkWantsStdin {
-		buffered, status, printed, err = g.askAgain(ctx, argv, req)
+		answer.Stdin, status, printed, err = g.askAgain(ctx, argv, req)
 		if err != nil {
-			return buffered, false, err
+			return answer, err
 		}
 	}
 	if err := readStatus(whatGhCall, status, printed); err != nil {
-		return buffered, false, err
+		return answer, err
 	}
 	if req.WritesNothing && provenCheck(check, req.ProvenCheck) {
 		// A read leaves no text in any repository, so neither the destination's visibility nor
 		// the private-name pass is read for it: the check above, which refuses a credential in a
 		// call it reads as a read, is all it needs. Under a check its caller's rule was not
 		// proven against, the check may read the call as a write, so the guard goes on whole.
-		return buffered, true, nil
+		answer.CheckedOnly = true
+		return answer, nil
+	}
+	rules, err := g.rules(whatGhCall)
+	if err != nil {
+		return answer, err
+	}
+	if rules == nil {
+		answer.NoRules = true
+		return answer, nil
 	}
 	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
 	if err != nil {
-		return buffered, false, err
+		return answer, err
 	}
 	if !public {
-		return buffered, false, nil
+		return answer, nil
 	}
 	records := []Record{{Label: "the gh call's arguments", Text: strings.Join(req.Args, " ")}}
-	if len(buffered) > 0 {
-		records = append(records, jsonAlso(Record{Label: "the gh call's standard input", Text: string(buffered)})...)
+	if len(answer.Stdin) > 0 {
+		records = append(records, jsonAlso(Record{Label: "the gh call's standard input", Text: string(answer.Stdin)})...)
 	}
 	// The text of each file the call would send, read here and not before the visibility answer:
 	// a private or internal destination runs no rule pass, and reading its files would cost the
@@ -164,7 +169,7 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 	for _, named := range files {
 		text, err := readGhFile(named)
 		if err != nil {
-			return buffered, false, err
+			return answer, err
 		}
 		record := Record{Label: named.Path, Text: text}
 		if named.Option == inputOption {
@@ -173,7 +178,7 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 		}
 		records = append(records, record)
 	}
-	return buffered, false, g.rules(ctx, whatGhCall, records)
+	return answer, rules.pass(ctx, whatGhCall, records)
 }
 
 // jsonAlso is record and, where its text is a JSON document, a second record of the strings
@@ -211,8 +216,8 @@ func jsonAlso(record Record) []Record {
 		return []Record{record}
 	}
 	// The label says which record this is of, so a report names the one the writer can find, and
-	// it is not the path of a file: the one path-scoped allowlist of the rule file is anchored
-	// on a whole path, and this record is of a document's strings rather than of that file.
+	// it is not the path of a file: a rule file's path-scoped allowlist is anchored on a whole
+	// path, and this record is of a document's strings rather than of that file.
 	return []Record{record, {Label: record.Label + ", decoded as JSON", Text: decoded.String()}}
 }
 
@@ -244,7 +249,7 @@ func jsonStrings(value any, out *strings.Builder) {
 // inside a mebibyte. A mebibyte is sixteen times that body, so no call GitHub would take meets
 // the bound, and a file past it is one an argument names by mistake. Such a file is a setup
 // failure rather than a pass — the call is refused either way — and the rule pass never reads a
-// gigabyte into memory to run ten regexes over.
+// gigabyte into memory to run its regexes over.
 const maxGhFile = 1 << 20
 
 // GhFile is one file a gh call would send as content: the option that named it, which a setup
@@ -316,9 +321,8 @@ var ghFileOptions = map[string]bool{
 //   - `-f`/`--raw-field`, which sends its value literally: `gh api -f body=@x` posts the two
 //     characters `@x` and opens no file.
 //   - `--env-file` (`gh secret set`, `gh variable set`), whose values are secrets GitHub stores
-//     and never publishes. A secret is the shared check's to read, not this rule file's, whose
-//     four classes are a repository name, a company name, an internal host and a Tailscale
-//     MagicDNS host.
+//     and never publishes. A secret is the shared check's to read, not the private-name rules',
+//     which are names a deployment keeps out of public repositories.
 //   - `--template`, which names a template of the repository (`gh pr create --template
 //     "pull_request_template.md"`) or a Go template for gh's own output (`-t, --template
 //     string`), neither of them a file the command sends.
@@ -388,23 +392,16 @@ func ghFileArgs(args []string) []GhFile {
 }
 
 // readGhFile is the text of one file a gh call would send. A file that cannot be opened, cannot
-// be read, or is longer than maxGhFile is a setup failure naming the option that named it: a
-// guard that could not read what the call publishes has cleared nothing, and a call it cleared
-// would be the hole this closes.
-//
-// The path is masked in the message as a report masks one, and the error under it is reduced to
-// what went wrong: os reports an open failure as a *fs.PathError whose own message repeats the
-// path unmasked, which would carry out of this process the very name the mask is for.
+// be read, or is longer than maxGhFile is a setup failure naming the option that named it and the
+// path as it was written: a guard that could not read what the call publishes has cleared
+// nothing, and a call it cleared would be the hole this closes. The error under it is reduced to
+// what went wrong (withoutPath), since the message names the path already.
 func readGhFile(named GhFile) (string, error) {
 	failed := func(why string, err error) error {
-		var path *fs.PathError
-		if errors.As(err, &path) {
-			err = path.Err
-		}
 		return &SetupFailure{
 			What: whatGhCall,
-			Why:  "the file " + named.Option + " names, " + maskPath(named.Path) + ", " + why,
-			Err:  err,
+			Why:  "the file " + named.Option + " names, " + named.Path + ", " + why,
+			Err:  withoutPath(err),
 		}
 	}
 	file, err := os.Open(named.Path)

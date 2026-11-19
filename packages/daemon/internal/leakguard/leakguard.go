@@ -3,22 +3,24 @@
 //
 //   - The shared public leak check, a script this repository does not hold, found at each call
 //     (Resolve) and run in the shape the write has: a push, a gh call, or a piece of text.
-//   - This repository's own private-name rules, the embedded private-names.toml, run in process
-//     over the records the write is made of, and only when the destination repository is one
-//     GitHub reports public.
+//   - The deployment's private-name rules, a gitleaks rule file the deployment names in
+//     LEGION_PRIVATE_NAME_RULES_FILE (RulesFileVar), or the compiled set a caller hands in
+//     Options.Rules, run in process over the records the write is made of, and only when the
+//     destination repository is one GitHub reports public. A deployment that names no rule file
+//     runs no private-name rule: the guard runs the shared check alone, reads no visibility and
+//     builds no record, and says so once (Options.OnNoRules).
 //
 // A call site reaches the guard through one of four entry points — Push, GhCall, Text and Rules —
 // and reads one of two answers from a refused write: a *Refusal, which is about the text the write
 // carries, and a *SetupFailure, which is the check missing, the check failing, the engine failing,
-// or a destination whose visibility cannot be read. Both refuse the write; they are two types so
-// that a call site can say which one it met, the way the shared check itself keeps
-// "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR".
+// a rule file that cannot be used, or a destination whose visibility cannot be read. Both refuse
+// the write; they are two types so that a call site can say which one it met, the way the shared
+// check itself keeps "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR".
 //
-// What the guard reports is the record and the class: never the text that matched, never the
-// component of a path that matched, and never anything the detection engine itself printed. The
-// classes are the descriptions of the rules in private-names.toml, and a path in a report has
-// every component the repository and company rules match replaced by "<name>", the masking
-// .github/scripts/check-private-names.sh does (its lines 145-154).
+// What the guard reports of a rule-pass refusal is the record and the class: never the text that
+// matched, and never anything the detection engine itself printed. The classes are the
+// descriptions of the deployment's rules. A record about a file is named by its path, and a
+// report or a setup failure prints a path or a repository slug as it was written.
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
@@ -32,6 +34,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -47,9 +50,10 @@ const (
 	Internal Visibility = "internal"
 )
 
-// Options are the guard's seams, each of them a field a test fills and a call site leaves alone.
-// The engine needs no seam: its rules are embedded in this package and it is linked into this
-// binary, so there is no copy of it for a test to stand in for.
+// Options are the guard's seams, each of them a field a test fills and a call site leaves alone,
+// and two doors a call site fills: Rules, and OnNoRules. The engine needs no seam: it is linked
+// into this binary, and the rules it runs are the deployment's, so a test names a fixture rule file
+// in Env as a deployment names its own.
 type Options struct {
 	// Check is the shared public leak check's path. Empty is the ordinary case, where every call
 	// resolves the check for itself (Resolve); a test fills it with a stand-in of its own.
@@ -70,8 +74,18 @@ type Options struct {
 	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote),
 	// which keeps only the names lsRemoteInherits allows. The guard adds to it the names that make
 	// a credential prompt fail closed (promptsNothing) and RunByRealGhVar blanked, and each child's
-	// own names on top of those.
+	// own names on top of those. It is also where the guard reads RulesFileVar (Guard.rules).
 	Env []string
+	// Rules is the private-name rule set the guard runs, which wins over the file RulesFileVar
+	// names in Env. It is the daemon's door: the daemon compiles the deployment's rule file once,
+	// at boot, and its branch create hands that set here, so the create does not depend on the
+	// daemon's environment. Nil is the ordinary case for every other caller, which runs the file
+	// its environment names, or no private-name rule where it names none (Guard.rules).
+	Rules *RuleSet
+	// OnNoRules is called the first time a write of this guard skips the private-name step
+	// because no rule is named, and never again for this guard. `legion leak-check` and `legion
+	// gh` say once on standard error that no private-name rule ran; nil says nothing.
+	OnNoRules func()
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
@@ -83,6 +97,8 @@ type Guard struct {
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
+	// noRules is OnNoRules' once.
+	noRules sync.Once
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
@@ -142,12 +158,10 @@ func (g *Guard) env(base []string, inherit func(name string) bool, extra ...stri
 
 // Record is one piece of a write the rules read: Label is what the report calls it, and Text is
 // what the rules match against. A label never carries the write's own text, since the report is
-// printed and that text is what must not be, with one exception this repository's own check
-// already makes: a record about a file carries that file's path, masked in the report as
-// .github/scripts/check-private-names.sh masks one. The path is also what the engine's path
-// rules read, and it is the whole label for a second reason — the rule file's one path-scoped
-// allowlist is anchored on a whole path, and a label with anything else in it would take that
-// allowlist away.
+// printed and that text is what must not be, with one exception: a record about a file carries
+// that file's path, as it was written. The path is also what the engine's path rules read, and it
+// is the whole label for a second reason — a rule file's path-scoped allowlist is anchored on a
+// whole path, and a label with anything else in it would take that allowlist away.
 type Record struct {
 	Label string
 	Text  string
@@ -160,27 +174,54 @@ func RefRecord(ref string) Record {
 	return Record{Label: "the ref name", Text: ref}
 }
 
-// Rules runs the rule-file pass over records and nothing else: no shared check, and no visibility
+// Rules runs the rule pass over records and nothing else: no shared check, and no visibility
 // read. It is what a write with no repository behind it has — the daemon's branch create, which
-// holds a ref name and no checkout at all.
+// holds a ref name and no checkout at all, and hands the rules it compiled at boot
+// (Options.Rules). Where no rule is named it passes the records unread.
 func (g *Guard) Rules(ctx context.Context, records ...Record) error {
-	return g.rules(ctx, "the write", records)
-}
-
-// rules is the rule-file pass over records, reported as a refusal of what.
-func (g *Guard) rules(ctx context.Context, what string, records []Record) error {
-	engine, err := compiled()
+	const what = "the write"
+	rules, err := g.rules(what)
 	if err != nil {
-		return &SetupFailure{What: what, Why: "the private-name rules could not be read", Err: err}
+		return err
 	}
-	lines, err := engine.scan(ctx, records)
-	if err != nil {
-		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: err}
-	}
-	if len(lines) == 0 {
+	if rules == nil {
 		return nil
 	}
-	return &Refusal{What: what, By: byRules, Lines: lines}
+	return rules.pass(ctx, what, records)
+}
+
+// rules is the private-name rule set a write of what runs: Options.Rules where the caller handed
+// one; else the rule file RulesFileVar names in the base environment, read at this write
+// (LoadRules compiles each content once per process); else none, which is nil with no error, after
+// OnNoRules has heard of the first such write. An empty RulesFileVar names none, as an unset one
+// does.
+//
+// A file named that cannot be used — missing, unreadable, longer than maxRulesFile, or one
+// LoadRules refuses — is a setup failure naming the file and why, so the write is refused: a
+// deployment that named rules meant them to run, and a guard that ran none in their place would
+// pass what they refuse.
+func (g *Guard) rules(what string) (*RuleSet, error) {
+	if g.opts.Rules != nil {
+		return g.opts.Rules, nil
+	}
+	path := value(g.base(), RulesFileVar)
+	if path == "" {
+		g.noRules.Do(func() {
+			if g.opts.OnNoRules != nil {
+				g.opts.OnNoRules()
+			}
+		})
+		return nil, nil
+	}
+	rules, bad := readRulesFile(path)
+	if bad != nil {
+		return nil, &SetupFailure{
+			What: what,
+			Why:  "the private-name rule file " + bad.path + ", which " + RulesFileVar + " names, " + bad.why,
+			Err:  bad.err,
+		}
+	}
+	return rules, nil
 }
 
 // TextRequest is a piece of text a write would publish, as the shared check's text shape reads it:
@@ -195,7 +236,8 @@ type TextRequest struct {
 
 // Text checks a piece of text a write would publish: a pull request's title and body, an issue
 // comment, a release note. The shared check reads it on standard input in its check-public-text
-// shape, and the rule pass then reads the title and the body as two records of their own.
+// shape, and the rule pass, where a rule is named, then reads the title and the body as two
+// records of their own.
 func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	const what = "the text"
 	check, err := g.Resolve()
@@ -208,6 +250,13 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	}); err != nil {
 		return err
 	}
+	rules, err := g.rules(what)
+	if err != nil {
+		return err
+	}
+	if rules == nil {
+		return nil
+	}
 	public, err := g.scanThrough(ctx, what, req.Repo)
 	if err != nil {
 		return err
@@ -216,7 +265,7 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 		return nil
 	}
 	title, body, _ := strings.Cut(req.Text, "\n")
-	return g.rules(ctx, what, []Record{{Label: "the title", Text: title}, {Label: "the body", Text: body}})
+	return rules.pass(ctx, what, []Record{{Label: "the title", Text: title}, {Label: "the body", Text: body}})
 }
 
 // scanThrough is whether the rule pass runs for a write to slug: it does for a destination GitHub
@@ -230,8 +279,7 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 // requires the slug to be one ghrepo.Parse takes (its ghVisibilityRead), so a read for any other
 // slug would go back through `legion gh`, into the guard, into a read of the same slug, without
 // end. The guard therefore reads no visibility it could not have exempted. The refusal carries no
-// error of Parse's: that refusal repeats the slug as it was written, and a report carries a
-// masked name alone.
+// error of Parse's, which says again the slug the refusal names.
 func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error) {
 	if slug == "" {
 		return true, nil
@@ -239,14 +287,14 @@ func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error
 	if _, err := ghrepo.Parse("", slug); err != nil {
 		return false, &SetupFailure{
 			What: what,
-			Why:  "the destination " + maskPath(slug) + " is no repository GitHub serves, so no visibility can be read for it",
+			Why:  "the destination " + slug + " is no repository GitHub serves, so no visibility can be read for it",
 		}
 	}
 	visibility, err := g.Visibility(ctx, slug)
 	if err != nil {
 		return false, &SetupFailure{
 			What: what,
-			Why:  "the visibility of " + maskPath(slug) + " could not be read",
+			Why:  "the visibility of " + slug + " could not be read",
 			Err:  err,
 		}
 	}

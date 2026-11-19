@@ -57,7 +57,8 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 		// newRef is whether the destination holds that ref already: a new one has no sha of its
 		// own to read the push's commits from, so they are read from the remote-tracking refs.
 		newRef bool
-		// want is the report, as a function of the commit's sha, and nil where the push passes.
+		// want is the report, "<record>: <class>" a line, as a function of the commit's sha, and
+		// nil where the push passes.
 		want func(head string) []string
 	}{
 		{
@@ -65,10 +66,10 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			build: func(t *testing.T) string {
 				branch(t, "message")
 				write(t, "README.md", "one\ntwo\n")
-				return commit(t, "moved the run to "+theHost+" this morning")
+				return commit(t, "moved the run to "+leakguardtest.RulesHost+" this morning")
 			},
 			want: func(head string) []string {
-				return []string{"commit " + short(head) + " message: " + theClass}
+				return []string{"commit " + short(head) + " message: " + leakguardtest.RulesHostClass}
 			},
 		},
 		{
@@ -76,20 +77,20 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			build: func(t *testing.T) string {
 				branch(t, "author")
 				write(t, "README.md", "one\nthree\n")
-				return commit(t, "a message of no interest", "GIT_AUTHOR_EMAIL=builder@"+theHost)
+				return commit(t, "a message of no interest", "GIT_AUTHOR_EMAIL=builder@"+leakguardtest.RulesHost)
 			},
 			want: func(head string) []string {
-				return []string{"commit " + short(head) + " author: " + theClass}
+				return []string{"commit " + short(head) + " author: " + leakguardtest.RulesHostClass}
 			},
 		},
 		{
 			name: "an added line of a tracked file names a host",
 			build: func(t *testing.T) string {
 				branch(t, "line")
-				write(t, "README.md", "one\nthe runner answers at "+theHost+"\n")
+				write(t, "README.md", "one\nthe runner answers at "+leakguardtest.RulesHost+"\n")
 				return commit(t, "a message of no interest")
 			},
-			want: func(string) []string { return []string{"README.md: " + theClass} },
+			want: func(string) []string { return []string{"README.md: " + leakguardtest.RulesHostClass} },
 		},
 		{
 			name: "the ref name names a host",
@@ -98,9 +99,9 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 				write(t, "README.md", "one\nfour\n")
 				return commit(t, "a message of no interest")
 			},
-			ref:    "refs/heads/legion/" + theHost,
+			ref:    "refs/heads/legion/" + leakguardtest.RulesHost,
 			newRef: true,
-			want:   func(string) []string { return []string{"the ref name: " + theClass} },
+			want:   func(string) []string { return []string{"the ref name: " + leakguardtest.RulesHostClass} },
 		},
 		{
 			name: "a commit that names nothing",
@@ -141,9 +142,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 				}
 				return
 			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want(head)) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want(head))
-			}
+			reports(t, refusal(t, err).Lines, tc.want(head)...)
 		})
 	}
 }
@@ -155,11 +154,11 @@ func TestAPushThatAddsNoCommitReadsNoCommit(t *testing.T) {
 	repo := filepath.Join(root, "repo")
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("the file names "+theHost+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("the file names "+leakguardtest.RulesHost+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fixture.Run(repo, "git", "add", "-A")
-	fixture.Run(repo, "git", "commit", "--quiet", "-m", "a commit naming "+theHost)
+	fixture.Run(repo, "git", "commit", "--quiet", "-m", "a commit naming "+leakguardtest.RulesHost)
 	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	// The destination holds that commit at that ref already, so the push moves nothing and the
@@ -185,7 +184,7 @@ func TestARootCommitsAddedLinesAreRead(t *testing.T) {
 	repo := filepath.Join(root, "repo")
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("the runner answers at "+theHost+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("the runner answers at "+leakguardtest.RulesHost+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fixture.Run(repo, "git", "add", "-A")
@@ -200,10 +199,7 @@ func TestARootCommitsAddedLinesAreRead(t *testing.T) {
 		URL:     "https://github.com/invented-org/invented-repo.git",
 		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 	})
-	want := []string{"README.md: " + theClass}
-	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-		t.Errorf("the report is %q, want %q", refused.Lines, want)
-	}
+	reports(t, refusal(t, err).Lines, "README.md: "+leakguardtest.RulesHostClass)
 }
 
 // What a merge's own resolution writes is read. A merge's diff-tree against its first parent is
@@ -239,7 +235,7 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	// The merge itself is clean; what the resolution adds is this file, which stands in neither
 	// parent and is the whole of what the merge commit publishes of its own.
 	fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "--no-commit", "side")
-	write("resolution.md", "the runner answers at "+theHost+"\n")
+	write("resolution.md", "the runner answers at "+leakguardtest.RulesHost+"\n")
 	head := commit("the merge")
 	if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(parents)) != 3 {
 		t.Fatalf("the fixture's head is %q, want a commit of two parents", parents)
@@ -251,10 +247,7 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 		URL:     "https://github.com/invented-org/invented-repo.git",
 		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
 	})
-	want := []string{"resolution.md: " + theClass}
-	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-		t.Errorf("the report is %q, want %q", refused.Lines, want)
-	}
+	reports(t, refusal(t, err).Lines, "resolution.md: "+leakguardtest.RulesHostClass)
 }
 
 // A forward merge, the default branch merged onto an older tip of a branch the destination
@@ -287,7 +280,7 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 	write("work.md", "a line of the branch\n")
 	tip := commit("the branch's own commit")
 	fixture.Run(repo, "git", "checkout", "--quiet", "main")
-	write("main.md", "the runner answers at "+theHost+"\n")
+	write("main.md", "the runner answers at "+leakguardtest.RulesHost+"\n")
 	commit("a commit of the default branch")
 	// The destination holds both branches, and so does this repository's origin/: origin/work
 	// is the old tip the push moves, and origin/main holds the default branch's commit.
@@ -299,20 +292,20 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 	if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", merge); len(strings.Fields(parents)) != 3 {
 		t.Fatalf("the fixture's merge is %q, want a commit of two parents", parents)
 	}
-	write("copy.md", "the runner answers at "+theHost+"\n")
+	write("copy.md", "the runner answers at "+leakguardtest.RulesHost+"\n")
 	onTop := commit("a commit no remote-tracking ref holds")
 
 	for _, tc := range []struct {
 		name string
 		head string
-		// want is the report, and nil where the push passes.
+		// want is the report, "<record>: <class>" a line, and nil where the push passes.
 		want []string
 	}{
 		{name: "the merge alone", head: merge},
 		{
 			name: "a commit of the same line on top of the merge",
 			head: onTop,
-			want: []string{"copy.md: " + theClass},
+			want: []string{"copy.md: " + leakguardtest.RulesHostClass},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -329,9 +322,7 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 				}
 				return
 			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
-			}
+			reports(t, refusal(t, err).Lines, tc.want...)
 		})
 	}
 }

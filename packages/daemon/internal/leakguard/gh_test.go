@@ -29,7 +29,7 @@ const theProgram = "# stands for the shared check a read rule was proven against
 // same call reads the destination's visibility and is refused by the rules.
 func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	const repo = "invented-org/invented-repo"
-	args := []string{"search", "code", theHost}
+	args := []string{"search", "code", leakguardtest.RulesHost}
 	proven := hexSHA256(theProgram)
 	call := func(t *testing.T, ctx context.Context, check, program string, writesNothing bool) ([]string, GhAnswer, error) {
 		t.Helper()
@@ -43,7 +43,7 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 		guard := New(Options{
 			Check:      script,
 			Visibility: answers(Public, &asked),
-			Env:        fixtureenv.Isolated(t.TempDir()),
+			Env:        withRules(t, fixtureenv.Isolated(t.TempDir())),
 		})
 		answer, err := guard.GhCall(ctx, GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven})
 		return asked, answer, err
@@ -86,7 +86,7 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			asked, answer, err := call(t, bound(t), passes, tc.program, tc.writesNothing)
-			if report := refusal(t, err); !strings.Contains(report.Error(), theClass) {
+			if report := refusal(t, err); len(report.Lines) != 1 || !namesClass(report.Lines[0], leakguardtest.RulesHostClass) {
 				t.Fatalf("the refusal does not name the class: %v", report)
 			}
 			if !slices.Equal(asked, []string{repo}) || answer.CheckedOnly {
@@ -103,16 +103,16 @@ func hexSHA256(text string) string {
 }
 
 // A gh call that carries its body in a file publishes the file's text, not the file's name, and
-// this repository's own rules must read that text.
+// the deployment's private-name rules must read that text.
 //
 // The shared public leak check already does: measured at leak-check-v15 from a pod on
 // 2026-11-10, `public-leak-check.sh gh-guard pr comment 1 --body-file <file>` over a file holding
 // a credential exits 3, so the check opens the file a body option names (its own BODY_FILES, and
-// the `-F <key>=@<path>` form `gh api` takes). What it does not read is any of this repository's
-// four classes: with PUBLIC_LEAK_CHECK_REPO_NAMES and PUBLIC_LEAK_CHECK_INTERNAL off, which R6
-// of dispatch://INFRA-1527 keeps them, the same call over a file holding a Tailscale MagicDNS
-// host exits 0. So for those four classes the rule file is the whole of the cover, and a body
-// option's file is a hole in it: the same host inline in `--body` is refused.
+// the `-F <key>=@<path>` form `gh api` takes). What it does not read is a deployment's private
+// names: with PUBLIC_LEAK_CHECK_REPO_NAMES and PUBLIC_LEAK_CHECK_INTERNAL off, which R6 of
+// dispatch://INFRA-1527 keeps them, the same call over a file holding a Tailscale MagicDNS host
+// exits 0. So for those names the rule file is the whole of the cover, and a body option's file is
+// a hole in it: the same host inline in `--body` is refused.
 //
 // This is the surface the issue was written for — 43 of its 60 measured refusals are text an
 // agent posted to GitHub — and a file is how a Legion role posts it:
@@ -120,7 +120,7 @@ func hexSHA256(text string) string {
 // `gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F body=@"$dir/body.md"`.
 func TestAGhCallsBodyFileIsRead(t *testing.T) {
 	body := filepath.Join(t.TempDir(), "body.md")
-	if err := os.WriteFile(body, []byte("the box is at "+theHost+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(body, []byte("the box is at "+leakguardtest.RulesHost+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -138,7 +138,7 @@ func TestAGhCallsBodyFileIsRead(t *testing.T) {
 				t.Fatal("the call was cleared, so the file's text reaches GitHub unread")
 			}
 			report := refusal(t, err)
-			if !strings.Contains(report.Error(), theClass) {
+			if !strings.Contains(report.Error(), leakguardtest.RulesHostClass) {
 				t.Fatalf("the refusal does not name the class: %v", report)
 			}
 		})
@@ -314,7 +314,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	named := filepath.Join(dir, "named.md")
 	unnamed := filepath.Join(dir, "unnamed.md")
 	for _, path := range []string{named, unnamed} {
-		if err := os.WriteFile(path, []byte("the box is at "+theHost+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("the box is at "+leakguardtest.RulesHost+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -327,7 +327,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 			Repo:  "invented-org/invented-repo",
 			Files: []GhFile{{Option: "--body-file", Path: unnamed}},
 		})
-		if report := refusal(t, err); !strings.Contains(report.Error(), theClass) {
+		if report := refusal(t, err); !strings.Contains(report.Error(), leakguardtest.RulesHostClass) {
 			t.Fatalf("the refusal does not name the class: %v", report)
 		}
 	})
@@ -347,7 +347,7 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 			Args: []string{"pr", "comment", "1", "--body-file", named},
 			Repo: "invented-org/invented-repo",
 		})
-		if report := refusal(t, err); !strings.Contains(report.Error(), theClass) {
+		if report := refusal(t, err); !strings.Contains(report.Error(), leakguardtest.RulesHostClass) {
 			t.Fatalf("the refusal does not name the class: %v", report)
 		}
 	})
@@ -361,8 +361,8 @@ func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 func TestAJsonBodysEscapesAreRead(t *testing.T) {
 	// The host, with the first letter of each of its three labels written as a JSON escape, so
 	// no pattern of the rule file matches the bytes of the document itself.
-	escaped := `{"body": "the box is at \u0077obble-fern.\u0071uiet-harbor.ts.\u006eet"}`
-	if strings.Contains(escaped, theHost) {
+	escaped := `{"body": "the box is at \u0061mber-kite.\u0073till-meadow.ts.\u006eet"}`
+	if strings.Contains(escaped, leakguardtest.RulesHost) {
 		t.Fatal("the fixture spells the host in the document's own bytes, so it proves nothing")
 	}
 	t.Run("gh api --input", func(t *testing.T) {
@@ -376,7 +376,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 			Repo: "invented-org/invented-repo",
 		})
 		report := refusal(t, err)
-		if len(report.Lines) != 1 || !strings.HasSuffix(report.Lines[0], ": "+theClass) ||
+		if len(report.Lines) != 1 || !namesClass(report.Lines[0], leakguardtest.RulesHostClass) ||
 			!strings.Contains(report.Lines[0], "decoded as JSON") {
 			t.Fatalf("the report is %q, want one line of the decoded record naming the class", report.Lines)
 		}
@@ -389,10 +389,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 			Repo:  "invented-org/invented-repo",
 		})
 		report := refusal(t, err)
-		want := []string{"the gh call's standard input, decoded as JSON: " + theClass}
-		if !slices.Equal(report.Lines, want) {
-			t.Fatalf("the report is %q, want %q", report.Lines, want)
-		}
+		reports(t, report.Lines, "the gh call's standard input, decoded as JSON: "+leakguardtest.RulesHostClass)
 	})
 	t.Run("a JSON body naming nothing is cleared", func(t *testing.T) {
 		body := filepath.Join(t.TempDir(), "request.json")
