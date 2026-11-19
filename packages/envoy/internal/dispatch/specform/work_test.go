@@ -1,6 +1,7 @@
 package specform
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -26,6 +27,37 @@ const (
 	workScale = 16
 	workBound = 32
 )
+
+// workRaceShrink is how many times smaller each row's n is under the race detector, whose
+// instrumentation makes the judgment about 15 times the work: the race build runs each row's
+// walks at about the plain build's time, and claims no bound.
+const workRaceShrink = 16
+
+// workJudgment builds the judgment of a text of n units: the text is built once, before any
+// window, and the judgment judges it.
+type workJudgment func(t *testing.T, n int) func() []Finding
+
+// workRow is one row of the work table: the shape of text that grows, the rule whose finding the
+// judgment of each size gives ("" for a shape that breaks no rule), the n of its smaller text in
+// the plain build, and its judgment.
+type workRow struct {
+	name  string
+	rule  Rule
+	n     int
+	judge workJudgment
+}
+
+// workRows is the work table in a build: each row of workTable at its n, or under the race
+// detector (race) at its n over workRaceShrink, which is the one difference of the two builds.
+func workRows(race bool) []workRow {
+	rows := workTable()
+	if race {
+		for index := range rows {
+			rows[index].n = max(1, rows[index].n/workRaceShrink)
+		}
+	}
+	return rows
+}
 
 // A judgment does work in proportion to its text, for each rule of the form and each shape that
 // grows the text: many forms of one rule on one line, one long line, many short lines, many links,
@@ -59,19 +91,18 @@ const (
 // "one statement that refers to many footnotes", and the statements of the first, hold a word or two
 // each, and the row of purpose lines of one id times the reader alone (read), since the walk that
 // it is for is the reader's, and the judgment of each line costs several times the reading of it.
-func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
+func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
-	type judgment func(t *testing.T, n int) func() []Finding
 	// checked judges one text of kind: before, n units, then after.
-	checked := func(kind Kind, before, unit, after string) judgment {
+	checked := func(kind Kind, before, unit, after string) workJudgment {
 		return func(_ *testing.T, n int) func() []Finding {
 			in := Input{Texts: []Text{{Node: "n", Kind: kind, Body: before + strings.Repeat(unit, n) + after, Where: where}}}
 			return func() []Finding { return Check(context, in) }
 		}
 	}
 	// extracted reads the document that markdown writes for n units, and judges it.
-	extracted := func(markdown func(n int) string) judgment {
+	extracted := func(markdown func(n int) string) workJudgment {
 		return func(t *testing.T, n int) func() []Finding {
 			document := markdown(n)
 			return func() []Finding {
@@ -87,7 +118,7 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 	// for a walk of the reader, which the judgment of each text, several times the work of its
 	// reading, would hide. It fails unless the reader keeps the n texts as n texts of kind under one
 	// node.
-	read := func(node string, kind Kind, markdown func(n int) string) judgment {
+	read := func(node string, kind Kind, markdown func(n int) string) workJudgment {
 		return func(t *testing.T, n int) func() []Finding {
 			document := markdown(n)
 			reading := func() Extracted {
@@ -157,12 +188,7 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 	}
 	const requirement, end = ":::requirement{#r}\nDispatch keeps", "\n:::\n"
 	const statementUnit = ":::requirement{#s-%d}\nDispatch keeps record %[1]d[^shared].\n:::\n\n"
-	for _, row := range []struct {
-		name  string
-		rule  Rule
-		n     int
-		judge judgment
-	}{
+	return []workRow{
 		{"many sentences on one line", ruleSentences, 1_000, checked(KindStatement, "", "Dispatch keeps it. ", "")},
 		{"many short lines", ruleSentences, 1_000, checked(KindStatement, "", "Dispatch keeps it.\n", "")},
 		{"one long sentence", ruleSentenceWords, 4_000, checked(KindStatement, "Dispatch keeps ", "word ", "it.")},
@@ -220,14 +246,21 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 			extracted(func(n int) string { return procedureCheck("Run the test with " + strings.Repeat("word ", n) + "now.") })},
 		{"one sentence of many spans of code", ruleInstructions, 4_000,
 			extracted(func(n int) string { return procedureCheck("Run " + strings.Repeat("`x` and ", n) + "read the log.") })},
-	} {
+	}
+}
+
+// TestTheWorkOfAJudgmentGrowsInProportionToItsText runs each row of the work table (workTable) at
+// the n of this build (workRows): under the race detector it runs each row's judgments and their
+// findings, and claims no bound.
+func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
+	for _, row := range workRows(raceEnabled) {
 		t.Run(row.name, func(t *testing.T) {
 			sizes := []int{row.n, workScale * row.n}
 			judges := []func() []Finding{row.judge(t, sizes[0]), row.judge(t, sizes[1])}
 			findings := make([][]Finding, len(sizes))
 			growth, small, large, err := cputest.Growth(workSamples, workScale,
 				cputest.Again(func() { findings[0] = judges[0]() }), cputest.Again(func() { findings[1] = judges[1]() }))
-			if err != nil {
+			if err != nil && !(raceEnabled && errors.Is(err, cputest.ErrShortWindow)) {
 				t.Fatal(err)
 			}
 			for index, found := range findings {
@@ -238,10 +271,33 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 				}
 			}
 			t.Logf("%d units %d times: %v; %d units once: %v; %.1f times", sizes[0], workScale, small, sizes[1], large, growth)
-			if growth >= workBound {
+			if !raceEnabled && growth >= workBound {
 				t.Errorf("the work grew %.1f times, from %v for %d runs of %d units to %v for one run of %d, want less than %d times",
 					growth, small, workScale, sizes[0], large, sizes[1], workBound)
 			}
 		})
+	}
+}
+
+// The race build runs the rows of the plain build, each at its n over workRaceShrink, and no
+// other: workRows makes both from workTable, and this fails when a row is in one and not the
+// other, or when the race build's n of a row is any other.
+func TestTheWorkTableRunsEachRowUnderTheRaceDetector(t *testing.T) {
+	plain, race := workRows(false), workRows(true)
+	names := func(rows []workRow) []string {
+		var named []string
+		for _, row := range rows {
+			named = append(named, row.name)
+		}
+		return named
+	}
+	if !slices.Equal(names(plain), names(race)) {
+		t.Fatalf("the plain build's rows are %q, and the race build's %q, want the same rows", names(plain), names(race))
+	}
+	for index, row := range plain {
+		if want := max(1, row.n/workRaceShrink); race[index].rule != row.rule || race[index].n != want {
+			t.Errorf("row %q: the race build reads rule %q at n %d, want rule %q at n %d (%d over %d)",
+				row.name, race[index].rule, race[index].n, row.rule, want, row.n, workRaceShrink)
+		}
 	}
 }
