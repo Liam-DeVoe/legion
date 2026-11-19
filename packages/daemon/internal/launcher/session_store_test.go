@@ -337,7 +337,11 @@ func (s *identityStub) present() error {
 // here mints on demand instead. The agent's own client is Bun's, and pgx through the same socket
 // stands in for it, which is also the client the launcher itself looks a resume up with.
 func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
-	database, dialer := sessionDatabaseAt(t, testdb.Database(t, "legion_launcher_expiry_test"))
+	// The lookup below asks the session table, which a database must hold: one with no table is
+	// the store's fault (ompsessions.Written), as every store a claim recorded a session in has it.
+	dsn := testdb.Database(t, "legion_launcher_expiry_test")
+	createSessionTables(t, dsn)
+	database, dialer := sessionDatabaseAt(t, dsn)
 	identity := &identityStub{}
 	identity.mint()
 	dialer.check = identity.present
