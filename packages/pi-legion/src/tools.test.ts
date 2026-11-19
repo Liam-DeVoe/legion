@@ -130,10 +130,12 @@ function recordingDaemon(options: {
   return { calls, daemon: () => daemon as never };
 }
 
-/** The `legion` tool description Oh My Pi agents read, written out whole but for the shared
- * `read_record` sentences, which are the shared template's own (`PHASE_OP_SENTENCES`): the template
- * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
-const OMP_LEGION_TOOL_DESCRIPTION =
+/** The `legion` tool description Oh My Pi agents read, written out whole but for two parts: the
+ * shared `read_record` sentences, which are the shared template's own (`PHASE_OP_SENTENCES`), and
+ * `stop_task`'s sentences, which the test holds by their terms (STOP_TASK_TERMS). The template
+ * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce the rest
+ * exactly. This is the text before `stop_task`'s. */
+const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
   PHASE_OP_SENTENCES.readRecord +
   "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
@@ -203,12 +205,18 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
   "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
   "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
-  "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
-  "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
-  "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
-  "which then starts at its first step (a task that never started waits for its gate and its line, as any task does before its " +
-  "first step); retry_or_escalate does not start it again (TASK_STOPPED). The daemon refuses a task the plan " +
-  "does not hold (TASK_NOT_FOUND) and one that is done (TASK_DONE). " +
+  "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). ";
+
+/** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
+ * tool's name and its parameters, and names the hold it leaves and each refusal code its text
+ * gives. */
+const STOP_TASK_TERMS = {
+  opens: "stop_task (issue, task) ",
+  names: ["`holdReason` task-stopped", "register_plan", "(TASK_STOPPED)", "(TASK_NOT_FOUND)", "(TASK_DONE)"],
+} as const;
+
+/** The text of the description after `stop_task`'s. */
+const OMP_LEGION_TOOL_DESCRIPTION_AFTER_STOP_TASK =
   "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
   "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
@@ -294,9 +302,18 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
-test("the legion tool's description is the exact text Oh My Pi agents read, for every session", () => {
+test("the legion tool's description is the exact text Oh My Pi agents read, for every session, and names stop_task's terms", () => {
   for (const active of EVERY_SESSION) {
-    expect(toolFor(active).description).toBe(OMP_LEGION_TOOL_DESCRIPTION);
+    const description = toolFor(active).description;
+    const before = OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK;
+    const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_STOP_TASK;
+    expect(description.slice(0, before.length)).toBe(before);
+    expect(description.slice(description.length - after.length)).toBe(after);
+    const stopTask = description.slice(before.length, description.length - after.length);
+    expect(stopTask.startsWith(STOP_TASK_TERMS.opens)).toBe(true);
+    for (const term of STOP_TASK_TERMS.names) {
+      expect(stopTask).toContain(term);
+    }
   }
 });
 
