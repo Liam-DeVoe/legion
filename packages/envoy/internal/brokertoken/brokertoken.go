@@ -369,19 +369,19 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 type LiveToken struct {
 	token  string
 	answer Introspection
-	// shape is shapeOf's verdict on answer, which Live reached and callerOf marks the Caller by,
-	// so an answer is read once for a request.
-	shape tokenShape
+	// caller is sessionCaller's reading of answer, which Live made, so an answer is read once for
+	// a request.
+	caller Caller
 }
 
-// Caller is who the token names (callerOf); the zero LiveToken names nobody.
-func (l LiveToken) Caller() Caller { return callerOf(l.answer, l.shape) }
+// Caller is who the token names (sessionCaller); the zero LiveToken names nobody.
+func (l LiveToken) Caller() Caller { return l.caller }
 
 // Live is Verify without the proof check: the broker's answer about the token r presents, cached
 // or fresh (known), held to a token that is live, bound to a key, issued for acting as a session,
-// and of a shape this verifier serves (shapeOf). Verify reads the answer through here, so an open
-// connection's heartbeat is held to the same rule as the request that opened it, the read-only
-// switch included.
+// and of a shape this verifier serves (sessionCaller, with this verifier's read-only switch).
+// Verify reads the answer through here, so an open connection's heartbeat is held to the same
+// rule as the request that opened it, the read-only switch included.
 //
 // It is for a connection that outlives the request that opened it and whose caller has to keep
 // resolving while it is open — a websocket Dispatch re-resolves on every heartbeat
@@ -399,11 +399,34 @@ func (v *Verifier) Live(ctx context.Context, r *http.Request) (LiveToken, error)
 	if err != nil {
 		return LiveToken{}, err
 	}
+	caller, err := sessionCaller(answer, v.servesReadOnly)
+	if err != nil {
+		return LiveToken{}, err
+	}
+	return LiveToken{token: token, answer: answer, caller: caller}, nil
+}
+
+// SessionCaller is the NATS auth service's reading of the broker's answer about a token as a
+// session's caller (internal/broker/natscallout): sessionCaller with the read-only switch off, so it
+// serves no read-only token, as a verifier built without Options.ServesReadOnly serves none. It
+// holds no proof to the key; whoever calls it checks the proof its credential carries against
+// answer.Thumbprint.
+func SessionCaller(answer Introspection) (Caller, error) {
+	return sessionCaller(answer, false)
+}
+
+// sessionCaller is the one reading of the broker's answer about a token as a session's caller:
+// Live makes it with its verifier's Options.ServesReadOnly, and so Verify, which reads the answer
+// through Live, and the NATS auth service through SessionCaller with the switch off. The token is
+// live (ErrNotActive), bound to a key (ErrKeyMismatch: no proof can be the key it does not have),
+// and issued for acting as a session in a shape this package reads, a read-only one only when
+// servesReadOnly is set (ErrNotASession); the Caller it names is callerOf the answer.
+func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	if !answer.Active {
-		return LiveToken{}, ErrNotActive
+		return Caller{}, ErrNotActive
 	}
 	if answer.Thumbprint == "" {
-		return LiveToken{}, ErrKeyMismatch
+		return Caller{}, ErrKeyMismatch
 	}
 	// A token names a person or a service: an exchange decided one of the two for every token
 	// issued for acting as a session, and one that names neither is no session's credential
@@ -421,13 +444,13 @@ func (v *Verifier) Live(ctx context.Context, r *http.Request) (LiveToken, error)
 	// a project, which the exchange refuses to mint, are refused for the same reason.
 	shape := shapeOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
-		shape == shapeNotASession || (shape == shapeReadOnly && !v.servesReadOnly) ||
+		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
 		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
 		(answer.Person == "" && len(answer.Projects) > 0) ||
 		oauthwire.ValidProjects(answer.Projects) != nil {
-		return LiveToken{}, ErrNotASession
+		return Caller{}, ErrNotASession
 	}
-	return LiveToken{token: token, answer: answer, shape: shape}, nil
+	return callerOf(answer, shape), nil
 }
 
 // Prove holds r's proof to live, the broker's answer about the token r presents (Live), through
