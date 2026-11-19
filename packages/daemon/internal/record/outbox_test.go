@@ -1599,3 +1599,26 @@ func TestTheRoleMessageRowsBuildTheirKindsRecords(t *testing.T) {
 		t.Errorf("the merge-queue removal's record is %+v, want %+v", got, want)
 	}
 }
+
+// R1: above the bound a text carries "the first part, the count of the rest (or that more
+// follows, where the event did not carry the whole text) and the item's reference"
+// (dispatch://INFRA-3686/spec). A person answers a question of a parked tree, and the answer's
+// Dispatch event reaches the daemon as a payload_omitted stand-in: the intake keeps its words as
+// none with more to follow (ActWords{More: true}). The controller's parked-decision notice must say
+// that more follows than it carries, as the kept-decisions task of the same decision does.
+func TestAParkedDecisionOfAStandInSaysMoreFollows(t *testing.T) {
+	at := time.Date(2026, 11, 14, 22, 44, 10, 0, time.UTC)
+	decision := ParkedDecision{Ref: "dispatch://LEGION-208/ask/ask-q", Decision: DecisionAskAnswered, Actor: "user:alice", At: at,
+		Words: &ActWords{By: "user:alice", At: at, More: true}}
+	notice, err := ControllerNoticeOf(ParkedDecisionNoticeOf("LEGION-208", "LEGION-208", decision, 0))
+	if err != nil {
+		t.Fatalf("build the parked-decision notice: %v", err)
+	}
+	payload, err := json.Marshal(Notice(notice))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"more":true`) {
+		t.Errorf("the notice of an answer whose event was a payload_omitted stand-in says nothing of the words that did not come: %s", payload)
+	}
+}
