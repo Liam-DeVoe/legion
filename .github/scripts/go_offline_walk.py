@@ -325,8 +325,7 @@ class Walk:
                     for script in self.scripts(values[at], command.words[origin[at]], cwd):
                         self.remembered(("script", script, cwd, tuple(args), state), reach, lambda into, s=script: (
                             self.walk(self.commands(s), s, cwd, args, inherited, {}, {}, into, depth + 1)))
-                        if values[at] is not None:
-                            reach.files.add(script)
+                        reach.files.add(script)  # a script named by a word its walk reads, never None
             elif any(values[k:k + len(r)] == r for r in RUNNERS):
                 runner = next(r for r in RUNNERS if values[k:k + len(r)] == r)
                 # Playwright loads its config, and the harness that config starts, whatever specs it

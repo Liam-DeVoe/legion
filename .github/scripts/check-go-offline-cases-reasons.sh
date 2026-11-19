@@ -136,7 +136,8 @@ put "$root" tools/inner.sh <<'EOF'
 # go-offline-file: a person runs this by hand; no CI job runs it.
 go list -deps ./... >/dev/null
 EOF
-printf '      - name: Run one of the tools\n        run: bash "tools/$TOOL.sh"\n' >>"$root/.github/workflows/ci.yaml"
+# The walk reads the sourced path as a guess, tools/*.sh, since $TOOL is set where it cannot see.
+printf '      - name: Source one of the tools\n        run: . "tools/$TOOL.sh"\n' >>"$root/.github/workflows/ci.yaml"
 run_check "$root"
 check "a script guessed from a variable's name: exits 0" "$(is "$status" 0)"
 check "a script guessed from a variable's name: its reason covers the command" \
