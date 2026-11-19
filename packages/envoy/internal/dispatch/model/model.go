@@ -30,6 +30,11 @@ const (
 // slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
 var Scopes = []string{ScopePerson, ScopeApprove}
 
+// ScopeRead is the word GET /api/v1/whoami lists among a read-only credential's scopes. No
+// credential holds it as a scope: Credential.ReadOnly marks the credential, Credential.Scopes
+// never carries the word, and no route requires it, so no recorded act names it either.
+const ScopeRead = "read"
+
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
 // which credential made it and not only whom it was made for: Session is the session a
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
@@ -72,15 +77,18 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
-	// one the secrets broker minted from a read entry, naming a service and a session and no
-	// person and no project. Dispatch serves it on the routes its read list names
-	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
-	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
-	// Scopes: those are what a route can require of a credential, and read meets no route's
-	// requirement; it narrows what this credential may call rather than widening it. False for
-	// every other credential.
+	// ReadOnly is a credential that may only read: a broker-issued token that holds the scope
+	// read (brokertoken.Caller.ReadOnly), which the secrets broker minted from a read entry or
+	// narrowed to reading because its trade asked for read. Dispatch answers it 403
+	// READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
+	// before anything else the route does. The scope itself is not among Scopes: those are what a
+	// route can require of a credential, and read meets no route's requirement; it narrows what
+	// this credential may call rather than widening it. whoami lists it as ScopeRead after
+	// Scopes. False for every other credential.
 	ReadOnly bool
+	// Cut is the past time a read-only credential reads at (brokertoken.Caller.Cut), in UTC, and
+	// the zero time for a credential that names no cut. Only a read-only credential carries one.
+	Cut time.Time
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a

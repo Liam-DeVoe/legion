@@ -3,19 +3,24 @@ package brokertoken_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -192,6 +197,35 @@ func readOnlyToken(jkt string, life time.Duration) brokertoken.Introspection {
 		ClientID:     brokertoken.ExchangeClientID,
 		Thumbprint:   jkt,
 	}
+}
+
+// narrowedAnswers is the broker's answer for a token narrowed to reading, by the kind of trade
+// that minted it, as testdata/narrowed-answers.json holds them: the golden file the broker's own
+// test holds its minted answers to (internal/broker/oauth,
+// TestATradeThatAsksForReadKeepsItsIdentityAndHoldsRead). Each answer is bound to jkt, names
+// session and expires at exp, filled in as the file's comment says. A member the file names and
+// Introspection does not carry fails the read, so the file holds nothing a reader never reads.
+func narrowedAnswers(t *testing.T, jkt, session string, exp int64) map[string]brokertoken.Introspection {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/narrowed-answers.json")
+	if err != nil {
+		t.Fatalf("read the narrowed answers: %v", err)
+	}
+	filled := strings.NewReplacer(`"${jkt}"`, strconv.Quote(jkt), `"${session}"`, strconv.Quote(session),
+		`"${exp}"`, strconv.FormatInt(exp, 10)).Replace(string(raw))
+	var golden struct {
+		Comment string                               `json:"_comment"`
+		Answers map[string]brokertoken.Introspection `json:"answers"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(filled))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&golden); err != nil {
+		t.Fatalf("decode the narrowed answers: %v", err)
+	}
+	if len(golden.Answers) == 0 {
+		t.Fatal("the narrowed answers file holds no answer")
+	}
+	return golden.Answers
 }
 
 // TestATokenThatIsNoSessionsCredentialIsRefused: a live, DPoP-bound token the broker issued for
@@ -466,6 +500,178 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	}
 	for _, serves := range []bool{false, true} {
 		rig := newRig(t, func(options *brokertoken.Options) { options.ServesReadOnly = serves })
+		verifier := "without the switch"
+		if serves {
+			verifier = "with the switch"
+		}
+		for _, row := range rows {
+			t.Run(verifier+"/"+row.name, func(t *testing.T) {
+				token := "a-token-of-" + strings.ReplaceAll(row.name, " ", "-")
+				rig.broker.Says(token, row.answer)
+				want := row.without
+				if serves {
+					want = row.with
+				}
+				var wantErr error
+				if reflect.DeepEqual(want, brokertoken.Caller{}) {
+					wantErr = brokertoken.ErrNotASession
+				}
+
+				decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(decided, want) {
+					t.Fatalf("Verify = %+v, %v; want %+v, %v", decided, err, want, wantErr)
+				}
+				live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(live, want) {
+					t.Fatalf("Live = %+v, %v; want %+v, %v", live, err, want, wantErr)
+				}
+			})
+		}
+	}
+	for _, row := range rows {
+		t.Run("SessionCaller/"+row.name, func(t *testing.T) {
+			var wantErr error
+			if reflect.DeepEqual(row.without, brokertoken.Caller{}) {
+				wantErr = brokertoken.ErrNotASession
+			}
+			got, err := brokertoken.SessionCaller(row.answer)
+			if !errors.Is(err, wantErr) || !reflect.DeepEqual(got, row.without) {
+				t.Fatalf("SessionCaller = %+v, %v; want %+v, %v", got, err, row.without, wantErr)
+			}
+		})
+	}
+}
+
+// TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly: a token narrowed to reading — a
+// narrowed project scope beside the scope read, or read person for a read-person token that names
+// its person — is a session's credential only to a verifier whose service serves a read-only
+// token, as the read entry's token is. With the switch, each answer of the golden file the
+// broker's own test holds its narrowed answers to is a Caller marked read-only, naming the
+// session, the person, the service and the projects the answer names, under the base word its
+// narrowed word narrows, with the answer's cut. Without the switch, and to SessionCaller, each is
+// ErrNotASession, as a build that predates the words refuses it.
+//
+// The switch widens the rule by nothing else. With it, these are ErrNotASession too: read person
+// on a narrowed word that may not hold person, approve or machine beside read, the two words in
+// the other order or read named twice, no scope at all, a read-none token naming a person or a
+// project, a read-named token whose projects break the named rules, a cut on a token that writes,
+// a cut on the read entry's token (the word none, which no trade that asks for read and a cut
+// carries), and a cut that is not an RFC 3339 time. The controls are the golden machine login's
+// answer with a cut, which the switch accepts with its cut, and the named token with no cut,
+// which both verifiers accept unmarked, so each refusal of a cut is the cut's. Each row goes
+// through Verify and through Live.
+func TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly(t *testing.T) {
+	caller := newSigner(t)
+	const session = "ses_narrowed"
+	answers := narrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	// bases is the word each narrowed word reads as, written out here rather than read from
+	// oauthwire.BaseProjectScope, so the test holds the helper to it.
+	bases := map[string]string{
+		oauthwire.ProjectScopeReadNamed:  brokertoken.ProjectScopeNamed,
+		oauthwire.ProjectScopeReadPerson: brokertoken.ProjectScopePerson,
+		oauthwire.ProjectScopeReadNone:   brokertoken.ProjectScopeNone,
+	}
+	const cutText = "2026-11-18T09:30:00.123456Z"
+	cut := time.Date(2026, 11, 18, 9, 30, 0, 123456000, time.UTC)
+	// cuts is the cut of each golden answer that names one; every other names none.
+	cuts := map[string]time.Time{"machine-login-with-a-cut": cut}
+
+	type row struct {
+		name   string
+		answer brokertoken.Introspection
+		// without and with are the Caller each verifier answers: the zero Caller is a refusal,
+		// which is ErrNotASession for every row here.
+		without brokertoken.Caller
+		with    brokertoken.Caller
+	}
+	var rows []row
+	narrowedWords := map[string]bool{}
+	for _, kind := range slices.Sorted(maps.Keys(answers)) {
+		answer := answers[kind]
+		base, narrowed := bases[answer.ProjectScope]
+		if !narrowed {
+			t.Fatalf("the golden answer %s carries the project scope %q, which is no narrowed word", kind, answer.ProjectScope)
+		}
+		narrowedWords[answer.ProjectScope] = true
+		rows = append(rows, row{name: "the golden answer " + kind, answer: answer, with: brokertoken.Caller{
+			Session: session, Person: answer.Person, Service: answer.Service, Projects: answer.Projects,
+			ProjectScope: base, ReadOnly: true, Cut: cuts[kind],
+		}})
+	}
+	if len(narrowedWords) != len(bases) {
+		t.Fatalf("the golden answers carry the narrowed words %v, want each of %v", slices.Sorted(maps.Keys(narrowedWords)), slices.Sorted(maps.Keys(bases)))
+	}
+
+	// changed is the golden answer of kind with one change made, on a copy of its projects.
+	changed := func(kind string, change func(*brokertoken.Introspection)) brokertoken.Introspection {
+		answer, ok := answers[kind]
+		if !ok {
+			t.Fatalf("the golden file holds no answer for %s", kind)
+		}
+		answer.Projects = slices.Clone(answer.Projects)
+		change(&answer)
+		return answer
+	}
+	scoped := func(kind, scope string) brokertoken.Introspection {
+		return changed(kind, func(answer *brokertoken.Introspection) { answer.Scope = scope })
+	}
+	named := liveToken(caller.jkt, time.Hour)
+	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: brokertoken.ProjectScopeNamed}
+	namedCut := liveToken(caller.jkt, time.Hour)
+	namedCut.AsOf = cutText
+	personCut := liveToken(caller.jkt, time.Hour)
+	personCut.ProjectScope, personCut.Projects, personCut.AsOf = brokertoken.ProjectScopePerson, nil, cutText
+	noneCut := readOnlyToken(caller.jkt, time.Hour)
+	noneCut.Scope, noneCut.AsOf = "", cutText
+	readEntryCut := readOnlyToken(caller.jkt, time.Hour)
+	readEntryCut.AsOf = cutText
+	rows = append(rows,
+		row{name: "read person on read-named", answer: scoped("pod-entry", "read person")},
+		row{name: "read person on read-none", answer: scoped("read-entry", "read person")},
+		row{name: "read person on read-person naming a service", answer: scoped("google-identity-no-person", "read person")},
+		row{name: "approve beside read", answer: scoped("pod-entry", "read approve")},
+		row{name: "approve beside read person", answer: scoped("machine-login", "read person approve")},
+		row{name: "machine beside read", answer: scoped("machine-login", "read machine")},
+		row{name: "person before read", answer: scoped("machine-login", "person read")},
+		row{name: "read named twice", answer: scoped("read-entry", "read read")},
+		row{name: "a narrowed word with no scope", answer: scoped("pod-entry", "")},
+		row{name: "read-none naming a person", answer: changed("read-entry", func(answer *brokertoken.Introspection) {
+			answer.Person = "ada@example.com"
+		})},
+		row{name: "read-none naming a project", answer: changed("read-entry", func(answer *brokertoken.Introspection) {
+			answer.Projects = []string{"ACME"}
+		})},
+		row{name: "read-named naming two projects", answer: changed("pod-entry", func(answer *brokertoken.Introspection) {
+			answer.Projects = []string{"ACME", "OTHER"}
+		})},
+		row{name: "read-named naming no project and no person", answer: changed("pod-entry", func(answer *brokertoken.Introspection) {
+			answer.Person, answer.Service, answer.Projects = "", "example-fleet", nil
+		})},
+		row{name: "a cut on a named token", answer: namedCut},
+		row{name: "a cut on a person token", answer: personCut},
+		row{name: "a cut on a none token that does not read", answer: noneCut},
+		row{name: "a cut that does not parse", answer: changed("machine-login-with-a-cut", func(answer *brokertoken.Introspection) {
+			answer.AsOf = "yesterday"
+		})},
+		row{name: "a cut with a space for its T", answer: changed("machine-login-with-a-cut", func(answer *brokertoken.Introspection) {
+			answer.AsOf = "2026-11-18 09:30:00.123456Z"
+		})},
+		row{name: "a cut at the zero time", answer: changed("machine-login-with-a-cut", func(answer *brokertoken.Introspection) {
+			answer.AsOf = "0001-01-01T00:00:00Z"
+		})},
+		// A trade that asks for no scope keeps the read entry's word none, and the broker refuses a
+		// cut without scope=read, so no broker mints none beside a cut: only a narrowed word
+		// carries one.
+		row{name: "a cut on the read entry's token", answer: readEntryCut},
+		row{name: "the named token with no cut", answer: named, without: namedCaller, with: namedCaller},
+	)
+
+	for _, serves := range []bool{false, true} {
+		// The bucket is wide enough for every row's token: what is under test is the answer.
+		rig := newRig(t, func(options *brokertoken.Options) {
+			options.ServesReadOnly = serves
+			options.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: 2 * len(rows)}
+		})
 		verifier := "without the switch"
 		if serves {
 			verifier = "with the switch"

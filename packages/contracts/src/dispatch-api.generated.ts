@@ -6695,6 +6695,7 @@ export interface components {
       summary: null | string;
     };
     WhoamiAgent: {
+      cut: null | string;
       /** @enum {string} */
       kind: "agent";
       owner: null | string;

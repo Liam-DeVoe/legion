@@ -29,6 +29,10 @@ const (
 	// decides it, never the request: the exchange client is registered for Scope alone, so the
 	// library refuses a request that names this one invalid_scope under every entry.
 	ScopeRead = "read"
+	// ScopePerson is the OAuth scope a token narrowed to reading holds beside ScopeRead when it
+	// acts for its person: a ProjectScopeReadPerson token that names a person, whose answer's
+	// scope is "read person". No other token holds it.
+	ScopePerson = "person"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -160,6 +164,24 @@ const (
 	// entry's token does.
 	ProjectScopeReadNone = "read-none"
 )
+
+// BaseProjectScope is the word whose rules a project-scope word's projects are read under:
+// ProjectScopeNamed for ProjectScopeReadNamed, ProjectScopePerson for ProjectScopeReadPerson,
+// ProjectScopeNone for ProjectScopeReadNone, and any other word as it is. A narrowed token's
+// projects mean what its base word's do, so every reader that checks a token's projects reads
+// this word, and a narrowed trade is checked and answered as the same trade without ScopeRead.
+// A word is narrowed exactly when this answers another word.
+func BaseProjectScope(word string) string {
+	switch word {
+	case ProjectScopeReadNamed:
+		return ProjectScopeNamed
+	case ProjectScopeReadPerson:
+		return ProjectScopePerson
+	case ProjectScopeReadNone:
+		return ProjectScopeNone
+	}
+	return word
+}
 
 // MaxProjects is the most projects one token names.
 const MaxProjects = 16

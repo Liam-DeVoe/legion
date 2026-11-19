@@ -28261,6 +28261,12 @@
       },
       "WhoamiAgent": {
         "properties": {
+          "cut": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "kind": {
             "enum": [
               "agent"
@@ -28302,6 +28308,7 @@
           }
         },
         "required": [
+          "cut",
           "kind",
           "owner",
           "project",
