@@ -472,7 +472,8 @@ function SearchNarrowing({
               onBlur={takeAuthor}
               onChange={setAuthor}
               onKeyDown={(event) => {
-                if (event.key === "Enter") {
+                // An Enter that ends or moves an input method's composition is the composition's.
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   takeAuthor();
                 }
@@ -850,7 +851,9 @@ function PaletteDialog({
             : walkable - 1
           : stepActive(activeIndex, delta, walkable);
       setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
-    } else if (event.key === "Enter" && activeRow !== undefined) {
+    } else if (event.key === "Enter" && !event.nativeEvent.isComposing && activeRow !== undefined) {
+      // Enter picks the highlighted row, but not an Enter that ends or moves an input method's
+      // composition: that one is the composition's.
       event.preventDefault();
       selectRow(activeRow);
     }

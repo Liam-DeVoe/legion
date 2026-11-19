@@ -13,9 +13,30 @@ export const badgeSelectWrapper = `${badgeSelectFrame} md:min-h-8 has-focus-visi
 /** The same wrapper in the issue header's details rail (the repository), 28 px from `md` like
  *  the rail's other controls, so it never makes the rail's row taller. */
 export const badgeSelectRailWrapper = `${badgeSelectFrame} md:min-h-7 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
+/** The same wrapper in the new issue page's header properties line, where the controls are the
+ *  line's own height, as the pictures draw them: 24 px, the least a touch target may be (WCAG
+ *  2.5.8), because the header at 390 px is held to eight lines and 250 px, nine and 280 px while
+ *  an approval request waits on the reader, which leaves no room for more. It is 24 px at every
+ *  width, from `md` too, since a 24 px target holds at every width and not only on a phone. It
+ *  holds a value - a person, a priority - so it narrows to its line rather than keep its width,
+ *  and the value inside breaks anywhere (`min-w-0 max-w-full`). */
+export const badgeSelectHeaderWrapper = `relative inline-flex min-h-6 min-w-0 max-w-full items-center rounded-sm has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
 /** The visible badge; the caller appends its tone's `bg` and `text`. */
 export const badgeSelectBadge =
   "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold";
+/** Inside `NoTooltips` (the new issue page) every value a shared control draws wraps: it keeps
+ *  `max-w-full` and breaks anywhere, and nothing around it keeps its width, so a long login with
+ *  no space stays inside Details' row rather than running past it. These are
+ *  `badgeSelectWrapper` in that shape, with `min-w-0 max-w-full` in place of `shrink-0`, and
+ *  `badgeSelectBadge` with `max-w-full [overflow-wrap:anywhere]`. The control over the badge
+ *  stays usable however many lines the badge takes: a native select is `absolute inset-0
+ *  size-full` over the `relative` wrapper (`badgeSelectOverlay`), and a list's trigger stretches
+ *  to the wrapper's height and narrows with it (`badgeSelectPageTrigger`), so either covers every
+ *  line of a badge that wraps. */
+const badgeSelectPageFrame =
+  "relative inline-flex min-h-11 min-w-0 max-w-full items-center rounded-sm";
+export const badgeSelectPageWrapper = `${badgeSelectPageFrame} md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
+export const badgeSelectPageBadge = `${badgeSelectBadge} max-w-full [overflow-wrap:anywhere]`;
 /** The native select laid over the badge, invisible but the thing that receives the pick. */
 export const badgeSelectOverlay =
   "absolute inset-0 size-full cursor-pointer appearance-none opacity-0 disabled:cursor-not-allowed";
@@ -30,6 +51,14 @@ const badgeSelectTriggerFrame =
  *  was when a native select lay over the badge (`badgeSelectOverlay`), and the trigger is still
  *  the 44 px target that select was. */
 export const badgeSelectTrigger = `${badgeSelectTriggerFrame} md:max-xl:-my-1.5`;
+/** The same trigger in `badgeSelectPageWrapper`, which is `badgeSelectWrapper`'s height: it
+ *  narrows with its wrapper, so the badge inside it wraps within the line. */
+export const badgeSelectPageTrigger = `${badgeSelectTrigger} min-w-0 max-w-full`;
+/** The same trigger in `badgeSelectHeaderWrapper`, which is 24 px at every width: below 1280 px
+ *  the 44 px trigger overhangs it by 10 px above and below, so the header's line stays 24 px and
+ *  the trigger is the 44 px target the select laid over it was; from 1280 px it is the wrapper's
+ *  height. It narrows with its wrapper, so the value inside it wraps within the line. */
+export const badgeSelectHeaderTrigger = `${badgeSelectTriggerFrame} min-w-0 max-w-full max-xl:-my-2.5`;
 /** The same trigger in `badgeSelectRailWrapper` (the issue header's repository), which is 28 px
  *  from `md`: there the 44 px trigger overhangs it by 8 px above and below, so the rail's line is
  *  28 px from `md` (`md:min-h-7`), the height of the rail's other controls. */

@@ -193,7 +193,7 @@ function IssuePageFallback(): ReactNode {
           />
         </h1>
       </header>
-      {/* `overflow-hidden`: the nine labels are wider than a narrow window and this row neither
+      {/* `overflow-hidden`: the ten labels are wider than a narrow window and this row neither
           wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
           never scrolls the page sideways. */}
       <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">
@@ -525,10 +525,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
-  // The page's one focus rescue (`focus-place.ts`): after any loss of the focus to the body - a
-  // press, or an update that takes the focused control away - the focus a disabled, hidden or
-  // departed control took with it goes to the control at its place, never to the body, once
-  // every component's own hand-off has had its turn.
+  // The page's one focus rescue, mounted once here: what it answers and where it sends the focus
+  // is `useFocusRescue`'s own description (`components/focus-place.ts`).
   useFocusRescue(mainRef);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // The status corner floats over the foot of the screen as the composers it sits above do, so

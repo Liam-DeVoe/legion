@@ -28,11 +28,10 @@ import (
 // A builder fills the columns its series' fold reads: a sum N and Sum; a share N (the rows its
 // denominator counts), Num and Den; a quantile N, Sum, Max and Samples, every value of the day.
 // Counts are the named sub-counts a fold sums beside the value (CountWithPRs and the rest).
-// LastValue is the value measured last and LastAt its moment; LastRecordedAt and LastReading say
-// which write stored it (a logged eval's reading, by its recorded_at and id; for the computed
-// unowned-p0 count, the moment of its write and no reading), which breaks a tie of two parts'
-// LastAt for the `last` fold (evals). LastAt and LastRecordedAt are nil, and LastReading "",
-// where LastValue is.
+// LastValue is the value measured last and LastAt its moment, nil where LastValue is.
+// LastRecordedAt and LastReading say which write stored it, a logged eval's reading by its
+// recorded_at and id, which breaks a tie of two parts' LastAt for the `last` fold (evals); they
+// are nil and "" where the part records no write.
 // ViaRepository is how many of the day's rows reached the part's project through a repository
 // rather than an issue (dispatch://INFRA-2916, D1); the builders here read no project, and leave it
 // to the caller that attributes their rows.

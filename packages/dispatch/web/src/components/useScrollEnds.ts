@@ -1,5 +1,8 @@
 import { useLayoutEffect, useState } from "react";
 
+import { observeStrip } from "../hooks/observe-strip";
+import { scrollFadeTrailing } from "../theme/classes";
+
 /** What `useScrollEnds` reads of one strip that scrolls sideways. */
 interface ScrollEnds {
   /** The setter to hand to the strip's `ref`. */
@@ -10,22 +13,33 @@ interface ScrollEnds {
   readonly leading: boolean;
   /** Whether the strip has anywhere left to scroll: something is out of view to the right. */
   readonly trailing: boolean;
+  /** The trailing fade (`scrollFadeTrailing`) while `trailing`, else nothing: the cue a strip
+   *  whose only fade is its trailing one puts in its class list. */
+  readonly fade: string;
 }
 
 /**
  * Which ends of a strip that scrolls sideways have something out of view beyond them: which ends
- * of it fade. Two strips read it. An issue's details rail wears a trailing fade
- * (`scrollFadeTrailing`) while there is more to the right. A control row's chips fade at each
- * end that has a chip out of view beyond it (`chipStripFade`), and draw a scroll button over
- * that end, which scrolls the strip `node`.
+ * of it fade. An issue's details rail, the tablist of `components/Tabs.tsx` and the scroll box
+ * of each Steps table (`features/steps/StepsTab.tsx`) wear the trailing fade alone (`fade`), so
+ * the app shows a cut-off strip one way. A control row's chips fade at each end
+ * that has a chip out of view beyond it (`chipStripFade`), and draw a scroll button over that
+ * end, which scrolls the strip `node`.
  *
  * The strip element is state rather than a ref, so this runs once per strip and not once per
  * render: three things change the answers and none of them is a render of the strip's owner -
  * the reader scrolling it, its box changing with the viewport, and its content arriving or
- * leaving (a label, a count, a chip the reader turned on). One listener and two observers cover
- * them, and the mutation observer re-observes children a render added.
+ * leaving (a label, a count, a chip the reader turned on). One listener covers the first and
+ * `observeStrip` the other two.
  */
-export function useScrollEnds(): ScrollEnds {
+export function useScrollEnds({
+  ends = "both",
+}: {
+  /** Which ends the caller reads. A strip whose only fade is its trailing one reads `trailing`
+   *  alone, so a scroll that changes only how far it is from its start draws its owner again for
+   *  nothing; `leading` then stays false. */
+  readonly ends?: "both" | "trailing";
+} = {}): ScrollEnds {
   const [node, ref] = useState<HTMLElement | null>(null);
   const [leading, setLeading] = useState(false);
   const [trailing, setTrailing] = useState(false);
@@ -38,30 +52,19 @@ export function useScrollEnds(): ScrollEnds {
     // from reading as scrolled.
     const measure = () => {
       setTrailing(node.scrollWidth - node.clientWidth - node.scrollLeft > 1);
-      setLeading(node.scrollLeft > 1);
+      if (ends === "both") setLeading(node.scrollLeft > 1);
     };
-    // happy-dom lays nothing out and has no `ResizeObserver` of its own; the unit suite installs
-    // one, and a test DOM without it still measures once and on every scroll.
-    const sizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
-    const observeAll = () => {
-      sizes?.observe(node);
-      for (const child of node.children) {
-        sizes?.observe(child);
-      }
-    };
-    observeAll();
-    const contents = new MutationObserver(() => {
-      observeAll();
-      measure();
+    const stop = observeStrip(node, measure, {
+      characterData: true,
+      childList: true,
+      subtree: true,
     });
-    contents.observe(node, { characterData: true, childList: true, subtree: true });
     node.addEventListener("scroll", measure, { passive: true });
     measure();
     return () => {
       node.removeEventListener("scroll", measure);
-      sizes?.disconnect();
-      contents.disconnect();
+      stop();
     };
-  }, [node]);
-  return { leading, node, ref, trailing };
+  }, [ends, node]);
+  return { fade: trailing ? scrollFadeTrailing : "", leading, node, ref, trailing };
 }

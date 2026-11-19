@@ -22,6 +22,12 @@ function movedIssue(issue: IssueSummary, { input, rank }: BoardChange): IssueSum
   };
 }
 
+/** What one board move sends: the issue (`key`) and its change (`input`). */
+export interface BoardMoveVariables {
+  readonly input: UpdateIssueInput;
+  readonly key: string;
+}
+
 /**
  * The one path every Board move takes - pointer, touch and keyboard drops alike. `move` places
  * the card on the page at once, in every listing the views read that holds it (the open listing
@@ -46,7 +52,7 @@ export function useBoardMoves(project: string): {
   // the header's status, its fields, a components save.
   const patch = useKeyedWrite({
     inline: true,
-    label: ({ key }: { input: UpdateIssueInput; key: string }) => `${key} moved on the board`,
+    label: ({ key }: BoardMoveVariables) => `${key} moved on the board`,
     target: ({ key }) => `issue:${key}`,
     request: ({ input, key }) => issuePatchRequest(key, input),
     mutationKey: boardMoveMutationKey(project),

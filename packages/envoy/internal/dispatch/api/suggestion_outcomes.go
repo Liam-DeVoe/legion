@@ -392,11 +392,11 @@ func runSuggestionRules(ctx context.Context, tx pgx.Tx, rules [3]string, args ..
 // (events.Horizon.Safe, one observation; Await on a process's first pass, below), judges page
 // after page up to it (sweepSuggestionOutcomePages), and answers when the loop should run again.
 //
-// A safe of 0 is a horizon that has proven nothing yet: one snapshot never proves its own A
-// (events.Horizon), so the first pass after a process starts reads 0 however much the log holds.
-// That pass takes a horizon with Await instead, which is at or above every id committed before
-// the call, rather than start a null cursor at the highest id at or below 0 (startSuggestionCursor)
-// and leave every later pass paging the log from its start.
+// A safe of 0 is a horizon that has proven nothing yet, which the first pass after a process
+// starts reads unless its own observation's snapshot proved it (events.Horizon), however much the
+// log holds. That pass takes a horizon with Await instead (events.Horizon.SafeOrAwait), which is
+// at or above every id committed before the call, rather than start a null cursor at the highest
+// id at or below 0 (startSuggestionCursor) and leave every later pass paging the log from its start.
 //
 // A pass that leaves an id standing above the horizon it read (events.Horizon.HeldBack) has read
 // less than the log holds: an event that committed while a lower id was still open, which this

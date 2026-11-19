@@ -4,9 +4,15 @@ import { borderDefault, card, surfaceMutedBg, textSecondaryOnCanvas } from "../t
 import { AnchoredPanel } from "./AnchoredPanel";
 import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { useFocusPlace } from "./focus-place";
+import { heldPress } from "./held-press";
 
 export interface PanelTriggerProps {
   readonly align?: "left" | "right";
+  /** Holds the trigger while a write it leads to is out (`heldPress`): it keeps the focus and its
+   *  Tab stop, says it cannot be pressed (`aria-disabled`), and a press on it opens nothing. A
+   *  press still closes a panel it has open, so a hold that comes while the panel is open never
+   *  leaves the reader unable to shut it. */
+  readonly ariaDisabled?: boolean;
   /** The panel's content, handed the one way to close it: a choice taken closes the panel and
    *  puts the reader back on the trigger they came from. */
   readonly children: (close: () => void) => ReactNode;
@@ -54,6 +60,7 @@ export interface PanelTriggerProps {
  */
 export function PanelTrigger({
   align = "left",
+  ariaDisabled = false,
   children,
   control = CONTROL.panelTrigger,
   count,
@@ -81,16 +88,19 @@ export function PanelTrigger({
     onOpenChange(false);
     trigger.current?.focus();
   };
-  const ownTrigger = `rounded-lg border text-sm font-semibold whitespace-nowrap ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
+  // Held, the trigger refuses only an open: a press on it while its panel is open closes it.
+  const press = heldPress(ariaDisabled, () => onOpenChange(true));
+  const ownTrigger = `rounded-lg border text-sm font-semibold whitespace-nowrap refused:opacity-40 ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
   return (
     <>
       <button
+        aria-disabled={press["aria-disabled"]}
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={title}
         className={triggerClassName ?? ownTrigger}
         data-control={control}
-        onClick={() => onOpenChange(!open)}
+        onClick={open ? () => onOpenChange(false) : press.onClick}
         ref={trigger}
         title={title}
         type="button"

@@ -134,6 +134,7 @@ On a Board grouped by Legion phase, `Shift+L` and `Shift+H` move no card.
 | `t s` | Spec tab |
 | `t k` | Verification tab |
 | `t p` | Plan tab |
+| `t e` | Steps tab |
 | `t c` | Conversation tab |
 | `t h` | Children tab |
 | `t a` | Artifacts tab |

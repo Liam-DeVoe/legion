@@ -7,12 +7,14 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import {
   errorFrame,
   type FakeLiveSockets,
   installFakeLiveSockets,
   snapshotFrame,
 } from "../../__tests__/live-socket-harness";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, legionBoardQuery, projectIssuesQuery } from "../../api/queries";
 import type {
@@ -105,14 +107,19 @@ afterEach(() => {
   localStorage.clear();
 });
 /** Draws the List over `issues`. `full` answers the listing of the closed issues, and `open` the
- *  one that holds the open ones alone, in place of `issues` itself; `props` is what a caller
- *  other than the project page passes: a listing of its own, the priorities' titles and the
- *  prefix its view is written under. `daemon` is the project's Legion daemon setting, none by
- *  default. */
+ *  one that holds the open ones alone, in place of `issues` itself; `rescued` draws the List in
+ *  the shell's main content with the page's focus rescue mounted (`RescuedMain`), after a link
+ *  that stands for the shell's navigation; `props` is what a caller other than the project page
+ *  passes: a listing of its own, the priorities' titles and the prefix its view is written
+ *  under. `daemon` is the project's Legion daemon setting, none by default. */
 function table(
   issues: IssueSummary[],
   search = "",
-  { full, open }: { full?: Promise<IssueSummary[]>; open?: Promise<IssueSummary[]> } = {},
+  {
+    full,
+    open,
+    rescued = false,
+  }: { full?: Promise<IssueSummary[]>; open?: Promise<IssueSummary[]>; rescued?: boolean } = {},
   props: {
     listing?: IssueListing;
     priorityTitles?: ReadonlyMap<string, string>;
@@ -165,12 +172,20 @@ function table(
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", login: "alice", kind: "user" });
+  const list = <IssuesTable listing={{ project: "CORE" }} {...props} />;
   const view = render(
     <MemoryRouter initialEntries={[`/projects/CORE/issues${search}`]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <Route />
-          <IssuesTable listing={{ project: "CORE" }} {...props} />
+          {rescued ? (
+            <>
+              <a href="/">Inbox</a>
+              <RescuedMain>{list}</RescuedMain>
+            </>
+          ) : (
+            list
+          )}
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -835,33 +850,13 @@ test("a scroll alone does no layout reads for the table's own box", async () => 
 // and the block above it are observed instead. happy-dom has no `ResizeObserver`, so the stub
 // is the geometry — what the table observes, and what a notice appearing there fires.
 test("the box is measured through an observer over itself and the content above it", async () => {
-  const live: { elements: Element[]; fire: () => void }[] = [];
-  const original = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = class {
-    readonly elements: Element[] = [];
-    constructor(callback: ResizeObserverCallback) {
-      live.push({
-        elements: this.elements,
-        fire: () => callback([], this as unknown as ResizeObserver),
-      });
-    }
-    observe(element: Element) {
-      this.elements.push(element);
-    }
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver;
-  restores.push(() => {
-    globalThis.ResizeObserver = original;
-  });
+  const sizes = installResizeObserver();
+  restores.push(() => sizes.restore());
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const box = screen.getByTestId("issues-table-scroll");
   const above = screen.getByRole("region", { name: "Project issues" }).firstElementChild;
   if (!above) throw new Error("The table has no content above it");
-  const watching = [...live].reverse().find((entry) => entry.elements.includes(box));
-  if (!watching) throw new Error("Nothing observes the table's box");
-  expect(watching.elements).toContain(above);
   const measured: string[] = [];
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
@@ -872,9 +867,11 @@ test("the box is measured through an observer over itself and the content above 
     return new DOMRect(0, 0, 1000, 600);
   });
   restores.push(() => rect.mockRestore());
-  act(() => {
-    watching.fire();
-  });
+  // A notice appearing above the box changes only that block's size.
+  sizes.resize(above);
+  expect(measured).toContain("issues-table-scroll");
+  measured.length = 0;
+  sizes.resize(box);
   expect(measured).toContain("issues-table-scroll");
 });
 
@@ -1549,7 +1546,11 @@ test("a press in the toolbar that sends the List off to read its issues keeps th
 });
 
 // A column filter goes with the table it heads when its press sends the List off to read its
-// issues: the focus in its list, a panel of its own, goes to the toolbar's search box.
+// issues: the focus in its list, a panel of its own, goes to the toolbar's search box. The pick is
+// the pointer's, whose option keeps the focus in the list's text box, and the List stands in the
+// shell's main content with the page's focus rescue mounted: the press inside the list's panel is
+// the reader's own, so the List's hand-off answers it rather than the rescue sending the focus out
+// of the main content, to the shell's navigation.
 test("a column filter press that sends the List off to read its issues leaves the focus on the toolbar", async () => {
   const user = userEvent.setup();
   // Opened on Done, whose listing answers. Ticking Todo asks for the open issues too, whose
@@ -1557,6 +1558,7 @@ test("a column filter press that sends the List off to read its issues leaves th
   const open = Promise.withResolvers<IssueSummary[]>();
   table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?status=done", {
     open: open.promise,
+    rescued: true,
   });
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
@@ -1564,11 +1566,60 @@ test("a column filter press that sends the List off to read its issues leaves th
   await user.click(screen.getByRole("option", { name: /^Todo/ }));
   expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
   expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
-  // Not the page's body, from which a keyboard reader would start again at its first link.
+  await afterRescue();
+  // Not the page's body, from which a keyboard reader would start again at its first link, nor
+  // that link itself, outside the main content.
   expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+  expect(screen.getByRole("link", { name: "Inbox" })).not.toHaveFocus();
   open.resolve([issue("CORE-1")]);
   expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+});
+
+// A row's own Start next is held (`aria-disabled`, `heldPress`) from its press until the list
+// read again moves its issue up the queue and takes the Start next away: it keeps the focus while
+// its write is out, and its going is the reader's doing, so the focus goes to a control of that
+// row, never to the table's box. With the hold ended at the write's answer, before that read, the
+// List's rescue read the Start next's going as a live update's and sent the focus to the box.
+test("a row's Start next stays held until the list read again takes it away, and its row keeps the focus", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-2") as never);
+  restores.push(() => send.mockRestore());
+  const { listing } = table(
+    [
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "C" }),
+    ],
+    "",
+    { rescued: true }
+  );
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const startNext = within(row).getByRole("button", { name: "Start next" });
+  // The read after the write, held until the test answers it with CORE-2 at the queue's head.
+  const reread = Promise.withResolvers<IssueSummary[]>();
+  const reads = listing.mock.calls.length;
+  listing.mockImplementation(() => reread.promise);
+  act(() => startNext.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+  await afterRescue();
+  expect(startNext).toHaveAttribute("aria-disabled", "true");
+  expect(startNext).toHaveFocus();
+
+  await act(async () =>
+    reread.resolve([
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "A" }),
+    ])
+  );
+  const moved = () => screen.getByRole("row", { name: "CORE-2 Work CORE-2" });
+  await waitFor(() =>
+    expect(within(moved()).queryByRole("button", { name: "Start next" })).toBeNull()
+  );
+  await afterRescue();
+  expect(moved().contains(document.activeElement)).toBe(true);
+  expect(screen.getByTestId("issues-table-scroll")).not.toHaveFocus();
 });
 
 // A notice's button that takes the notice away hands the focus on, never to the page's body

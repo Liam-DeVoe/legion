@@ -43,7 +43,6 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
-  scrollFadeTrailing,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
@@ -140,9 +139,8 @@ export function IssueHeader({
       parentInputRef.current?.focus();
     }
   }, [parentEditing]);
-  // Whether the details rail has anywhere left to scroll, which is what its trailing fade says
-  // (`components/useScrollEnds.ts`, which a control row's chips use too).
-  const { ref: setRail, trailing: railScrollable } = useScrollEnds();
+  // The details rail's trailing fade, worn while the rail has anywhere left to scroll.
+  const railFade = useScrollEnds({ ends: "trailing" });
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
@@ -419,6 +417,9 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
+                  // An Enter or an Escape that ends or moves an input method's composition is the
+                  // composition's: it saves nothing, discards nothing and keeps the editor open.
+                  if (event.nativeEvent.isComposing) return;
                   if (event.key === "Escape") {
                     drafts.discardTitle();
                     setEditingTitle(false);
@@ -430,16 +431,15 @@ export function IssueHeader({
                 value={drafts.title}
               />
             ) : (
+              // The heading opens its editor when the reader activates it - a click, Enter or
+              // Space - and never as it takes the focus: an editor that opens on focus changes
+              // the page on focus (WCAG 2.2, 3.2.1 On Focus), and the heading can take the focus
+              // with no act of the reader's, from the page's focus rescue.
               <h1
                 className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
                   isClosed ? "" : `cursor-text ${borderStrongHover}`
                 }`}
                 onClick={() => {
-                  if (!isClosed) {
-                    setEditingTitle(true);
-                  }
-                }}
-                onFocus={() => {
                   if (!isClosed) {
                     setEditingTitle(true);
                   }
@@ -584,9 +584,9 @@ export function IssueHeader({
             fade says the cut is a scroll, and it is off at the end of the scroll, where a fade
             would hide the last item instead. */}
         <div
-          className={`flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin] md:[&_button]:min-h-7 md:[&_button]:py-0 ${railScrollable ? scrollFadeTrailing : ""}`}
+          className={`flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin] md:[&_button]:min-h-7 md:[&_button]:py-0 ${railFade.fade}`}
           data-testid="issue-metadata-rail"
-          ref={setRail}
+          ref={railFade.ref}
         >
           {whoseTurn === null ? null : (
             <span
@@ -724,7 +724,8 @@ export function IssueHeader({
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // An Escape that ends an input method's composition is the composition's.
+              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -773,7 +774,8 @@ export function IssueHeader({
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // An Escape that ends an input method's composition is the composition's.
+              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
                 drafts.discardParent();
                 setParentEditing(false);
               }

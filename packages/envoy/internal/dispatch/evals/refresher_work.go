@@ -191,11 +191,13 @@ func (w *pageWork) restartAll() {
 }
 
 // addChange records what change touches (refresher_work.go's list above). A ref that names no row
-// (a pull request number or a run id that is no number) names nothing.
+// (a pull request number or a run id that is no number, or a pull request number past the 32 bits
+// delivery_pull_requests.number holds) names nothing.
 func (w *pageWork) addChange(change delivery.Change) {
 	switch change.Kind {
 	case delivery.ChangeKindPullRequest:
-		if number, err := strconv.Atoi(change.Ref); err == nil {
+		if parsed, err := strconv.ParseInt(change.Ref, 10, 32); err == nil {
+			number := int(parsed)
 			w.prs[PullRequestMember(change.Repo, number)] = pullRequestRef{repo: change.Repo, number: number}
 		}
 	case delivery.ChangeKindRun, delivery.ChangeKindRunJob:

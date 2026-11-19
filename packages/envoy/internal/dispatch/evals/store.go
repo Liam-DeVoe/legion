@@ -46,24 +46,37 @@ func EvalID(project, slug string) string {
 	return project + "/" + slug
 }
 
-// writeTx is one registry write's transaction and what its commit owes: the document events it
-// appended, published once it commits, and the documents it wrote, whose settlement is scheduled
-// then, as an upload and an edit schedule theirs. now is the transaction's own now(), which every
-// time the write stores is.
+// writeTx is one registry write's transaction and what its commit owes: the ledger its document
+// writes and their events queue on (docs.Ledger), the document events it queued, published once
+// it commits, and the documents it wrote, whose settlement is scheduled then, as an upload and an
+// edit schedule theirs. now is the transaction's own now(), which every time the write stores is.
 type writeTx struct {
 	pgx.Tx
+	ledger  *docs.Ledger
 	now     time.Time
 	project string
 	// projectName is the project's name, which titles its `evals-md` document.
 	projectName string
-	events      []model.Event
+	events      []*model.Event
 	settle      []string
 }
+
+// writeAttempts is how many transactions inWrite runs one write in at most: a second where the
+// first found the project's `evals-md` removed while it waited for the document's owner lock
+// (errDocumentRemoved), which creates the document anew.
+const writeAttempts = 2
 
 // inWrite runs fn in one transaction joined with the document service, after reading the project
 // (refused PROJECT_NOT_FOUND when there is none), and commits through the ledger, so the document
 // writes fn makes commit with its rows or not at all. ctx, as fn receives it, is the context Join
 // returned.
+//
+// The transaction runs in the two phases every joined writer runs in (docs.Ledger): fn takes its
+// locks, reads and does its document work first, holding no transaction id, the document's writes
+// and events queued on the ledger as it makes them; then it writes its own rows, and the ledger's
+// Commit sends the queued writes as one batch after them and commits. fn is run again, in a new
+// transaction, where its first run found the document removed under it (errDocumentRemoved),
+// which it answers before it writes anything.
 //
 // Every registry write logs a change for its versions, readings and day rows, whose triggers
 // record each in the change log's outbox (delivery_changes_pending, migration 20261117100001) and
@@ -74,6 +87,16 @@ func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context
 	if s.database == nil || s.database.Pool == nil {
 		return errors.New("evals: the registry has no database")
 	}
+	for attempt := 1; ; attempt++ {
+		err := s.writeOnce(ctx, project, fn)
+		if !errors.Is(err, errDocumentRemoved) || attempt == writeAttempts {
+			return err
+		}
+	}
+}
+
+// writeOnce is one transaction of inWrite.
+func (s *Store) writeOnce(ctx context.Context, project string, fn func(ctx context.Context, w *writeTx) error) error {
 	tx, err := s.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval write: %w", err)
@@ -81,7 +104,7 @@ func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context
 	defer tx.Rollback(ctx)
 	documentCtx, ledger := s.documents.Join(ctx, tx)
 	defer ledger.Discard()
-	w, err := openWrite(ctx, tx, project)
+	w, err := openWrite(ctx, tx, ledger, project)
 	if err != nil {
 		return err
 	}
@@ -95,10 +118,11 @@ func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context
 	return nil
 }
 
-// openWrite is a registry write of project in tx: the project's name and the transaction's own
-// now() read, refused PROJECT_NOT_FOUND when tx holds no such project.
-func openWrite(ctx context.Context, tx pgx.Tx, project string) (*writeTx, error) {
-	w := &writeTx{Tx: tx, project: project}
+// openWrite is a registry write of project in tx, whose document writes queue on ledger: the
+// project's name and the transaction's own now() read, refused PROJECT_NOT_FOUND when tx holds no
+// such project.
+func openWrite(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, project string) (*writeTx, error) {
+	w := &writeTx{Tx: tx, ledger: ledger, project: project}
 	if err := tx.QueryRow(ctx, `select name, now() from projects where key = $1`, project).Scan(&w.projectName, &w.now); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, refusal(CodeProjectNotFound, "no project has the key %q", project)
@@ -110,7 +134,7 @@ func openWrite(ctx context.Context, tx pgx.Tx, project string) (*writeTx, error)
 }
 
 // committed is what w's commit owes, paid once its transaction has committed: the settlement of
-// each document it wrote is scheduled, the document events it appended are published, and a batch
+// each document it wrote is scheduled, the document events it queued are published, and a batch
 // of the change log's outbox, its own change rows among them where no backlog lies ahead of them,
 // is moved into the change log (drainChanges).
 func (s *Store) committed(ctx context.Context, w *writeTx) {
@@ -118,7 +142,7 @@ func (s *Store) committed(ctx context.Context, w *writeTx) {
 		s.documents.ScheduleSettlement(artifactID)
 	}
 	for _, event := range w.events {
-		s.events.Publish(event)
+		s.events.Publish(*event)
 	}
 	s.drainChanges(ctx)
 }
@@ -250,10 +274,7 @@ func scanReading(row pgx.Row) (Reading, error) {
 	reading.Links = utcLinks(reading.Links)
 	reading.MeasuredAt = reading.MeasuredAt.UTC()
 	reading.RecordedAt = reading.RecordedAt.UTC()
-	if reading.SupersededAt != nil {
-		superseded := reading.SupersededAt.UTC()
-		reading.SupersededAt = &superseded
-	}
+	reading.SupersededAt = utcTime(reading.SupersededAt)
 	return reading, nil
 }
 
@@ -357,27 +378,23 @@ func currentSeries(ctx context.Context, q pgx.Tx, evalID string) (map[string]Ser
 	return byName, nil
 }
 
-// insertDefinition writes definition as a new version. onConflictNothing makes the insert of a
-// version someone else wrote first a no-op, answered inserted false: a readings write's first
-// registration of a slug, which two first readings may make at once.
-func insertDefinition(ctx context.Context, tx pgx.Tx, definition Definition, onConflictNothing bool) (Definition, bool, error) {
-	statement, args, err := definitionInsert(definition, onConflictNothing)
+// insertDefinition writes definition as a new version. The writer holds the eval's lock
+// (lockEval), under which it read the version before it, so the version's number is free: a
+// version a write that holds no such lock stored first refuses the insert.
+func insertDefinition(ctx context.Context, tx pgx.Tx, definition Definition) (Definition, error) {
+	statement, args, err := definitionInsert(definition)
 	if err != nil {
-		return Definition{}, false, err
+		return Definition{}, err
 	}
 	stored, err := scanDefinition(tx.QueryRow(ctx, statement+` returning `+definitionColumns, args...))
-	if onConflictNothing && errors.Is(err, pgx.ErrNoRows) {
-		return Definition{}, false, nil
-	}
 	if err != nil {
-		return Definition{}, false, fmt.Errorf("write version %d of %s: %w", definition.Version, definition.EvalID, err)
+		return Definition{}, fmt.Errorf("write version %d of %s: %w", definition.Version, definition.EvalID, err)
 	}
-	return stored, true, nil
+	return stored, nil
 }
 
-// definitionInsert is the statement that writes definition as a new version, and its arguments;
-// onConflictNothing makes it a no-op where that version exists.
-func definitionInsert(definition Definition, onConflictNothing bool) (string, []any, error) {
+// definitionInsert is the statement that writes definition as a new version, and its arguments.
+func definitionInsert(definition Definition) (string, []any, error) {
 	failureModes, err := json.Marshal(nonNil(definition.FailureModes))
 	if err != nil {
 		return "", nil, fmt.Errorf("encode failure modes: %w", err)
@@ -390,16 +407,12 @@ func definitionInsert(definition Definition, onConflictNothing bool) (string, []
 	if err != nil {
 		return "", nil, fmt.Errorf("encode the writer: %w", err)
 	}
-	conflict := ""
-	if onConflictNothing {
-		conflict = ` on conflict (eval_id, version) do nothing`
-	}
 	return `
 		insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision,
 			doc_block, failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person,
 			issue_key, kind, source, state, replaced_by, links, written_via, written_by, set_by_person)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, nullif($12, ''), $13, $14, $15, $16, $17,
-			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25, $26)` + conflict, []any{
+			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25, $26)`, []any{
 		definition.EvalID, definition.Version, definition.ProjectKey, definition.Slug, definition.Name,
 		definition.Question, definition.NumberRule, definition.Decision, definition.DocBlock, failureModes,
 		definition.Unit, definition.Direction, definition.Target, definition.TargetInclusive,

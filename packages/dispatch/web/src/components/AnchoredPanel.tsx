@@ -298,7 +298,9 @@ export function AnchoredPanel({
       dismiss.current("press");
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      // An Escape that ends an IME composition is the input method's: it cancels what the reader
+      // was composing in the panel's text box, and the panel stays open.
+      if (event.key !== "Escape" || event.isComposing) return;
       // Escape belongs to whatever the reader is in. This panel takes it only while the press
       // comes from inside the panel or from its anchor; a press in the command bar opened over
       // the panel, or in any other layer, travels on to whoever owns that layer. The listener

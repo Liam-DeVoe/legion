@@ -12,6 +12,7 @@ import { matchPath } from "react-router-dom";
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
+import { addressPath } from "../../lib/page-address";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import {
   type BlockTarget,
@@ -28,6 +29,7 @@ export type IssueRoute =
   | ({ key: string; kind: "spec" } & BlockTarget)
   | { key: string; kind: "verification" }
   | { key: string; kind: "plan" }
+  | { key: string; kind: "steps" }
   | { key: string; kind: "conversation" }
   | { key: string; kind: "activity" }
   | { key: string; kind: "decisions" }
@@ -125,6 +127,7 @@ export type IssueTab =
   | "spec"
   | "verification"
   | "plan"
+  | "steps"
   | "conversation"
   | "children"
   | "artifacts"
@@ -137,14 +140,15 @@ export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
 
 /** The issue tabs whose whole route is the tab itself: no block, no slug, no id. Each one is
  *  parsed from the segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>`
- *  and is the tab of its own name, so the chains below hold the six in one arm rather than one
- *  apiece and a seventh tab is this list. The spec, the conversation and the decisions stay out
+ *  and is the tab of its own name, so the chains below hold the seven in one arm rather than one
+ *  apiece and an eighth tab is this list. The spec, the conversation and the decisions stay out
  *  of it: a spec route carries a block, the conversation is written `log` in a reference and
  *  `conversation` in a path, and the Decisions tab is a view of the issue's `decisions.md`, which
  *  a reference names as that document. */
 const PLAIN_ISSUE_TABS = [
   "verification",
   "plan",
+  "steps",
   "activity",
   "children",
   "artifacts",
@@ -967,8 +971,7 @@ export function buildProjectPath(route: ProjectRoute): string {
   if (route.item !== undefined) {
     query.set(route.item.kind, route.item.id);
   }
-  const search = query.toString();
-  return search === "" ? document : `${document}?${search}`;
+  return addressPath(document, query);
 }
 
 /**

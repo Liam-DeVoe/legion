@@ -593,9 +593,7 @@ func readsSamples(definition Definition, series Series) bool {
 //     measured at one moment (two repositories' rows of one day, in a read of repositories) it is
 //     the one written later (lastBefore: the write that began later, then the later reading of
 //     one write), the order a logged eval's row of the whole project breaks the same tie by
-//     (addParts), whatever order the parts come in. A computed eval's `last` series, unowned-p0's,
-//     records the moment of the write that stored its count, which is its last_at, so the later
-//     write of the value is the later moment there too.
+//     (addParts), whatever order the parts come in.
 func aggStatistics(agg string, parts []measures.DayPart, series string) Statistics {
 	var stats Statistics
 	switch agg {

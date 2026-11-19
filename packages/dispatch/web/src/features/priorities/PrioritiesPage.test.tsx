@@ -938,6 +938,34 @@ test("j and k walk the priorities from outside every table, and each issue table
   expect(workRows[1], "j from a row of the opened work").toHaveFocus();
 });
 
+// An issue table's toolbar and pager stand outside its box but are that table's, so the
+// priorities' page-wide j and k leave a focus on them where it is, as the merge base's page did.
+test("j and k pressed on an issue table's toolbar or pager walk no priority and leave the focus there", async () => {
+  const user = userEvent.setup();
+  page(
+    body({
+      ...FIFTEEN,
+      work_under_no_priority: { by_project: { CORE: 2 }, count: 2, issues: null },
+    }),
+    [issue("CORE-1"), issue("CORE-2")]
+  );
+  const faults = await screen.findByRole("table", {
+    name: "Issues active under no priority table",
+  });
+  await within(faults).findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const section = screen.getByRole("region", { name: "Issues active under no priority" });
+  const controls = ["Columns", "Group by", "Next ›"].map((name) =>
+    within(section).getByRole("button", { name })
+  );
+  for (const control of controls) {
+    for (const key of ["j", "k"]) {
+      act(() => control.focus());
+      await user.keyboard(key);
+      expect(control, `${key} on ${control.textContent}`).toHaveFocus();
+    }
+  }
+});
+
 // R1, the architect's chip rule: every narrowing that is on is visible and removable from the
 // control row, whatever set it. This table's narrowings are all its columns', set on their own
 // headers, and the reader may hide a column with the columns menu, which leaves its filter

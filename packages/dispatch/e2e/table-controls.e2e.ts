@@ -4958,8 +4958,11 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
   await expect(viewTrigger, "Inbox drawer: Tab from the View menu's last choice").toBeFocused();
   await expect(drawer(page)).toBeVisible();
 
-  // In a dialog again: the search bar's Filter panel, whose last control is Updated since.
+  // In a dialog again: the search bar's Filter panel, whose last control is Updated since. The
+  // key waits for the Inbox's own search box: pressed as the page loads, before the shell has
+  // registered its keys, it opened nothing in WebKit (full lane 44466817714, passed on retry).
   await page.goto("/");
+  await expect(page.getByRole("searchbox", { name: "Search asks" })).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("Control+k");
   const palette = page.getByRole("dialog", { name: "Search" });
@@ -5271,14 +5274,15 @@ test("a column filter is visible and removable from the row even while its colum
   await expect(chip).toHaveCount(0);
 });
 
-// SLOW(>=2s): 60 issues seeded, the List opened, a middle row focused and then closed by a second
-// person through the API.
+// SLOW(>=2s): 60 issues seeded, the List opened, a middle row marked and unmarked and then closed
+// by a second person through the API.
 // INFRA-3135's review round 1, follow-up F4 (thread PRRT_kwDORFy7ds63p6y_): a focused row a live
-// update removes, with no press of the reader's on it, hands the focus to no other row and scrolls
-// nothing. The reader's last press is on the page's heading, outside the row, so the press window
-// does not cover the removal. `@firefox` and `@webkit`: a focused row taken away fires no `focusout`
-// in these engines, so the rescue sees the loss only by watching the page, the clause of
-// `playwright.config.ts` on a focused control taken away.
+// update removes hands the focus to no other row and scrolls nothing, though the reader's last
+// press was on that row: a press is the cause only of the update that answers it, and the
+// reader's two clicks on the row's checkbox have been answered, the selection bar drawn and gone
+// again, before the second person's close arrives. `@firefox` and `@webkit`: a focused row taken
+// away fires no `focusout` in these engines, so the rescue sees the loss only by watching the
+// page, the clause of `playwright.config.ts` on a focused control taken away.
 test("a row a live update removes while it holds the focus hands the focus to no other row and scrolls nothing @firefox @webkit", async ({
   page,
 }) => {
@@ -5316,11 +5320,18 @@ test("a row a live update removes while it holds the focus hands the focus to no
   });
   if (picked === null) throw new Error("no row sits wholly in the middle of the box");
   const pickedBox = listBox.getByRole("checkbox", { exact: true, name: `Select ${picked}` });
-  // The reader's last press is on the page's heading, outside the row; the focus is then put on the
-  // row's checkbox with no press, so the removal that follows is a loss they did not cause.
-  await page.getByRole("heading", { exact: true, level: 1, name: "Core" }).click();
+  const bar = control(main, CONTROL.selectionBar);
+  // The reader presses in the row itself: a click on its checkbox marks it, and a second click
+  // unmarks it. WebKit leaves a clicked checkbox unfocused, so the focus is then put on it with no
+  // press, which leaves it there in every engine alike.
+  await pickedBox.click();
+  await expect(bar).toBeVisible();
+  await pickedBox.click();
   await pickedBox.evaluate((node) => (node as HTMLElement).focus({ preventScroll: true }));
   await expect(pickedBox).toBeFocused();
+  // The second click's update is drawn - the selection bar gone - before the close is sent, so
+  // that press has been answered by the time the live update takes the row away.
+  await expect(bar).toHaveCount(0);
   const beforeTop = await listBox.evaluate((node) => node.scrollTop);
   const beforeY = await page.evaluate(() => window.scrollY);
   // A second person closes the issue through the API; the live update takes its row off the view.
@@ -5337,7 +5348,7 @@ test("a row a live update removes while it holds the focus hands the focus to no
   expect(Math.abs(afterY - beforeY), "the window scrolled").toBeLessThanOrEqual(1);
   // `x` marks nothing: no row holds the focus for it to act on, so no bar appears.
   await page.keyboard.press("x");
-  await expect(control(main, CONTROL.selectionBar)).toHaveCount(0);
+  await expect(bar).toHaveCount(0);
 });
 
 // SLOW(>=2s): three priorities and two asks seeded, and two pages opened.
@@ -5717,10 +5728,12 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     },
     {
       // Opened with `c` over the issue page, whose project it starts on, and read once its title
-      // has the focus the dialog gives it on opening.
+      // has the focus the dialog gives it on opening. The focus is taken off the list read before
+      // this one first: a list's trigger takes a page's single keys as the select it replaced did,
+      // so `c` pressed on it opens nothing (`isEditableTarget`).
       name: "the Create issue dialog's Project",
       reach: async () => {
-        await page.locator("body").focus();
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
         await page.keyboard.press("c");
         await expect(createIssueDialog.getByRole("textbox", { name: "Title" })).toBeFocused();
       },
@@ -5792,10 +5805,13 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // `styles.css` gives every input below 1280 px and under which iOS Safari zooms the page onto the
 // box - the option a typed word leaves is not the value the list starts on, the word leaves only
 // the options it matches, Escape picks nothing and changes no value, Tab out of the text box
-// (Shift+Tab at the second width) picks nothing and leaves the reader on the trigger, and Enter
-// picks the option the word left - the trigger shows it with the focus back on it, or where the
-// pick takes the trigger away the panel hands the focus on. A list that holds no text box is
-// named and the row goes on, so one run names every such list.
+// (Shift+Tab at the second width) picks nothing and leaves the reader on the trigger, `?` pressed
+// then on the closed trigger opens no Keyboard shortcuts, since the trigger takes a page's single
+// keys as the select or the text box it replaced did (`isEditableTarget` in
+// `features/shell/keymap.ts`), and Enter picks the option the word left - the trigger shows it
+// with the focus back on it, or where the pick takes the trigger away the panel hands the focus
+// on. A list that holds no text box is named and the row goes on, so one run names every such
+// list.
 // It runs in Chromium alone. What an engine decides here is one component's, the same in every
 // list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
 // list's text box takes, as each engine delivers them, in `keyboard-agents-picker`'s rows of the
@@ -5816,6 +5832,9 @@ test("every list of options a reader picks from holds a text box that narrows it
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or
    *  a list holding other than one text box. */
   const missing: string[] = [];
+  /** The closed triggers a page's single key acted through. */
+  const keyed: string[] = [];
+  const shortcuts = page.getByRole("dialog", { name: "Keyboard shortcuts" });
   /** Opens `list` from its trigger and answers the options of its own panel, once the focus is
    *  in that panel's one text box; or records why not, and shuts what the press opened. */
   const open = async (list: PickList, at: string): Promise<Locator | undefined> => {
@@ -5912,6 +5931,19 @@ test("every list of options a reader picks from holds a text box that narrows it
       await expect(list.trigger, `${at}: ${tab} left the focus elsewhere`).toBeFocused();
       expect(await list.value(), `${at}: ${tab} changed the list's value`).toBe(before);
 
+      // A single key of the page, pressed on the closed trigger, is the list's as it was the
+      // select's or the text box's: the shell's `?` opens no Keyboard shortcuts over it.
+      await page.keyboard.press("?");
+      await nextFrames(page);
+      // One read after the press's frames is the answer: the shell draws Keyboard shortcuts in
+      // the render the key's binding starts, which nextFrames has let run.
+      if ((await shortcuts.count()) > 0) {
+        keyed.push(`${at}: ? on the closed trigger opened the Keyboard shortcuts`);
+        await page.keyboard.press("Escape");
+        await expect(shortcuts, `${at}: Escape left the Keyboard shortcuts open`).toHaveCount(0);
+        await list.trigger.focus();
+      }
+
       // Enter picks the option the word left.
       const entered = await open(list, at);
       if (entered === undefined) continue;
@@ -5930,6 +5962,7 @@ test("every list of options a reader picks from holds a text box that narrows it
     }
   }
   expect(missing, missing.join("; ")).toEqual([]);
+  expect(keyed, keyed.join("; ")).toEqual([]);
 });
 
 /** A title wider than any list's trigger is at 1024x768, given to a priority and a named version,

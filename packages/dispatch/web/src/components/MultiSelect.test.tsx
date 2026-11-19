@@ -493,6 +493,35 @@ test("Escape, Tab and an outside press close a single pick with nothing picked a
   }
 });
 
+// An input method composes text in the list's text box from several keys and ends with Enter,
+// which commits what it composed, or Escape, which cancels it: neither is the reader's pick or
+// close. user-event has no form for a composing key, so each is fired with `isComposing`.
+test("Enter, Escape and Tab that end or move an IME composition leave a single pick open with nothing picked", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    await user.click(trigger);
+    const box = screen.getByRole("combobox", { name: "Search epics" });
+    await user.keyboard("{ArrowDown}");
+    for (const key of ["Enter", "Escape", "Tab"]) {
+      // user-event cannot mark a key as part of an IME composition, so the key is fired with
+      // `isComposing` set.
+      fireEvent.keyDown(box, { isComposing: true, key });
+      expect(screen.queryByRole("listbox"), `${key} composing`).toBeInTheDocument();
+      expect(box, `${key} composing`).toHaveFocus();
+    }
+    expect(screen.getByTestId("handed").textContent).toBe("");
+
+    // The same keys with no composition are the reader's: Enter picks the active row.
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getByTestId("handed").textContent).toBe("docs");
+  } finally {
+    view.unmount();
+  }
+});
+
 /** Makes the document keep naming a focused element once it has left the page, as an engine that
  *  moves the focus off a removed element only at its next rendering update does (the HTML spec's
  *  focus fixup, `focusLost`); happy-dom names the body at once, as Chromium does. Answers what

@@ -237,13 +237,18 @@ type Status struct {
 
 // Quantile is p's quantile of ascending, non-empty sorted, linear between the two nearest ranks:
 // d3's quantileSorted, as the prototype's collector/src/collector/pipeline.py:69-77 writes it.
+// Each product is converted to float64, which rounds it before the subtraction or sum it feeds,
+// as the prototype's arithmetic rounds every step: the Go spec lets a build fuse a product with
+// that subtraction or sum into one instruction that rounds once, an arm64 build does, and the
+// last bit that moves can move a figure rounded to one decimal (a Pipeline day's p90 of 453 s,
+// 7.55 minutes, read 7.6 on arm64 and 7.5 on amd64), so the quantile would differ by machine.
 func Quantile(sorted []float64, p float64) float64 {
-	i := float64(len(sorted)-1) * p
+	i := float64(float64(len(sorted)-1) * p)
 	lo := int(math.Floor(i))
 	if lo+1 >= len(sorted) {
 		return sorted[len(sorted)-1]
 	}
-	return sorted[lo] + (sorted[lo+1]-sorted[lo])*(i-float64(lo))
+	return sorted[lo] + float64((sorted[lo+1]-sorted[lo])*(i-float64(lo)))
 }
 
 // minutesBetween is b - a in minutes, one division of whole nanoseconds, so a duration the

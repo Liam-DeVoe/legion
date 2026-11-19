@@ -68,7 +68,9 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
               label="Filter issues"
               onChange={setFilter}
               onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
-                if (event.key !== "Enter") {
+                // An Enter that ends or moves an input method's composition is the composition's:
+                // it picks nothing.
+                if (event.key !== "Enter" || event.nativeEvent.isComposing) {
                   return;
                 }
                 // The filter sits inside the composer's <form>; without this the implicit

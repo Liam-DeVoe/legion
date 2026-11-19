@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's `evals-md` document holds one section per eval: a `##` heading that is the eval's
@@ -34,18 +35,60 @@ type evalsDocument struct {
 	name string
 }
 
-// existingDocument is the project's `evals-md` document, found false when the project has none.
-// The lookup runs again under the lock every creation of a project document takes
-// (docs.LockProjectArtifacts), which a miss leaves held for the rest of the transaction, so two
-// writes that both miss the document create one: the second finds the first's once it commits.
-func existingDocument(ctx context.Context, w *writeTx) (evalsDocument, bool, error) {
-	if document, found, err := findDocument(ctx, w); found || err != nil {
-		return document, found, err
-	}
-	if err := docs.LockProjectArtifacts(ctx, w.Tx, w.project); err != nil {
+// errDocumentRemoved is lockDocument's answer when the project's `evals-md` it found was removed
+// before the write held the document's owner lock. The write has stored nothing by then, and the
+// one lock it would take next to create the document anew, the project's documents' lock
+// (docs.LockProjectArtifacts), comes before an owner lock in every writer, so the write is not let
+// take it while it holds one: inWrite runs the write again, in a transaction of its own, which
+// finds no document and creates it.
+var errDocumentRemoved = errors.New("evals: the project's evals-md was removed while the write waited for its lock")
+
+// lockDocument takes the lock every writer of the project's `evals-md` serialises on, the
+// document's owner lock (store.LockOwner of store.ArtifactOwner, a transaction advisory lock),
+// and answers the document, found false when the project has none. Every registry write that may
+// write the document takes it in its read phase, after its eval locks (lockEval, lockEvals) and
+// before it reads the document or stores anything: a first registration, a register write of a
+// method and the seed. So registry writes queue on it holding no transaction id while no earlier
+// build is in the fleet - beside one it takes the owner's row too, right after the advisory lock
+// (store.LockOwner) - and hold back no reader of the event log (events.Horizon), whose horizon
+// waits only for running transaction ids. It is the lock the edit route takes first
+// (requireOpenOwnerStatus), and the docs package takes it again where an operation joins the
+// document (lockArtifactOwner), which returns at once, so registry writes and every other writer
+// of the document take turns on one lock in one order: the eval locks, which no document writer
+// takes, then the owner lock, then the document's own (the writer slot and the document's
+// advisory lock, docs' liveWrite).
+//
+// A project with no `evals-md` yet is read again under the lock every creation of a project
+// document takes (docs.LockProjectArtifacts), which a miss leaves held for the rest of the
+// transaction, so two writes that both miss the document create one: the second finds the first's
+// once it commits and takes its owner lock after that lock, in the order a project upload takes
+// the two. The document's row is read again in the statement after the owner lock, sent with it
+// in one round trip (store.LockOwnerAndRead), so a removal that committed while the write waited
+// for the lock is seen (errDocumentRemoved), and a title correction's name is the one the write's
+// event carries.
+func lockDocument(ctx context.Context, w *writeTx) (evalsDocument, bool, error) {
+	document, found, err := findDocument(ctx, w)
+	if err != nil {
 		return evalsDocument{}, false, err
 	}
-	return findDocument(ctx, w)
+	if !found {
+		if err := docs.LockProjectArtifacts(ctx, w.Tx, w.project); err != nil {
+			return evalsDocument{}, false, err
+		}
+		if document, found, err = findDocument(ctx, w); err != nil || !found {
+			return document, found, err
+		}
+	}
+	err = store.LockOwnerAndRead(ctx, w.Tx, store.ArtifactOwner(document.id), `
+		select name from artifacts where id = $1 and issue_key is null
+	`, []any{document.id}, &document.name)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return evalsDocument{}, false, errDocumentRemoved
+	case err != nil:
+		return evalsDocument{}, false, fmt.Errorf("lock the %s document of %s: %w", DocumentSlug, w.project, err)
+	}
+	return document, true, nil
 }
 
 func findDocument(ctx context.Context, w *writeTx) (evalsDocument, bool, error) {
@@ -69,30 +112,47 @@ func findDocument(ctx context.Context, w *writeTx) (evalsDocument, bool, error) 
 }
 
 // createDocument creates the project's `evals-md` as actor, its text the paragraph that says what
-// the document is and then sections, and appends its `artifact.created` event, as an upload of a
+// the document is and then sections, and queues its `artifact.created` event, as an upload of a
 // new project document does (docs.CreateDocument). The sections are in the seeded text rather
 // than added by an edit after it: an edit reads a document no room holds from the store (docs'
-// coldFork, through its own connection), where a seed this transaction has not committed is not
-// yet.
+// coldFork), where a document whose insert this transaction has only queued is not yet. The
+// caller holds the project's documents' lock and found no `evals-md` under it (lockDocument).
 func (s *Store) createDocument(ctx context.Context, w *writeTx, sections string, actor model.Actor) error {
 	artifact, written, err := docs.CreateDocument(ctx, s.documents, docs.NewArtifact{
-		Project: &w.project, Slug: DocumentSlug, Name: DocumentName, CreatedBy: actor,
+		Project: &w.project, RefPrefix: w.project, Slug: DocumentSlug, Name: DocumentName, CreatedBy: actor,
 	}, documentIntroduction(w.project, w.projectName)+"\n"+sections)
 	if err != nil {
 		return fmt.Errorf("create the %s document of %s: %w", DocumentSlug, w.project, err)
 	}
-	event, err := s.events.Append(ctx, w.Tx, model.Event{
+	if err := s.queueDocumentEvent(w, artifact.ID, model.Event{
 		ArtifactID: &artifact.ID, Type: "artifact.created", Actor: actor,
 		Payload: docs.ArtifactCreatedEventPayload(artifact, written.Changes),
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
-	if err := refs.Stamp(ctx, w.Tx, "artifact", artifact.ID, event.ID); err != nil {
-		return err
-	}
-	w.events = append(w.events, event)
 	w.owesSettlement(artifact.ID)
+	return nil
+}
+
+// queueDocumentEvent queues event, an event of the document artifactID, on w's ledger: its append
+// (events.Broker.QueueAppend) and, in the same step, the stamp of the document's new reference
+// edges with its id (refs.QueueStamp), after the append so stamping never touches sequence
+// allocation, as api's queueStampedEvent queues a route's. The append takes the document's owner
+// lock again, which the write holds from its read phase (lockDocument), and the owner's row, in
+// the write phase. The event is filled in once the ledger's Commit has run that phase, and
+// published once the transaction has committed (committed).
+func (s *Store) queueDocumentEvent(w *writeTx, artifactID string, event model.Event) error {
+	appended := new(model.Event)
+	if err := w.ledger.Queue(func(b *store.WriteBatch) error {
+		if err := s.events.QueueAppend(b, event, func(written model.Event) { *appended = written }); err != nil {
+			return err
+		}
+		refs.QueueStamp(b, "artifact", artifactID)
+		return nil
+	}); err != nil {
+		return err
+	}
+	w.events = append(w.events, appended)
 	return nil
 }
 
@@ -109,27 +169,22 @@ func documentIntroduction(project, name string) string {
 }
 
 // writeMethod makes method, as actor writes it, the method block of the eval slug names, under
-// the new block id blockID, in one write of the document. A section whose block oldBlock names
-// gets the new block in place of that one, in one batch of edit operations: inserted after it,
-// then the old block deleted. An eval with no such block in the document (none yet, or one a
-// person deleted) gets a new section at the document's end. A project with no `evals-md` gets
-// one, created holding that section.
+// the new block id blockID, in one write of document, the project's `evals-md` as lockDocument
+// answered it (found false: the project has none). A section whose block oldBlock names gets the
+// new block in place of that one, in one batch of edit operations: inserted after it, then the
+// old block deleted. An eval with no such block in the document (none yet, or one a person
+// deleted) gets a new section at the document's end. A project with no `evals-md` gets one,
+// created holding that section.
 //
-// It is the last write of its transaction (WriteReadings, Register), made once the write has
-// queued behind the project's other registry writes of the document (readyDocumentWrite) and
-// stored its versions, readings and day rows, so a first registration takes the document's owner
-// row here and holds it for the document's write and the commit alone. It takes the document's
-// locks in the order every writer of the document takes them (docs' liveWrite): ApplyOps first has
-// the other processes' rooms of the document stored, then takes the owner row, the writer slot
-// and the advisory lock (joinLiveWrite, readFork). A method that replaces a block reads the
-// document's blocks first, which takes the owner row before the edit, as the edit route takes it
-// (requireOpenOwnerStatus) before its ApplyOps; a register write of a method holds it from its
-// read of the section already (holdsMethod).
-func (s *Store) writeMethod(ctx context.Context, w *writeTx, slug, oldBlock, blockID, method string, actor model.Actor) error {
-	document, found, err := existingDocument(ctx, w)
-	if err != nil {
-		return err
-	}
+// It is the document work of its write (WriteReadings, Register), done in the read phase, under
+// the document's owner lock and before the write stores anything: it reads and renders the
+// document and queues the document's writes and its event on the write's ledger, which Commit
+// sends after the write's own rows, in the one transaction, so the eval's section exists once its
+// registration commits and the write holds a transaction id only for its database statements. It
+// takes the document's other locks in the order every writer of the document takes them (docs'
+// liveWrite): ApplyOps has the other processes' rooms of the document stored, takes the owner
+// lock again, which returns at once, then the writer slot and the document's advisory lock.
+func (s *Store) writeMethod(ctx context.Context, w *writeTx, document evalsDocument, found bool, slug, oldBlock, blockID, method string, actor model.Actor) error {
 	if !found {
 		return s.createDocument(ctx, w, sectionMarkdown(slug, blockID, method), actor)
 	}
@@ -151,17 +206,14 @@ func (s *Store) writeMethod(ctx context.Context, w *writeTx, slug, oldBlock, blo
 	return s.editDocument(ctx, w, document, ops, actor)
 }
 
-// holdsMethod reports whether the method block docBlock names in the project's `evals-md`
-// document holds method already (sameMethod): a register write whose doc_text is the method its
-// eval's section holds writes no new block, and so no new version. It is false where docBlock is
-// empty, or the project has no such document or the document no such block.
-func (s *Store) holdsMethod(ctx context.Context, w *writeTx, docBlock, method string) (bool, error) {
-	if docBlock == "" {
+// holdsMethod reports whether the method block docBlock names in document, the project's
+// `evals-md` as lockDocument answered it (found false: the project has none), holds method
+// already (sameMethod): a register write whose doc_text is the method its eval's section holds
+// writes no new block, and so no new version. It is false where docBlock is empty, or the project
+// has no such document or the document no such block.
+func (s *Store) holdsMethod(ctx context.Context, w *writeTx, document evalsDocument, found bool, docBlock, method string) (bool, error) {
+	if docBlock == "" || !found {
 		return false, nil
-	}
-	document, found, err := findDocument(ctx, w)
-	if err != nil || !found {
-		return false, err
 	}
 	markdown, blocks, err := s.documents.TextWithBlocks(ctx, document.id)
 	if err != nil {
@@ -198,48 +250,6 @@ func canonicalMethod(method string) (string, error) {
 	return pmdoc.Render(tree)
 }
 
-// readyDocumentWrite readies a registry write that writes the project's `evals-md`, a first
-// registration or a register write of a method, before it writes anything. It loads the
-// document's room (docs' WarmRoom), so that the write's fork of the document, made once it holds
-// the document's owner row and writer slot (writeMethod), clones the resident room rather than
-// loading and decoding the stored document while it holds them. It then queues the write behind
-// every other registry write of the document (lockDocumentWrites). The room is loaded outside
-// that queue, so writes that queue together share one load. A project with no `evals-md` yet has
-// no room to load. The seed queues without loading the room (ensure): a refresher pass seeds every
-// project, and most seeds write no section.
-func (s *Store) readyDocumentWrite(ctx context.Context, w *writeTx) error {
-	document, found, err := findDocument(ctx, w)
-	if err != nil {
-		return err
-	}
-	if found {
-		if err := s.documents.WarmRoom(ctx, document.id); err != nil {
-			return fmt.Errorf("load the room of the %s document of %s: %w", DocumentSlug, w.project, err)
-		}
-	}
-	return lockDocumentWrites(ctx, w.Tx, w.project)
-}
-
-// lockDocumentWrites queues tx, for the rest of it, behind every other registry write of project's
-// `evals-md`: a first registration (WriteReadings, Register), a register write of a method and the
-// seed (ensure). Each takes it after its eval locks (lockEval, lockEvals) and before it stores
-// anything, and no other writer of the document takes it, so registry writes hold the document's
-// owner row one after another, each for its own document write, and the order every writer takes
-// its locks in stays one: the eval locks, this lock, then the document's own (the owner row, the
-// writer slot and the advisory lock, docs' liveWrite), which no document writer holds while it
-// waits for an eval lock or this one.
-//
-// It is an advisory lock, which assigns tx no transaction id, and so is every eval lock; a write
-// queued here has stored nothing yet, so it holds no transaction id while it waits, and holds back
-// no reader of the event log (events.Horizon), whose horizon waits only for running transaction
-// ids. A write queued on the owner row instead holds the id of every row it stored before it.
-func lockDocumentWrites(ctx context.Context, tx pgx.Tx, project string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('evals-md:' || $1))`, project); err != nil {
-		return fmt.Errorf("queue for the %s document of %s: %w", DocumentSlug, project, err)
-	}
-	return nil
-}
-
 // hasBlock reports whether blocks holds the block id names, at any depth: whether the document
 // those blocks are of still holds an eval's method block.
 func hasBlock(blocks []model.ArtifactBlock, id string) bool {
@@ -248,9 +258,9 @@ func hasBlock(blocks []model.ArtifactBlock, id string) bool {
 	})
 }
 
-// editDocument applies ops to the document as one batch and, where the batch changed it, writes
-// the version it reached and appends that version's `artifact.version` event, as the edit route
-// does for a batch with no summary.
+// editDocument applies ops to the document as one batch and, where the batch changed it, queues
+// the version it reached and that version's `artifact.version` event, as the edit route does for
+// a batch with no summary.
 func (s *Store) editDocument(ctx context.Context, w *writeTx, document evalsDocument, ops []model.EditOp, actor model.Actor) error {
 	edit, err := s.documents.ApplyOps(ctx, document.id, ops, actor, nil)
 	if err != nil {
@@ -269,18 +279,10 @@ func (s *Store) editDocument(ctx context.Context, w *writeTx, document evalsDocu
 	if !written.Wrote {
 		return nil
 	}
-	event, err := s.events.Append(ctx, w.Tx, model.Event{
+	return s.queueDocumentEvent(w, document.id, model.Event{
 		ArtifactID: &document.id, Type: "artifact.version", Actor: actor,
 		Payload: docs.ArtifactVersionEventPayload(document.id, document.name, written.Version, nil, written.Changes),
 	})
-	if err != nil {
-		return err
-	}
-	if err := refs.Stamp(ctx, w.Tx, "artifact", document.id, event.ID); err != nil {
-		return err
-	}
-	w.events = append(w.events, event)
-	return nil
 }
 
 // owesSettlement records that the transaction wrote artifactID, whose settlement is scheduled

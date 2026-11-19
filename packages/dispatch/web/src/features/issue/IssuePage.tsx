@@ -30,6 +30,7 @@ import {
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { StepsTab } from "../steps/StepsTab";
 import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
 import { CollaboratorsTab } from "./CollaboratorsTab";
@@ -107,17 +108,19 @@ const PRIORITY_SELECT = 'select[aria-label^="Priority of "]';
 const STATUS_SELECT = 'select[aria-label="Status"]';
 const TITLE_HEADING = 'h1[tabindex="0"]';
 
-/** The header control `selector` names, or `null` when it is absent or refuses input (a closed
- *  issue, a save in flight): the one fact both the key's `run` and the `when` that offers it read,
- *  so a shortcut is listed exactly while its control would take a click. */
+/** The header control `selector` names, or `null` when it is absent or refuses input: disabled
+ *  (a closed issue, a save in flight), or held with `aria-disabled` (the labels' trigger while
+ *  their save is out, `IssueLabels`). It is the one fact both the key's `run` and the `when` that
+ *  offers it read, so a shortcut is listed exactly while its control would take a click. */
 function usableControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {
     return null;
   }
-  const disabled =
-    (node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled;
-  return disabled ? null : node;
+  const refused =
+    node.getAttribute("aria-disabled") === "true" ||
+    ((node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled);
+  return refused ? null : node;
 }
 
 /**
@@ -148,13 +151,15 @@ const tabChords: readonly { keys: string; label: string; tab: IssueTab }[] = [
   // is free (`p` alone focuses the priority, which is a different scope of key).
   { keys: "t k", label: "Verification tab", tab: "verification" },
   { keys: "t p", label: "Plan tab", tab: "plan" },
+  // `t s` is the Spec, so Steps takes the next letter of its name.
+  { keys: "t e", label: "Steps tab", tab: "steps" },
   { keys: "t c", label: "Conversation tab", tab: "conversation" },
   { keys: "t h", label: "Children tab", tab: "children" },
   { keys: "t a", label: "Artifacts tab", tab: "artifacts" },
   // `t a` is Artifacts and `l` is the issue's label editor, so Activity takes `t v`.
   { keys: "t v", label: "Activity tab", tab: "activity" },
   { keys: "t d", label: "Decisions tab", tab: "decisions" },
-  // `s k p c h a v d` are taken, so Collaborators, the last tab, takes `t o`.
+  // `s k p e c h a v d` are taken, so Collaborators, the last tab, takes `t o`.
   { keys: "t o", label: "Collaborators tab", tab: "collaborators" },
 ];
 
@@ -291,12 +296,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(LABELS_TRIGGER) !== null,
     },
     {
-      // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
-      // `onFocus` does not open the editor, so the key is offered exactly while it edits.
+      // The heading is a Tab stop only while the issue is open - closed, its `tabIndex` is -1
+      // and it opens no editor - so the key is offered exactly while it edits. The key clicks
+      // it, since the heading opens its editor when activated and not when it takes the focus.
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.focus(),
+      run: () => usableControl(TITLE_HEADING)?.click(),
       when: () => usableControl(TITLE_HEADING) !== null,
     },
     {
@@ -350,6 +356,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
     spec: activeTab === "spec",
+    steps: activeTab === "steps",
     verification: activeTab === "verification",
   }));
   if (!activatedTabs[activeTab]) {
@@ -510,6 +517,17 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         onVersionChange={selectDocumentVersion}
         tab="plan"
       />
+      <div
+        aria-hidden={activeTab !== "steps"}
+        aria-labelledby="issue-steps-tab"
+        hidden={activeTab !== "steps"}
+        id="issue-steps-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.steps ? (
+          <StepsTab active={activeTab === "steps"} issueKey={issueKey} />
+        ) : null}
+      </div>
       <div
         aria-hidden={activeTab !== "conversation"}
         aria-labelledby="issue-conversation-tab"

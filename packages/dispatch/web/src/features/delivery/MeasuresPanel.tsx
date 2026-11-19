@@ -43,6 +43,7 @@ import {
   DEPLOY_BARS,
   dailyValue,
   dayMeets,
+  type Judge,
   RUN_SUCCESS_BARS,
   showsAnyJudge,
   type Target,
@@ -144,7 +145,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   // bound; and deploy-frequency judged by its deploys with a PR does not colour its deploys a day.
   // The card's badge (`met`) stays the verdict of everything its target judges.
   const judgedTone = (
-    judge: string,
+    judge: Judge,
     target: (response: DeliveryMeasuresResponse) => Target,
     met: (response: DeliveryMeasuresResponse) => boolean | null
   ): string => {

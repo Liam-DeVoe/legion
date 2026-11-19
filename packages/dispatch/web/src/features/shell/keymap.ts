@@ -209,6 +209,8 @@ function isStrictPrefix(shorter: readonly KeyCombo[], longer: readonly KeyCombo[
  *  registry a key was pressed inside one (`isEditableTarget`). */
 export const PANEL_ATTRIBUTE = "data-anchored-panel";
 const IN_PANEL = `[${PANEL_ATTRIBUTE}]`;
+/** An option list's trigger: the button that names the `listbox` it opens (`MultiSelect`). */
+const LIST_TRIGGER = '[aria-haspopup="listbox"]';
 
 /** The `<input>` types that take typed text. Everything else an input can be - checkbox, radio,
  *  the button family, file, range, color - takes no text, so a letter or digit pressed while one
@@ -233,7 +235,7 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
 /**
  * Whether a key pressed on `target` is the control's own, so that only the bindings that fire
  * while the reader types (`inEditable`) may take it: a control that takes typed text, a
- * `<select>`, or anything at all inside an open panel.
+ * `<select>`, the trigger of an option list, or anything at all inside an open panel.
  *
  * A panel - the display menu, a filter panel and the lists opened from it, a column filter -
  * stands over the page in place of the selects it replaced, and its keys are its own whatever
@@ -243,6 +245,11 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
  * radio would walk the table behind the panel, and the Inbox's single keys would act on its
  * rows. Only the key's own target counts: a panel standing open while the focus is on the page -
  * the Board's, restored on load - masks nothing.
+ *
+ * An option list's trigger (`MultiSelect`'s, the one control that names a `listbox` popup) stands
+ * in for the `<select>` or the text box it replaced, closed as much as open, so it takes the keys
+ * a select takes: a digit on the issue header's Assignee is no priority, and `c` on a Settings
+ * project list opens no Create issue.
  */
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -261,8 +268,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
   }
   const tag = target.tagName;
   // A `<select>` stays editable: its own keys type-ahead and step through the options, and the
-  // Inbox's `h` hands it focus on purpose.
-  return tag === "TEXTAREA" || tag === "SELECT";
+  // Inbox's `h` hands it focus on purpose. A list's trigger is read as one.
+  return tag === "TEXTAREA" || tag === "SELECT" || target.matches(LIST_TRIGGER);
 }
 
 export interface KeymapOptions {

@@ -116,14 +116,16 @@ func sampleStatistics(samples []float64, sumName string) Statistics {
 }
 
 // quantile is the q-th quantile of a sorted list by "linear interpolation between the closest
-// ranks": the rank (n−1)·q, read between the two values either side of it.
+// ranks": the rank (n−1)·q, read between the two values either side of it. Each product is
+// converted to float64, which rounds it, so no build fuses it with the subtraction or sum it
+// feeds (an arm64 build would, rounding once), and the reading is the same on every machine.
 func quantile(sorted []float64, q float64) float64 {
-	rank := float64(len(sorted)-1) * q
+	rank := float64(float64(len(sorted)-1) * q)
 	below := int(rank)
 	if below+1 >= len(sorted) {
 		return sorted[len(sorted)-1]
 	}
-	return sorted[below] + (sorted[below+1]-sorted[below])*(rank-float64(below))
+	return sorted[below] + float64((sorted[below+1]-sorted[below])*(rank-float64(below)))
 }
 
 // figure is one value as a reading states it, rounded as every figure is.
