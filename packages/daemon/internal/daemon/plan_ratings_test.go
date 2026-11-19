@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -327,4 +328,34 @@ func (r *stepRecordsRig) waitClosed() {
 		}
 		return fmt.Errorf("the read lists %d finished issues and not %s", len(read.Issues), r.key)
 	})
+}
+
+// walkToRetro walks the issue through planning, implementing, testing, an approving review and
+// the architect's sign-off, to its retro.
+func (r *stepRecordsRig) walkToRetro() {
+	r.t.Helper()
+	r.plan()
+	r.implement()
+	r.test()
+	r.review("APPROVED", phase.Accepting)
+	r.accept()
+}
+
+// unratedRetroRefused is c's completion of the retro with no rating, refused 400
+// PLAN_RATING_REQUIRED, and answers the refusal's body. It fails first when c's claim records a
+// plugin contract below api.PlanRatingContract, whose retro the daemon takes unrated, so a pass
+// says the refusal is the contract's.
+func (r *stepRecordsRig) unratedRetroRefused(c *stepClaimant) string {
+	t := r.t
+	t.Helper()
+	contract := r.d.claim(c.token).PluginContract
+	if contract < api.PlanRatingContract {
+		t.Fatalf("the %s of %s registered plugin contract %d, below PlanRatingContract %d: this check proves nothing", c.role, r.key, contract, api.PlanRatingContract)
+	}
+	status, body := r.complete(c, r.retroCompletion(nil))
+	if status != http.StatusBadRequest || !strings.Contains(body, "PLAN_RATING_REQUIRED") {
+		t.Fatalf("the retro's completion of %s with no rating from the %s at plugin contract %d = %d %s, want 400 PLAN_RATING_REQUIRED",
+			r.key, c.role, contract, status, body)
+	}
+	return body
 }
