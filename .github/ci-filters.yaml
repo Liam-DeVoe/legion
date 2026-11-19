@@ -314,6 +314,7 @@ daemon_go_tests:
   - 'packages/envoy/internal/contracts/**'
   - 'packages/contracts/fixtures/capability-redaction.json'
   - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
+  - 'packages/contracts/fixtures/checks-settlement/*'
   - 'packages/contracts/fixtures/classification/**'
   - 'packages/contracts/fixtures/daemon-api/*'
   - 'packages/contracts/fixtures/dispatch-public-url.json'

@@ -1514,7 +1514,7 @@ changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once 
 release asset and once under the fault, where each must read its ghcr copy and each install's
 own 504 is read after a probe of its own (the called file's comments say how). Those faulted
 installs read the copies the ci-images job fills, so this job needs that job for order and
-carries `!cancelled()`, as tool-fallback does and for the reason that job's comment gives.
+carries `!cancelled()`, as tool-fallback does and for the reason #the-tool-fallback-proof-what-it-drives-what-it-only-reasons-about-and-how-to-read-it-when-it-is-red gives.
 
 ## Why the tool-fallback-arm job needs no other scope
 
