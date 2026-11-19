@@ -4,7 +4,12 @@ import { macBaseKeymap } from "@milkdown/kit/prose/commands";
 import { Schema } from "@milkdown/kit/prose/model";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import { EditorView } from "@milkdown/kit/prose/view";
-import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  focusManager,
+  QueryClient,
+  QueryClientProvider,
+  type QueryKey,
+} from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
@@ -13,7 +18,6 @@ import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "r
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
-import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -43,6 +47,7 @@ import { issueAddress, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
+import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
 import {
   OutlineRequestProvider,
   useAskOutline,
@@ -61,6 +66,7 @@ import {
   EMPTY_STATE_LINES,
   NODE_TYPE_NAMES,
   type NodeType,
+  PRESET_ORDER,
   type Preset,
 } from "./page-words";
 import { EditorBox } from "./StagedDocument";
@@ -463,16 +469,6 @@ async function nextFrame(): Promise<void> {
   const frame = Promise.withResolvers<void>();
   requestAnimationFrame(() => frame.resolve());
   await act(async () => frame.promise);
-}
-
-/** Lets `ms` pass inside `act`, after `first` where given, and React draw what changed by then. */
-function waitInAct(ms: number, first?: () => void): Promise<void> {
-  return act(async () => {
-    first?.();
-    const waited = Promise.withResolvers<void>();
-    setTimeout(waited.resolve, ms);
-    await waited.promise;
-  });
 }
 
 /** Holds every frame asked for from here on until `run` runs them - the ones named, or every one
@@ -6823,42 +6819,6 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
   }
 });
 
-/** A comment as the comments' read answers it, `at` the minute of the hour it was written in:
- *  `reply_to` is the head of the thread it answers, and `author` alice where none is given. */
-function readComment(
-  id: string,
-  at: number,
-  reply_to: string | null = null,
-  author: Comment["author"] = { id: "alice", kind: "user" }
-): Comment {
-  return {
-    ...commentDeliveryFields(),
-    anchor: null,
-    answers: reply_to,
-    ask_id: null,
-    author,
-    body: `The words of ${id}.`,
-    created_at: `2026-11-05T01:${String(at).padStart(2, "0")}:00Z`,
-    edited_at: null,
-    id,
-    issue_key: KEY,
-    reply_to,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
-  };
-}
-
-/** Two threads of the issue, each a head and one reply under it. */
-const TWO_THREADS: readonly Comment[] = [
-  readComment("head-a", 1),
-  readComment("reply-a", 2, "head-a"),
-  readComment("head-b", 3),
-  readComment("reply-b", 4, "head-b"),
-];
-
 /** The page's body at the address the router holds, as the page's root draws it
  *  (`IssueOutlinePage.tsx`): the route read from the address at every render. `held.navigate`
  *  is what a link followed calls. `Slot` is what draws the address: the body, or the stage that
@@ -6885,20 +6845,22 @@ function AddressedBody({
 
 /** The page's body opened at `path`, every read the tree is built from answered: the issue
  *  holds `comments` and nothing else, and its comments' read is left unread where `comments` is
- *  undefined. `follow` follows a link to an address, as a row's link or the router's does;
- *  `redraw` draws the same location again, as a read answering does; `client` holds the reads.
- *  `Slot` draws the address, the body where none is given, of `issue`, which holds no document
- *  where none is given. */
+ *  undefined, as is each read `unread` names by its query key. `follow` follows a link to an
+ *  address, as a row's link or the router's does; `redraw` draws the same location again, as a
+ *  read answering does; `client` holds the reads. `Slot` draws the address, the body where none
+ *  is given, of `issue`, which holds no document where none is given. */
 function renderAddressedBody(
   path: string,
   comments: readonly Comment[] | undefined,
   Slot: (props: SlotProps) => ReactNode = BodySlot,
-  issue: IssueDetails = { ...issueDetails(), artifacts: [] }
+  issue: IssueDetails = { ...issueDetails(), artifacts: [] },
+  unread: readonly QueryKey[] = []
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  seedBodyReads(client, comments === undefined ? {} : { comments });
+  seedBodyReads(client, { comments });
+  for (const queryKey of unread) client.removeQueries({ queryKey });
   const held: { navigate?: NavigateFunction } = {};
   const draw = () => (
     <MemoryRouter initialEntries={[path]}>
@@ -7001,6 +6963,11 @@ function noSuchComment(): ApiError {
   return new ApiError(404, { code: "NOT_FOUND", error: "no such comment" });
 }
 
+/** A read's answer that the server is down, which the reader can retry. */
+function serverDown(): ApiError {
+  return new ApiError(500, { code: "INTERNAL", error: "the server is down" });
+}
+
 // A node the tree does not hold falls back to the address's own page, never to the page's body,
 // once every read the tree is built from has answered: for an id no item of the issue holds, the
 // old page's landing reads the item and finds none (`missing`), and the page says so where the
@@ -7072,8 +7039,8 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
 // followed the address: a reader who put the focus on a control and pressed a key there while the
 // item's read was still out lost it to the line. The line takes the focus only while the reader
 // has not acted since the address was followed - as the landing on a row takes none after such an
-// act - or in place of a line that held the focus, and the same address followed again, with no
-// act since, gives it the focus again.
+// act - or in place of whatever held the focus in the body's box, a row of the outline or a line,
+// and the same address followed again, with no act since, gives it the focus again.
 test("an item's failure drawn after the reader pressed a key leaves the focus where they put it", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -7215,6 +7182,59 @@ test("an item's failure drawn in place of the outline after the reader moved to 
   }
 });
 
+// A line took the focus after the reader acted wherever the focus had been on the body's box, a
+// mark a focusout leaving the box clears: the page took out the row the reader had moved to while
+// the outline stayed drawn, so the focus fell to the page's body with the mark still set, and no
+// focusout left the box when the reader then pressed a control outside it. The line drawn later
+// took the focus from that control. After an act the line takes the focus only while nothing else
+// holds it as it is drawn.
+test("a line drawn after the reader's row left the outline and they pressed a control outside it leaves the focus on that control", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const answer = Promise.withResolvers<never>();
+  const read = spyOn(api, "getComment").mockReturnValue(answer.promise);
+  const outside = controlOutside();
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const { container } = body.view;
+    await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
+    await moveOnFromFirstRow(user, container);
+    const moved = focusedRow(container);
+    if (moved === undefined) throw new Error("j left the focus on no row");
+
+    await act(async () => {
+      body.client.setQueryData(
+        ["comments", KEY],
+        TWO_THREADS.filter((comment) => comment.id !== moved)
+      );
+    });
+    await waitFor(() => expect(rowsFor(container, moved)).toEqual([]));
+    expect(rowsFor(container, "head-a"), "the outline left the page with the row").not.toEqual([]);
+    expect(
+      document.activeElement,
+      "the row's leaving left the focus on an element, not the page's body"
+    ).toBe(document.body);
+    await user.click(outside.control);
+    expect(document.activeElement).toBe(outside.control);
+
+    await act(async () => answer.reject(noSuchComment()));
+    await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+    await nextFrame();
+    expect(
+      document.activeElement,
+      "the line that names no comment, drawn after the reader's row left the outline and they pressed a control outside it, took the focus from that control"
+    ).toBe(outside.control);
+    body.view.unmount();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
 // The line saying the outline holds no row of the block a `#b-` address names is drawn once the
 // last of the tree's reads answers, which can be after a read that answered first drew the rows
 // and the reader moved to one of them by a key: drawn in place of the outline, it takes the focus
@@ -7226,26 +7246,13 @@ test("the line that names no row of a block, drawn in place of the outline after
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const answer = Promise.withResolvers<never[]>();
   const messages = spyOn(api, "listIssueMessages").mockReturnValue(answer.promise as never);
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  seedBodyReads(client, { comments: TWO_THREADS });
-  client.removeQueries({ queryKey: ["issue-messages", KEY] });
   try {
-    const view = render(
-      <MemoryRouter initialEntries={[`/issues/${KEY}#b-no-such-block`]}>
-        <QueryClientProvider client={client}>
-          <KeymapProvider>
-            <MarginProvider>
-              <AddressedBody
-                held={{}}
-                issue={{ ...issueDetails(), artifacts: [] }}
-                Slot={BodySlot}
-              />
-            </MarginProvider>
-          </KeymapProvider>
-        </QueryClientProvider>
-      </MemoryRouter>
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}#b-no-such-block`,
+      TWO_THREADS,
+      BodySlot,
+      undefined,
+      [["issue-messages", KEY]]
     );
     await waitFor(() => expect(messages).toHaveBeenCalled());
     await moveOnFromFirstRow(user, view.container);
@@ -7384,8 +7391,7 @@ test("an item whose read failed draws a Retry that is busy while it reads again,
   setViewport(1440);
   const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const down = () => new ApiError(500, { code: "INTERNAL", error: "the server is down" });
-  const read = spyOn(api, "getComment").mockRejectedValueOnce(down());
+  const read = spyOn(api, "getComment").mockRejectedValueOnce(serverDown());
   try {
     const body = renderAddressedBody(
       buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
@@ -7405,7 +7411,7 @@ test("an item whose read failed draws a Retry that is busy while it reads again,
       )
     );
     expect(retry, "the Retry is disabled while its read runs again").not.toBeDisabled();
-    await act(async () => again.reject(down()));
+    await act(async () => again.reject(serverDown()));
     await waitFor(() =>
       expect(retry, "the Retry is still busy once its read failed again").not.toHaveAttribute(
         "aria-busy"
@@ -7424,7 +7430,7 @@ test("an item whose read failed draws a Retry that is busy while it reads again,
 
 /** Every preset that draws a view in the outline's place, read from the stage's own slots
  *  (`VIEW_SLOTS`), so a view added there is a view these cases cover. */
-const VIEW_PRESETS: readonly Preset[] = (Object.keys(VIEW_SLOTS) as Preset[]).filter(
+const VIEW_PRESETS: readonly Preset[] = PRESET_ORDER.filter(
   (preset) => VIEW_SLOTS[preset] !== undefined
 );
 
@@ -7506,8 +7512,8 @@ test("under a view whose slot is not filled, an item's address beside the view's
 
 // Once a view's part fills its slot, an address naming a node beside the view's own is that
 // view's to draw, which lands on the node in its own tree: the stage draws the view and no body in
-// its place, though the outline holds the node. The body is read by its own mark
-// (`data-issue-body`), since a view draws a tree too.
+// its place, though the outline holds the node. The body is found by its own mark
+// (`data-issue-body`), not by a tree, since in place of the outline it can draw a line.
 test("under a view whose slot is filled, an item's address beside the view's draws the view and no body", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
@@ -7583,11 +7589,6 @@ test("a block or the children an address names that the tree holds none of draw 
 // The ids of an ask and a message no item of the issue holds, which their own reads answer for.
 const GONE_ASK = "3c0d5a2e-7f41-4b8e-9d26-1e6a4f0b8c55";
 const GONE_MESSAGE = "9a4e6c1b-2d73-4f58-b0e9-6c3a1d7f2e84";
-
-/** A read's answer that the server is down, which the reader can retry. */
-function serverDown(): ApiError {
-  return new ApiError(500, { code: "INTERNAL", error: "the server is down" });
-}
 
 // A following decides its fallback once. A comment the address landed on, deleted while the
 // reader is on its row - the comments' read answering without it - left the tree, and the whole
@@ -8088,6 +8089,30 @@ test("under a view whose slot is not filled, the view's own address and an addre
       }
     }
     expect(opening, "no view's address read here opens a document").not.toEqual([]);
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The architect's ruling: a block of the spec on the Spec view's own address opens the Spec view
+// at that block, never the outline, while the view's slot is not filled. The view is a stand-in,
+// so the case reads the stage's rule apart from what the Spec view draws.
+// It names the spec on purpose: the one view whose address can open a document (`routeDocument`).
+test("a block of the spec on the Spec view's address draws the Spec view and no body while its slot is not filled", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const body = renderStage(`/issues/${KEY}/spec#b-r1`, "spec", false, issueDetails());
+    await nextFrame();
+    const { container } = body.view;
+    expect(
+      container.querySelector("[data-issue-body]"),
+      "the spec's block drew the body in place of the Spec view"
+    ).toBeNull();
+    expect(standInViews(container), "the spec's block drew no Spec view, or another").toEqual([
+      "spec",
+    ]);
+    body.view.unmount();
   } finally {
     names.mockRestore();
   }

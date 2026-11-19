@@ -62,8 +62,7 @@ export function StageSlot({
   );
 }
 
-/** The slot each view draws in place of the outline, by preset: none for Conversation, which is
- *  the outline itself. */
+/** The slot each view draws in place of the outline, by preset. */
 export type ViewSlots = Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | undefined>>;
 
 /** The slot each view draws in place of the outline; none for Conversation, which is the

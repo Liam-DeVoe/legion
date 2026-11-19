@@ -645,12 +645,11 @@ export function IssueTree({
     if (row === null || row === undefined) return;
     if (held === undefined) {
       taken.current?.acts.abort();
-      if (addressActs?.current?.signal.aborted === true) {
+      const acted = addressActs?.current;
+      if (acted?.signal.aborted === true) {
         // The landing ends as it starts: the reader has acted since the following, and the page
         // stays as they left it.
-        const ended = new AbortController();
-        ended.abort();
-        taken.current = { acts: ended, key: landingKey };
+        taken.current = { acts: acted, key: landingKey };
         return;
       }
       taken.current = { acts: abortOnReaderAct(), key: landingKey };
