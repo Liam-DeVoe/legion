@@ -28,6 +28,7 @@ a module Python has finished loading by then.
 """
 
 import json
+import posixpath
 import re
 from collections import defaultdict
 from functools import cache
@@ -46,6 +47,7 @@ from ci_filter_coverage import (
     read_repository_text,
     script_lines,
     squash,
+    step_workdir,
     where_if,
 )
 from workflow_paths import events
@@ -481,9 +483,22 @@ def check_one_merge_group_workflow(problems: list) -> None:
 # them there, as a step writes it from that module's directory.
 DAEMON_MODULE = "packages/daemon"
 PRIVATE_PROC = ".github/scripts/private_proc.py"
-# A go test that runs a test binary: `go test`, `go -C <dir> test`, or `xargs go test`. A `-c`
-# build and a `-list` listing run no test function, so they need no namespace.
-GO_TEST_LINE = re.compile(r"(?:^|[\s|;&(])go\s+(?:-C\s+\S+\s+)?test\b(?P<rest>.*)")
+# What splits a script line into the commands this rule reads one at a time: bash's &&, ||, ;, |
+# and &, and the parentheses of a subshell. A quote is read as a space, so a go test a quoted
+# script runs (`bash -c 'go test ./...'`) is a command of the line too.
+COMMAND_SEPARATOR = re.compile(r"&&|\|\||[;|&()]")
+QUOTE = re.compile(r"['\"]")
+# The words of a command that run the command after them rather than being it.
+RUNNERS = frozenset({"exec", "env", "xargs", "sudo", "time", "nice", "timeout"})
+
+
+def commands(line: str) -> list[list[str]]:
+    """The words of each command of a script line, in order (COMMAND_SEPARATOR, QUOTE)."""
+    return [words for part in COMMAND_SEPARATOR.split(QUOTE.sub(" ", line)) if (words := part.split())]
+
+
+def in_daemon_module(directory: str) -> bool:
+    return directory == DAEMON_MODULE or directory.startswith(DAEMON_MODULE + "/")
 
 
 def check_daemon_tests_in_private_proc(documents: dict, problems: list) -> None:
@@ -494,34 +509,65 @@ def check_daemon_tests_in_private_proc(documents: dict, problems: list) -> None:
     tests on the runner's /proc, where nothing refuses a listing no scanner of the module sees: a
     raw read of the directory, a glob, a program such as pgrep. Nothing fails then; the tests pass on
     a runner whose processes happen to be harmless and fail on a machine several users share
-    (docs/testing.md, "A test that lists the machine's /proc"). A step counts as the module's when
-    its working directory is the module or below it, or when its go command moves there with -C.
-    The documents are ci.yaml and every workflow its jobs call, keyed by repository-relative path."""
+    (docs/testing.md, "A test that lists the machine's /proc").
+
+    It reads each command of each line of a step's script on its own (commands): a `go test`
+    whose own words hold `-c` or `-list` builds or lists and runs no test, and a later command of the
+    same line is judged by its own words. A command counts as the module's when the directory it
+    runs in is the module or below it: the step's working directory (step_workdir), moved by each
+    `cd` of the script before it, and by its go command's own -C. A test binary run by its own name
+    (`./launcher.test`) in the module is refused as a go test is: it runs outside the wrapper. After
+    a `cd` to a directory the script names by anything but a plain path the directory is unknown,
+    and a go test or test binary there is refused, for the reason a step outside the module cannot
+    say it is outside. The documents are ci.yaml and every workflow its jobs call, keyed by
+    repository-relative path; a script those workflows run from a file of their own is no step of
+    them (scripts/e2e's proofs enroll their drivers in the wrapper themselves: live-daemon-proof.sh)."""
     for path, document in documents.items():
-        default = ((document.get("defaults") or {}).get("run") or {}).get("working-directory")
         for job_id, job in (document.get("jobs") or {}).items():
-            job_default = ((job.get("defaults") or {}).get("run") or {}).get("working-directory")
             for step in job.get("steps") or []:
                 script = step.get("run")
                 if not isinstance(script, str):
                     continue
-                workdir = str(step.get("working-directory") or job_default or default or ".").strip().removeprefix("./")
+                directory = step_workdir(document, job, step)
                 for line in script_lines(script):
-                    match = GO_TEST_LINE.search(line)
-                    if not match:
-                        continue
-                    words = match.group("rest").split()
-                    if any(word in ("-c", "-list") or word.startswith(("-list=", "-c=")) for word in words):
-                        continue
-                    moved = re.search(r"\bgo\s+-C\s+(\S+)", line)
-                    module = moved.group(1).strip("'\"").removeprefix("./") if moved else workdir
-                    if not (module == DAEMON_MODULE or module.startswith(DAEMON_MODULE + "/")):
-                        continue
-                    before = line[: match.start()]
-                    if before.split() and before.split()[-1].endswith(PRIVATE_PROC):
-                        continue
-                    problems.append(error(path, f"job {job_id} step \"{step.get('name') or line}\" runs `{line}` in "
-                                                f"{DAEMON_MODULE} outside {PRIVATE_PROC}: its test binaries then read the "
-                                                f"runner's /proc, where a listing no scanner of the module checks sees every "
-                                                f"process of the machine; write the go command behind the wrapper, as "
-                                                f"`../../{PRIVATE_PROC} go test …` from the module's directory"))
+                    for words in commands(line):
+                        if words[0] == "cd":
+                            target = words[1] if len(words) > 1 else ""
+                            plain = target and not set(target) & set("$`~*?[{") and target != "-"
+                            directory = posixpath.normpath(posixpath.join(directory, target)) if plain and directory else None
+                            continue
+                        where = unwrapped_daemon_test(words, directory)
+                        if where:
+                            problems.append(error(path, f"job {job_id} step \"{step.get('name') or line}\" runs `{line}` in "
+                                                        f"{where} outside {PRIVATE_PROC}: its test binaries then read the "
+                                                        f"runner's /proc, where a listing no scanner of the module checks sees "
+                                                        f"every process of the machine; write the go command behind the wrapper, "
+                                                        f"as `../../{PRIVATE_PROC} go test …` from the module's directory"))
+
+
+def unwrapped_daemon_test(words: list[str], directory: str | None) -> str:
+    """Where one command runs a test binary of packages/daemon outside the wrapper, or "": a go
+    test (`go test` or `go -C <dir> test`, wherever the command puts it: behind a RUNNERS word, a
+    `bash -c` or the wrapper) whose own words do not build or list alone, or a test binary run by
+    its own name, the command's first word or one after a RUNNERS word. directory is where the
+    command runs, None when a cd made it unknown."""
+    unknown = "a directory a cd made unknown"
+    for at, word in enumerate(words):
+        rest = words[at + 1:]
+        moved = "."
+        if word == "go" and len(rest) > 1 and rest[0] == "-C":
+            moved, rest = rest[1], rest[2:]
+        if word == "go" and rest[:1] == ["test"]:
+            if any(flag in ("-c", "-list") or flag.startswith(("-list=", "-c=")) for flag in rest[1:]):
+                return ""
+            if at and words[at - 1].endswith(PRIVATE_PROC):
+                return ""
+            if directory is None:
+                return unknown
+            module = posixpath.normpath(posixpath.join(directory, moved))
+            return module if in_daemon_module(module) else ""
+        if word.endswith(".test") and (at == 0 or RUNNERS & set(words[:at])):
+            if directory is None:
+                return f"{unknown}, the test binary {word} run by its own name,"
+            return f"{directory}, the test binary {word} run by its own name," if in_daemon_module(directory) else ""
+    return ""

@@ -2496,6 +2496,53 @@ daemon_step "$root" "Test the daemon" "go -C packages/daemon test ./..." .
 run_check "$root"
 check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`go -C packages/daemon test ./...\` in packages/daemon $rule21")"
 
+# The four forms rule 21 once let through, each its own case: the rule reads each command of a
+# line on its own, follows a cd, reads a go test a quoted script runs, and refuses a test binary
+# run by its own name.
+echo "case: a -c build and then a run of the daemon's tests on one line, outside the wrapper"
+root=$(fixture daemon-unwrapped-after-build)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "go test -c -o /dev/null ./... && go test -count=1 ./..." packages/daemon
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`go test -c -o /dev/null ./... && go test -count=1 ./...\` in packages/daemon $rule21")"
+
+echo "case: a cd into the daemon from the root, then a go test outside the wrapper"
+root=$(fixture daemon-unwrapped-cd)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "cd packages/daemon && go test -count=1 ./..." .
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`cd packages/daemon && go test -count=1 ./...\` in packages/daemon $rule21")"
+
+echo "case: a daemon go test inside a quoted script, outside the wrapper"
+root=$(fixture daemon-unwrapped-quoted)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "bash -c 'go test -count=1 ./...'" packages/daemon
+run_check "$root"
+check "names the line" "$(contains "$out" "step \"Test the daemon\" runs \`bash -c 'go test -count=1 ./...'\` in packages/daemon $rule21")"
+
+echo "case: a daemon test binary built with -c and run by its own name"
+root=$(fixture daemon-unwrapped-binary)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the launcher" "go test -c -o d.test ./internal/launcher/ && ./d.test -test.count=1" packages/daemon
+run_check "$root"
+check "names the line and the binary" "$(contains "$out" "step \"Test the launcher\" runs \`go test -c -o d.test ./internal/launcher/ && ./d.test -test.count=1\` in packages/daemon, the test binary ./d.test run by its own name, $rule21")"
+
+echo "case: the step's working directory, as step_workdir reads it, is where a cd starts"
+# step_workdir drops a leading ./ and a trailing /, which the rule's own reading once did not.
+root=$(fixture daemon-unwrapped-workdir-cd)
+mkdir -p "$root/packages/daemon"
+daemon_step "$root" "Test the daemon" "cd daemon && go test -count=1 ./..." ./packages/
+run_check "$root"
+check "names the module the cd reaches" "$(contains "$out" "step \"Test the daemon\" runs \`cd daemon && go test -count=1 ./...\` in packages/daemon $rule21")"
+
+echo "case: a cd out of the daemon, and a quoted script behind the wrapper, pass rule 21"
+root=$(fixture daemon-cd-out)
+mkdir -p "$root/packages/daemon" "$root/packages/other"
+daemon_step "$root" "Test another module" "cd ../other && go test -count=1 ./..." packages/daemon/
+daemon_step "$root" "Test the daemon in a quoted script" "bash -c '../../.github/scripts/private_proc.py go test -count=1 ./...'" packages/daemon
+run_check "$root"
+check "no line of rule 21" "$(is "$(contains "$out" "$rule21")" false)"
+
 echo "case: a daemon go test behind the wrapper, and a -c build, pass rule 21"
 root=$(fixture daemon-wrapped)
 mkdir -p "$root/packages/daemon"
