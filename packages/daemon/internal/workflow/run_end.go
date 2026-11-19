@@ -260,9 +260,13 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 // run is marked ended (record.Store.EndStepStart), and its end is the record its start kept
 // (record.IssueStepRun.Kept), with end's fields and the session and the model of one read of its
 // agent now, as endStep writes them, so the two writes of the run agree. The log says why it
-// ended. A run marked already writes nothing, and a row that kept no start's record, which no
-// writer of a row leaves, writes no end either.
+// ended. A row with no kept start's record breaks the store invariant: every writer of a row keeps
+// the write in its transaction, so ending it without a record would mark it ended while Dispatch
+// never learned it started.
 func (e *Engine) endOffWalk(ctx context.Context, tx pgx.Tx, row record.IssueStepRun, end StepEnd) error {
+	if row.Kept.ID == "" {
+		return fmt.Errorf("end the off-walk run of %s %s/%s/%d: its open start row holds no kept record", row.Issue, row.Place.Task, row.Place.Kind, row.Place.Place)
+	}
 	start, ended, err := e.store.EndStepStart(ctx, tx, row.Issue, row.Place)
 	if err != nil || !ended {
 		return err
@@ -271,9 +275,6 @@ func (e *Engine) endOffWalk(ctx context.Context, tx pgx.Tx, row record.IssueStep
 		"task", row.Place.Task, "kind", row.Place.Kind, "place", row.Place.Place, "result", end.Result,
 		"reason", "no step of the walk of its run holds its place: the plan rows that named its step are gone")
 	write := row.Kept
-	if write.ID == "" {
-		return nil
-	}
 	if !start.StartedAt.IsZero() {
 		write.StartedAt = new(start.StartedAt)
 	}
