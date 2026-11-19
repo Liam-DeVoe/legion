@@ -72,9 +72,10 @@ func (s *IssuerSet) VerifyClaims(ctx context.Context, raw string, into ...any) (
 
 // Key answers the key the issuer of the set whose URL is issuer publishes under kid for alg,
 // through that issuer's LazyVerifier (LazyVerifier.Key), so a caller that needs the key itself,
-// as the RFC 8693 token exchange does, reads the discovery document and the key set VerifyClaims
-// reads, with their background read, their spacing and their errors, ErrIssuerUnavailable among
-// them. An issuer the set does not name is ErrIssuer, and reads nothing.
+// as the RFC 8693 token exchange does, or a Verifier of that issuer for another audience
+// (NewWithKeys), reads the discovery document and the key set VerifyClaims reads, with their
+// background read, their spacing and their errors, ErrIssuerUnavailable among them. An issuer the
+// set does not name is ErrIssuer, and reads nothing.
 func (s *IssuerSet) Key(ctx context.Context, issuer, kid, alg string) (crypto.PublicKey, error) {
 	entry, err := s.entry(issuer)
 	if err != nil {

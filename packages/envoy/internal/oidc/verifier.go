@@ -9,6 +9,7 @@ package oidc
 
 import (
 	"context"
+	"crypto"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -130,6 +131,13 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 	return NewWithKeys(issuer, audience, keys), nil
 }
 
+// KeySource answers the public key a token naming kid and signed with alg is checked against: a
+// *Keys, or one issuer of an IssuerSet read through the set (IssuerSet.Key), whose error matches
+// ErrIssuerUnavailable while that issuer cannot be read.
+type KeySource interface {
+	Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error)
+}
+
 // NewWithKeys returns a verifier for tokens issuer issued to audience, checking
 // every signature against keys. It exists so that one key cache serves a
 // process's whole use of an issuer: the broker reads Google's set both to
@@ -139,7 +147,10 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 // memory, and bounds the reads a token naming an unpublished key id prompts at
 // one per MinRefresh across both of them. A LazyVerifier builds its verifier
 // with it too, over the Keys its read of the discovery document makes (NewKeys).
-func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
+// Over an IssuerSet's issuer, it verifies that issuer's tokens for an audience
+// other than the set's, reading the issuer's discovery document and key set
+// only as the set reads them, as the broker's NATS auth service does.
+func NewWithKeys(issuer, audience string, keys KeySource) *Verifier {
 	return &Verifier{
 		// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the
 		// verifier a discovered provider builds, defaults to RS256 alone: the
@@ -268,6 +279,8 @@ func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Cla
 // the issuer's key set could not be read at all, as ErrIssuerUnavailable:
 // keySetErr is the key source's own error, which keyset.go carries past the %v
 // go-oidc formats it with, and an ErrKeySet in it means no verdict was reached.
+// A source that answers ErrIssuerUnavailable itself, an IssuerSet's issuer it
+// has not read or whose key set it cannot read, is answered with that error.
 // ErrNoKey is not that case and stays in the signature class, a token signed by
 // something the issuer never had.
 //
@@ -304,6 +317,8 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 		return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audience)
 	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
 		return fmt.Errorf("%w at %s", ErrExpired, time.Unix(int64(claims.Expiry), 0).UTC().Format(time.RFC3339))
+	case errors.Is(keySetErr, ErrIssuerUnavailable):
+		return keySetErr
 	case errors.Is(keySetErr, ErrKeySet):
 		return fmt.Errorf("%w: %w", ErrIssuerUnavailable, keySetErr)
 	default:

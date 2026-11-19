@@ -163,6 +163,55 @@ func TestAnIssuerSetAnswersEachIssuersKey(t *testing.T) {
 	}
 }
 
+// setKeys is the issuer of set whose URL is url as a KeySource, read through the set
+// (IssuerSet.Key).
+type setKeys struct {
+	set *IssuerSet
+	url string
+}
+
+func (k setKeys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error) {
+	return k.set.Key(ctx, k.url, kid, alg)
+}
+
+// A Verifier over an issuer of a set (NewWithKeys) verifies that issuer's tokens for its own
+// audience and not the set's, and reads the issuer's discovery document only through the set, so
+// the verifier and the set read it once between them. While the set cannot read the issuer, the
+// verifier answers its tokens ErrIssuerUnavailable and not ErrSignature, both before the
+// discovery document is read and while the key set cannot be.
+func TestAVerifierOverAnIssuerOfASetReadsItThroughTheSet(t *testing.T) {
+	const audience = "another-audience"
+	set, first, _, firstKey, _ := twoIssuers(t)
+	ctx := context.Background()
+	verifier := NewWithKeys(first.URL(), audience, setKeys{set: set, url: first.URL()})
+	if claims, err := verifier.Verify(ctx, first.Mint(t, firstKey, first.Claims(testSubject, audience))); err != nil || claims.Subject != testSubject {
+		t.Fatalf("Verify(the issuer's token for the verifier's audience) = %+v, %v; want %s", claims, err, testSubject)
+	}
+	if _, err := verifier.Verify(ctx, first.Mint(t, firstKey, first.Claims(testSubject, testAudience))); !errors.Is(err, ErrAudience) {
+		t.Fatalf("Verify(the issuer's token for the set's audience) = %v, want ErrAudience", err)
+	}
+	if _, _, err := set.VerifyClaims(ctx, first.Mint(t, firstKey, first.Claims(testSubject, testAudience))); err != nil {
+		t.Fatalf("the set's VerifyClaims(the issuer's token for the set's audience) = %v", err)
+	}
+	if got := first.DiscoveryRequests(); got != 1 {
+		t.Fatalf("the issuer's discovery document was read %d times, want once: the verifier reads it through the set", got)
+	}
+
+	for name, fail := range map[string]func(*oidctest.Issuer){
+		"whose discovery document cannot be read": func(issuer *oidctest.Issuer) { issuer.FailDiscovery(http.StatusServiceUnavailable) },
+		"whose key set cannot be read":            func(issuer *oidctest.Issuer) { issuer.FailKeys(http.StatusServiceUnavailable) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			set, down, _, downKey, _ := twoIssuers(t)
+			fail(down)
+			verifier := NewWithKeys(down.URL(), audience, setKeys{set: set, url: down.URL()})
+			if _, err := verifier.Verify(ctx, down.Mint(t, downKey, down.Claims(testSubject, audience))); !errors.Is(err, ErrIssuerUnavailable) || errors.Is(err, ErrSignature) {
+				t.Fatalf("Verify(a token of an issuer the set cannot read) = %v, want ErrIssuerUnavailable and not ErrSignature", err)
+			}
+		})
+	}
+}
+
 // Boot tries every issuer once and answers which it read, in the set's order; Run then reads the
 // one that failed once it answers and reports it once, and never reports one Boot read.
 func TestAnIssuerSetBootsAndReadsTheRestInTheBackground(t *testing.T) {

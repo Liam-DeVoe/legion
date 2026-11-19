@@ -52,6 +52,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/machine"
+	"github.com/sjawhar/envoy/internal/broker/natscallout"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -363,6 +364,10 @@ func main() {
 	discovered, err := discoverVerifiers(ctx, cfg, issuerKeys)
 	fatal(err)
 	pod := discovered.Pod
+	// The NATS auth service's list of services and the verifiers of their platform tokens, read
+	// at boot so an entry it could never admit refuses the start rather than every connection.
+	natsServices, natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
+	fatal(err)
 
 	// This process's own sender id, minted once at boot. Postgres delivers a notification to every
 	// session listening on the channel, this pod's own included, so without an id stamped on what
@@ -578,7 +583,7 @@ func main() {
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
-		w := wake.Envoy{URL: cfg.EnvoyURL, Token: cfg.EnvoyToken, HTTP: &http.Client{Timeout: 10 * time.Second}}
+		w := wake.Envoy{URL: cfg.EnvoyURL, Account: brokertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
 		waker = func(ctx context.Context, enrollmentID, requestID, state string) {
 			sid, _ := reqMachine.SessionID(ctx, requestID) // requests.session_id, else the enrollment's
 			if sid == "" {
@@ -703,10 +708,11 @@ func main() {
 		airlockProxy.Store(proxy)
 	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
-	// every metric above is built on, and nothing else (metricsHandler). Its timeouts are the
-	// API's, since a scraper is a caller like any other to the server.
+	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its
+	// timeouts are the API's, since a scraper is a caller like any other to the server.
+	var callout atomic.Pointer[natscallout.Service]
 	metricsServer := &http.Server{
-		Handler:           metricsHandler(registry),
+		Handler:           metricsHandler(registry, &callout),
 		ReadHeaderTimeout: srv.ReadHeaderTimeout,
 		ReadTimeout:       srv.ReadTimeout,
 		WriteTimeout:      srv.WriteTimeout,
@@ -747,8 +753,32 @@ func main() {
 			stopNotify()
 		}
 	}()
+	// The NATS auth service starts once the broker serves, so a connection it admits can trade
+	// and introspect against a broker that answers; it answers in the replicas' queue group until
+	// the drain begins.
+	if cfg.NATS.Enabled() {
+		service, err := natscallout.Start(ctx, natscallout.Settings{
+			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
+			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
+		}, natscallout.Deps{
+			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
+			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
+		})
+		fatal(err)
+		callout.Store(service)
+		go func() {
+			if err := service.Ready(ctx); err == nil {
+				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(natsServices))
+			}
+		}()
+	}
 
 	<-ctx.Done()
+	// The auth service leaves the queue group first, so the hub sends the next authorization to
+	// a replica that is not draining.
+	if service := callout.Load(); service != nil {
+		service.Close()
+	}
 	// nil when this deployment has no airlock, which is what brokerStop reads as "there is no
 	// proxy port to drain".
 	var airlockShutdown func(ctx context.Context) error
@@ -1185,12 +1215,16 @@ func peerReread(current *policy.Current, dropAirlockName func(string)) func(cont
 
 // metricsHandler is what the metrics port serves: registry's scrape at GET /metrics in the
 // Prometheus text format (the pattern takes HEAD too, as every GET pattern of a ServeMux does),
-// and nothing else - every other path is 404 and every method there but GET and HEAD is 405 - so
-// a scraper reaches no route of the API through it, and no caller of the API reaches the scrape
-// (the API's mux registers no /metrics).
-func metricsHandler(registry *metrics.Registry) http.Handler {
+// and GET /livez, the NATS auth service's liveness, and nothing else - every other path is 404 and
+// every method there but GET and HEAD is 405 - so a scraper or a probe reaches no route of the API
+// through it, and no caller of the API reaches either (the API's mux registers neither).
+//
+// GET /livez is natscallout.Livez on the auth service this broker started, which answers the whole
+// of it, the broker that runs no auth service included.
+func metricsHandler(registry *metrics.Registry, callout *atomic.Pointer[natscallout.Service]) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", registry.Handler())
+	mux.Handle("GET /livez", natscallout.Livez(callout.Load))
 	return mux
 }
 
@@ -1383,6 +1417,10 @@ type verifiers struct {
 	// read, at the boot or since, can be read again (loggedIssuers). Nil on a broker told about no
 	// cluster.
 	Pod enroll.PodVerifier
+	// Clusters is the issuer set Pod reads, logged (loggedIssuers), through which a verifier of
+	// the clusters' tokens for another audience reads each issuer's keys (loggedIssuers.audience),
+	// as the NATS auth service's does; its zero value on a broker told about no cluster.
+	Clusters loggedIssuers
 	// ExchangeK8s is the cluster issuers the exchange takes (BROKER_EXCHANGE_K8S_ISSUER), each for
 	// BROKER_EXCHANGE_K8S_AUDIENCE and with its keys read through Pod's issuer set
 	// (loggedIssuers.keys), nil on a broker with no exchange audience.
@@ -1414,7 +1452,8 @@ type verifiers struct {
 // The exchange's cluster issuers (BROKER_EXCHANGE_K8S_ISSUER) are issuers of that same set, and
 // the exchange reads each one's keys through it (IssuerSet.Key), with the same background read,
 // the same answers and the same lines, so an exchange issuer that cannot be read stops no boot
-// either. Google's (BROKER_GOOGLE_OIDC_ISSUER), for a machine's
+// either. The NATS auth service reads the clusters' keys for BROKER_NATS_K8S_AUDIENCE through it
+// the same way (Clusters, natsCalloutBoot). Google's (BROKER_GOOGLE_OIDC_ISSUER), for a machine's
 // identity token, is read only when BROKER_GOOGLE_OIDC_AUDIENCE is set, and its key set serves
 // both a listed caller's Google verifier and the exchange, which resolves a machine's subject
 // token against it; that read logs one line naming the issuer, the audience, the machine services
@@ -1432,7 +1471,7 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		logged := newLoggedIssuers(issuers, cfg.K8sOIDCIssuers)
 		logged.boot(ctx)
 		go logged.run(ctx)
-		found.Pod = enroll.K8sPodVerifier{Issuers: logged}
+		found.Pod, found.Clusters = enroll.K8sPodVerifier{Issuers: logged}, logged
 		for _, issuer := range cfg.ExchangeK8sIssuers {
 			found.ExchangeK8s = append(found.ExchangeK8s, oauth.IssuerConfig{
 				Name: issuer.Name, Issuer: issuer.URL, Audience: cfg.ExchangeK8sAudience, Keys: logged.keys(issuer),
@@ -1489,16 +1528,17 @@ const (
 )
 
 // loggedIssuers is the clusters' issuer set as the broker boots and reads it in the background
-// (boot, run), as its pod verifier reads it (enroll.IssuerVerifier) and as the token exchange
-// reads its issuers' keys (keys), logging each change of an issuer between read and not read
-// once: issuerUnreadableMessage when a token of it is answered oidc.ErrIssuerUnavailable, and
-// issuerReadableMessage when, after that or after a boot that could not read it, a token of it
-// verifies, a key of it is read, or the background read of it succeeds. Every route answers such
-// a token 503 OIDC_ISSUER_UNAVAILABLE and logs nothing (api.writeIssuerUnavailable, and the
-// exchange's own answer), and package oidc reads a key set and logs nothing, since the Dispatch
-// server and the Envoy listener read their key sets through it too. So these two lines are the
-// log of a key set the broker cannot read, and with the boot's line, of an issuer it could not
-// read at its start.
+// (boot, run), as its pod verifier reads it (enroll.IssuerVerifier) and as the token exchange and
+// the NATS auth service read its issuers' keys (keys, audience), logging each change of an issuer
+// between read and not read once: issuerUnreadableMessage when a token of it is answered
+// oidc.ErrIssuerUnavailable, and issuerReadableMessage when, after that or after a boot that could
+// not read it, a token of it verifies, a key of it is read, or the background read of it succeeds.
+// Every route answers such a token 503 OIDC_ISSUER_UNAVAILABLE and logs nothing
+// (api.writeIssuerUnavailable, and the exchange's own answer), the NATS auth service refuses it
+// as a token it cannot verify, and package oidc reads a key set and logs nothing, since the
+// Dispatch server and the Envoy listener read their key sets through it too. So these two lines
+// are the log of a key set the broker cannot read, and with the boot's line, of an issuer it could
+// not read at its start.
 type loggedIssuers struct {
 	set *oidc.IssuerSet
 	// unreadable is, for the URL of each issuer of set, whether its last line said that it could
@@ -1541,9 +1581,9 @@ func (l loggedIssuers) VerifyClaims(ctx context.Context, raw string, into ...any
 	return claims, issuer, err
 }
 
-// keys is the token exchange's key source for issuer, an issuer of the set: IssuerSet.Key, which
-// reads that issuer through the set's own verifier of it, logging the change each read finds in
-// the issuer (note).
+// keys is the key source for issuer, an issuer of the set, of the token exchange and of a verifier
+// for another audience (audience): IssuerSet.Key, which reads that issuer through the set's own
+// verifier of it, logging the change each read finds in the issuer (note).
 func (l loggedIssuers) keys(issuer oidc.NamedIssuer) oauth.KeySource {
 	return loggedKeys{issuers: l, issuer: issuer}
 }
@@ -1559,6 +1599,42 @@ func (k loggedKeys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey,
 	key, err := k.issuers.set.Key(ctx, k.issuer.URL, kid, alg)
 	k.issuers.note(ctx, k.issuer, err)
 	return key, err
+}
+
+// audience verifies the tokens issuers, the issuers of the set, issue to audience, an audience
+// other than the set's, as the NATS auth service verifies the clusters' tokens for
+// BROKER_NATS_K8S_AUDIENCE: each token against the issuer its iss names, through a verifier of
+// that issuer whose keys are the set's own (keys). So it reads no discovery document or key set
+// the set does not read, a token of an issuer the set cannot read is oidc.ErrIssuerUnavailable, and
+// each read logs the change it finds in the issuer as the token exchange's do.
+func (l loggedIssuers) audience(issuers []oidc.NamedIssuer, audience string) audienceIssuers {
+	verifiers := make(audienceIssuers, 0, len(issuers))
+	for _, issuer := range issuers {
+		verifiers = append(verifiers, audienceIssuer{issuer: issuer, verifier: oidc.NewWithKeys(issuer.URL, audience, l.keys(issuer))})
+	}
+	return verifiers
+}
+
+// audienceIssuers is loggedIssuers.audience's answer, an enroll.IssuerVerifier.
+type audienceIssuers []audienceIssuer
+
+// audienceIssuer is one issuer of an audienceIssuers, with its verifier.
+type audienceIssuer struct {
+	issuer   oidc.NamedIssuer
+	verifier *oidc.Verifier
+}
+
+// VerifyClaims checks raw against the issuer its iss names (oidc.Verifier.Issues) and answers that
+// issuer beside the claims, as IssuerSet.VerifyClaims does; a token whose iss names none of them
+// is oidc.ErrIssuer and reads nothing.
+func (a audienceIssuers) VerifyClaims(ctx context.Context, raw string, into ...any) (oidc.Claims, oidc.NamedIssuer, error) {
+	for _, entry := range a {
+		if entry.verifier.Issues(raw) {
+			claims, err := entry.verifier.VerifyClaims(ctx, raw, into...)
+			return claims, entry.issuer, err
+		}
+	}
+	return oidc.Claims{}, oidc.NamedIssuer{}, fmt.Errorf("%w: the token's iss names no issuer of BROKER_K8S_OIDC_ISSUER", oidc.ErrIssuer)
 }
 
 // note logs the change err, an answer about a token of issuer, finds in issuer: the issuer
