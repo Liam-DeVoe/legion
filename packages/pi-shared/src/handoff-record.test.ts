@@ -910,7 +910,7 @@ test("a report read whose Dispatch does not answer ends that request at Dispatch
     const paneEnv = {
       ...env,
       DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
-      DISPATCH_TOKEN: "pane-dispatch-token",
+      DISPATCH_TOKEN: fixtureSecret("pane"),
     };
     const attempt = new AbortController();
     const report = findHandoffReport({

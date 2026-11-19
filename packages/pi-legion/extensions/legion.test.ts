@@ -5693,7 +5693,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         path === "/legion/v1/claims/activity" ? new Response(null, { status: 204 }) : undefined,
     });
     const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+    await writeFile(bootFile, `${fixtureSecret("boot")}\n`, { mode: 0o600 });
     delete process.env.LEGION_CONTROLLER_SECRET_FILE;
     delete process.env.LEGION_CONTROLLER_START_MESSAGE;
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
@@ -5768,7 +5768,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         path === "/legion/v1/claims/activity" ? new Response(null, { status: 204 }) : undefined,
     });
     const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+    await writeFile(bootFile, `${fixtureSecret("boot")}\n`, { mode: 0o600 });
     delete process.env.LEGION_CONTROLLER_SECRET_FILE;
     delete process.env.LEGION_CONTROLLER_START_MESSAGE;
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;

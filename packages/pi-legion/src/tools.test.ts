@@ -1864,7 +1864,7 @@ test("the controller reads the state without a grant and sets an issue's status 
 // and role as the two other recoveries do, is refused before any grant, and no claim's session has
 // the operation.
 test("relaunch posts the claim's token under the controller's grant, and hands on the daemon's refusal", async () => {
-  const token = "legion-acme-acme-209-implementer";
+  const token = "legion-acme-acme-209-implementer"; // fixture-secret: a claim token, the name the notices carry
   const minted: string[] = [];
   const { calls, daemon } = recordingDaemon({});
   const run = (parameters: Record<string, unknown>) =>

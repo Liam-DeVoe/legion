@@ -624,7 +624,7 @@ async function reviewerOverHeldDispatch(attemptLimit: DaemonRestartRetry["attemp
     LEGION_WORKSPACE: root,
     LEGION_ISSUE: "LEGION-208",
     DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
-    DISPATCH_TOKEN: "pane-dispatch-token",
+    DISPATCH_TOKEN: fixtureSecret("pane"),
   };
   const tool = createLegionTool({
     pi,
@@ -635,7 +635,7 @@ async function reviewerOverHeldDispatch(attemptLimit: DaemonRestartRetry["attemp
       sessionID: "ses_208",
       tree: "LEGION-208",
       issue: "LEGION-208",
-      secret: "claim-secret",
+      secret: CLAIM_SECRET,
       claimToken: "legion-omp-legion-208-reviewer",
       generation: 1,
     }),
