@@ -117,13 +117,13 @@
 -- read as a phase start where it names a phase and an operator's task otherwise (supervise's
 -- originOf), as a row of the release before this one is.
 --
--- The fifth takes out the two keys this release writes into every merge-forward ask and hold, the
--- read of GitHub the act rests on (record.MergeForwardMessage.MergeState and StateReadAt). The
--- release before it knows neither key and decodes that row strictly too, so a row still carrying
--- either fails to decode at every attempt, retried on the runner's backoff, and its message is
--- never delivered. Nothing that daemon reads is lost with them, since its ask and its hold name no
--- read, and a row the roll-forward finds carrying neither says that GitHub's merge state and the
--- time of its read are unknown (record.AnsweredMergeState).
+-- The fifth takes out the two keys this release writes each into a merge-forward ask or hold whose
+-- record holds it, the read of GitHub the act rests on (record.MergeForwardMessage.MergeState and
+-- StateReadAt). The release before it knows neither key and decodes that row strictly too, so a
+-- row still carrying either fails to decode at every attempt, retried on the runner's backoff, and
+-- its message is never delivered. Nothing that daemon reads is lost with them, since its ask and
+-- its hold name no read, and a row the roll-forward finds carrying neither says that GitHub's
+-- merge state and the time of its read are unknown (record.AnsweredMergeState).
 --
 -- The fourteen drops and the deleted version row are for the roll-forward that follows the rollback
 -- rather than for the older daemon, which reads none of the fourteen columns and writes none of them:

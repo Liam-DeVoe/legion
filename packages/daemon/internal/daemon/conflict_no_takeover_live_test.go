@@ -325,18 +325,18 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 // the tester is told, on its own, to hold while the merge runs (MergeForwardHold), and the
 // architect is told once, in a checks-red notice naming testing, the phase the issue stays in. The
 // ask, the hold and the notice name the read of GitHub the act rests on (dispatch://INFRA-2833
-// R3): GitHub's merge state for h1 and the time of the second read, which the daemon logs with its
-// ask, a time after the first read was logged and before the second read's own line. The
-// tester's connection is sent nothing at all — no abort and no prompt, both frames gone — its claim
-// stays working on the task it took in step 1, and nothing is suspended. Nothing repeats once it is
-// sent.
+// R3): GitHub's merge state for h1 as the second read logs GitHub's answer, and the time of the
+// second read, which the daemon logs with its ask, a time after the first read was logged and
+// before the second read's own line. The tester's connection is sent nothing at all — no abort and
+// no prompt, both frames gone — its claim stays working on the task it took in step 1, and nothing
+// is suspended. Nothing repeats once it is sent.
 func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	t := r.t
 	bound := testwait.Bounded(t, conflictSecondReadBound, time.Second)
 	second := r.awaitLogged(conflictSecondReadLine, r.key, bound)
 	first := r.loggedFor(conflictFirstReadLine, r.key)[0]
-	r.note("read back: the second read ran %s after the first was logged: the daemon logged %q for %s, GitHub answering %v for head %v",
-		second.at.Sub(first.at).Round(time.Second), second.Message, r.key, second.Attrs["mergeable"], second.Attrs["readHead"])
+	r.note("read back: the second read ran %s after the first was logged: the daemon logged %q for %s, GitHub answering %v, merge state %v, for head %v",
+		second.at.Sub(first.at).Round(time.Second), second.Message, r.key, second.Attrs["mergeable"], second.Attrs["mergeState"], second.Attrs["readHead"])
 	asked := r.awaitLogged(conflictAskedLine, r.key, bound)
 	if asked.Attrs["why"] != string(record.ConflictCheckNotGreen) || asked.Attrs["phase"] != string(phase.Testing) || asked.Attrs["head"] != conflictFirstHead {
 		t.Fatalf("the daemon logged %q for %s with %v, want the merge forward of %s asked in testing for %s",
@@ -351,9 +351,12 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	r.note("read back: the daemon logged %q for %s: head %v, phase %v, why %v, merge state %q, read at %s",
 		asked.Message, r.key, asked.Attrs["head"], asked.Attrs["phase"], asked.Attrs["why"], asked.Attrs["mergeState"], readAt.UTC().Format(time.RFC3339Nano))
 
+	// The merge state the ask and the hold name is GitHub's answer as the second read logged it
+	// (conflictConfirm), the read the workflow applied, not the daemon's own line of its ask.
+	answered := record.MergeState(fmt.Sprint(second.Attrs["mergeState"]))
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictFirstHead,
 		Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen,
-		MergeState: record.MergeState(fmt.Sprint(asked.Attrs["mergeState"])), StateReadAt: readAt}
+		MergeState: answered, StateReadAt: readAt}
 	if told := r.awaitHeard(claim.RoleImplementer, 1, bound); told[0].Message != ask.Message(r.key, liveRepo) {
 		t.Fatalf("the implementer was told %q, want the merge forward's ask %q", told[0].Message, ask.Message(r.key, liveRepo))
 	}
@@ -364,7 +367,7 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 		t.Fatalf("the tester was told %q, want the merge forward's hold %q", told[0].Message, hold.Message(r.key, liveRepo))
 	}
 	r.note("read back: one message on the tester's role topic — %s", hold.Message(r.key, liveRepo))
-	named := " at " + readAt.UTC().Format(time.RFC3339)
+	named := "; " + record.AnsweredMergeState(answered, readAt, conflictFirstHead)
 	var notices []record.Notice
 	testwait.WithinPolling(t, bound, testwait.Poll, "the architect's notice of the merge forward", func() bool {
 		notices = r.architectNoticesSince()

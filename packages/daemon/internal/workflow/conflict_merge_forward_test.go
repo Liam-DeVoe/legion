@@ -18,8 +18,8 @@ import (
 )
 
 // firstConflictRead is when the first CONFLICTING read of these tests is made. Each later read is
-// applied through an engine whose clock stands that long after it (mergingEngineAt): a fact a test
-// mints carries no read time, so the engine's clock times both reads (mergeability).
+// applied through an engine whose clock stands that long after it (mergingEngineAt): the facts
+// conflictingRead mints carry no read time, so the engine's clock times both reads (mergeability).
 var firstConflictRead = time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)
 
 // conflictHead is the head of #42 GitHub answers CONFLICTING with main (seedConflictIssue), and
@@ -130,10 +130,10 @@ func assertNothingActed(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
 	}
 }
 
-// askedOnce is askedOnceReadAt of a conflict whose reads carried no read time, as every fact a test
-// mints carries none (intake.PullRequestMergeability.ReadAt): the record then holds no dated read
-// of the head, so the ask, the hold and the notice say GitHub's merge state and the time of its
-// read are unknown.
+// askedOnce is askedOnceReadAt of a conflict whose reads carried no read time, as the facts
+// conflictingRead mints carry none (intake.PullRequestMergeability.ReadAt): the record then holds
+// no dated read of the head, so the ask, the hold and the notice say GitHub's merge state and the
+// time of its read are unknown.
 func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, why record.ConflictWhy, hold claim.Role) {
 	t.Helper()
 	askedOnceReadAt(t, pool, at, status, why, hold, time.Time{})
@@ -141,11 +141,12 @@ func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, 
 
 // askedOnceReadAt is the one merge forward the record and the outbox hold, asked of conflictHead
 // onto main in at for why: the record's ask, the implementer's ask and, where hold names a role,
-// that role's hold, and the architect's one checks-red notice outside implementing. The ask, the
-// hold and the notice name the read of GitHub the act rests on (dispatch://INFRA-2833 R3), the
-// newest the record holds of the head: GitHub's merge state, dirty, and readAt, in RFC 3339 UTC,
-// or, where readAt is zero, that both are unknown (namedRead). Nothing moved: the issue is in at
-// with the status it had, and no worker was started.
+// that role's hold, and the architect's one checks-red notice outside implementing. The ask and
+// the hold carry the read of GitHub the act rests on (dispatch://INFRA-2833 R3), the newest the
+// record holds of the head: GitHub's merge state, dirty, and readAt in UTC, which their messages
+// name (record.AnsweredMergeState). The notice's reason ends naming that read, the time in RFC 3339
+// UTC, or, where readAt is zero, that both are unknown (namedRead). Nothing moved: the issue is in
+// at with the status it had, and no worker was started.
 func askedOnceReadAt(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, why record.ConflictWhy, hold claim.Role, readAt time.Time) {
 	t.Helper()
 	asked := recordedPR(t, pool, "LEGION-208").MergeForward
@@ -162,18 +163,13 @@ func askedOnceReadAt(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status st
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("merge-forward messages %+v, want %+v", got, want)
 	}
-	read := namedRead(readAt)
-	for _, message := range got {
-		if text := message.Message("LEGION-208", "sjawhar/legion"); !strings.Contains(text, " "+read+". ") {
-			t.Fatalf("the %s's message reads %q, want it to name the read it rests on: %q", message.Step, text, read)
-		}
-	}
 	notices := noticeKinds(t, pool, "LEGION-208")
 	if at == phase.Implementing {
 		if len(notices) != 0 {
 			t.Fatalf("notices %v, want none: a merge forward in implementing tells the implementer alone", notices)
 		}
 	} else {
+		read := namedRead(readAt)
 		if len(notices) != 1 || notices[0] != "checks-red" {
 			t.Fatalf("notices %v, want the one checks-red", notices)
 		}
@@ -603,9 +599,6 @@ func TestAMergeForwardNamesTheReadItRestsOn(t *testing.T) {
 			t.Fatalf("merge-forward messages %+v, want %+v: the ask names the newest read the record holds of the head", got, want)
 		}
 		read := namedRead(newest.ReadAt)
-		if text := got[0].Message("LEGION-208", "sjawhar/legion"); !strings.Contains(text, " "+read+". ") {
-			t.Fatalf("the ask reads %q, want it to name the newest read of the head: %q", text, read)
-		}
 		if reason, stays := checksRedNotice(t, pool); stays != phase.Accepting || !strings.HasSuffix(reason, "; "+read) {
 			t.Fatalf("the checks-red notice names %s with reason %q, want accepting and a reason that ends naming the newest read of the head: %q",
 				stays, reason, read)

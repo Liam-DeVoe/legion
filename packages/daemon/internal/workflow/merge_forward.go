@@ -31,11 +31,11 @@ import (
 // The read the act rests on is the newest read of GitHub the record holds of the head, its merge
 // state and the moment it was read (record.PullRequest.MergeState and StateReadAt), which the ask,
 // the hold and the notice each name (record.AnsweredMergeState, dispatch://INFRA-2833 R3) and the
-// log line of the ask carries. On a confirmed read (mergeability) it is the read that confirmed
-// the conflict, which mergeability has just written to pr; a fact that carries no read time, as
-// one a test mints, writes its state and leaves the stamp the record held. On a phase entry
-// (mergeForwardOnEntry) it is the newest read the record holds of that head by then. The time is
-// carried in UTC, as the messages name it.
+// log line of the ask carries. On a confirmed read (mergeability) it is the read just applied,
+// which confirmed the conflict or found it confirmed again, and which mergeability has just
+// written to pr; a fact that carries no read time, as one a test mints, writes its state and
+// leaves the stamp the record held. On a phase entry (mergeForwardOnEntry) it is the newest read
+// the record holds of that head by then. The time is carried in UTC, as the messages name it.
 //
 // It asks once for each head: the record keeps the ask (record.PullRequest.MergeForward), and a
 // later confirmed read, or a move into another phase, at the head it names sends nothing. The one

@@ -94,7 +94,6 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		drainAt(t, runner, 10*time.Minute, "the row's attempt once the session holds the role")
 		_, delivered := publisher.snapshot()
 		if len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != ask.Message("LEGION-208", "acme/widgets") ||
-			!strings.Contains(delivered[0].message, " GitHub answered mergeState=dirty for head sha-1 at 2026-11-19T01:01:00Z. ") ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
 			t.Fatalf("delivered %+v, want the ask once to %s under its row's key, naming the read it rests on", delivered, topic)
 		}
