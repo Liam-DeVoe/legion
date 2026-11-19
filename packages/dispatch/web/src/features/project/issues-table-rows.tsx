@@ -26,8 +26,10 @@ import { issueStatuses, statusLabel } from "./board-model";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
 /** One issue's row: its cells, and the Start next the reader reaches by hovering it or by putting
- *  the focus in it, which is held while a table action is out (`busy`) as a `StepButton` is, and
- *  for the same reason. */
+ *  the focus in it, which is held while a table action is out (`busy`, `heldPress`) as a
+ *  `StepButton` is, and for the same reason: from its own press until the list read again moves
+ *  its issue up the queue and takes it away, so it keeps the focus while its write is out and its
+ *  going is the press's doing. */
 export function IssueRow({
   busy,
   index,

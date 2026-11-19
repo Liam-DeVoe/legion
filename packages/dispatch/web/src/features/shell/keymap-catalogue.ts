@@ -699,6 +699,14 @@ export const KEYMAP_CATALOGUE = {
     palette: true,
     surface: "issue",
   },
+  "issue.tab-steps": {
+    scope: "issue",
+    id: "tab-steps",
+    label: "Steps tab",
+    keys: ["t e"],
+    palette: true,
+    surface: "issue",
+  },
   "issue.tab-conversation": {
     scope: "issue",
     id: "tab-conversation",

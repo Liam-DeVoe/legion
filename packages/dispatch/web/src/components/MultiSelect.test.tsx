@@ -508,6 +508,8 @@ test("Enter, Escape and Tab that end or move an IME composition leave a single p
     const box = screen.getByRole("combobox", { name: "Search epics" });
     await user.keyboard("{ArrowDown}");
     for (const key of ["Enter", "Escape", "Tab"]) {
+      // user-event cannot mark a key as part of an IME composition, so the key is fired with
+      // `isComposing` set.
       fireEvent.keyDown(box, { isComposing: true, key });
       expect(screen.queryByRole("listbox"), `${key} composing`).toBeInTheDocument();
       expect(box, `${key} composing`).toHaveFocus();
@@ -515,7 +517,7 @@ test("Enter, Escape and Tab that end or move an IME composition leave a single p
     expect(screen.getByTestId("handed").textContent).toBe("");
 
     // The same keys with no composition are the reader's: Enter picks the active row.
-    fireEvent.keyDown(box, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(screen.getByTestId("handed").textContent).toBe("docs");
   } finally {

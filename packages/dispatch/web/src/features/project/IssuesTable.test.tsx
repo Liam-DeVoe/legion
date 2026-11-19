@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { pickNamed } from "../../__tests__/list-picks";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -1157,33 +1158,13 @@ test("a scroll alone does no layout reads for the table's own box", async () => 
 // and the block above it are observed instead. happy-dom has no `ResizeObserver`, so the stub
 // is the geometry — what the table observes, and what a notice appearing there fires.
 test("the box is measured through an observer over itself and the content above it", async () => {
-  const live: { elements: Element[]; fire: () => void }[] = [];
-  const original = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = class {
-    readonly elements: Element[] = [];
-    constructor(callback: ResizeObserverCallback) {
-      live.push({
-        elements: this.elements,
-        fire: () => callback([], this as unknown as ResizeObserver),
-      });
-    }
-    observe(element: Element) {
-      this.elements.push(element);
-    }
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver;
-  restores.push(() => {
-    globalThis.ResizeObserver = original;
-  });
+  const sizes = installResizeObserver();
+  restores.push(() => sizes.restore());
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const box = screen.getByTestId("issues-table-scroll");
   const above = screen.getByRole("region", { name: "Project issues" }).firstElementChild;
   if (!above) throw new Error("The table has no content above it");
-  const watching = [...live].reverse().find((entry) => entry.elements.includes(box));
-  if (!watching) throw new Error("Nothing observes the table's box");
-  expect(watching.elements).toContain(above);
   const measured: string[] = [];
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
@@ -1194,9 +1175,11 @@ test("the box is measured through an observer over itself and the content above 
     return new DOMRect(0, 0, 1000, 600);
   });
   restores.push(() => rect.mockRestore());
-  act(() => {
-    watching.fire();
-  });
+  // A notice appearing above the box changes only that block's size.
+  sizes.resize(above);
+  expect(measured).toContain("issues-table-scroll");
+  measured.length = 0;
+  sizes.resize(box);
   expect(measured).toContain("issues-table-scroll");
 });
 
@@ -1960,6 +1943,52 @@ test("a column filter press that sends the List off to read its issues leaves th
   open.resolve([issue("CORE-1")]);
   expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
+});
+
+// A row's own Start next is held (`aria-disabled`, `heldPress`) from its press until the list
+// read again moves its issue up the queue and takes the Start next away: it keeps the focus while
+// its write is out, and its going is the reader's doing, so the focus goes to a control of that
+// row, never to the table's box. With the hold ended at the write's answer, before that read, the
+// List's rescue read the Start next's going as a live update's and sent the focus to the box.
+test("a row's Start next stays held until the list read again takes it away, and its row keeps the focus", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-2") as never);
+  restores.push(() => send.mockRestore());
+  const { listing } = table(
+    [
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "C" }),
+    ],
+    "",
+    { rescued: true }
+  );
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const startNext = within(row).getByRole("button", { name: "Start next" });
+  // The read after the write, held until the test answers it with CORE-2 at the queue's head.
+  const reread = Promise.withResolvers<IssueSummary[]>();
+  const reads = listing.mock.calls.length;
+  listing.mockImplementation(() => reread.promise);
+  act(() => startNext.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+  await afterRescue();
+  expect(startNext).toHaveAttribute("aria-disabled", "true");
+  expect(startNext).toHaveFocus();
+
+  await act(async () =>
+    reread.resolve([
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "A" }),
+    ])
+  );
+  const moved = () => screen.getByRole("row", { name: "CORE-2 Work CORE-2" });
+  await waitFor(() =>
+    expect(within(moved()).queryByRole("button", { name: "Start next" })).toBeNull()
+  );
+  await afterRescue();
+  expect(moved().contains(document.activeElement)).toBe(true);
+  expect(screen.getByTestId("issues-table-scroll")).not.toHaveFocus();
 });
 
 // A notice's button that takes the notice away hands the focus on, never to the page's body

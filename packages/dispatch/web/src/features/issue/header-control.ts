@@ -8,9 +8,9 @@
 const HEADER = "[data-issue-header]";
 
 /** The header control `selector` names, or `null` when it is absent or refuses input (a closed
- *  issue, a save in flight, which holds a menu's trigger with `aria-disabled`): the one fact both
- *  the key's `run` and the `when` that offers it read, so a shortcut is listed exactly while its
- *  control would take a click. */
+ *  issue, a save in flight, which holds a menu's trigger or the labels' trigger with
+ *  `aria-disabled`, `IssueLabels`): the one fact both the key's `run` and the `when` that offers
+ *  it read, so a shortcut is listed exactly while its control would take a click. */
 export function usableControl(selector: string): HTMLElement | null {
   const node = document.querySelector(HEADER)?.querySelector<HTMLElement>(selector);
   if (node == null) {

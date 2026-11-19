@@ -31,6 +31,7 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import type { KeymapActionId } from "../shell/keymap-catalogue";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { StepsTab } from "../steps/StepsTab";
 import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
 import { CollaboratorsTab } from "./CollaboratorsTab";
@@ -126,13 +127,15 @@ function outsideInputsAndAskCards(): boolean {
 }
 
 /** The tabs the chords reach, each through the tablist button `IssueTabs` renders for it. `t v`
- *  is Activity and `t c` the Conversation, so Verification takes its checks' `t k`; `t a` is
- *  Artifacts and `l` is the issue's label editor, so Activity takes `t v`; and with
- *  `s k p c h a v d` taken, Collaborators, the last tab, takes `t o` (`keymap-catalogue.ts`). */
+ *  is Activity and `t c` the Conversation, so Verification takes its checks' `t k`; `t s` is the
+ *  Spec, so Steps takes the next letter of its name, `t e`; `t a` is Artifacts and `l` is the
+ *  issue's label editor, so Activity takes `t v`; and with `s k p e c h a v d` taken,
+ *  Collaborators, the last tab, takes `t o` (`keymap-catalogue.ts`). */
 const tabChords: readonly { action: KeymapActionId; tab: IssueTab }[] = [
   { action: "issue.tab-spec", tab: "spec" },
   { action: "issue.tab-verification", tab: "verification" },
   { action: "issue.tab-plan", tab: "plan" },
+  { action: "issue.tab-steps", tab: "steps" },
   { action: "issue.tab-conversation", tab: "conversation" },
   { action: "issue.tab-children", tab: "children" },
   { action: "issue.tab-artifacts", tab: "artifacts" },
@@ -328,6 +331,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
     spec: activeTab === "spec",
+    steps: activeTab === "steps",
     verification: activeTab === "verification",
   }));
   if (!activatedTabs[activeTab]) {
@@ -488,6 +492,17 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         onVersionChange={selectDocumentVersion}
         tab="plan"
       />
+      <div
+        aria-hidden={activeTab !== "steps"}
+        aria-labelledby="issue-steps-tab"
+        hidden={activeTab !== "steps"}
+        id="issue-steps-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.steps ? (
+          <StepsTab active={activeTab === "steps"} issueKey={issueKey} />
+        ) : null}
+      </div>
       <div
         aria-hidden={activeTab !== "conversation"}
         aria-labelledby="issue-conversation-tab"

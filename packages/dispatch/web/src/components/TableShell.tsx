@@ -20,6 +20,7 @@ import {
   textSecondaryOnSurface,
 } from "../theme/classes";
 import { CONTROL, type ControlSize } from "./control-names";
+import { useScrollEnds } from "./useScrollEnds";
 
 /** Everything one density of the shell draws, so the two sit side by side in one place. */
 interface TableRecipe {
@@ -98,6 +99,15 @@ export type TableAlign = "left" | "right";
 
 const ALIGN: Record<TableAlign, string> = { left: "text-left", right: "text-right" };
 
+/** How a cell's text breaks across lines. */
+export type TableWrap = "nowrap" | "text" | "words";
+
+const WRAP: Record<TableWrap, string> = {
+  nowrap: "whitespace-nowrap",
+  text: "",
+  words: "break-words",
+};
+
 /** The shell's classes for one part, with the tone, weight and alignment its caller chose; a
  *  choice that adds no class contributes nothing. */
 function joined(...parts: readonly string[]): string {
@@ -124,6 +134,10 @@ export interface TableShellProps {
   readonly size?: ControlSize;
   /** Whether the head stays at the top of the box while the rows scroll under it. */
   readonly stickyHead?: boolean;
+  /** Whether the box wears the trailing fade (`scrollFadeTrailing`) while columns lie past its
+   *  edge, as the tablist and the details rail do, so a cut column reads as more to scroll rather
+   *  than as clipped text (`useScrollEnds`). */
+  readonly fadeTrailing?: boolean;
 }
 
 /**
@@ -145,16 +159,19 @@ export interface TableShellProps {
 export function TableShell({
   children,
   className,
+  fadeTrailing = false,
   label,
   size = "comfortable",
   stickyHead = false,
 }: TableShellProps): ReactNode {
   const recipe = RECIPE[size];
   const style = useMemo(() => ({ size, stickyHead }), [size, stickyHead]);
+  const ends = useScrollEnds({ ends: "trailing" });
   return (
     <div
-      className={className === undefined ? recipe.wrapper : `${recipe.wrapper} ${className}`}
+      className={joined(recipe.wrapper, className ?? "", fadeTrailing ? ends.fade : "")}
       data-control={CONTROL.tableShell}
+      ref={fadeTrailing ? ends.ref : undefined}
     >
       <table aria-label={label} className={recipe.table}>
         <TableStyleContext value={style}>{children}</TableStyleContext>
@@ -228,6 +245,12 @@ export function TableRow({ children, tone = "default", ...rest }: TableRowProps)
 
 export interface TableCellProps extends Omit<TdHTMLAttributes<HTMLTableCellElement>, "className"> {
   readonly align?: TableAlign;
+  /** Whether the text keeps to one line (`nowrap`), or breaks inside a long word where it must
+   *  (`words`), as an id does; by default it wraps as text does. */
+  readonly wrap?: TableWrap;
+  /** Whether the cell's text sits at the top of a row taller than it, as in a row where another
+   *  cell takes two lines; by default it sits in the middle. */
+  readonly top?: boolean;
   /** Figures that line up column-wise, such as a key or a commit. */
   readonly mono?: boolean;
   readonly tone?: TableTone;
@@ -240,7 +263,9 @@ export function TableCell({
   children,
   mono = false,
   tone = "default",
+  top = false,
   weight = "normal",
+  wrap = "text",
   ...rest
 }: TableCellProps): ReactNode {
   const { size } = useContext(TableStyleContext);
@@ -251,7 +276,9 @@ export function TableCell({
         ALIGN[align],
         mono ? "font-mono" : "",
         WEIGHT[weight],
-        TONE[tone]
+        TONE[tone],
+        WRAP[wrap],
+        top ? "align-top" : ""
       )}
       {...rest}
     >

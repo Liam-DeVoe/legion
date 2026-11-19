@@ -250,6 +250,7 @@ On the Delivery page's list:
 | `t s` | Spec tab |
 | `t k` | Verification tab |
 | `t p` | Plan tab |
+| `t e` | Steps tab |
 | `t c` | Conversation tab |
 | `t h` | Children tab |
 | `t a` | Artifacts tab |

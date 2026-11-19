@@ -5,11 +5,17 @@ import { type ReactNode, useState } from "react";
 
 import { PanelTrigger } from "./PanelTrigger";
 
-function Host({ count }: { count?: number }) {
+function Host({ count, held = false }: { count?: number; held?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <PanelTrigger count={count} label="Columns" onOpenChange={setOpen} open={open}>
+      <PanelTrigger
+        ariaDisabled={held}
+        count={count}
+        label="Columns"
+        onOpenChange={setOpen}
+        open={open}
+      >
         {(close) => (
           <button onClick={close} type="button">
             Done
@@ -84,6 +90,33 @@ test("the close the panel is handed shuts it and leaves the reader on the trigge
     await user.click(trigger);
     await user.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A held trigger (`ariaDisabled`, a write it leads to out) refuses only an open: a press on it
+// still closes the panel it has open, so a hold that comes while the panel is open never leaves the
+// reader unable to shut it, and a press on it while the panel is closed opens nothing. It keeps
+// the focus throughout.
+test("a held trigger closes the panel it has open, and opens none while closed", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Columns" });
+    await user.click(trigger);
+    expect(screen.getByRole("dialog", { name: "Columns" })).toBeTruthy();
+
+    view.rerender(<Host held />);
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+    await user.click(trigger);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(trigger);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(trigger).toHaveFocus();
   } finally {
     view.unmount();

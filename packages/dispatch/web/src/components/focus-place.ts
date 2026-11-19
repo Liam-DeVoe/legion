@@ -140,8 +140,10 @@ export function useFocusPlace(
 /** A dialog, modal or not - the search bar, the Inbox drawer, every `useDialog` dialog, and the
  *  panel a `PanelTrigger` opens - or any other panel an `AnchoredPanel` draws, which carries the
  *  keymap's `PANEL_ATTRIBUTE`: a `MultiSelect` list's, which has no role of its own. Each is a
- *  region of its own, and a press inside it is a press in the region it was opened from, since
- *  the focus goes back to its opener when it goes. */
+ *  region of its own, and a press inside it is a press in it, and on the trigger that names it
+ *  where one does (`openerOf`). Once it has gone with the element the press landed on, the press
+ *  reads as one on the control it was opened from as well (`pressedOn`), since the focus goes
+ *  back to its opener when it goes. */
 const DIALOG = `[role="dialog"], [${PANEL_ATTRIBUTE}]`;
 
 /** What a row of a table or list is: a `<tr>`, anything given a row role, or an Inbox row. A loss
@@ -307,13 +309,15 @@ function readSight(watched: Sight): void {
 
 /** The page's one record of what the reader can see of the element the focus was last noted on,
  *  which the page's rescue keeps (`useFocusRescue`), mounted once in the app shell: null while no
- *  rescue is mounted. The component hand-offs read it too, so one record decides for all. */
+ *  rescue is mounted. Two component hand-offs read it too (`useFocusPlace`, `SelectionBar`), so
+ *  one record decides for them and for the rescue. */
 let sight: Sight | null = null;
 
 /** Whether the reader had scrolled `element` out of their sight, as the page's rescue last read
- *  it: false for an element the rescue has not noted, and wherever no rescue is mounted. Every
- *  hand-off asks this of the element that went before it moves the focus, so none pulls a list
- *  or the page back to a place the reader scrolled away from (`useFocusPlace`, `SelectionBar`). */
+ *  it: false for an element the rescue has not noted, and wherever no rescue is mounted. The
+ *  rescue asks this of a loss's element before it answers the loss, and the two component
+ *  hand-offs that read it (`useFocusPlace`, `SelectionBar`) ask it before they move the focus, so
+ *  none of them pulls a list or the page back to a place the reader scrolled away from. */
 export function outOfSight(element: Element): boolean {
   return sight?.element === element && !sight.seen;
 }
@@ -330,11 +334,14 @@ const HELD = '[aria-disabled="true"], :disabled';
 /** The reader's latest act - a `pointerdown`, a `keydown`, or a `change` they committed - which
  *  tells a loss the reader caused from one an update made under them: where it landed, the dialog
  *  or panel it landed in (`DIALOG`), the control that opened that panel where one names it
- *  (`control`, `openerOf`) and the loss that region was opened from (`openedFrom`), the event
- *  that releases it (`pointerup`, `keyup`, none for a change), whether it can still be the cause
- *  of a loss (`live`, `answerPress`), and what stops the timers and the watch that end it. */
+ *  (`control`, `openerOf`) and the loss that region was opened from (`openedFrom`), the elements
+ *  it can read as (`pressedOn`) that were already held when it was made (`heldBefore`,
+ *  `heldAt`), the event that releases it (`pointerup`, `keyup`, none for a change), whether it
+ *  can still be the cause of a loss (`live`, `answerPress`), and what stops the timers and the
+ *  watch that end it. */
 interface Press {
   readonly control: Element | null;
+  readonly heldBefore: ReadonlySet<Element>;
   live: boolean;
   readonly opener: Loss | null;
   readonly region: Element | null;
@@ -358,6 +365,31 @@ function drawnOpener(opener: Loss | null): Loss | null {
   let from = opener;
   while (from !== null && !present(from.region)) from = from.opener;
   return from;
+}
+
+/** Whether `element` is in the page and cannot be pressed now (`HELD`). */
+function isHeld(element: Element): boolean {
+  return element.isConnected && element.closest(HELD) !== null;
+}
+
+/** The elements a press on `target` can read as (`pressedOn`) - `target`, the control that opened
+ *  the panel it is in (`control`, `openerOf`), and the control each region around it was opened
+ *  from, `opener` and each opener before it - that are held now (`isHeld`). Read as the press is
+ *  made, before what it does: a control held then refuses the press, so its hold is no doing of
+ *  the press (`answerPress`). */
+function heldAt(
+  target: Element,
+  control: Element | null,
+  opener: Loss | null
+): ReadonlySet<Element> {
+  const held = new Set<Element>();
+  for (const each of control === null ? [target] : [target, control]) {
+    if (isHeld(each)) held.add(each);
+  }
+  for (let from = opener; from !== null; from = from.opener) {
+    if (isHeld(from.element)) held.add(from.element);
+  }
+  return held;
 }
 
 /** The elements `press` reads as now: the one it landed on, the control that opened the panel it
@@ -384,13 +416,16 @@ function pressedOn(press: Press): Element[] {
  *  of the change it leads to. That is a frame and a task from now (`afterComponents`) - from the
  *  press, and again from its release, which a click answers - by when React has committed what the
  *  press did and run its effects, and longer only while a control it reads as (`pressedOn`) is
- *  held (`HELD`), its write out, and then until a frame and a task after that hold ends: the
- *  control taken away, or its `aria-disabled` or `disabled` gone. The hold's end is watched rather
- *  than polled, since its write's latency is the server's, and the watch ends at the write
- *  deadline (`RESCUE_WAIT_MS`) as the rescue's own wait does, so a control refused for good - the
- *  pager's Next on its last page - keeps no watch over the page and no press live past it. A press
- *  past that is no cause, so an update after it - a live update taking the row away, a refetch
- *  emptying the selection bar - is a loss the reader did not cause. */
+ *  held (`HELD`) by a hold that began after the press, its write out, and then until a frame and a
+ *  task after that hold ends: the control taken away, or its `aria-disabled` or `disabled` gone. A
+ *  control already held when the press was made (`heldBefore`) - the pager's Next on its last
+ *  page, a select or a trigger held while an earlier write is out - refused the press, which led
+ *  to no write, so its hold keeps the press live no longer than a press on a control held by
+ *  nothing. The hold's end is watched rather than polled, since its write's latency is the
+ *  server's, and the watch ends at the write deadline (`RESCUE_WAIT_MS`) as the rescue's own wait
+ *  does, so a write that never answers keeps no watch over the page and no press live past it. A
+ *  press past that is no cause, so an update after it - a live update taking the row away, a
+ *  refetch emptying the selection bar - is a loss the reader did not cause. */
 function answerPress(press: Press): void {
   press.stop();
   press.live = true;
@@ -404,7 +439,7 @@ function answerPress(press: Press): void {
     if (!target.isConnected && (region === null || !region.isConnected)) kept = now;
     return now;
   };
-  const held = () => pressed().some((each) => each.isConnected && each.closest(HELD) !== null);
+  const held = () => pressed().some((each) => !press.heldBefore.has(each) && isHeld(each));
   press.stop = afterComponents(() => {
     if (!held()) {
       press.live = false;
@@ -915,11 +950,11 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * scrolled away from - a live update taking that row away, say - and their next key acts on
  * nothing they did not choose. The focus stays on the body, except in a dialog or a panel
  * (`DIALOG`), which takes it itself without a scroll, so the page behind a modal one is never
- * reached (`leaveUnseen`). The record is the page's one (`outOfSight`), which the component
- * hand-offs read too, so none of them answers such a loss before the rescue's check. Only an
- * element a read has found in sight since it took the focus can be read out of it (`readSight`):
- * one focused below the fold, which a scroll the page made before the engine's own left there,
- * was never in the reader's sight.
+ * reached (`leaveUnseen`). The record is the page's one (`outOfSight`), which two component
+ * hand-offs read too (`useFocusPlace`, `SelectionBar`), so neither answers such a loss before the
+ * rescue's check. Only an element a read has found in sight since it took the focus can be read
+ * out of it (`readSight`): one focused below the fold, which a scroll the page made before the
+ * engine's own left there, was never in the reader's sight.
  */
 export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
   useEffect(() => {
@@ -1172,16 +1207,30 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
      *  while it is live can be told from one an update made under them (`causedByReader`), with
      *  the dialog or panel it landed in, the control that opened it (`openerOf`) and the loss that
      *  region was opened from, read now, while the region is still in the page, for when a pick or
-     *  a confirm takes it away (`pressedOn`). A newer act ends the one before it, and the watch on
-     *  that one's hold with it. */
+     *  a confirm takes it away (`pressedOn`), and the controls it can read as that are already held
+     *  (`heldAt`), read before the act runs. A newer act ends the one before it, and the watch on
+     *  that one's hold with it, except an act on a control that act already holds - a double
+     *  click, a repeated Enter - which the control refuses, so the act before it stays the cause of
+     *  what its write takes away. */
     const notePress = (event: Event) => {
       if (!(event.target instanceof Element)) return;
+      if (
+        lastPress?.live === true &&
+        isHeld(event.target) &&
+        !lastPress.heldBefore.has(event.target) &&
+        pressedOn(lastPress).includes(event.target)
+      ) {
+        return;
+      }
       lastPress?.stop();
       const region = event.target.closest(DIALOG);
+      const opener = region === null ? null : (openedFrom.get(region) ?? null);
+      const control = openerOf(event.target);
       lastPress = {
-        control: openerOf(event.target),
+        control,
+        heldBefore: heldAt(event.target, control, opener),
         live: true,
-        opener: region === null ? null : (openedFrom.get(region) ?? null),
+        opener,
         region,
         release: RELEASE[event.type] ?? null,
         stop: () => undefined,

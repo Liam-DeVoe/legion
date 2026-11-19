@@ -5299,6 +5299,7 @@ const ISSUE_TABS = [
   ["spec", "Spec"],
   ["verification", "Verification"],
   ["plan", "Plan"],
+  ["steps", "Steps"],
   ["conversation", "Conversation"],
   ["children", "Children"],
   ["artifacts", "Artifacts"],
@@ -5314,6 +5315,7 @@ const TAB_CHORD_HINT = [
   "s Spec tab",
   "k Verification tab",
   "p Plan tab",
+  "e Steps tab",
   "c Conversation tab",
   "h Children tab",
   "a Artifacts tab",
@@ -6118,10 +6120,12 @@ test("k-comment-focus: at 1024x768, where the margin is a sheet, each new commen
 // focus.
 // ---------------------------------------------------------------------------
 
-/** A group of controls that share one Tab stop, and the arrow key that moves among them. */
+/** A group of controls that share one Tab stop, the arrow key that moves among them, and how many
+ *  members the page holds, shown or not: a tab its strip has scrolled out of view is one. */
 interface ReachGroup {
   readonly id: number;
   readonly arrow: "ArrowDown" | "ArrowRight";
+  readonly size: number;
 }
 
 /** A control a page shows: where it stands in the page's list, the name a failure gives it - its
@@ -6200,7 +6204,7 @@ async function installReach(page: Page): Promise<void> {
     let listed: Element[] = [];
     let first: Element | null = null;
     const focused = new Set<number>();
-    const groups: { readonly name: string; readonly node: Node }[] = [];
+    const groups: { readonly name: string; readonly node: Node; readonly size: number }[] = [];
     document.addEventListener(
       "focusin",
       (event) => {
@@ -6284,32 +6288,62 @@ async function installReach(page: Page): Promise<void> {
     };
 
     /** The group `element` shares one Tab stop with: the radios of one name in one form, the radios
-     *  of a `radiogroup`, the tabs of a `tablist`, the items of a `menu` or a `menubar`. */
+     *  of a `radiogroup`, the tabs of a `tablist`, the items of a `menu` or a `menubar`. Its size
+     *  is read as the group is first met: every member the page holds that takes a press, shown
+     *  or not, as the group's arrow keys skip a disabled one. */
     const groupOf = (element: Element): ReachGroup | null => {
-      const groupAt = (node: Node, name: string, arrow: ReachGroup["arrow"]): ReachGroup => {
+      const groupAt = (
+        node: Node,
+        name: string,
+        arrow: ReachGroup["arrow"],
+        members: () => number
+      ): ReachGroup => {
         const known = groups.findIndex((group) => group.node === node && group.name === name);
-        return { arrow, id: known === -1 ? groups.push({ name, node }) - 1 : known };
+        const id = known === -1 ? groups.push({ name, node, size: members() }) - 1 : known;
+        return { arrow, id, size: groups[id]?.size ?? 0 };
       };
       if (element instanceof HTMLInputElement && element.type === "radio") {
-        return element.name === ""
-          ? null
-          : groupAt(element.form ?? document, element.name, "ArrowDown");
+        if (element.name === "") return null;
+        const scope = element.form ?? document;
+        return groupAt(
+          scope,
+          element.name,
+          "ArrowDown",
+          () =>
+            [...scope.querySelectorAll('input[type="radio"]:not(:disabled)')].filter(
+              (radio) =>
+                radio instanceof HTMLInputElement &&
+                radio.name === element.name &&
+                radio.form === element.form
+            ).length
+        );
       }
       const role = element.getAttribute("role") ?? "";
-      const owner =
+      const owners =
         role === "radio"
-          ? element.closest('[role="radiogroup"]')
+          ? '[role="radiogroup"]'
           : role === "tab"
-            ? element.closest('[role="tablist"]')
+            ? '[role="tablist"]'
             : role.startsWith("menuitem")
-              ? element.closest('[role="menu"], [role="menubar"]')
+              ? '[role="menu"], [role="menubar"]'
               : null;
+      if (owners === null) return null;
+      const owner = element.closest(owners);
       if (owner === null) return null;
       const across =
         owner.getAttribute("role") === "menubar" ||
         (owner.getAttribute("role") === "tablist" &&
           owner.getAttribute("aria-orientation") !== "vertical");
-      return groupAt(owner, "", across ? "ArrowRight" : "ArrowDown");
+      const kind = role.startsWith("menuitem") ? '[role^="menuitem"]' : `[role="${role}"]`;
+      return groupAt(
+        owner,
+        "",
+        across ? "ArrowRight" : "ArrowDown",
+        () =>
+          [...owner.querySelectorAll(`${kind}:not(:disabled)`)].filter(
+            (member) => member.closest(owners) === owner
+          ).length
+      );
     };
 
     const controlsIn = (root: Element | Document): Element[] =>
@@ -6470,7 +6504,11 @@ async function expectKeyboardReach(page: Page, at: ReachPage): Promise<void> {
   }
   await addFocused();
 
-  // A group's members from the stop Tab reached, by the group's arrow key.
+  // A group's members from the stop Tab reached, by the group's arrow key, once round the whole
+  // group and back to that stop. The round counts every member the page holds, not only the
+  // ones it shows: the issue page's ten tabs overflow their strip beside the margin, so the tabs
+  // scrolled out of view are no listed control, and a round of the listed ones alone would end
+  // short of the stop, on a tab whose panel then hides the one the page was opened on.
   const groups = new Map<number, ShownControl[]>();
   for (const control of controls) {
     if (control.group !== null) {
@@ -6479,17 +6517,18 @@ async function expectKeyboardReach(page: Page, at: ReachPage): Promise<void> {
   }
   for (const members of groups.values()) {
     const stop = members.find((member) => reached.has(member.index));
-    const arrow = members[0]?.group?.arrow;
+    const group = members[0]?.group;
     if (
       stop === undefined ||
-      arrow === undefined ||
+      group === null ||
+      group === undefined ||
       members.every((member) => reached.has(member.index))
     ) {
       continue;
     }
     await page.evaluate((index) => window.__keyboardReach?.focus(index), stop.index);
-    for (let press = 0; press < members.length; press += 1) {
-      await page.keyboard.press(arrow);
+    for (let press = 0; press < group.size; press += 1) {
+      await page.keyboard.press(group.arrow);
       // A group's arrow moves the focus inside its own key press, so this reads where it settled.
       const focus = await page.evaluate(
         () => window.__keyboardReach?.at() ?? { back: true, index: -1 }
@@ -6652,6 +6691,14 @@ for (const [tab] of ISSUE_TABS) {
           .locator("#issue-collaborators-panel")
           .locator('section[aria-label], [aria-label="Collaborators empty state"]')
           .first()
+      ).toBeVisible();
+      await withoutEases(page);
+    } else if (tab === "steps") {
+      // No reviewed route draws the Steps tab (`e2e/review-routes.ts`), and the corpus writes no
+      // step record, so the tab has answered once it draws its empty state.
+      await page.goto(`/issues/${seed.issue}/steps`);
+      await expect(
+        page.locator("#issue-steps-panel").getByRole("region", { name: "Steps empty state" })
       ).toBeVisible();
       await withoutEases(page);
     } else {
