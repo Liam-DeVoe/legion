@@ -1,3 +1,4 @@
+import { awaitsDecision } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -66,7 +67,9 @@ export function blockedOnYouText(needs: NeedsYou | undefined): string {
 
 /** Everything that waits for the viewer themselves - every ask `waitingOnYou` keeps, and every
  *  pending credential request they may decide, as its approver or as anyone signed in -
- *  counted, with when the oldest of them began waiting (undefined when nothing does). The
+ *  counted, with when the oldest of them began waiting (undefined when nothing does). An expired
+ *  credential request is listed until somebody dismisses it, but nobody can decide it any more,
+ *  so it waits on nobody and is neither counted nor the oldest (`awaitsDecision`). The
  *  badges and the Inbox's own needs-you control read this one rule, so every count of work
  *  waiting on the reader means the same thing whatever the list on screen is filtered
  *  to, and another kind of waiting item is added here once. An ask is counted only once the
@@ -88,7 +91,7 @@ export function needsYou(
 ): NeedsYou {
   const since = [
     ...waitingOnYou(asks, viewer).map((ask) => ask.created_at),
-    ...credentialRequests.map((request) => request.requested_at),
+    ...credentialRequests.filter(awaitsDecision).map((request) => request.requested_at),
   ];
   const oldest = since
     .filter(isTimestamp)

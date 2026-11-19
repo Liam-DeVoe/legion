@@ -75,6 +75,27 @@ test("a request whose time cannot be read still counts, and the control's age co
   expect(blockedOnYouText(needsYou([], [unreadable], "alice"))).toBe("Blocked on you: 1 item");
 });
 
+// INFRA-3921: an expired credential request stays listed until somebody dismisses it, but nobody
+// can decide it any more, so nothing waits on the reader there: it is neither counted nor the
+// oldest, even when it was asked long before everything else.
+test("an expired credential request is neither counted nor the oldest", () => {
+  const pending = {
+    ...request("record-1", new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()),
+    state: "pending" as const,
+  };
+  const expired = {
+    ...request("record-2", new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()),
+    expires_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    state: "expired" as const,
+  };
+
+  expect(blockedOnYouText(needsYou([], [pending, expired], "alice"))).toBe(
+    "Blocked on you: 1 item, oldest 3h"
+  );
+  // The Inbox draws no Blocked on you control while this count is 0.
+  expect(needsYou([], [expired], "alice").count).toBe(0);
+});
+
 // One meaning for every count of what waits on the reader: whose turn it is AND whose issue it
 // is, whatever the list on screen is filtered to. A credential request is nobody's issue and
 // anyone signed in may decide one, so it is counted whether or not the login has resolved.
