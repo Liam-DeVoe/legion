@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    `dispatch artifact` without `--force` no longer writes a version into a document another writer
+    made between its read of what the owner holds and its upload. The upload asks Dispatch for a
+    create alone (`create_only`), so Dispatch refuses it under a name held by then and writes
+    nothing, and the command answers with the refusal it gives a name its read finds: the document,
+    its newest version and who wrote it, and that `--force` writes the next version.
+time: 2026-11-19T13:19:57.436523683Z
+custom:
+    Issue: pr4507

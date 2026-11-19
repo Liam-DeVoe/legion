@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+    An upload to an issue or a project takes `create_only`, as a JSON member or as a multipart field
+    spelled true or false. With it true the upload only creates: where the name is the name or the
+    slug of an artifact the owner already holds, a renamed document's new name included, Dispatch
+    answers 409 ARTIFACT_NAME_TAKEN, naming that artifact, and writes no version. The check is made
+    under the owner's lock, in the upload's own transaction, so a document another writer makes just
+    before the upload is refused too. A file under a name already held is refused before its bytes
+    reach the file store. An upload without it writes the next version of a held name, as before.
+time: 2026-11-19T13:19:57.312465536Z
+custom:
+    Issue: pr4507
