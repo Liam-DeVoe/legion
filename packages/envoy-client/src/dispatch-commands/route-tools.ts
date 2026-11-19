@@ -60,7 +60,7 @@ export async function callBoundRoute(
     for (const name of route.body ?? []) {
       if (args[name] !== undefined) body[name] = args[name];
     }
-    body.actor = actor;
+    body["actor"] = actor;
   }
   const answer = await client.callRoute(route.method, path, { body, query });
   return {
