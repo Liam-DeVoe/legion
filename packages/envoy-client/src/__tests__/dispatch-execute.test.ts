@@ -17227,7 +17227,14 @@ for (const [name, reference, routeAnswer, named, absent] of [
 // that is not there, that sentence says it stands. The positive control drives the same fixture
 // with the owner read answered, where the claim is true and is made. The document arm is reached
 // by `dispatch read` of a comment by its whole id: no listing resolves that id, so the read of
-// the document on this failing path is the command's first.
+// the document on this failing path is the command's first. A failure's `words` are what the
+// refusal quotes of an answer; a transport failure has none, and the text the client words for
+// it (`DispatchUnreachableError`) is not this refusal's, so its rows assert none of it.
+/** One way the read of an owner fails: its answer, and the words of it the refusal quotes. */
+interface OwnerReadFailure {
+  readonly answer: (pathname: string) => Response;
+  readonly words?: string;
+}
 const ownerReadFailures = {
   gateway: {
     answer: (): Response =>
@@ -17250,9 +17257,8 @@ const ownerReadFailures = {
     answer: (): Response => {
       throw new TypeError("fetch failed");
     },
-    words: "unreachable: fetch failed",
   },
-} as const;
+} satisfies Record<string, OwnerReadFailure>;
 
 for (const [tool, args, ownerKind, ownerName, kind, ownerPath, standing] of [
   [
@@ -17302,14 +17308,16 @@ for (const [tool, args, ownerKind, ownerName, kind, ownerPath, standing] of [
         : response({ code: "NOT_FOUND", error: "not found" }, 404);
     };
 
-  for (const [failure, { answer, words }] of Object.entries(ownerReadFailures)) {
+  for (const [failure, { answer, words }] of Object.entries<OwnerReadFailure>(ownerReadFailures)) {
     test(`${tool} on ${ownerName} claims nothing of an owner whose read met a ${failure}`, async () => {
       const error = await runWithFixture(tool, args, fixture(answer));
 
       expect(error).toBeInstanceOf(Error);
       const message = (error as Error).message;
-      expect(message).toContain(`the read of ${ownerName} failed`);
-      expect(message).toContain(words);
+      expect(message).toContain(
+        `the read of ${ownerName} failed, so this does not say whether ${ownerName} exists`
+      );
+      if (words !== undefined) expect(message).toContain(words);
       expect(message).not.toContain(claim);
       // An issue's own missing record is the one answer that names it; a document owner has none.
       if (ownerKind === "issue") expect(message).not.toContain("holds no issue");

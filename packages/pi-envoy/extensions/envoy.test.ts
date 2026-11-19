@@ -13718,7 +13718,7 @@ console.log(JSON.stringify(args));
       runEphemeralTurn?: () => Promise<{ replyText: string }>
     ): Promise<{ replies: unknown[]; warnings: string[]; failures: string[] }> {
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       const replies: unknown[] = [];
       globalThis.fetch = async (input, init) => {
         const path = new URL(input.toString()).pathname;

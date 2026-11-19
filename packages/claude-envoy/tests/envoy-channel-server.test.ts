@@ -780,7 +780,7 @@ test("a rejected frame's report that landed with no answer back is not said to b
       },
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-    process.env["DISPATCH_TOKEN"] = "reply-token"
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const delivery = createChannelDelivery({
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier: new FakeNotifier(),

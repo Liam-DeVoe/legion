@@ -180,6 +180,11 @@ function repliesBody(rows: Record<string, unknown>[], now: number): Record<strin
   return { rows, total: rows.length, limit: 0, offset: 0, as_of: new Date(now).toISOString() };
 }
 
+/** The Unread threads line `stdout` prints for the thread whose page is `ref`, which ends it. */
+function threadLine(stdout: string, ref: string): string | undefined {
+  return stdout.split("\n").find((line) => line.startsWith("- ") && line.endsWith(` · ${ref}`));
+}
+
 /** How the stub answers one read: the rows it lists by default (`LISTED`), or a body and status
  *  of its own, a literal `null` body among them. */
 type Answer = typeof LISTED | { readonly status: number; readonly body: unknown };
@@ -502,13 +507,16 @@ describe("dispatch inbox", () => {
 
     expect(stderr).toBe("");
     expect(code).toBe(0);
-    expect(stdout).toContain(
-      [
-        "Unread threads 3",
-        "- DSP-6 · comment · Deleted by user alice@theorem.dev at 2026-11-02T08:00:00Z · user bob@theorem.dev · 5m · /issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-        "- DSP-6 · comment · The staging box lost its disk again · user bob@theorem.dev · 5m · /issues/DSP-6/comments/66666666-6666-4666-8666-666666666666",
-      ].join("\n")
+    // The deleted line stands where the root's subject was; the thread's author and age are the
+    // fixture's, which this row does not read.
+    expect(
+      threadLine(stdout, "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+    ).toStartWith(
+      "- DSP-6 · comment · Deleted by user alice@theorem.dev at 2026-11-02T08:00:00Z · "
     );
+    expect(
+      threadLine(stdout, "/issues/DSP-6/comments/66666666-6666-4666-8666-666666666666")
+    ).toStartWith("- DSP-6 · comment · The staging box lost its disk again · ");
   });
 
   test("a thread whose root its author edited prints the edited mark after its subject", async () => {
@@ -537,13 +545,17 @@ describe("dispatch inbox", () => {
 
     expect(stderr).toBe("");
     expect(code).toBe(0);
-    expect(stdout).toContain(
-      [
-        "Unread threads 3",
-        "- DSP-6 · comment · The staging box is back · edited 2026-11-02T08:00:00Z · user bob@theorem.dev · 5m · /issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-        "- DSP-6 · comment · The staging box lost its disk again · user bob@theorem.dev · 5m · /issues/DSP-6/comments/66666666-6666-4666-8666-666666666666",
-      ].join("\n")
+    // The edited mark follows the root's subject, and a root nobody edited carries none; the
+    // thread's author and age are the fixture's, which this row does not read.
+    expect(
+      threadLine(stdout, "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+    ).toStartWith("- DSP-6 · comment · The staging box is back · edited 2026-11-02T08:00:00Z · ");
+    const standing = threadLine(
+      stdout,
+      "/issues/DSP-6/comments/66666666-6666-4666-8666-666666666666"
     );
+    expect(standing).toStartWith("- DSP-6 · comment · The staging box lost its disk again · ");
+    expect(standing).not.toContain("edited");
   });
 
   test("counts the unread threads in the call's details", async () => {

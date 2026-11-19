@@ -515,10 +515,16 @@ describe("sending pictures", () => {
     for (const [code, landing] of [
       [
         "ANSWER_NOT_KEPT",
-        () =>
+        // Dispatch's keyed layer carries the request's key back on every answer to a keyed
+        // write, a replay included; a 2xx without it is no answer of Dispatch's.
+        (key: string) =>
           new Response(JSON.stringify({ code: "ANSWER_NOT_KEPT", error: "not kept" }), {
             status: 201,
-            headers: { "Content-Type": "application/json", "Idempotency-Replayed": "?1" },
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": key,
+              "Idempotency-Replayed": "?1",
+            },
           }),
       ],
       [
@@ -534,7 +540,7 @@ describe("sending pictures", () => {
         uploads += 1;
         return uploads === 1
           ? json({ code: "UNAVAILABLE", error: "database unavailable" }, 503)
-          : landing();
+          : landing(new Headers(init.headers).get("Idempotency-Key") ?? "");
       });
       const shot = file("landed.png", PNG);
 
