@@ -18,6 +18,7 @@ import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "r
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -35,6 +36,7 @@ import { pageFocusedRow } from "../../theme/classes";
 import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -1159,6 +1161,119 @@ test("Home from a chip of the first row brings the row back on screen after the 
   } finally {
     boxes.mockRestore();
     scrolled.mockRestore();
+  }
+});
+
+// A wide code block or table of the focused row's words keeps a tab stop of its own, so a reader
+// on the keyboard can scroll it sideways. On it, or on a link inside it, every key the browser
+// scrolls by - the block, or the page where the block does not scroll the key's way - is the
+// browser's: the page's keymap prevents none of them, and the tree moves no focus, folds nothing
+// and says nothing. Escape from it gives the row back, and `j`, which scrolls nothing, still moves
+// to the next row. happy-dom scrolls nothing, so a key left to the browser is what a unit case
+// reads; the browser suite reads the scroll itself.
+test("on a block of the focused row that keeps its tab stop, the keys the browser scrolls by are left to it, and Escape gives the row back", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  await warmMarkdownRenderer();
+  const text = [
+    "Run it so:",
+    "",
+    "```sh",
+    "bun run e2e --project=chromium --workers=1 --retries=0",
+    "```",
+    "",
+    "| Where | What |",
+    "| --- | --- |",
+    "| [the notes](https://example.com/notes) | value |",
+  ].join("\n");
+  // The comment holds a reply, drawn folded, so Right would unfold it and Left move to no row;
+  // the second comment is the row after it.
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "reply-1", text: "A reply.", type: "comment" })],
+        id: "comment-1",
+        text,
+        tree: displayTree(text),
+        type: "comment",
+      }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  // The rules that make a block of a row's words scroll, which `useOutOfTabOrder` reads through
+  // the computed style: happy-dom applies no rule of styles.css.
+  const sheet = document.createElement("style");
+  sheet.textContent = "[data-node-words] pre, [data-node-words] table { overflow-x: auto; }";
+  document.head.append(sheet);
+  try {
+    const { container } = renderTree(root);
+    await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+    const [row] = rowsFor(container, "comment-1");
+    if (row === undefined) throw new Error("the comment has no row");
+    expect(row.getAttribute("aria-expanded"), "the comment's reply is drawn").toBe("false");
+    /** The block of the focused row that keeps its tab stop under `name`. */
+    const kept = (name: string): HTMLElement => {
+      const block = row.querySelector<HTMLElement>(`[tabindex="0"][aria-label="${name}"]`);
+      if (block === null) throw new Error(`the focused row keeps no tab stop named "${name}"`);
+      return block;
+    };
+    const code = await waitFor(() => kept(CONTROL_LABELS.scrolls_code));
+    const link = kept(CONTROL_LABELS.scrolls_table).querySelector<HTMLElement>("a[href]");
+    if (link === null) throw new Error("the table draws no link");
+    /** The rows as drawn, each with whether it is open: what a move or a fold changes. */
+    const drawn = (): string[] =>
+      [...container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+        (one) => `${one.dataset.rowKey} ${one.getAttribute("aria-expanded")}`
+      );
+    /** Presses `key` where the focus is, as the browser sends it, and answers the event once
+     *  the page has heard it. */
+    const press = (key: string): KeyboardEvent => {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+      act(() => {
+        document.activeElement?.dispatchEvent(event);
+      });
+      return event;
+    };
+    const rows = drawn();
+    const report = rowReport(container);
+    for (const [on, what] of [
+      [code, "the code block"],
+      [link, "a link in the table"],
+    ] as const) {
+      act(() => code.focus());
+      // `f` steps from the block to the row's one link, the table's.
+      if (on === link) await user.keyboard("f");
+      expect(document.activeElement, `the focus did not reach ${what}`).toBe(on);
+      for (const key of [
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowUp",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        " ",
+      ]) {
+        const name = key === " " ? "Space" : key;
+        expect(press(key).defaultPrevented, `the page took ${name} from ${what}`).toBe(false);
+        expect(document.activeElement, `${name} moved the focus off ${what}`).toBe(on);
+        expect(drawn(), `${name} on ${what} moved through the tree or folded it`).toEqual(rows);
+        expect(rowReport(container), `${name} on ${what} said something`).toBe(report);
+      }
+      press("Escape");
+      expect(document.activeElement, `Escape on ${what} did not give the row back`).toBe(row);
+    }
+
+    act(() => code.focus());
+    expect(press("j").defaultPrevented, "j on the code block was left to the browser").toBe(true);
+    expect(focusedRow(container), "j on the code block did not move to the next row").toBe(
+      "comment-2"
+    );
+  } finally {
+    sheet.remove();
   }
 });
 

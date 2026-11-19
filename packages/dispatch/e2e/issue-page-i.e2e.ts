@@ -3412,15 +3412,20 @@ function focusAgainstRow(row: Locator): Promise<string> {
 // focused row's words sideways (WCAG 2.1.1, which axe's `scrollable-region-focusable` rule
 // reads): the code block and the table that scroll in the row that holds the focus are tab stops,
 // each named for what it holds, and every other row's are out of the tab order. With every row's
-// out, as the outline had them, no key reached a wide block, and no key scrolled it. At 1440 by
-// 900, a comment whose words hold a code block and a table, each wider than its box, and a comment
-// of words alone after it: Tab from the first stops on its code block, then on its table, then
-// leaves the tree; from the second, Tab leaves the tree at once, and so does Shift+Tab, which
-// passes the first comment's blocks above it; and with the first focused, axe finds no scroller
-// on the page that the keyboard cannot reach.
+// out, as the outline had them, no key reached a wide block, and no key scrolled it; with the
+// focus on the code block the tree still took its keys, so Right scrolled nothing and End moved the
+// focus to the tree's last row. At 1440 by 900, a comment whose words hold a code block and a
+// table, each wider than its box, and a comment of words alone after it: Tab from the first stops
+// on its code block, where Right scrolls it sideways with the focus still on it, and End, which the
+// browser scrolls by only up and down, leaves the focus on it and moves and folds no row; Shift+Tab
+// and Escape each give the row back; Tab from the row stops on the code block, then on its table,
+// then leaves the tree; from the second, Tab leaves the tree at once, and so does Shift+Tab, which
+// passes the first comment's blocks above it; and with the first focused, axe finds no scroller on
+// the page that the keyboard cannot reach.
 // SLOW(>=2s): an issue of two comments seeded and loaded at the first one's address, its code
-// block and table waited for until they are laid out wider than their boxes, eight keys each
-// waited on until the focus lands, and the page read by axe once the first row has the focus.
+// block and table waited for until they are laid out wider than their boxes, fourteen keys each
+// waited on until the focus lands, the block scrolls or the rows read as before, and the page read
+// by axe once the first row has the focus.
 test("Tab from the focused row stops on its code block and its table, then leaves the tree, and a row with neither leaves at once", async ({
   browser,
 }) => {
@@ -3463,6 +3468,58 @@ test("Tab from the focused row stops on its code block and its table, then leave
       focused,
       "the code block's tab stop is not named for what it holds"
     ).toHaveAccessibleName(CONTROL_LABELS.scrolls_code);
+
+    // On the code block the keys that scroll a box are the browser's: Right scrolls it sideways
+    // with the focus still on it, and End, which the browser scrolls by in the other direction
+    // alone, leaves the focus on it and moves and folds no row. Shift+Tab gives the row back, as
+    // the tab order has it, and so does Escape; Tab from the row stops on the code block again.
+    const code = rowWords(row).locator("pre");
+    await page.keyboard.press("ArrowRight");
+    await expect
+      .poll(() => code.evaluate((element) => element.scrollLeft), {
+        message: "Right on the focused comment's code block did not scroll it sideways",
+      })
+      .toBeGreaterThan(0);
+    await expect
+      .poll(() => focusAgainstRow(row), {
+        message: "Right on the focused comment's code block took the focus off it",
+      })
+      .toBe("its code block");
+    /** Each row the tree draws, by its node, with its fold and whether it holds the tree's
+     *  stop. */
+    const folds = async () =>
+      (await drawnRows(page)).map(({ expanded, foldedCount, id, tabIndex }) => ({
+        expanded,
+        foldedCount,
+        id,
+        tabIndex,
+      }));
+    const beforeEnd = await folds();
+    await page.keyboard.press("End");
+    await expect
+      .poll(() => focusAgainstRow(row), {
+        message: "End on the focused comment's code block took the focus off it",
+      })
+      .toBe("its code block");
+    await expect
+      .poll(folds, {
+        message: "End on the focused comment's code block moved the tree's stop or a fold",
+      })
+      .toEqual(beforeEnd);
+    for (const key of ["Shift+Tab", "Escape"]) {
+      await page.keyboard.press(key);
+      await expect
+        .poll(() => focusAgainstRow(row), {
+          message: `${key} on the focused comment's code block did not give the row back`,
+        })
+        .toBe("the row");
+      await page.keyboard.press("Tab");
+      await expect
+        .poll(() => focusAgainstRow(row), {
+          message: `Tab from the row, after ${key}, did not stop on its code block again`,
+        })
+        .toBe("its code block");
+    }
     await page.keyboard.press("Tab");
     await expect
       .poll(() => focusAgainstRow(row), {
