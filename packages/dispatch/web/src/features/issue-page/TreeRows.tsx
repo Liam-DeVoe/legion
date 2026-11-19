@@ -30,7 +30,6 @@ export function TreeRows({
   cycle,
   editing,
   focused,
-  heading,
   isClosed,
   onFocus,
   onOpenDeeper,
@@ -42,6 +41,7 @@ export function TreeRows({
   tabStop,
   threads,
   unplaced,
+  zoomRoot,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
@@ -55,10 +55,6 @@ export function TreeRows({
    *  the one a press on another control of the page took it from, which keeps them drawn until
    *  that press has ended (`IssueTree.tsx`'s `useReleaseFocus`). */
   focused: string | undefined;
-  /** The id of the node the tree is zoomed to, whose row is the tree's heading: drawn open by
-   *  definition, so it draws no fold control, whose press drew nothing. Undefined where the
-   *  tree is drawn from the issue, which is no row. */
-  heading: string | undefined;
   isClosed: boolean;
   onFocus: (row: string, node: TreeNode) => void;
   onOpenDeeper: (id: string) => void;
@@ -79,6 +75,10 @@ export function TreeRows({
    *  reader on, each until the reader acts, and the row the reader is editing in, which the
    *  editor's caret places as the reader writes. */
   unplaced: string | undefined;
+  /** The id of the node the tree is zoomed to, whose row is drawn open by definition, so it
+   *  draws no fold control, whose press drew nothing. Undefined where the tree is drawn from the
+   *  issue, which is no row. */
+  zoomRoot: string | undefined;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
   // every row rather than once a row: a name and a shape for every node, the page's own words
@@ -127,7 +127,7 @@ export function TreeRows({
             {...(editing?.row === key ? { editing: editing.artifactId } : {})}
             expanded={row.expanded}
             focused={focused === key}
-            foldable={!(row.level === 1 && row.node.id === heading)}
+            foldable={!(row.level === 1 && row.node.id === zoomRoot)}
             folded={row.folded}
             isClosed={isClosed}
             key={key}

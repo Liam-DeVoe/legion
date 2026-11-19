@@ -161,9 +161,9 @@ export function NodeRow({
    *  undefined for a node that holds none. */
   expanded?: boolean;
   focused: boolean;
-  /** Whether the row draws its fold control where it holds children. A tree's heading - the row
-   *  a tree is zoomed to, drawn open by definition - draws none, and keeps its `aria-expanded`.
-   *  True unless the view passes it. */
+  /** Whether the row draws its fold control where it holds children. The row a tree is zoomed
+   *  to, drawn open by definition, draws none, and keeps its `aria-expanded`. True unless the
+   *  view passes it. */
   foldable?: boolean;
   /** How many nodes it holds while it is folded. */
   folded?: number;

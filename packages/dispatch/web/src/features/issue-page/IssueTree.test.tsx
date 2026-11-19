@@ -6685,10 +6685,11 @@ test("Left on the row the tree is zoomed to, the whole tree drawn, says the tree
 });
 
 // A zoom the drawn tree no longer holds - the reader zoomed into a row, then a filter left that
-// row out - is kept for when the filter is cleared, while the rows are drawn from the issue. Left
-// and `,` read that zoom rather than the tree drawn, so on a top-level row they moved nothing and
-// said nothing. They say the whole issue is drawn, as on a tree that was never zoomed.
-test("Left and , on a tree whose zoom a filter left out say the whole issue is drawn", async () => {
+// row out, or a read dropped it - is kept for when the row comes back, while the rows are drawn
+// from the issue. Left and `,` read that zoom rather than the tree drawn, so on a top-level row
+// they moved nothing and said nothing. They say the whole issue is drawn, as on a tree that was
+// never zoomed. The case drops the row with a read, which reaches both widths.
+test("Left and , on a tree that no longer holds its zoom say the whole issue is drawn", async () => {
   for (const width of [1440, 390]) {
     setViewport(width);
     const user = userEvent.setup();
@@ -6741,35 +6742,28 @@ function twoBranchesTree(): TreeNode {
 
 /** Puts `view`'s tree in the cycle's last state, which draws every branch, with the reader's own
  *  unfold of `comment-1` made first, and reads that both replies are drawn there. */
-async function inEverythingState(
-  view: ReturnType<typeof renderTree>,
-  user: ReturnType<typeof userEvent.setup>
-): Promise<void> {
-  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+async function inEverythingState(container: HTMLElement, user: UserEvent): Promise<void> {
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
   await user.keyboard("{ArrowRight}");
-  await waitFor(() => expect(rowsFor(view.container, "reply-1").length).toBe(1));
+  await waitFor(() => expect(rowsFor(container, "reply-1").length).toBe(1));
   await user.keyboard("zz");
-  await waitFor(() => expect(rowsFor(view.container, "reply-2").length).toBe(1));
-  expect(focusedRow(view.container)).toBe("comment-1");
+  await waitFor(() => expect(rowsFor(container, "reply-2").length).toBe(1));
+  expect(focusedRow(container)).toBe("comment-1");
 }
 
 /** Reads that `comment-1` is drawn folded in the cycle's last state with `comment-2`'s branch
  *  still drawn, and that the next press of the cycle key, which goes to its first state, keeps
  *  the fold: the reader's own unfold of that branch made before is replaced by it. */
-async function expectFoldKept(
-  view: ReturnType<typeof renderTree>,
-  user: ReturnType<typeof userEvent.setup>,
-  how: string
-): Promise<void> {
+async function expectFoldKept(container: HTMLElement, user: UserEvent, how: string): Promise<void> {
   await waitFor(() =>
-    expect(rowsFor(view.container, "reply-1").length, `${how} drew the branch still open`).toBe(0)
+    expect(rowsFor(container, "reply-1").length, `${how} drew the branch still open`).toBe(0)
   );
-  expect(rowsFor(view.container, "reply-2").length, `${how} folded another branch`).toBe(1);
-  expect(rowsFor(view.container, "comment-1")[0]?.getAttribute("aria-expanded")).toBe("false");
+  expect(rowsFor(container, "reply-2").length, `${how} folded another branch`).toBe(1);
+  expect(rowsFor(container, "comment-1")[0]?.getAttribute("aria-expanded")).toBe("false");
   await user.keyboard("z");
-  await waitFor(() => expect(rowsFor(view.container, "reply-2").length).toBe(0));
+  await waitFor(() => expect(rowsFor(container, "reply-2").length).toBe(0));
   expect(
-    rowsFor(view.container, "reply-1").length,
+    rowsFor(container, "reply-1").length,
     `the cycle's first state lost the fold ${how} made`
   ).toBe(0);
 }
@@ -6782,10 +6776,10 @@ test("Left on an open row in the cycle's last state folds that branch at once an
   setViewport(1440);
   const user = userEvent.setup();
   const view = renderTree(twoBranchesTree());
-  await inEverythingState(view, user);
+  await inEverythingState(view.container, user);
   await user.keyboard("{ArrowLeft}");
   expect(focusedRow(view.container), "Left moved off the row it folded").toBe("comment-1");
-  await expectFoldKept(view, user, "Left");
+  await expectFoldKept(view.container, user, "Left");
   view.unmount();
 });
 
@@ -6794,13 +6788,13 @@ test("a row's fold control in the cycle's last state folds that branch at once a
   setViewport(1440);
   const user = userEvent.setup();
   const view = renderTree(twoBranchesTree());
-  await inEverythingState(view, user);
+  await inEverythingState(view.container, user);
   const control = rowsFor(view.container, "comment-1")[0]?.querySelector<HTMLElement>(
     "button[data-node-bullet]"
   );
   expect(control?.getAttribute("aria-label")).toBe(CONTROL_LABELS.fold);
   await user.click(control as HTMLElement);
-  await expectFoldKept(view, user, "the fold control");
+  await expectFoldKept(view.container, user, "the fold control");
   view.unmount();
 });
 
@@ -6812,7 +6806,7 @@ test("in the cycle's last state Right opens a branch folded there, and coming ba
   setViewport(1440);
   const user = userEvent.setup();
   const view = renderTree(twoBranchesTree());
-  await inEverythingState(view, user);
+  await inEverythingState(view.container, user);
   await user.keyboard("{ArrowLeft}");
   await waitFor(() => expect(rowsFor(view.container, "reply-1").length).toBe(0));
   await user.keyboard("{ArrowRight}");

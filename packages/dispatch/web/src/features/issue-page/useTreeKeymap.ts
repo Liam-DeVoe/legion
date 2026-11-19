@@ -407,7 +407,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         // Where the whole tree is drawn, the row the tree is zoomed to stays open over what it
         // holds and its parent is above the zoom, which no row draws: the key has nowhere to go,
         // and says so at the row.
-        if (row.node.id === tree.zoom && tree.zoom !== tree.root.id) {
+        if (row.node.id === tree.zoom) {
           tree.onReport(KEY_REPORTS.already_zoomed);
           return;
         }
@@ -422,9 +422,11 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           }
         }
         // A top-level row of the whole tree, with nothing to fold, has the issue for its parent,
-        // which no row draws: the key has nowhere to go, and says so at the row.
-        const whole = tree.zoom === undefined || tree.zoom === tree.root.id;
-        if (whole && row.trail.at(-1) === tree.root.id) tree.onReport(KEY_REPORTS.whole_tree);
+        // which no row draws: the key has nowhere to go, and says so at the row. Where the whole
+        // tree is drawn the zoom is undefined while the rows are drawn from the issue.
+        if (tree.zoom === undefined && row.trail.at(-1) === tree.root.id) {
+          tree.onReport(KEY_REPORTS.whole_tree);
+        }
       },
       when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
