@@ -234,7 +234,9 @@ type Runtime struct {
 	// launchMu serializes everything that decides which window a pane lands in and every change
 	// to the private server's set of panes the runtime must not race: session creation, a launch's
 	// refusal of a claim whose process still runs and the files it then writes for the claim, window
-	// choice, the pane's opening and recording, orphan reaping, and the scrub.
+	// choice, the pane's opening and recording, orphan reaping, and the scrub. A refresh's write of
+	// a claim's gh directory takes it too, to judge under it that its pane is still watched
+	// (writeWatchedBundle).
 	launchMu sync.Mutex
 
 	trackedMu sync.Mutex
