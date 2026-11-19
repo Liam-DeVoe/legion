@@ -61,10 +61,11 @@ type podKind interface {
 	// role of roles, and launcherContainer that container: its command, the mounts of every role's
 	// own volumes and the pod's shared ones, and the kubelet-resolved environment (resolved).
 	// mainVolumes are the volumes that container mounts beyond each role's own, the pod's volume,
-	// the config home, the agent-secrets volumes, the providers and the operator's.
+	// the config home, the agent-secrets volumes, the providers and the operator's, for a pod of
+	// launch l.
 	container() string
 	launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container
-	mainVolumes(r *Runtime) []corev1.Volume
+	mainVolumes(r *Runtime, l launch) []corev1.Volume
 	// agentEnv is what each agent is told of its kind, mainEnvironment's one block of its own.
 	agentEnv(l launch) []corev1.EnvVar
 	// provision readies what a new pod needs before relaunch writes its launcher Secrets and sets
@@ -313,8 +314,13 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 	mounts = append(mounts, corev1.VolumeMount{Name: roleHomesVolume, MountPath: RoleHomesDir})
 	if r.testPostgres {
 		// The launcher serves the pod's own test database (launcher's testpg.go) and the roles
-		// container keeps its cluster here; no role's namespace shows this mount.
+		// container keeps its cluster here; no role's namespace shows this mount. Where the
+		// cluster is on a disk of its own (mainVolumes), the launcher is told so
+		// (--test-postgres-disk), since the free bytes it reads there are then the cluster's alone.
 		command = append(command, "--test-postgres")
+		if r.testPostgresDisk != nil {
+			command = append(command, "--test-postgres-disk")
+		}
 		mounts = append(mounts, corev1.VolumeMount{Name: testPGVolume, MountPath: TestPGDir})
 	}
 	if l.microVM != nil {
@@ -344,19 +350,32 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 // ephemeral storage as a container's own filesystem is, where each role's namespace keeps its home
 // overlay's writable layer, its /tmp and /var/tmp, and its own config home (`legion launcher
 // role-init`). An overlay's writable layer cannot be the container's own root filesystem, and a
-// memory one would charge a role's /tmp to the pod's memory.
-func (issuePod) mainVolumes(r *Runtime) []corev1.Volume {
+// memory one would charge a role's /tmp to the pod's memory. Where the deployment serves the pod's
+// own test database, the testpg volume its cluster lives on follows, its disk claimed for launch l.
+func (issuePod) mainVolumes(r *Runtime, l launch) []corev1.Volume {
 	volumes := []corev1.Volume{{Name: roleHomesVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
-	if r.testPostgres {
-		// The test database's cluster, on the node's disk for the same reason the role homes are:
-		// a memory volume would charge its data directory and every test's database to the pod's
-		// memory. It is created with the pod and deleted with it, so each issue starts on an
-		// empty cluster. It carries no SizeLimit, as the role homes volume does not: the pod's
-		// ephemeral-storage limit is what bounds both, and a test that fills the node's disk
-		// through either is evicted with every role of the pod.
-		volumes = append(volumes, corev1.Volume{Name: testPGVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+	if !r.testPostgres {
+		return volumes
 	}
-	return volumes
+	// The test database's cluster, on a disk for the same reason the role homes are: a memory
+	// volume would charge its data directory and every test's database to the pod's memory. It is
+	// created with the pod and deleted with it either way, so each issue starts on an empty
+	// cluster. Where the deployment sizes a disk for it (runtime.kubernetes.test_postgres_disk) it
+	// is a generic ephemeral volume of that size, claimed on the issue disk's class (claimSpec) with
+	// no metadata, as the issue disk's is (disk): the kubelet's ephemeral-storage limit counts the
+	// pod's emptyDir volumes and not a volume a claim provides, so a test database that fills it
+	// fills its own disk and cannot get the pod evicted. The pod's FSGroup makes the new disk's
+	// root writable to the pod's user, as it makes the issue disk's (podTemplate). Otherwise it is
+	// an emptyDir on the node's disk with no SizeLimit, as the role homes volume carries none: the
+	// pod's ephemeral-storage limit is what bounds both, and a test that fills the node's disk
+	// through either is evicted with every role of the pod.
+	cluster := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	if size := r.testPostgresDisk; size != nil {
+		cluster = corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
+			VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: r.claimSpec(l, *size)},
+		}}
+	}
+	return append(volumes, corev1.Volume{Name: testPGVolume, VolumeSource: cluster})
 }
 
 // agentEnv tells each agent its tree, issue and workspace, the issue key it stamps into its
@@ -545,7 +564,7 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 
 // mainVolumes are none beyond the controller's own: its launcher has no namespaces to keep homes
 // in, and the pod's own test database is an issue pod's (issuePod.mainVolumes).
-func (controllerPod) mainVolumes(*Runtime) []corev1.Volume { return nil }
+func (controllerPod) mainVolumes(*Runtime, launch) []corev1.Volume { return nil }
 
 // initVolumes are none: the controller's pod runs no init container.
 func (controllerPod) initVolumes(launch) []corev1.Volume { return nil }

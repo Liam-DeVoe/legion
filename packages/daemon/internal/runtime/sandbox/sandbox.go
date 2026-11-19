@@ -123,6 +123,10 @@ type Runtime struct {
 	launcherAuth            launcherCredentials
 	now                     func() time.Time
 	log                     *slog.Logger
+	// testPostgresDisk is Options.TestPostgresDisk: the size of the disk of its own an issue pod
+	// that serves the test database keeps the cluster on, nil while the cluster stays in the
+	// testpg emptyDir.
+	testPostgresDisk *resource.Quantity
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
@@ -414,7 +418,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard,
+		testPostgres: opts.TestPostgres, testPostgresDisk: opts.TestPostgresDisk, memoryGuard: opts.MemoryGuard,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,

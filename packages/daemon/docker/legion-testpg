@@ -7,11 +7,12 @@
 # DSN it was handed, which is why the runtime refuses LEGION_TEST_PG_DSN in a deployment's pod.env
 # and sets it itself.
 #
-# The data directory is LEGION_TESTPG_DIR, /var/run/legion/roles/testpg: a disk emptyDir the daemon
-# mounts there, which the kubelet makes with the pod and deletes with it, so every issue pod gets an
-# empty cluster and nothing of one issue's tests reaches another. Every role's own mounts cover that
-# path inside the role's namespace, so no role can edit postgresql.auto.conf and have the next start
-# load it into the launcher's namespace.
+# The data directory is LEGION_TESTPG_DIR, /var/run/legion/roles/testpg: a volume the daemon
+# mounts there, a disk emptyDir or, where the deployment sets runtime.kubernetes.test_postgres_disk,
+# a generic ephemeral volume of its own, which the kubelet makes with the pod and deletes with it
+# either way, so every issue pod gets an empty cluster and nothing of one issue's tests reaches
+# another. Every role's own mounts cover that path inside the role's namespace, so no role can edit
+# postgresql.auto.conf and have the next start load it into the launcher's namespace.
 #
 # The server's log is LEGION_TESTPG_LOG, server.log in that directory: the server's own output and
 # what each step of this script printed. The launcher names the file and creates it before the

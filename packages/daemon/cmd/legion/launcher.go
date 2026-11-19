@@ -21,7 +21,7 @@ import (
 // a command under it or a usage error naming the word, a flag after it included (wordFirst).
 func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--microvm [--metadata-workload-pool <project>.svc.id.goog --metadata-identity-provider <url>]] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)",
+		Use:    "launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres [--test-postgres-disk]] [--microvm [--metadata-workload-pool <project>.svc.id.goog --metadata-identity-provider <url>]] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email>]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)",
 		Short:  "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command",
 		Hidden: true,
 	}
@@ -42,6 +42,7 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	sessionUser := flags.String("session-user", "", "the IAM login this pod signs in to the session database as")
 	sessionAccount := flags.String("session-impersonate-service-account", "", "the Google service account the session proxy impersonates with this pod's own credentials and signs in as; optional, and given only with the three other session flags")
 	testPostgres := flags.Bool("test-postgres", false, "serve the pod's own PostgreSQL for tests from the worker image's legion-testpg, before any role starts and again whenever its postmaster exits (an issue pod's container, with --roles-dir)")
+	testPostgresDisk := flags.Bool("test-postgres-disk", false, "the test database's directory is a disk of its own (runtime.kubernetes.test_postgres_disk), whose free bytes are the cluster's alone; given only with --test-postgres")
 	microVM := flags.Bool("microvm", false, "the pod runs in a GKE Sandbox microVM rather than under gVisor")
 	metadataPool := flags.String("metadata-workload-pool", "", "serve the pod-local metadata endpoint for this Workload Identity pool, <project>.svc.id.goog, given with --metadata-identity-provider (a microVM issue pod's container: with --microvm and --roles-dir)")
 	metadataProvider := flags.String("metadata-identity-provider", "", "the cluster's identity provider the metadata endpoint exchanges the pod's ServiceAccount token with: https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>")
@@ -49,6 +50,9 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 		cfg := launcher.Config{
 			Connect: *connect, Sandbox: *sandbox, PodUID: *podUID, StopGrace: *stopGrace,
 			Stdout: stdout, Stderr: stderr, MicroVM: *microVM,
+			// Set in either form, so a disk given without the test database is refused
+			// (launcher.Config's validate) rather than dropped.
+			TestPostgresDisk: *testPostgresDisk,
 			SessionDatabase: ompsessions.Database{
 				Instance: *sessionInstance, Name: *sessionDatabase, User: *sessionUser, ImpersonateServiceAccount: *sessionAccount,
 			},

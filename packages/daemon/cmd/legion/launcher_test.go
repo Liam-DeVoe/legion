@@ -216,6 +216,37 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 	}
 }
 
+// --test-postgres-disk tells the launcher that the test database's directory is a disk of its
+// own, which means nothing without the test database: in either form, the flag without
+// --test-postgres is refused before anything is dialled, naming what it lacks. The refusal is
+// launcher.Config's, read from the field the flag sets, so it proves the flag reaches the
+// launcher: one it did not know would exit 2 on its usage, and one it dropped would dial the
+// unreachable daemon until the context ends and exit 0.
+func TestPGDiskTheLauncherCommandRefusesTheDiskWithoutTheTestDatabase(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	const want = "launcher: --test-postgres-disk says the test database's directory is a disk of its own: it needs --test-postgres"
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"an issue pod's form", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--test-postgres-disk"}},
+		{"the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--test-postgres-disk"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p"}, tc.args...)
+			if code := run(ctx, args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), want) {
+				t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), want)
+			}
+		})
+	}
+}
+
 // `legion launcher role-init` is the launcher's own, hidden from its usage, and refuses to run
 // anywhere but as the init of a role's new namespaces: run by hand it would otherwise mount a
 // role's private view over the caller's own. Every refusal, its usage's included, is a failure

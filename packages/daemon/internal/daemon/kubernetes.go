@@ -319,6 +319,16 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	if err != nil {
 		return sandbox.Options{}, fmt.Errorf("runtime.kubernetes.issue_volume: %w", err)
 	}
+	// The test database's own disk, parsed once here as the issue volume is; nil while the file
+	// sets none, which keeps the cluster in the pod's emptyDir.
+	var testPostgresDisk *resource.Quantity
+	if k.TestPostgresDisk != "" {
+		size, err := resource.ParseQuantity(k.TestPostgresDisk)
+		if err != nil {
+			return sandbox.Options{}, fmt.Errorf("runtime.kubernetes.test_postgres_disk: %w", err)
+		}
+		testPostgresDisk = &size
+	}
 	var tolerations []corev1.Toleration
 	for _, t := range k.Scheduling.Tolerations {
 		tolerations = append(tolerations, corev1.Toleration{
@@ -371,6 +381,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
 		TestPostgres:            k.TestPostgres,
+		TestPostgresDisk:        testPostgresDisk,
 		MemoryGuard:             memoryGuard,
 		BootTimeout:             cfg.WorkerBootTimeout,
 		RegistrationIntervals:   cfg.WorkerBootRegistrationDeadlineIntervals,

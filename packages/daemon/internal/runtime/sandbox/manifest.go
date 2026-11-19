@@ -49,8 +49,10 @@ const (
 	ghVolume        = "gh"
 	roleHomesVolume = "role-homes"
 	roleProbeVolume = "role-probe"
-	// testPGVolume is the disk emptyDir an issue pod keeps its own test PostgreSQL's cluster on
-	// (TestPGDir), when the deployment sets runtime.kubernetes.test_postgres.
+	// testPGVolume is the volume an issue pod keeps its own test PostgreSQL's cluster on
+	// (TestPGDir), when the deployment sets runtime.kubernetes.test_postgres: a disk emptyDir, or
+	// a generic ephemeral volume of its own where runtime.kubernetes.test_postgres_disk sizes one
+	// (issuePod.mainVolumes).
 	testPGVolume = "testpg"
 	// workloadIdentityTokenVolume is the projected ServiceAccount token a microVM issue pod's
 	// launcher exchanges for a Google one to serve the pod's metadata endpoint
@@ -777,14 +779,21 @@ func (l launch) claudeArgv() []string {
 // labels are the pod's resource labels, as its kind gives them (podKind.labels).
 func (r *Runtime) labels(l launch) map[string]string { return l.kind.labels(r.project, l) }
 
-// diskSpec is the claim of a pod's disk, wherever it is declared: ReadWriteOnce on the launch's
-// StorageClass at the operator's size (runtime.kubernetes.issue_volume). The class is the microVM
-// block's for a microVM pod (MicroVM.StorageClass) and the operator's
-// runtime.kubernetes.storage_class for every other, the controller's included, so whatever
-// declares an issue's disk takes its class from here. The controller's Sandbox declares it as the
-// claim template it owns, an issue pod as the template of its own ephemeral volume, so the two
-// disks are provisioned alike and differ only in who deletes them.
+// diskSpec is the claim of a pod's disk, wherever it is declared: the launch's claim (claimSpec)
+// at the operator's size (runtime.kubernetes.issue_volume), so whatever declares an issue's disk
+// takes its class from there. The controller's Sandbox declares it as the claim template it owns,
+// an issue pod as the template of its own ephemeral volume, so the two disks are provisioned alike
+// and differ only in who deletes them.
 func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
+	return r.claimSpec(l, r.volumeSize)
+}
+
+// claimSpec is a claim of size for a pod of launch l: ReadWriteOnce on the launch's StorageClass,
+// which is the microVM block's for a microVM pod (MicroVM.StorageClass) and the operator's
+// runtime.kubernetes.storage_class for every other, the controller's included. The pod's disk
+// (diskSpec) and an issue pod's test database disk (issuePod.mainVolumes) are both claimed here,
+// so the test database's disk is always on the class of the issue's own.
+func (r *Runtime) claimSpec(l launch, size resource.Quantity) corev1.PersistentVolumeClaimSpec {
 	storageClass := r.storageClass
 	if l.microVM != nil {
 		storageClass = l.microVM.StorageClass
@@ -793,7 +802,7 @@ func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 		StorageClassName: &storageClass,
 		Resources: corev1.VolumeResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceStorage: r.volumeSize},
+			Requests: corev1.ResourceList{corev1.ResourceStorage: size},
 		},
 	}
 }
@@ -977,7 +986,7 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 	volume := corev1.Volume{Name: issueVolume, VolumeSource: disk}
 	config := corev1.Volume{Name: configVolume, VolumeSource: memory}
 	return slices.Concat([]corev1.Volume{volume}, l.kind.initVolumes(l), []corev1.Volume{config}, roleVolumes,
-		l.kind.mainVolumes(r), r.agentSecretsVolumes(l.roles), workloadIdentityVolumes(l), providers, r.pod.Volumes)
+		l.kind.mainVolumes(r, l), r.agentSecretsVolumes(l.roles), workloadIdentityVolumes(l), providers, r.pod.Volumes)
 }
 
 // agentSecretsVolumes are, for a pod the runtime enrolls with the secrets broker

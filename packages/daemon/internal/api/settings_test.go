@@ -114,6 +114,7 @@ var settingsEmitted = map[string]string{
 	"Kubernetes.Plugins":                             "runtime.kubernetes.plugins",
 	"Kubernetes.Setup":                               "runtime.kubernetes.setup",
 	"Kubernetes.TestPostgres":                        "runtime.kubernetes.test_postgres",
+	"Kubernetes.TestPostgresDisk":                    "runtime.kubernetes.test_postgres_disk (absent while the file sets none)",
 	"Kubernetes.RepositoryCache":                     "runtime.kubernetes.repository_cache",
 	"Kubernetes.IdleRelease":                         "runtime.kubernetes.idle_release",
 	"IdleReleaseConfig.IdleMinutes":                  "runtime.kubernetes.idle_release.idle_minutes",
@@ -914,6 +915,31 @@ func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
 			}
 			if string(encoded) != want {
 				t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+			}
+		})
+	}
+}
+
+// runtime.kubernetes.test_postgres_disk reaches the settings as the size the file wrote where it
+// sets one, and is absent where it does not, so a deployment that never set it reads byte for byte
+// as before the key existed.
+func TestPGDiskTheSettingsNameTheTestDatabasesDiskOnlyWhereItIsSet(t *testing.T) {
+	for name, tc := range map[string]struct{ block, want string }{
+		"set":   {"    test_postgres: true\n    test_postgres_disk: 20Gi\n", "20Gi"},
+		"unset": {"    test_postgres: true\n", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal(SettingsOf(loadSettingsFile(t, settingsFixtureFile+tc.block)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			kubernetes := keysOf(t, keysOf(t, keysOf(t, encoded)["runtime"])["kubernetes"])
+			got, set := kubernetes["test_postgres_disk"]
+			switch {
+			case tc.want == "" && set:
+				t.Errorf("settings.runtime.kubernetes.test_postgres_disk = %s, want the key absent", got)
+			case tc.want != "" && string(got) != `"`+tc.want+`"`:
+				t.Errorf("settings.runtime.kubernetes.test_postgres_disk = %s, want %q", got, tc.want)
 			}
 		})
 	}
