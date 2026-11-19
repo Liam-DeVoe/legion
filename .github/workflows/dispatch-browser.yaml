@@ -1247,12 +1247,27 @@ jobs:
   # runs only the *.multiprocess.e2e.ts specs, in Chromium, in a job of its own so the default
   # suite's job does not wait on two more servers and the second bundle they serve, which the
   # binaries job builds for this job and no other.
+  #
+  # That Postgres is the harness's own, a `docker run` of the image below per Playwright run
+  # (e2e/harness-postgres.ts), as the visual job's is, and not a `services:` container. The
+  # harness starts its servers with crash safety off, so no commit waits for the runner's disk.
+  # With it on, merge-group run 44456291758 (job 135332117623) failed here: the disk stopped
+  # answering for about 5 s, the read mark a closed page left in flight could neither commit nor
+  # be cancelled, and the next row's reset could not lock `user_document_reads` within its 5 s. A
+  # service can be given those three settings too, with `alter system` and a reload, as
+  # docs-site.yaml's is; this job takes the harness's server rather than a second copy of its
+  # settings, and that server loads the stall library below as it starts, which a service,
+  # started before any step has built the library, could do only after a restart. The suite's
+  # row e2e/read-marker-disk-stall.multiprocess.e2e.ts stalls the disk on purpose, through the
+  # library the harness preloads where DISPATCH_E2E_PG_STALL_DIR names a directory
+  # (e2e/disk-stall.ts), and holds this job to the same reset.
   multiprocess:
     needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    # The budgets below, this one and the three on steps, are measured: GitHub's jobs API over
-    # the 397 of the newest 400 ci.yaml runs that could be read, created between
+    # The budgets of the install, dashboard and sign-in steps below, and the job's from them, are
+    # measured (the connections step's is the floor, as the end of this comment says): GitHub's
+    # jobs API over the 397 of the newest 400 ci.yaml runs that could be read, created between
     # 2026-11-05T04:52:45Z and 2026-11-05T21:06:27Z (268 pull_request, 120 merge_group, 12
     # push), over the 335 jobs of this name that concluded success. That window is before
     # cybermonklabs/legion#2771 took ci.yaml's push trigger away, which is why it holds push runs
@@ -1270,7 +1285,15 @@ jobs:
     # 1.15 = 232 s -> 4 min for the dashboard step, 13 s x 1.15 = 15 s -> the two-minute floor
     # for the sign-in step, and 4 min for the install step, for the reason its own comment gives.
     # The job budget is the sum of its step budgets plus the measured maximum of every step
-    # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. With budgets on the steps, the
+    # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. The job's Postgres then moved
+    # from a `services:` container to the harness's own (this job's head says why), which put the
+    # image's pull before the browser steps: it has no budget and counts at the 120 s the visual
+    # job counts its pull of the same digest at (the time a browser step spent before its stack's
+    # first output on the run that found the need; the pull took 13 s in run 44480885813), and the
+    # budget below adds it. The dashboard step now also starts the stack's container and builds
+    # the stall library, and its four runs since took 118 s,
+    # 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
+    # the 202 s its 4 min derives from. With budgets on the steps, the
     # `if: failure()` upload below still runs, which a cancelled job skips.
     #
     # That 13 minutes stood through the change that took the server build out of this job and put
@@ -1340,7 +1363,14 @@ jobs:
     # maximum and summed (the checkout 9 s, job 132926233684, the largest), with the dashboard
     # step at most 99 s and the sign-in step 13 s (both job 132904452893), so the 12 minutes
     # stand as a backstop above the sum.
-    timeout-minutes: 12
+    #
+    # Main's change to the harness's own Postgres for this job and the embedder job (pull request
+    # #4486) put one step before the browser steps here: the image's pull, which has no budget and
+    # counts at 120 s, the figure the budget paragraph of this job's head gives it. Its connections
+    # read is no step of this job: the binaries job reads that number once for the run, as for
+    # every job of this file (e2e/harness-postgres.ts). 4 + 4 + 2 min plus 94 s and 120 s =
+    # 13 min 34 s -> 14 min.
+    timeout-minutes: 14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1397,8 +1427,9 @@ jobs:
         # `apt-get update`.
         #
         # The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
-        # coedit, signin and two-builds today (`multiprocessSpecs` in e2e/playwright.config.ts
-        # matches them by that suffix, so a new one joins without an edit here) -- and they run
+        # coedit, cross-build, read-marker-disk-stall, signin and two-builds today
+        # (`multiprocessSpecs` in e2e/playwright.config.ts matches them by that suffix, so a new
+        # one joins without an edit here) -- and they run
         # headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
         # `toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
         # already. A row that later needs CJK or Thai glyphs would fail visibly.
@@ -1421,6 +1452,14 @@ jobs:
         timeout-minutes: 4
         run: bunx playwright install chromium
         working-directory: packages/dispatch
+      # The image the harness starts each Playwright run's Postgres from, pulled here so the
+      # browser steps below do not pay for it inside their own budgets, as the visual job pulls
+      # it. The digest is the browser steps', written three times, and the three must stay the
+      # same: a pull of another digest leaves the browser step to pull its own. Each new step's
+      # name carries the lane, as the embedder job's build step's does, for the reason that
+      # step gives.
+      - name: Pull the multiprocess stack's Postgres image
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       - name: Browser-test dispatch dashboard against two server processes
         # Runs the multiprocess specs through the round-robin proxy on the two dashboards the
         # binaries job built. `e2e:multiprocess:run` and not `e2e:multiprocess`: that script
@@ -1429,6 +1468,10 @@ jobs:
         # (packages/dispatch/package.json). DISPATCH_E2E_SERVER_BIN and the stack's Postgres
         # image are set on the command line rather than in this step's `env:`, for the reason
         # the shard job's head gives.
+        # DISPATCH_E2E_PG_STALL_DIR is the directory the harness builds e2e/fsync-stall.c into and
+        # preloads into the stack's Postgres, which e2e/read-marker-disk-stall.multiprocess.e2e.ts
+        # needs: on GitHub Actions (GITHUB_ACTIONS=true) the row fails without it, and elsewhere,
+        # an agent's shell included, it is skipped. The runner's own cc builds it.
         timeout-minutes: 4
         run: |
           # pgvector, the copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml),
@@ -1442,6 +1485,7 @@ jobs:
           export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
           # Read in the binaries job, since this job sets up no Go (e2e/harness-postgres.ts).
           export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
+          export DISPATCH_E2E_PG_STALL_DIR="$RUNNER_TEMP/pg-stall"
           bun run e2e:multiprocess:run
         working-directory: packages/dispatch
       - name: Browser-test a sign-in across two server processes
@@ -1538,10 +1582,15 @@ jobs:
   # most 69 s (job 131282160430, run 43245766326). By the rule those maxima alone would give 2
   # and 2 min. The budgets stay on the borrowed figures, which are larger, and no budget here
   # was moved by these runs.
+  #
+  # Main's change to the harness's own Postgres (pull request #4486) put the image's pull before
+  # the browser step, which counts at 120 s, the multiprocess job's figure for the same pull; the
+  # connections read it added there is the binaries job's output here, as that job's head says.
+  # 8 min plus 94 s and 120 s = 11 min 34 s -> 12 min.
   embedder:
     needs: binaries
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1584,6 +1633,9 @@ jobs:
         timeout-minutes: 4
         run: bunx playwright install chromium
         working-directory: packages/dispatch
+      # The multiprocess job's step of this name, for the reason it gives.
+      - name: Pull the embedder stack's Postgres image
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       - name: Browser-test the bar's two tiers against a counting embedder
         timeout-minutes: 4
         # `e2e:embedder:run` and not `e2e:embedder`: that script builds the contracts and the

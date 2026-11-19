@@ -1,9 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { Suspense } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { api } from "../../api/client";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import { issue } from "../margin/margin-fixture";
 import {
@@ -35,7 +36,7 @@ afterEach(async () => {
 });
 
 /** A client whose sign-in read holds alice and whose issue read holds CORE-1, and that never
- *  asks either again: the new page needs nothing more to draw. */
+ *  asks either again. */
 function aliceOnCore1(): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -43,6 +44,36 @@ function aliceOnCore1(): QueryClient {
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   client.setQueryData(issueQuery(issue.key).queryKey, issue);
   return client;
+}
+
+/** The reads the new page makes as it draws its tree (`useIssueTree.ts`), each answered empty.
+ *  The row is about when the hold ends, not about what the tree holds, and a read nothing
+ *  answered fails the file (`__tests__/setup.ts`). Each returns its spy, to restore. */
+function answerTreeReadsEmpty() {
+  return [
+    spyOn(api, "getIssueCoverage").mockResolvedValue({
+      gaps: [],
+      has_plan: false,
+      issue: issue.key,
+      requirements: [],
+      spec_artifact_id: "",
+    }),
+    spyOn(api, "getIssueDecisions").mockResolvedValue({
+      decisions: [],
+      document: null,
+      open_questions: [],
+    }),
+    spyOn(api, "getIssueResults").mockResolvedValue({
+      checks: [],
+      issue: issue.key,
+      verification_artifact_id: "",
+    }),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
+  ];
 }
 
 /** "ended" if no hold is on within `ms` from now, else "still on". */
@@ -63,6 +94,7 @@ test("a landing on the new issue page ends the shell's hold on its extras when t
   holdUntilContentDraws();
   // The hold is on before the page renders, so the row cannot pass with no hold at all.
   expect(await holdWithin(0)).toBe("still on");
+  const reads = answerTreeReadsEmpty();
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={aliceOnCore1()}>
@@ -81,6 +113,7 @@ test("a landing on the new issue page ends the shell's hold on its extras when t
     expect(await holdWithin(AFTER_DRAW_MS)).toBe("ended");
   } finally {
     view.unmount();
+    for (const read of reads) read.mockRestore();
     window.localStorage.removeItem(ALICE_KEY);
   }
 });
