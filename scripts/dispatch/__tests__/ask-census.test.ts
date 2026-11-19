@@ -349,39 +349,38 @@ describe("ask census", () => {
   });
 
   test("reads every issue when the whole run outlasts one client's deadline", async () => {
-    // Each client's deadline is the row's: AbortSignal.timeout hands back a signal the row aborts
-    // on a clock of its own, which each answer moves on by one read's latency, so a deadline lasts
-    // four waves of ISSUE_CONCURRENCY issues' two reads. An issue's own two reads come back within
-    // about two waves of answers, and six waves take a deadline and a half, so a client made for
-    // the whole run, or made before its issue's turn, meets its deadline before its last read.
-    const latency = DISPATCH_TOOL_DEADLINE_MS / (4 * 2 * ISSUE_CONCURRENCY);
-    let clock = 0;
-    const armed: {
-      readonly at: number;
-      readonly milliseconds: number;
-      readonly controller: AbortController;
-    }[] = [];
+    // A client arms its one deadline (DISPATCH_TOOL_DEADLINE_MS) as it is made, so a run that
+    // outlasts a deadline still reads every issue when each issue reads through a client made at
+    // its own turn: no deadline then covers more than that issue's two reads, and the six waves of
+    // ISSUE_CONCURRENCY issues here take as long as they take. The row holds that structure, and
+    // no clock decides its verdict: AbortSignal.timeout records each deadline as it is armed, with
+    // the clients alive at that moment, and hands back a signal that never aborts. A client is
+    // alive from its arm until the stub answers its issue's last read. The stub counts the issue
+    // finished before it sends that answer, and a reader makes its next client only after the
+    // answer has reached it, so the count is in before the next arm, whatever order the scheduler
+    // gives the readers' requests. A client made for the whole run is armed once and fails the
+    // count of one deadline per issue. Clients made before their issues' turns are alive more than
+    // ISSUE_CONCURRENCY at once and fail the bound. With both held, each issue's reads use only
+    // the client made at its turn.
+    const armed: { readonly milliseconds: number; readonly alive: number }[] = [];
+    const finished = new Set<string>();
     const timeout = spyOn(AbortSignal, "timeout").mockImplementation((milliseconds: number) => {
-      const controller = new AbortController();
-      armed.push({ at: clock + milliseconds, milliseconds, controller });
-      return controller.signal;
+      armed.push({ milliseconds, alive: armed.length + 1 - finished.size });
+      return new AbortController().signal;
     });
     const read: string[] = [];
     const server = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch(request) {
-        // The answer's latency passes, and with it every deadline it reaches, before it is sent.
-        clock += latency;
-        for (const deadline of armed) {
-          if (deadline.at <= clock && !deadline.controller.signal.aborted) {
-            deadline.controller.abort(new DOMException("The operation timed out.", "TimeoutError"));
-          }
-        }
         const { pathname } = new URL(request.url);
         read.push(pathname);
         if (pathname.endsWith("/asks")) return Response.json([approvalAsk(1, 1)]);
-        if (pathname.endsWith("/events")) return Response.json([]);
+        if (pathname.endsWith("/events")) {
+          // The issue's last read (`/api/v1/issues/<key>/events`): its client is done.
+          finished.add(pathname.split("/")[4] ?? pathname);
+          return Response.json([]);
+        }
         return new Response("not found", { status: 404 });
       },
     });
@@ -399,12 +398,13 @@ describe("ask census", () => {
         }
       );
 
-      // The run outlasted the first client's deadline on the row's clock, and each issue's
-      // client armed one deadline of its own, the client's.
-      expect(clock).toBeGreaterThan(armed[0]?.at ?? Number.POSITIVE_INFINITY);
       expect(armed.map((deadline) => deadline.milliseconds)).toEqual(
         issues.map(() => DISPATCH_TOOL_DEADLINE_MS)
       );
+      expect(
+        Math.max(...armed.map((deadline) => deadline.alive)),
+        "the clients alive at one deadline's arm"
+      ).toBeLessThanOrEqual(ISSUE_CONCURRENCY);
       expect(census.map((issue) => issue.issueRow?.issue)).toEqual(issues);
       expect(read).toHaveLength(2 * issues.length);
     } finally {
