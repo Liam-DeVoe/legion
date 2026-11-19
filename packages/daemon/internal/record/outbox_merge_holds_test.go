@@ -8,7 +8,7 @@ import (
 // A change of the merge holds reaches the architect as a notice's reason and the merger as a
 // message, and both read one text: it names the project's document, tells the role to read it
 // again, and tells a held role to wait again and any other role to go on. The merger's message
-// starts with its issue key, as a phase-ended message does. Neither names READY, which no merger
+// starts with its issue key, as a merge-queue removal's message does. Neither names READY, which no merger
 // prompt may name (prompts' TestNoComposedPromptCommitsAHandoff).
 func TestAMergeHoldsChangeTellsTheRoleToReadTheDocumentAgain(t *testing.T) {
 	reason := MergeHoldsChangedReason("LEGION")

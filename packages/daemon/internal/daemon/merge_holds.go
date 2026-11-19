@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -14,18 +15,20 @@ import (
 // mergeHoldsChanged publishes the message of a merge holds change row (record.MergeHoldsChanged)
 // to the Envoy topic of the issue's merger, and to nothing else: the project's merge holds
 // document changed, so the merger reads it again, then merges or waits again (step 1 of its role
-// prompt). It stops nothing it reaches, as a phase-ended message stops nothing.
+// prompt). It stops nothing it reaches.
 //
 // A merger that a line of the document holds ends its turn with a WAITING line and subscribes to
 // nothing, because a Dispatch document event does not wake a released pod. So this row is the one
-// thing that tells it the hold was lifted. It is held as a merge-queue removal is held: it wakes a
-// released merger and waits until the woken session holds the role (tellMerger).
+// thing that tells it the hold was lifted. It is held as a merge-queue removal is held
+// (mergeQueueRemoval): it is delivered as deliverHeld delivers a held message, so a released
+// merger is woken, and the row waits until a session holds the merger's role.
 //
 // Each attempt first reads whether the issue still works merging (mergingNow), and the row
 // finishes undelivered, with one log line naming why, once it does not: the issue stands in
-// another phase, it is out of the workflow, its tree lingers, or its pull request has merged. The
-// rest is the delivery every merger's row makes (tellMerger): it ends on a failed or retired
-// merger, and holds a released merger while the root's design gate is closed.
+// another phase, it is out of the workflow, its tree lingers, or its pull request has merged. What
+// follows - a claim that failed or retired, the design gate, the wake and the publish - is
+// deliverHeld's, as it is a merge-queue removal's: it ends on a failed or retired merger, and holds
+// a released merger while the root's design gate is closed.
 func (r *outbox) mergeHoldsChanged(ctx context.Context, row record.OutboxRow, payload record.MergeHoldsChanged) error {
 	if r.notices == nil {
 		return errors.New("merge-holds change executor has no Envoy publisher")
@@ -33,16 +36,23 @@ func (r *outbox) mergeHoldsChanged(ctx context.Context, row record.OutboxRow, pa
 	if r.supervisor == nil {
 		return errors.New("merge-holds change executor has no claim supervisor")
 	}
+	token, err := roleToken(r.project, row, claim.RoleMerger)
+	if err != nil {
+		return err
+	}
 	issue, left, err := r.mergingNow(ctx, row.Issue)
 	if err != nil {
 		return err
 	}
 	attributes := []any{"row", row.ID, "issue", row.Issue, "project", payload.Project}
 	if left != "" {
-		r.log.Info("outbox merge-holds change finished undelivered: the issue left merging", append(attributes, "why", left)...)
+		r.log.Info("outbox merge holds change finished undelivered: the issue left merging", append(attributes, "why", left)...)
 		return nil
 	}
-	return r.tellMerger(ctx, row, issue, "merge-holds change", payload.Message(row.Issue), attributes)
+	return r.deliverHeld(ctx, row, heldMessage{issue: issue, token: token, role: claim.RoleMerger,
+		what: "the merge holds change of " + row.Issue, message: payload.Message(row.Issue), attributes: attributes,
+		claimEnded: "outbox merge holds change finished undelivered: the merger's claim has failed or retired",
+		delivered:  "outbox merge holds change delivered to the merger"})
 }
 
 // mergingNow reads, in one transaction, the issue a merge holds change row is for and why the
