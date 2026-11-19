@@ -6145,7 +6145,7 @@ The migration drops two columns that every release from `legion-v19.16.0` on rea
 How many update rounds run at once is the project's to cap, with two optional top-level `legion.yaml` keys, each a positive integer (`beginPodUpdateSweep`, `podUpdateSweep`):
 `pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).
 The 50 seconds run from the moment of the last opening, not from the start of the sweep that made it:
-a sweep can wait in its walk before it opens a round, on the lock of a claim's machine that a relaunch holds, and the next sweep still opens nothing until more than 50 seconds after that opening (`recordPodUpdateOpening`).
+a sweep can take a while in its walk before it opens a round, on a slow read of a pod from the cluster for one, and the next sweep still opens nothing until more than 50 seconds after that opening (`recordPodUpdateOpening`).
 An issue holds one of those slots while a claim of it holds the round over the pod its claims record, or while its claims record two pods with a round open, which is a replacement in flight (`holdsOpenRound`).
 A round over a pod the claims no longer record holds none, since that pod is gone and the same sweep ends the round, and neither does a round whose claims record no pod at all.
 A round this daemon opened at an earlier sweep that no claim of the issue records yet holds a slot too, since it is an opening all the same: the post that carries a round to a machine is asynchronous, and a machine in a relaunch can take minutes to take it (`podUpdateOpenings`).
@@ -6165,6 +6165,8 @@ A round that outlives its bound is told to the project's controller once, as an 
 an operator's suspension of a claim the round asks, a `ReplacePod` the cluster refuses, no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
 Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim the round asked, with that claim's state and whether it answered (`skill://legion-controller/references/escalation.md`).
 One round is told once, however many sweeps find it open.
+The sweep marks the round told on each claim of it without waiting for that claim's machine:
+a claim whose machine is busy, such as one in a relaunch, is marked at a later sweep, the round is not told again meanwhile, and no other issue's round waits for that relaunch (`markUpdateTold`, `markOwedTold`).
 A round that waits for its roles before its bound is told to nobody, since the bound ends that wait by itself.
 An operator's suspension is the one hold only a person can clear: the daemon replaces the pod only after the operator resumes each such claim.
 A pod that goes before its round is over, replaced where it stood for a failure of its own, has the daemon write on the issue which roles had not answered and that the work they did not push went with the disk.

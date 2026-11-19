@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -44,11 +45,18 @@ import (
 // Everything a round decides comes from the durable claim columns — the round, its reasons, when
 // it opened, when each worker was asked, when each answered, and when the operator's side was
 // told. A daemon restart therefore resumes a round exactly where it stood, and the same record
-// gives the same decision. The one thing this pass keeps of its own is the pace at which it
+// gives the same decision. Two things this pass keeps of its own. One is the pace at which it
 // opens new rounds: when it last opened one, and the issues it has opened one for whose claims
-// have not recorded it yet (podUpdateOpenings). Neither goes in the store, because neither
-// decides a round: they pace this daemon's own openings, and a daemon that has just booted
-// opens its first round at its first sweep, one sweep interval after the start.
+// have not recorded it yet (podUpdateOpenings). The other is the told marks it owes: a claim
+// whose machine was deciding something when its round was told is marked at a later sweep
+// (markUpdateTold, markOwedTold). None of it goes in the store, because none of it decides a
+// round: the pace is this daemon's own, and a daemon that has just booted opens its first round
+// at its first sweep, one sweep interval after the start.
+//
+// No step of the walk waits on a claim's machine. A decision in flight holds that machine's
+// lock — a Sandbox relaunch, for minutes — so the walk reads each machine's published view
+// (roundGroup) and takes a machine's lock only without waiting for it (supervise's
+// Machine.PodUpdateTold): one relaunching claim must not hold back every issue after it.
 //
 // The sweep walks the issues in key order, decides each of them, and only then makes the pod
 // replacements those decisions left it, also in key order. A replacement waits its pod out — a
@@ -75,6 +83,7 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 		byIssue[c.Issue] = append(byIssue[c.Issue], c)
 	}
 	slices.Sort(issues)
+	s.markOwedTold(ctx, byIssue)
 	sweep := s.beginPodUpdateSweep(now, byIssue)
 	var replacements []podReplacement
 	for _, issue := range issues {
@@ -873,9 +882,10 @@ func (s *supervision) roundGroup(group []supervise.Claim, mask bool) []supervise
 // the round, so the list says what each role said rather than whom the round waits for. It is
 // never empty while the round asks a claim, which the store requires of the notice
 // (record.UpdateStalled). A round that asks no claim at all is told nothing: there is no role to
-// name. A round that group already records as told is told nothing again and read no further.
+// name. A round that group already records as told, or whose told mark this daemon owes, is told
+// nothing again and read no further (roundTold).
 func (s *supervision) tellLateRound(ctx context.Context, issue string, group []supervise.Claim, round, pod, reasons string, now time.Time, why string) {
-	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || roundTold(group, round) {
+	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || s.roundTold(group, round) {
 		return
 	}
 	told := s.noticeGroup(group)
@@ -945,7 +955,7 @@ func (s *supervision) podlessRound(ctx context.Context, issue string, group []su
 // so a round before its bound costs no read of the machines. The rest is tellLateRound's, with no
 // pod to name.
 func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group []supervise.Claim, round string, now time.Time) {
-	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || roundTold(group, round) {
+	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || s.roundTold(group, round) {
 		return
 	}
 	told := s.noticeGroup(group)
@@ -1101,10 +1111,11 @@ type updateStall struct {
 // tellUpdateStalled tells the controller that a round is held past its bound (the
 // update-stalled notice, record.UpdateStalledNotice). One round is told once however many ticks
 // find it open: the telling is marked on every claim of the round (UpdateToldAt), and a round
-// already marked is told nothing more. The mark is written after the row is enqueued, so a row
-// the store refuses is written again at the next tick rather than swallowed.
+// already marked, or whose mark this daemon owes, is told nothing more (roundTold). The mark is
+// written after the row is enqueued, so a row the store refuses is written again at the next tick
+// rather than swallowed.
 func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) {
-	if roundTold(stall.group, stall.round) {
+	if s.roundTold(stall.group, stall.round) {
 		return
 	}
 	if s.enqueue == nil {
@@ -1126,13 +1137,20 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 	}
 	s.log.Warn("supervise: an update round is held past its bound; the controller is told", "issue", stall.issue, "round", stall.round,
 		"pod", stall.pod, "reason", stall.reason, "waiting", stall.waiting)
-	s.markUpdateTold(ctx, stall.group, stall.round)
+	s.markUpdateTold(ctx, stall.issue, stall.group, stall.round, s.plan.clock.Now())
 }
 
-// markUpdateTold records on every claim of the round that this round was told, so no later tick
-// tells it again. A claim whose machine the daemon no longer holds, or whose round has moved on,
-// marks nothing (supervise's Machine.PodUpdateTold).
-func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Claim, round string) {
+// markUpdateTold records on every claim of the round that this round was told at at, so no later
+// tick tells it again. A claim whose machine the daemon no longer holds, or whose round has moved
+// on, marks nothing (supervise's Machine.PodUpdateTold).
+//
+// A claim whose machine is deciding something now is not waited for: the mark answers
+// supervise.ErrMachineBusy, and the sweep owes it (podUpdateToldOwed) and makes it at a later
+// sweep (markOwedTold). The decision may be a Sandbox relaunch, which holds the machine's lock for
+// minutes; waited for, it would hold every issue the walk reaches after this one, and the orphan
+// reaping behind the walk, for as long. An owed mark counts as made for whether the round was
+// told (roundTold), so the round is told once all the same.
+func (s *supervision) markUpdateTold(ctx context.Context, issue string, group []supervise.Claim, round string, at time.Time) {
 	for _, c := range group {
 		if c.UpdateRound != round {
 			continue
@@ -1141,8 +1159,68 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 		if !ok {
 			continue
 		}
-		if _, err := m.PodUpdateTold(ctx, round); err != nil && ctx.Err() == nil {
+		_, err := m.PodUpdateTold(ctx, round, at)
+		switch {
+		case errors.Is(err, supervise.ErrMachineBusy):
+			s.oweToldMark(c.Token, toldMarkOwed{issue: issue, round: round, at: at})
+			s.log.Info("supervise: this claim's machine is deciding something, so the mark that its update round was told is made at a later sweep",
+				"claim", c.Token, "round", round)
+		case err != nil && ctx.Err() == nil:
 			s.log.Error("supervise: record that this claim's update round was told", "claim", c.Token, "round", round, "error", err)
+		}
+	}
+}
+
+// toldMarkOwed is one told mark the sweep could not make when it told the round, because the
+// claim's machine was deciding something (markUpdateTold): the issue and round it is of, and when
+// the round was told, which is the time the mark carries whenever it is made.
+type toldMarkOwed struct {
+	issue string
+	round string
+	at    time.Time
+}
+
+// oweToldMark keeps one claim's told mark for a later sweep (markOwedTold).
+func (s *supervision) oweToldMark(token claim.Token, owed toldMarkOwed) {
+	s.podUpdateToldMu.Lock()
+	defer s.podUpdateToldMu.Unlock()
+	if s.podUpdateToldOwed == nil {
+		s.podUpdateToldOwed = map[claim.Token]toldMarkOwed{}
+	}
+	s.podUpdateToldOwed[token] = owed
+}
+
+// markOwedTold makes the told marks earlier sweeps owe, over the claims this sweep read, before
+// the walk weighs any round. An entry is dropped once the claims no longer need it: the claim
+// records the mark, the claim is in another round or in none, or the sweep groups no such claim
+// (it retired, or it is gone). Until then it is kept, and a mark made here keeps it too, since the
+// claims this sweep read were read before the mark and would read the round as never told: the
+// next sweep reads the mark and drops the entry. A machine still deciding something is tried
+// again at the next sweep. A mark the store refuses drops the entry, and the round is told again,
+// as a refused mark of a machine that was free is (Machine.PodUpdateTold).
+func (s *supervision) markOwedTold(ctx context.Context, byIssue map[string][]supervise.Claim) {
+	s.podUpdateToldMu.Lock()
+	defer s.podUpdateToldMu.Unlock()
+	for token, owed := range s.podUpdateToldOwed {
+		i := slices.IndexFunc(byIssue[owed.issue], func(c supervise.Claim) bool { return c.Token == token })
+		if i < 0 {
+			delete(s.podUpdateToldOwed, token)
+			continue
+		}
+		if c := byIssue[owed.issue][i]; c.UpdateRound != owed.round || c.UpdateToldAt != nil {
+			delete(s.podUpdateToldOwed, token)
+			continue
+		}
+		m, ok := s.supervisor.Machine(token)
+		if !ok {
+			delete(s.podUpdateToldOwed, token)
+			continue
+		}
+		if _, err := m.PodUpdateTold(ctx, owed.round, owed.at); err != nil && !errors.Is(err, supervise.ErrMachineBusy) {
+			delete(s.podUpdateToldOwed, token)
+			if ctx.Err() == nil {
+				s.log.Error("supervise: record that this claim's update round was told; the round is told again", "claim", token, "round", owed.round, "error", err)
+			}
 		}
 	}
 }
@@ -1466,10 +1544,17 @@ func heldByOperator(group []supervise.Claim, round string) []supervise.Claim {
 	return held
 }
 
-// roundTold is whether this round was already told to the operator's side.
-func roundTold(group []supervise.Claim, round string) bool {
+// roundTold is whether this round was already told to the operator's side: a claim of the group
+// records the round's told mark, or this daemon owes the mark to one (markUpdateTold), because its
+// machine was deciding something when the round was told.
+func (s *supervision) roundTold(group []supervise.Claim, round string) bool {
+	s.podUpdateToldMu.Lock()
+	defer s.podUpdateToldMu.Unlock()
 	for _, c := range group {
-		if c.UpdateRound == round && c.UpdateToldAt != nil {
+		if c.UpdateRound != round {
+			continue
+		}
+		if owed, ok := s.podUpdateToldOwed[c.Token]; c.UpdateToldAt != nil || (ok && owed.round == round) {
 			return true
 		}
 	}
