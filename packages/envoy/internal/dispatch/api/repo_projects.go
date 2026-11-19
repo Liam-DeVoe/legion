@@ -206,26 +206,19 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 // keeps it and still resolves to it. An issue that names none resolves, as before, through its
 // parent chain and then its project's default, which is gone where this mapping was that default.
 //
-// Its path names the mapping stored under the path's own spelling (deletedRepoProjectSpelling),
-// compared with the stored name as every lookup of a mapping is, `repo = $1` on the table's
-// primary key, which is byte for byte; where no mapping is stored under that spelling, it names
-// the one stored under the path as every mapping's path was read before the PUT held its own to
-// GitHub's names (storedRepoProjectPath), lower-cased and one trailing `.git` trimmed. So a
-// mapping stored under a name that reading turns into another, `acme/x.git` (from a PUT of
-// `acme/x.git.git`) or `Acme/X` (by direct SQL), is removed by its own name, and that DELETE
-// leaves `acme/x` stored beside it; one stored then under a name the PUT now refuses, `acme/..`
-// among them, is removed by its own name too, and a DELETE of `acme/x.git.git`, which names no
-// mapping by its own spelling, still removes `acme/x.git` through the second reading. A path that
-// names no mapping either way answers as the second reading alone would, 204 or 400.
+// Its path removes the mapping stored under the path's own spelling (deletedRepoProjectSpelling)
+// and no other. The lookup is `repo = $1` on the table's primary key, which compares the stored
+// name with the spelling byte for byte. A path the canonical reading (storedRepoProjectPath,
+// lower-cased and one trailing `.git` trimmed) reads as itself, `acme/x`, so names the canonical
+// row, and a path that reading reads as another name or refuses, `acme/x.git`, `Acme/X`,
+// `acme/x.git.git` or `acme/a%20b`, names only the mapping stored under that exact spelling, never
+// the row the reading names. So of `acme/x.git` (from a PUT of `acme/x.git.git`) and `acme/x`
+// stored together, each is removed by its own spelling, and the DELETE sent again removes nothing
+// more. A path that names no stored mapping is 204 where the canonical reading takes it, and that
+// reading's 400 where it refuses it.
 //
-// The write takes the locks of the path's own spelling first (lockRepoProjectWrite), so a
-// mapping stored under it cannot appear or go between the lookup and the removal, and only where
-// none is stored the locks of the second reading's name. That order cannot wait in a cycle: a
-// DELETE holds at most its spelling's lock, and no project's, while it waits for its second
-// reading's, and a cycle would need that reading, applied over and over, to lead back to a
-// spelling it changed. A name it has made is lower-case and trimmed, and reading it again leaves
-// it as it is or trims one more `.git`, so it never comes back; every other writer takes one
-// mapping's locks.
+// The write takes the locks of the path's own spelling (lockRepoProjectWrite), so the mapping
+// stored under it cannot appear or go between the lookup and the removal.
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -248,19 +241,10 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if previous == nil {
-		repo, err := storedRepoProjectPath(r)
-		if err != nil {
+		if err := storedRepoProjectPath(spelled); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if repo != spelled {
-			if previous, err = lockRepoProjectWrite(r.Context(), tx, s.deps.Events, repo, actor); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-		}
-	}
-	if previous == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -443,19 +427,27 @@ func repoProjectPath(r *http.Request) (owner, name string, err error) {
 // its two segments as the mux unescapes them, joined by `/`, nothing trimmed and nothing
 // lower-cased, so it names a mapping stored under any name the mux carries in two segments. The
 // mux unescapes each segment after it splits the path, so a `/` in a name is written `%2F`, and a
-// `.` or `..` segment `%2E` or `%2E%2E`, which no client resolves away; an empty segment reaches
-// no wildcard of the route. No GitHub path is built from it here.
+// `.` or `..` segment `%2E` or `%2E%2E`; an empty segment reaches no wildcard of the route. A
+// caller that sends the path as it is written keeps such a segment: curl with `--path-as-is`, or
+// a Go client building the path by hand. A browser's URL parser (WHATWG URL) reads `%2E` and
+// `%2E%2E` as dot segments, as it reads `.` and `..`, and resolves them away before the request
+// is sent. The dashboard's DELETE is such a request: it splits the stored name on `/` and puts
+// each half into the path through encodeURIComponent, which leaves a dot as it is
+// (packages/dispatch/web/src/api/paths.ts, repoParams and routeUrl), so its DELETE of a mapping
+// stored under `acme/..` is sent as `/api/v1/settings/repo-projects/`, no path of this route. No
+// GitHub path is built from it here.
 func deletedRepoProjectSpelling(r *http.Request) string {
 	return r.PathValue("owner") + "/" + r.PathValue("repo")
 }
 
-// storedRepoProjectPath reads the {owner}/{repo} path of a mapping removal that names no mapping
-// by its own spelling (deletedRepoProjectSpelling) as every mapping's path was read before
-// repoProjectPath held it to GitHub's names: canonicalised by externalRef alone, lower-cased and
-// one trailing `.git` trimmed. No GitHub path is built from it here.
-func storedRepoProjectPath(r *http.Request) (string, error) {
-	repo, _, err := externalRef(deletedRepoProjectSpelling(r) + "#1")
-	return repo, err
+// storedRepoProjectPath reads the spelling of a mapping removal's {owner}/{repo} path as every
+// mapping's path was read before repoProjectPath held it to GitHub's names: canonicalised by
+// externalRef alone, lower-cased and one trailing `.git` trimmed. A removal whose path names no
+// stored mapping answers by it: 204 where it reads the path, and its 400 where it refuses the
+// path. No GitHub path is built from it here.
+func storedRepoProjectPath(spelled string) error {
+	_, _, err := externalRef(spelled + "#1")
+	return err
 }
 
 // parseRepoRename reads the `renamed_to` of a mapping write: nil for an absent or null field,

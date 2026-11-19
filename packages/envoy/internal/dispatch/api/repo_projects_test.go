@@ -285,29 +285,42 @@ func TestRepoProjectMappingCanonicalizesRepositoryVariants(t *testing.T) {
 			t.Fatalf("external issue %d project: got %q, want CORE", number, issue.Project)
 		}
 	}
-	deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/repo-projects/OWNER/REPO.git", nil, "alice")
-	if deleted.Code != http.StatusNoContent {
-		t.Fatalf("delete canonical repository: status=%d body=%s", deleted.Code, deleted.Body.String())
+	// A DELETE names only the mapping stored under its path's own spelling
+	// (TestRepoProjectDeleteRemovesOnlyTheMappingItsPathSpells), so a variant the PUT and the
+	// references above canonicalise removes nothing, and the canonical name removes the mapping.
+	for _, removal := range []struct {
+		path string
+		left int
+	}{{"OWNER/REPO.git", 1}, {"owner/repo", 0}} {
+		deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/repo-projects/"+removal.path, nil, "alice")
+		if deleted.Code != http.StatusNoContent {
+			t.Fatalf("DELETE %s: status=%d body=%s, want 204", removal.path, deleted.Code, deleted.Body.String())
+		}
+		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/repo-projects", nil, "alice")
+		if got := decodeBody[[]repoProjectResponse](t, listed); len(got) != removal.left {
+			t.Fatalf("after DELETE %s the mappings are %#v, want %d", removal.path, got, removal.left)
+		}
 	}
 	if got := refs.ExternalRepo(" Owner ", " Repo.git "); got != "owner/repo" {
 		t.Fatalf("canonical repository whitespace: got %q", got)
 	}
 }
 
-// A DELETE removes the mapping stored under its path's own spelling, compared byte for byte as
-// every lookup of a mapping by its name is, before it reads the path as every mapping's path was
-// read before the PUT held names to GitHub's rule, lower-cased and one trailing `.git` trimmed. A
-// PUT of `acme/x.git.git` stores `acme/x.git`, and the DELETE of `acme/x.git` removes that row and
-// leaves `acme/x` beside it; `acme/x` alone is removed by its own name, as before; and
-// `acme/x.git.git`, which names no mapping as it is spelled, still reaches `acme/x.git` through
-// the second reading. Names only direct SQL stores are removed by their own spelling too:
-// `Acme/X`, which the second reading lower-cases into `acme/x`, and `acme/a b`, which it refuses.
-// A path that names no mapping answers as before: 204 for a name the second reading takes, 400
-// for one it refuses.
+// A DELETE removes only the mapping stored under its path's own spelling, compared byte for byte
+// on the table's primary key. A path the canonical reading (lower-cased, one trailing `.git`
+// trimmed) reads as itself, `acme/x`, is the canonical row's own spelling; any other path names
+// the mapping stored under its exact spelling alone, never the row that reading names. A PUT of
+// `acme/x.git.git` stores `acme/x.git`, here beside `acme/x`: the DELETE of `acme/x.git.git`, a
+// spelling no mapping is stored under, removes nothing; that of `acme/x.git` removes
+// `acme/x.git`; that of `Acme/X.git`, which the reading reads as `acme/x`, removes nothing; and
+// that of `acme/x` removes `acme/x`. Names only direct SQL stores are removed by their own
+// spelling too: `Acme/X`, whose DELETE sent again leaves `acme/x` beside it, and `acme/a b`,
+// which the reading refuses. A path that names no mapping is 204 where the reading takes it and
+// 400 where it refuses it.
 //
-// The negative control is the DELETE reading its path the second way alone, as it did: its DELETE
-// of `acme/x.git` removes `acme/x` and leaves `acme/x.git`.
-func TestRepoProjectDeleteRemovesTheMappingItsPathSpellsBeforeTheOneItReadsAs(t *testing.T) {
+// The negative control is the DELETE reaching, where its spelling names no mapping, the row the
+// canonical reading names, as it did: its DELETE of `acme/x.git.git` removes `acme/x.git`.
+func TestRepoProjectDeleteRemovesOnlyTheMappingItsPathSpells(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -352,16 +365,16 @@ func TestRepoProjectDeleteRemovesTheMappingItsPathSpellsBeforeTheOneItReadsAs(t 
 	if got := stored(); !slices.Equal(got, []string{"acme/x", "acme/x.git"}) {
 		t.Fatalf("the PUTs stored %q, want acme/x and acme/x.git", got)
 	}
+	deleteLeaving("acme/x.git.git", http.StatusNoContent, "acme/x", "acme/x.git")
 	deleteLeaving("acme/x.git", http.StatusNoContent, "acme/x")
 	events := projectEvents(t, database, "CORE", "settings.repo_project.updated")
 	if removed := events[len(events)-1]; removed["deleted"] != true || removed["mapping"].(map[string]any)["repo"] != "acme/x.git" {
 		t.Fatalf("the DELETE's event = %v, want acme/x.git removed, deleted:true", removed)
 	}
+	deleteLeaving("Acme/X.git", http.StatusNoContent, "acme/x")
 	deleteLeaving("acme/x", http.StatusNoContent)
 
-	mapPaths("acme/x.git.git", "acme/x")
-	deleteLeaving("acme/x.git.git", http.StatusNoContent, "acme/x")
-
+	mapPaths("acme/x")
 	for _, name := range []string{"Acme/X", "acme/a b"} {
 		if _, err := database.Pool.Exec(t.Context(), `
 			insert into repo_projects (repo, project, created_by) values ($1, 'CORE', '{"kind":"system","id":"test"}'::jsonb)
@@ -370,9 +383,45 @@ func TestRepoProjectDeleteRemovesTheMappingItsPathSpellsBeforeTheOneItReadsAs(t 
 		}
 	}
 	deleteLeaving("Acme/X", http.StatusNoContent, "acme/a b", "acme/x")
+	deleteLeaving("Acme/X", http.StatusNoContent, "acme/a b", "acme/x")
 	deleteLeaving("acme/a%20b", http.StatusNoContent, "acme/x")
 	deleteLeaving("acme/nothing", http.StatusNoContent, "acme/x")
 	deleteLeaving("acme/no%20thing", http.StatusBadRequest, "acme/x")
+}
+
+// A DELETE is the same however often it is sent: the dashboard sends a DELETE again, with no key,
+// when an earlier attempt's answer did not reach it and that attempt may have landed
+// (packages/dispatch/web/src/features/writes/keyed-write.ts), and two tabs can send the same
+// removal at once. So the DELETE of `acme/x.git` that removed the mapping stored under that
+// spelling removes nothing more when it is sent again, and the mapping of `acme/x` beside it,
+// which nobody asked to remove, stays.
+func TestRepoProjectDeleteSentAgainRemovesNoOtherMapping(t *testing.T) {
+	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, path := range []string{"acme/x.git.git", "acme/x"} {
+		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+path,
+			map[string]string{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("map %s: status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		response := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/repo-projects/acme/x.git", nil, "alice")
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("DELETE acme/x.git, attempt %d: status=%d body=%s, want 204", attempt, response.Code, response.Body.String())
+		}
+		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/repo-projects", nil, "alice")
+		var repos []string
+		for _, mapping := range decodeBody[[]repoProjectResponse](t, listed) {
+			repos = append(repos, mapping.Repo)
+		}
+		if !slices.Equal(repos, []string{"acme/x"}) {
+			t.Fatalf("after DELETE acme/x.git, attempt %d, the mappings are %q, want acme/x alone", attempt, repos)
+		}
+	}
 }
 
 func TestExternalIssueUsesPersistedRepoProject(t *testing.T) {
