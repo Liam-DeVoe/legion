@@ -21,14 +21,22 @@ body: |-
   fenced code, no longer hides the decisions after it from the stale-link check. Each decision is
   compared by the cut of its own heading, so a heading of the same name inside a quote or a list
   item no longer shifts it onto another decision's text, and a stored version the parser refuses
-  leaves the links that name it as they are.
+  leaves the links that name it as they are. The view reads a stored version's rows before it
+  parses them, parses each version once, and keeps each cut in a memo of at most 32 MiB.
   Dispatch links an email address whole, or not at all. For a link that a reader made from a bare
   address, it takes the run of characters an RFC 5322 local part allows that ends at the `@`, as
   the text decodes: the link is that whole run where GFM links every character of it, and there is
   no link otherwise. So a resource path such as `projects/p/serviceAccounts/agent-hosts@example.com`
   is stored as written, and is no longer stored as
   `agent-[hosts@example.com](mailto:hosts@example.com)`, which `dispatch artifact` refused, and so
-  is `a.b+c_d%e-f@example.com`. Where a run of GFM's characters reaches into another link a reader
-  made, both links stay as they are. An address split by inline markup keeps its earlier reading,
-  and a link the writer wrote is never changed. The browser editor reads by the same rule,
-  and the display tree version is now 4, so every display tree stored before is read again.
+  is `a.b+c_d%e-f@example.com`. A link a reader made ends the run only where the next character
+  would continue that link written bare, so `alice@example.com/bob-smith@example.com` links only
+  the first address. Two cases keep the earlier reading, because no other spelling reads back:
+  a web address (`www.`, `http://` or `https://`) in the joined text that reaches into the
+  address keeps the reader's email link, and so does an earlier link a reader made next to an
+  email link the writer wrote, or one whose text starts `_www.`. No text the earlier release
+  stores is refused. An address split by inline markup keeps its earlier reading, and a link the
+  writer wrote is never changed. The browser editor reads by the same rule, and the display tree
+  version is now 4, so every display tree stored before is read again. Where a write's text reads
+  back the same and only a mark differs, its refusal names the run and the mark, such as
+  `reads back without the link on "b@c.test"`, rather than quoting the same text twice.
