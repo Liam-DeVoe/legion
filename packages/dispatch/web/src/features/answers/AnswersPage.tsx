@@ -8,7 +8,6 @@ import { EmptyState } from "../../components/EmptyState";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
-import { ROW_MARKER } from "../../components/row-marker";
 import {
   borderDefault,
   card,
@@ -65,11 +64,7 @@ function AnswerRow({
     row.ask_state === "answered" &&
     row.ask_kind !== "approval";
   return (
-    <li
-      className={`rounded-xl border p-3 ${card} ${borderDefault}`}
-      data-answer-row={row.ask_id}
-      {...ROW_MARKER}
-    >
+    <li className={`rounded-xl border p-3 ${card} ${borderDefault}`} data-answer-row={row.ask_id}>
       <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-xs ${textMutedOnCanvas}`}>
         <Timestamp at={row.at} />
         {/* The owner itself, not the ask: the row's Open already goes to the ask. */}

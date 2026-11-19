@@ -46,6 +46,7 @@ import {
   putRepoProject,
   replyToMessageDelivery,
   resolveAsk,
+  resolveComment,
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import {
@@ -5555,6 +5556,72 @@ test("an ask withdrawn while the reader types its answer in the Inbox's list tak
     );
     if (typedInto.length > 0) {
       wrong.push(`${surface}: j was typed into ${typedInto.join(", ")}`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): two widths, each with an issue and four comments seeded and one resolved by its
+// author.
+// INFRA-3135, round 18 (the tester's, measured in builds Jobs infra-3135-r18xh, -r18xp and
+// -r18xb at e9ed2743, 90fa8211 and the merge base a20e0b05): the reader has narrowed an issue's
+// Conversation to Open and holds the focus on a comment's Reply when the comment's author
+// resolves it, so the filter takes the turn away, a loss the reader did not cause. At e9ed2743
+// and at 90fa8211 the focus goes into the next turn - its Pin, its Reply, its Expand thread or its
+// body - at 1440 and at 390 px in Chromium, Firefox and WebKit, six runs of six: a turn carries no
+// row marker (`components/row-marker.ts`), so the rescue takes the next turn's control for a
+// control in no row. At a20e0b05 the focus goes to the page body in all six. The architect's rule
+// of 2026-11-19: a loss the reader did not cause moves the focus into no other row of a list. A
+// focused control taken away, for which Firefox and WebKit fire no `focusout`: the clause of the
+// `webkit` and `firefox` projects that names the page-own focus row (e2e/playwright.config.ts).
+test("a Conversation turn resolved elsewhere while its Reply holds the focus hands the focus into no other turn @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    const issue = await createIssue({ project: "CORE", title: `Conversation at ${size.width} px` });
+    const ids: string[] = [];
+    for (const turn of [1, 2, 3, 4]) {
+      const made = await createComment(
+        issue.key,
+        { body: `Turn ${turn}: a thought.` },
+        SURFACE_SESSION
+      );
+      ids.push(made.id);
+    }
+    await page.setViewportSize(size);
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const resolved = page.locator(`[data-turn="comment:${ids[1]}"]`);
+    await expect(resolved).toBeVisible();
+    const open = page.getByRole("button", { exact: true, name: "Open" });
+    await open.click();
+    await expect(open).toHaveAttribute("aria-pressed", "true");
+    const reply = resolved.getByRole("button", { exact: true, name: "Reply" });
+    await reply.focus();
+    await expect(reply).toBeFocused();
+    await resolveComment(ids[1] as string, SURFACE_SESSION);
+    await expect(resolved).toHaveCount(0);
+    // The page's rescue runs a frame and a task after the loss, so it is done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const named =
+        active?.getAttribute("aria-label") ||
+        active?.textContent?.replace(/\s+/g, " ").trim().slice(0, 40);
+      return {
+        name: `${active?.tagName.toLowerCase()} "${named}"`,
+        turn: active?.closest("[data-turn]")?.getAttribute("data-turn") ?? null,
+      };
+    });
+    if (holder.turn !== null) {
+      wrong.push(`at ${size.width} px: the focus is on ${holder.name} in the turn ${holder.turn}`);
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);

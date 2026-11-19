@@ -326,10 +326,11 @@ test("the bar going with a control the reader scrolled out of sight hands the fo
   }
 });
 
-/** Three rows, each an Inbox row carrying the row marker and its mark, a control of the page's
- *  own outside them, and the bar over them: the page the hand-off is read on when a refetch, not
- *  the reader, empties the selection. The rows sit in no scroll box, so a loss the reader did not
- *  cause leaves the focus on the body rather than pulled into any row. */
+/** Three rows, each a `div` carrying the row marker and its mark - where the Inbox draws an
+ *  `<li>`, a row by the same rule (`ROW_SELECTOR`) - a control of the page's own outside them,
+ *  and the bar over them: the page the hand-off is read on when a refetch, not the reader,
+ *  empties the selection. The rows sit in no scroll box, so a loss the reader did not cause
+ *  leaves the focus on the body rather than pulled into any row. */
 function MarkedTable({
   count,
   returnFocus,
@@ -454,6 +455,35 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
     expect(trigger).toHaveFocus();
     // The write lands and the marked rows leave: the bar goes with its trigger.
     view.rerender(<Bar count={0} />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(rowBox("CORE-2")).toHaveFocus();
+    expect(asked).toBe(1);
+  } finally {
+    view.unmount();
+    rescue.unmount();
+  }
+});
+
+// INFRA-3135, round 18 (the tester's): emptied by the reader's press on the last marked row's
+// mark, the bar hands the focus on too (`pressOnRowMark`). A click leaves a checkbox unfocused in
+// WebKit, so the focus is still in the bar when the press takes the last row away, and the press
+// is on no control of the bar. With `pressOnRowMark` answering false in a scratch copy of
+// e9ed2743, this file, `DataTable.test.tsx`, `Inbox.test.tsx` and `IssuesTable.test.tsx` passed
+// 254 of 254, and so did the page-own press row of `e2e/table-controls.e2e.ts` in WebKit and
+// Firefox (builds Job infra-3135-r18mk): no test read the rule.
+test("the bar emptied by the reader's press on the last row's mark hands the focus to what returnFocus names", () => {
+  const rescue = renderHook(() => useFocusRescue({ current: null }));
+  let asked = 0;
+  const returnFocus = () => {
+    asked += 1;
+    return rowBox("CORE-2");
+  };
+  const view = render(<MarkedTable count={1} returnFocus={returnFocus} />);
+  try {
+    act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+    const mark = rowBox("CORE-1");
+    act(() => mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    view.rerender(<MarkedTable count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).toHaveFocus();
     expect(asked).toBe(1);

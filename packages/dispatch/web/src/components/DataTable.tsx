@@ -45,7 +45,6 @@ import { ColumnFilter } from "./ColumnFilter";
 import { CONTROL } from "./control-names";
 import { useFocusPlace } from "./focus-place";
 import { Pager, type PagerOptions } from "./Pager";
-import { ROW_MARKER } from "./row-marker";
 import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
 import { reorder, type TableLayoutModel, widthBounds } from "./table-layout";
 
@@ -380,9 +379,9 @@ export interface DataTableProps<Row> {
    *  to React, so a change there would draw every cell anew. */
   readonly filterUnloaded?: ReadonlyMap<string, readonly string[]>;
   /** Draws one row: a `<tr>` carrying the caller's own row attribute, which the keys and the
-   *  box's height read, the shared row marker (`ROW_MARKER`), which the page's focus rescue
-   *  reads a row by, `data-index`, which the table writes the row's `aria-rowindex` from, and
-   *  `ref={measure}`. */
+   *  box's height read, `data-index`, which the table writes the row's `aria-rowindex` from, and
+   *  `ref={measure}`. A `<tr>` is a row to the page's focus rescue by its element alone
+   *  (`row-marker.ts`'s `ROW_SELECTOR`). */
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
   /** Draws one group's heading, with `data-index` and `ref={measure}`, as `renderRow` does. */
   readonly renderGroup: (props: LineProps & { readonly entry: DisplayRow<Row> }) => ReactNode;
@@ -752,7 +751,7 @@ export function DataTable<Row>({
           >
             <thead>
               {headerGroups.map((group, index) => (
-                <tr aria-rowindex={index + 1} key={group.id} {...ROW_MARKER}>
+                <tr aria-rowindex={index + 1} key={group.id}>
                   {group.headers.map((header, place) => {
                     // The columns drawn either side that a move may pass: none for a pinned
                     // column, and none that is pinned, as a drop takes no pinned column either.
@@ -792,7 +791,7 @@ export function DataTable<Row>({
               ))}
             </thead>
             <tbody onFocus={noteFocus} ref={body}>
-              {first ? <tr aria-hidden style={{ height: first.start }} {...ROW_MARKER} /> : null}
+              {first ? <tr aria-hidden style={{ height: first.start }} /> : null}
               {virtualRows.map((virtual) => {
                 const entry = displayRows[virtual.index];
                 if (entry === undefined) return null;
@@ -806,11 +805,7 @@ export function DataTable<Row>({
                 );
               })}
               {last ? (
-                <tr
-                  aria-hidden
-                  style={{ height: virtualizer.getTotalSize() - last.end }}
-                  {...ROW_MARKER}
-                />
+                <tr aria-hidden style={{ height: virtualizer.getTotalSize() - last.end }} />
               ) : null}
             </tbody>
           </table>
@@ -846,9 +841,8 @@ export interface DataTableCellsProps<Row> {
 /**
  * The cells of one row: each visible column at its own width, the pinned ones held at the box's
  * left edge in the order they are pinned, and the caller's trailing action cell after them.
- * The caller draws the `<tr>` itself — its accessible name, its own data attributes, the shared
- * row marker (`ROW_MARKER`), `data-index` and `ref={measure}` — and gives the cells what
- * only it knows.
+ * The caller draws the `<tr>` itself — its accessible name, its own data attributes,
+ * `data-index` and `ref={measure}` — and gives the cells what only it knows.
  */
 export function DataTableCells<Row>({
   cellClass,
@@ -917,7 +911,7 @@ export function DataTableGroupRow({
   width,
 }: DataTableGroupRowProps): ReactNode {
   return (
-    <tr className={surfaceMutedBg} data-index={index} ref={measure} {...ROW_MARKER}>
+    <tr className={surfaceMutedBg} data-index={index} ref={measure}>
       <td className="px-2 py-2" colSpan={columns}>
         <div
           className="sticky left-0 flex flex-wrap items-center gap-x-4 gap-y-1"

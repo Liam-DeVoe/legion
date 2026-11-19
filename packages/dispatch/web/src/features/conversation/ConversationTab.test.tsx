@@ -2798,10 +2798,11 @@ test("the turns' keys stand down while another tab is shown", async () => {
   }
 });
 
-// A turn is a row of the tab's list (`turnMarks`). A refetch that takes the turn holding the focus
-// away is a loss the reader did not cause, so the app shell's focus rescue, mounted here on the
-// page's main content as the shell mounts it, hands the focus into no other turn: the reader's
-// next `r` or `y` acts on no conversation they did not pick.
+// A turn is a row of the tab's list: an `<li>`, a row by its element alone (`row-marker.ts`'s
+// `ROW_SELECTOR`). A refetch that takes the turn holding the focus away is a loss the reader did
+// not cause, so the app shell's focus rescue, mounted here on the page's main content as the
+// shell mounts it, hands the focus into no other turn: the reader's next `r` or `y` acts on no
+// conversation they did not pick.
 test("a turn a refetch takes away from under the focus hands it to no other turn", async () => {
   const stub = stubLists(turnLists());
   const queryClient = newQueryClient();
