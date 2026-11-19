@@ -308,7 +308,7 @@ Each item below names an option and its measurement, then the verdict on it.
   **chosen**
 
 - a per-issue install onto the issue's disk
-  — the issue's disk is 49 GiB, and every cache already sits on it (`XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `TMPDIR`, `GOCACHE`, `GOMODCACHE`, `BUN_INSTALL_CACHE_DIR`, `UV_CACHE_DIR` and `UV_PYTHON_INSTALL_DIR`, the nine `skills/legion-worker/references/tools.md` lists), so disk is not what rules it out
+  — the issue's disk is 49 GiB, and every cache already sits on it (`XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `TMPDIR`, `GOCACHE`, `GOMODCACHE`, `BUN_INSTALL_CACHE_DIR`, `UV_CACHE_DIR` and `UV_PYTHON_INSTALL_DIR`, the nine `skills/legion-worker/references/withheld-capability.md` lists), so disk is not what rules it out
 
   **rejected for a compiled client on a role's `PATH`**:
   `apt` refuses above, and leaving one unpacked where a role's later commands resolve it is the withheld `operator-setup` capability (decision dispatch://LEGION-200), the extraction item below.
@@ -483,8 +483,7 @@ Then:
   `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, and each amount in GiB to a tenth, or in MiB below one GiB.
   Each control character of a database's name or of its owner's is written `?`, since a role names its own databases, and a newline in a name would otherwise split the line and could forge a second `legion-testpg: reset` line.
   Where the server did not answer, the line ends `the server did not answer, so it read no databases`, and where the list failed, `the server answered but the list of its databases failed, so it read none`.
-  `kubectl logs <pod> -c roles | grep 'legion-testpg: reset'` finds it, and a role reads it there or in `$LEGION_TEST_PG_LOG`;
-  `skills/legion-worker/references/tools.md` ("The database your tests use") tells a role what a reset is and where its line is.
+  `kubectl logs <pod> -c roles | grep 'legion-testpg: reset'` finds it, and a role reads it there or in `$LEGION_TEST_PG_LOG`.
   A reset ends every session on the test database and loses every database in it, as an eviction does, but it ends no role's turn: the new empty cluster serves the same DSN.
   So a harness that makes a database at each run and never drops it is reset each time it passes the floor, and no pod is evicted for it.
 
@@ -4799,7 +4798,9 @@ Every role is told `LEGION_GH_OWNERS_DIR=/var/run/legion/gh`, the bundle's root 
 The root holds one directory per owner account the role's App is installed on and one file of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both wrappers route a moved repository by and read from there and from nowhere else (`ghconfig.PairsFile`; the role Secret's `github-renames` key, projected like the gh files).
 The `gh` first on its PATH is `/opt/legion/bin/gh`, which runs `legion gh`:
 it runs the real gh with `GH_CONFIG_DIR` at the one directory every repository the command targets is routed to, read as gh reads it from the real gh's own help (see docs/deployment.md, "What a pane's gh, git and jj are"): the owner's, or the directory of the owner a configured rename moved a repository to where a pair names it, each repository routed on its own; and at the issue owner's when the command names no repository at all;
-a command it cannot read for certain, one whose repositories route to two directories (two owners' repositories, or a repository a pair moved beside another of the owner it moved from), one naming an owner the bundle holds no directory for, and one naming a repository a pair moved to an owner the bundle holds no directory for are refused with exit 2 and send nothing.
+a command it cannot read for certain, one whose repositories route to two directories (two owners' repositories, or a repository a pair moved beside another of the owner it moved from), one naming an owner the bundle holds no directory for, and one naming a repository a pair moved to an owner the bundle holds no directory for are refused with exit 2 and send nothing;
+a read `legion gh` reads for certain that names only owners the bundle holds no directory for, names no repository a configured rename moves, and has no `github.com` remote of the working directory read for it runs with `GH_CONFIG_DIR`'s token instead (docs/deployment.md, "What a pane's gh, git and jj are", says which calls are such reads).
+In a checkout whose one gh-resolved line is `remote.origin.gh-resolved base`, on an `origin` whose one fetch URL gh keeps as a `github.com` URL that is not ssh, a command of the groups gh resolves through that marker (`repo set-default` only with `--view` or `--unset`) counts origin's repository alone (docs/deployment.md, "What a pane's gh, git and jj are").
 `git` reads the same files through `!legion git-credential` (`workspace.GitHubCredentialHelper`) with `credential.useHttpPath` on, so the helper answers from the `hosts.yml` of the owner of the repository in the path git asks about — of the owner that repository moved to where a pair names it — and from nothing else.
 The shared clone names it as its `credential.helper`: `workspace-init provision` is passed it as `--credential-helper '!legion git-credential'`.
 Every role is also told it outside any clone, as five git configuration entries git reads after every configuration file, the clone's own `.git/config` among them (`gitConfigPairs`, `manifest.go`):

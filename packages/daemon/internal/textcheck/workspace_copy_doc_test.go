@@ -9,34 +9,37 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testdoc"
 )
 
-// Two doc tests hold regions of docs/kubernetes.md to the code those regions document.
+// Three doc tests hold regions of docs/kubernetes.md to the code those regions document.
 // internal/daemon's workspace_copy_doc_test.go holds the copy's cadence paragraphs and the
 // paragraph on what each kind of pod end loses and keeps to the running copy's constants;
 // internal/runtime/sandbox's holds the extended-run-time annotation's bullet and the guide's three
 // other statements of that rule, the paragraphs on an end from outside the pod and the copy's
-// two-kinds and AWS paragraphs to the runtime's annotations and pod-end reasons. That comparison
-// is in two halves, because a test that reads the guide puts the guide in its job's filter — a
-// declared read applies to every compiled source file of a run — and a documentation-only edit
-// would then start the whole daemon Go lane. The product
-// halves read workspace_copy_doc_extract.txt, a copy of their regions committed beside each of the
-// two packages, through internal/testdoc; this half holds each region of both copies to the guide
-// itself. Neither half alone is the guarantee: together they are the one the two tests used to
-// give when they read the guide.
+// two-kinds and AWS paragraphs to the runtime's annotations and pod-end reasons; and
+// internal/launcher's testpg_disk_doc_test.go holds the line a reset of the test database writes,
+// and the command that shows it, to the program's name. That comparison is in two halves, because
+// a test that reads the guide puts the guide in its job's filter — a declared read applies to every
+// compiled source file of a run — and a documentation-only edit would then start the whole daemon
+// Go lane. The product halves read a copy of their regions committed beside each of the three
+// packages (workspace_copy_doc_extract.txt, and testpg_disk_doc_extract.txt in internal/launcher)
+// through internal/testdoc; this half holds each region of every copy to the guide itself. Neither
+// half alone is the guarantee: together they are the one the tests used to give when they read the
+// guide.
 //
-// What it proves: each region of either copy is the run of the guide's lines, byte for byte, that
-// the region's own two markers bound, and those are the markers its product test reads it by,
-// since internal/testdoc fails a test whose markers name no region of its copy. What it does not:
-// that a region states a fact or a constant, which is the product halves', and anything of a
-// region neither copy carries.
+// What it proves: each region of any copy is the run of the guide's lines, byte for byte, that the
+// region's own two markers bound, and those are the markers its product test reads it by, since
+// internal/testdoc fails a test whose markers name no region of its copy. What it does not: that a
+// region states a fact or a constant, which is the product halves', and anything of a region no
+// copy carries.
 const (
 	// The committed copies, each read from the package whose test reads it, and the guide, read
 	// under ../../../.. by shippedText.
 	daemonWorkspaceCopyExtract  = "../daemon/workspace_copy_doc_extract.txt"
 	sandboxWorkspaceCopyExtract = "../runtime/sandbox/workspace_copy_doc_extract.txt"
+	launcherTestPGDiskExtract   = "../launcher/testpg_disk_doc_extract.txt"
 	workspaceCopyGuide          = "docs/kubernetes.md"
 )
 
-// Each region of the two committed copies is the guide's own lines between the region's two
+// Each region of the committed copies is the guide's own lines between the region's two
 // markers. An edit to either side alone fails here: a sentence reworded in the guide and not in a
 // copy would otherwise never reach the product test, which reads the copy and not the guide; and a
 // region copied from another place, or a marker the guide no longer bounds that region by, would
@@ -45,7 +48,7 @@ const (
 func TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines(t *testing.T) {
 	guide := strings.Split(shippedText(t, workspaceCopyGuide), "\n")
 	flat, lineOf := flattenKeepingLines(guide)
-	for _, extract := range []string{daemonWorkspaceCopyExtract, sandboxWorkspaceCopyExtract} {
+	for _, extract := range []string{daemonWorkspaceCopyExtract, sandboxWorkspaceCopyExtract, launcherTestPGDiskExtract} {
 		for _, region := range workspaceCopyExtractRegions(t, extract) {
 			first, last, ok := workspaceCopyGuideRun(t, flat, lineOf, extract, region)
 			if !ok {
