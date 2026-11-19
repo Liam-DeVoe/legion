@@ -3289,11 +3289,11 @@ for (const first of ["the pick", "the other card's move"] as const) {
     };
     try {
       act(() => {
-        void board.moves().moveCardToLane(neighbour.key, "todo", 2, 0);
+        void board.moves().move(neighbour.key, toLane(2));
       });
       await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
       act(() => {
-        void board.moves().moveCardToLane(issue.key, "todo", 3, 0);
+        void board.moves().move(issue.key, toLane(3));
       });
       // The drag waits in the board's scope, out of the store.
       expect(
