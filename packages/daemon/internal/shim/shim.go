@@ -35,8 +35,9 @@ import (
 )
 
 const (
-	// backlogLimit is how many of OMP's newest frames wait for a daemon that is not connected
-	// (BACKLOG_LIMIT, worker-shim.ts).
+	// backlogLimit is how many of the newest lines bound for the daemon wait for one that is not
+	// connected (BACKLOG_LIMIT, worker-shim.ts); the oldest are dropped a whole frame at a time
+	// (outbox).
 	backlogLimit = 1000
 	// A refused or failed connect is retried after reconnectBase, doubling to reconnectCap
 	// (RECONNECT_BASE_MS and RECONNECT_CAP_MS, and cmdWorkerShimConnect's retry, worker-shim.ts).
@@ -487,16 +488,22 @@ func (s *shim) spawnOnce() bool {
 	return true
 }
 
-// pump carries OMP's stdout to the daemon, line by line and unchanged
-// (createShimBridge's forwardToSocket, worker-shim.ts). The child's first line is also when the
-// workspace's CodeGraph warm-up starts (Config.WarmCodegraph), in its own goroutine so the pump
-// never waits on it.
+// pump carries OMP's stdout to the daemon unchanged (createShimBridge's forwardToSocket,
+// worker-shim.ts), each line as a frame of its own but for an rpc_chunk sequence's, which reach
+// the outbox as one frame (chunkHold). The child's first line is also when the workspace's
+// CodeGraph warm-up starts (Config.WarmCodegraph), in its own goroutine so the pump never waits
+// on it.
 func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 	defer close(done)
 	defer stdout.Close()
 	r := shimwire.NewReader(stdout)
+	var held chunkHold
 	for {
 		line, err := r.ReadLine()
+		if err != nil {
+			// A sequence the child never finished goes as it is, and the daemon's reader drops it.
+			held.release(&s.out)
+		}
 		if errors.Is(err, shimwire.ErrLineTooLong) {
 			// OMP chunks every frame over the limit; a longer line is a child whose stream can no
 			// longer be framed, and nothing from mid-line can be forwarded honestly.
@@ -513,11 +520,62 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 		}
 		s.warmed.Do(s.warmCodegraph)
 		line = bytes.Clone(line)
-		s.out.send(line)
+		held.forward(&s.out, line)
 		if summary := summarize(line); summary != "" {
 			s.log.Print(summary)
 		}
 	}
+}
+
+// chunkHold is the rpc_chunk sequence of OMP's that the pump is reading — a frame over the line
+// limit, such as a long turn's agent_end — held until its last chunk is read and then sent to the
+// outbox as one frame. So a connection that breaks under it leaves the whole sequence, from its
+// chunk 0, for the next, and nothing the shim sends of its own (a bundle result's sequence,
+// toDaemonChunked) lands between two of its chunks. A line that does not continue the sequence —
+// one that is not a chunk, a chunk of another sequence, or an index that is not the next — sends
+// what is held first, as one frame, and so does the pump's end: the daemon's reader drops that
+// broken sequence as it would have, and nothing changes order. The pump holds one sequence at
+// most, which OMP writes back to back: at most MaxReassembledBytes of payload, as base64 lines.
+type chunkHold struct {
+	lines [][]byte
+	id    string
+	next  int // the index a chunk has to have to continue the sequence
+}
+
+// chunkPosition is what the pump reads of an rpc_chunk line: where it sits in its sequence,
+// never its data.
+type chunkPosition struct {
+	ChunkID string `json:"chunkId"`
+	Index   int    `json:"index"`
+	Count   int    `json:"count"`
+}
+
+// forward sends one of OMP's lines to out, or holds it with the rest of its sequence.
+func (h *chunkHold) forward(out *outbox, line []byte) {
+	var chunk chunkPosition
+	if frameType(line) != shimwire.TypeRPCChunk || json.Unmarshal(line, &chunk) != nil {
+		h.release(out)
+		out.send(line)
+		return
+	}
+	if chunk.ChunkID != h.id || chunk.Index != h.next {
+		h.release(out)
+	}
+	h.lines = append(h.lines, line)
+	h.id, h.next = chunk.ChunkID, chunk.Index+1
+	if chunk.Index == chunk.Count-1 {
+		h.release(out)
+	}
+}
+
+// release sends what is held to out as one frame, if anything is.
+func (h *chunkHold) release(out *outbox) {
+	if len(h.lines) == 0 {
+		return
+	}
+	out.send(h.lines...)
+	clear(h.lines)
+	h.lines, h.id, h.next = h.lines[:0], "", 0
 }
 
 // warmCodegraph starts cfg.WarmCodegraph for the workspace LEGION_WORKSPACE names, once the
@@ -649,8 +707,10 @@ func (s *shim) finish(code int, err error) {
 }
 
 // toDaemonChunked sends a frame that may be larger than one line: under the limit it is one line,
-// and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks). The
-// bundle result is this shim's one frame that can be: everything else fits a line.
+// and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks), handed
+// to the outbox as one frame so it reaches a connection whole from its chunk 0 or waits whole for
+// the next, as the pump hands over OMP's own sequences (chunkHold). The bundle result is this
+// shim's one frame that can be: everything else it sends of its own fits a line.
 func (s *shim) toDaemonChunked(frame shimwire.Frame) {
 	line, err := json.Marshal(frame)
 	if err != nil {
@@ -666,14 +726,16 @@ func (s *shim) toDaemonChunked(frame shimwire.Frame) {
 		s.log.Printf("[worker-shim] could not chunk a %s frame of %d bytes: %v", frame.FrameType(), len(line), err)
 		return
 	}
-	for _, chunk := range chunks {
+	lines := make([][]byte, len(chunks))
+	for i, chunk := range chunks {
 		encoded, err := json.Marshal(chunk)
 		if err != nil {
 			s.log.Printf("[worker-shim] could not encode an rpc_chunk frame: %v", err)
 			return
 		}
-		s.out.send(encoded)
+		lines[i] = encoded
 	}
+	s.out.send(lines...)
 }
 
 // envValue is name's value in env, the last assignment winning as it does for a process started
@@ -697,7 +759,7 @@ const (
 // summarize is the one line the pane shows for a frame worth a human's glance, or nothing
 // (summarizeShimFrame, worker-shim.ts). It reads line's type first and decodes only the frames it
 // has a line for: every other line Oh My Pi writes — an `rpc_chunk`'s few hundred kilobytes of
-// base64 among them — is forwarded to the daemon and read no further.
+// base64 among them — it reads no further than its type.
 func summarize(line []byte) string {
 	switch frameType(line) {
 	case shimwire.TypeAgentStart, shimwire.TypeAgentEnd, shimwire.TypeResponse, shimwire.TypeToolExecutionStart,
@@ -762,23 +824,34 @@ func truncate(s string, n int) string {
 }
 
 // outbox is every frame bound for the daemon: written to the connection when one is attached,
-// held in the backlog of the newest backlogLimit frames when none is, and replayed in order —
+// held in the backlog of the newest backlogLimit lines when none is, and replayed in order —
 // ahead of anything newer — when the next connection is acked (createShimBridge's forward and
 // onConnect, worker-shim.ts).
+//
+// A frame is one line, or the whole rpc_chunk sequence of a frame too large for one: the shim's
+// own (toDaemonChunked) or OMP's (chunkHold). The outbox moves frames, never part of one: the
+// daemon's reader reassembles a sequence only from its chunk 0 on one stream, so a sequence is
+// written, held, replayed and dropped whole. One a connection breaks under waits from its chunk 0
+// for the next, and the part the broken connection carried is its reader's to drop.
 type outbox struct {
-	mu      sync.Mutex
-	conn    net.Conn
-	w       *shimwire.Writer
+	mu   sync.Mutex
+	conn net.Conn
+	w    *shimwire.Writer
+	// backlog is every line waiting for a connection, oldest first, and frames is how many of
+	// those lines each frame is, in the same order.
 	backlog [][]byte
+	frames  []int
 	dropped bool
 	log     *log.Logger
 }
 
-func (o *outbox) send(line []byte) {
+// send writes the lines of one frame to the connection, or holds them in the backlog when there
+// is none or it breaks under them.
+func (o *outbox) send(lines ...[]byte) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.w != nil {
-		if o.w.WriteLine(line) == nil {
+		if writeFrame(o.w, lines) {
 			return
 		}
 		// The stream broke under this frame, so the daemon never got it whole: it waits with the
@@ -786,10 +859,12 @@ func (o *outbox) send(line []byte) {
 		_ = o.conn.Close()
 		o.conn, o.w = nil, nil
 	}
-	o.backlog = append(o.backlog, line)
-	if len(o.backlog) > backlogLimit {
-		o.backlog[0] = nil
-		o.backlog = o.backlog[1:]
+	o.backlog = append(o.backlog, lines...)
+	o.frames = append(o.frames, len(lines))
+	for len(o.backlog) > backlogLimit {
+		dropped := o.backlog[:o.frames[0]]
+		clear(dropped)
+		o.backlog, o.frames = o.backlog[len(dropped):], o.frames[1:]
 		if !o.dropped {
 			o.dropped = true
 			o.log.Printf("[worker-shim] no daemon client connected; dropping oldest frames beyond the last %d", backlogLimit)
@@ -798,20 +873,31 @@ func (o *outbox) send(line []byte) {
 }
 
 // attach replays the backlog on a newly acked connection and makes it the one frames go to. A
-// connection that breaks mid-replay is closed, and what it did not take waits for the next.
+// connection that breaks mid-replay is closed, and what it did not take whole waits for the next.
 func (o *outbox) attach(conn net.Conn, w *shimwire.Writer) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	for len(o.backlog) > 0 {
-		if w.WriteLine(o.backlog[0]) != nil {
+	for len(o.frames) > 0 {
+		frame := o.backlog[:o.frames[0]]
+		if !writeFrame(w, frame) {
 			_ = conn.Close()
 			return
 		}
-		o.backlog[0] = nil
-		o.backlog = o.backlog[1:]
+		clear(frame)
+		o.backlog, o.frames = o.backlog[len(frame):], o.frames[1:]
 	}
-	o.backlog = nil
+	o.backlog, o.frames = nil, nil
 	o.conn, o.w = conn, w
+}
+
+// writeFrame writes the lines of one frame in order and reports whether w took every one.
+func writeFrame(w *shimwire.Writer, lines [][]byte) bool {
+	for _, line := range lines {
+		if w.WriteLine(line) != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (o *outbox) detach(conn net.Conn) {

@@ -146,7 +146,10 @@ func TestEveryBrokenChunkSequenceIsRefusedByName(t *testing.T) {
 			},
 			ErrChunkData,
 		},
-		{"a sequence that does not start at index 0", nil, chunk(1, chunks, declared), ErrChunkSequence},
+		// Of another id than the chunk the case sends next: the later chunks of a sequence joined
+		// after its start are passed over quietly, which
+		// TestASequenceWhoseStartWasNotOnTheStreamIsDroppedOnce holds.
+		{"a sequence that does not start at index 0", nil, RPCChunk{ChunkID: "c0", Index: 1, Count: chunks, ByteLength: declared, Data: payload}, ErrChunkSequence},
 		{
 			"a chunk id that changes mid-sequence",
 			[]RPCChunk{chunk(0, chunks, declared)},
@@ -268,6 +271,150 @@ func TestAnInterruptedSequenceIsDroppedByName(t *testing.T) {
 	if _, err = reassembler.Push(chunks[1]); !errors.Is(err, ErrChunkSequence) {
 		t.Fatalf("Push after an interrupt = %v, want the dropped sequence to refuse it", err)
 	}
+}
+
+// A stream can join a sequence after its start: an older shim's backlog carried the rest of a
+// frame whose head went to a connection that is gone. That sequence is dropped and named once, at
+// the first of its chunks, and the rest of them are passed over without a word until a chunk of
+// another sequence or a whole frame ends the skip; the next sequence reassembles as any other.
+func TestASequenceWhoseStartWasNotOnTheStreamIsDroppedOnce(t *testing.T) {
+	joined, err := SplitChunks("agent-end-1", agentEnd(t, 3<<20))
+	if err != nil {
+		t.Fatalf("SplitChunks: %v", err)
+	}
+	other, err := SplitChunks("agent-end-2", agentEnd(t, 3<<20))
+	if err != nil {
+		t.Fatalf("SplitChunks: %v", err)
+	}
+	next := agentEnd(t, MaxFrameBytes+5)
+	following, err := SplitChunks("agent-end-3", next)
+	if err != nil {
+		t.Fatalf("SplitChunks: %v", err)
+	}
+	var reassembler Reassembler
+	if _, err := reassembler.Push(joined[5]); !errors.Is(err, ErrChunkSequence) || !strings.Contains(err.Error(), `"agent-end-1"`) {
+		t.Fatalf("Push(chunk 5, the first on the stream) = %v, want ErrChunkSequence naming agent-end-1", err)
+	}
+	for _, chunk := range joined[6:] {
+		if frame, err := reassembler.Push(chunk); frame != nil || err != nil {
+			t.Fatalf("Push(chunk %d of the dropped sequence) = %d bytes, %v; want it passed over quietly", chunk.Index, len(frame), err)
+		}
+	}
+	// A whole frame ends the skip without a word, as it ends nothing else.
+	if err := reassembler.Interrupt(); err != nil {
+		t.Fatalf("Interrupt while passing a sequence over = %v, want nil: nothing was being built", err)
+	}
+	// So does a chunk of another sequence, and one joined after its start is named in its turn.
+	if _, err := reassembler.Push(joined[3]); !errors.Is(err, ErrChunkSequence) {
+		t.Fatalf("Push(chunk 3 after a whole frame) = %v, want ErrChunkSequence", err)
+	}
+	if _, err := reassembler.Push(other[7]); !errors.Is(err, ErrChunkSequence) || !strings.Contains(err.Error(), `"agent-end-2"`) {
+		t.Fatalf("Push(chunk 7 of another sequence) = %v, want ErrChunkSequence naming agent-end-2", err)
+	}
+	if frame, err := reassembler.Push(other[8]); frame != nil || err != nil {
+		t.Fatalf("Push(chunk 8 of agent-end-2) = %d bytes, %v; want it passed over quietly", len(frame), err)
+	}
+	if got := pushSequence(t, &reassembler, following); !bytes.Equal(got, next) {
+		t.Fatalf("the sequence after the skip reassembled to %d bytes, want the %d sent", len(got), len(next))
+	}
+}
+
+// A sequence's chunk 0 always starts it. A sequence it cuts short was abandoned by its sender and
+// is named once, as Interrupt names one; one being passed over ends quietly. Either way the new
+// sequence is read whole rather than dropped beside the old one.
+func TestAChunkZeroStartsItsSequenceWhateverCameBefore(t *testing.T) {
+	cut, err := SplitChunks("agent-end-1", agentEnd(t, 3<<20))
+	if err != nil {
+		t.Fatalf("SplitChunks: %v", err)
+	}
+	next := agentEnd(t, MaxFrameBytes+5)
+	following, err := SplitChunks("agent-end-2", next)
+	if err != nil {
+		t.Fatalf("SplitChunks: %v", err)
+	}
+	var reassembler Reassembler
+	for _, chunk := range cut[:2] {
+		if _, err := reassembler.Push(chunk); err != nil {
+			t.Fatalf("Push(chunk %d): %v", chunk.Index, err)
+		}
+	}
+	if frame, err := reassembler.Push(following[0]); frame != nil || !errors.Is(err, ErrChunkSequence) ||
+		!strings.Contains(err.Error(), `"agent-end-1" abandoned after 2 of 12 chunks`) {
+		t.Fatalf("Push(chunk 0 of agent-end-2 mid-sequence) = %d bytes, %v; want agent-end-1 named as abandoned", len(frame), err)
+	}
+	if got := pushSequence(t, &reassembler, following[1:]); !bytes.Equal(got, next) {
+		t.Fatalf("the sequence that cut the other short reassembled to %d bytes, want the %d sent", len(got), len(next))
+	}
+
+	if _, err := reassembler.Push(cut[7]); !errors.Is(err, ErrChunkSequence) {
+		t.Fatalf("Push(chunk 7 with no start) = %v, want ErrChunkSequence", err)
+	}
+	if frame, err := reassembler.Push(following[0]); frame != nil || err != nil {
+		t.Fatalf("Push(chunk 0 while a sequence is passed over) = %d bytes, %v; want the skip ended quietly", len(frame), err)
+	}
+	if got := pushSequence(t, &reassembler, following[1:]); !bytes.Equal(got, next) {
+		t.Fatalf("the sequence after the skip reassembled to %d bytes, want the %d sent", len(got), len(next))
+	}
+}
+
+// A stream can also join a sequence after its start while another is being built. One chunk
+// loses both, so one error names both: the sequence being built, which its sender abandoned, and
+// the arriving one, dropped because its start was not on this stream. The rest of the arriving
+// one is passed over without a word, and the next sequence reassembles as any other.
+func TestASequenceJoinedAfterItsStartWhileAnotherIsBuiltIsOneErrorNamingBoth(t *testing.T) {
+	built, err := SplitChunks("agent-end-1", agentEnd(t, 3<<20))
+	if err != nil {
+		t.Fatalf("SplitChunks: %v", err)
+	}
+	joined, err := SplitChunks("agent-end-2", agentEnd(t, 3<<20))
+	if err != nil {
+		t.Fatalf("SplitChunks: %v", err)
+	}
+	next := agentEnd(t, MaxFrameBytes+5)
+	following, err := SplitChunks("agent-end-3", next)
+	if err != nil {
+		t.Fatalf("SplitChunks: %v", err)
+	}
+	var reassembler Reassembler
+	for _, chunk := range built[:2] {
+		if _, err := reassembler.Push(chunk); err != nil {
+			t.Fatalf("Push(chunk %d of agent-end-1): %v", chunk.Index, err)
+		}
+	}
+	frame, err := reassembler.Push(joined[7])
+	if frame != nil || !errors.Is(err, ErrChunkSequence) ||
+		!strings.Contains(err.Error(), `"agent-end-1" abandoned after 2 of 12 chunks`) ||
+		!strings.Contains(err.Error(), `"agent-end-2" dropped: its start was not on this stream`) {
+		t.Fatalf("Push(chunk 7 of agent-end-2 while agent-end-1 is built) = %d bytes, %v; want one ErrChunkSequence naming agent-end-1 abandoned and agent-end-2 dropped", len(frame), err)
+	}
+	for _, chunk := range joined[8:] {
+		if frame, err := reassembler.Push(chunk); frame != nil || err != nil {
+			t.Fatalf("Push(chunk %d of agent-end-2) = %d bytes, %v; want it passed over quietly", chunk.Index, len(frame), err)
+		}
+	}
+	if got := pushSequence(t, &reassembler, following); !bytes.Equal(got, next) {
+		t.Fatalf("the sequence after the skip reassembled to %d bytes, want the %d sent", len(got), len(next))
+	}
+}
+
+// pushSequence pushes chunks, which must be accepted without a word, and returns the frame the
+// last of them completes.
+func pushSequence(t *testing.T, reassembler *Reassembler, chunks []RPCChunk) []byte {
+	t.Helper()
+	for i, chunk := range chunks {
+		frame, err := reassembler.Push(chunk)
+		if err != nil {
+			t.Fatalf("Push(chunk %d of %q): %v", chunk.Index, chunk.ChunkID, err)
+		}
+		if (frame != nil) != (i == len(chunks)-1) {
+			t.Fatalf("Push(chunk %d of %q) returned %d bytes; want the frame at the last chunk alone", chunk.Index, chunk.ChunkID, len(frame))
+		}
+		if frame != nil {
+			return frame
+		}
+	}
+	t.Fatal("no chunks to push")
+	return nil
 }
 
 // rawChunks slices arbitrary bytes into a well-formed sequence, so a test can put a payload

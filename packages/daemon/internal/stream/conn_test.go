@@ -529,6 +529,49 @@ func TestAWholeFrameInterruptingASequenceDropsTheSequence(t *testing.T) {
 	}
 }
 
+// A stream can begin inside a chunked frame: an older shim's backlog held the rest of a sequence
+// whose head went to a connection that is gone. That frame is lost, and logged once rather than
+// once per chunk left of it, and the next whole frame — a plain line or a whole sequence — is read
+// as any other.
+func TestAStreamThatBeginsMidSequenceLosesOnlyThatFrameAndLogsItOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		next func(t *testing.T, p *peer)
+	}{
+		{"then a plain line", func(_ *testing.T, p *peer) { p.send(shimwire.AgentEnd{}) }},
+		{"then a whole sequence", func(t *testing.T, p *peer) {
+			p.sendChunked("agent-end-2", agentEndFrame(t, shimwire.MaxFrameBytes+5))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startListener(t, harnessOptions{})
+			p := h.connect(testToken)
+			chunks, err := shimwire.SplitChunks("agent-end-1", agentEndFrame(t, 4<<20))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, chunk := range chunks[12:] {
+				p.send(chunk) // chunks 12 to 15 of 16: the first twelve were never on this stream
+			}
+			tc.next(t, p)
+			p.conn.Close()
+			for _, want := range []Event{TurnEnd{Claim: testClaim}, Closed{Claim: testClaim}} {
+				if got := h.next(); got != want {
+					t.Fatalf("event = %#v, want %#v: the whole frame read, nothing of the dropped sequence", got, want)
+				}
+			}
+			if rest := h.stop(); len(rest) != 0 {
+				t.Fatalf("further events = %#v, want none", rest)
+			}
+			logs := h.logs.Lines()
+			if len(logs) != 1 || !strings.HasPrefix(logs[0], "worker-stream: dropped an rpc_chunk sequence") ||
+				!strings.Contains(logs[0], "claim="+string(testClaim)) || !strings.Contains(logs[0], "agent-end-1") {
+				t.Fatalf("logs = %q, want one line naming the claim and the dropped sequence", logs)
+			}
+		})
+	}
+}
+
 func TestGetStateReadsIsStreaming(t *testing.T) {
 	for _, streaming := range []bool{true, false} {
 		h := startListener(t, harnessOptions{})

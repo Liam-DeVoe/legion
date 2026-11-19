@@ -79,15 +79,33 @@ type Reassembler struct {
 	byteLength int
 	nextIndex  int
 	payload    []byte
+	// skipping is the id of the sequence whose chunks Push passes over, "" when there is none.
+	skipping string
 }
 
 // Push adds one chunk. It returns the whole logical frame once the last one lands, nil while
 // more are expected, and an error naming the bound a chunk broke — which also drops the
 // sequence, so the next chunk has to start a new one. Nothing is ever returned truncated.
 //
+// A stream can begin inside a sequence: a shim replays to its next connection what a broken one
+// did not take, and an older shim forwarded a sequence line by line (internal/shim now sends and
+// replays one whole), so the head of one may have gone to the broken connection. So a chunk past
+// index 0 of a sequence that is not the one in progress drops its sequence with one error, and
+// every later chunk of that sequence is passed over unread and without one, until a chunk of
+// another sequence or a whole frame (Interrupt) ends the skip. Where another sequence was in
+// progress, that one error also names it, as abandoned by its sender. A chunk 0 always starts its
+// sequence: one it cuts short was abandoned by its sender and is reported as Interrupt reports
+// it, while the new one goes on.
+//
 // The frame is returned as bytes rather than a decoded Frame so nothing is lost on the way
 // through: Decode reads it exactly as it reads a plain line.
 func (r *Reassembler) Push(chunk RPCChunk) ([]byte, error) {
+	if r.skipping != "" {
+		if chunk.ChunkID == r.skipping && chunk.Index != 0 {
+			return nil, nil
+		}
+		r.skipping = ""
+	}
 	if err := chunk.validate(); err != nil {
 		r.drop()
 		return nil, err
@@ -97,16 +115,25 @@ func (r *Reassembler) Push(chunk RPCChunk) ([]byte, error) {
 		r.drop()
 		return nil, err
 	}
+	var abandoned error
+	if chunk.Index == 0 {
+		abandoned = r.Interrupt()
+	}
 	if !r.active {
 		if chunk.Index != 0 {
-			r.drop()
-			return nil, fmt.Errorf("%w: a sequence starts at index 0, not %d", ErrChunkSequence, chunk.Index)
+			return nil, fmt.Errorf("%w: %s", ErrChunkSequence, r.skip(chunk))
 		}
 		r.active = true
 		r.chunkID, r.count, r.byteLength, r.nextIndex = chunk.ChunkID, chunk.Count, chunk.ByteLength, 0
 		r.payload = r.payload[:0]
 	}
-	if r.chunkID != chunk.ChunkID || r.count != chunk.Count || r.byteLength != chunk.ByteLength || r.nextIndex != chunk.Index {
+	if r.chunkID != chunk.ChunkID {
+		// Only a chunk past index 0 gets here with another id, since a chunk 0 has started its own
+		// sequence above: one whose start was not on this stream arrived while another was built.
+		abandoned = r.Interrupt()
+		return nil, fmt.Errorf("%w, and %s", abandoned, r.skip(chunk))
+	}
+	if r.count != chunk.Count || r.byteLength != chunk.ByteLength || r.nextIndex != chunk.Index {
 		r.drop()
 		return nil, fmt.Errorf(
 			"%w: expected chunk %d of %q (%d chunks, %d bytes), got chunk %d of %q (%d chunks, %d bytes)",
@@ -122,7 +149,9 @@ func (r *Reassembler) Push(chunk RPCChunk) ([]byte, error) {
 		return nil, fmt.Errorf("%w: more bytes than the declared %d", ErrChunkSequence, declared)
 	}
 	if r.nextIndex < r.count {
-		return nil, nil
+		// A chunk 0 always ends here — validate holds a sequence to two chunks or more and to a
+		// declared length over one chunk's payload — so the sequence it cut short is reported.
+		return nil, abandoned
 	}
 	if len(r.payload) != r.byteLength {
 		got, declared := len(r.payload), r.byteLength
@@ -142,8 +171,9 @@ func (r *Reassembler) Push(chunk RPCChunk) ([]byte, error) {
 // Interrupt drops a half-built sequence when something that is not a chunk arrives on the same
 // stream: the sender abandoned it, and joining its chunks to whatever comes next would build a
 // frame nobody sent (worker-rpc.ts:348-349). It reports what it dropped, and nothing when there
-// was nothing to drop.
+// was nothing to drop. A sequence Push was passing over ends here too, without a word.
 func (r *Reassembler) Interrupt() error {
+	r.skipping = ""
 	if !r.active {
 		return nil
 	}
@@ -152,6 +182,13 @@ func (r *Reassembler) Interrupt() error {
 	return fmt.Errorf(
 		"%w: %q abandoned after %d of %d chunks", ErrChunkSequence, chunkID, index, count,
 	)
+}
+
+// skip makes Push pass over the rest of chunk's sequence, whose start was not on this stream, and
+// names what it dropped.
+func (r *Reassembler) skip(chunk RPCChunk) string {
+	r.skipping = chunk.ChunkID
+	return fmt.Sprintf("%q dropped: its start was not on this stream (chunk %d of %d came first)", chunk.ChunkID, chunk.Index, chunk.Count)
 }
 
 func (r *Reassembler) drop() {
