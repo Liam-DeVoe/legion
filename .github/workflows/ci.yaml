@@ -3527,6 +3527,9 @@ jobs:
               # document (internal/dispatch/api/openapi_test.go:189-190).
               - 'packages/contracts/fixtures/live/**'
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              # The shared list of the priority id rule's cases, which the API package's test
+              # binary reads (internal/dispatch/api/priority_id_fixture_test.go:50).
+              - 'packages/contracts/fixtures/priority-ids.json'
               # The daemon's own fixture, the server.started envelope its intake decodes:
               # internal/dispatch/startup/started_test.go:379 reads it and
               # TestTheBuiltEnvelopeIsTheSharedFixture holds this package's build to it, so a
