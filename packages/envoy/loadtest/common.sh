@@ -21,6 +21,10 @@
 # Legion roles of one pod, each with its own LOADTEST_ROOT) take two bases. stack.sh setup records
 # the ports in ROOT/stack.json, and `stack.sh status` prints them.
 #
+# port_in_ephemeral PORT: PORT is inside this machine's ephemeral range (ephemeral_range), from which
+# the kernel takes the source port of every outgoing connection, so stack.sh start refuses such a
+# port (check_port): a connection of the stack could take it before its server binds it.
+#
 # lock_root ROOT: one run at a time per root (README.md, "One run at a time"). It takes an
 # exclusive, non-blocking flock on ROOT/.run.lock and keeps it on file descriptor 9. The lock lasts
 # until every process that holds that descriptor has exited: the holder and the children that
@@ -152,6 +156,28 @@ stack_ports() {
     return 1
   fi
   printf '%s\n' "$given"
+}
+
+# ephemeral_range: this machine's ephemeral port range, "LOW HIGH", read from
+# /proc/sys/net/ipv4/ip_local_port_range (LOADTEST_PORT_RANGE_FILE names another file, for a test
+# of a range this machine does not have); nothing when the file cannot be read or does not hold two
+# numbers. The kernel takes the source port of every outgoing connection from this range, so a
+# stack port inside it can be taken by any connection of the stack before its own process binds it,
+# which then fails with "address already in use".
+ephemeral_range() {
+  local low high
+  { read -r low high <"${LOADTEST_PORT_RANGE_FILE:-/proc/sys/net/ipv4/ip_local_port_range}"; } 2>/dev/null || return 0
+  [[ $low =~ ^[0-9]+$ && $high =~ ^[0-9]+$ ]] || return 0
+  printf '%s %s\n' "$low" "$high"
+}
+
+# port_in_ephemeral PORT: PORT is inside this machine's ephemeral range.
+port_in_ephemeral() {
+  local range low high
+  range=$(ephemeral_range)
+  [ -n "$range" ] || return 1
+  read -r low high <<<"$range"
+  (($1 >= low && $1 <= high))
 }
 
 # lock_field NAME RECORD: the value of NAME= in a lock record.

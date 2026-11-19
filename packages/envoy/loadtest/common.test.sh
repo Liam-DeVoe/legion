@@ -26,6 +26,9 @@
 # (i) the stack chooses no port of its own: with no port given it refuses, naming the variables to
 # set; LOADTEST_PORT_BASE gives the nine ports as its offsets 0 to 8; a LOADTEST_*_PORT overrides its
 # own port alone; and a base or a port outside 1024-65535 is refused.
+# (j) a port is inside the machine's ephemeral range, which stack.sh start refuses (check_port), from
+# the range's first port to its last, under a gVisor pod's range and Linux's default, and a range
+# that cannot be read, or a file that holds no range, holds no port.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -476,6 +479,47 @@ case_stack_ports() {
   printf 'PASS: the stack chooses no port: it refuses with none given, LOADTEST_PORT_BASE gives nine, and each LOADTEST_*_PORT overrides its own\n'
 }
 
+# range_file LOW HIGH: a file holding an ephemeral range as /proc/sys/net/ipv4/ip_local_port_range
+# does, for LOADTEST_PORT_RANGE_FILE.
+range_file() {
+  local file="${temporary_dir}/range-$1-$2"
+  printf '%s\t%s\n' "$1" "$2" >"$file"
+  printf '%s\n' "$file"
+}
+
+# in_range FILE PORT: common.sh's port_in_ephemeral PORT, with the ephemeral range read from FILE
+# (LOADTEST_PORT_RANGE_FILE).
+in_range() {
+  LOADTEST_PORT_RANGE_FILE=$1 bash -c 'source "$1"; port_in_ephemeral "$2"' in-range "$helper" "$2"
+}
+
+# case_port_in_ephemeral_range: stack.sh start refuses a port inside the machine's ephemeral range
+# (check_port, through port_in_ephemeral), since any outgoing connection may take such a port as
+# its source port before the stack's server binds it. A range's first and last ports are inside it
+# and the ports next to them are not, under a gVisor pod's range (16000-65535) and Linux's default
+# (32768-60999); a range that cannot be read, or a file that holds no range, holds no port.
+case_port_in_ephemeral_range() {
+  out=""
+  local gvisor linux p
+  gvisor=$(range_file 16000 65535)
+  linux=$(range_file 32768 60999)
+  for p in 16000 65535; do
+    in_range "$gvisor" "$p" || { fail "(j) port $p is not inside the range 16000-65535"; return; }
+  done
+  ! in_range "$gvisor" 15999 || { fail "(j) port 15999 is inside the range 16000-65535"; return; }
+  for p in 32768 60999; do
+    in_range "$linux" "$p" || { fail "(j) port $p is not inside the range 32768-60999"; return; }
+  done
+  for p in 32767 61000 20008; do
+    ! in_range "$linux" "$p" || { fail "(j) port $p is inside the range 32768-60999"; return; }
+  done
+  ! in_range "${temporary_dir}/no-such-range" 40000 ||
+    { fail "(j) a range that cannot be read holds port 40000"; return; }
+  printf 'no range\n' >"${temporary_dir}/range-none"
+  ! in_range "${temporary_dir}/range-none" 40000 || { fail "(j) a file that holds no range holds port 40000"; return; }
+  printf 'PASS: a port is inside the ephemeral range from its first port to its last, and a range that cannot be read holds none\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -487,7 +531,8 @@ case_foreign_record_live_pid || failed=$((failed + 1))
 case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
+case_port_in_ephemeral_range || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 10 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 11 cases failed\n' "$failed" >&2
   exit 1
 fi

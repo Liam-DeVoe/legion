@@ -93,7 +93,9 @@
 # LOADTEST_NATS_MONITOR_PORT, LOADTEST_LISTENER_PORT, LOADTEST_DISPATCH_PORT, LOADTEST_PPROF_PORT
 # and LOADTEST_ENVOY_PROXY_PORT each give or override their own port; setup refuses a key with no
 # port, and records them in stack.json (`stack.sh status` prints them), so two stacks on one machine
-# take two bases, and a port another process holds is refused by start, not shared;
+# take two bases, and a port another process holds is refused by start, not shared; start refuses a
+# port inside the machine's ephemeral range (ip_local_port_range); LOADTEST_PORT_RANGE_FILE reads
+# that range from another file than /proc/sys/net/ipv4/ip_local_port_range, for a test;
 # LOADTEST_PROXY_RTT (1ms); LOADTEST_PG_DIRECT=1 starts Dispatch
 # on Postgres without the proxy; LOADTEST_ENVOY_RTT=<duration> starts Dispatch with ENVOY_URL
 # through a latency proxy (envoy_proxy) in front of the listener;
@@ -423,6 +425,8 @@ port_holder() {
 # this pod, in the network namespace they share, whose operator gave the same port). The ports are
 # the operator's (write_stack_json), so the remedy is another port, given to setup; a stack.json an
 # earlier stack.sh wrote, whose ports it chose itself, is refused until setup is given every port.
+# It refuses first, whoever holds it, a port inside the machine's ephemeral range, which any
+# outgoing connection may take as its source port before NAME binds it.
 # A port taken after this check fails the start: each server binds its own port, and the start
 # waits for that server (held_by, or the server's own answer), not for the port.
 check_port() {
@@ -430,6 +434,9 @@ check_port() {
   ports_given ||
     die "$STACK records ports an earlier stack.sh chose itself (a hash of LOADTEST_ROOT), which another program could take; give the stack every port (LOADTEST_PORT_BASE, or each LOADTEST_*_PORT) and rerun stack.sh setup"
   p=$(port "$key")
+  if port_in_ephemeral "$p"; then
+    die "port $p ($key, for $name) is inside this machine's ephemeral range $(ephemeral_range | tr ' ' '-') (ip_local_port_range), so any outgoing connection may take it as its source port before $name binds it; give the stack a port outside that range (${PORT_VAR[$key]}, or another LOADTEST_PORT_BASE) and rerun stack.sh setup with it set, then stack.sh start"
+  fi
   port_open "$p" || return 0
   holders=$(port_holder "$p")
   [ -n "$holders" ] &&
