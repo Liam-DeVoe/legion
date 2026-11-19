@@ -8,7 +8,7 @@
 # and the job fetches what it needs in a step before the tests, tried again on failure
 # (.github/scripts/go-fetch.sh). A list of the tests that follow it would go stale the day a new
 # one is written, in Go, TypeScript, Python or shell, so this program asks every such place for
-# its answer instead. It checks three things.
+# its answer instead. It checks five things.
 #
 # 1. Every go command a file starts runs with GOPROXY=off, or says why it need not. Each file is
 #    read whole, a statement at a time, as its language parses it (a call's arguments across
@@ -139,6 +139,19 @@
 #    module the job's cache would have held, on every run. The check lists each such fetch step
 #    with the restore before it.
 #
+# 4. Every Go job of a required workflow runs with GOPROXY=off and GOFLAGS=-mod=readonly in its env,
+#    and a step that sends either online says why (.github/scripts/go_offline_jobs.py, whose header
+#    says what it reads and what it does not see). A refusal names the job's line, or the step's.
+#
+# 5. No step of a required workflow, or of a local action one uses, installs an Ubuntu package off
+#    the apt cache the job restores: a bare apt-get, apt or dpkg -i, a Playwright --with-deps, and
+#    an apt-cache.sh install with no restore or no bound before it are refused at their line
+#    (.github/scripts/package_installs.py, whose header says how it reads a step).
+#
+# Rules 4 and 5 are modules of their own, each runnable alone; this script calls each one's
+# check(), adds its problems to its own and its summary to the line a clean run ends with, and an
+# UNKNOWN of either is this check's UNKNOWN.
+#
 # What catches a go command this check misses (a form its limits name): every job of a required
 # workflow runs with GOPROXY=off and GOFLAGS=-mod=readonly, so such a command in a required job's
 # test fails at once, naming the module its cache lacks, instead of downloading it. This check is
@@ -156,11 +169,12 @@
 # CI runs it in ci.yaml's lint job.
 set -euo pipefail
 
-# The rules' code (go_offline_sites.py, go_offline_walk.py, go_offline_restore.py) and the shared
-# reading of source files (source_scan.py and the source_*.py modules) sit beside this script's own
-# file, which a test may link into a tree of its own: PYTHONPATH names that directory, and the scan
-# reads the tree this script stands in. PYTHONDONTWRITEBYTECODE keeps the import from leaving a
-# __pycache__. Each rule adds its problems to errors and a clause to the line a clean run ends with.
+# The rules' code (go_offline_sites.py, go_offline_walk.py, go_offline_restore.py, go_offline_jobs.py
+# and package_installs.py) and the shared reading of source files (source_scan.py
+# and the source_*.py modules) sit beside this script's own file, which a test may link into a tree of
+# its own: PYTHONPATH names that directory, and the scan reads the tree this script stands in.
+# PYTHONDONTWRITEBYTECODE keeps the import from leaving a __pycache__. Each rule adds its problems to
+# errors and a clause to the line a clean run ends with.
 scripts=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 cd "$(dirname "$0")/../.."
 
@@ -168,9 +182,11 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 <<'PY'
 import os
 import re
 
+import go_offline_jobs as jobs
 import go_offline_restore as restore
 import go_offline_sites as sites
 import go_offline_walk as walk
+import package_installs as installs
 import source_scan as scan
 
 # A file reason: a comment holding `go-offline-file: <why>` within the file's first 40 lines.
@@ -263,6 +279,16 @@ clauses = [f"every one of the {summary} runs with GOPROXY=off ({offline_count}),
 # the same job that restores ~/go/pkg/mod.
 pairs = restore.check(workflows, errors)
 clauses.append(f"each of the {len(pairs)} fetch steps of a required job comes after a restore of ~/go/pkg/mod")
+
+# --- 4 and 5. Every Go job of a required workflow reads the module cache alone, and no required job
+# installs a package off its apt cache. Each rule's summary is a clause; an UNKNOWN of one is the
+# check's.
+for rule in (jobs, installs):
+    found, said = rule.check(".")
+    if said.startswith("UNKNOWN: "):
+        scan.unknown(said[len("UNKNOWN: "):])
+    errors += found
+    clauses.append(said)
 
 print("Each fetch step of a required job, after the restore of the module cache before it:")
 print("\n".join(pairs) if pairs else "  (none)")

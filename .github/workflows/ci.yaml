@@ -1585,6 +1585,8 @@ jobs:
               - '.github/scripts/go_offline_sites.py'
               - '.github/scripts/go_offline_walk.py'
               - '.github/scripts/go_offline_restore.py'
+              - '.github/scripts/go_offline_jobs.py'
+              - '.github/scripts/package_installs.py'
               - '.github/scripts/source_scan.py'
               - '.github/scripts/source_statements.py'
               - '.github/scripts/source_env.py'
@@ -1617,6 +1619,8 @@ jobs:
               - '.github/scripts/go_offline_sites.py'
               - '.github/scripts/go_offline_walk.py'
               - '.github/scripts/go_offline_restore.py'
+              - '.github/scripts/go_offline_jobs.py'
+              - '.github/scripts/package_installs.py'
               - '.github/scripts/check-omp-offline.sh'
             check_daemon_api_contract_test: &check_daemon_api_contract_test
               - *ci_router

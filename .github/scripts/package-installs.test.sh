@@ -292,17 +292,27 @@ run_rule "$root"
 check "a ci.yaml with no run step is UNKNOWN, exit 2" "$(is "$rc" 2)"
 check "and says so" "$(has "$err" 'UNKNOWN: read no run step of the 1 required workflows')"
 
-echo "case: check() and summary() answer as the program does"
+echo "case: check() answers as the program does, with (problems, summary)"
 root=$(tree api)
 one_job "$root" '      - name: Install tmux
         run: sudo apt-get install -y tmux'
 api=$(cd "$script_dir" && PYTHONDONTWRITEBYTECODE=1 python3 -c '
 import sys
 import package_installs as rule
-problems = rule.check(sys.argv[1])
+problems, summary = rule.check(sys.argv[1])
 print(len(problems), problems[0][0], problems[0][1])
-print(rule.summary(sys.argv[1]))' "$root")
+print(summary)' "$root")
 check "check() gives (path, line, message)" "$(has "$api" '1 .github/workflows/ci.yaml 9')"
-check "summary() gives the one line" "$(has "$api" '1 required workflows and 0 local actions, 1 jobs and 1 run steps read')"
+check "and the one line, with the count of refusals" \
+  "$(has "$api" '1 package installs a required job makes off the cached path, over the 1 required workflows and 0 local actions, 1 jobs and 1 run steps read')"
+root=$(tree api-no-run)
+one_job "$root" ''
+api=$(cd "$script_dir" && PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import sys
+import package_installs as rule
+problems, summary = rule.check(sys.argv[1])
+print(len(problems), summary)' "$root")
+check "check() of a tree with no run step gives no problem and an UNKNOWN summary" \
+  "$(has "$api" '0 UNKNOWN: read no run step of the 1 required workflows')"
 
 summary "package_installs.py"

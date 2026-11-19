@@ -34,13 +34,16 @@
 # name. Its third rule: a required job's fetch step (deps, tools or a fetch file), in ci.yaml or a
 # workflow it calls, that comes before a restore of ~/go/pkg/mod, or after a restore of another
 # path, is refused, and one whose restore (actions/cache/restore or actions/cache) comes first
-# passes and is listed. A tree with no file of a language, a tree with testbuild and no caller,
-# and a tree with no ci.yaml each give UNKNOWN and exit 2.
+# passes and is listed. Its rules 4 and 5, which it calls from go_offline_jobs.py and
+# package_installs.py: a required Go job with no GOPROXY=off, and a bare apt-get install in a
+# required job, each fail the check naming their line, and an UNKNOWN of either is the check's. A tree with no file of a language, a tree with
+# testbuild and no caller, and a tree with no ci.yaml each give UNKNOWN and exit 2.
 #
 # The cases live in the files this one sources, one part of the check each:
 # check-go-offline-cases-go.sh, -typescript.sh, -python.sh and -shell.sh (rule 1 in each
-# language), -reasons.sh (its file reasons), -steps.sh (rule 2) and -restores.sh (rule 3). This
-# file holds what they share, the fixtures, and the cases of a scan that cannot see.
+# language), -reasons.sh (its file reasons), -steps.sh (rule 2), -restores.sh (rule 3) and -jobs.sh
+# (rules 4 and 5). This file holds what they share, the fixtures, and the
+# cases of a scan that cannot see.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -66,8 +69,9 @@ put() {
   cat >"$1/$2"
 }
 
-# fixture <name>: a tree the script can scan: the script linked in, a ci.yaml with one job, and one
-# file of each of the four languages that starts no go command. Echoes its root.
+# fixture <name>: a tree the script can scan: the script linked in, a ci.yaml with one job, which
+# sets up Go and runs with GOPROXY=off and GOFLAGS=-mod=readonly (so rule 4 reads a Go job), and
+# one file of each of the four languages that starts no go command. Echoes its root.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -79,10 +83,14 @@ fixture() {
   put "$root" .github/workflows/ci.yaml <<'EOF'
 name: CI
 on: pull_request
+env:
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/setup-go@v5
       - run: echo lint
 EOF
   printf 'package app\n\nfunc App() {}\n' | put "$root" packages/app/app.go
@@ -163,8 +171,9 @@ passes_offline() {
 
 # --- The cases, each file one part of the check ------------------------------------------------
 # Each file this sources holds the cases of one part: rule 1's sites in each language and its file
-# reasons, rule 2's steps and rule 3's restores. They share this file's fixtures and counters.
-for part in go typescript python shell reasons steps restores; do
+# reasons, rule 2's steps, rule 3's restores and rules 4 and 5's calls.
+# They share this file's fixtures and counters.
+for part in go typescript python shell reasons steps restores jobs; do
   # shellcheck source=/dev/null
   source "$script_dir/check-go-offline-cases-$part.sh"
 done

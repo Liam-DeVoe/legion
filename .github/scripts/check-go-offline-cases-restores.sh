@@ -68,7 +68,7 @@ called_fetch() {
   printf 'tools\n' | put "$root" tools.txt
   printf 'deps packages/app ./cmd/app\n' | put "$root" .github/go-fetch/checks.txt
   {
-    printf 'name: CI job checks\non: workflow_call\njobs:\n  checks:\n    runs-on: ubuntu-24.04\n    steps:\n'
+    printf 'name: CI job checks\non: workflow_call\nenv:\n  GOPROXY: "off"\n  GOFLAGS: -mod=readonly\njobs:\n  checks:\n    runs-on: ubuntu-24.04\n    steps:\n'
     if [ "$3" = first ]; then printf '%s\n%s\n' "$fetch" "$restore"; else printf '%s\n%s\n' "$restore" "$fetch"; fi
   } | put "$root" .github/workflows/ci-job-checks.yaml
   run_check "$root"

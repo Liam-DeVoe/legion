@@ -49,10 +49,12 @@ set to apt-get, eval of a string), and a script a step runs (a repository script
 is not followed; apt-cache.sh is the one script here that does). It is a check of what the steps
 say, as check-go-offline.sh is of its own.
 
-The interface: check(root) gives (path, line, message) for each refusal, and summary(root) one line
-of what was read. Run as a program, it reads the tree it stands in (or the root it is given), prints
-each refusal as a GitHub error annotation, and exits 1 on a refusal, 2 (UNKNOWN) when it read no
-required workflow or no step of one, and 0 otherwise.
+The interface: check(root) gives (problems, summary), as go_offline_jobs.py's does: problems is a
+(path, line, message) for each refusal, and summary one line of what was read, which starts
+`UNKNOWN: ` when it read no required workflow or no run step of one. Run as a program, it reads the
+tree it stands in (or the root it is given), prints each refusal as a GitHub error annotation, and
+exits 1 on a refusal, 2 (UNKNOWN) when it read no required workflow or no step of one, and 0
+otherwise. check-go-offline.sh calls check().
 
 Run from anywhere: .github/scripts/package_installs.py [ROOT]
 Its test is .github/scripts/package-installs.test.sh, in ci.yaml's test job.
@@ -646,33 +648,32 @@ def scan_tree(root: Path) -> Scan:
     return scan
 
 
-def check(root) -> list[tuple[str, int, str]]:
-    """Each refusal over the tree at root, as (path, line, message)."""
-    return scan_tree(Path(root)).problems
-
-
-def summary(root) -> str:
-    """One line of what the rule read over the tree at root."""
-    return scan_tree(Path(root)).summary
+def check(root) -> tuple[list[tuple[str, int, str]], str]:
+    """(each refusal over the tree at root as (path, line, message), one line of what was read)."""
+    scan = scan_tree(Path(root))
+    if scan.problems:
+        return scan.problems, (f"{len(scan.problems)} package installs a required job makes off the cached path, "
+                               f"over the {scan.summary}")
+    if scan.workflows == 0:
+        return [], f"UNKNOWN: no {ROOT_WORKFLOW} under {root}, so no workflow is known to be required"
+    if scan.run_steps == 0:
+        return [], (f"UNKNOWN: read no run step of the {scan.workflows} required workflows under {root}, so their "
+                    f"installs are unseen")
+    return [], f"no required job installs a package off the cached path: {scan.summary}"
 
 
 def main(argv: list[str]) -> int:
     root = Path(argv[1]) if len(argv) > 1 else Path(__file__).resolve().parents[2]
-    scan = scan_tree(root)
-    if scan.problems:
-        print(f"{len(scan.problems)} package installs a required job makes off the cached path, over the "
-              f"{scan.summary}:", file=sys.stderr)
-        for path, line, message in scan.problems:
+    problems, summary = check(root)
+    if problems:
+        print(f"{summary}:", file=sys.stderr)
+        for path, line, message in problems:
             print(f"::error file={path},line={line}::{message}")
         return 1
-    if scan.workflows == 0:
-        print(f"UNKNOWN: no {ROOT_WORKFLOW} under {root}, so no workflow is known to be required", file=sys.stderr)
+    if summary.startswith("UNKNOWN: "):
+        print(summary, file=sys.stderr)
         return 2
-    if scan.run_steps == 0:
-        print(f"UNKNOWN: read no run step of the {scan.workflows} required workflows under {root}, so their "
-              f"installs are unseen", file=sys.stderr)
-        return 2
-    print(f"no required job installs a package off the cached path: {scan.summary}")
+    print(summary)
     return 0
 
 
