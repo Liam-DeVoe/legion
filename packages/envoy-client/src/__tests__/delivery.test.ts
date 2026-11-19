@@ -5,6 +5,7 @@ import {
   type Envelope,
   legacyDispatchIssueSubject,
 } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
 import {
@@ -17,6 +18,9 @@ import {
 
 const reader = "01a01111-2222-7333-4444-555555555555";
 const actor = { kind: "session", id: "session-1" };
+
+/** The Dispatch bearer a delivery reply is posted under. */
+const REPLY_TOKEN = fixtureSecret("dsp");
 
 const targetedDispatchPayload = readFileSync(
   new URL("../../../contracts/fixtures/dispatch-targeted-delivery.json", import.meta.url),
@@ -408,7 +412,7 @@ describe("renderInbound dispatch events", () => {
       if (rejected === undefined) throw new Error("missing recoverable rejected delivery");
 
       await postDeliveryReply(
-        { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential("reply-token") },
+        { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential(REPLY_TOKEN) },
         reader,
         rejected,
         { error: "Invalid Dispatch targeted delivery frame" }
@@ -447,7 +451,7 @@ describe("renderInbound dispatch events", () => {
     });
     const config = {
       url: `http://127.0.0.1:${server.port}`,
-      credential: bearerCredential("reply-token"),
+      credential: bearerCredential(REPLY_TOKEN),
     };
     const delivery: DispatchDelivery = {
       resource: "message",
@@ -505,7 +509,7 @@ describe("renderInbound dispatch events", () => {
           await postDeliveryReply(
             {
               url: `http://127.0.0.1:${server.port}`,
-              credential: bearerCredential("reply-token"),
+              credential: bearerCredential(REPLY_TOKEN),
             },
             reader,
             rendered.delivery,
@@ -557,7 +561,7 @@ describe("renderInbound dispatch events", () => {
         await postDeliveryReply(
           {
             url: `http://127.0.0.1:${server.port}`,
-            credential: bearerCredential("reply-token"),
+            credential: bearerCredential(REPLY_TOKEN),
           },
           reader,
           delivery,
@@ -610,7 +614,7 @@ describe("renderInbound dispatch events", () => {
     };
     const config = {
       url: `http://127.0.0.1:${server.port}`,
-      credential: bearerCredential("reply-token"),
+      credential: bearerCredential(REPLY_TOKEN),
     };
 
     try {
@@ -1716,7 +1720,7 @@ describe("renderInbound dispatch events", () => {
         envelope({
           source: "dispatch",
           payload: JSON.stringify({
-            secret: "now visible as data, not prose",
+            secret: "now visible as data, not prose", // fixture-secret: a field of an unrecognized Dispatch payload, rendered as data; not a credential, never held
             unexpected: { nested: true },
           }),
         })
@@ -1726,7 +1730,7 @@ describe("renderInbound dispatch events", () => {
     const decoded = decode(rendered.content) as { envoy: { dispatch: unknown } };
 
     expect(decoded.envoy.dispatch).toEqual({
-      secret: "now visible as data, not prose",
+      secret: "now visible as data, not prose", // fixture-secret: the same payload field, read back; never held
       unexpected: { nested: true },
     });
   });

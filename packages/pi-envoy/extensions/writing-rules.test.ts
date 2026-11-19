@@ -6,7 +6,10 @@ import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { createStandInHost, type SessionContext } from "../test/stand-in-host";
+
+const RULES_TOKEN = fixtureSecret("dsp");
 
 // The written rules under Oh My Pi (INFRA-3231, R6): the `dispatch` command refuses once the
 // session's first write of a comment, and its first after each compaction, showing the rules
@@ -118,7 +121,7 @@ beforeEach(() => {
     process.env.ENVOY_CONFIG_FILE,
     `${JSON.stringify({
       askgate: { enabled: false },
-      dispatch: { enabled: true, serverUrl: "http://dispatch.test", token: "rules-token" },
+      dispatch: { enabled: true, serverUrl: "http://dispatch.test", token: RULES_TOKEN },
     })}\n`
   );
 });

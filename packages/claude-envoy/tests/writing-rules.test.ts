@@ -2,6 +2,7 @@ import { afterAll, beforeEach, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 
 // The written rules under Claude Code (INFRA-3231, R6): the `dispatch` command refuses once the
 // session's first write of a comment, and its first after each compaction, showing the rules
@@ -10,6 +11,7 @@ import { join, resolve } from "node:path"
 // hook and the command run here as Claude Code runs them, each a process of its own, against a
 // stand-in Dispatch.
 
+const RULES_TOKEN = fixtureSecret("dsp")
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 const dispatchEntry = resolve(import.meta.dir, "..", "..", "envoy-client", "bin", "dispatch.ts")
 const SESSION = "s-rules"
@@ -79,7 +81,7 @@ function environment(extra: Record<string, string> = {}): Record<string, string>
     CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
     DISPATCH_STATE_DIR: join(scratch, "state"),
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-    DISPATCH_TOKEN: "rules-token",
+    DISPATCH_TOKEN: RULES_TOKEN,
     ...extra,
   }
 }
