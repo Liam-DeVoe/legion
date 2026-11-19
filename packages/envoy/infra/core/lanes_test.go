@@ -24,14 +24,17 @@ func publishes(r core.Rules, subject string) bool {
 
 // Check l5 of dispatch://INFRA-3589: only Dispatch's NATS user may publish directly on Dispatch's
 // lane, and only the user of the listener that receives GitHub's webhook may publish directly on
-// GitHub's lane. The Legion daemon trusts an event on either lane as its source's. A session on a
-// host can still have a message stored under either lane, by a stream update that adds a subject
-// transform, until dispatch://INFRA-840 closes that gap; this test checks the deny alone. Every
-// other set built on the listener grant still publishes the rest of notifications.>, a role lane
-// among them. Dispatch's user may not publish the listener's resume lane, which only a listener
-// holding the session consumers' calls writes; it still publishes the kept lane and the wake
-// topic, as the outbox and the listener beside envoy-dispatch do, and a session's agent subject,
-// on which Dispatch queues a person's message for a session no store of the listener's holds
+// GitHub's lane. The Legion daemon trusts an event on either lane as its source's. The grants are
+// natsgrant's: this test reads them through core's wrapper, as a hub renders them, and
+// natsgrant's own TestOnlyDispatchMayPublishItsLane holds the same rows over natsgrant. A session
+// on a shared host user can still have a message stored under either lane, by a stream update that
+// adds a subject transform, until the host's sessions connect through the auth service
+// (dispatch://INFRA-840); this test checks the deny alone. Every other set built on the listener
+// grant still publishes the rest of notifications.>, a role lane among them. Dispatch's user may
+// not publish the listener's resume lane, which only a listener holding the session consumers'
+// calls writes; it still publishes the kept lane and the wake topic, as the outbox and the
+// listener beside envoy-dispatch do, and a session's agent subject, on which Dispatch queues a
+// person's message for a session no store of the listener's holds
 // (internal/dispatch/api/message_queue_publish.go). The listener sets keep the resume and kept
 // lanes.
 func TestOnlyDispatchMayPublishItsLane(t *testing.T) {

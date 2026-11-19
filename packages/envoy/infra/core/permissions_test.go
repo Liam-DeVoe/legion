@@ -239,8 +239,8 @@ func admitsInbox(entry string) bool {
 // the set's own, and it admits the session's relay subject, which is why the union adds no entry
 // for it. It keeps the base grant's publish deny, so no session on the host publishes directly on
 // Dispatch's lane or GitHub's. A session on the host can still have a message stored under either
-// lane, by a stream update that adds a subject transform, until dispatch://INFRA-840 closes that
-// gap; this test checks the deny alone.
+// lane, by a stream update that adds a subject transform, until the host's sessions connect
+// through the auth service (dispatch://INFRA-840); this test checks the deny alone.
 func TestHostPermissionsAreTheListenersThenTheSessions(t *testing.T) {
 	require.Equal(t, core.Permissions{
 		Publish: core.Rules{Allow: append(append([]string{}, listenerBasePublish...), "_INBOX.>", "agentstream.*.frames"), Deny: listenerDeny},

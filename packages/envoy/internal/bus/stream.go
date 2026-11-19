@@ -103,9 +103,10 @@ const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
 // DispatchTopicPrefix begins Dispatch's lane: every topic Dispatch publishes an issue's, a
 // document's or a project's events on, and its own announcements. Only Dispatch's NATS user may
 // publish directly under it, since the Legion daemon trusts an event there as Dispatch's
-// (packages/envoy/infra/core/permissions.go, listenerGrant). A session on a host can still have a
-// message stored under it, by a stream update that adds a subject transform, until
-// dispatch://INFRA-840 closes that gap.
+// (packages/envoy/natsgrant, listenerGrant's publish deny, which a hub's users and the auth
+// service's answers both carry). A session on a host user it shares with the host's listener can
+// still have a message stored under it, by a stream update that adds a subject transform, until
+// the host's sessions connect through the auth service (dispatch://INFRA-840).
 const DispatchTopicPrefix = NotificationTopicPrefix + "dispatch."
 
 // LegionWakeTopic is the one topic the listener reports a wake of a released Legion issue pod

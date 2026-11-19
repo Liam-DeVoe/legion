@@ -1699,7 +1699,7 @@ For a targeted message to a session, Dispatch then publishes the message itself 
 on that session's own subject, `notifications.agent.<session>`, the envelope the listener's send route would have stored (`contracts.AgentSendEnvelope`), under the dedupe key that send would have used.
 It settles the attempt `queued` with that envelope, or as a duplicate with none when the stream already held it, and the card reads as for any queued attempt.
 The listener's delivery of that copy finds no record, waits once for its agent wait and then reports the agent wake (`noRecordAgentDelivery`), which brings a released Legion pod back, and the session reads the copy from its consumer when it registers again under its id.
-Dispatch's NATS user may publish that subject: `DispatchPermissions` (`infra/core/permissions.go`) allows `notifications.>` but the lanes it denies, and an agent subject is none of them.
+Dispatch's NATS user may publish that subject: `natsgrant.Dispatch` (`natsgrant/natsgrant.go`, which envoy-infra's `DispatchPermissions` and the auth service's `dispatch` kind both read) allows `notifications.>` but the lanes it denies, and an agent subject is none of them.
 Every sender above queues it the same way, and only while it still holds the attempt's claim.
 A comment's mention is never queued this way, and neither is a message to a role whose holder is gone, which resolves to no session, nor a send that asks for a session running now (`connected_only`, a model or thinking switch).
 A publish that fails settles the attempt `failed`, with the publish's error after the listener's words, and a process with no publisher (`DISPATCH_NATS_DISABLED=1` without test hooks) publishes nothing and settles `failed`.
@@ -6323,11 +6323,13 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
 - The listener subscribes to no topic of its own for a session, so it takes none off the bus:
   a topic published straight onto NATS, bypassing the API, reaches nobody.
   `ENVOY_SUBSCRIBE_ALL_TOPICS` is read no longer, and a start that still carries it logs one WARN naming it (`warnIgnoredEnv`, `cmd/listener/main.go`), as `ENVOY_HOST_BRIDGE` does.
-  The listener's grant publishes all of `notifications.>` either way, but for the two lanes its publish deny names (`packages/envoy/infra/README.md`, "Permission sets").
+  The listener's grant publishes all of `notifications.>` either way, but for the two lanes its publish deny names (`natsgrant`'s listener grant, `packages/envoy/natsgrant/natsgrant.go`; `packages/envoy/infra/README.md`, "Permission sets").
+  A hub's static users and the connections the NATS auth service admits carry the same deny, since both take their grants from `natsgrant`.
   Only Dispatch's own NATS user publishes directly on Dispatch's lane, `notifications.dispatch.>`.
-  Only the user of the listener that receives GitHub's webhook publishes directly on GitHub's lane, `notifications.github.>`, from that listener's webhook route and CI summary loop.
+  Only the user of the listener that receives GitHub's webhook publishes directly on GitHub's lane, `notifications.github.>`, from that listener's webhook route and CI summary loop: a hub's `listenerMachineId` user with `githubWebhook: true`, or a `webhook-listener` entry of the auth service's `BROKER_NATS_SERVICES`.
   So the server refuses a `/v1/messages/publish` to Dispatch's lane on every listener but the one beside `envoy-dispatch`, which shares Dispatch's user, and to GitHub's lane on every listener but the webhook's, and the route answers `403`.
-  A session on a host can still have a message stored under either lane, by a stream update that adds a subject transform, since the host user keeps the stream's update; dispatch://INFRA-840 closes that gap.
+  A session on a host user that it shares with the host's listener can still have a message stored under either lane, by a stream update that adds a subject transform, since that user keeps the stream's update.
+  A session the auth service admits holds `natsgrant.Session`, which grants no stream update; for the host's sessions the gap stays open until dispatch://INFRA-840.
 
 - A failed role delivery, or a fan-out's terminal capability refusal on any topic (a delivery mode the session does not advertise, or one that cannot be read unambiguously), publishes `notifications.envoy.exceptions.<original-topic>`, and so does a role send the publish route refused 404 because no live session holds the role (`publishRefusalException`).
 

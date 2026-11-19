@@ -558,7 +558,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` | How often the listener deletes the stream consumers of sessions that read `gone`, as a Go duration; default `5m`. A session that deregisters has its consumer deleted with its registration, and one that simply ended — its pane closed, its box rebooted — deregisters nothing, so this sweep is what frees the slot it holds, within one pass of the session's record leaving the `envoy_sessions` bucket ([Messages a session missed](#messages-a-session-missed)). A pass deletes at most 256 consumers, each checked against the `envoy_sessions` bucket before it goes, and runs only on the listener task that holds its machine's durable binding; the rest wait for the next pass. |
 | `ENVOY_ROLE_CLAIM_REAP_INTERVAL` | How often the role claim reaper looks for role claims nobody has renewed inside the live window whose holder is `gone`, or which a hand-back marked, and releases them, as a Go duration; default `5m`. Nothing else releases a claim, and a claim its holder still renews is kept whatever that holder's session record says. While `ENVOY_SESSION_MAX_AGE` is below `ENVOY_SESSION_GONE_HORIZON`, keep it at or above that age: a record the bucket expires reads `gone` before the horizon, so a shorter period takes a merely stalled holder's role that much sooner. Once the maximum age covers the horizon no record goes early, and the period only says how long past the horizon a `gone` holder keeps its role: keep it well inside the horizon instead. |
 | `ENVOY_SESSION_MAX_AGE` | The `envoy_sessions` bucket's `MaxAge`, as a Go duration: how long a registration record survives in NATS. Unset, the listener leaves an existing bucket as it is, and creates a missing one at `2h`, an hour past the default gone horizon. A bucket an older listener created keeps its `5m` until this setting raises it. A listener whose bucket's age is at or below `ENVOY_SESSION_GONE_HORIZON` logs a warning at its start that names both values. `/healthz` reports the age in use as `session_max_age` and the gone horizon as `session_gone_horizon`. |
-| `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. With `github` the listener publishes GitHub's lane (`notifications.github.>`): on a NATS whose users envoy-infra renders, only a `listenerMachineId` user with `githubWebhook: true` may publish on it directly, and under any other user those publishes are refused. A session on a host can still have a message stored under that lane, by a stream update that adds a subject transform, until dispatch://INFRA-840 closes that gap. |
+| `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. With `github` the listener publishes GitHub's lane (`notifications.github.>`). Two kinds of NATS user may publish on it directly: on a NATS whose users envoy-infra renders, a `listenerMachineId` user with `githubWebhook: true`; on a hub whose NATS auth service admits the listener, a `webhook-listener` entry of `BROKER_NATS_SERVICES`. Under any other user those publishes are refused. A session on a host user that it shares with the host's listener can still have a message stored under that lane, by a stream update that adds a subject transform, since that user keeps the stream's update. A session the auth service admits holds no stream update. For the host's sessions the gap stays open until dispatch://INFRA-840. |
 | `ENVOY_GITHUB_WEBHOOK_SECRET` | Required with `github`: the webhook secret. |
 | `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
@@ -715,12 +715,16 @@ does not count a message with another source, such as Dispatch's (`dispatch`) or
 (`envoy`). It does not count a message with no sender either, which is how the Legion daemon sends
 its notices.
 
-So the count is bound to a session only where callers present secrets-broker tokens. A caller
-that presents one and names another session in the body gets `403`. A caller that the listener
-admits on a bearer, or with no credential where `/v1` is open, names the sender itself in
-`source_session`. Such a caller can send under another session's id and spend that session's
-count, which then takes up to `burst × 60 ÷ rate` seconds to fill again. That caller can already
-send messages as that session.
+A secrets-broker token names the session that the listener counts. A caller that presents one
+and names another session in the body gets `403`. A caller that the listener admits on a bearer, or
+with no credential where `/v1` is open, names the sender itself in `source_session`. Such a caller
+can send under another session's id and spend that session's count, which then takes up to
+`burst × 60 ÷ rate` seconds to fill again. That caller can already send messages as that session.
+
+A token does not make a message with another `source` count. The agents' own Envoy tools send
+the source `agent` and give the agent no argument for it, so the limit counts each of their
+messages that has a sender. A caller that writes its own request can give another source, so the
+limit is not a security boundary.
 
 A counted message costs one when the listener stores it, may have stored it or reports a wake for
 it, whatever the answer is. A role send answered `504` costs one whether or not a forward went
@@ -742,9 +746,9 @@ count at 0 is refused as a new message is, because the listener reads the count 
 Each listener process keeps its counts in its own memory. So each replica of a listener keeps its
 own count for a session, and a restart fills each count again. The start log states the limit in
 one line, `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session
-in this process`, or `listener sender limit: none`. The `envoy-infra` components take the two
-values as the inputs `senderMessagesPerMinute` and `senderMessageBurst`
-([With Pulumi](#with-pulumi)).
+in this process`, or `listener sender limit: none`. Where the rate is 1, the line reads
+`1 message a minute`. The `envoy-infra` components take the two values as the inputs
+`senderMessagesPerMinute` and `senderMessageBurst` ([With Pulumi](#with-pulumi)).
 
 ### With Pulumi
 
