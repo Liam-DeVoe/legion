@@ -971,9 +971,9 @@ def json_stream_script(command: str, stream: str) -> str:
     """A test step whose one go command writes its `go test -json` stream to a file under
     $RUNNER_TEMP/go-test-json and replays it to the log: the package result lines of a green run,
     the whole stream of a red one (the envoy-go unit step in ci-job-envoy-go.yaml says why). The
-    race lane's envoy-go-race and envoy-go-race-api, and envoy-go-checks' architecture-note tests
-    and display-tree fixture check, are the steps of this shape; envoy-go's unit step runs nine
-    calls and builds its own (UNIT_TEST_SCRIPT)."""
+    race lane's envoy-go-race and envoy-go-race-api, and envoy-go-checks' architecture-note tests,
+    listenerwire tests and display-tree fixture check, are the steps of this shape; envoy-go's unit
+    step runs nine calls and builds its own (UNIT_TEST_SCRIPT)."""
     return f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json"
 s=0
@@ -1593,11 +1593,14 @@ NOTE_AND_SPEC_SCRIPT = json_stream_script(
 # (its RULES entry), so run in envoy-go's unit step a change to one of those daemon packages would
 # start that whole job, its database and its 20-minute unit step, for one type check. They need no
 # database. As with the architecture-note and spec-file packages, that step's package list and the
-# unit step's exclusion are built from this one list.
+# unit step's exclusion are built from this one list. The step writes a `go test -json` stream
+# (json_stream_script), as the architecture-note step does, and its -timeout is the call's own,
+# from the step's measured time (the comment on the step in ci-job-envoy-go-checks.yaml).
 LISTENERWIRE_PACKAGES = ["listenerwire", "internal/wirecheck"]
 LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck"
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
-LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
+LISTENERWIRE_SCRIPT = json_stream_script(
+    "go test -json -count=1 -timeout 1m " + " ".join(LISTENERWIRE_PKGS), "listenerwire.json")
 
 # The broker's packages, internal/broker and every package under it, which envoy-go's step
 # "Count the database broker suites' skips" runs with `go test -json` through
@@ -3311,11 +3314,14 @@ GATES = [
     gate("envoy_go_checks", "envoy-go-checks", runs=[
         step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
+    ], exact=[
         # LISTENERWIRE_PACKAGES' tests (listenerwire's, its clients test's type check of the daemon's
         # listener clients among them, and internal/wirecheck's), built from the list the unit
-        # step's `grep -Ev` leaves them out by.
-        step_run("envoy-go-checks", LISTENERWIRE_STEP, LISTENERWIRE_TEXT, ENVOY, LISTENERWIRE_PKGS),
-    ], exact=[
+        # step's `grep -Ev` leaves them out by. The step writes a `go test -json` stream, so it is
+        # pinned whole rather than reduced.
+        pinned_step("envoy-go-checks", LISTENERWIRE_STEP, ENVOY, LISTENERWIRE_SCRIPT, [
+            (ENVOY, LISTENERWIRE_PKGS, "go test " + " ".join(LISTENERWIRE_PKGS), {}),
+        ]),
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.
         pinned_step("envoy-go-checks", "Check the OpenAPI document is generated from the route table", ENVOY,

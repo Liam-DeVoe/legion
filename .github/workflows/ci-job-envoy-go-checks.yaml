@@ -50,8 +50,9 @@ jobs:
     # runs 44175873364 and 44195030350 at 4f1f4436, by the rule envoy-go's comment gives
     # (dispatch://INFRA-1075, check 6224bb0e). The job's bound is its larger time in the pair,
     # 610 s (run 44175873364, job 134367428126), 10.17 minutes, plus the largest -timeout of its
-    # go test calls, 1m, plus 6: 10.17 + 1 + 6 = 17.17, so 18. Its other go commands are builds
-    # and two `go run`s, which run no test binary and carry no -timeout.
+    # go test calls, 1m, plus 6: 10.17 + 1 + 6 = 17.17, so 18. The listenerwire step, which main
+    # added after that pair, is the exception its own comment names. Its other go commands are
+    # builds and two `go run`s, which run no test binary and carry no -timeout.
     timeout-minutes: 18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -153,9 +154,23 @@ jobs:
       # type-checks the daemon's listener clients, so they run here, their one run, and a change to
       # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step
       # leaves both packages out, its `grep -Ev` and this step's package list built from
-      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
+      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py. Main added this step after the
+      # pair at 4f1f4436, so R6's numbers above do not cover it. Its -timeout is 1m by the same
+      # rule from main's own runs of it, 4 s each (run 44439697233, job 135277309301; run
+      # 44430694686, job 135247164658), and 4 / 30 = 0.13, so 1m, the smallest whole minute there
+      # is; the next measurement pair reads it again. The `go test -json` stream goes to a file the
+      # upload step below publishes and is replayed to the log, as the architecture-note step's is.
       - name: Test the listener's wire package, its clients and wirecheck
-        run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -count=1 -timeout 1m ./listenerwire/ ./internal/wirecheck/ > "$RUNNER_TEMP/go-test-json/listenerwire.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/listenerwire.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/listenerwire.json"
+          fi
+          exit $s
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
