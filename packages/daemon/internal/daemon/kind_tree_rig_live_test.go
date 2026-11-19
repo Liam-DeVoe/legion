@@ -832,8 +832,10 @@ func startKindListener(t *testing.T, natsURL, host, reviewerAppID string) string
 	port := kindFreePortOn(t, host)
 	command := exec.Command(binary)
 	command.Dir = home
+	// ENVOY_ALLOW_REMOTE_NATS: natsURL is the relay at the kind network's gateway, an address of this
+	// host the bus's guard reads as another machine's, which it refuses otherwise.
 	command.Env = append(os.Environ(), "HOME="+home, "PORT="+strconv.Itoa(port), "ENVOY_LISTEN_HOST="+host,
-		"ENVOY_MACHINE_ID=kind", "NATS_URLS="+natsURL, "ENVOY_API_TOKEN="+kindTreeEnvoyToken,
+		"ENVOY_MACHINE_ID=kind", "NATS_URLS="+natsURL, "ENVOY_ALLOW_REMOTE_NATS=1", "ENVOY_API_TOKEN="+kindTreeEnvoyToken,
 		"ENVOY_WEBHOOKS=github", "ENVOY_GITHUB_WEBHOOK_SECRET="+kindTreeWebhookSecret, "ENVOY_REVIEWER_APP_ID="+reviewerAppID)
 	log := kindLogFile(t, nil, "listener.log")
 	command.Stdout, command.Stderr = log, log
