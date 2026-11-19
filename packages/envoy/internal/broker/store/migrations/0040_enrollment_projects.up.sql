@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0038_enrollment_projects.up.sql
+-- packages/envoy/internal/broker/store/migrations/0040_enrollment_projects.up.sql
 -- The Dispatch projects a session's enrollment names: the projects whose private secrets the
 -- broker may release to it (dispatch://INFRA-3862, R11). A session names them when it enrols,
 -- from AGENT_SECRETS_PROJECTS, and the broker takes the list only when Dispatch says the session's

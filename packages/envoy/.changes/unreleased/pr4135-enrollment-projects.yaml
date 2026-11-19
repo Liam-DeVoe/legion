@@ -12,8 +12,8 @@ body: |-
   naming no project enrolls as before while Dispatch cannot be reached, with a line saying it
   enrolled unchecked; while Dispatch refuses the broker's own account, no session enrolls through
   it, `503 PROJECTS_UNCHECKED` saying so. The list is fixed for the
-  enrollment's life and is never carried to a successor that adopts its grants. Migration 0038
-  (`0038_enrollment_projects`) adds `enrollments.projects`, empty on every existing row.
+  enrollment's life and is never carried to a successor that adopts its grants. Migration 0040
+  (`0040_enrollment_projects`) adds `enrollments.projects`, empty on every existing row.
 time: 2026-11-16T02:40:03Z
 custom:
     Issue: pr4135
