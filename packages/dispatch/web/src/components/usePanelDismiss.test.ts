@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: an Escape that ends an IME composition, which user-event has no form for
-import { fireEvent, renderHook } from "@testing-library/react";
+import { renderHook } from "@testing-library/react";
 
 import { usePanelDismiss } from "./usePanelDismiss";
 
@@ -27,12 +26,22 @@ test("an Escape that ends an IME composition leaves the open panel open", () => 
   );
   try {
     field.focus();
-    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+    // user-event has no form for a key that ends a composition, so the event is made by hand.
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        isComposing: true,
+        key: "Escape",
+      })
+    );
     expect(changes, "the Escape that ended a composition closed the panel").toEqual([]);
     expect(document.activeElement, "that Escape moved the focus").toBe(field);
     expect(behind.length, "that Escape stopped short of the view behind").toBe(1);
 
-    fireEvent.keyDown(field, { key: "Escape" });
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+    );
     expect(changes).toEqual([false]);
     expect(document.activeElement).toBe(trigger);
     expect(behind.length, "the panel's Escape reached the view behind").toBe(1);

@@ -1,6 +1,6 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the hover-intent sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget), `scroll` has no user-event form at all, and neither has an Escape that ends an IME composition.
+// biome-ignore lint/style/noRestrictedImports: the hover-intent sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget), and `scroll` has no user-event form at all.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useRef } from "react";
 import { Link, MemoryRouter } from "react-router-dom";
@@ -437,12 +437,26 @@ test("an Escape that ends an IME composition leaves the open card open", () => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
     });
     expect(screen.getByRole("tooltip")).toBeTruthy();
-    fireEvent.keyDown(document, { isComposing: true, key: "Escape" });
+    // user-event has no form for a key that ends a composition, so the event is made by hand.
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+          key: "Escape",
+        })
+      );
+    });
     expect(
       screen.queryByRole("tooltip"),
       "the Escape that ended a composition closed the card"
     ).toBeInTheDocument();
-    fireEvent.keyDown(document, { key: "Escape" });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+      );
+    });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   } finally {
     view.unmount();
