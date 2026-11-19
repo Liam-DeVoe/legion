@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"strings"
+	"unicode"
 )
 
 // systemPrompt is the short system prompt the agent's resumed conversation runs under: who it is
@@ -19,7 +21,7 @@ func systemPrompt(req Request) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are the agent whose conversation follows: the %s of issue %s (session %s, phase %s).", req.Agent.Role, req.Agent.Issue, req.Agent.Session, req.Agent.Phase)
-	b.WriteString(" You are not running now, and Legion has resumed your conversation for one message to you. Answer it as yourself, from your conversation and from what your tools read.\n\n")
+	b.WriteString(" You are not running now, and Legion has resumed your conversation for one message to you. Answer it as yourself. Your conversation is your first source: answer from it what it holds, and use your tools only for what it does not hold.\n\n")
 	fmt.Fprintf(&b, "Your tools now: %s. ", strings.Join(names, ", "))
 	fmt.Fprintf(&b, "The `gh` tool is GitHub's own command line with your GitHub access. %s Give it gh's arguments without the leading gh; its description lists the commands it takes and gives an example. ", req.Agent.GHUsage.Checkout())
 	b.WriteString("Every comment or review you post with it carries your Legion footer, which the tool adds, so do not write one. ")
@@ -169,4 +171,36 @@ func parseReply(value json.RawMessage, mayAskNothing bool) (form, error) {
 		return form{}, fmt.Errorf("a %s reply with no text", f.kind)
 	}
 	return f, nil
+}
+
+// errPlaceholder is the sentence a reply whose text is a placeholder is asked for again with.
+var errPlaceholder = errors.New("your reply's text is a placeholder: answer the question from your conversation")
+
+// placeholder says whether text, the text of a reply of any kind but none, is a placeholder
+// rather than an answer: trimmed, it is one or more letters and nothing else (no digit, no
+// punctuation, no space), it is neither yes nor no, and it is no word of texts, a word being a
+// run of letters and digits as long as it goes, compared in any case. texts are what the agent
+// has in front of it as it replies: the conversation, the question and the run's gh results.
+//
+// The rule is this narrow because a wider one refuses right answers. Replayed on 2026-11-19 as
+// whole loops, a guard refusing any one word or any text under 12 characters refused all 12
+// terse right answers ("SBOM-ZINC-512", to "Reply with the marker alone"), and all 12 ended
+// malformed after the one ask again. This rule refused none of 24 terse right answers (the
+// marker, and "No" to a yes-or-no question) and caught the one "x" of 24 loops on a long
+// question, which the ask again answered right.
+func placeholder(text string, texts iter.Seq[string]) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.ContainsFunc(text, func(r rune) bool { return !unicode.IsLetter(r) }) ||
+		strings.EqualFold(text, "yes") || strings.EqualFold(text, "no") {
+		return false
+	}
+	notWord := func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) }
+	for t := range texts {
+		for word := range strings.FieldsFuncSeq(t, notWord) {
+			if strings.EqualFold(word, text) {
+				return false
+			}
+		}
+	}
+	return true
 }

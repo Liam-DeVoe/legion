@@ -711,6 +711,7 @@ func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 		{name: "none not offered", replies: []reply{anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(`{"kind":"none","text":"","needs":""}`))}, want: Malformed},
 		{name: "not answered naming no need", replies: []reply{anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(`{"kind":"not_answered","text":"I cannot tell.","needs":""}`))}, want: Malformed},
 		{name: "answered with no text", replies: []reply{anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(`{"kind":"answered","text":"  ","needs":""}`))}, want: Malformed},
+		{name: "a placeholder on the last allowed call", replies: []reply{anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(`{"kind":"answered","text":"x","needs":""}`))}, want: Malformed},
 		{name: "the provider failed", replies: []reply{{status: http.StatusBadRequest, body: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`)}}, want: ProviderError},
 		{name: "past the time bound", replies: []reply{{delay: 5 * time.Second, body: anthropicStream("end_turn", anthropicUsage{}, anthropicText(answered)).body}}, answer: time.Second, want: AnswerSeconds},
 	} {
@@ -809,6 +810,116 @@ func TestAReplyTheFormRefusesIsAskedForOnceAgain(t *testing.T) {
 	}
 	if err := reply.Append.Validate(); err != nil {
 		t.Errorf("the append does not validate: %v", err)
+	}
+}
+
+// A reply of any kind but none whose text is a placeholder, one word of letters alone that is
+// neither yes nor no and no word of the conversation, the question or the run's gh results, is
+// asked for once again with the placeholder sentence, as a reply the form's other rules refuse
+// is, and the reply after it is the one posted. Neither the request's history nor its question
+// holds any of the placeholders.
+func TestAPlaceholderReplyIsAskedForOnceAgain(t *testing.T) {
+	const sentence = "your reply's text is a placeholder: answer the question from your conversation"
+	for _, c := range []struct {
+		name, refused, second string
+		kind                  Kind
+		text, needs           string
+	}{
+		{
+			name: "answered x", refused: `{"kind":"answered","text":"x","needs":""}`,
+			second: `{"kind":"answered","text":"PR 7 is green.","needs":""}`, kind: Answered, text: "PR 7 is green.",
+		},
+		{
+			name: "answered placeholder", refused: `{"kind":"answered","text":"placeholder","needs":""}`,
+			second: `{"kind":"answered","text":"PR 7 is green.","needs":""}`, kind: Answered, text: "PR 7 is green.",
+		},
+		{
+			name: "not_answered tbd", refused: `{"kind":"not_answered","text":"tbd","needs":"My working copy."}`,
+			second: `{"kind":"not_answered","text":"I cannot tell from here.","needs":"My working copy."}`,
+			kind:   NotAnswered, text: "I cannot tell from here.", needs: "My working copy.",
+		},
+		{
+			name: "needs_work x", refused: `{"kind":"needs_work","text":"x","needs":"A run of my phase."}`,
+			second: `{"kind":"needs_work","text":"I cannot run the checks again now.","needs":"A run of my phase."}`,
+			kind:   NeedsWork, text: "I cannot run the checks again now.", needs: "A run of my phase.",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStandIn(t,
+				anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicText(c.refused)),
+				anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 25}, anthropicText(c.second)),
+			)
+			reply, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 3))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reply.Fault != "" || reply.Kind != c.kind || reply.Text != c.text || reply.Needs != c.needs {
+				t.Fatalf("reply %+v, want the second reply: %s %q needing %q", reply, c.kind, c.text, c.needs)
+			}
+			got := s.requests()
+			if len(got) != 2 || reply.Calls != 2 {
+				t.Fatalf("%d model calls (reply calls %d), want 2", len(got), reply.Calls)
+			}
+			sent := messages(t, got[1])
+			last := sent[len(sent)-1]
+			if said := blocks(last); last["role"] != "user" || len(said) != 1 || said[0]["text"] != sentence {
+				t.Fatalf("the second call ends with %v, want the placeholder sentence as a user message", last)
+			}
+			if turns := reply.Append.Turns; len(turns) != 2 || turns[0].AskedAgain != sentence || turns[1].AskedAgain != "" {
+				t.Errorf("turns %+v, want the placeholder asked again with the sentence, then the reply", turns)
+			}
+		})
+	}
+}
+
+// A terse right reply is no placeholder and is posted at once, never asked for again: a text with
+// a digit, a punctuation mark or a space in it, a bare yes or no, and a word of letters alone that
+// the conversation's history holds (in another case) each on one model call, and a word of
+// letters alone that only a gh result of the run holds on two, the gh call's and the reply's.
+func TestATerseReplyIsPostedAtOnce(t *testing.T) {
+	for _, c := range []struct {
+		text string
+		// history changes the request's conversation to hold the reply's word.
+		history func(*conversation.Conversation)
+		// gh is the args of a gh call the model makes before it replies, whose output holds the
+		// reply's word.
+		gh []string
+	}{
+		{text: "Yes, merged in #12."},
+		{text: "SBOM-ZINC-512"},
+		{text: "No."},
+		{text: "yes"},
+		{text: "4f1c2ab"},
+		{text: "go 1.22"},
+		{text: "bramble", history: func(c *conversation.Conversation) {
+			c.Messages[1].Content[1].Text = "The plan is written, on the branch named Bramble."
+		}},
+		{text: "Quince", gh: []string{"release", "view", "quince", "-R", "acme/widgets"}},
+	} {
+		t.Run(c.text, func(t *testing.T) {
+			var replies []reply
+			if c.gh != nil {
+				replies = append(replies, anthropicStream("tool_use", anthropicUsage{Input: 2, Output: 3}, anthropicGH("toolu_1", c.gh...)))
+			}
+			replies = append(replies, anthropicStream("end_turn", anthropicUsage{Input: 2, Output: 3},
+				anthropicText(`{"kind":"answered","text":`+quote(c.text)+`,"needs":""}`)))
+			s := newStandIn(t, replies...)
+			gh := &stubGH{}
+			req := anthropicRequest(t, s, gh, 3)
+			if c.history != nil {
+				c.history(&req.Conversation)
+			}
+			reply, err := Answer(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reply.Fault != "" || reply.Kind != Answered || reply.Text != c.text {
+				t.Fatalf("reply %+v, want answered %q", reply, c.text)
+			}
+			if n := len(s.requests()); n != len(replies) || reply.Calls != len(replies) || len(gh.made()) != len(replies)-1 {
+				t.Errorf("%d model calls (reply calls %d) and %d gh calls, want %d model calls", n, reply.Calls, len(gh.made()), len(replies))
+			}
+		})
 	}
 }
 

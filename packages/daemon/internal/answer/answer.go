@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/sjawhar/envoy/agentloop"
 
@@ -321,23 +322,43 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		return Reply{Fault: UnknownFormat, Detail: err.Error()}, nil
 	}
 	question := userMessage(req)
+	// The gh tool adds each call's output to what the agent has in front of it (inFront).
+	front := &inFront{history: history, question: question}
+	toolset := toolSet(req)
+	for i, t := range toolset {
+		toolset[i].Run = func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
+			output, isError := t.Run(ctx, call)
+			front.add(output)
+			return output, isError
+		}
+	}
+	// read reads a reply by the form's own rules: parseReply's, and a text of any kind but
+	// none that is no placeholder.
+	read := func(value json.RawMessage) (form, error) {
+		reply, err := parseReply(value, req.MayAskNothing)
+		if err == nil && reply.kind != None && placeholder(reply.text, front.texts) {
+			return form{}, errPlaceholder
+		}
+		return reply, err
+	}
 	result, runErr := agentloop.Run(ctx, agentloop.Request{
 		Model:   r.agentModel(req.Conversation.ThinkingLevel),
 		System:  systemPrompt(req),
 		History: history,
 		Input:   []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: question}}}},
-		Tools:   toolSet(req),
+		Tools:   toolset,
 		Bounds: agentloop.Bounds{
 			Time: req.Bounds.Answer, Calls: req.Bounds.ModelCalls, OutputTokens: req.Bounds.OutputTokens,
 		},
 		FirstToolIndex: firstToolIndex(req.Earlier),
 		Final:          finalSchema(req.MayAskNothing),
-		// A reply the form's own rules refuse is asked for once again, with parseReply's
-		// sentence as the message after it, within the same bounds: the rules the strict
-		// schema cannot state are the ones a model gets wrong, and one more call costs less
-		// than a question passed on as malformed. A second refusal is finish's to make.
+		// A reply the form's own rules refuse is asked for once again, with the rule's
+		// sentence (parseReply's, or errPlaceholder) as the message after it, within the
+		// same bounds: the rules the strict schema cannot state are the ones a model gets
+		// wrong, and one more call costs less than a question passed on as malformed. A
+		// second refusal is finish's to make.
 		Check: func(value json.RawMessage) error {
-			_, err := parseReply(value, req.MayAskNothing)
+			_, err := read(value)
 			return err
 		},
 		AskAgain: 1,
@@ -368,8 +389,55 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 		reply.Fault, reply.Detail = Unmetered, fmt.Sprintf("the provider reported no usage for the answer's %d model call(s)", len(result.Steps))
 		return reply, nil
 	}
-	finish(&reply, req, r, result, question)
+	finish(&reply, req, r, result, question, read)
 	return reply, nil
+}
+
+// inFront is what the agent has in front of it as it replies, the texts whose words a reply may
+// be without being a placeholder (placeholder): the conversation's history and the question the
+// run is given, and the output of every gh call the run makes, which add takes as the gh tool
+// runs it. The SDK runs a tool call on a goroutine of its own and agentloop checks a reply on
+// Run's, so the outputs are held under a lock.
+type inFront struct {
+	history  []agentloop.Message
+	question string
+	mu       sync.Mutex
+	outputs  []string
+}
+
+// add takes one gh call's output, as the model reads it.
+func (f *inFront) add(output string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outputs = append(f.outputs, output)
+}
+
+// texts are its texts: each history block's text (prose, thinking, a reasoning summary or a tool
+// result's output), a tool call's input and a tool result's parts; the question; and the gh
+// outputs.
+func (f *inFront) texts(yield func(string) bool) {
+	for _, message := range f.history {
+		for _, block := range message.Blocks {
+			if !yield(block.Text) || !yield(string(block.Input)) {
+				return
+			}
+			for _, part := range block.Content {
+				if !yield(part.Text) {
+					return
+				}
+			}
+		}
+	}
+	if !yield(f.question) {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, output := range f.outputs {
+		if !yield(output) {
+			return
+		}
+	}
 }
 
 // unmetered says whether nothing counted the run's model calls (Unmetered). Two things say so,
@@ -402,12 +470,13 @@ func firstToolIndex(earlier []store.AnswerToolCall) int {
 	return first
 }
 
-// finish reads the run's last reply into reply: the agent's reply in the form, or no answer when
-// the form's own rules refuse it, which they do once agentloop has asked again where its bounds
-// let it; and, with it, the turns to append, every call of the run in order but a cut one whose
-// call agentloop made again, which no later call was sent and the conversation never holds.
-func finish(reply *Reply, req Request, r route, result agentloop.Result, question string) {
-	form, err := parseReply(result.Value, req.MayAskNothing)
+// finish reads the run's last reply into reply with read: the agent's reply in the form, or no
+// answer when the form's own rules refuse it, which they do once agentloop has asked again where
+// its bounds let it; and, with it, the turns to append, every call of the run in order but a cut
+// one whose call agentloop made again, which no later call was sent and the conversation never
+// holds.
+func finish(reply *Reply, req Request, r route, result agentloop.Result, question string, read func(json.RawMessage) (form, error)) {
+	form, err := read(result.Value)
 	if err != nil {
 		reply.Fault, reply.Detail = Malformed, fmt.Sprintf("%v: %.500q", err, result.Text)
 		return
