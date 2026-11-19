@@ -63,8 +63,8 @@ generated.
   `IdempotencyLandedCode`, `InboxThreadKind`, `DispatchServiceErrorShape` and `Sleep` in
   `client.ts` are `@legion/contracts`', and the `paths.ts` names it imports are that file's; `Query`,
   `QueryKey`, `QueryFunction`, `QueryFunctionContext`, `QueryObserverOptions`,
-  `DefaultedQueryObserverOptions`, `DefaultError`, `RefetchOptions` and `RefetchQueryFilters` in
-  `query-client.ts` and `queries.ts` are TanStack Query's; and `FakeLiveSocket` and
+  `DefaultedQueryObserverOptions`, `DefaultError`, `RefetchOptions`, `RefetchQueryFilters` and
+  `Updater` in `query-client.ts` and `queries.ts` are TanStack Query's; and `FakeLiveSocket` and
   `FakeLiveSockets` in `live-socket.test.ts` are `web/src/__tests__/live-socket-harness.ts`'s,
   the stand-in socket that test drives its subject with and the set of them a test installs. Not a
   response shape: each is read here under the name of the package or module that declares it.
