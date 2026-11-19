@@ -722,6 +722,7 @@ check_workflow_files_test: &check_workflow_files_test
   - '.github/scripts/check-workflow-files.test.sh'
   - '.github/scripts/check-workflow-files.sh'
   - '.github/scripts/workflow_paths.py'
+  - '.github/ci-notes/README.md'
 check_private_names_test: &check_private_names_test
   - *ci_router
   - *ci_filters_data

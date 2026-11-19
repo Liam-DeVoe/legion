@@ -66,6 +66,9 @@ GITHUB_CAP = 500_000
 # followed, and a call to another repository's workflow counts as one.
 CALL_LIMIT = 45
 GITHUB_CALL_CAP = 50
+# Where the rule the two size refusals enforce is written down: what a workflow file holds, and
+# where the rest goes.
+RULE = ".github/ci-notes/README.md"
 
 
 def one_line(text: object) -> str:
@@ -222,7 +225,8 @@ for path in targets:
             f"{path} is {size:,} bytes, above GitHub's own cap of {GITHUB_CAP:,} bytes (500 KB): "
             f"GitHub starts no run at all for a workflow file this size, and signals it only as a "
             f"run with no jobs in it. It is above this check's limit of {LIMIT:,} bytes as well. "
-            f"Move filter data, inline shell and prose into files of their own that a job reads.",
+            f"Move filter data, inline shell and prose into files of their own that a job reads, "
+            f"as {RULE} says.",
         )
     elif size > LIMIT:
         problem(
@@ -231,7 +235,7 @@ for path in targets:
             f"no run at all for a workflow file above its own cap of {GITHUB_CAP:,} bytes (500 "
             f"KB), and signals it only as a run with no jobs in it, so this limit keeps every file "
             f"far enough below the cap that no edit crosses it unseen. Move filter data, inline "
-            f"shell and prose into files of their own that a job reads.",
+            f"shell and prose into files of their own that a job reads, as {RULE} says.",
         )
 
     node, error = composed(path)

@@ -109,6 +109,8 @@ check "exits 1" "$(is "$status" 1)"
 check "names the file and its bytes" \
   "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml is 64,001 bytes, above this check.s limit of 64,000 bytes')"
 check "names GitHub's cap too" "$(contains "$out" 'its own cap of 500,000 bytes (500 KB)')"
+check "names the file the rule is in" \
+  "$(contains "$out" 'that a job reads, as \.github/ci-notes/README\.md says\.$')"
 check "counts the problem" \
   "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
@@ -122,6 +124,10 @@ check "names GitHub's cap and what it does to the run" \
   "$(contains "$out" 'is 500,001 bytes, above GitHub.s own cap of 500,000 bytes (500 KB): GitHub starts no run at all')"
 check "says it is above this check's limit as well" \
   "$(contains "$out" "above this check's limit of 64,000 bytes as well")"
+check "names the file the rule is in" \
+  "$(contains "$out" 'that a job reads, as \.github/ci-notes/README\.md says\.$')"
+check "the file both refusals name exists" \
+  "$(is "$([ -f "$script_dir/../ci-notes/README.md" ] && echo true || echo false)" true)"
 check "reports it once, not twice" "$(is "$(errors "$out")" 1)"
 
 echo "case: a workflow file holding one key twice"
@@ -379,7 +385,10 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the .yml file" \
   "$(contains "$out" '^::error file=.github/workflows/ci.yml::.github/workflows/ci.yml is 64,001 bytes')"
-check "says nothing of the README" "$(is "$(contains "$out" 'README')" false)"
+check "says nothing of the README beside the workflows" \
+  "$(is "$(contains "$out" 'workflows/README\.md')" false)"
+check "names .github/ci-notes/README.md, where the rule is" \
+  "$(contains "$out" '^::error file=.github/workflows/ci.yml::.* as \.github/ci-notes/README\.md says\.$')"
 check "read one file" \
   "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 

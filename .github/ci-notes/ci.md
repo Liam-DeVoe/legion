@@ -1018,6 +1018,11 @@ The docs site's build on a push to main, and its GitHub Pages
 deploy, are docs-pages.yaml's, a workflow of its own whose header says why. Its paths are held
 to the docs filter of .github/ci-filters.yaml.
 
+What a workflow file of this repository holds, and where its filter data, its longer shell
+bodies and its prose go instead, is the rule .github/ci-notes/README.md writes down. Each
+`changes` output that hands on a filter's verdict reads `steps.filter.outputs.<name>`, and
+rule 19 of `check-ci-filters.sh` holds `<name>` to a filter of .github/ci-filters.yaml.
+
 A new job joins the router in eight places: a filter in .github/ci-filters.yaml that names every
 file the job reads, with the `*ci_filters_data` line beside its `*ci_router`, an output of
 `changes` for that filter, the job's `needs: changes` and an `if:` on that

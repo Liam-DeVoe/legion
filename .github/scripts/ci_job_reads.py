@@ -2157,6 +2157,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-workflow-files.sh", "the script under test"),
         (f"{SCRIPTS}/workflow_paths.py", "check-workflow-files.sh imports repeated_keys from it, beside the "
                                          "script's own file that every fixture links in"),
+        (".github/ci-notes/README.md", "the file both size refusals name, which the over-cap case holds to exist"),
     ]),
     harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
