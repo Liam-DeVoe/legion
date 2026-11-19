@@ -444,7 +444,7 @@ dump and a data race report among them), the build output and, for a run of its 
 stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
-`--timeout 8m` and a step limit of its own (`timeout-minutes: 18`) that its time budget
+`--timeout 9m` and a step limit of its own (`timeout-minutes: 19`) that its time budget
 counts, and `envoy-go-race-api` runs the Dispatch API through it as the second line above,
 with `--keep "$RUNNER_TEMP/go-test-json/race-api.json"`: that run's stream is the one the job
 uploads.

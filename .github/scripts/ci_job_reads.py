@@ -1148,11 +1148,11 @@ RACE_DOCS_STEP = "Race-test the document service"
 RACE_DOCS_SCRIPT = ('mkdir -p "$RUNNER_TEMP/go-test-json"\n'
                     'RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" '
                     "../../.github/scripts/race_memory.py "
-                    "go test -json -race -count=1 -parallel 2 -timeout 56m ./internal/dispatch/docs/")
+                    "go test -json -race -count=1 -parallel 2 -timeout 54m ./internal/dispatch/docs/")
 # The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
 # ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
 FINALIZERS_STEP = "Test the document service under the cleanup detector"
-FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 30m ./internal/dispatch/docs/"
+FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 27m ./internal/dispatch/docs/"
 # Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
 # which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
 # what the script runs, so each such gate declares the script, and the go run on the script's line
@@ -1583,13 +1583,13 @@ class RaceJob(NamedTuple):
 
 
 # The lane's three jobs and envoy-go are sized by R6 from one measurement pair alone: two
-# workflow_dispatch runs of ci.yaml at one head, runs 44544482617 and 44544557129 at 31649808
+# workflow_dispatch runs of ci.yaml at one head, runs 44604816847 and 44604887499 at ae055610
 # (dispatch://INFRA-1075, check 6224bb0e). No limit is sized from any other run. Each -timeout
 # is the smallest whole minute at which that call's slowest package, on the slower run of the
-# pair, takes at most half of it: cmd/listener 679.4 s (run 44544482617, job 135631501099),
-# 679.4 / 30 = 22.65, so 23m; internal/dispatch/api 942.6 s (run 44544482617, job
-# 135631500555), 942.6 / 30 = 31.42, so 32m; and internal/dispatch/docs 1,657.9 s (run
-# 44544482617, job 135631501732), 1,657.9 / 30 = 55.26, so 56m. Each figure is read from that
+# pair, takes at most half of it: cmd/listener 682.6 s (run 44604887499, job 135864937409),
+# 682.6 / 30 = 22.75, so 23m; internal/dispatch/api 952.9 s (run 44604816847, job
+# 135845995524), 952.9 / 30 = 31.76, so 32m; and internal/dispatch/docs 1,608.5 s (run
+# 44604887499, job 135864950192), 1,608.5 / 30 = 53.62, so 54m. Each figure is read from that
 # job's own `go test -json` artifact. envoy-go-race-api's step runs its package through
 # database-skips.sh (main's #4456), which takes that -timeout as its --timeout (RACE_API_SCRIPT).
 ENVOY_RACE_LANE = (
@@ -1601,7 +1601,7 @@ ENVOY_RACE_LANE = (
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
                     RacePackage("natscred"), RacePackage("internal/broker/natscallout"))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "32m", (RacePackage("internal/dispatch/api"),)),
-    RaceJob("envoy-go-race-docs", "Race-test the document service", "56m", (RacePackage("internal/dispatch/docs"),)),
+    RaceJob("envoy-go-race-docs", "Race-test the document service", "54m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
 
@@ -1683,10 +1683,11 @@ DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
 DATABASE_SKIPS_PATTERN = "|".join(
     f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
     if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/"))
-# The count step's --timeout, by R6 from the pair at 31649808: cmd/broker, the step's slowest
-# package on the slower run, 210.3 s (run 44544557129, job 135652201404), which the step's log
-# prints, and 210.3 / 30 = 7.01, so 8m (the comment on the step in ci-job-envoy-go.yaml).
-UNIT_TEST_TIMEOUT = "8m"
+# The count step's --timeout, by R6 from the pair at ae055610: cmd/broker, the step's slowest
+# package on the slower run, 256.558 s (run 44604887499, job 135864942539), which the step's own
+# stream (DATABASE_SKIPS_STREAM, below) holds, and 256.558 / 30 = 8.55, so 9m (the comment on the
+# step in ci-job-envoy-go.yaml).
+UNIT_TEST_TIMEOUT = "9m"
 # Its --keep copies that run's `go test -json` stream to broker.json under
 # $RUNNER_TEMP/go-test-json, which envoy-go's upload step, after it, uploads with the unit step's
 # streams: the step's go test is one of envoy-go's, so it writes its stream as a job artifact as
@@ -2139,9 +2140,9 @@ def race_impossible_tests(root, packages=None) -> dict:
 
 # The race-impossible call's -timeout: the one place it is written, so the call this module
 # derives and check-ci-filters.test.sh's expected text of that call cannot disagree (the test
-# reads it from here). By R6 from the pair at 31649808: internal/dispatch/docs, the call's
-# slowest package on the slower run, 224.5 s (run 44544557129, job 135652201404), and
-# 224.5 / 30 = 7.48, so 8m; the table in the comment on the envoy-go job holds every call's
+# reads it from here). By R6 from the pair at ae055610: internal/dispatch/docs, the call's
+# slowest package on the slower run, 223.7 s (run 44604816847, job 135845995806), and
+# 223.7 / 30 = 7.46, so 8m; the table in the comment on the envoy-go job holds every call's
 # reading (dispatch://INFRA-1075).
 RACE_IMPOSSIBLE_TIMEOUT = "8m"
 
@@ -2269,11 +2270,11 @@ class AloneStep(NamedTuple):
 # rows read every non-test file of packages/envoy (MODULE_SOURCES), which envoy-go-checks' filter
 # covers already (packages/envoy/**), as envoy_go_race_api's, the closure of the API's race build,
 # does not; and that job is off envoy-go's critical path, as envoy-go-race-api is.
-# Each step's -timeout is by R6 from the pair at 31649808, the smallest whole minute at which its
+# Each step's -timeout is by R6 from the pair at ae055610, the smallest whole minute at which its
 # slowest package on the slower run takes at most half of it: envoy-go-race's is
-# internal/broker/natscallout, 16.9 s (run 44544557129, job 135652198938), 16.9 / 30 = 0.56, so
-# 1m, and envoy-go-checks' is internal/dispatch/api, 57.5 s (run 44544557129, job 135652199715),
-# 57.5 / 30 = 1.92, so 2m.
+# internal/broker/natscallout, 17.0 s (run 44604816847, job 135845994792), 17.0 / 30 = 0.57, so
+# 1m, and envoy-go-checks' is internal/dispatch/api, 54.3 s (run 44604887499, job 135864946828),
+# 54.3 / 30 = 1.81, so 2m.
 ALONE_STEP = "Test the wall-clock measurements alone"
 ALONE_STEPS = (
     AloneStep("envoy-go-race", "envoy-go-race", "alone.json", "1m"),
@@ -2362,10 +2363,10 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
 # and 65.6 s in that pair.
 #
-# -timeout 19m, by R6 from the pair at 31649808 (the table on this job): this call's
-# slowest package on the slower run is cmd/agent-secrets, 540.143 s (run 44544557129,
-# job 135652201404), and 540.143 / 30 = 18.005, so 19m. The limit leaves 649.7 s above
-# internal/dispatch/pmdoc's 490.3 s on that run, over the 60 s of pmdoc's
+# -timeout 19m, by R6 from the pair at ae055610 (the table on this job): this call's
+# slowest package on the slower run is cmd/agent-secrets, 541.0 s (run 44604816847,
+# job 135845995806), and 541.0 / 30 = 18.03, so 19m. The limit leaves 663.2 s above
+# internal/dispatch/pmdoc's 476.8 s on that run, over the 60 s of pmdoc's
 # perCallReportMargin, which is the floor a package that reads the test binary's
 # deadline sets for itself.
 lead="{UNIT_TEST_LEAD_TEXT}"
@@ -2408,10 +2409,10 @@ unit=$!
 # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
 # //go:build !race and raceEnabled, less the tests that run alone, so a test added to
 # either and missing here fails the ci-filters job naming this step.
-# -timeout 8m, by R6 from the pair at 31649808
+# -timeout 8m, by R6 from the pair at ae055610
 # (the table on this job): this call's slowest package on the slower run is
-# internal/dispatch/docs, 224.5 s (run 44544557129, job 135652201404), and
-# 224.5 / 30 = 7.48, so 8m. The limit leaves 255.5 s above that time, over the 30 s
+# internal/dispatch/docs, 223.7 s (run 44604816847, job 135845995806), and
+# 223.7 / 30 = 7.46, so 8m. The limit leaves 256.3 s above that time, over the 30 s
 # of the documents package's roomWaitMargin. A run that missed the Go build cache on
 # x64 has read 537.3 s there (run 44097184245), more than the 8m.
 #
@@ -2441,9 +2442,9 @@ impossible=$!
 # and 4m was too small: the call measured 159.7 s and 183.2 s on two runs and then
 # ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
 # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
-# 42856652273). By R6 from the pair at 31649808 (the table on this job): this call's
-# one package on the slower run is internal/pgmigrate, 287.0 s (run 44544557129, job
-# 135652201404), and 287.0 / 30 = 9.57, so 10m. No floor stands above that rule
+# 42856652273). By R6 from the pair at ae055610 (the table on this job): this call's
+# one package on the slower run is internal/pgmigrate, 285.7 s (run 44604816847, job
+# 135845995806), and 285.7 / 30 = 9.52, so 10m. No floor stands above that rule
 # here: no test of internal/pgmigrate reads the test binary's deadline, so it declares
 # no margin of its own the way the documents package's roomWaitMargin (30 s) and
 # pmdoc's perCallReportMargin (60 s) are theirs.
@@ -2453,10 +2454,10 @@ pgmigrate=$!
 # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
 # its own tests'. It is on the call rather than in the step's env:, which would reach
 # every call; the calls that name no server of their own run against 5432. -timeout
-# 2m, by R6 from the pair at 31649808 (the table on this job): this call's one package
-# on the slower run is internal/dispatch/routes, 58.7 s (run 44544557129, job
-# 135652201404), and 58.7 / 30 = 1.96, so 2m.
-DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 2m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+# 3m, by R6 from the pair at ae055610 (the table on this job): this call's one package
+# on the slower run is internal/dispatch/routes, 60.7 s (run 44604816847, job
+# 135845995806), and 60.7 / 30 = 2.02, so 3m.
+DISPATCH_TEST_DATABASE_URL={ROUTES_DSN} go test -json -count=1 -timeout 3m ./{ROUTES_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
 routes=$!
 # internal/dispatch/events, on the fifth Postgres service, for the reason the routes
 # call gives: its horizon tests wait for the event log's safe horizon, which any
@@ -2464,10 +2465,10 @@ routes=$!
 # of them failed at its one-minute give-up (run 43596122521, job 132450917326). Its
 # own tests hold transaction ids on purpose, so it shares no other call's service:
 # 5436 is named on this call and nowhere else, and the package list above leaves the
-# package out (dispatch://INFRA-1075). -timeout 2m, by R6 from the pair at 31649808
+# package out (dispatch://INFRA-1075). -timeout 2m, by R6 from the pair at ae055610
 # (the table on this job): this call's one package on the slower run is
-# internal/dispatch/events, 34.2 s (run 44544557129, job 135652201404), and
-# 34.2 / 30 = 1.14, so 2m.
+# internal/dispatch/events, 37.2 s (run 44604816847, job 135845995806), and
+# 37.2 / 30 = 1.24, so 2m.
 DISPATCH_TEST_DATABASE_URL={EVENTS_DSN} go test -json -count=1 -timeout 2m ./{EVENTS_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/events.json" 2> "$RUNNER_TEMP/go-test-logs/events.log" &
 events=$!
 # The one untagged test of cmd/dispatch that reads a live event feed, on the third
@@ -2477,10 +2478,10 @@ events=$!
 # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
 # has been blown by a sibling's clone before - so 5434 is named on this call and
 # nowhere else. The package list above skips this test by name, which is unique in the
-# module (dispatch://INFRA-1075). -timeout 3m, by R6 from the pair at 31649808 (the
+# module (dispatch://INFRA-1075). -timeout 3m, by R6 from the pair at ae055610 (the
 # table on this job): this call's one package on the slower run is cmd/dispatch,
-# 61.3 s (run 44544557129, job 135652201404), and 61.3 / 30 = 2.04, so 3m. The limit
-# leaves 118.7 s above that time, over the 30 s of horizontest.Drain that the test's
+# 61.7 s (run 44604816847, job 135845995806), and 61.7 / 30 = 2.06, so 3m. The limit
+# leaves 118.3 s above that time, over the 30 s of horizontest.Drain that the test's
 # wait for its event feed leaves of the deadline.
 DISPATCH_TEST_DATABASE_URL={SHUTDOWN_DSN} go test -json -count=1 -timeout 3m -run '{SHUTDOWN_PATTERN}' ./{SHUTDOWN_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
 shutdown=$!
@@ -2511,10 +2512,10 @@ shutdown=$!
 # its own and runs before the command it feeds: under bash -e it carries the script's
 # exit status, so an empty or refused list fails the step instead of running -run "",
 # which matches every test. -timeout 1m on each command, by R6 from the pair at
-# 31649808 (the table on this job): on the slower run of each, internal/testnats took
-# 3.8 s, internal/bus 19.9 s and internal/broker/natscallout 5.3 s (run 44544557129,
-# job 135652201404), and 3.8 / 30 = 0.13, 19.9 / 30 = 0.66 and 5.3 / 30 = 0.18, so 1m
-# each, the smallest whole minute there is.
+# ae055610 (the table on this job): on the slower run of each, internal/testnats took
+# 4.6 s and internal/broker/natscallout 4.5 s (run 44604816847, job 135845995806) and
+# internal/bus 21.5 s (run 44604887499, job 135864942539), and 4.6 / 30 = 0.15,
+# 4.5 / 30 = 0.15 and 21.5 / 30 = 0.72, so 1m each, the smallest whole minute there is.
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 callout=$(../../{TAGGED_TESTS} natslive ./internal/broker/natscallout)
@@ -2523,9 +2524,9 @@ callout=$(../../{TAGGED_TESTS} natslive ./internal/broker/natscallout)
   go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/broker/natscallout/; }} > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
 natslive=$!
 # The integration suite, which runs a real NATS server in the test process.
-# -timeout 1m, by R6 from the pair at 31649808 (the table on this job): this call's
-# one package on the slower run is internal/integration, 8.0 s (run 44544557129, job
-# 135652201404), and 8.0 / 30 = 0.27, so 1m, the smallest whole minute there is.
+# -timeout 1m, by R6 from the pair at ae055610 (the table on this job): this call's
+# one package on the slower run is internal/integration, 2.8 s (run 44604816847, job
+# 135845995806), and 2.8 / 30 = 0.09, so 1m, the smallest whole minute there is.
 go test -json -count=1 -timeout 1m ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
 integration=$!
 # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
@@ -3928,7 +3929,7 @@ GATES = [
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 56m ./internal/dispatch/docs/", {"race": True}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 54m ./internal/dispatch/docs/", {"race": True}),
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
@@ -3940,7 +3941,7 @@ GATES = [
     # claim different steps and do not collide.
     gate("envoy_go_race_docs", "envoy-go-docs-finalizers", runs=[ceiling_run("envoy-go-docs-finalizers")], exact=[
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 30m ./internal/dispatch/docs/", {}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 27m ./internal/dispatch/docs/", {}),
         ]),
     ], reads=ceiling_reads("envoy-go-docs-finalizers") + setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")
        + service_settings("envoy-go-docs-finalizers")),

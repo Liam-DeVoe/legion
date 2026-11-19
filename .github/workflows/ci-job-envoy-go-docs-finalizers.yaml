@@ -32,17 +32,17 @@ env:
 jobs:
   envoy-go-docs-finalizers:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
-    # the dump that names it. Both numbers come from one measurement pair alone, runs 44544482617
-    # and 44544557129 at 31649808 (dispatch://INFRA-1075, check 6224bb0e), by this job's own rule:
+    # The step's -timeout 27m must fire before the runner cancels the job, so a hung test prints
+    # the dump that names it. Both numbers come from one measurement pair alone, runs 44604816847
+    # and 44604887499 at ae055610 (dispatch://INFRA-1075, check 6224bb0e), by this job's own rule:
     # the step's deadline is the smallest whole minute at which the slower run's package time is
     # at most 60 % of it, and the job's bound is six minutes above that. The package's `ok` line
-    # read 1,049.1 s in run 44544482617 (job 135631501061), whose job took 1,103 s, and 902.5 s in
-    # run 44544557129 (job 135652199298); 1,049.1 / 36 = 29.14, so 30m (1,049.1 s is 58.3 % of
-    # 30m and would be 60.3 % of 29m), and 30 + 6 = 36. Measure again before changing either: a
+    # read 959.1 s in run 44604816847 (job 135845996176), whose job took 1,011 s, and 950.5 s in
+    # run 44604887499 (job 135864946557); 959.1 / 36 = 26.64, so 27m (959.1 s is 59.2 % of 27m
+    # and would be 61.5 % of 26m), and 27 + 6 = 33. Measure again before changing either: a
     # package that has grown past 60 % of its deadline is a deadline to raise, not a flake to
     # re-run.
-    timeout-minutes: 36
+    timeout-minutes: 33
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -101,7 +101,7 @@ jobs:
       # and the count of services the tests left alive is the half of this job that no detector
       # of Go's reports.
       - name: Test the document service under the cleanup detector
-        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 30m ./internal/dispatch/docs/
+        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 27m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

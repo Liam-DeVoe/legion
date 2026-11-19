@@ -32,13 +32,13 @@ env:
 jobs:
   envoy-go-race-api:
     runs-on: ubuntu-24.04-arm
-    # R6 sizes both numbers from one measurement pair alone, runs 44544482617 and 44544557129 at
-    # 31649808 (dispatch://INFRA-1075, check 6224bb0e). The step's --timeout is the smallest whole
+    # R6 sizes both numbers from one measurement pair alone, runs 44604816847 and 44604887499 at
+    # ae055610 (dispatch://INFRA-1075, check 6224bb0e). The step's --timeout is the smallest whole
     # minute at which its slowest package, on the slower run of the pair, takes at most half of
-    # it: internal/dispatch/api, this job's one package, 942.6 s (run 44544482617, job
-    # 135631500555), 942.6 / 30 = 31.42, so 32m; database-skips.sh (main's #4456) passes it to go
-    # test as -timeout. The job's bound is its larger time in the pair, 1,086 s (run 44544482617,
-    # job 135631500555), 18.10 minutes, plus that -timeout plus 6: 18.10 + 32 + 6 = 56.10, so 57.
+    # it: internal/dispatch/api, this job's one package, 952.9 s (run 44604816847, job
+    # 135845995524), 952.9 / 30 = 31.76, so 32m; database-skips.sh (main's #4456) passes it to go
+    # test as -timeout. The job's bound is its larger time in the pair, 1,098 s (run 44604816847,
+    # job 135845995524), 18.30 minutes, plus that -timeout plus 6: 18.30 + 32 + 6 = 56.30, so 57.
     # The limit must fire before the runner cancels the job, so a hung test prints the dump that
     # names it.
     timeout-minutes: 57
