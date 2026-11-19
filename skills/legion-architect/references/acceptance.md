@@ -174,8 +174,9 @@ Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 (`gh pr view <n> --json mergeable,mergeStateStatus`). From `testing`, `reviewing`, `accepting`,
 `retro` and `merging` alike the daemon acts on it itself: it moves the issue back to
 `implementing`, starts the implementer, and tells you with a `checks-red` notice naming the phase
-the issue was taken out of (`phase`), the base the head conflicts with (`conflicts_with`) and the
-head (`head`). The notice is `low`, so you read it at your next turn. You start nothing for it.
+the issue was taken out of (`phase`), the base the head conflicts with (`conflicts_with`, absent
+where the daemon has not recorded the pull request's base) and the head (`head`). The notice is
+`low`, so you read it at your next turn. You start nothing for it.
 
 The daemon then runs the phases from `implementing`: the implementer merges the bookmark forward
 with the destination and pushes it (the procedure in

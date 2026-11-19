@@ -101,12 +101,17 @@
 // of their declaration, such as summary or catch_up.kept.decisions[1].answer, for the words object
 // of a payload. A task names no words object: Render draws its blocks itself.
 //
-// Render draws the blocks of a text together. The tag of each block is the first of its name,
-// name-1, name-2 and on that the words of no block of the text hold as an opening or a closing
-// tag (<tag or </tag), and that no earlier block of the text took. So no block's words can open
-// or close the tag of any block of the text, and no two blocks share a tag. Block draws one block,
-// as the one block of its text. The opening tag carries these attributes, in this order, each
-// only where it is set:
+// Render draws the blocks of a text together, after the rest of the text. The tag of each block
+// is the first of its name, name-1, name-2 and on that neither the lines before the blocks (the
+// lead, the fields and the kept sentences) nor the words of any block of the text hold as an
+// opening or a closing tag (<tag or </tag), and that no earlier block of the text took. A field
+// can hold another author's words too, such as an issue's title or a check's name, so nothing in
+// the text can open or close the tag of a block but that block's own lines, and no two blocks
+// share a tag. Block draws one block, as the whole of its text. InFront puts the notes a start
+// puts before a task in front of that task's text, and draws the task's blocks again under the
+// tags the same rule gives them against those notes too, since a note can hold words that are not
+// the daemon's. The opening tag carries these attributes, in this order, each only where it is
+// set:
 //
 //   - by: the author, where the fields of the text do not name the author;
 //   - at: the time of the act, where the fields of the text do not give the time;

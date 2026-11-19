@@ -883,11 +883,16 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 		if !owed {
 			continue
 		}
-		// A rule answered true, so this run has a claim, and its record holds the last step and,
-		// for a background stall, the moment of the report the rule judged it by.
+		// A rule answered true, so this run has a claim. Its record holds the last step where the
+		// silence rule judged it (SilentPhaseWorker reads a step past the bound), and, for a
+		// background stall, the moment of the report that rule judged it by; a background stall
+		// is judged by the report alone, so a claim whose agent the record holds no step of names
+		// no last step and no time quiet, rather than a step at year 1 and the 292 years since.
 		lastStep := run.Claim.Step.LastStep()
-		entry := record.SilentIssue{Issue: held.issue.Key, Role: held.role, LastStep: lastStep,
-			Silent: now.Sub(lastStep).Round(time.Minute).String()}
+		entry := record.SilentIssue{Issue: held.issue.Key, Role: held.role, LastStep: lastStep}
+		if !lastStep.IsZero() {
+			entry.Silent = now.Sub(lastStep).Round(time.Minute).String()
+		}
 		if background {
 			entry.BackgroundSince = run.Claim.ActivityAt
 		}

@@ -481,11 +481,12 @@ type DecisionMark struct {
 
 // ChecksRedRecord is the notice that the head conflicts with its base and the daemon moved the
 // issue (workflow's NoticeFor for a conflict): the phase it left, the base, the head and the pull
-// request.
+// request. The base is absent where the daemon has not recorded it, as for a pull request recorded
+// before the daemon kept the base (record.PullRequest.Base).
 type ChecksRedRecord struct {
 	NoticeHead
 	Phase         phase.Phase `json:"phase,omitempty"`
-	ConflictsWith string      `json:"conflicts_with"`
+	ConflictsWith string      `json:"conflicts_with,omitempty"`
 	Head          string      `json:"head"`
 	PullRequest   string      `json:"pull_request"`
 }
@@ -562,7 +563,10 @@ type VolumeNearFullRecord struct {
 // (VolumeSize) with the time they were measured, whether a cut ended the walk early and the
 // targets it did not measure (VolumeMissing); the faults the trimmer recovered from; and whether
 // the trimmer switched itself off. Each Omitted count is how many entries the launcher's bound
-// left out of a list. The keys are the shape main's release keeps in its outbox rows.
+// left out of a list. The keys are the shape main's release keeps in its outbox rows. SizesAt is
+// left out where it is zero, since then no walk measured the sizes, as in the report of a trimmer
+// that switched itself off: a row main's release queued, which writes the zero time, reads back as
+// zero all the same.
 type VolumeSweep struct {
 	PodUID              string          `json:"podUid"`
 	Trimmer             string          `json:"trimmer"`
@@ -576,7 +580,7 @@ type VolumeSweep struct {
 	RefusedReadsOmitted int             `json:"refusedReadsOmitted,omitempty"`
 	Sizes               []VolumeSize    `json:"sizes"`
 	SizesOmitted        int             `json:"sizesOmitted,omitempty"`
-	SizesAt             time.Time       `json:"sizesAt"`
+	SizesAt             time.Time       `json:"sizesAt,omitzero"`
 	SizesPartial        bool            `json:"sizesPartial,omitempty"`
 	SizesMissing        []VolumeMissing `json:"sizesMissing,omitempty"`
 	SizesMissingOmitted int             `json:"sizesMissingOmitted,omitempty"`

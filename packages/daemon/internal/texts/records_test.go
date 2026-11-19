@@ -230,8 +230,9 @@ func TestEveryNoticeAndRoleMessageRecordMarshalsAnObject(t *testing.T) {
 // A notice stays one record.Notice on the wire (the plan's decision 4), so a key has one Go type
 // in every notice record that declares it, and a key of main's record.Notice keeps main's JSON
 // shape: the same type of value, the same omitempty, and, for a nested object, each of main's
-// members with its shape, beside new members that are all omitempty. The keys that main's notice
-// lacks are logged, which is the list record.Notice gains.
+// members with its shape, beside new members that are all omitempty. The one change of omitempty
+// allowed is a member of zeroMeansNone gaining it. The keys that main's notice lacks are logged,
+// which is the list record.Notice gains.
 func TestEachNoticeKeyHasOneShape(t *testing.T) {
 	onMain := map[string]jsonField{}
 	for _, field := range jsonFields(reflect.TypeFor[mainNotice]()) {
@@ -270,7 +271,7 @@ func TestEachNoticeKeyHasOneShape(t *testing.T) {
 		for _, kind := range key.kinds {
 			entry, _ := Lookup(kind)
 			for _, field := range jsonFields(reflect.TypeOf(entry.Record)) {
-				if field.name == name && field.optional != was.optional {
+				if field.name == name && field.optional != was.optional && !mayLeaveOutItsZero(name, field.optional, shapeOf(was.typ)) {
 					t.Errorf("%s declares %s with omitempty %t, and main's notice with %t", kind, name, field.optional, was.optional)
 				}
 			}
@@ -279,6 +280,30 @@ func TestEachNoticeKeyHasOneShape(t *testing.T) {
 			t.Error(problem)
 		}
 	}
+}
+
+// zeroMeansNone is each member of main's record.Notice, by its path, whose zero value says that
+// there is nothing to state, and which a record now leaves out when it is zero (omitzero or
+// omitempty) where main wrote it. Decision 4 keeps the one record.Notice shape because a notice
+// comes back whole: the listener echoes it in a role-lane exception, and the daemon decodes that
+// into record.Notice with unknown fields refused (internal/daemon/notice_exceptions.go,
+// DisallowUnknownFields). A key left out decodes to the zero value, which is what main wrote for
+// it, so every reader deployed, main's daemon among them, reads the same value either way. Only a
+// time, or a duration or the text of one, may be listed (mayLeaveOutItsZero), and the list names
+// each by its path, so a member added to it is an edit that a reviewer sees.
+var zeroMeansNone = map[string]bool{
+	// The last step of a worker whose claim's record holds no step of its agent, which only a
+	// background stall, judged by its report, names (admit's silentWorkers), and the time quiet
+	// since it.
+	"silent[].lastStep": true,
+	"silent[].silent":   true,
+}
+
+// mayLeaveOutItsZero says whether a member of main's notice at path, of main's shape was, may be
+// optional (omitempty or omitzero) where main's was not: a member of zeroMeansNone that is a time,
+// a duration or the text of one, gaining omitempty and never losing it.
+func mayLeaveOutItsZero(path string, optional bool, was jsonShape) bool {
+	return optional && zeroMeansNone[path] && (was.kind == "time" || was.kind == "string" || was.kind == reflect.Int64.String())
 }
 
 func kindList(kinds []Kind) string {
@@ -671,7 +696,8 @@ func shapeOf(typ reflect.Type) jsonShape {
 }
 
 // keepsShape lists how got fails to keep main's shape at path: another kind of value, a member of
-// main's gone or with another omitempty, or a new member that is not omitempty.
+// main's gone or with another omitempty (bar a member of zeroMeansNone gaining it), or a new
+// member that is not omitempty.
 func keepsShape(got, main jsonShape, path string) []string {
 	if got.kind != main.kind {
 		return []string{fmt.Sprintf("%s is a %s in the records, and a %s in main's notice", path, got.kind, main.kind)}
@@ -688,7 +714,7 @@ func keepsShape(got, main jsonShape, path string) []string {
 			case !ok:
 				problems = append(problems, fmt.Sprintf("%s.%s, a key of main's notice, is gone", path, name))
 				continue
-			case is.optional != was.optional:
+			case is.optional != was.optional && !mayLeaveOutItsZero(path+"."+name, is.optional, was.shape):
 				problems = append(problems, fmt.Sprintf("%s.%s has omitempty %t, and main's %t", path, name, is.optional, was.optional))
 			}
 			problems = append(problems, keepsShape(is.shape, was.shape, path+"."+name)...)

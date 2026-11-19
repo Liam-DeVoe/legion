@@ -71,12 +71,16 @@ type HeldIssue struct {
 
 // SilentIssue is one issue whose phase worker nothing will prompt (record.SilentIssue is this
 // type): the issue, the role, when its agent last stepped, how long it has been quiet, and, for a
-// worker that waits on its own background work, the moment of that report.
+// worker that waits on its own background work, the moment of that report. The last step and the
+// time quiet are left out where the claim's record holds no step of its agent, which only a
+// background stall, judged by its report, can name (admit's silentWorkers): a zero time stated
+// would be a step at year 1. A row an older daemon queued, which wrote them always, reads back the
+// same.
 type SilentIssue struct {
 	Issue           string     `json:"issue"`
 	Role            claim.Role `json:"role"`
-	LastStep        time.Time  `json:"lastStep"`
-	Silent          string     `json:"silent"`
+	LastStep        time.Time  `json:"lastStep,omitzero"`
+	Silent          string     `json:"silent,omitempty"`
 	BackgroundSince time.Time  `json:"backgroundSince,omitzero"`
 }
 

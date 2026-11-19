@@ -71,7 +71,7 @@ in `blocked` and in `held` at once: `blocked` is what readers use for a link or 
 wait, and `held` says of every held issue what it waits for. Name them in the day's report and
 take nothing for them.
 
-`silent`, when present, is `[{issue, role, lastStep, silent, backgroundSince?}, …]`: every issue whose phase worker
+`silent`, when present, is `[{issue, role, lastStep?, silent?, backgroundSince?}, …]`: every issue whose phase worker
 nothing will prompt, with the role whose claim is silent, the moment that claim's agent last
 stepped, and how long it has been quiet.
 Such a worker's process is up and between turns, it holds no task, and its last recorded step is
@@ -82,6 +82,7 @@ architect the same fact in a `worker-silent` notice.
 An entry with `backgroundSince` is a worker whose own background work has stood since that moment,
 past `worker_background_hours`, which the daemon does not prompt; its architect got a `worker-background-stalled` notice.
 Name it in the day's report with how long its background work has stood.
+Such an entry has no `lastStep` and no `silent` where the daemon recorded no step of that worker's agent.
 Most entries here are ones that architect has been told of, and an entry is not proof of it: this
 list is derived at the tick from the record, where the notice is written by the sweep that runs
 each minute, so an issue that went quiet since the last sweep is named here before its architect

@@ -2,6 +2,7 @@ package texts
 
 import (
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -156,13 +157,14 @@ func Carry(text string, limit int, more bool) Words {
 }
 
 // Block draws w in a block of its own, the block that carries another author's words after a
-// text's fields (dispatch://INFRA-3686/spec R1), as the one block of its text: its tag is the one
-// blockTags gives such a text. The opening tag carries the attributes by, at, field, rest and
-// more, in that order, each only where it is set. Then come a new line, the words exactly as
-// given, a new line and the closing tag. Render draws the blocks of a text with several together
-// (drawBlocks), since the tag of each is chosen against the words of them all.
+// text's fields (dispatch://INFRA-3686/spec R1), as the whole of its text: its tag is the one
+// blockTags gives a block with nothing before it and no other block beside it. The opening tag
+// carries the attributes by, at, field, rest and more, in that order, each only where it is set.
+// Then come a new line, the words exactly as given, a new line and the closing tag. Render draws
+// the blocks of a text together (drawBlocks), since the tag of each is chosen against the lines
+// before them and the words of them all.
 func Block(name string, w Words) string {
-	return drawBlock(blockTags([]block{{name: name, words: w}})[0], w)
+	return drawBlock(blockTags(nil, []block{{name: name, words: w}})[0], w)
 }
 
 // block is one block of a text: the name of the field that holds the words, and the words.
@@ -171,14 +173,128 @@ type block struct {
 	words Words
 }
 
-// drawBlocks draws the blocks of one text, in their order, each under the tag blockTags gives it.
-func drawBlocks(blocks []block) []string {
-	tags := blockTags(blocks)
+// drawBlocks draws the blocks of one text, in their order, each under the tag blockTags gives it
+// against before, the lines of the text ahead of the blocks.
+func drawBlocks(before []string, blocks []block) []string {
+	tags := blockTags(before, blocks)
 	drawn := make([]string, len(blocks))
 	for i, b := range blocks {
 		drawn[i] = drawBlock(tags[i], b.words)
 	}
 	return drawn
+}
+
+// InFront is parts and then text, each joined to the next by a blank line: the notes a start puts
+// in front of a task (supervise's Delivery.message), and the task. A part can hold words that are
+// not the daemon's: a process's cause quotes the runtime's, and those can carry a tail of the
+// role's own log, a task's own lines among it. So text's blocks (drawnBlocks) are drawn again,
+// each with its attributes and its words as they were, under the tag blockTags gives it against
+// the whole of what is sent: the parts, the lines of text outside its blocks and the words of every
+// block. Nothing in front of a block then opens or closes its tag, as nothing does in the task
+// alone (Render). Each block keeps the tag Render gave it wherever the parts hold none of those
+// tags, and the parts and a text with no block are joined as they are.
+func InFront(parts []string, text string) string {
+	if len(parts) == 0 {
+		return text
+	}
+	front := strings.Join(parts, "\n\n") + "\n\n"
+	found := drawnBlocks(text)
+	if len(found) == 0 {
+		return front + text
+	}
+	head, tail := text[:found[0].start], text[found[len(found)-1].end:]
+	before := make([]string, 0, len(parts)+2)
+	before = append(append(before, parts...), head, tail)
+	blocks := make([]block, len(found))
+	for i, d := range found {
+		blocks[i] = block{name: d.name(), words: Words{Text: d.words}}
+	}
+	tags := blockTags(before, blocks)
+	var b strings.Builder
+	b.Grow(len(front) + len(text) + 8*len(found))
+	b.WriteString(front)
+	b.WriteString(head)
+	for i, d := range found {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		// The block as drawBlock draws it, its opening tag's attributes as that tag wrote them.
+		b.WriteString("<")
+		b.WriteString(tags[i])
+		b.WriteString(d.attributes)
+		b.WriteString(">\n")
+		b.WriteString(d.words)
+		b.WriteString("\n</")
+		b.WriteString(tags[i])
+		b.WriteString(">")
+	}
+	b.WriteString(tail)
+	return b.String()
+}
+
+// drawnOpening is the opening tag of a block as drawBlock draws it, a line of its own: the tag,
+// then each attribute as writeAttribute writes it, whose value holds no double quote.
+var drawnOpening = regexp.MustCompile(`^<([A-Za-z_][A-Za-z0-9_]*(?:-[1-9][0-9]*)?)((?: [a-z]+="[^"]*")*)>$`)
+
+// drawnBlock is one block of a drawn text: where its opening line starts and where its closing
+// tag ends, its tag, the attributes of its opening tag as written, and its words.
+type drawnBlock struct {
+	start, end int
+	tag        string
+	attributes string
+	words      string
+}
+
+// name is the name of the field whose words the block holds: its tag without the -n that a step
+// past held tags added (blockTags).
+func (d drawnBlock) name() string {
+	if at := strings.LastIndexByte(d.tag, '-'); at >= 0 {
+		return d.tag[:at]
+	}
+	return d.tag
+}
+
+// drawnBlocks is the blocks of text, a text Render drew, in their order. No line of a drawn text
+// ahead of its blocks starts with <, since a field is a TOON line and the lead and the kept
+// sentences are the daemon's own, so its first such line opens its first block. A block closes on
+// the first line after its opening that is its closing tag, since no words of a block hold that
+// tag (blockTags), and the next block opens on the line after. The run ends at the first line that
+// opens no block. It is empty where the first line that starts with < opens none, or opens a block
+// that never closes, as in a text Render did not draw, such as an operator's task, which InFront
+// then joins as it is. One pass over text.
+func drawnBlocks(text string) []drawnBlock {
+	at := 0
+	if !strings.HasPrefix(text, "<") {
+		line := strings.Index(text, "\n<")
+		if line < 0 {
+			return nil
+		}
+		at = line + 1
+	}
+	var blocks []drawnBlock
+	for at < len(text) && text[at] == '<' {
+		opened := strings.IndexByte(text[at:], '\n')
+		if opened < 0 {
+			break
+		}
+		match := drawnOpening.FindStringSubmatch(text[at : at+opened])
+		if match == nil {
+			break
+		}
+		wordsAt := at + opened + 1
+		closing := "\n</" + match[1] + ">"
+		closed := strings.Index(text[wordsAt:], closing)
+		if closed < 0 {
+			break
+		}
+		end := wordsAt + closed + len(closing)
+		if end < len(text) && text[end] != '\n' {
+			break
+		}
+		blocks = append(blocks, drawnBlock{start: at, end: end, tag: match[1], attributes: match[2], words: text[wordsAt : wordsAt+closed]})
+		at = end + 1
+	}
+	return blocks
 }
 
 // drawBlock draws w under tag.
@@ -215,14 +331,20 @@ func (w Words) empty() bool {
 	return w.Text == "" && w.Rest == 0 && !w.More
 }
 
-// blockTags is the tag of each of blocks, the blocks of one text in their order: the first of the
-// block's name, name-1, name-2 and on that the words of no block of the text hold as <tag or
-// </tag, and that no earlier block took. So no block's words open or close the tag of any block of
-// the text, its own or another's, and no two blocks share a tag: a reader that pairs each opening
-// tag with the next closing tag of its name reads each block's words as its own. The test is a
-// plain substring test, so words that hold <name-1 or <names also step past name.
-func blockTags(blocks []block) []string {
+// blockTags is the tag of each of blocks, the blocks of one text in their order, after the lines
+// before: the first of the block's name, name-1, name-2 and on that neither a line before the
+// blocks nor the words of any block of the text hold as <tag or </tag, and that no earlier block
+// took. The lines before are the whole text ahead of the first block, its lead, its fields and its
+// kept sentences, which can hold another author's words too: an issue's title, a check's name, an
+// option of an ask. So nothing in the text opens or closes the tag of a block but that block's own
+// lines, and no two blocks share a tag: a reader that pairs each opening tag with the next closing
+// tag of its name reads each block's words as its own. The test is a plain substring test, so
+// text that holds <name-1 or <names also steps past name.
+func blockTags(before []string, blocks []block) []string {
 	limit := len(blocks)
+	for _, line := range before {
+		limit += len(line)
+	}
 	for _, b := range blocks {
 		limit += len(b.words.Text)
 	}
@@ -232,7 +354,7 @@ func blockTags(blocks []block) []string {
 	for i, b := range blocks {
 		suffixes, read := held[b.name]
 		if !read {
-			suffixes = heldSuffixes(b.name, blocks, limit)
+			suffixes = heldSuffixes(b.name, before, blocks, limit)
 			held[b.name] = suffixes
 		}
 		for n := 0; ; n++ {
@@ -252,43 +374,52 @@ func blockTags(blocks []block) []string {
 	return tags
 }
 
-// heldSuffixes is each n up to limit such that the words of a block of blocks hold <tag or </tag,
-// where tag is name for n = 0 and name-n otherwise: 0 where they hold <name or </name at all, and,
-// after <name- or </name-, each number whose digits begin the digits there (<name-12 holds 1 and
-// 12). Nil where they hold none. One scan of the words, so a text is drawn in time linear in its
-// length: limit, the length of the words and the count of the blocks, bounds every tag the text
-// can need, since each held number and each block takes away at most one candidate.
-func heldSuffixes(name string, blocks []block, limit int) map[int]bool {
+// heldSuffixes is each n up to limit such that a line of before or the words of a block of blocks
+// hold <tag or </tag, where tag is name for n = 0 and name-n otherwise (holdSuffixes). Nil where
+// they hold none. One scan of the text, so a text is drawn in time linear in its length: limit,
+// the length of the lines, the length of the words and the count of the blocks, bounds every tag
+// the text can need, since each held number and each block takes away at most one candidate. A
+// line is scanned on its own, which finds what the joined text holds: a tag holds no new line.
+func heldSuffixes(name string, before []string, blocks []block, limit int) map[int]bool {
 	var held map[int]bool
+	for _, line := range before {
+		held = holdSuffixes(held, name, line, limit)
+	}
 	for _, b := range blocks {
-		text := b.words.Text
-		for {
-			at := strings.IndexByte(text, '<')
-			if at < 0 {
-				break
-			}
-			text = text[at+1:]
-			after, named := strings.CutPrefix(strings.TrimPrefix(text, "/"), name)
-			if !named {
-				continue
-			}
-			if held == nil {
-				held = map[int]bool{}
-			}
-			held[0] = true
-			digits, suffixed := strings.CutPrefix(after, "-")
-			if !suffixed || digits == "" || digits[0] < '1' || digits[0] > '9' {
-				continue
-			}
-			for n, j := 0, 0; j < len(digits) && digits[j] >= '0' && digits[j] <= '9'; j++ {
-				if n = n*10 + int(digits[j]-'0'); n > limit {
-					break
-				}
-				held[n] = true
-			}
-		}
+		held = holdSuffixes(held, name, b.words.Text, limit)
 	}
 	return held
+}
+
+// holdSuffixes adds to held each n up to limit that text holds as <tag or </tag: 0 where it holds
+// <name or </name at all, and, after <name- or </name-, each number whose digits begin the digits
+// there (<name-12 holds 1 and 12). It returns held, which stays nil while nothing is held.
+func holdSuffixes(held map[int]bool, name, text string, limit int) map[int]bool {
+	for {
+		at := strings.IndexByte(text, '<')
+		if at < 0 {
+			return held
+		}
+		text = text[at+1:]
+		after, named := strings.CutPrefix(strings.TrimPrefix(text, "/"), name)
+		if !named {
+			continue
+		}
+		if held == nil {
+			held = map[int]bool{}
+		}
+		held[0] = true
+		digits, suffixed := strings.CutPrefix(after, "-")
+		if !suffixed || digits == "" || digits[0] < '1' || digits[0] > '9' {
+			continue
+		}
+		for n, j := 0, 0; j < len(digits) && digits[j] >= '0' && digits[j] <= '9'; j++ {
+			if n = n*10 + int(digits[j]-'0'); n > limit {
+				break
+			}
+			held[n] = true
+		}
+	}
 }
 
 // writeAttribute writes one attribute of an opening tag. The value escapes the ampersand, the

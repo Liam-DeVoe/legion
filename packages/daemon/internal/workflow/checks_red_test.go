@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -406,6 +407,65 @@ func TestEveryConflictingReadDecidesAndTheMoveItselfStopsTheRepeat(t *testing.T)
 	}
 	if pass := implementerPass(t, pool); pass != 1 {
 		t.Fatalf("pass = %d, want the one return to implementing counted once", pass)
+	}
+}
+
+// A pull request recorded before the daemon kept its base (record.PullRequest.Base) conflicts as
+// any other does: a conflict is its head's, so a conflicting read sends the issue back to
+// implementing. The phase-ended message to the tester whose phase ended, the architect's
+// checks-red notice and the implementer's task name the head and the pull request, and no base:
+// the record holds none, so each leaves conflicts_with out rather than naming an empty base.
+func TestAConflictOnAPullRequestWithNoRecordedBaseSendsTheIssueBack(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
+		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
+		Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+	applyRefusingNothing(t, pool, mergingEngine(),
+		intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", Mergeable: record.MergeabilityConflicting})
+	if base := recordedPR(t, pool, "LEGION-208").Base; base != "" {
+		t.Fatalf("the pull request records the base %q; this test is of one that records none", base)
+	}
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after the conflicting read the issue is in %s, want implementing", got)
+	}
+
+	var payload []byte
+	if err := pool.QueryRow(context.Background(), "select payload from outbox where kind = $1 and issue = 'LEGION-208'",
+		string(record.OutboxKindPhaseEnded)).Scan(&payload); err != nil {
+		t.Fatalf("read the tester's phase-ended message: %v", err)
+	}
+	var ended record.PhaseEnded
+	if err := json.Unmarshal(payload, &ended); err != nil {
+		t.Fatalf("decode the phase-ended row %s: %v", payload, err)
+	}
+	if want := (record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Head: "head", PullRequest: "sjawhar/legion#42"}); ended != want {
+		t.Fatalf("the phase-ended row is %+v, want %+v", ended, want)
+	}
+	published, err := json.Marshal(ended.Record("LEGION-208"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(published), "conflicts_with") || !strings.Contains(string(published), `"head":"head"`) {
+		t.Fatalf("the phase-ended message is %s, want the head and no base", published)
+	}
+
+	red := checksRedNotice(t, pool)
+	if red.Phase != phase.Testing || red.ConflictsWith != "" || red.Head != "head" || red.PullRequest != "sjawhar/legion#42" {
+		t.Fatalf("the checks-red notice is %+v, want head head of sjawhar/legion#42 from testing and no base", red)
+	}
+	notice, err := json.Marshal(red)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(notice), "conflicts_with") {
+		t.Fatalf("the checks-red notice is %s, want no base", notice)
+	}
+
+	task := implementerTask(t, pool)
+	if !hasLines(task, "head: head", "pull_request: sjawhar/legion#42") || strings.Contains(task, "conflicts_with") {
+		t.Fatalf("the implementer's task is %q, want it to name the head and the pull request and no base", task)
 	}
 }
 

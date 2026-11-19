@@ -250,6 +250,10 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	// checks-red, review-stuck in each cause, status-reasserted, session-lost, session-store-fault.
 	b.notice(r, "conflict", arch, workflow.NoticeFor(issue.Key, workflow.TriggerConflict, phase.Reviewing, phase.Implementing, record.PhaseRow{}, &pr, "", now),
 		goldenWant("issue", issue.Key, "phase", phase.Reviewing, "conflicts_with", pr.Base, "head", head, "pull_request", ref))
+	// A conflict on a pull request recorded before the daemon kept the base names the head and no base.
+	unbased := record.PullRequest{Issue: issue.Key, Repo: r.repo, Number: 750 + r.n, HeadSHA: r.sha("notice/no-base/head")}
+	b.notice(r, "no-base", arch, workflow.NoticeFor(issue.Key, workflow.TriggerConflict, phase.Merging, phase.Implementing, record.PhaseRow{}, &unbased, "", now),
+		goldenWant("issue", issue.Key, "phase", phase.Merging, "head", unbased.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, unbased.Number)))
 	stuck := goldenStuckRequest(r)
 	stuckRef := texts.PullRequestRef(r.repo, stuck.Number)
 	topic := "notifications.role." + string(r.token(t, issue.Key, claim.RoleReviewer))
@@ -542,6 +546,16 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 			want["task_follows"] = "true"
 		}
 		b.published(r, texts.PhaseEnded, variant, role, issue, row.Record(issue), texts.UrgencyOf(texts.PhaseEnded, role, texts.Variant{}), want)
+	}
+
+	// phase-ended of a conflict on a pull request recorded before the daemon kept the base: the
+	// head and no base.
+	{
+		pr := record.PullRequest{Repo: r.repo, Number: 1150 + r.n, HeadSHA: r.sha("ended/no-base/head")}
+		row := queuedRow(b.t, issue, record.PhaseEnded{Role: claim.RoleMerger, From: phase.Merging, To: phase.Implementing,
+			ConflictsWith: pr.Base, Head: pr.HeadSHA, PullRequest: texts.PullRequestRef(pr.Repo, pr.Number)})
+		b.published(r, texts.PhaseEnded, "no-base", claim.RoleMerger, issue, row.Record(issue), texts.UrgencyOf(texts.PhaseEnded, claim.RoleMerger, texts.Variant{}),
+			goldenWant("issue", issue, "from", phase.Merging, "to", phase.Implementing, "head", pr.HeadSHA, "pull_request", texts.PullRequestRef(pr.Repo, pr.Number)))
 	}
 
 	// hook-prompt, as hooks.go's fireHook queues it, published as its text.

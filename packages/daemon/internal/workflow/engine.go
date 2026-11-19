@@ -2038,12 +2038,13 @@ func phaseMove(trigger TriggerKind, from phase.Phase, handoff record.PhaseRow, r
 
 // NoticeFor is what a transition of issue on trigger out of from into to tells the architect: that
 // from finished, with its worker's handoff, or, when the head started conflicting with its base
-// (TriggerConflict), the base, the head and the pull request pr, under the checks-red kind the
-// architect's prompt reads, since that is the daemon stopping the phase on something it read of
-// the head. Two moves tell it nothing (a nil record, which notice drops): its own sign-off, whose
-// only recipient would be the architect that just acted, and the merge that closes the issue,
-// whose close tells the architect above a child child-closed itself (leave) and closes the child's
-// own architect with its other claims, and suspends a root's architect with the rest of its tree.
+// (TriggerConflict), the base (none where pr's record holds no base), the head and the pull request
+// pr, under the checks-red kind the architect's prompt reads, since that is the daemon stopping the
+// phase on something it read of the head. Two moves tell it nothing (a nil record, which notice
+// drops): its own sign-off, whose only recipient would be the architect that just acted, and the
+// merge that closes the issue, whose close tells the architect above a child child-closed itself
+// (leave) and closes the child's own architect with its other claims, and suspends a root's
+// architect with the rest of its tree.
 // A third move names no role: the gate's opening, the one move out of admitted (Table), whose role
 // is the architect. A phase-finished names the worker whose phase ended, and admitted has none:
 // its role is an architect, the role that reads this notice.
@@ -2097,18 +2098,20 @@ func NoticeFor(issue string, trigger TriggerKind, from, to phase.Phase, handoff 
 // phaseEnded tells the role a conflicting-head transition out of from leaves with no phase that
 // its phase ended, which phase the issue is in now, and the conflict: the base the head of pr
 // conflicts with, that head and the pull request (record.PhaseEnded), on that role's own Envoy
-// topic. Only that move sends one: every other move out of a phase is the working role's own
-// completion or backward move, which that role made and so already knows of, and the approval and
-// the merge the daemon raises of its own leave a role that has just finished the work they report.
-// A CI result moves no issue (dispatch://INFRA-714 R1), so the trigger is a head that starts
-// conflicting with its base. The recipient is phase.RoleFor(from) whenever that is a role other
-// than the architect, read from the transition alone rather than from what the role had done: the
-// tester in testing, the reviewer in reviewing whether or not it completed its round, the merger
-// in merging, and the implementer in retro, which is also the role starting, told that its task for
-// the new phase follows. Accepting sends none — its role is the architect, which the conflict
-// notice tells (NoticeFor). Without the message nothing tells that role: no transition stops a
-// worker, and the daemon's next task for a role is delivered only once that role's turn ends, while
-// this message reaches its session at its next model turn and ends a wait.
+// topic. A pull request recorded before the daemon kept the base has none (record.PullRequest.Base),
+// so its message names the head and no base. Only that move sends one: every other move out of a
+// phase is the working role's own completion or backward move, which that role made and so already
+// knows of, and the approval and the merge the daemon raises of its own leave a role that has just
+// finished the work they report. A CI result moves no issue (dispatch://INFRA-714 R1), so the
+// trigger is a head that starts conflicting with its base. The recipient is phase.RoleFor(from)
+// whenever that is a role other than the architect, read from the transition alone rather than
+// from what the role had done: the tester in testing, the reviewer in reviewing whether or not it
+// completed its round, the merger in merging, and the implementer in retro, which is also the role
+// starting, told that its task for the new phase follows. Accepting sends none — its role is the
+// architect, which the conflict notice tells (NoticeFor). Without the message nothing tells that
+// role: no transition stops a worker, and the daemon's next task for a role is delivered only once
+// that role's turn ends, while this message reaches its session at its next model turn and ends a
+// wait.
 func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, pr *record.PullRequest) error {
 	ended := phase.RoleFor(from)
 	if trigger != TriggerConflict || ended == "" || ended == claim.RoleArchitect || pr == nil {

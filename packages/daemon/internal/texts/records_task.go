@@ -46,15 +46,15 @@ const (
 // A move back names the phase it came from (MovedBackFrom), and the words of the role that moved
 // it go in the reason block, by that role. A review's rejection names the head it reviewed, and
 // the review's body goes in the body block, by its author. A head that conflicts with its base
-// names the base (ConflictsWith) and the head. A retry names who retried (architect, operator,
-// or a todo written on the held issue), and the architect's own words go in the reason block. A
-// retry of a review round that nothing on its way ends names the round's cause (StuckRound, a
-// ReviewStuckRecord cause), its head, the head the reviewer approved where that is other code
-// (ReviewedHead), the review that ends it (EndsRound), and why the daemon set aside a review that
-// would otherwise have decided it (SetAside). A round GitHub will not merge from names, as its
-// review-stuck notice does, the merge state GitHub reports for the head, each check and each commit
-// status of that head that did not pass, the count of the checks and statuses that passed and the
-// command that lists them.
+// names the head and the base (ConflictsWith), the base absent where the daemon has not recorded
+// it. A retry names who retried (architect, operator, or a todo written on the held issue), and
+// the architect's own words go in the reason block. A retry of a review round that nothing on its
+// way ends names the round's cause (StuckRound, a ReviewStuckRecord cause), its head, the head the
+// reviewer approved where that is other code (ReviewedHead), the review that ends it (EndsRound),
+// and why the daemon set aside a review that would otherwise have decided it (SetAside). A round
+// GitHub will not merge from names, as its review-stuck notice does, the merge state GitHub reports
+// for the head, each check and each commit status of that head that did not pass, the count of the
+// checks and statuses that passed and the command that lists them.
 type PhaseAssignmentRecord struct {
 	TaskHead
 	Title             string            `json:"title"`

@@ -29,7 +29,8 @@ var (
 
 // Render writes a task record as its text: the lead line, the fields in TOON form, the kept
 // sentences, then the blocks of its Words, and nothing else. The text ends with no new line.
-// The package documentation gives the rules.
+// Each block's tag is chosen against the whole text: the lines before the blocks as well as the
+// words of every block (blockTags). The package documentation gives the rules.
 func Render(record any) (string, error) {
 	value := reflect.ValueOf(record)
 	methods := record
@@ -72,7 +73,7 @@ func Render(record any) (string, error) {
 	}
 	lines = append(lines, encoded...)
 	lines = append(lines, kept...)
-	lines = append(lines, drawBlocks(r.blocks)...)
+	lines = append(lines, drawBlocks(lines, r.blocks)...)
 	return strings.Join(lines, "\n"), nil
 }
 

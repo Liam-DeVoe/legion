@@ -155,6 +155,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			Document: "dispatch://LEGION-208/artifact/spec@v4", Artifact: "artifact-208", Version: 4, Merge: texts.MergeReleased}, texts.Med),
 		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, ConflictsWith: "main", Head: "c0de", PullRequest: "sjawhar/legion#42"},
 		PhaseEnded{Role: claim.RoleImplementer, From: phase.Retro, To: phase.Implementing, TaskFollows: true, ConflictsWith: "main", Head: "c0de", PullRequest: "sjawhar/legion#42"},
+		// A conflict on a pull request recorded before the daemon kept the base: the head, no base.
+		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Head: "c0de", PullRequest: "sjawhar/legion#42"},
 		// A phase-ended message an older daemon queued, with the conflict as its reason.
 		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"},
 		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
@@ -440,8 +442,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a phase-ended message to no role", payload: PhaseEnded{From: phase.Testing, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "never to an architect"},
 		{name: "a phase-ended message without the phase that ended", payload: PhaseEnded{Role: claim.RoleTester, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "names the phase that ended and the different phase"},
 		{name: "a phase-ended message out of the phase the issue is in", payload: PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "names the phase that ended and the different phase"},
-		{name: "a phase-ended message naming neither the conflict nor a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing}, reason: "names the base its head conflicts with and that head"},
-		{name: "a phase-ended message naming a head and no base", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Head: "c0de"}, reason: "names the base its head conflicts with and that head"},
+		{name: "a phase-ended message naming neither the conflict nor a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing}, reason: "names the head that conflicts with its base"},
+		{name: "a phase-ended message naming a base and no head", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, ConflictsWith: "main", PullRequest: "sjawhar/legion#42"}, reason: "names the head that conflicts with its base"},
 		{name: "a phase-ended message naming the conflict and a reason", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, ConflictsWith: "main", Head: "c0de", Reason: "the head conflicts with main"}, reason: "never both"},
 		{name: "a phase-ended task that follows for another role", payload: PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "CI is red at head: pytest", TaskFollows: true}, reason: "only the implementer is told its task follows"},
 		{name: "a hook prompt with no hook", payload: HookPrompt{Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "carries the name of the hook that fired it"},
@@ -1266,6 +1268,43 @@ func TestARowAnOlderDaemonQueuedStillDecodes(t *testing.T) {
 				t.Fatalf("the row main's daemon queued decodes as %s, want the payload it wrote %s", gotJSON, tc.payload)
 			}
 		})
+	}
+}
+
+// A trimmer that switched itself off made its report with no size walk, so the row this daemon
+// queues for it holds no sizesAt, where main's release wrote the zero time there. Both rows decode
+// into the same sweep, which states no time of a walk.
+func TestAVolumeRowOfNoWalkHoldsNoWalkTimeAndMainsRowStillDecodes(t *testing.T) {
+	off := &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 1, RaisedBy: "first", UsedBytes: 45 << 30, FreeBytes: 1 << 30,
+		StopReason: "the trimmer switched itself off after 3 panics in a row of sweeps", Sizes: []VolumeSize{},
+		Faults: []string{"panic: a", "panic: b", "panic: c"}, SwitchedOff: true}
+	notice, err := NoticeOf(texts.VolumeNearFullRecord{NoticeHead: texts.NoticeHead{Kind: texts.VolumeNearFull, Issue: "LEGION-208"}, Volume: off})
+	if err != nil {
+		t.Fatalf("NoticeOf the switched-off trimmer's sweep: %v", err)
+	}
+	row, err := NewOutboxRow("LEGION-208", notice, time.Now())
+	if err != nil {
+		t.Fatalf("queue the switched-off trimmer's notice: %v", err)
+	}
+	if strings.Contains(string(row.Payload), "sizesAt") {
+		t.Errorf("the row of a sweep no walk measured states a time of a walk: %s", row.Payload)
+	}
+	mains := `{"kind":"volume-near-full","volume":{"podUid":"pod-uid","trimmer":"trim-1","episode":1,"raisedBy":"first",` +
+		`"usedBytes":48318382080,"freeBytes":1073741824,"freedBytes":0,"stopReason":"the trimmer switched itself off after 3 panics in a row of sweeps",` +
+		`"sizes":[],"sizesAt":"0001-01-01T00:00:00Z","faults":["panic: a","panic: b","panic: c"],"switchedOff":true}}`
+	for _, tc := range []struct {
+		name    string
+		payload json.RawMessage
+	}{{"this daemon's row", row.Payload}, {"main's row", json.RawMessage(mains)}} {
+		got, err := DecodeOutboxPayload(OutboxRow{ID: 77, Kind: OutboxKindNotice, Issue: "LEGION-208", Payload: tc.payload})
+		if err != nil {
+			t.Fatalf("%s does not decode: %v", tc.name, err)
+		}
+		decoded, ok := got.(Notice)
+		if !ok || decoded.Kind != texts.VolumeNearFull || !reflect.DeepEqual(decoded.Volume, off) {
+			gotJSON, _ := json.Marshal(got)
+			t.Errorf("%s decodes as %s, want the switched-off trimmer's sweep with no time of a walk", tc.name, gotJSON)
+		}
 	}
 }
 

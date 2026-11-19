@@ -376,6 +376,17 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "conflicts_with", request.Base,
 				"head", request.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, request.Number)))
 	}
+	// A head that conflicts with its base, on a pull request recorded before the daemon kept the
+	// base: the task names the head and no base.
+	{
+		issue := record.Issue{Key: r.key(4), Title: hostile[3], Phase: phase.Implementing}
+		request := pr(75+r.n, "conflict-no-base")
+		request.Base = ""
+		b.task(r, "conflict-no-base", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, request,
+			workflow.PhaseMove{Conflict: true}),
+			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase,
+				"head", request.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, request.Number)))
+	}
 	// A retry of a held phase, with the architect's words or none (the operator's).
 	{
 		issue := record.Issue{Key: r.key(5), Title: hostile[4], Phase: phase.Testing}

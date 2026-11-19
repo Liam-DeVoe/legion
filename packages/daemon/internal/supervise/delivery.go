@@ -285,6 +285,12 @@ type sentences struct{ abandoned, ended bool }
 // (ProviderErrorNote, as the delivery holds it rendered), so the agent reads what the provider
 // did and then the task; each of these says something the others do not.
 //
+// The notes go in front of the task joined by texts.InFront, which draws the task's blocks of
+// another author's words again under tags chosen against the notes as well: a note's cause or
+// reason quotes the runtime's or the provider's own words, which can carry a tail of the role's own
+// log, a line that opens a block's tag among it, and the task was drawn before any note was. The
+// notes stay word for word.
+//
 // The daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch) has no task:
 // its text is the record's note alone (RelaunchNote with no task), composed from the record as it
 // stands when the prompt goes, so a let-go recorded after it was queued is told in it too. One
@@ -339,7 +345,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if d.ProviderErrorNote != "" {
 		parts = append(parts, d.ProviderErrorNote)
 	}
-	return strings.Join(append(parts, text), "\n\n"), carried
+	return texts.InFront(parts, text), carried
 }
 
 // HashBootToken is the one hash a boot token is stored and looked up by. A launch mints the token

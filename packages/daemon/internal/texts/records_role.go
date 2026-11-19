@@ -89,13 +89,15 @@ type MemoryKillRecord struct {
 // PhaseEndedRecord is the message to the role whose phase the daemon ended because the head
 // conflicts with its base (record.PhaseEnded.Record): the phase that ended, the phase the issue is
 // in now, whether the recipient's task for that phase follows, the base, the head and the pull
-// request.
+// request. The base is absent where the daemon has not recorded it, as for a pull request recorded
+// before the daemon kept the base (record.PullRequest.Base): a conflict is always a head's, so the
+// head is always named.
 type PhaseEndedRecord struct {
 	RoleHead
 	From          phase.Phase `json:"from"`
 	To            phase.Phase `json:"to"`
 	TaskFollows   bool        `json:"task_follows,omitempty"`
-	ConflictsWith string      `json:"conflicts_with"`
+	ConflictsWith string      `json:"conflicts_with,omitempty"`
 	Head          string      `json:"head"`
 	PullRequest   string      `json:"pull_request"`
 }

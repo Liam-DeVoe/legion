@@ -629,15 +629,17 @@ type UpdateStalled = texts.UpdateRound
 //
 // Sizes are the size walk's targets with their two age splits (VolumeSize), SizesAt when they
 // were measured — a report made between walks carries the last walk's numbers with that walk's
-// time — SizesPartial a walk its budget or the container's stop cut before it reached every
-// target, which is the one way a walk ends early, and SizesMissing every target the walk did not
-// measure at all, and the volume root or an immediate child of it where the walk did not list
-// one in full, each with its reason where a read was refused (VolumeMissing): a directory it
-// could not open or list, a file whose lstat was refused, and, of a walk that was cut, every
-// target it had not measured when it was cut, as far as the report's cap and counted past it
-// (SizesMissingOmitted) — where the cut came while it listed them, every one it had listed, the
-// child of the volume root whose names it was reading, whole, and every child it had not yet
-// listed, or the volume root alone where the cut came inside the root's own listing
+// time, and a report no walk has measured for, such as a switched-off trimmer's, carries none,
+// which the row leaves out (texts.VolumeSweep) — SizesPartial a walk its budget or the
+// container's stop cut before it reached every target, which is the one way a walk ends early,
+// and SizesMissing every target the walk did not measure at all, and the volume root or an
+// immediate child of it where the walk did not list one in full, each with its reason where a read
+// was refused (VolumeMissing): a directory it could not open or list, a file whose lstat was
+// refused, and, of a walk that was cut, every target it had not measured when it was cut, as far
+// as the report's cap and counted past it (SizesMissingOmitted) — where the cut came while it
+// listed them, every one it had listed, the child of the volume root whose names it was reading,
+// whole, and every child it had not yet listed, or the volume root alone where the cut came inside
+// the root's own listing
 // (shimwire.LauncherVolumeReport). A directory the walk could read only in part is a
 // size that names the first read under it the walk did not make, one the kernel refused or a
 // directory deeper than the walk descends (VolumeSize). Faults are the panics the trimmer
@@ -708,7 +710,9 @@ type BlockedIssue = texts.BlockedIssue
 // SilentIssue is one issue whose phase worker nothing will prompt, as the tick notice above
 // carries it: the issue, the role whose claim is silent, the moment that claim's agent last
 // stepped (supervise.StepRecord.LastStep), and how long it has been quiet. For a plain silence
-// the last step is never the zero time, which workflow.SilentPhaseWorker refuses to judge from.
+// the last step is never the zero time, which workflow.SilentPhaseWorker refuses to judge from;
+// an entry of the other kind below, judged by its report alone, names neither where the claim's
+// record holds no step (texts.SilentIssue leaves both out).
 // It is the shape the tick's record declares (texts.SilentIssue), named here beside BlockedIssue
 // for the same reason that one is: one shape of the fact, named where every reader of the notice
 // can see it.
@@ -1450,9 +1454,11 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // recipient, From the phase that ended, To the phase the issue is in now, and TaskFollows that
 // the recipient is also the role the new phase starts — the implementer sent back from retro —
 // whose task for that phase follows this message. ConflictsWith is the base the head conflicts
-// with, Head that head and PullRequest the pull request as owner/name#n: the facts of the
-// conflict that ended the phase, which its record names (Record). Reason is that conflict as a
-// sentence, which a row an older daemon queued carries in place of those facts.
+// with, "" where the pull request's record holds no base (PullRequest.Base), Head that head and
+// PullRequest the pull request as owner/name#n: the facts of the conflict that ended the phase,
+// which its record names (Record). A conflict is always a head's, so a row names its head whether
+// or not the base is known. Reason is that conflict as a sentence, which a row an older daemon
+// queued carries in place of those facts.
 // It stops nothing: the recipient keeps its turn, its jobs, its process and its session.
 type PhaseEnded struct {
 	Role          claim.Role  `json:"role"`
@@ -2114,8 +2120,8 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a phase-ended message names the phase that ended and the different phase the issue is in now; it names %q and %q", value.From, value.To)
 		}
 		facts := value.ConflictsWith != "" || value.Head != "" || value.PullRequest != ""
-		if value.Reason == "" && (value.ConflictsWith == "" || value.Head == "") {
-			return fmt.Errorf("a phase-ended message names the base its head conflicts with and that head, as a row an older daemon queued names its reason")
+		if value.Reason == "" && value.Head == "" {
+			return fmt.Errorf("a phase-ended message names the head that conflicts with its base, and that base where the daemon recorded it, as a row an older daemon queued names its reason")
 		}
 		if value.Reason != "" && facts {
 			return fmt.Errorf("a phase-ended message carries the conflict's facts or, in a row an older daemon queued, its reason, and never both")
