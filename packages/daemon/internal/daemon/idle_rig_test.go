@@ -689,7 +689,8 @@ func (r *idleWakeRig) boot() {
 	transport := &http.Transport{}
 	r.owner().Cleanup(transport.CloseIdleConnections)
 	r.api = &daemon{t: r.t, cfg: r.cfg, transport: transport, client: &http.Client{Transport: transport, Timeout: 150 * time.Second},
-		base: "http://127.0.0.1:" + strconv.Itoa(r.cfg.Port), stopped: true}
+		base: "http://127.0.0.1:" + strconv.Itoa(r.cfg.Port)}
+	r.api.stopped.Store(true)
 }
 
 // owner is the test the rig was made for, which every cleanup of the rig is registered on: a step

@@ -562,6 +562,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
 		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
+		{"POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
 		{"POST " + ProjectReleaseRoute, s.operator(s.startProjectRelease)},
 		{"GET " + ProjectReleaseRoute, s.operator(s.readProjectRelease)},
