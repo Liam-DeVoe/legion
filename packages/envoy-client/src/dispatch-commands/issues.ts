@@ -1,5 +1,6 @@
 import type {
   Advised,
+  CheckResultRecorded,
   ClaimedIssue,
   DuplicateCandidate,
   Issue,
@@ -754,14 +755,32 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
     ...defined("excluded", optionalNumber(args, "excluded")),
     ...defined("screenshots", optionalStringArray(args, "screenshots")),
   };
-  const recorded = await client.recordResult(issue, {
-    actor,
-    check: stringArg(args, "check"),
-    role: stringArg(args, "role"),
-    verdict: stringArg(args, "verdict") as "pass" | "fail",
-    commit: stringArg(args, "commit"),
-    ...optional,
-  });
+  let recorded: CheckResultRecorded;
+  try {
+    recorded = await client.recordResult(issue, {
+      actor,
+      check: stringArg(args, "check"),
+      role: stringArg(args, "role"),
+      verdict: stringArg(args, "verdict") as "pass" | "fail",
+      commit: stringArg(args, "commit"),
+      ...optional,
+    });
+  } catch (error) {
+    // CHECK_CONTENDED is the one refusal of this route that asks for nothing but the same
+    // call again: a document version reworded the check at both of the write's attempts, so
+    // nothing was recorded and the next call resolves the check afresh. A server of this
+    // build never answers it, since its write reads the check from the block index under its
+    // locks, but a released server still can, and this command meets both. Untouched, it
+    // reaches the caller as prose with its code hidden, which reads as a failure to work out
+    // rather than a write to repeat.
+    if (dispatchAnswered(error, 409) && error.code === "CHECK_CONTENDED") {
+      throw refusalWithCode(
+        error,
+        "the check moved twice while this result was being written, and nothing was recorded: run the same dispatch result command again"
+      );
+    }
+    throw error;
+  }
   const shown = printableStrings(recorded.result);
   return {
     text: `Recorded ${shown.verdict} for check ${shown.check_block_id} of ${shown.check_issue_key} at ${shown.commit_sha}, as ${shown.role}. Result ${shown.id}.\n\nPull request body line:\n${printableLine(recorded.line)}`,
