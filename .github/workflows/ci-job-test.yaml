@@ -523,6 +523,13 @@ jobs:
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
 
+      # scripts/e2e is no workspace either; the root package pins its TypeScript and Bun types.
+      # The program is every TypeScript file there: the drivers and model stand-ins the
+      # agent-harness, daemon-live and envoy-session-stall jobs run under bun, which no step
+      # typechecks before it runs them, and the libraries and Bun tests beside them.
+      - name: Typecheck the e2e scripts and their libraries
+        run: bunx tsc --noEmit -p scripts/e2e
+
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
       # that compiled it. What runs go here is the held-port build of the envoy listener below,
@@ -536,7 +543,7 @@ jobs:
           cache: false
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
-      - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
+      - name: Test the e2e scripts' libraries
         run: bun test scripts/e2e/lib
 
       # After setup-go: its fixtures run go list over a scratch module.

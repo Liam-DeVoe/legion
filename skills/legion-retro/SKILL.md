@@ -51,10 +51,11 @@ Dispatch message (step 5) is for a finished retro only.
    body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: the
    result that `dispatch results` derives is the pass it needs, and its CI job is its evidence
    (`skill://legion-worker/references/ci-checks.md`). In
-   cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
-   `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
-   request. A `ci_check` check has no pass standing at that head when its derived result is a
-   fail, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
+   cybermonklabs/legion a surface may also be a test of a CI job, such as the daemon's real-process
+   tests and the scripts under `scripts/e2e/`, read from that job's run at the head, or a live check
+   at the operator's next daemon restart recorded on the pull request. A `ci_check` check has no
+   pass standing at that head when its derived result is a fail, or its run concluded `skipped`,
+   `neutral` or `cancelled`. Wait for a run that has not
    concluded, and read again where GitHub could not be read. Send a name that no run answers
    (`absent`) to the architect as a finding, because the words of the check are wrong. Neither
    wait nor that finding moves the issue back. A check whose `run` is a whole test suite has wrong

@@ -154,7 +154,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.
   `.github/scripts/check-ci-images.sh` is the gate, and it takes one mode:
   `lint` runs its `tree` mode on every change, which refuses a reference to any other source and a Go `FROM` on a `library/golang` row that `ARG GO_VERSION` does not name, and the `ci-images` job runs its `package` mode, which reads ghcr.io.
-  The devbox live proofs under `scripts/e2e/` and the deployment examples, which no CI job runs, keep Google's mirror `mirror.gcr.io`.
+  The deployment examples, and each other file that `check-ci-images.sh`'s `EXCEPTIONS` names with the reason it may, keep Google's mirror `mirror.gcr.io`.
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
 
 - **What those rules do not prove is where an image's bytes came from**, and that is an accepted limit rather than a gap to patch.
@@ -180,7 +180,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The docker provider plugin takes `get.pulumi.com`, which serves that tarball byte for byte, and the Pulumi CLI is that row reversed: `get.pulumi.com` is its primary, because that is the address its install reads, and the GitHub release of `pulumi/pulumi` is its second source.
   `ci.yaml`'s `ci-images` job fills that copy with `.github/scripts/mirror-ci-tools.sh`, which pushes the asset's own bytes through the registry API rather than with `crane append`, since that would re-compress the layer and move the blob off the one literal both paths check.
   A row whose asset does not answer stays green there and prints `cold`, so a copy that cannot be filled never reddens `ci-ok` during the outage it exists to survive.
-  `ci.yaml`'s `tool-fallback` job is the live proof: it faults `github.com` and the two release hosts for a whole job — and deliberately not `get.pulumi.com`, which is the docker provider plugin's second source in that same job — runs eight installs with nowhere to go as the negative control, drives the head's eight beside them, and reads every refusal with sixteen corrupted payloads
+  `ci.yaml`'s `tool-fallback` job is the test of it: it faults `github.com` and the two release hosts for a whole job — and deliberately not `get.pulumi.com`, which is the docker provider plugin's second source in that same job — runs eight installs with nowhere to go as the negative control, drives the head's eight beside them, and reads every refusal with sixteen corrupted payloads
 
 - **The tool gate** `.github/scripts/check-ci-tools.sh` is a step of `lint`.
   It holds each row to its shape — every field present, and not empty but for the six a row may leave empty (`primary`, `mirror_member`, `second_member` and the three `primary_*` fields), one name per row, a `primary_source` and a `second_source` each written in one of the five words the helper names a source by (`github-release`, `ghcr-mirror`, `npm`, `pypi` and `pulumi-releases`), of which a primary may take the three that are an origin of the bytes alone (`github-release`, `pypi` and `pulumi-releases`), the two further fields the second word decides (`mirror_from` and `mirror_member` for `ghcr-mirror`, `npm_package` and `npm_member` for `npm`, `second_url` and `second_member` for the other three), a bare 64-hex lower-case `digest`, and a `primary`, a `mirror_from` and a `second_url` that each hold the row's own `version` where they are not empty.
@@ -223,6 +223,18 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   Those comparisons are text too: `pinned_in` is compared as the path the entry writes, so `..` or a symlink that reaches the manifest is not recognised as the manifest, and a repository is compared without regard to case but is not percent-decoded.
   Whether that `why` is true is the reviewer's judgement and not the gate's, and `.github/ci-tools.yaml` says so where that key is: the rules above are the whole of what a program can check here, and a gate claiming to check a reason would teach its readers that the reason had been checked (dispatch://INFRA-1974).
 
+## Where a test runs
+
+Every test of this repository runs in a CI job that `ci-ok` needs, before each merge that changes a file it reads, with stand-ins for what is outside the machine.
+A test of real infrastructure that no stand-in can make runs in the deployment's pipeline after each apply of what it checks.
+A check of the operator's own grants and configuration belongs to the deployment's repository, not to this one.
+A check that production already makes at each use, where a failure reaches a role, is not repeated as a test.
+A measurement or a reading is a Go benchmark or a command, not a test, and its first lines carry the `legion: tool - ` line, which the reviewer judges.
+
+`.github/scripts/check-test-reach.sh`, a step of the `lint` job, holds the tree to the first of these: it fails on each test that no step of a job `ci-ok` needs runs, whether a build tag, a `-skip`, a variable gate, a script no such step runs or a step that runs only on a schedule leaves it out, and its header says how it reads each.
+A variable gate holds only where `.github/test-variables.yaml` names its variable with one of five classes, `set`, `selector`, `prerequisite`, `tool` or `opt-out`, and that class holds for the gate.
+A script whose first 15 lines use the words proof, smoke, check or test, and that no such step runs, carries in those lines the tool line (`legion: tool - `, then what it measures or reads, and who runs it for which decision) or the not-a-test line (`legion: not a test - `, then what the script is), and the reviewer judges either line; a Go tool that calls a package's own code is a `Benchmark…` function of its `_test.go` file, run as `go test -run '^$' -bench '^BenchmarkX$' -benchtime 1x`.
+
 ## Commands
 
 - `bun install`
@@ -241,9 +253,9 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   CI runs this command in each of these, in a job of ci.yaml that runs when a change touches a file it reads:
   packages/contracts, envoy-client, claude-envoy, pi-shared, pi-envoy, pi-legion, proof-editor and dispatch, and docs/site
 
-- `bunx tsc --noEmit -p scripts/dispatch && bunx tsc --noEmit -p scripts/github-apps && bunx tsc --noEmit -p scripts/sessions`
+- `bunx tsc --noEmit -p scripts/dispatch && bunx tsc --noEmit -p scripts/github-apps && bunx tsc --noEmit -p scripts/sessions && bunx tsc --noEmit -p scripts/approval-eval && bunx tsc --noEmit -p scripts/e2e`
 
-  Type check the three script directories that are no workspace, as ci.yaml's `test` job does
+  Type check the five script directories that are no workspace, as ci.yaml's `test` job does
 
 - `(cd packages/daemon && go vet ./... && flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64) && while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./... || exit 1; done <<< "$flags")`
 
@@ -258,13 +270,13 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   packages/dispatch's recipe builds `@legion/contracts` before it runs a test, as its `e2e` recipe does:
   rows of `e2e/__tests__` list a Playwright configuration, and Playwright evaluates it under Node, which reads that package's build output rather than its sources.
 
-- `bun test scripts/third-party-notices.test.ts && bun test scripts/semantic-line-breaks.test.ts && bun test scripts/dispatch && bun test scripts/e2e/lib && bun test scripts/conflicts`
+- `bun test scripts/third-party-notices.test.ts && bun test scripts/semantic-line-breaks.test.ts && bun test scripts/priorities-seed.test.ts && bun test scripts/dispatch && bun test scripts/approval-eval && bun test scripts/e2e/lib && bun test scripts/conflicts`
 
   The Bun tests under `scripts/`, which is no workspace.
-  ci.yaml's `test` job runs the first four, one step each and in that order, and runs no other Bun test under `scripts/`: `scripts/semantic-line-breaks.guides.test.ts` checks the guides' own layout on demand and gates nothing.
-  `bun test scripts/conflicts` runs in the `conflicts-script` job instead, after that job's biome and tsc steps over the same directory.
+  ci.yaml's `test` job runs the first six, one step each and in that order, and `scripts/semantic-line-breaks.guides.test.ts`, which checks the guides' own layout, in a step behind a filter of its own (`guide_layout`).
+  `bun test scripts/conflicts` runs in the `conflicts-script` job instead, after that job's biome and tsc steps over the same directory, and `bun test scripts/sessions` in the `sessions-script` job, which gives it a database.
   Beyond `bun install`, a suite needs only what it names in the line it prints when it skips, and that line, not this entry, is the whole of it.
-  Examples: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port proof), `docker` (the rigs that start a container), `openssl` (the h2 settings proof), `tmux` (claude-envoy's session-title rows and the parked-decision teardown proof), `bash` (pi-shared's shell-command row), `node` (claude-envoy's channel rows, and packages/dispatch's pull-request lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and stack suites, whose one skip line names whichever of the two the host does not have).
+  Examples: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port test), `docker` (the rigs that start a container), `openssl` (the h2 settings test), `tmux` (claude-envoy's session-title rows), `bash` (pi-shared's shell-command row), `node` (claude-envoy's channel rows, and packages/dispatch's pull-request lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and stack suites, whose one skip line names whichever of the two the host does not have).
   The `-omp` and Claude Code suites are the exception that prints nothing: they skip silently unless `LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names a real binary, and on GitHub Actions they fail rather than skip.
   The browser suite is no `bun run test` at all — `bun run e2e` and `bun run e2e:clock` in packages/dispatch build @legion/contracts and the SPA and run Playwright, and refuse before they start a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
   `bun run e2e` runs the default selection and `bun run e2e:clock` the three wall-clock projects, which are out of that selection because their rows are read from the clock and need the machine to themselves, so the two commands together are the whole suite.
@@ -346,7 +358,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   a pod's model route is the operator's (`runtime.kubernetes.pod` and `provider_keys`, docs/kubernetes.md "Operator configuration");
   the Sandbox runtime's three flags for a role's process, the daemon-launched controller's included, in a pod enrolled with the secrets broker (runtime.kubernetes.agent_secrets):
   the shim runs agent-secrets keygen there before its hello, sends the key's thumbprint and the projected token in hello2, answers the daemon's `agent-secrets-token` frame with the token as its mount holds it then (asked when the hello's token would expire before the daemon enrolls), keeps the enrollment id the daemon hands back, and runs agent-secrets renew;
-  the daemon-launched controller's process gets them as a workflow role's does, so its `slack_post` is granted `LEGION_SLACK_BOT_TOKEN`, a shared agent secret the broker grants every session enrolled with it, and a tmux pane never gets them (daemon-spawned under either runtime, by a tmux pane's command or by a pod launcher's start command, never run by hand)
+  the daemon-launched controller's process gets them as a workflow role's does, so its `slack_post` is granted `LEGION_SLACK_BOT_TOKEN`, a shared agent secret the broker grants every session enrolled with it, and a tmux pane never gets them (daemon-spawned under either runtime, by a tmux pane's command or by a pod launcher's start command, never started by a person)
 
 - `legion claude-bridge -- <claude argv…>`
 
@@ -541,16 +553,16 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `bash scripts/e2e/stage1-skeleton.sh`
 
-  Stage 1's live proof: the Go daemon boots on a real Postgres, serves GET /legion/v1/state, answers GET /readyz 200 once it serves, at each of its two boots, restarts against the same store, and refuses an unreachable Postgres by host (scripts/e2e/README.md)
+  Stage 1's test, a step of `ci.yaml`'s `daemon-go` job: the Go daemon boots on a real Postgres, serves GET /legion/v1/state, answers GET /readyz 200 once it serves, at each of its two boots, restarts against the same store, and refuses an unreachable Postgres by host (scripts/e2e/README.md)
 
 - `LEGION_TEST_OMP=<omp> LEGION_TEST_PG_DSN=<loopback postgres://…> bash scripts/e2e/stage2-tmux-supervision.sh`
 
-  Stage 2's live proof, which the `tmux-scripts` part of `ci.yaml`'s `agent-harness` job runs: real Oh My Pi panes with the branch's two plugins (pi-envoy and pi-legion) under the Go daemon's private tmux server, against a real Envoy listener and NATS and an Anthropic Messages stand-in
+  Stage 2's test, which the `tmux-scripts` part of `ci.yaml`'s `agent-harness` job runs: real Oh My Pi panes with the branch's two plugins (pi-envoy and pi-legion) under the Go daemon's private tmux server, against a real Envoy listener and NATS and an Anthropic Messages stand-in
   — register, role claim, delivery once, resume, suspend, the registration deadline, re-adoption across a restart, the orphan sweep, the gate's refusal of pi-legion without pi-envoy (scripts/e2e/README.md)
 
 - `LEGION_TEST_CLAUDE=<claude> LEGION_TEST_PG_DSN=<loopback postgres://…> go test -count=1 -v -run '^TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive$' ./internal/daemon/` (in packages/daemon)
 
-  The Claude Code backend's live proof on tmux, which the `tmux-scripts` part of `ci.yaml`'s `agent-harness` job runs:
+  The Claude Code backend's test on tmux, which the `tmux-scripts` part of `ci.yaml`'s `agent-harness` job runs:
   an implementer `worker_backends` puts on claude registers its transcript, is reminded by Claude Code's own `Stop` hook when a turn ends with its phase open, completes its phase through the `legion` MCP tool's handoff_complete with its handoff recorded on the Dispatch issue, and resumes the same Claude Code session after its pane is killed;
   the architect and the planner run on the fake runtime, the model is a Messages stand-in, and GitHub is a stand-in with a local bare remote (`packages/daemon/internal/daemon/claude_backend_live_test.go`)
 
@@ -559,7 +571,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The whole daemon on the kind rig, which the `tree` part of `ci.yaml`'s `kind` job runs:
   Dispatch, the Envoy listener and natsd built from the checkout, PostgreSQL in the cluster, the fake GitHub, which sends its pushes and pull requests to the listener as signed webhooks, and real agents in issue pods on a Messages stand-in.
   `TestStage4bSandboxTreeOnTheKindRigLive` drives a tree through Stage 4b's checkpoints, one subtest each;
-  `TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive` runs a Claude Code implementer in an issue pod on its pinned bridge and resumes its session after the pod and its disk are deleted (`packages/daemon/internal/daemon/kind_tree_rig_live_test.go`)
+  `TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive` runs a Claude Code implementer in an issue pod on its pinned bridge and resumes its session after the pod and its disk are deleted (`stage4b_kind_live_test.go` and `claude_backend_kind_live_test.go` of `packages/daemon/internal/daemon`, on the rig of `kind_tree_rig_live_test.go`)
 
 ## Configuration
 
@@ -687,7 +699,7 @@ Each item below names a task and where its code is, then notes on it.
   A phase worker's role on `claude` runs `legion claude-bridge -- claude -p …` under either runtime, with claude-envoy's `dist/envoy-channel.js` (the `legion` MCP tool, its claim, Envoy, the phase reminder's hook endpoint) as its one MCP server and claude-envoy plus its generated `legion/` plugin as its plugins.
   Under tmux boot resolves `LEGION_CLAUDE_PATH`, `LEGION_BUN_PATH` and `LEGION_CLAUDE_PLUGIN_DIR`;
   a pod takes bun and the plugin from the worker image, which carries Claude Code's pin and no Claude Code (its licence grants no redistribution), and its start script installs the pinned release at every launch and verifies it, failing the launch when the fetch fails or does not verify (`claudeCodeBlock`, `packages/daemon/internal/runtime/sandbox/plugins.go`).
-  `docs/deployment.md` "How a harness plugs in", `docs/kubernetes.md`; live proofs `packages/daemon/internal/daemon/claude_backend_live_test.go` and `packages/daemon/internal/daemon/claude_backend_kind_live_test.go`
+  `docs/deployment.md` "How a harness plugs in", `docs/kubernetes.md`; its tests on real agents are `packages/daemon/internal/daemon/claude_backend_live_test.go`, which the `tmux-scripts` part of the `agent-harness` job runs, and `packages/daemon/internal/daemon/claude_backend_kind_live_test.go`, which the `tree` part of the `kind` job runs
 
 - Shared plugin interface — `packages/pi-shared/`
 
@@ -725,8 +737,9 @@ Each item below names a task and where its code is, then notes on it.
 
 - Prove the Kubernetes runtime live — the `kind` job of `ci.yaml`: `TestStage4aSandboxRuntimeLive` runs the runtime alone, and `TestStage4bSandboxTreeOnTheKindRigLive` drives a full tree through the whole daemon
 
-  Both run on the kind rig, with the fake GitHub, a Messages stand-in and Dispatch and the listener built from the checkout (`packages/daemon/internal/kindtest`)
-  — `TestStage4aSandboxRuntimeLive` in groups of its checks, each group on a rig of its own and in a part of the job of its own, selected by `-run '^TestStage4aSandboxRuntimeLive$/^<group>$'` (`liveGroups`, `packages/daemon/internal/runtime/sandbox/live_test.go`)
+  Every test of the job runs on the kind rig, with the fake GitHub and, for the whole daemon, a Messages stand-in and Dispatch and the listener built from the checkout (`packages/daemon/internal/kindtest`), in a part of the job that runs its tests by name once the `image` part has built the worker image under test
+  — `rig-and-shares` runs the rig's own measuring test and the share test, `burstable-and-sweep` the burstable issue pod and the controller sweep tests, `runtime-root`, `runtime-roles`, `runtime-image-and-issues` and `runtime-pod-update` one group each of `TestStage4aSandboxRuntimeLive`'s checks, selected by `-run '^TestStage4aSandboxRuntimeLive$/^<group>$'` (`liveGroups`, `packages/daemon/internal/runtime/sandbox/live_test.go`), and `tree` the two whole-tree tests;
+  `KIND_PARTS` and `KIND_TREE_FILES` of `.github/scripts/ci_job_reads.py` are the one list of what each part runs
 
 - Run a database, broker or server the work needs — `docs/kubernetes.md`, "Running a workload in the cluster from a role"
 
@@ -755,7 +768,7 @@ Each item below names a task and where its code is, then notes on it.
 - Legion daemon — `packages/daemon/`
 
   The Go module the root `go.work` binds, with the worker image's Dockerfile under `docker/`.
-  `cmd/legion` is its CLI, `internal/api/state.go` owns its wire shape, `packages/contracts/src/legion-api.ts` mirrors it, `scripts/e2e/` holds each stage's live proof.
+  `cmd/legion` is its CLI, `internal/api/state.go` owns its wire shape, `packages/contracts/src/legion-api.ts` mirrors it, and `scripts/e2e/` holds the end-to-end scripts that jobs of `ci.yaml` run, its README naming the job of each.
   The binary embeds its role prompts (`internal/prompts/roles/`:
   a phase worker composes `core/<role>.md`, `mechanics/headless.md` and its role's residue, the merger the headless fragment and its residue;
   the root architect, controller and sub-architect prompts are single files;
@@ -791,7 +804,7 @@ Each item below names a task and where its code is, then notes on it.
   It expands every `go test` step of `ci.yaml` and of the workflows its jobs call whose working directory is `packages/envoy`, `packages/envoy/infra` or `packages/daemon` into the test functions that step really runs — through the step's own packages, `-tags`, `-race`, `-run` and `-skip`, with `go test -list` — and exits 1 on every (package, function) pair more than one step runs that no `EXCEPTIONS` entry declares with the requirement that makes it run twice.
   It reads the steps with `.github/scripts/go_test_steps.py`, the reader `check-test-reach.sh` uses too.
   The search replaced its other verdict, every pair some step compiles while no step runs it: `.github/scripts/check-test-reach.sh` runs in `ci.yaml`'s `lint` job on every change, with no `go` command, and fails on a test one step's `-skip` leaves out and no other step runs, a build tag no required step passes, a variable gate whose variable `.github/test-variables.yaml` does not name with a class that holds, a script no required step runs that carries neither the tool line nor the not-a-test line, and a scheduled step whose test command no required job runs; its header says how it reads each.
-  The daemon joined the scope with the `-run`/`-skip` pair that keeps `internal/daemon`'s three real-Oh-My-Pi tests to one run each (dispatch://INFRA-1413): a check that sees one of the two steps and not the other proves nothing about them.
+  The daemon joined the scope with the `-run`/`-skip` pair that kept `internal/daemon`'s three real-Oh-My-Pi tests to one run each (dispatch://INFRA-1413), and `daemon-go`'s steps now `-skip` every test of the package that the `daemon-live`, `agent-harness` and `kind` jobs run by name: a check that sees one of the two steps and not the other proves nothing about them.
   No CI job runs it and none should — it compiles every test binary of all three modules, the `-race` ones included, which the script's own header times.
 
 - Documentation site — `docs/site/`
@@ -861,7 +874,7 @@ Each item below names a task and where its code is, then notes on it.
   The number exists only once the pull request is open, so open the pull request first and add the fragment in a later commit on the same branch.
   No Dispatch issue key goes in the file name, in the `Issue` field or in the body.
   Two `changie new` calls for one package and one kind inside the same second write the same name, and the first entry is lost with nothing reported.
-  So run them at least a second apart and count the files against the entries you meant, or write the fragment by hand as `pr<number>-<slug>.yaml`.
+  So run them at least a second apart and count the files against the entries you meant, or write the fragment file yourself as `pr<number>-<slug>.yaml`.
   The file holds `kind:` (`Added`, `Changed`, `Removed` or `Fixed`) and `body:`, the entry's markdown as plain text.
   For an entry of more than one line, write `body:` as a `|-` block.
   The rendered entry indents its continuation lines under the bullet (`changeFormat` in each `.changie.yaml`).

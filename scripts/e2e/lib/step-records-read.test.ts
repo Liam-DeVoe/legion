@@ -54,8 +54,9 @@ function changed(pick: RegExp, edit: (line: string) => string): string {
 
 // bash is the shell the script runs under, found once where read's own PATH finds it, so a case
 // that gives the script a PATH with no bash on it still runs the same shell.
-const bash = Bun.which("bash", { PATH: "/usr/bin:/bin" });
-if (bash === null) throw new Error("no bash in /usr/bin or /bin");
+const found = Bun.which("bash", { PATH: "/usr/bin:/bin" });
+if (found === null) throw new Error("no bash in /usr/bin or /bin");
+const bash: string = found;
 let runs = 0;
 // read runs the script with args against the fake dispatch, which prints err on stderr and out on
 // stdout and exits exit, on path, which by default finds the fake first.

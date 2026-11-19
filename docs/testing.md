@@ -2,6 +2,18 @@
 
 Rules for this repository's tests that the code under test does not show.
 
+## Where a test runs
+
+Every test of this repository runs in a CI job that `ci-ok` needs, before each merge that changes a file it reads, with stand-ins for what is outside the machine.
+A test of real infrastructure that no stand-in can make runs in the deployment's pipeline after each apply of what it checks.
+A check of the operator's own grants and configuration belongs to the deployment's repository, not to this one.
+A check that production already makes at each use, where a failure reaches a role, is not repeated as a test.
+A measurement or a reading is a Go benchmark or a command, not a test, and its first lines carry the `legion: tool - ` line, which the reviewer judges.
+
+`.github/scripts/check-test-reach.sh`, a step of the `lint` job, holds the tree to the first of these: it fails on each test that no step of a job `ci-ok` needs runs, whether a build tag, a `-skip`, a variable gate, a script no such step runs or a step that runs only on a schedule leaves it out, and its header says how it reads each.
+A variable gate holds only where `.github/test-variables.yaml` names its variable with one of five classes, `set`, `selector`, `prerequisite`, `tool` or `opt-out`, and that class holds for the gate.
+A script whose first 15 lines use the words proof, smoke, check or test, and that no such step runs, carries in those lines the tool line (`legion: tool - `, then what it measures or reads, and who runs it for which decision) or the not-a-test line (`legion: not a test - `, then what the script is), and the reviewer judges either line; a Go tool that calls a package's own code is a `Benchmark…` function of its `_test.go` file, run as `go test -run '^$' -bench '^BenchmarkX$' -benchtime 1x`.
+
 ## The fixtures a test takes rather than copies
 
 Each of these is one body per Go module, and a test that needs what it does calls it rather than writing the body again.
@@ -256,7 +268,7 @@ plain step still ran it, it took at most 625 s there over the 49 green main `tes
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
 job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
-takes longer still (908 s under `-race` on a shared devbox), so a command that runs the whole
+takes longer still (908 s under `-race` on a machine shared with other work), so a command that runs the whole
 package, alone or in a pattern that includes it, passes `-timeout 30m`:
 
 ```sh
@@ -291,7 +303,7 @@ The rule covers the cleanup's argument as well as its closure, so an argument th
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
-It is one of the nine slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
+It is one of the slow suites `AGENTS.md` lists: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
@@ -336,7 +348,7 @@ composes with the `TestMain` a package already has
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
-apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
+apply part of the migration set themselves and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
 `internal/store`'s own tests take that same `Database`, from the leaf package
 `packages/daemon/internal/testpg/testdb` that holds it: `internal/testpg` imports `internal/store`
@@ -524,8 +536,8 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   Code under test that names its own transport, as provisioning's `GIT_ALLOW_PROTOCOL=https` does, still uses it.
   Guard also takes off the process's `PATH` every directory whose `git` is the image's git wrapper (`/opt/legion/bin/git`, or a link to it), which leads a pod's `PATH`: that git puts Legion's leak guard in front of every push, and that jj refuses a push whose git is any other, so a fixture's push to a local bare repository under the test's empty home was refused in a pod and passed on CI, whose `PATH` holds no such directory.
   It is the process's `PATH` that matters, because `exec.Command` and `exec.LookPath` look a bare name up on it whatever `PATH` the command's `Env` holds.
-  Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
-  A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
+  Guard does the same in every build.
+  A kind test, which drives the kind cluster of its rig with the runner's own tools and environment on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
 
 - A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's with its config and state homes (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`) under it, and an identity.
   The state home is the test's because the leak guard caches public visibility answers there, and a test on the runner's would read answers other tests cached.
@@ -534,12 +546,12 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
 
 ## Containers a test starts
 
-Every container a test or a proof script starts carries a CPU limit and a memory limit sized to its
+Every container a test or a script starts carries a CPU limit and a memory limit sized to its
 work, and is removed when the test stops, except kind's node containers (`scripts/e2e/README.md`
 says why) and the Pulumi containers of `packages/envoy/infra/host/live_test.go`, whose released
-`Listener` component has no CPU or memory inputs. Tests and the live proofs run on shared dev boxes
-as well as on CI runners, and an unlimited server can take every core and all the memory of a host
-that other work shares.
+`Listener` component has no CPU or memory inputs. A test shares the machine it runs on with other
+work, a CI job's other steps included, and an unlimited server can take every core and all the
+memory of a host that other work shares.
 
 - In Go, set `Resources.NanoCPUs` and `Resources.Memory` in the container's host configuration:
   through `testcontainers.WithHostConfigModifier` for a `Run`, or as the request's
@@ -548,7 +560,7 @@ that other work shares.
   configuration of its own sets the limits in that same modifier.
 - In a script, `docker run` takes `--cpus` and `--memory` before the image. A Postgres whose data
   directory is a `tmpfs` mount counts that data against its memory limit. `scripts/e2e/README.md`
-  lists each proof's containers and their limits.
+  lists each script's containers and their limits.
 - Remove a container with its anonymous volumes: `docker rm -f -v`, since the Postgres images
   declare a `VOLUME` that a plain `docker rm -f` leaves on the host.
 

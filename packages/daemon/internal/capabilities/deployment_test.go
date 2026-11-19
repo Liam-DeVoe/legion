@@ -517,7 +517,7 @@ func TestEveryDeploymentRowIsMeasured(t *testing.T) {
 	}
 }
 
-var updateGolden = flag.Bool("update", false, "rewrite the golden this package writes for scripts/e2e")
+var updateGolden = flag.Bool("update", false, "rewrite this package's golden under testdata")
 
 // The web-search row as `legion state --json` carries it when a planner, in its issue pod, reports
 // web_search off, written here from the producer so a change to how the daemon renders an open

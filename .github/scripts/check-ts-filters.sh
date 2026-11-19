@@ -20,8 +20,8 @@
 # contracts, envoy_client (packages/envoy-client and packages/broker-client), pi_shared,
 # pi_envoy, pi_legion, claude_envoy, dispatch_ui (packages/dispatch and packages/proof-editor),
 # docs (docs/site, in the docs-site.yaml job ci.yaml's docs job calls), conflicts_script
-# (scripts/conflicts) and test (scripts/dispatch, scripts/github-apps, scripts/sessions and
-# scripts/approval-eval).
+# (scripts/conflicts) and test (scripts/dispatch, scripts/github-apps, scripts/sessions,
+# scripts/approval-eval and scripts/e2e).
 # The gates left out are the ones whose job runs TypeScript but no typecheck, so there is no
 # program to derive: `dispatch_browser`, whose jobs are the browser suite itself, sharded and in
 # two-process mode, in the workflow ci.yaml's dispatch-browser job calls (the dashboard's and the

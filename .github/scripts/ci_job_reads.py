@@ -3486,7 +3486,8 @@ GATES = [
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans "
-                           "scripts/e2e/*.sh and lib/*)"),
+                           "scripts/e2e/*.sh and lib/*); "
+                           f"{at('test', 'Typecheck the e2e scripts and their libraries')} compiles every .ts file there"),
         (CONTRACTS_SRC, "scripts/e2e/lib/session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
                         "scripts/priorities-seed.ts:29"),
         (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
@@ -3495,6 +3496,15 @@ GATES = [
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the
         # scripts/dispatch typecheck holds seven broker-client sources in its own program.
         ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
+        *[(f"packages/{path}", f"{at('test', 'Typecheck the e2e scripts and their libraries')}: {why}")
+          for path, why in (
+              ("envoy-client/test/dispatch-stack.ts", "scripts/e2e/lib/plugin-smoke-stack.ts:27 imports it"),
+              ("envoy-client/test/envoy-stack.ts", "scripts/e2e/lib/plugin-smoke-stack.ts:31 imports it"),
+              ("envoy-client/test/subscribe-answer.ts", "packages/pi-shared/test/omp-harness.ts:17 imports it"),
+              ("pi-shared/test/omp-harness.ts", "scripts/e2e/lib/messages-standin.ts:37, plugin-smoke-model.ts:23, "
+                                                "user-turns-model.ts:18 and dispatch-session-settings.ts:32 import it"),
+              ("pi-shared/test/omp-natives.ts", "packages/pi-shared/test/omp-harness.ts:21 imports it"),
+          )],
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
                                 "scripts/priorities-seed.test.ts:3 imports __tests__/held-deadlines.ts"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),

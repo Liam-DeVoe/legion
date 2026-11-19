@@ -1789,6 +1789,15 @@ jobs:
               # claude_envoy_build names.
               - 'scripts/e2e/**'
               - 'packages/envoy-client/test/fake-dispatch.ts'
+              # `bunx tsc --noEmit -p scripts/e2e` compiles every TypeScript file there, and with
+              # them the modules they import from two packages' test directories:
+              # lib/plugin-smoke-stack.ts imports the Dispatch and Envoy stacks, and four drivers
+              # and stand-ins import the Oh My Pi harness, which imports the last two.
+              - 'packages/envoy-client/test/dispatch-stack.ts'
+              - 'packages/envoy-client/test/envoy-stack.ts'
+              - 'packages/envoy-client/test/subscribe-answer.ts'
+              - 'packages/pi-shared/test/omp-harness.ts'
+              - 'packages/pi-shared/test/omp-natives.ts'
               - 'scripts/dispatch/**'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'

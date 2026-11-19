@@ -190,8 +190,9 @@ and decides there, the only gate on such an issue.
   checks have settled goes to the architect as a finding. It re-runs the
   implementer's command or drives the same surface independently, and records the verdict in
   its `test` handoff as `implementerProof` (`{verdict, how}`). The tester runs the
-  application, not CI again, and by hand it drives only the changed behaviour on the real surface,
-  the negative controls, and named test files that no CI lane selects. Try to break the changed surface — wrong and boundary inputs, the
+  application, not CI again, and itself drives only the changed behaviour on the real surface and
+  its negative controls; a test file that no CI lane runs is a finding, never one it runs in that
+  lane's place. Try to break the changed surface — wrong and boundary inputs, the
   second and the concurrent run, the party it must refuse — judge whether the implementer's tests
   would catch the ways it breaks, writing the red test for one that none would, and
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
