@@ -42,8 +42,10 @@ on:
     # The re-record job below, at an hour of its own and away from the full lane's: the two share
     # this workflow's concurrency group, so a re-record at the full lane's hour would queue behind
     # the whole lane, and the recordings would be read against a server the night had already moved
-    # on from. The cron below is the far side of the day from this repository's other schedules: the
-    # full lane's above, and e2e.yaml's and codeql.yaml's, which the comment above names. A schedule
+    # on from. The cron below is the far side of the day from the full lane's above and from
+    # e2e.yaml's and codeql.yaml's, which the comment above names, and four hours after
+    # dispatch-unit-repeat.yaml's weekly run (Saturdays at 09:23 when read at bacd5d7e on
+    # 2026-11-19). A schedule
     # starts a workflow and not a job, so each job's `if:` below names the cron it runs on: the cron
     # above starts the full lane alone and the one below the re-record alone, and a
     # `workflow_dispatch`, which carries no cron, starts both.
