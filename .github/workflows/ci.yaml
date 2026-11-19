@@ -3513,6 +3513,8 @@ jobs:
               - 'packages/contracts/fixtures/dispatch-public-url.json'
               # src/__tests__/transport.test.ts:3.
               - 'packages/contracts/fixtures/envoy-session-no-interests.json'
+              # src/__tests__/ask-reply-recipients.test.ts renders the copies this fixture holds.
+              - 'packages/contracts/fixtures/ask-reply-recipients.json'
               # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
               # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
               # an edit of the list alone must start both jobs, or the side it disagrees with
@@ -3579,10 +3581,12 @@ jobs:
               - 'packages/contracts/fixtures/daemon-api/state.json'
               # The API package's test binary, whose xid window tests the race-impossible step runs
               # (ci_job_reads.py, RACE_IMPOSSIBLE_SCRIPT): its live-feed fixtures
-              # (internal/dispatch/api/delivery_live_diff_test.go:1016) and the committed OpenAPI
-              # document (internal/dispatch/api/openapi_test.go:189-190).
+              # (internal/dispatch/api/delivery_live_diff_test.go:1016), the committed OpenAPI
+              # document (internal/dispatch/api/openapi_test.go:189-190) and the ask reply's copies
+              # (internal/dispatch/api/session_answers_test.go:1496).
               - 'packages/contracts/fixtures/live/**'
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              - 'packages/contracts/fixtures/ask-reply-recipients.json'
               # The daemon's own fixture, the server.started envelope its intake decodes:
               # internal/dispatch/startup/started_test.go:379 reads it and
               # TestTheBuiltEnvelopeIsTheSharedFixture holds this package's build to it, so a
@@ -4013,6 +4017,10 @@ jobs:
               - 'packages/contracts/schemas/dispatch-openapi.json'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
+              # internal/dispatch/api/session_answers_test.go's
+              # TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes this fixture and
+              # fails when the committed file differs, so an edit of it alone must start this job.
+              - 'packages/contracts/fixtures/ask-reply-recipients.json'
               # The step that sizes this job's Postgres runs this script, which runs
               # internal/dispatch/store/cmd/connections (and so testlimits and the store, above).
               - '.github/scripts/pg-connection-ceiling.sh'
