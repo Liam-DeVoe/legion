@@ -378,6 +378,9 @@ test("EventBody names how an ask was resolved: a withdrawal by the close, a retr
 // An ask.answered event written before answers stored an empty list holds null where the
 // contract says a list; the body reads it as no option chosen rather than throwing.
 test("EventBody reads a null selected list on an answer and its previous answer as empty", async () => {
+  // The answer is read as soon as the struck line shows, and only a loaded engine has drawn it by
+  // then (`MarkdownBody`): the first body of a file takes the asynchronous path.
+  await warmMarkdownRenderer();
   const stored: Extract<DispatchEvent, { type: "ask.answered" }> = {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-09-11T00:00:00Z",
