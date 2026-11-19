@@ -147,15 +147,16 @@ status that holds it. A parent's own first phase can start once the last of them
 workflow, and its pull request then builds on a base that already carries their merges.
 
 The rule holds after the first phase too. A child filed under an issue whose phases have started
-holds its next phase, and the daemon stops a phase that is under way. The issue then waits in
-`awaiting_children`: it holds no admission slot, Dispatch shows it `in_progress`, and no role of
-it works. Once no child under it is open, it goes back by itself to the phase it held, a held
-test, review or acceptance as `implementing`. That round merges the children's work into its
-branch, and the tester then runs every check again. For the same reason the daemon refuses a
-parent's acceptance, and a root's close, while an issue beneath it is still in the workflow. A
-child's own architect starts with the child's first phase, so a child it files stops the child's
-phase in this way, and the child is accepted only at a head that carries the merges of every child
-its checks need.
+holds its next phase, and the daemon stops a phase that is under way and tells its worker to push
+what it has and stop. The issue then waits in `awaiting_children`: it holds no admission slot,
+Dispatch shows it `in_progress`, and no role of it works: the architect's `sign_off` and
+`request_backward_move` on it are refused (`WAITING_ON_CHILDREN`). Once no child under it is open,
+it goes back by itself to the phase it held, a held test, review or acceptance as `implementing`.
+That round merges the children's work into its branch, and the tester then runs every check again.
+For the same reason the daemon refuses a parent's acceptance, and a root's close, while an issue
+beneath it is still in the workflow. A child's own architect starts with the child's first phase,
+so a child it files stops the child's phase in this way, and the child is accepted only at a head
+that carries the merges of every child its checks need.
 
 ## Phase workers
 
@@ -367,7 +368,11 @@ delivers parts of the ancestor's requirements and states none of its own. Its ar
 registers the step on your approval of the ancestor's version, and the step opens with no approval
 of the root's own spec. Where that version still waits for your approval, the step opens when you
 approve it. `legion state` shows such a step as `open_on_basis` or `pending_on_basis`
-([Troubleshooting](/legion/legion/troubleshooting/#a-tree-waits-on-a-person)).
+([Troubleshooting](/legion/legion/troubleshooting/#a-tree-waits-on-a-person)). The ancestor's own
+acceptance, and its root's close, wait until each root that rests on its approval is done or out of
+the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`) and until no Dispatch child of it is open
+(`SIGNOFF_CHILD_OPEN`), and the ancestor's architect is told when a root starts or stops resting on
+it (`resting-root`).
 
 ## Handoffs on the Dispatch issue
 
