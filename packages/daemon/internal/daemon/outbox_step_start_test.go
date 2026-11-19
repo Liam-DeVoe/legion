@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -109,6 +110,95 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 			if found != tc.starts || execErr != nil {
 				t.Fatalf("the linter's start of step 3 with the task at step %d (%s running): execute = %v, linter claim created %t (pending task %q), want no error and created %t",
 					tc.at, read.StepRole, execErr, found, pending, tc.starts)
+			}
+		})
+	}
+}
+
+// The outbox judges a start on its own read of the issue (record.Issue.HoldsQueued), and the
+// workflow's move of the task does not wait on that read: the move can commit after it and before
+// the start brings the claim back. Here the linter's start of step 3 passed the read with the task
+// at step 3, and the task went back to the checker's step 2 while the start provisioned the
+// workspace, before its spawn. The start judges its work again under the machine's lock, before it
+// spawns (supervise.StartWork, the spawn's own judge): the linter's claim starts no process, holds
+// no task, and the row finishes without an error. Without that judge the runtime started the
+// linter's process, the task it was handed was dropped under the machine's lock once the agent was
+// ready (PhaseHolds), and the process stood ready with nothing to do for as long as its issue ran,
+// as every role whose step has ended does. The control is the same start with the task left at
+// step 3, which starts the linter and hands it its task.
+func TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess(t *testing.T) {
+	const lintTask = "Lint it. Issue: LEGION-208. Phase: step."
+	for _, tc := range []struct {
+		name   string
+		moves  bool
+		starts bool
+	}{
+		{"the task goes back to the checker's step 2 before the spawn", true, false},
+		{"the control: the task stays at the linter's step 3", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			putOutboxIssue(t, pool, records, record.Issue{Key: stepStartKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: stepStartKey, Title: "Workflow", Phase: phase.Step, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			openTree(t, pool, "LEGION", stepStartKey)
+			holdSlot(t, pool, stepStartKey)
+			seedStepStartPlan(t, pool, records, 3)
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
+			token := mustClaimToken(t, stepStartKey, stepStartLinter)
+			conn := fake.NewConn()
+			sup.deps.Conns.(*fake.Conns).Register(token, conn)
+			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
+				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now,
+				// The workspace is provisioned after the outbox's read of the issue and before the
+				// spawn: the move of the task lands here.
+				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+					if tc.moves {
+						if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+							return records.MoveTask(ctx, tx, stepStartKey, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+						}); err != nil {
+							t.Errorf("move the task back to step 2: %v", err)
+						}
+					}
+					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+				},
+			}
+			start := mustOutboxRow(t, stepStartKey, record.SuperviseRequest{Op: "start", Tree: stepStartKey, Role: stepStartLinter, Generation: 2, Phase: phase.Step,
+				Task: lintTask, Entry: 1}, time.Now())
+			start.ID = 95
+			execErr := runner.execute(ctx, start)
+			machine, found := sup.Machine(token)
+			if !found {
+				t.Fatalf("the linter's start (execute = %v) created no claim, want the claim it creates before its spawn", execErr)
+			}
+			machine.Wait()
+			spawned := len(rt.CallsOf("Spawn")) + len(rt.CallsOf("Resume"))
+			// What the started process then does: its agent comes up, and the task it was handed is
+			// sent or dropped under the machine's lock (PhaseHolds).
+			if spawned > 0 {
+				generation := machine.Claim().Generation
+				for _, ev := range []supervise.Event{
+					supervise.StreamHello{Claim: token, Generation: generation},
+					supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses-linter", SessionFile: "/tmp/linter.jsonl", CapabilityHash: []byte("linter")},
+					supervise.RequestReady{Claim: token, Generation: generation, Session: "ses-linter"},
+				} {
+					if err := machine.Handle(ctx, ev); err != nil {
+						t.Fatalf("bring the linter's agent up: handle %T: %v", ev, err)
+					}
+				}
+				machine.Wait()
+			}
+			after := machine.Claim()
+			var pending string
+			if after.Pending != nil {
+				pending = after.Pending.Task
+			}
+			sent := len(conn.Prompts())
+			if execErr != nil || (spawned > 0) != tc.starts || (sent > 0) != tc.starts {
+				t.Fatalf("the linter's start, the task moved back %t: execute = %v; the runtime started %d processes, the claim stands %s holding %q, and %d prompts reached its agent; want no error and a process and its task %t",
+					tc.moves, execErr, spawned, after.State, pending, sent, tc.starts)
 			}
 		})
 	}

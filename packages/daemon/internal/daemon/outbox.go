@@ -2010,10 +2010,18 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// and told its work here, in that order, and nothing of the start waits on another row.
 		// Whether the row waited for the issue's admission slot before the lane took it is
 		// settled by then (workflow.StartOrOwe); by here it is a start like any other.
+		//
+		// The phase and run this row was queued for travel with the request that brings the claim
+		// back (supervise.StartWork): the fences above read the issue in a transaction of their
+		// own, which the workflow's move of the issue does not wait on, so the machine judges the
+		// same rule again under its own lock before it starts a process, and a start the issue has
+		// left since starts none and is finished without acting here (supervise.ErrStartLeft).
+		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation}
+		var brought error
 		switch state {
 		case supervise.StateQueued:
-			if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token}); err != nil {
-				return fmt.Errorf("start claim %s: %w", token, err)
+			if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token, Start: work}); err != nil {
+				brought = fmt.Errorf("start claim %s: %w", token, err)
 			}
 		case supervise.StateSuspended:
 			// The role owns the issue's phase this start is for: the rule resumes it, unless an
@@ -2024,8 +2032,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			if payload.CheckLook > 0 {
 				reason = fmt.Sprintf("start row %d of %s (production check look %d)", row.ID, issue.Key, payload.CheckLook)
 			}
-			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
-				return fmt.Errorf("resume claim %s: %w", token, err)
+			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason, Start: work}); err != nil {
+				brought = fmt.Errorf("resume claim %s: %w", token, err)
 			}
 		case supervise.StateFailed:
 			// A boot rule-resume that spent its launch budget is terminal for this row: retrying it
@@ -2038,8 +2046,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// A start that asks for a new session has the retry forget the recorded one, inside
 			// that one decision: the operator's `legion claims retry --fresh-session`, which is
 			// refused by whatever refuses this row rather than having discarded the session first.
-			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
-				return fmt.Errorf("retry claim %s: %w", token, err)
+			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, Start: work}); err != nil {
+				brought = fmt.Errorf("retry claim %s: %w", token, err)
 			}
 		case supervise.StateRetired:
 			// A retired claim's tree closed, and its linger removed the workspace; the tree was
@@ -2047,9 +2055,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
 			}
-			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
-				return fmt.Errorf("relaunch retired claim %s: %w", token, err)
+			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, Start: work}); err != nil {
+				brought = fmt.Errorf("relaunch retired claim %s: %w", token, err)
 			}
+		}
+		if errors.Is(brought, supervise.ErrStartLeft) {
+			r.log.Info("outbox start serves a phase or a step the issue left before its claim was brought back; finished without acting", "row", row.ID,
+				"issue", issue.Key, "phase", payload.Phase, "role", payload.Role, "error", brought)
+			return nil
+		}
+		if brought != nil {
+			return brought
 		}
 		// A claim that, once brought back above, still holds a task of this row's phase and run that
 		// it will work is given that task: one not yet confirmed (a claim whose process is gone keeps

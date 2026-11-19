@@ -838,10 +838,11 @@ type Deps struct {
 	// every role a deployment defines runs as, for the step of c's role, and the outbox refuses to
 	// start a role for a phase or a step the issue has left (daemon/outbox.go), so a delivery
 	// queued before the phase, the step or the run moved on is that same staleness one step later
-	// and is dropped rather than sent. It is asked only about a delivery that names a phase; a
-	// task an operator delivered by hand names none and is never put to it, which the machine
-	// decides rather than this answer. d's generation is 0 for a task of no run. nil holds every
-	// delivery.
+	// and is dropped rather than sent. The same answer judges a start's work before the claim is
+	// brought back for it (StartWork), as a delivery of that phase and run. It is asked only about
+	// a delivery or a start that names a phase; a task an operator delivered by hand names none and
+	// is never put to it, which the machine decides rather than this answer. d's generation is 0
+	// for a task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, c Claim, d Delivery) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
@@ -2271,7 +2272,7 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // cause is why the process the claim still records is let go, which the let-go records with
 // what that process ended (letGo, recordEnd); noEnd for a launch that lets none go.
 func (m *Machine) launch(ctx context.Context, cause string) error {
-	return m.launchAfter(ctx, false, false, cause)
+	return m.launchAfter(ctx, false, false, cause, StartWork{})
 }
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
@@ -2308,14 +2309,41 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // cause is launch's: why the process the claim still records is let go. It travels with the
 // launch to wherever it runs — here, or at the turn of the wake the gate parks it on, which is
 // when a process the park left running is let go and what it ended is read (launchNow, letGo).
-func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause string) error {
-	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, cause) }
+//
+// start is the work a workflow start brings the claim back for (StartWork, revive), the zero
+// StartWork for every other launch. Its caller judged it under this lock already (startHolds),
+// so a launch that runs here is not judged twice; one the gate parks is judged again at its
+// wake's turn, since the wait can be tens of minutes over a wave and the issue can leave the
+// start's work meanwhile. A launch that turn finds left behind starts no process: the claim,
+// written launching with none for the wait (parkWake), is suspended for the daemon with its
+// session kept, and the start of the role's next work resumes it (startLeft).
+func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause string, start StartWork) error {
+	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, cause, start) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
 	return m.reserveWake(ctx, exempt, func(ctx context.Context) error {
+		if parked := m.claim.State == StateLaunching && m.claim.Locator == nil; parked {
+			if err := m.startHolds(ctx, start); errors.Is(err, ErrStartLeft) {
+				return m.startLeft(ctx, err)
+			} else if err != nil {
+				return m.relaunchRefused(ctx, again, err)
+			}
+		}
 		return m.launchNow(ctx, charged, exempt, cause)
 	}, again)
+}
+
+// startLeft ends a start's launch the pacing parked and whose work the issue left during the wait
+// (launchAfter): the claim records no process, so none is stopped, and it is suspended for the
+// daemon, its session kept, the end a launch the tree's lifecycle refuses over a claim with no
+// process takes too (relaunchRefused). The task the start handed it names a phase and is retired
+// unsent with the suspension (settle), and the start of the role's next work resumes the claim by
+// rule. A suspension for the daemon is no stranded claim of a role that works no step the task
+// stands at (workflow.Stranded).
+func (m *Machine) startLeft(ctx context.Context, err error) error {
+	m.log.Info("supervise: the launch this start's wake held is of work its issue has left; suspending the claim with no process started", "error", err)
+	return m.suspended(ctx, SuspendedByDaemon)
 }
 
 // launchNow is launchAfter past its lifecycle check and its wake gate: the launch itself, and the
@@ -2369,7 +2397,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
 				"generation", m.claim.Generation, "error", err)
 			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
-				return m.launchAfter(ctx, charged, exempt, noEnd)
+				return m.launchAfter(ctx, charged, exempt, noEnd, StartWork{})
 			}))
 			return err
 		}
@@ -2524,7 +2552,7 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 	m.log.Error("supervise: the session store could not answer this start; trying it again every minute, charging nothing",
 		"generation", m.claim.Generation, "retry", sessionStoreRetry, "error", err)
 	m.tellStoreFault(cause)
-	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
+	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd, StartWork{}) })
 	return errors.Join(err, m.persist(ctx))
 }
 
