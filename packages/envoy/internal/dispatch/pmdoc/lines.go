@@ -61,9 +61,13 @@ func (reader markdownReader) parse(source []byte, unclosedFrontmatter bool, budg
 // source's first server bytes the server's (origin), with the count and the parser context it
 // kept, or the refusal of markdown nested past either of parseSource's bounds, before anything else
 // refuses it. A display reader's parse is marked as one (displayParseKey), since a block nested
-// past a bound is no refusal there (nestingRefusal).
+// past a bound is no refusal there (nestingRefusal), and so is a parse with the base's reading of
+// email addresses (baseEmailsKey), whose links the linkify guard leaves as the readers made them.
 func (reader markdownReader) read(source []byte, unclosedFrontmatter bool, budget *WriteBudget, server int) (ast.Node, *parseCount, parser.Context, error) {
 	pc, count := readContext(unclosedFrontmatter, budget, server, reader.display)
+	if reader.baseEmails {
+		pc.Set(baseEmailsKey, true)
+	}
 	root, err := parseSource(reader.md.Parser(), source, pc)
 	return root, count, pc, err
 }

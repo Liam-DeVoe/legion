@@ -22,10 +22,14 @@ var anchorAttribute = regexp.MustCompile(`([a-zA-Z0-9_-]+)="([^"]*)"`)
 // parse. Front matter is read apart from it (parseFrontmatterBlock), so an unclosed opener is
 // ordinary markdown. Its list parser opens no empty item that would interrupt a paragraph
 // (emptyItemGuard). display marks the one reader whose parse is for display alone
-// (displayReader), which refuses nothing a reader must still be shown.
+// (displayReader), which refuses nothing a reader must still be shown. baseEmails marks the
+// reader of the base's email links (baseEmailReader): each email link a reader makes from a bare
+// address stays as GFM makes it, with Dispatch's rule for the whole address (wholeEmailLinks) not
+// applied, which is how an address was read before that rule.
 type markdownReader struct {
-	md      goldmark.Markdown
-	display bool
+	md         goldmark.Markdown
+	display    bool
+	baseEmails bool
 }
 
 // blockReader is the configuration every document is read with, its delimiter runs read by
@@ -47,6 +51,11 @@ var blockReader = markdownReader{md: goldmark.New(
 		parser.WithInlineParsers(util.Prioritized(elementInlineCounter{}, -1)),
 	),
 )}
+
+// baseEmailReader is blockReader with the base's email links (markdownReader.baseEmails). Only the
+// write path's fallback reads with it (FallBackEmailLinks), and only a rendering
+// (parseRenderingAsBase); every reader of a document keeps the rule's links.
+var baseEmailReader = markdownReader{md: blockReader.md, baseEmails: true}
 
 // blockParsers is goldmark's default block parsers with its list parser held off an empty item
 // that would interrupt a paragraph (emptyItemGuard), its list and quote parsers opening no
@@ -105,6 +114,13 @@ func ParseRendering(markdown string) (*Node, error) {
 	return parseStamped(markdown, readBackBudget())
 }
 
+// parseRenderingAsBase is ParseRendering of markdown with the base's email links
+// (baseEmailReader), before EnsureBlockIDs, since the fallback reads its links alone
+// (FallBackEmailLinks).
+func parseRenderingAsBase(markdown string) (*Node, error) {
+	return parseMarkdown(baseEmailReader, markdown, fromStart, true, readBackBudget(), nil)
+}
+
 // ParseWithSourceStarts parses markdown as Parse does and also answers, for each of the tree's
 // top-level children, the byte offset in markdown where the goldmark block it was converted from
 // starts (startOf): a paragraph's first line, and every other block's recorded position, so a
@@ -115,7 +131,7 @@ func ParseRendering(markdown string) (*Node, error) {
 // blocks begin (itemblocks.Split).
 func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	var starts []int
-	doc, err := parseMarkdown(markdown, fromStart, true, NewWriteBudget(), func(doc *Node, root ast.Node, _ []byte, rest int) {
+	doc, err := parseMarkdown(blockReader, markdown, fromStart, true, NewWriteBudget(), func(doc *Node, root ast.Node, _ []byte, rest int) {
 		starts = startsInMarkdown(sourceStarts(doc, root, rest), markdown)
 	})
 	if err != nil {
@@ -160,7 +176,7 @@ type OutlineTypedBlock struct {
 // its line. Markdown the parser refuses answers that refusal and no outline.
 func RenderingOutline(markdown string) (Outline, error) {
 	var outline Outline
-	_, err := parseMarkdown(markdown, fromStart, true, readBackBudget(), func(_ *Node, root ast.Node, source []byte, rest int) {
+	_, err := parseMarkdown(blockReader, markdown, fromStart, true, readBackBudget(), func(_ *Node, root ast.Node, source []byte, rest int) {
 		outline = outlineOf(root, source, rest, markdown)
 	})
 	if err != nil {
@@ -192,9 +208,10 @@ func parseStampedAt(markdown string, at origin, budget *WriteBudget) (*Node, err
 // block of live the markdown leaves unchanged keeps its id (carryBlockIDs), which the markdown
 // cannot name, so the write leaves it as it was. A block id of any length is written; one longer
 // than text.MaxBlockIDBytes is simply no graph node (refs.PlanBlocks). A document whose rendering,
-// the markdown it is stored as, reads back otherwise is refused (RefuseMisreadDocument);
-// ParseWritten is this parse with that read-back, for a write that goes on to read the same
-// rendering.
+// the markdown it is stored as, reads back otherwise is refused (RefuseMisreadDocument), unless
+// giving the email addresses whose links do not read back the base's reading makes a tree that
+// reads back (FallBackEmailLinks), which is the tree the write takes; ParseWritten is this parse
+// with that read-back, for a write that goes on to read the same rendering.
 func ParseForWrite(markdown string, live *Node) (*Node, error) {
 	doc, _, err := ParseWritten(markdown, live)
 	return doc, err
@@ -203,7 +220,9 @@ func ParseForWrite(markdown string, live *Node) (*Node, error) {
 // ParseWritten is ParseForWrite with the read-back its refusal of a document that reads back
 // otherwise already made: the markdown the document is stored as and that markdown's tree
 // (WrittenReadBack). A write that stores that rendering and reads it again - for its task items,
-// for its blocks - shares this parse rather than making a second one of the same markdown. A
+// for its blocks - shares this parse rather than making a second one of the same markdown. Where
+// the parse's tree reads back otherwise and the fallback finds a tree that reads back
+// (FallBackEmailLinks), that tree and its read-back are answered, and the write stores them. A
 // refused parse answers the zero read-back.
 func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
 	doc, err := parseForWrite(markdown, live, true, NewWriteBudget())
@@ -211,6 +230,15 @@ func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
 		return nil, WrittenReadBack{}, err
 	}
 	read, misread, refused, err := documentMisread(doc)
+	if misread != "" {
+		fallen, changed, fallenRead, err := fallBackEmailLinks(doc, read)
+		if err != nil {
+			return nil, WrittenReadBack{}, err
+		}
+		if changed {
+			return fallen, fallenRead, nil
+		}
+	}
 	if err := refuseMisread(misread, refused, err); err != nil {
 		return nil, WrittenReadBack{}, err
 	}
@@ -299,10 +327,11 @@ func LineFeedAttrs(attrs map[string]any) map[string]any {
 // as the blocks its lines make. at is where markdown stands in what the caller wrote, which a
 // refusal's line number counts from.
 func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
-	return parseMarkdown(markdown, at, readFrontmatter, budget, nil)
+	return parseMarkdown(blockReader, markdown, at, readFrontmatter, budget, nil)
 }
 
-// parseMarkdown is parseUnstamped that, given read, also hands it what the parse read once the
+// parseMarkdown is parseUnstamped read with reader (blockReader, or baseEmailReader for the
+// fallback's reading of a rendering) that, given read, also hands it what the parse read once the
 // tree is converted and valid: the tree, the goldmark tree root it was converted from, the source
 // root's offsets count, and rest, how many bytes of front matter the parse read ahead of that
 // source, 0 where it read none (a closed front-matter block is never empty). ParseWithSourceStarts
@@ -320,7 +349,7 @@ func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *Wr
 // U+0000 and so keeps its length, and the offsets read hands on are offsets into source until
 // startsInMarkdown maps each of them back to the byte of markdown it stands at.
 func parseMarkdown(
-	markdown string, at origin, readFrontmatter bool, budget *WriteBudget,
+	reader markdownReader, markdown string, at origin, readFrontmatter bool, budget *WriteBudget,
 	read func(doc *Node, root ast.Node, source []byte, rest int),
 ) (doc *Node, err error) {
 	defer recoverPanic(&doc, &err, "reading markdown")
@@ -334,7 +363,7 @@ func parseMarkdown(
 		at.server = max(0, at.server-rest)
 		source = source[rest:]
 	}
-	root, err := blockReader.parse(source, unclosedFrontmatter, budget, at)
+	root, err := reader.parse(source, unclosedFrontmatter, budget, at)
 	if nesting := (nestingError{}); errors.As(err, &nesting) {
 		nesting.line += at.line - 1
 		return nil, nesting

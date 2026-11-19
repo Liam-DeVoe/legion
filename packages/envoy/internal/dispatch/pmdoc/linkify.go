@@ -94,6 +94,9 @@ func (linkifyGuard) Trigger() []byte { return linkifyTriggers }
 var (
 	linkifyBlockKey  = parser.NewContextKey()
 	literalDomainKey = parser.NewContextKey()
+	// baseEmailsKey marks a parse with the base's reading of email addresses
+	// (markdownReader.baseEmails), which CloseBlock leaves as both readers linked them.
+	baseEmailsKey = parser.NewContextKey()
 )
 
 // linkifyBlock is what the guard knows of the textblock goldmark is reading.
@@ -191,13 +194,16 @@ func settleCut(pc parser.Context, parent ast.Node) {
 // CloseBlock settles the guard's last cut, links the addresses the transform reads in parent's
 // text (linkTextAddresses), and then holds each email link either reader made from a bare address
 // there to Dispatch's rule (wholeEmailLinks), unless the write's markdown has passed its element
-// limit, which leaves the tree unread.
+// limit, which leaves the tree unread. A parse with the base's reading (baseEmailsKey) holds no
+// link to the rule: each stays as the reader made it, as GFM links an address.
 func (linkifyGuard) CloseBlock(parent ast.Node, block text.Reader, pc parser.Context) {
 	settleCut(pc, parent)
 	pc.Set(linkifyBlockKey, nil)
 	if count := countedElements(pc); count == nil || !count.passed() {
 		linkTextAddresses(parent, block.Source())
-		wholeEmailLinks(parent, block.Source())
+		if pc.Get(baseEmailsKey) == nil {
+			wholeEmailLinks(parent, block.Source())
+		}
 	}
 }
 

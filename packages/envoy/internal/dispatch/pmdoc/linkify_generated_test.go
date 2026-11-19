@@ -2,6 +2,7 @@ package pmdoc
 
 import (
 	"fmt"
+	classicrand "math/rand"
 	"math/rand/v2"
 	"strings"
 	"testing"
@@ -165,4 +166,104 @@ func TestLinkifyStoresEveryGeneratedAddress(t *testing.T) {
 		}
 	}
 	t.Logf("seeds and bounds %v: %d shapes, %d distinct markdowns for the engine, in %v", emailShapeSets, len(shapes), len(markdowns), time.Since(began))
+}
+
+// testerShapes is what the tester's own generator draws, the generator that found the two shapes
+// of TestLinkifyStoresTheShapesTheTesterFoundRefused: for each of its seeds, 3,000 draws of a
+// prefix, one to six local-part pieces, an `@`, a domain and a suffix, in one of its contexts,
+// each distinct markdown once. Its source is math/rand's classic one, rand.New(rand.NewSource(seed)),
+// kept rather than math/rand/v2's because the shapes it found are the stream that source gives.
+func testerShapes() []string {
+	prefixes := []string{"", "x ", "q/", "a/b/", "key=", "--account=", "(", "\"", "www.", "http://", "https://",
+		"&#45;", "&amp;", "*e*", "`c`", "[t](mailto:a@b.co) ", "<a@b.co>", "_www.", "alice@example.com/", "see: ",
+		"é", "$HOME/", "~", "a&#64;b.co ", "http://x.co/", "q/&#45;", "x;http://", "ftp://"}
+	locals := []string{"a", "b", "Z", "9", "-", ".", "+", "_", "%", "&", "'", "/", "!", "#", "$", "=", "?", "^",
+		"~", "|", "{", "}", "*", "`", "&#45;", "&amp;", "&#x2D;", "&period;", ";", ":", " ", "www.", "\\.", "\\_", "é"}
+	domains := []string{"example.com", "c.co", "b", "a.b.c.test", "ex-ample.co.uk", "x_y.com", "example.com."}
+	suffixes := []string{"", ".", "/x", " and y@z.co", "-", "_", "@d.co", ")", "/bob-smith@example.com", ".www.q.com"}
+	contexts := []string{"%s", "- %s", "> %s", "| a |\n| --- |\n| %s |", "**%s**", "# %s"}
+	seen := map[string]bool{}
+	var shapes []string
+	for _, seed := range []int64{11, 23, 4242} {
+		draw := classicrand.New(classicrand.NewSource(seed))
+		for range 3000 {
+			var b strings.Builder
+			b.WriteString(prefixes[draw.Intn(len(prefixes))])
+			for n := 1 + draw.Intn(6); n > 0; n-- {
+				b.WriteString(locals[draw.Intn(len(locals))])
+			}
+			b.WriteString("@")
+			b.WriteString(domains[draw.Intn(len(domains))])
+			b.WriteString(suffixes[draw.Intn(len(suffixes))])
+			shape := strings.Replace(contexts[draw.Intn(len(contexts))], "%s", b.String(), 1) + "\n"
+			if !seen[shape] {
+				seen[shape] = true
+				shapes = append(shapes, shape)
+			}
+		}
+	}
+	return shapes
+}
+
+// baseParseRefusal is the base's refusal of a write of markdown, its parse (parseForWrite) read
+// with the base's email links (baseEmailReader), as a write read an address before Dispatch's
+// rule, or nil where that parse reads it. The write's check of its rendering is not the base's
+// here: this build's renderer spells a run for the rule's reader (runSpelling), so the base's
+// read-back of its rendering would refuse text the base stores, as it reads `**see:
+// a&~&#x2D;@a.b.c.test_**`, rendered `**see: a&~-@a.b.c.test\_**`, with a link on
+// `-@a.b.c.test`.
+func baseParseRefusal(markdown string) error {
+	_, err := parseMarkdown(baseEmailReader, LineFeeds(markdown), fromStart, true, NewWriteBudget(), nil)
+	return err
+}
+
+// R4 (INFRA-4224) stores every text the base stores, each address as the rule reads it or, where
+// that tree has no spelling that reads back, as the base reads it (FallBackEmailLinks). The
+// tester's generator (testerShapes) draws 8,994 distinct shapes, and for every one the base's
+// parse reads (baseParseRefusal), a write of it is not refused (ParseWritten), the text it stores
+// reads back as the tree it stores, and the browser editor's engine reads that text as that tree.
+// The shapes the base refuses too, tables holding `|`, are counted and named in the log; the test
+// stops after a few failures.
+func TestLinkifyStoresEveryShapeTheTesterDraws(t *testing.T) {
+	const most = 5
+	began := time.Now()
+	shapes := testerShapes()
+	if len(shapes) != 8994 {
+		t.Fatalf("the tester's generator draws %d distinct shapes, want 8,994", len(shapes))
+	}
+	failures := 0
+	fail := func(format string, args ...any) {
+		t.Helper()
+		t.Errorf(format, args...)
+		if failures++; failures == most {
+			t.Fatalf("stopped after %d failures", most)
+		}
+	}
+	var refusedByBase, written []string
+	var stored []*Node
+	for _, shape := range shapes {
+		if err := baseParseRefusal(shape); err != nil {
+			refusedByBase = append(refusedByBase, fmt.Sprintf("%q (%v)", shape, err))
+			continue
+		}
+		tree, read, err := ParseWritten(shape, nil)
+		if err != nil {
+			fail("the base stores %q, and a write of it is refused: %v", shape, err)
+			continue
+		}
+		if back, err := ParseRendering(read.Markdown); err != nil || !back.Equal(tree) {
+			fail("a write of %q stores %q, which Go reads back as %s (%v), not as the stored tree %s", shape, read.Markdown, inlineSummaries(back), err, inlineSummaries(tree))
+		}
+		stored = append(stored, tree)
+		written = append(written, read.Markdown)
+	}
+	t.Logf("%d shapes: the base stores %d and refuses %d, in %v", len(shapes), len(stored), len(refusedByBase), time.Since(began))
+	t.Logf("the shapes the base refuses:\n%s", strings.Join(refusedByBase, "\n"))
+	readings := engineReadings(t, written)
+	for index, tree := range stored {
+		if engine := readings[index]; engine == nil || !withoutBlockIDs(engine).Equal(withoutBlockIDs(tree)) {
+			fail("the engine reads the stored %q as %s, not as the stored tree %s", written[index], inlineSummaries(engine), inlineSummaries(tree))
+		}
+	}
+	t.Logf("%d stored texts read by the engine, in %v", len(written), time.Since(began))
 }

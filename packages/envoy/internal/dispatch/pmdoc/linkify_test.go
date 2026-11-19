@@ -332,21 +332,7 @@ func inlineRuns(doc *Node) []inlineRun {
 // writer wrote or starts `_www.`: they store as the reader read them, the later address linked as
 // the reader linked it.
 func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("testdata", "refused-email-shapes.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var shapes []refusedEmailShape
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		var shape refusedEmailShape
-		if err := json.Unmarshal([]byte(line), &shape); err != nil {
-			t.Fatalf("testdata/refused-email-shapes.jsonl: %v", err)
-		}
-		shapes = append(shapes, shape)
-	}
-	if len(shapes) != 75 {
-		t.Fatalf("testdata/refused-email-shapes.jsonl holds %d shapes, want 75", len(shapes))
-	}
+	shapes := readRefusedEmailShapes(t)
 	docs := make([]*Node, len(shapes))
 	noted := map[string]int{}
 	var markdowns []string
@@ -420,45 +406,166 @@ func TestLinkifyStoresEveryRefusedShape(t *testing.T) {
 	}
 }
 
+// readRefusedEmailShapes is every row of testdata/refused-email-shapes.jsonl, which holds 75.
+func readRefusedEmailShapes(t *testing.T) []refusedEmailShape {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "refused-email-shapes.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shapes []refusedEmailShape
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var shape refusedEmailShape
+		if err := json.Unmarshal([]byte(line), &shape); err != nil {
+			t.Fatalf("testdata/refused-email-shapes.jsonl: %v", err)
+		}
+		shapes = append(shapes, shape)
+	}
+	if len(shapes) != 75 {
+		t.Fatalf("testdata/refused-email-shapes.jsonl holds %d shapes, want 75", len(shapes))
+	}
+	return shapes
+}
+
+// runHolding is the first inline run of doc whose text holds text (inlineRuns), or the zero run
+// where none does.
+func runHolding(doc *Node, text string) inlineRun {
+	for _, run := range inlineRuns(doc) {
+		if strings.Contains(run.Text, text) {
+			return run
+		}
+	}
+	return inlineRun{}
+}
+
+// testerLaterAddress is the second address of each shape the tester found refused, which the
+// rule reads with no link and the base links whole.
+const testerLaterAddress = "smith@example.com"
+
 // R4 stores every text the base stores (main 948aeca5 stores each of these), each address as
 // written or linked whole. These two hold an earlier email link the reader made and then a second
 // address after `/`, as `alice@example.com/bob-smith@example.com` does, where the earlier link
 // starts `b-_www.` or after a code span and a character reference: the tester's own generator found
-// them (seeds 11, 23 and 4242 over its own pieces). A write of each is not refused, its rendering
-// reads back as its tree, and the engine reads the markdown and the rendering as Go does.
+// them (seeds 11, 23 and 4242 over its own pieces). The rule reads `smith@example.com` with no
+// link, but the renderer writes the earlier email link explicit, and after an explicit link the
+// rule keeps the link on `smith@example.com`, so no spelling of the rule's tree reads back: the
+// write takes the base's reading of that address (FallBackEmailLinks). For each, (1) a write is
+// not refused; (2) the tree the write stores renders to the text it stores, which reads back as
+// that tree; (3) the browser editor's engine reads the stored text as the stored tree; and (4) the
+// raw shape keeps the rule's reading, where Parse and the engine link nothing on
+// `smith@example.com`, while the stored tree holds the base's link to it.
 func TestLinkifyStoresTheShapesTheTesterFoundRefused(t *testing.T) {
 	shapes := []string{
 		"b-_www.@example.com./bob-smith@example.com\n",
 		"`c`&period;.@x_y.com/bob-smith@example.com\n",
 	}
-	docs := make([]*Node, len(shapes))
+	stored := make([]*Node, len(shapes))
 	var markdowns []string
 	for index, shape := range shapes {
 		if _, err := ParseForWrite(shape, nil); err != nil {
 			t.Errorf("a write of %q is refused: %v", shape, err)
 		}
-		doc, err := Parse(shape)
+		tree, written, err := ParseWritten(shape, nil)
 		if err != nil {
-			t.Errorf("Parse(%q): %v", shape, err)
+			t.Errorf("ParseWritten(%q): %v", shape, err)
 			markdowns = append(markdowns, shape, shape)
 			continue
 		}
-		rendering := mustRender(t, doc)
-		if back, err := Parse(rendering); err != nil || !back.Equal(doc) {
-			t.Errorf("%q is written %q, which Go reads back as %s (%v), not %s", shape, rendering, inlineSummaries(back), err, inlineSummaries(doc))
+		if rendering := mustRender(t, tree); rendering != written.Markdown {
+			t.Errorf("a write of %q stores %q, and its tree renders to %q", shape, written.Markdown, rendering)
 		}
-		docs[index] = doc
-		markdowns = append(markdowns, shape, rendering)
+		if back, err := ParseRendering(written.Markdown); err != nil || !back.Equal(tree) {
+			t.Errorf("a write of %q stores %q, which Go reads back as %s (%v), not as the stored tree %s", shape, written.Markdown, inlineSummaries(back), err, inlineSummaries(tree))
+		}
+		if run := runHolding(tree, testerLaterAddress); run != (inlineRun{Text: testerLaterAddress, Link: "mailto:" + testerLaterAddress}) {
+			t.Errorf("a write of %q stores %s, holding %v where the base links %s whole", shape, inlineSummaries(tree), run, testerLaterAddress)
+		}
+		doc, err := Parse(shape)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", shape, err)
+		} else if run := runHolding(doc, testerLaterAddress); run.Link != "" {
+			t.Errorf("Go reads %q as %s, linking %v, where the rule links nothing on %s", shape, inlineSummaries(doc), run, testerLaterAddress)
+		}
+		stored[index] = tree
+		markdowns = append(markdowns, shape, written.Markdown)
 	}
 	readings := engineReadings(t, markdowns)
 	for index, shape := range shapes {
-		if docs[index] == nil {
+		if stored[index] == nil {
 			continue
 		}
-		for offset, markdown := range markdowns[2*index : 2*index+2] {
-			if engine := readings[2*index+offset]; engine == nil || !withoutBlockIDs(engine).Equal(withoutBlockIDs(docs[index])) {
-				t.Errorf("the engine reads %q as %s, and Go reads %q as %s", markdown, inlineSummaries(engine), shape, inlineSummaries(docs[index]))
+		if engine := readings[2*index+1]; engine == nil || !withoutBlockIDs(engine).Equal(withoutBlockIDs(stored[index])) {
+			t.Errorf("a write of %q stores %q, which the engine reads as %s, not as the stored tree %s", shape, markdowns[2*index+1], inlineSummaries(engine), inlineSummaries(stored[index]))
+		}
+		if engine := readings[2*index]; engine == nil || runHolding(engine, testerLaterAddress).Link != "" {
+			t.Errorf("the engine reads %q as %s, where the rule links nothing on %s", shape, inlineSummaries(engine), testerLaterAddress)
+		}
+	}
+}
+
+// FallBackEmailLinks gives an address the base's reading only where the rule's reading of it
+// cannot be written so that it reads back. The rule reads the first shape the tester found refused
+// with no link on `smith@example.com`, a tree no spelling reads back: the fallback gives that
+// address the base's link and answers a tree that reads back, with its read-back, keeping the
+// paragraph's block id and its text, a line after a hard break included, and leaving the tree it
+// was given as it was. Each shape of testdata/refused-email-shapes.jsonl already reads back, and
+// comes back as the tree it was given, uncopied, with changed false and its own read-back.
+func TestLinkifyFallsBackToTheBaseWhereTheRuleDoesNotReadBack(t *testing.T) {
+	const shape = "b-_www.@example.com./bob-smith@example.com\n"
+	// inlineKinds is the kind of each inline node of doc's first block that is no text.
+	inlineKinds := func(doc *Node) []string {
+		var kinds []string
+		for _, node := range doc.Children[0].Children {
+			if node.Type != "text" {
+				kinds = append(kinds, node.Type)
 			}
+		}
+		return kinds
+	}
+	for _, markdown := range []string{shape, strings.TrimSuffix(shape, "\n") + "\\\nand on\n"} {
+		doc, err := Parse(markdown)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", markdown, err)
+		}
+		given := cloneNode(doc)
+		if run := runHolding(doc, testerLaterAddress); run.Link != "" {
+			t.Fatalf("Go reads %q as %s, linking %v, where the rule links nothing on %s", markdown, inlineSummaries(doc), run, testerLaterAddress)
+		}
+		tree, changed, read, err := FallBackEmailLinks(doc)
+		if err != nil || !changed {
+			t.Fatalf("FallBackEmailLinks(Parse(%q)) = %s, changed %v, %v; want the base's link on %s", markdown, inlineSummaries(tree), changed, err, testerLaterAddress)
+		}
+		if run := runHolding(tree, testerLaterAddress); run != (inlineRun{Text: testerLaterAddress, Link: "mailto:" + testerLaterAddress}) {
+			t.Errorf("the fallback of %q is %s, holding %v where the base links %s whole", markdown, inlineSummaries(tree), run, testerLaterAddress)
+		}
+		if TextContent(tree) != TextContent(doc) || !slices.Equal(inlineKinds(tree), inlineKinds(doc)) {
+			t.Errorf("the fallback of %q is %s, not the text and inline nodes of %s", markdown, inlineSummaries(tree), inlineSummaries(doc))
+		}
+		if rendering := mustRender(t, tree); rendering != read.Markdown {
+			t.Errorf("the fallback of %q renders to %q, and answers the read-back of %q", markdown, rendering, read.Markdown)
+		}
+		if back, err := ParseRendering(read.Markdown); err != nil || !back.Equal(tree) || !read.Tree.Equal(tree) {
+			t.Errorf("the fallback of %q is %s, written %q, which Go reads back as %s (%v), answered as %s", markdown, inlineSummaries(tree), read.Markdown, inlineSummaries(back), err, inlineSummaries(read.Tree))
+		}
+		if id := blockIDOf(doc.Children[0]); id == "" || blockIDOf(tree.Children[0]) != id {
+			t.Errorf("the fallback of %q gives its paragraph the block id %q, not %q", markdown, blockIDOf(tree.Children[0]), id)
+		}
+		if !doc.EqualWithBlockIDs(given) {
+			t.Errorf("the fallback of %q wrote the tree it was given: %s, was %s", markdown, inlineSummaries(doc), inlineSummaries(given))
+		}
+	}
+	for _, shape := range readRefusedEmailShapes(t) {
+		doc, err := Parse(shape.Markdown)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", shape.Markdown, err)
+			continue
+		}
+		tree, changed, read, err := FallBackEmailLinks(doc)
+		if err != nil || changed || tree != doc {
+			t.Errorf("FallBackEmailLinks(Parse(%q)) = %s, changed %v, %v; want the tree it was given, unchanged", shape.Markdown, inlineSummaries(tree), changed, err)
+		}
+		if rendering := mustRender(t, doc); rendering != read.Markdown || read.Tree == nil || !read.Tree.Equal(doc) {
+			t.Errorf("FallBackEmailLinks(Parse(%q)) answers the read-back %q, %s, not its rendering %q", shape.Markdown, read.Markdown, inlineSummaries(read.Tree), rendering)
 		}
 	}
 }
