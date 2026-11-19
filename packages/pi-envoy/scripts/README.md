@@ -1486,7 +1486,9 @@ unspent, so the same completion without the rating is taken: only the completion
 retro rates the plan, and no run stands in `retro`. A request body a string of which holds U+0000
 is refused 400 before any route reads it, naming the first such string's place and where the
 character stands in it in code points, in the daemon's words. Both refusals are main's since
-#4488, read off the label's source (`labelShapes`' `refusesRating` and `refusesNul`). Each move
+#4488, read off the label's source (`labelShapes`' `refusesRating` and `refusesNul`); where the
+source holds no refusal of such a body, main `ff2a10ef`'s, the body is taken to its route as any
+other is. Each move
 into a phase that shows another status writes that status to the run's own Dispatch before the
 request that made the move is answered, as the daemon's outbox runs a `dispatch_status` row:
 under the daemon's own session, `legion-daemon:<PROJECT>` (the session the seeds write each

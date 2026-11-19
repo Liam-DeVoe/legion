@@ -173,15 +173,12 @@
  * `WORLD_FIX_ATTEMPTS`), and none where it serves none, main's since contract 59.
  *
  * A request body any string of which, a member's name or a value, holds U+0000 is refused 400
- * before any route reads it, where the label's daemon refuses one (`NUL_REFUSED`, main's since
- * #4488), in that daemon's words, naming the first such string's place in the body and where the
- * character stands in it (daemon-pane.ts's `NUL_REFUSAL`, `nulRefusal` here): an agent's own text,
- * a completion's summary or a move's reason, can carry one, and the `legion` tool sends it as the
- * agent gave it. What a daemon of main `ff2a10ef`'s shape, whose decoder reads no string of a
- * body, then does with such text at its store is not modelled: this takes the body as it takes any
- * other. Unreachable: no batch's label is of that shape: both labels of a batch are main
- * `724196ef` or after, the base main `724196ef` by the architect's standing rule, so that shape is
- * read by the rows alone (packages/pi-envoy/scripts/README.md, the paragraph on `labelShapes`).
+ * before any route reads it, where the label's daemon source holds that refusal (`NUL_REFUSED`,
+ * main's since #4488), in that daemon's words, naming the first such string's place in the body
+ * and where the character stands in it (daemon-pane.ts's `NUL_REFUSAL`, `nulRefusal` here): an
+ * agent's own text, a completion's summary or a move's reason, can carry one, and the `legion` tool
+ * sends it as the agent gave it. Where the source holds no such refusal, main `ff2a10ef`'s, whose
+ * decoder reads no string of a body, the body is taken to its route as any other is.
  *
  * The session holding each live role of the issue is published to the run's own Dispatch as the
  * daemon publishes it (`PUT /api/v1/issues/{key}/role-holders`: packages/daemon/internal/daemon/

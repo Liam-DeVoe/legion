@@ -133,12 +133,6 @@
       "reason": "the daemon writes the plan at the run's move out of admitted and at a hand-over's re-admission, and no run begins in admitted or is re-admitted (rig.sh's worker_boots); the plan's one read, GET /api/v1/projects/{key}/plans, lists a project's finished issues alone, and no move of the stand-in takes the world's issue past accepting"
     },
     {
-      "name": "a body holding U+0000 at a daemon of main ff2a10ef's shape",
-      "check": "stand-ins: a behaviour a stand-in declares not modelled",
-      "at": "daemon-standin\\.ts:\\d+ What a daemon of main `ff2a10ef`'s shape, whose decoder reads no string of a body, .* is not modelled: .* Unreachable: no batch's label is of that shape",
-      "reason": "both labels of a batch are main 724196ef or after, the base main 724196ef by the architect's standing rule, and main's daemon since #4488 refuses such a body, which the stand-in models (daemon-standin.ts's nulRefusal); the ff2a10ef shape is read by the rows alone"
-    },
-    {
       "name": "a head that conflicts with its base",
       "check": "stand-ins: a behaviour a stand-in declares not modelled",
       "at": "daemon-standin\\.ts:\\d+ A head that conflicts with its base is not modelled, .* Unreachable: no world's head conflicts with its base, and no world's base moves during a run",

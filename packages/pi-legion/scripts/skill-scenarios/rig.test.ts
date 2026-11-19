@@ -10665,7 +10665,10 @@ docker() {
   const DESCRIBES =
     "export const LegionStateResponse = { safeParse: () => ({ success: true }) };\n";
   /** services_up for `labels`, each with a checkout of its own under the work directory, whose
-   * packages/contracts/src/legion-api.ts is `contracts`' source for that label, or `DESCRIBES`. */
+   * packages/contracts/src/legion-api.ts is `contracts`' source for that label, or `DESCRIBES`, and
+   * whose packages/daemon/internal/api/state.go is this checkout's: main's shape of the state's pull
+   * request, which the contract check builds its bodies by (daemon-pane.ts's `servesFixAttempts`),
+   * as both labels of a batch are main's now. */
   function up(
     env: Record<string, string>,
     labels: string[] = ["head"],
@@ -10680,6 +10683,12 @@ docker() {
       const contract = path.join(work, "checkouts", label, "packages", "contracts", "src");
       mkdirSync(contract, { recursive: true });
       writeFileSync(path.join(contract, "legion-api.ts"), contracts[label] ?? DESCRIBES);
+      const api = path.join(work, "checkouts", label, "packages", "daemon", "internal", "api");
+      mkdirSync(api, { recursive: true });
+      cpSync(
+        path.join(CHECKOUT, "packages", "daemon", "internal", "api", "state.go"),
+        path.join(api, "state.go")
+      );
     }
     const result = bash(
       `${servicesUp}\n${stubs}\nwork=$1 S=$1/services root=$2 here=$3 tag=rig-test\nservices_postgres=$S/postgres-url tokens=$S/tokens\nshift 3\nservices_up "$@"`,

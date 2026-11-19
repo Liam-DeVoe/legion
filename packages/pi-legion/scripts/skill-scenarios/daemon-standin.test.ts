@@ -3104,44 +3104,107 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a stand-in that takes a request body a string of which holds U+0000, which main's
-// daemon since #4488 refuses 400 before any route reads it, the claim's secret and the grant
-// among them (claims.go's `decodeJSON`, storable_text.go's `unstorableJSON`), in its words
-// (daemon-pane.ts's `NUL_REFUSAL`); one that names a later string than the first the body
-// writes, or a nested one otherwise than Dispatch's walk names it, a member's name among them; and
-// one that counts where the character stands in UTF-16 units rather than code points. An agent's
-// summary or reason is its own text, which the `legion` tool sends as the agent gave it.
+// Catches: a stand-in that takes a request body a string of which holds U+0000 for a label whose
+// daemon refuses one, main's since #4488, which refuses it 400 before any route reads it, the
+// claim's secret and the grant among them (claims.go's `decodeJSON`, storable_text.go's
+// `unstorableJSON`), in its words (daemon-pane.ts's `NUL_REFUSAL`): this checkout, and main
+// `724196ef` where SKILL_SCENARIOS_BASE_CHECKOUT names it; one that names a later string than the
+// first the body writes, or a nested one otherwise than Dispatch's walk names it, a member's name
+// among them; and one that counts where the character stands in UTF-16 units rather than code
+// points. An agent's summary or reason is its own text, which the `legion` tool sends as the agent
+// gave it.
 test.skipIf(skip)(
   "a body holding U+0000 is refused before its route reads it, naming the first string that holds one",
   async () => {
-    const daemon = await standin("reviewer");
+    for (const checkout of [CHECKOUT, ...(baseCheckout === undefined ? [] : [baseCheckout])]) {
+      const daemon = await standin("reviewer", "", undefined, { checkout });
+      try {
+        const refusal = (place: string, at: number) => ({
+          error: `invalid request body: ${place} holds a NUL character (U+0000) at character ${at}, which the daemon cannot store`,
+        });
+        const summary = await daemon.complete(true, {
+          summary: "the 🦀 round\u0000 is in",
+          planReason: "\u0000",
+        });
+        expect([checkout, summary.status, await summary.json()]).toEqual([
+          checkout,
+          400,
+          refusal("summary", 12),
+        ]);
+        const ready = await daemon.post("/legion/v1/claims/ready", {
+          secret: fixtureSecret("other"),
+          capabilities: {
+            measuredAt: "2026-11-19T10:00:00Z",
+            rows: [
+              { name: "github", ok: true, detail: "ok" },
+              { name: "mcp", ok: false, detail: "off\u0000" },
+            ],
+          },
+        });
+        expect([checkout, ready.status, await ready.json()]).toEqual([
+          checkout,
+          400,
+          refusal("capabilities.rows[1].detail", 4),
+        ]);
+        const named = await daemon.post("/legion/v1/grants", { "session\u0000Id": "01a0f2cc" });
+        expect([checkout, named.status, await named.json()]).toEqual([
+          checkout,
+          400,
+          refusal("session\\u0000Id", 8),
+        ]);
+        expect(daemon.logged().filter((line) => line.status === 400)).toHaveLength(3);
+        expect([checkout, (await daemon.complete(true)).status]).toEqual([checkout, 200]);
+      } finally {
+        daemon.stop();
+      }
+    }
+  },
+  600_000
+);
+
+/** A copy of this checkout's daemon module whose decoder reads no string of a body, as main
+ * `ff2a10ef`'s does (daemon-pane.ts's `DECODER_WITHOUT_WALK`), and is this checkout's in all
+ * else. Made once for the file. */
+let walkless: string | undefined;
+function walklessCheckout(): string {
+  if (walkless !== undefined) return walkless;
+  const checkout = path.join(work, "walkless-checkout");
+  const daemon = path.join(checkout, "packages", "daemon");
+  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
+  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
+  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const claims = path.join(daemon, "internal", "api", "claims.go");
+  const walking = readFileSync(claims, "utf8");
+  const reading = walking.replace(
+    "\treturn body, unstorableJSON(body)\n}",
+    "\treturn body, nil\n}"
+  );
+  expect(reading).not.toBe(walking);
+  writeFileSync(claims, reading);
+  walkless = checkout;
+  return checkout;
+}
+
+// Catches: a stand-in that refuses a body holding U+0000 for a label whose daemon's decoder reads
+// no string of a body, main `ff2a10ef`'s shape (`labelShapes`' `refusesNul` false): that decoder
+// takes the body, and each route answers it as the stand-in answers any other, a claim's ready
+// and a phase's completion among them.
+test.skipIf(skip)(
+  "a label whose decoder reads no string of a body takes one holding U+0000 to its route",
+  async () => {
+    const daemon = await standin("reviewer", "", undefined, { checkout: walklessCheckout() });
     try {
-      const refusal = (place: string, at: number) => ({
-        error: `invalid request body: ${place} holds a NUL character (U+0000) at character ${at}, which the daemon cannot store`,
-      });
-      const summary = await daemon.complete(true, {
-        summary: "the 🦀 round\u0000 is in",
-        planReason: "\u0000",
-      });
-      expect([summary.status, await summary.json()]).toEqual([400, refusal("summary", 12)]);
       const ready = await daemon.post("/legion/v1/claims/ready", {
-        secret: "not the claim's",
+        secret: SECRET,
         capabilities: {
           measuredAt: "2026-11-19T10:00:00Z",
-          rows: [
-            { name: "github", ok: true, detail: "ok" },
-            { name: "mcp", ok: false, detail: "off\u0000" },
-          ],
+          rows: [{ name: "mcp", ok: false, detail: "off\u0000" }],
         },
       });
-      expect([ready.status, await ready.json()]).toEqual([
-        400,
-        refusal("capabilities.rows[1].detail", 4),
-      ]);
-      const named = await daemon.post("/legion/v1/grants", { "session\u0000Id": "01a0f2cc" });
-      expect([named.status, await named.json()]).toEqual([400, refusal("session\\u0000Id", 8)]);
-      expect(daemon.logged().filter((line) => line.status === 400)).toHaveLength(3);
-      expect((await daemon.complete(true)).status).toBe(200);
+      expect(ready.status).toBe(204);
+      const summary = await daemon.complete(true, { summary: "the 🦀 round\u0000 is in" });
+      expect([summary.status, await summary.json()]).toEqual([200, {}]);
+      expect(daemon.logged().filter((line) => line.status === 400)).toEqual([]);
     } finally {
       daemon.stop();
     }
