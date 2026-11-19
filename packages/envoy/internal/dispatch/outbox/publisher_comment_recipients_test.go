@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1505,5 +1506,50 @@ func TestAStoppingBatchReleasesTheEventsWhoseRecipientQueryFailed(t *testing.T) 
 		})
 		stop()
 		assertReleased(t, database, commented, message)
+	})
+}
+
+// R6: a thread's sessions "count while Envoy's registry reads them as live or unresponsive. Where
+// none of them counts, or the registry does not answer, the reply reaches the sessions that the
+// documents credit" (dispatch://INFRA-3686/spec). One session X, the root author of a thread on
+// T-1, has an interest record the listener cannot read: GET /v1/registry/session-x answers 500
+// (writeInterestRecordUnreadable), while the registry answers every other read. The person replies
+// in X's thread and, in the same batch, in the thread of session B, which the registry reads live.
+// B's thread has a session that counts and a registry that answers for it, so the reply in it
+// reaches B and none of A and C, whatever X's read answered.
+func TestOneSessionsUnreadableRecordLeavesAnotherThreadsRuleAlone(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	issue := seedThreadRuleIssue(t, database)
+	x := model.Actor{Kind: "session", ID: "session-x"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
+		switch {
+		case id == x.ID:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"envoy: the interest record of session session-x is unreadable: malformed interest"}`))
+		case id == issue.b.ID:
+			_, _ = w.Write([]byte(`{"session_id":"session-b","state":"live"}`))
+		default:
+			// The other writers of X's thread are gone from the registry; their reads answer a
+			// little later than X's.
+			time.Sleep(300 * time.Millisecond)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no live session ` + id + `","state":"gone"}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	rootX := seedThreadComment(t, database, "T-1", "", x, nil)
+	for i := 2; i <= 8; i++ {
+		seedThreadComment(t, database, "T-1", "", model.Actor{Kind: "session", ID: fmt.Sprintf("session-gone-%d", i)}, &rootX)
+	}
+	replyX := seedThreadComment(t, database, "T-1", "", issue.person, &rootX)
+	appendCommentEvent(t, database, broker, "comment.created", issue.person, model.Comment{ID: replyX, ReplyTo: &rootX})
+	rootB := seedThreadComment(t, database, "T-1", "", issue.b, nil)
+	replyB := seedThreadComment(t, database, "T-1", "", issue.person, &rootB)
+	inB := appendCommentEvent(t, database, broker, "comment.created", issue.person, model.Comment{ID: replyB, ReplyTo: &rootB})
+	checkSessionRecipientsReading(t, database, envoy.New(server.URL), []recipientCheck{
+		{event: inB, want: []string{issue.b.ID}},
 	})
 }
