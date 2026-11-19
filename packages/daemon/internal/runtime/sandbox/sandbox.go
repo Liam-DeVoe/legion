@@ -208,9 +208,13 @@ type Runtime struct {
 	// (meanToEndPod), written before the Sandbox patch or delete that carries it out. podEnds is,
 	// by pod uid, what the daemon read about the cause of a pod's end (capturePodEnd), captured
 	// where the informer delivers that end because neither fact it rests on can be read once the
-	// end is final. The first is consumed by the second (takeIntendedEnd) and both expire
-	// (podEndRecordLife), so neither grows without bound and neither answers for an end it is not
-	// of. Every read and write of both runs under mu.
+	// end is final. The first is consumed by the second (takeIntendedEnd) and expires
+	// podEndRecordLife after the act it was written for, so it answers for no later end of a pod
+	// that kept running. The second stands while its pod is in the pods informer's store and for
+	// podEndRecordLife after the pod leaves it, since a node's failure can hold a pod there under
+	// its deletion timestamp for longer than that before any claim of it is judged for its end.
+	// Both are pruned wherever either is written (prunePodEnds), so neither grows without bound,
+	// and neither answers for an end it is not of. Every read and write of both runs under mu.
 	intendedEnds map[string]intendedEnd
 	podEnds      map[string]podEnd
 	// occupiedCaches are the cache names RepositoryCache found held by another repository's cache and

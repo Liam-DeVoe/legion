@@ -13,23 +13,36 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// podEndRecordLife is how long each of the two records a pod's end needs stands: the daemon's own
-// record that it means to end a pod (intendedEnds), written before the act and read when the end
-// arrives, and the reading the end was captured as (podEnds), written where the informer delivers
-// the end and read again by each claim of that pod as it is evaluated.
+// podEndRecordLife is how long each of the two records a pod's end needs stands past the moment
+// it is counted from: the daemon's own record that it means to end a pod (intendedEnds), written
+// before the act and read when the end arrives, counted from the act; and the reading the end was
+// captured as (podEnds), written where the informer delivers the end and read again by each claim
+// of that pod as it is evaluated, counted from the moment the pod left the pods informer's store
+// (podEnd.goneAt). A reading stands for as long as its pod is in the store, however long that is.
 //
-// It is long enough that every claim of the pod reaches its verdict while the reading stands: the
-// six roles of an issue pod share one pod and are evaluated one at a time, each marked for the
-// running Observe by the same informer event that captured the reading, and the slowest of them
-// waits a probe interval (30 seconds in the deployment's configuration) and the API reads one
-// evaluation makes. Ten minutes is twenty such intervals.
+// The reading is counted from the pod's leaving and not from its making because an end from
+// outside the pod can take longer than this to finish, and no claim of the pod is judged for it
+// until it has: the mapping reads a pod that still runs under a deletion timestamp as alive, so a
+// claim's first ending verdict comes once the pod has left the store (Gone) or its Sandbox holds a
+// pod of a new uid (NotRecordedProcess). A node that fails holds its pods in the store under their
+// deletion timestamps through the taint manager's evictions and the node's own grace, which can
+// run well past ten minutes before the pods are deleted and the Sandbox controller makes new ones.
+// A reading timed from its making would have expired by then, and that end would be charged as one
+// the daemon read neither way.
 //
-// It is short enough that a pod which keeps running outlives it, which is what the record of an
-// intended end needs: the daemon patches the Sandbox, the patch does not take, the pod runs on,
-// and the pod's next genuine end must be read for what it is rather than taken for the end that
-// patch meant to make. An issue pod runs for hours, so a record ten minutes old belongs to an act
-// whose end never came, and prunePodEnds drops it rather than letting it answer for an end that
-// is not the one it was written for.
+// It is long enough that every claim of the pod reaches its verdict while the reading stands once
+// the pod has left the store: the six roles of an issue pod share one pod and are evaluated one at
+// a time, each marked for the running Observe by the informer event that delivered the pod's
+// delete or its successor, and the slowest of them waits a probe interval (30 seconds in the
+// deployment's configuration) and the API reads one evaluation makes. Ten minutes is twenty such
+// intervals.
+//
+// The record of an intended end keeps counting from the act, because it must be short enough that
+// a pod which keeps running outlives it: the daemon patches the Sandbox, the patch does not take,
+// the pod runs on, and the pod's next genuine end must be read for what it is rather than taken for
+// the end that patch meant to make. An issue pod runs for hours, so a record ten minutes old belongs
+// to an act whose end never came, and prunePodEnds drops it rather than letting it answer for an
+// end that is not the one it was written for.
 const podEndRecordLife = 10 * time.Minute
 
 // deletedByAnother is the reading of a pod the daemon found being deleted with no act of its own
@@ -300,15 +313,37 @@ type intendedEnd struct {
 
 // podEnd is what the daemon read about the cause of one pod's end: the reading the supervisor
 // decides on (runtime.PodEndReading), the words that reading was made from, the reason the cluster
-// gave where it gave one, the cause the daemon tells in plain words where the end is one of the
-// pod's own it names (runtime.DeathCause: overRequest, selfEvictedCause), and the moment it was
-// read. The cause is kept here because the kubelet's message it is read from leaves with the pod.
+// gave where it gave one, and the cause the daemon tells in plain words where the end is one of the
+// pod's own it names (runtime.DeathCause: overRequest, selfEvictedCause). The cause is kept here
+// because the kubelet's message it is read from leaves with the pod.
+//
+// Beside the reading it keeps the pod's name, which the pods informer's store holds the pod by,
+// and goneAt, the moment the daemon heard the pod leave that store: the informer's delete of it
+// (capturePodEnd), or the first prune that found the store holding no pod of its uid under that
+// name (prunePodEnds). goneAt is zero while the store holds the pod, and the reading's
+// podEndRecordLife is counted from it (expired).
 type podEnd struct {
 	reading runtime.PodEndReading
 	cause   string
 	reason  string
 	death   runtime.DeathCause
-	at      time.Time
+	name    string
+	goneAt  time.Time
+}
+
+// expired is whether the reading has outlived podEndRecordLife at now: its pod left the informer's
+// store that long ago. A reading whose pod the store still holds has not, however long ago it was
+// made, since a node's failure can hold a pod there under its deletion timestamp for longer than
+// that before any claim of it is judged for its end (podEndRecordLife).
+func (e podEnd) expired(now time.Time) bool {
+	return !e.goneAt.IsZero() && now.Sub(e.goneAt) >= podEndRecordLife
+}
+
+// sameReading is whether e reads a pod's end as o does: the same reading, made from the same words,
+// with the same cause told in plain words. A later event of the pod read that way changes nothing
+// a claim is answered and writes no second line (capturePodEnd).
+func (e podEnd) sameReading(o podEnd) bool {
+	return e.reading == o.reading && e.cause == o.cause && e.death == o.death
 }
 
 // detail is what a claim's observation of this end says of it, after the mapping's own detail: the
@@ -373,18 +408,44 @@ func (r *Runtime) takeIntendedEnd(uid string) (string, bool) {
 	return intended.act, true
 }
 
-// prunePodEnds drops every record of an intended end and every captured reading that has outlived
-// podEndRecordLife. It runs wherever one of them is written, so neither map grows without bound on
-// a daemon that has watched pods come and go for weeks. Called with r.mu held.
+// prunePodEnds drops every record of an intended end that has outlived podEndRecordLife since its
+// act, and every captured reading whose pod left the informer's store that long ago
+// (podEnd.expired). It runs wherever one of them is written, so neither map grows without bound on
+// a daemon that has watched pods come and go for weeks: the readings it keeps are of the pods in
+// the store and of those that left it within the last podEndRecordLife.
+//
+// A reading is timed from the informer's delete of its pod (capturePodEnd), and here, where that
+// delete never comes, from the first prune that finds the store holding no pod of its uid under its
+// name. A pod can leave the store with no delete of its own delivered: where the watch missed both
+// the pod's delete and its successor's add, the relist finds the new pod under the same name, and
+// client-go hands the handlers an update from the old pod to the new one (processDeltas), so
+// notify never hears the old uid go. Without this, the reading of such a pod would stand for ever.
+// Called with r.mu held.
 func (r *Runtime) prunePodEnds() {
 	now := r.now()
 	maps.DeleteFunc(r.intendedEnds, func(_ string, e intendedEnd) bool { return now.Sub(e.at) >= podEndRecordLife })
-	maps.DeleteFunc(r.podEnds, func(_ string, e podEnd) bool { return now.Sub(e.at) >= podEndRecordLife })
+	for uid, e := range r.podEnds {
+		switch {
+		case e.expired(now):
+			delete(r.podEnds, uid)
+		case e.goneAt.IsZero():
+			if pod := r.storedPod(e.name); pod == nil || string(pod.UID) != uid {
+				e.goneAt = now
+				r.podEnds[uid] = e
+			}
+		}
+	}
 }
 
-// capturePodEnd reads what ended pod and keeps that reading by the pod's uid, once, the first time
-// the pod shows an end; gone says the informer delivered the pod as deleted, which is an end
-// whatever the copy that event carries says.
+// capturePodEnd reads what ended pod and keeps that reading by the pod's uid, the first time the
+// pod shows an end; gone says the informer delivered the pod as deleted, which is an end whatever
+// the copy that event carries says. The reading stands for as long as the pod stays in the
+// informer's store and for podEndRecordLife after the informer delivers it deleted: the first
+// event that does sets the moment that life is counted from (podEnd.goneAt), whatever reading
+// already stands. A node's failure can hold a pod in the store under its deletion timestamp for
+// longer than podEndRecordLife, through a second eviction and the node's own grace, and no claim of
+// the pod is judged for its end before the pod has gone, so a reading timed from its making would
+// have expired by the time any claim asked for it.
 //
 // The reading is made here, where the informer delivers the object, because neither fact it rests
 // on can be read once the end is final: a pod being deleted carries its deletion timestamp while
@@ -433,23 +494,40 @@ func (r *Runtime) prunePodEnds() {
 // and no test here proves the order the informer delivers in.
 //
 // Every reading is kept, an end of neither reading too, which is kept with an empty reading and
-// charged as it always was. The record is what makes the first event that shows a pod's end the
-// one that decides: a deletion read from outside stays so when the kubelet's terminal status
-// follows it, and no later event of the same end — the controller's delete, pod garbage
-// collection, an operator's own `kubectl delete pod`, the informer's delete — is read again or
-// gets a line of its own. The empty reading is answered to no caller as a reading (podEndOf), so
-// it decides nothing it did not read; the cause it carries, where it carries one, is answered.
-// Called with r.mu held.
+// charged as it always was. A reading that is not empty makes the first event that shows a pod's
+// end the one that decides: a deletion read from outside stays so when the kubelet's terminal
+// status follows it, and no later event of the same end — a second eviction, the controller's
+// delete, pod garbage collection, an operator's own `kubectl delete pod`, the informer's delete —
+// is read again or gets a line of its own. An empty reading is read again at each later event of
+// the pod, by the same rule and from the state that event carries, so an end is read alike whether
+// its facts came in one event or in several; a re-read that reads the end as the reading standing
+// does (podEnd.sameReading) keeps that reading and writes no line, and only a changed reading is
+// kept and logged. A re-read takes no record of an intended end: the first reading took any that
+// stood (takeIntendedEnd), so a record standing now was written after the pod had shown its end, by
+// an act that did not make it. A reading that has expired is pruned before the event is read, so
+// that event reads the end afresh. The empty reading is answered to no caller as a reading
+// (podEndOf), so it decides nothing it did not read; the cause it carries, where it carries one, is
+// answered. Called with r.mu held.
 func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 	uid := string(pod.UID)
 	if uid == "" || !podEnding(pod, gone) {
 		return
 	}
-	if _, read := r.podEnds[uid]; read {
+	r.prunePodEnds()
+	held, read := r.podEnds[uid]
+	if gone && held.goneAt.IsZero() {
+		held.goneAt = r.now()
+	}
+	if read && held.reading != "" {
+		r.podEnds[uid] = held
 		return
 	}
-	end := podEnd{at: r.now()}
-	act, intended := r.takeIntendedEnd(uid)
+	end := podEnd{name: pod.Name, goneAt: held.goneAt}
+	var act string
+	intended := false
+	if !read {
+		act, intended = r.takeIntendedEnd(uid)
+	}
 	cause, reason, disrupted := disruption(pod)
 	ownUse := overRequest(pod)
 	switch {
@@ -467,7 +545,10 @@ func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 	case pod.DeletionTimestamp != nil:
 		end.reading, end.cause = runtime.PodEndNotOurs, deletedByAnother
 	}
-	r.prunePodEnds()
+	if read && end.sameReading(held) {
+		r.podEnds[uid] = held
+		return
+	}
 	r.podEnds[uid] = end
 	r.logPodEnd(pod, end)
 }
@@ -479,7 +560,8 @@ func podEnding(pod *corev1.Pod, gone bool) bool {
 	return gone || pod.DeletionTimestamp != nil || terminal(pod)
 }
 
-// podEndLine is the one line a pod's end gets, written where the end is first read and naming the
+// podEndLine is the one line a pod's end gets, written where the end is first read, and again only
+// where a later event reads otherwise an end the first read neither way (capturePodEnd), naming the
 // pod, which reading was made, the words it was made from, the reason the cluster gave where it
 // gave one, and, as ended, the roles whose processes the end ended: every role of that pod the
 // runtime watches. The line names what ended and nothing of what any claim got for it. It is
@@ -527,19 +609,23 @@ func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
 }
 
 // podEndOf is what the daemon read about the end of the pod uid, and whether it read anything at
-// all: the reading capturePodEnd kept, unless it has outlived podEndRecordLife, which is answered
-// to no one.
+// all: the reading capturePodEnd kept, unless its pod left the informer's store podEndRecordLife
+// ago or longer (podEnd.expired), which is answered to no one whether or not a prune has dropped
+// it yet. A reading whose pod the store still holds is answered however long ago it was made: a
+// node's failure can hold a pod there under its deletion timestamp for longer than
+// podEndRecordLife, and the claims of that pod are judged for its end only once it has gone.
 //
 // An end read neither way is answered to no one either, unless it carries a cause the daemon tells
 // in plain words (podEnd.death), which is then answered with its empty reading. Its record exists so
-// that the first end event of a pod is the one that decides (capturePodEnd), and it holds no
-// reading, so the claims of that pod are evaluated as they were before the reading existed: no
-// reading on the observation and nothing added to its detail, and only the cause where there is one.
+// that a later event of the pod that reads the end alike writes no second line (capturePodEnd), and
+// it holds no reading, so the claims of that pod are evaluated as they were before the reading
+// existed: no reading on the observation and nothing added to its detail, and only the cause where
+// there is one.
 func (r *Runtime) podEndOf(uid string) (podEnd, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	end, ok := r.podEnds[uid]
-	if !ok || (end.reading == "" && end.death.Kind == "") || r.now().Sub(end.at) >= podEndRecordLife {
+	if !ok || (end.reading == "" && end.death.Kind == "") || end.expired(r.now()) {
 		return podEnd{}, false
 	}
 	return end, true

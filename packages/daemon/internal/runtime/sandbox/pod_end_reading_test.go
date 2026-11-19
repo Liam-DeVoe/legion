@@ -11,6 +11,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -65,7 +66,7 @@ func (g *rig) podEndRead(uid string) podEnd {
 // podEndHeld is the record the runtime keeps for the pod uid, whatever reading it holds, waiting
 // for the informer event that makes it to be handled. It reads the map rather than podEndOf
 // because an end read neither way is kept with an empty reading and answered to no caller: that
-// record is what makes the first end event of a pod the one that decides.
+// record is what each later event of the pod is read against.
 func (g *rig) podEndHeld(uid string) podEnd {
 	g.t.Helper()
 	var end podEnd
@@ -123,6 +124,143 @@ func TestAPodDeletedByNoActOfTheDaemonsIsObservedAsAnEndFromOutsideIt(t *testing
 	}
 	if !strings.Contains(obs.Detail, deletedByAnother) {
 		t.Errorf("the observation's detail is %q, want it to say the pod was being deleted with no act of the daemon's behind it", obs.Detail)
+	}
+}
+
+// taintEviction is the reason of the DisruptionTarget condition the taint manager sets on a pod of
+// a node that stopped answering, before it deletes that pod.
+const taintEviction = "DeletionByTaintManager"
+
+// podEndLeft waits for the runtime to hear that the pod uid left the informer's store, the moment
+// its reading's podEndRecordLife is counted from.
+func (g *rig) podEndLeft(uid string) {
+	g.t.Helper()
+	g.eventually("the runtime to hear pod "+uid+" leave the store", func() bool {
+		g.r.mu.Lock()
+		defer g.r.mu.Unlock()
+		return !g.r.podEnds[uid].goneAt.IsZero()
+	})
+}
+
+// A node that fails holds its pods in the store under their deletion timestamps for longer than
+// podEndRecordLife: the taint manager marks each a disruption target and deletes it, the node goes
+// NotReady, the taint manager evicts the pod again, and only once the node's grace has run out does
+// the pod leave the store and the Sandbox controller make a pod of a new uid. No claim of the pod
+// is judged for its end before then, since the mapping reads a pod that still runs under a deletion
+// timestamp as alive, so the reading made at the first eviction must still answer for the claim
+// when it is: timed from its making, it would have expired, and the claim would be charged a death
+// for an end the cluster made. The second eviction leaves the reading as the first made it.
+func TestAnOutsideEndOfAPodStillInTheStoreOutlivesTheTenMinutes(t *testing.T) {
+	const replacing = "uid-pod-replacing"
+	const again = "Taint manager: deleting due to NoExecute taint"
+	g := runningIssuePod(t)
+	name := SandboxName(workerToken)
+	evicted := metav1.NewTime(rigNow)
+	g.update(g.pod(name), func(p *corev1.Pod) {
+		p.DeletionTimestamp = &evicted
+		p.Status.Conditions = append(p.Status.Conditions, disruptionTarget(taintEviction))
+	})
+	if end := g.podEndRead(recorded); end.reading != runtime.PodEndNotOurs || end.reason != taintEviction {
+		t.Fatalf("read %+v of the pod the taint manager evicted, want %s with the reason %s", end, runtime.PodEndNotOurs, taintEviction)
+	}
+
+	g.advance(podEndRecordLife + 5*time.Minute)
+	g.update(g.pod(name), func(p *corev1.Pod) { podCondition(p, corev1.DisruptionTarget).Message = again })
+	g.eventually("the pod store to see the second eviction", func() bool {
+		pod := g.r.storedPod(name)
+		if pod == nil {
+			return false
+		}
+		c := podCondition(pod, corev1.DisruptionTarget)
+		return c != nil && c.Message == again
+	})
+	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.kube.Tracker().Add(podObject(name, replacing, sandboxUID, claimLabels(claim.RoleTester), runningStatus())); err != nil {
+		t.Fatal(err)
+	}
+	g.eventually("the pod store to show the Sandbox's new pod", func() bool {
+		pod := g.r.storedPod(name)
+		return pod != nil && string(pod.UID) == replacing
+	})
+
+	obs := g.observed(rolesLocator(workerToken, recorded))
+
+	if obs.Kind != runtime.NotRecordedProcess || obs.EndReading != runtime.PodEndNotOurs || obs.Displaced {
+		t.Fatalf("observed %s EndReading=%q Displaced=%t (%s) %s after the eviction, want NotRecordedProcess %s and no displacement: "+
+			"a reading made while the pod was in the store must stand until it leaves",
+			obs.Kind, obs.EndReading, obs.Displaced, obs.Detail, podEndRecordLife+5*time.Minute, runtime.PodEndNotOurs)
+	}
+	if !strings.Contains(obs.Detail, taintEviction) {
+		t.Errorf("the observation's detail is %q, want the reason %q the cluster gave in it", obs.Detail, taintEviction)
+	}
+}
+
+// A reading stands for podEndRecordLife after its pod leaves the informer's store and no longer,
+// so a daemon that watches pods end for weeks keeps readings only of the pods in its store and of
+// those that left it in the last ten minutes: past that a reading is answered to no one and is
+// dropped where the next record is written. Time the pod spent in the store before it left does not
+// count. A pod leaves the store by the informer's delete, or, where the watch missed both its
+// delete and its successor's add, by a relist that finds the new pod under its name and hands it to
+// the handlers as an update of the old one, so no delete of the old uid ever comes; that reading is
+// timed from the first prune that finds the store holding another uid.
+func TestAnOutsideEndsReadingIsDroppedTenMinutesAfterItsPodLeavesTheStore(t *testing.T) {
+	// act is a record the runtime writes for another pod, which prunes the records it holds.
+	const act = "a launch replaced the pod"
+	for _, tc := range []struct {
+		name  string
+		leave func(g *rig, name string)
+	}{
+		{name: "the informer delivered its delete", leave: func(g *rig, name string) {
+			if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+				g.t.Fatal(err)
+			}
+			g.podEndLeft(recorded)
+		}},
+		{name: "a relist found a new pod under its name", leave: func(g *rig, name string) {
+			relisted := podObject(name, "uid-pod-relisted", sandboxUID, claimLabels(claim.RoleTester), runningStatus())
+			if err := g.r.pods.GetStore().Update(relisted); err != nil {
+				g.t.Fatal(err)
+			}
+			g.r.meanToEndPod("uid-another-pod", act)
+			g.podEndLeft(recorded)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := runningIssuePod(t)
+			name := SandboxName(workerToken)
+			held := func() bool {
+				g.r.mu.Lock()
+				defer g.r.mu.Unlock()
+				_, ok := g.r.podEnds[recorded]
+				return ok
+			}
+			evicted := metav1.NewTime(rigNow)
+			g.update(g.pod(name), func(p *corev1.Pod) {
+				p.DeletionTimestamp = &evicted
+				p.Status.Conditions = append(p.Status.Conditions, disruptionTarget(taintEviction))
+			})
+			g.podEndRead(recorded)
+			g.advance(podEndRecordLife)
+
+			tc.leave(g, name)
+
+			g.advance(podEndRecordLife - time.Second)
+			if _, answered := g.r.podEndOf(recorded); !answered {
+				t.Fatalf("the reading was answered to no one %s after its pod left the store, want it standing for %s",
+					podEndRecordLife-time.Second, podEndRecordLife)
+			}
+			g.advance(time.Second)
+			if end, answered := g.r.podEndOf(recorded); answered {
+				t.Fatalf("the reading %+v was answered %s after its pod left the store, want it answered to no one", end, podEndRecordLife)
+			}
+			g.r.meanToEndPod("uid-another-pod", act)
+			if held() {
+				t.Errorf("the runtime still holds the reading of pod %s after a write, %s after the pod left the store; want it pruned",
+					recorded, podEndRecordLife)
+			}
+		})
 	}
 }
 
