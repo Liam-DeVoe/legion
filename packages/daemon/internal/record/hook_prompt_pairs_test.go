@@ -14,7 +14,7 @@ import (
 // the work back from testing to reviewing. The outbox takes that hook prompt, keeps it whole
 // through a stored row, and its message lists the count of that move. A phase paired with itself
 // is no move, and the outbox refuses it with its reason. The twin: a move back of today's line is
-// taken as before.
+// taken.
 func TestAHookPromptOfAMoveOfAnyOrderIsWritten(t *testing.T) {
 	now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 	for _, prompt := range []HookPrompt{

@@ -151,7 +151,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 // A task names its steps in any order. The planner stands at any place, and the tester, the
 // reviewer and the owner's acceptance each come after the implementer, in any order among them. A
 // role named at two steps stays refused in this release. The twin: today's line, the steps an
-// issue with no plan rows runs, is taken as before.
+// issue with no plan rows runs, is taken.
 func TestSupportedTakesStepsInAnyOrder(t *testing.T) {
 	for _, steps := range []string{"implementer reviewer tester", "implementer tester reviewer", "implementer acceptance:owner reviewer",
 		"implementer reviewer acceptance:owner tester", "implementer planner", "planner implementer reviewer", "implementer reviewer planner tester",

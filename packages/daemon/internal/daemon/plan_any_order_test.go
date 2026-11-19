@@ -334,8 +334,9 @@ func newReleaseBeforeRig(t *testing.T) *inFlightRig {
 // what that release adds to an issue seedInFlight left in reviewing once its architect gave the
 // plan `implementer reviewer` at version 1: the plan's rows, its task a running at step 2 with the
 // counts of one round that requested changes (pass 1, rounds 1, one move back from reviewing to
-// implementing), each step with the type of its role, the step each phases row ran, and the
-// claims' plugin contract, the owner's plan's.
+// implementing), which that release keeps on the task and not on the implementer's phases row,
+// each step with the type of its role, the step each phases row ran, and the claims' plugin
+// contract, the owner's plan's.
 func (r *inFlightRig) seedPlanInReviewing(issue *inFlightIssue) {
 	r.t.Helper()
 	key := issue.key
@@ -345,6 +346,7 @@ func (r *inFlightRig) seedPlanInReviewing(issue *inFlightIssue) {
 		values ($1, 1, 'a', 1, $2, 'running', 'step', 2, 1, 1, '{"reviewing-implementing": 1}')`, key, releaseBeforeTaskText)
 	r.exec(`insert into plan_steps (issue, generation, task, position, role, type)
 		values ($1, 1, 'a', 1, 'implementer', 'implementation'), ($1, 1, 'a', 2, 'reviewer', 'review')`, key)
-	r.exec(`update phases set step_task = 'a', step_place = case role when 'implementer' then 1 else 2 end where issue = $1`, key)
+	r.exec(`update phases set step_task = 'a', step_place = case role when 'implementer' then 1 else 2 end, pass = 0, rounds = 0
+		where issue = $1`, key)
 	r.exec(`update claims set plugin_contract = $2 where issue = $1`, key, api.OwnerPlanContract)
 }

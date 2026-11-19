@@ -99,10 +99,10 @@ func (w Walk) steps() []phase.Phase {
 // task's own order: to stands before from on w's line, its steps in the task's order, then the
 // retro, then the merge. Each role runs at most one step of a task, so each phase stands at one
 // place of the line. A phase the line does not hold goes back nowhere, and nothing goes back into
-// it. A run with no plan rows walks today's line, phase.Order, so this is phase.MovesBack for it,
-// as it always was. A task in another order than today's so counts its move back from testing to
-// reviewing (the steps `implementer reviewer tester`), and not the review's approval from
-// reviewing to testing, which moves it on.
+// it. A run with no plan rows walks today's line, phase.Order, so this is phase.MovesBack for it.
+// A task in another order than today's so counts its move back from testing to reviewing (the
+// steps `implementer reviewer tester`), and not the review's approval from reviewing to testing,
+// which moves it on.
 func (w Walk) MovesBack(from, to phase.Phase) bool {
 	back := slices.Index(w.Line, to)
 	return back >= 0 && back < slices.Index(w.Line, from)

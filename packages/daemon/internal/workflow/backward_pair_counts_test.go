@@ -224,7 +224,7 @@ func testerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, key strin
 // tester's move back to reviewing is a move back of the task and counts its pair, testing-reviewing,
 // and a pass. The tester's fail after it adds its own pair. The twin: an issue with no plan rows
 // walks today's line, where the tester's pass into reviewing counts nothing and the reviewer's
-// move back to testing counts reviewing-testing, as before.
+// move back to testing counts reviewing-testing.
 func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
