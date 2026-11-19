@@ -7,6 +7,7 @@ import { legacyDispatchIssueSubject } from "@legion/contracts";
 import * as consumerDeliveryModule from "@legion/envoy-client/consumer-delivery";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
   REPLAY_DELIVERED_ENTRY,
@@ -31,6 +32,9 @@ import {
 import type { SessionContext } from "../test/stand-in-host";
 
 useExtensionHarness();
+
+/** The Dispatch token a row hands the session in DISPATCH_TOKEN. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 // A listener that answers `consumer` relays the session's durable consumer on
 // `notifications.envoy.deliver.<id>`: each frame carries the stored envelope and its stream
@@ -139,7 +143,7 @@ describe("consumer delivery", () => {
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     let refusing = options.refuse;
     // While set, the listener holds each registration on the wire until the row releases it.
     let holding: PromiseWithResolvers<void> | undefined;

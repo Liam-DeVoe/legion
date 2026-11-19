@@ -302,8 +302,9 @@ export interface RegistrationState {
    *  registration accepted for another session, or none at all, reads as older than any age. */
   readonly registrationFresherThan: (sessionID: string, ms: number) => boolean;
   /** Deregisters the session at the listener, carrying this instance's client instance id so a
-   *  successor instance's registration under the same id is left alone. */
-  readonly deregister: (sessionID: string) => Promise<void>;
+   *  successor instance's registration under the same id is left alone; within `timeoutMs`,
+   *  where the caller has only that long (a shutdown's budget). */
+  readonly deregister: (sessionID: string, timeoutMs?: number) => Promise<void>;
   /**
    * Hands back at the listener every role hold this process still has there, for a session that
    * is stopping: the role it holds, under the session id the listener names for it, and each hold
@@ -923,8 +924,12 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     refreshRegistration,
     registrationFresherThan: (sessionID, ms) =>
       registeredFor === sessionID && Date.now() - registeredAt < ms,
-    deregister: async (sessionID) => {
-      await deps.client().unregisterSession({ sessionID, clientInstanceID });
+    deregister: async (sessionID, timeoutMs) => {
+      await deps.client().unregisterSession({
+        sessionID,
+        clientInstanceID,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      });
     },
     handBackAllHolds: () =>
       holds.handBackAll(

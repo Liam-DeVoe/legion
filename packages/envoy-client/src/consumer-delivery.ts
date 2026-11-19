@@ -866,7 +866,12 @@ export function inboundRestoredNoticeText(): string {
  * (dispatch://INFRA-3589, R24): on 2026-11-16 an Oh My Pi session whose NATS was held closed
  * for its first pass took 67 s from its start to its first accepted registration. pi-envoy tries
  * again every 15 s (`NATS_RETRY_INTERVAL_MS`), so a real outage is told within about 135 s of
- * the start, inside the listener's 300 s live window.
+ * the start, inside the listener's 300 s live window. The bound starts at the first registration
+ * that found no relay subject, not at the start. A session whose NATS connection presents its
+ * broker token (`NATS_AUTH=broker`) waits up to 20 s for the token before each dial
+ * (`TRADE_DEADLINE_MS`), so its first such registration and each later try come up to 20 s
+ * later, and its outage is told within about three minutes of the start, still inside that
+ * window.
  */
 export const INBOUND_FIRST_OPEN_BOUND_MS = 120_000;
 

@@ -6,10 +6,12 @@
 // no hook in its body: a hook here would take the scope of whichever test file imported it first.
 // Each file calls `useExtensionHarness()` at its own module scope instead.
 import { afterAll, afterEach, beforeAll, beforeEach, mock } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
+import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import type {
   DeliveryLedgerHost,
@@ -25,7 +27,7 @@ import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/h
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { procmgr } from "@oh-my-pi/pi-utils";
-import { connect as realConnect } from "nats";
+import { ErrorCode, NatsError, connect as realConnect } from "nats";
 import type { z } from "zod";
 import type * as EnvoyEntry from "../extensions/envoy";
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
@@ -82,12 +84,24 @@ function relayCarries(subject: string): boolean {
  * Records every registration whatever `fetch` a row installs, so the followed topics are known
  * centrally. A row's own fetch is kept behind this one; reading `globalThis.fetch` answers this
  * wrapper, so a row that wraps the fetch it found takes it from `rowFetch()`, never from
- * `globalThis.fetch`, which would call the row's own wrapper forever.
+ * `globalThis.fetch`, which would call the row's own wrapper forever. That mistake fails at once,
+ * by name: a call nested past `MOST_NESTED_FETCHES` of this wrapper's own is refused. Made once,
+ * it grew one row's process to 118 GiB before anything stopped it.
  */
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this module found it: what a row restores and what the live stack uses. */
 const nativeFetch: typeof globalThis.fetch = installedFetch;
+/** How deep the calls of `recordingFetch` are nested in the current call's async context. */
+const fetchDepth = new AsyncLocalStorage<number>();
+/** A row's fetch may hand a request on through `globalThis.fetch` this many times at most. */
+const MOST_NESTED_FETCHES = 8;
 const recordingFetch = (async (input, init) => {
+  const depth = (fetchDepth.getStore() ?? 0) + 1;
+  if (depth > MOST_NESTED_FETCHES) {
+    throw new Error(
+      `a row's fetch handed its request on through globalThis.fetch ${MOST_NESTED_FETCHES} times: globalThis.fetch is this harness's recording wrapper, which calls the row's fetch again, so take the fetch to hand on to from rowFetch()`
+    );
+  }
   try {
     if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
       const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -99,7 +113,7 @@ const recordingFetch = (async (input, init) => {
   } catch {
     // A request that is not a registration, or a body that is not JSON, teaches nothing.
   }
-  return installedFetch(input, init);
+  return fetchDepth.run(depth, () => installedFetch(input, init));
 }) as typeof globalThis.fetch;
 /** The fetch a row installed, for a row that answers some requests itself and hands on the rest. */
 export const rowFetch = (): typeof globalThis.fetch => installedFetch;
@@ -188,10 +202,19 @@ export const natsState = {
   connectedNames: [] as string[],
   /** What each connect was given: its servers, and whether it carried an nkey authenticator. */
   connects: [] as { readonly servers: readonly string[]; readonly authenticated: boolean }[],
+  /** The token each CONNECT presented (`auth_token`), where its authenticator answers one: a
+   *  connect's and each reconnect's, in order. */
+  presented: [] as string[],
+  /** Each `subscribe` and `reconnect`, in order, for a row that holds the two to an order. */
+  timeline: [] as string[],
   /** Each connection `close()` was called on, by the name its dial carried: a dial nothing holds
    *  is never drained, and with `maxReconnectAttempts: -1` it outlives every session. */
   closedNames: [] as string[],
   failConnects: 0,
+  /** The error a failed connect throws, as nats.js throws it: its refusal by default, a
+   *  resolver's (`getaddrinfo`, its text naming the host) for a row that sees what a notice
+   *  carries of it. */
+  failError: (): unknown => NatsError.errorForCode(ErrorCode.ConnectionRefused),
   /** Every connection reports itself closed, as one NATS dropped does. */
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
@@ -242,25 +265,46 @@ const natsStandInConnect = async (options: {
   const { name, servers, authenticator } = options;
   if (natsState.failConnects > 0) {
     natsState.failConnects -= 1;
-    throw new Error("CONNECTION_REFUSED");
+    throw natsState.failError();
   }
   natsState.connectedNames.push(name);
   natsState.connects.push({ servers, authenticated: authenticator !== undefined });
+  // A CONNECT asks the authenticator for its credential over the server's nonce, as nats.js does
+  // at every connect and reconnect.
+  const connectWith = (nonce: string) => {
+    if (typeof authenticator !== "function") return;
+    const credential = (authenticator as (nonce: string) => unknown)(nonce);
+    if (typeof credential === "object" && credential !== null && "auth_token" in credential) {
+      natsState.presented.push(String(credential.auth_token));
+    }
+  };
+  connectWith("stand-in-nonce");
   // Parked only where a test asks for it: every other connect answers at once, as before.
   if (natsState.heldConnect !== undefined) await natsState.heldConnect;
   if (natsState.realConnect) {
     return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
   }
   let closed = false;
+  // nats.js's `closed()`: settles once the connection is closed for good.
+  const ended = Promise.withResolvers<void>();
   return {
     isClosed: () => closed || natsState.connectionsClosed,
+    closed: () => ended.promise,
     close: async () => {
       closed = true;
       natsState.closedNames.push(name);
+      ended.resolve();
     },
     drain: async () => {
       natsState.drainStarted = true;
       if (natsState.drainHangs) await Promise.withResolvers<never>().promise;
+    },
+    // nats.js's client-initiated reconnect: the connection drops and comes back with a CONNECT of
+    // its own, which every reader of its status hears of once it is back.
+    reconnect: async () => {
+      natsState.timeline.push("reconnect");
+      connectWith("stand-in-nonce-again");
+      setTimeout(() => pushNatsStatus("reconnect"), 0);
     },
     // An async iterable of the connection's status events, which a test feeds through
     // `pushNatsStatus`; it ends once the connection is closed.
@@ -312,6 +356,7 @@ const natsStandInConnect = async (options: {
       natsState.onPublish?.(subject);
     },
     subscribe: (topic: string) => {
+      natsState.timeline.push(`subscribe ${topic}`);
       if (natsState.failSubscribes > 0) {
         natsState.failSubscribes -= 1;
         throw new Error("SUBSCRIBE_FAILED");
@@ -502,6 +547,12 @@ const configVariables = [
   "ENVOY_TOKEN_FILE",
   "NATS_NKEY_SEED",
   "NATS_NKEY_SEED_FILE",
+  // A box's broker route and the NATS credential choice: a row that presents a broker token sets
+  // them, and every other row runs with none, whatever the box running the suite holds.
+  "NATS_AUTH",
+  "AGENT_SECRETS_URL",
+  "AGENT_SECRETS_MACHINE_IDENTITY",
+  "AGENT_SECRETS_MACHINE_TOKEN_FILE",
 ] as const;
 const originalConfigVariables = configVariables.map((name) => [name, process.env[name]] as const);
 /** The envoy.json every test starts with: no Dispatch or Envoy section, and AskGate off. */
@@ -586,6 +637,10 @@ async function tearDownRow(): Promise<void> {
   // What a test's Dispatch answers taught the process about its keyed layer is per process, so a
   // later suite in the same run (envoy-client's) would read it for the same origin.
   forgetKeyedLayerMemory();
+  // A broker client's retry loop trades on for the process's life, so each row's clients are
+  // closed with it: one whose trades were failing would go on trading, and logging, into the
+  // rows after it.
+  forgetBrokerClients();
   if (originalDispatchUrl === undefined) delete process.env.DISPATCH_URL;
   else process.env.DISPATCH_URL = originalDispatchUrl;
   if (originalDispatchToken === undefined) delete process.env.DISPATCH_TOKEN;
@@ -633,6 +688,8 @@ async function tearDownRow(): Promise<void> {
   delete process.env.ENVOY_TMUX_PLACE_CACHE_MS;
   natsState.connectedNames.length = 0;
   natsState.connects.length = 0;
+  natsState.presented.length = 0;
+  natsState.timeline.length = 0;
   natsState.closedNames.length = 0;
   // A test aborted at Bun's own timeout never runs its `finally`: a connect left parked here
   // would park every later test's connect for the rest of the process.
@@ -646,6 +703,7 @@ async function tearDownRow(): Promise<void> {
   relaySeq = 0;
   natsState.controlsByTopic.clear();
   natsState.failConnects = 0;
+  natsState.failError = () => NatsError.errorForCode(ErrorCode.ConnectionRefused);
   natsState.connectionsClosed = false;
   natsState.failSubscribes = 0;
   natsState.realConnect = false;
