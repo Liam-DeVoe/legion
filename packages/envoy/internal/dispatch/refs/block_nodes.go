@@ -308,6 +308,20 @@ func DocumentRoomSQL(document string) string {
 	return `coalesce((select moved.room from document_rooms moved where moved.artifact_id = ` + document + `), ` + document + `)`
 }
 
+// DecisionsQuerySQL is true of the artifacts row aliased alias while it is its issue's decisions
+// query node (api's createDecisionsQuery, D6 of this branch's plan): a document whose node is a
+// query node of query `decisions` (graphstore.QueryNode) and which no document_rooms row joins to
+// an issue room, whose versions render that query. No fragment of any room holds it, so no socket
+// opens on it (docs.Service.ServeHTTP), no upload or edit writes it (api's decisionsQueryRefusal),
+// and it is no backlink of its issue (issueOwnArtifact). It is the one SQL of that test, kept in
+// refs, which docs and api both import, so that every reader of it reads this one.
+func DecisionsQuerySQL(alias string) string {
+	return `(` + alias + `.kind = 'doc' and not exists (select 1 from document_rooms moved where moved.artifact_id = ` + alias + `.id)
+		and exists (select 1 from graph_nodes node where node.kind = '` + graphstore.KindArtifact + `' and node.id = ` + alias + `.ref_key
+		            and node.supertag = '` + graphstore.SupertagQuery + `'
+		            and node.attributes->>'` + graphstore.AttributeQuery + `' = '` + graphstore.QueryDecisions + `'))`
+}
+
 // ResolvedBlockSQL is the node a block far end of a reference resolves to, as SQL text answering a
 // node id, null where it resolves to none; address is the far end, a text SQL expression holding
 // a node id (text.TargetID). The one resolution is block_moved_to's (migration

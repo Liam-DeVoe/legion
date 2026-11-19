@@ -45,10 +45,10 @@ var errSettleJoined = errors.New("docs: an issue's documents settle outside ever
 // document_rooms rows name, and every other document of an issue, of an issue with no issue room
 // (no issue_trees row) and of a converted one alike, is its own room and holds that room's own
 // fragment (R5 of this branch's spec, version 112). The decisions query node of an issue born
-// converted, a doc row with no fragment and no document_rooms row (DecisionsQuerySQL, D6 of this
-// branch's plan), holds none.
+// converted, a doc row with no fragment and no document_rooms row (refs.DecisionsQuerySQL, D6 of
+// this branch's plan), holds none.
 func holdsFragmentSQL(alias string) string {
-	return `(` + alias + `.kind = 'tree' or ` + alias + `.kind = 'doc' and not ` + DecisionsQuerySQL(alias) + `)`
+	return `(` + alias + `.kind = 'tree' or ` + alias + `.kind = 'doc' and not ` + refs.DecisionsQuerySQL(alias) + `)`
 }
 
 // issueDocumentIDs lists the documents of the issue $1 that hold a fragment (holdsFragmentSQL), the

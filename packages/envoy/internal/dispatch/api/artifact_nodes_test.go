@@ -99,7 +99,7 @@ func TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues(t *testing.T) {
 		refs.DocumentRoomSQL("$1::uuid"), issue.PrimaryArtifactID).Scan(&roomKey); err != nil {
 		t.Fatalf("read the ref_key of the spec's room: %v", err)
 	}
-	born := issueArtifactsAttached(t, database, key)
+	born := issueArtifactsBorn(t, database, key)
 	underTheIssue := func() int {
 		t.Helper()
 		var count int
@@ -386,6 +386,20 @@ func requireNothingOf(t *testing.T, database *store.Store, refKey string) {
 	if left != 0 {
 		t.Errorf("a refused write left %d rows, nodes or tuples of %s, want none", left, refKey)
 	}
+}
+
+// issueArtifactsBorn is how many artifacts the issue key holds of the kinds an issue is made with,
+// each part_of the issue in the store, and fails unless they are the three an issue born converted
+// is made with: its spec, its tree and its decisions query.
+func issueArtifactsBorn(t *testing.T, database *store.Store, key string) int {
+	t.Helper()
+	var born int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from artifacts where issue_key = $1 and kind in ('doc', 'tree')
+	`, key).Scan(&born); err != nil || born != 3 {
+		t.Fatalf("the artifacts of %s = %d (%v), want its spec, its tree and its decisions query", key, born, err)
+	}
+	return born
 }
 
 // refuseCommits runs during with a deferred constraint trigger in place on table, which refuses at

@@ -1646,11 +1646,11 @@ func readsAsDocument(artifact model.Artifact) bool {
 // issue's documents (docs.RetireDocument), and its own address and id still read it. Neither is
 // the issue's tree artifact (createIssueTree): it is the issue's room, whose own fragment holds the
 // nodes written into the issue rather than into a document, and the tree read names it. Nor is
-// the issue's decisions query (docs.DecisionsQuerySQL): Decisions is a view over decision nodes
+// the issue's decisions query (refs.DecisionsQuerySQL): Decisions is a view over decision nodes
 // and not a document (R6 and R8 of this branch's spec), which its own address and id still read.
 var issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and retired_at is null and kind <> 'tree' and not ` + docs.DecisionsQuerySQL("artifacts") + `
+		from artifacts where issue_key = $1 and retired_at is null and kind <> 'tree' and not ` + refs.DecisionsQuerySQL("artifacts") + `
 		order by created_at, id
 	`
 
@@ -1835,7 +1835,7 @@ func isArtifactNotFound(err error) bool {
 func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
 	query := `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and kind = 'doc' and retired_at is null and not ` + docs.DecisionsQuerySQL("artifacts") + `
+		from artifacts where issue_key = $1 and kind = 'doc' and retired_at is null and not ` + refs.DecisionsQuerySQL("artifacts") + `
 		order by created_at, id`
 	value := target.Project
 	if target.IssueKey != nil {
@@ -2087,7 +2087,7 @@ func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artif
 // the room that holds the document is its own id where its room is another (an issue room's
 // tree), and the room's own fragment otherwise, as docs' fragmentOf names it. The issue's
 // decisions query - a document whose node is a query node of query `decisions` and which no
-// document_rooms row joins to a room, as docs.DecisionsQuerySQL reads it - is held by no fragment
+// document_rooms row joins to a room, as refs.DecisionsQuerySQL reads it - is held by no fragment
 // and answers none.
 func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	var artifact model.Artifact
@@ -2430,7 +2430,7 @@ func decisionsAreNodes(target artifactTarget, name string) error {
 // query node (model.Artifact.DecisionsQuery): an upload under its name or slug, and an edit by its
 // id or its slug. Its versions render the issue's decisions, which are nodes of the issue's
 // documents, and no fragment of any room holds it, so text written into it would be read by
-// nobody; a socket on it is refused with the same code (docs.DecisionsQuerySQL).
+// nobody; a socket on it is refused with the same code (refs.DecisionsQuerySQL).
 func decisionsQueryRefusal(artifact model.Artifact) error {
 	return errorf(http.StatusConflict, codeDecisionsQuery,
 		"%s (%s, %s) is the issue's decisions query: it renders the issue's decisions and takes no text; write each decision as a `decision` block in the `## Decisions` part of the issue's spec",

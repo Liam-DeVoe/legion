@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -24,7 +24,7 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 		select ` + artifactColumns + `
 		from artifacts
 		where project_key = $1 and not is_primary and retired_at is null
-		  and kind <> 'tree' and not ` + docs.DecisionsQuerySQL("artifacts")
+		  and kind <> 'tree' and not ` + refs.DecisionsQuerySQL("artifacts")
 	if unlinked {
 		query += ` and issue_key is null`
 	}

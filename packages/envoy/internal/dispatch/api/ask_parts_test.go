@@ -407,9 +407,8 @@ func TestALinkInAnOptionStartsAtThatOption(t *testing.T) {
 	if links := askRefs(t, database, question.ID); len(links) != 1 || links[0] != "issue "+target.Key {
 		t.Fatalf("the links of the question ask's own row = %#v, want its question's", links)
 	}
-	// One beside the structural edge of each artifact attached to the issue: its spec, and the
-	// tree and the decisions query an issue born converted is made with.
-	requireIssueBacklinkCount(t, handler, target.Key, 1+issueArtifactsAttached(t, database, target.Key))
+	// One beside the structural edge of the issue's own spec document.
+	requireIssueBacklinkCount(t, handler, target.Key, 2)
 }
 
 // An answer is a part, so its text reaches the graph, and the ask.answered event the answer

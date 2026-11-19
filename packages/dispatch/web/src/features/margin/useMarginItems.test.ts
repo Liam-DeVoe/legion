@@ -857,7 +857,7 @@ test("an open and a declined ask are no decision beside the spec, and an answere
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
         decisions: [["p-a", "answered-ask", false]],
-        items: ["decision:answered-ask:CORE-1/tree#p-a"],
+        items: ["decision:answered-ask:CORE-1/spec#p-a"],
       })
     );
   } finally {
@@ -914,6 +914,8 @@ function renderDecisionItems(document: Artifact) {
   );
 }
 
+// An item names the spec block it stands beside by the spec's own address, never by the room's
+// node the server answers on the link, which belongs to no one document of the room.
 test("each decision is a margin item beside every spec block it links, in the spec's order", async () => {
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(issueDecisions);
   const view = renderDecisionItems(artifact);
@@ -928,11 +930,11 @@ test("each decision is a margin item beside every spec block it links, in the sp
           ["p-c", "CORE-1/choices-md#d-4", false],
         ],
         items: [
-          "decision:CORE-1/choices-md#d-1:CORE-1/tree#p-b",
-          "decision:CORE-1/choices-md#d-2:CORE-1/tree#p-b",
-          "decision:CORE-1/notes-md#d-2:CORE-1/tree#p-b",
-          "decision:CORE-1/choices-md#d-1:CORE-1/tree#p-a",
-          "decision:CORE-1/choices-md#d-4:CORE-1/tree#p-c",
+          "decision:CORE-1/choices-md#d-1:CORE-1/spec#p-b",
+          "decision:CORE-1/choices-md#d-2:CORE-1/spec#p-b",
+          "decision:CORE-1/notes-md#d-2:CORE-1/spec#p-b",
+          "decision:CORE-1/choices-md#d-1:CORE-1/spec#p-a",
+          "decision:CORE-1/choices-md#d-4:CORE-1/spec#p-c",
         ],
       })
     );

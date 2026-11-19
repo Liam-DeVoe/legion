@@ -21,9 +21,10 @@ import (
 // the arms of graph_edges that can point at a node of toKind - the six mention arms every kind
 // has and the structural arms declared for that kind (backlinkArms) - and counts them in one
 // statement, each arm read through its own index, rather than leaving the planner the whole
-// 26-arm view on every call. The counts are the view's, arm for arm. A kind with no entry in the
-// arm table is refused rather than counted from the mention arms alone, so a count is never
-// silently low.
+// 26-arm view on every call. The counts are the view's, arm for arm, but for an issue's own tree
+// and decisions query (issueOwnArtifact), which the view answers attached_to the issue and which
+// neither the count nor the list behind it counts. A kind with no entry in the arm table is
+// refused rather than counted from the mention arms alone, so a count is never silently low.
 //
 // It counts only edges whose source is a node kind this build reads, so the count is the rows its
 // list shows, and counts a document's, comment's, message's or ask's mention once for each of its
@@ -360,6 +361,28 @@ const attachedArtifactStands = `a.node_kind is not null
 				  and t.to_kind = 'issue' and t.to_id = a.issue_key
 				order by t.seq desc limit 1) newest where newest.asserted)`
 
+// issueOwnArtifact is true of the artifacts row aliased alias, an issue's, while it is a part of
+// the issue rather than a document anybody attached to it: the issue's tree, whose Yjs document
+// is the issue's room, or its decisions query node (DecisionsQuerySQL), a view over its decision
+// nodes. The view answers both attached_to the issue, as it answers every artifact the issue
+// holds, but neither is a backlink of the issue: the issue read's documents leave both out
+// (api's issueArtifactsStatement), and so do the issue's count, in its two attached_to arms
+// (backlinkArms), and its Referenced-by list (issueOwnAttachment), by this one test. Every other
+// artifact attached to the issue is a backlink of it.
+func issueOwnArtifact(alias string) string {
+	return `(` + alias + `.kind = 'tree' or ` + DecisionsQuerySQL(alias) + `)`
+}
+
+// issueOwnAttachment is the test that the graph_edges row aliased alias is the attached_to edge,
+// into the issue whose key the text SQL expression key names, of one of that issue's own artifacts
+// (issueOwnArtifact): an edge its Referenced-by list leaves out, as its count leaves it out. Both
+// of the view's attached_to arms name the artifact by its uuid, read here through the issue's own
+// artifacts by artifacts_issue_key.
+func issueOwnAttachment(alias, key string) string {
+	return `(` + alias + `.kind = '` + TupleAttachedTo + `' and ` + alias + `.from_kind = '` + graphstore.KindArtifact + `'
+		and ` + alias + `.from_id in (select own.id::text from artifacts own where own.issue_key = ` + key + ` and ` + issueOwnArtifact("own") + `))`
+}
+
 // currentTuple is the test that the row alias names is the fact the store holds now: the newest
 // tuple of its (from, kind, to), kept only while that newest one asserts, which is how the store
 // reads a current relation (graphstore.CurrentTupleRead) and how the view's own tuple arm reads
@@ -612,12 +635,14 @@ var backlinkArms = map[string][]backlinkArm{
 		// release, answered while the issue_links row of the pair carries its node.
 		{kind: "blocked_by", from: `issue_links l`, where: `l.kind = 'blocked_by'`, toID: `l.target_key`,
 			fromKind: "issue", fromID: `l.issue_key`, projected: `l.node_kind`, tupleKind: graphstore.TupleNeeds, projectedIn: "issue_links"},
-		// artifacts_issue_key, partial on issue_key is not null, over the rows that name no node.
-		{kind: TupleAttachedTo, from: `artifacts a`, where: `a.issue_key is not null`, toID: `a.issue_key`,
+		// artifacts_issue_key, partial on issue_key is not null, over the rows that name no node,
+		// but for the issue's own tree and decisions query (issueOwnArtifact).
+		{kind: TupleAttachedTo, from: `artifacts a`, where: `a.issue_key is not null and not ` + issueOwnArtifact("a"), toID: `a.issue_key`,
 			fromKind: "artifact", fromID: `a.ref_key`, projected: `a.node_kind`},
 		// The same index, over the rows that carry their node while its part_of to that issue
-		// stands: the view's arm of its own for them, which names the artifact by its uuid.
-		{kind: TupleAttachedTo, from: `artifacts a`, where: `a.issue_key is not null and ` + attachedArtifactStands, toID: `a.issue_key`,
+		// stands: the view's arm of its own for them, which names the artifact by its uuid. It
+		// leaves out the issue's own tree and decisions query too.
+		{kind: TupleAttachedTo, from: `artifacts a`, where: `a.issue_key is not null and not ` + issueOwnArtifact("a") + ` and ` + attachedArtifactStands, toID: `a.issue_key`,
 			fromKind: "artifact", fromID: `a.ref_key`},
 		// graph_tuples_inbound: a lens invoked on the issue, and a constraint written under it,
 		// each placed there by its part_of tuple (lensStandsOn).

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -345,8 +346,7 @@ func TestABlocksChangedVersionMovesOnlyWithItsText(t *testing.T) {
 // A node one document cites from two blocks is cited twice, so a version that moves a citation
 // from one citing block to two, or back, moves the node's count even though the document cites it
 // throughout: each such version's event names it, and the count reads one per citing block plus
-// each artifact attached_to the target - its spec, and the tree and the decisions query an issue
-// born converted is made with.
+// the target's own spec, attached_to it: 2, 3, 2.
 func TestAVersionWriteNamesATargetWhoseBlockCountChanged(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -356,8 +356,7 @@ func TestAVersionWriteNamesATargetWhoseBlockCountChanged(t *testing.T) {
 	source := createSpecIssue(t, handler, "OPS", "First cites "+cite+".\n\nSecond paragraph.\n")
 	events := "/api/v1/issues/" + source.Key + "/events"
 	named := []model.ChangedReference{{Kind: "issue", ID: target.Key}}
-	attached := issueArtifactsAttached(t, database, target.Key)
-	requireCitations := func(stage string, blocks int) {
+	requireCitations := func(stage string, blocks, count int) {
 		t.Helper()
 		var got int
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -368,17 +367,17 @@ func TestAVersionWriteNamesATargetWhoseBlockCountChanged(t *testing.T) {
 		if got != blocks {
 			t.Fatalf("%s: blocks citing %s = %d, want %d", stage, target.Key, got, blocks)
 		}
-		requireIssueBacklinkCount(t, handler, target.Key, blocks+attached)
+		requireIssueBacklinkCount(t, handler, target.Key, count)
 	}
-	requireCitations("one citing block", 1)
+	requireCitations("one citing block", 1, 2)
 
 	editSpec(t, handler, source.Key, []map[string]any{{"op": "replace", "find": "Second paragraph.", "with": "Second cites " + cite + "."}})
 	requireArtifactEventNames(t, handler, events, source.PrimaryArtifactID, named)
-	requireCitations("two citing blocks", 2)
+	requireCitations("two citing blocks", 2, 3)
 
 	editSpec(t, handler, source.Key, []map[string]any{{"op": "replace", "find": "Second cites " + cite + ".", "with": "Second paragraph."}})
 	requireArtifactEventNames(t, handler, events, source.PrimaryArtifactID, named)
-	requireCitations("one citing block again", 1)
+	requireCitations("one citing block again", 1, 2)
 }
 
 // Migration 0122's trigger marks a document owed on every version insert; each path a block-aware
@@ -589,22 +588,15 @@ func TestAMentionABlockHoldsIsListedFromTheBlock(t *testing.T) {
 }
 
 // A node one document cites from two blocks is cited twice: its count and its list each hold
-// both blocks' mentions, beside each artifact of the target's issue attached_to it: its spec, and
-// the tree and the decisions query an issue born converted is made with, each part_of its issue.
+// both blocks' mentions, beside the target's own spec, attached_to it.
 func TestBacklinkCountsCountEachCitingBlock(t *testing.T) {
-	handler, database := blockIndexHandler(t)
+	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
 	cite := "dispatch://" + target.Key
 	issue := createSpecIssue(t, handler, "CORE", "First cites "+cite+".\n\nSecond cites "+cite+".\n")
-	var attached int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from artifacts where issue_key = $1 and kind in ('doc', 'tree')
-	`, target.Key).Scan(&attached); err != nil || attached != 3 {
-		t.Fatalf("the artifacts of %s = %d (%v), want its spec, its tree and its decisions query", target.Key, attached, err)
-	}
 
-	requireIssueBacklinkCount(t, handler, target.Key, 2+attached)
+	requireIssueBacklinkCount(t, handler, target.Key, 3)
 	edges := graphEdges(t, handler, url.Values{"to": {cite}}).Edges
 	citing := map[string]bool{}
 	for _, edge := range edges {
@@ -612,9 +604,66 @@ func TestBacklinkCountsCountEachCitingBlock(t *testing.T) {
 			citing[edge.Node.ID] = true
 		}
 	}
-	if len(edges) != 2+attached || len(citing) != 2 {
-		t.Fatalf("links to %s = %#v, want two citing blocks and the %d artifacts attached", target.Key, edges, attached)
+	if len(edges) != 3 || len(citing) != 2 {
+		t.Fatalf("links to %s = %#v, want two citing blocks and the attached spec", target.Key, edges)
 	}
+}
+
+// An issue born converted is made with its tree, the room its documents are fragments of, and
+// its decisions query node beside its spec, and each of the three is attached to it. Neither the
+// tree nor the query is a document anyone attached, and the issue read's documents leave both
+// out, so the issue's backlink count and its Referenced-by list leave them out too: a new issue
+// is referenced by its spec alone, as an issue was before its documents shared a room. A document
+// uploaded to it later is attached to it as any document is, and raises both by one.
+func TestAnIssuesBacklinksLeaveOutItsTreeAndItsDecisionsQuery(t *testing.T) {
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	var trees, queries int
+	if err := database.Pool.QueryRow(t.Context(), `
+		select count(*) filter (where a.kind = 'tree' and exists (select 1 from issue_trees tree where tree.artifact_id = a.id)),
+		       count(*) filter (where `+refs.DecisionsQuerySQL("a")+`)
+		from artifacts a where a.issue_key = $1
+	`, issue.Key).Scan(&trees, &queries); err != nil || trees != 1 || queries != 1 {
+		t.Fatalf("%s holds %d trees and %d decisions queries (%v), want one of each, as an issue born converted is made", issue.Key, trees, queries, err)
+	}
+	// The issue's own reference, as the graph read names its node, which the list is read at.
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	node, found, err := refs.Node(t.Context(), database.Pool, alice, "issue", issue.Key, false)
+	if err != nil || !found {
+		t.Fatalf("read the node of %s: found=%v err=%v", issue.Key, found, err)
+	}
+
+	requireListed := func(stage string, want ...string) {
+		t.Helper()
+		requireIssueBacklinkCount(t, handler, issue.Key, len(want))
+		counts, err := refs.BacklinkCounts(t.Context(), database.Pool, alice, "issue", []string{issue.Key}, nil)
+		if err != nil || counts[issue.Key] != len(want) {
+			t.Fatalf("%s: refs.BacklinkCounts of %s = %v (%v), want %d", stage, issue.Key, counts, err, len(want))
+		}
+		var listed []string
+		for _, edge := range graphEdges(t, handler, url.Values{"to": {node.Ref}}).Edges {
+			if edge.Kind != "attached_to" || edge.Node.Kind != "artifact" {
+				t.Fatalf("%s: %s lists a %s edge from a %s, want only the documents attached to it", stage, issue.Key, edge.Kind, edge.Node.Kind)
+			}
+			listed = append(listed, edge.Node.ID)
+		}
+		slices.Sort(listed)
+		slices.Sort(want)
+		if !slices.Equal(listed, want) {
+			t.Fatalf("%s: %s is referenced by %v, want %v", stage, issue.Key, listed, want)
+		}
+	}
+	requireListed("a new issue", issue.PrimaryArtifactID)
+
+	uploaded := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "notes.md", "text/markdown", []byte("Notes.\n"), "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload a document: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	notes := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact.ID
+	requireListed("a document uploaded to it", issue.PrimaryArtifactID, notes)
 }
 
 // Contract item 11: the older references route loses no source. A document that cites only a

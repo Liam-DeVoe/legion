@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Retirement is what RetireDocument did: the document.retired event it appended, which the
@@ -143,23 +144,11 @@ func documentRetired(ctx context.Context, q Queryer, room string) (bool, error) 
 	return retired, nil
 }
 
-// DecisionsQuerySQL is true of the artifacts row aliased alias while it is its issue's decisions
-// query node (api's createDecisionsQuery, D6 of this branch's plan): a document whose node is a
-// query node of query `decisions` (graphstore.QueryNode) and which no document_rooms row joins to
-// an issue room, whose versions render that query. No fragment of any room holds it, so no socket
-// opens on it (Service.ServeHTTP), and no upload or edit writes it (api's decisionsQueryRefusal).
-func DecisionsQuerySQL(alias string) string {
-	return `(` + alias + `.kind = 'doc' and not exists (select 1 from document_rooms moved where moved.artifact_id = ` + alias + `.id)
-		and exists (select 1 from graph_nodes node where node.kind = '` + graphstore.KindArtifact + `' and node.id = ` + alias + `.ref_key
-		            and node.supertag = '` + graphstore.SupertagQuery + `'
-		            and node.attributes->>'` + graphstore.AttributeQuery + `' = '` + graphstore.QueryDecisions + `'))`
-}
-
 // refusedDocument reads from q, in one statement, whether the document asked is retired
-// (documentRetired) and whether it is its issue's decisions query (DecisionsQuerySQL): no socket
-// opens on either.
+// (documentRetired) and whether it is its issue's decisions query (refs.DecisionsQuerySQL): no
+// socket opens on either.
 func refusedDocument(ctx context.Context, q Queryer, asked string) (retired, query bool, err error) {
-	if err := q.QueryRow(ctx, `select a.retired_at is not null, `+DecisionsQuerySQL("a")+` from artifacts a where a.id = $1`, asked).
+	if err := q.QueryRow(ctx, `select a.retired_at is not null, `+refs.DecisionsQuerySQL("a")+` from artifacts a where a.id = $1`, asked).
 		Scan(&retired, &query); err != nil {
 		return false, false, fmt.Errorf("read whether the document takes a socket: %w", err)
 	}

@@ -213,13 +213,14 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 	}
 	// The stamped issue is born converted, so beside its spec it is made with its tree and its
 	// decisions query, each attached to it (part_of its issue), and the release before's document
-	// is a fourth artifact attached to it.
-	var attachedArtifacts int
+	// is a fourth artifact attached to it. Its tree and its decisions query are no backlinks of it
+	// (refs' issueOwnArtifact), so its count of attachments is its spec and that document.
+	var issueArtifacts int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from artifacts where issue_key = $1 and kind in ('doc', 'tree')
-	`, stamped.Key).Scan(&attachedArtifacts); err != nil || attachedArtifacts != 4 {
+	`, stamped.Key).Scan(&issueArtifacts); err != nil || issueArtifacts != 4 {
 		t.Fatalf("the artifacts of %s = %d (%v), want its spec, its tree, its decisions query and the release before's document",
-			stamped.Key, attachedArtifacts, err)
+			stamped.Key, issueArtifacts, err)
 	}
 
 	standing := []rollbackEdge{
@@ -306,8 +307,8 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s count the attachments: %v", stage, err)
 		}
-		if attached[stamped.Key] != attachedArtifacts {
-			t.Errorf("%s %s counts %d backlinks, want its spec, its tree, its decisions query and the release before's document",
+		if attached[stamped.Key] != 2 {
+			t.Errorf("%s %s counts %d backlinks, want its spec and the release before's document, and neither its tree nor its decisions query",
 				stage, stamped.Key, attached[stamped.Key])
 		}
 		// legion holds daemon and envoy, stamped, and the release before's relay; daemon holds

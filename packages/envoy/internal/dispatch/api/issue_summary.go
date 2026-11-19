@@ -6,7 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The summary reads serve what a rendered dispatch:// reference shows, an issue's title and status
@@ -71,7 +71,7 @@ func (s *server) getIssueSummary(w http.ResponseWriter, r *http.Request) {
 	// branch's spec).
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select a.id::text, a.slug, a.name, a.kind, `+summaryLatestVersion+`, a.is_primary
-		from artifacts a where a.issue_key = $1 and a.retired_at is null and a.kind <> 'tree' and not `+docs.DecisionsQuerySQL("a")+`
+		from artifacts a where a.issue_key = $1 and a.retired_at is null and a.kind <> 'tree' and not `+refs.DecisionsQuerySQL("a")+`
 		order by a.created_at, a.id
 	`, summary.Key)
 	if err != nil {

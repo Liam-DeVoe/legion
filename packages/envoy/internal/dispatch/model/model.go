@@ -1253,8 +1253,8 @@ type Artifact struct {
 	// carries it.
 	Retired bool `json:"-"`
 	// DecisionsQuery is whether the document is its issue's decisions query node, whose versions
-	// render the issue's decisions and which no fragment of any room holds (docs'
-	// DecisionsQuerySQL): it answers no Fragment, and no upload, edit or socket writes it. No
+	// render the issue's decisions and which no fragment of any room holds
+	// (refs.DecisionsQuerySQL): it answers no Fragment, and no upload, edit or socket writes it. No
 	// response carries it.
 	DecisionsQuery bool      `json:"-"`
 	Versions       []Version `json:"versions"`

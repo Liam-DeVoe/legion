@@ -410,7 +410,9 @@ func excerptOf(node resolvedNode) *model.GraphExcerpt {
 // narrow. A document's, comment's, message's or ask's read adds the edges at its blocks — an
 // ask's parts among them (see Query) — and every inbound read lists an item's mention from the
 // block holding it (heldByABlock). A whole-document read lists each citer by its item instead,
-// an ask citing the document from a part included (asksCitingTheDocument).
+// an ask citing the document from a part included (asksCitingTheDocument). An issue's inbound
+// read leaves out the attached_to edges of its own tree and decisions query (issueOwnAttachment),
+// as its count does.
 //
 // Every arm carries the visibility predicate of the end it answers, bound from the registry
 // (visibility.go) and never applied to the rows in Go: an edge whose far end who may not see is
@@ -482,6 +484,11 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		own := source
 		if itemBlocks {
 			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", blocks)
+		}
+		if query.Kind == graphstore.KindIssue {
+			// An issue's own tree and decisions query are no backlinks of it, as its count holds
+			// (issueOwnArtifact).
+			own += ` and not ` + issueOwnAttachment("g", `(select `+id+`::text)`)
 		}
 		arms = `select g.kind, g.from_kind, ` + from + `, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.to_kind = ` + kind + ` and g.to_id = (select ` + id + `::text) and ` + own

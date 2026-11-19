@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // issueRoleDocuments is what an issue read names by role: its spec, and its document of each
@@ -136,11 +137,11 @@ func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t 
 	if project := uploadDocument(t, handler, "/api/v1/projects/DEC", "decisions.md", "# Decisions\n\nOne.\n"); project.Artifact.Role != "" {
 		t.Fatalf("project document = %#v, want it taken with no role: the refusal is an issue's", project.Artifact)
 	}
-	// The issue's decisions query (docs.DecisionsQuerySQL), a doc row slugged decisions that every
+	// The issue's decisions query (refs.DecisionsQuerySQL), a doc row slugged decisions that every
 	// issue born converted holds, is no stored decisions document.
 	var stored int
 	if err := database.Pool.QueryRow(ctx, `
-		select count(*) from artifacts a where a.issue_key = $1 and a.slug like 'decisions%' and not `+docs.DecisionsQuerySQL("a"),
+		select count(*) from artifacts a where a.issue_key = $1 and a.slug like 'decisions%' and not `+refs.DecisionsQuerySQL("a"),
 		issue.Key).Scan(&stored); err != nil || stored != 0 {
 		t.Fatalf("the refused writes stored %d decisions documents on %s (%v), want none", stored, issue.Key, err)
 	}

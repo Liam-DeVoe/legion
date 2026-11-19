@@ -14,8 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -61,13 +61,13 @@ with q as (select $1::tsquery as tsq, $4::text as term, '{}'::text[] as own_keys
 `
 
 // searchTermDocument is true of the artifacts row aliased alias while it is a document the counts
-// hold the words of: a doc, and no issue's decisions query (docs.DecisionsQuerySQL), whose versions
+// hold the words of: a doc, and no issue's decisions query (refs.DecisionsQuerySQL), whose versions
 // render a view over decision nodes and whose row is in no list of its issue's documents. An
 // issue's tree artifact is no doc. Both write versions, so both have document_search rows
 // (migration 20261101182454 puts no kind filter on it), and neither is an item: the issue holds
 // its spec and its other documents.
 func searchTermDocument(alias string) string {
-	return `(` + alias + `.kind = 'doc' and not ` + docs.DecisionsQuerySQL(alias) + `)`
+	return `(` + alias + `.kind = 'doc' and not ` + refs.DecisionsQuerySQL(alias) + `)`
 }
 
 // searchTermItemsSQL selects the search vector of every searchable item of the project

@@ -280,7 +280,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// A retired document takes no new text (RetireDocument), so no socket opens on it: its
 	// retirement closed every room of it, and a browser that comes back is refused here, before
 	// anything reserves a room for it. The issue's decisions query is no document a socket edits
-	// (DecisionsQuerySQL): no fragment of any room holds it.
+	// (refs.DecisionsQuerySQL): no fragment of any room holds it.
 	retired, query, err := refusedDocument(r.Context(), s.queryFrom(r.Context()), asked)
 	switch {
 	case err != nil:
