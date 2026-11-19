@@ -6527,6 +6527,163 @@ test("a key with nowhere to go says so at its row, until the next move", async (
   expect(rowReport(view.container)).toBeUndefined();
 });
 
+/**
+ * Presses `key` on the row of `on`, where the key has nowhere to go, at each of `widths` (1440 and
+ * 390 px unless a key goes somewhere at one of them), and reads that it says `report` at that row
+ * and nowhere else, moves the focus nowhere, and that the next key, `next`, which moves, lets the
+ * report go. The tree is `twoCommentsTree`'s, which opens on its first row; `to` are the keys that
+ * take the reader from there to `on`, none where the key is pressed there, and `zoomed` says that
+ * they zoom, so the crumb line is waited for.
+ */
+async function expectNowhereToGo({
+  key,
+  next,
+  on,
+  report,
+  to,
+  widths = [1440, 390],
+  zoomed = false,
+}: {
+  readonly key: string;
+  readonly next: string;
+  readonly on: string;
+  readonly report: string;
+  readonly to?: string;
+  readonly widths?: readonly number[];
+  readonly zoomed?: boolean;
+}): Promise<void> {
+  for (const width of widths) {
+    setViewport(width);
+    const user = userEvent.setup();
+    const view = renderTree(twoCommentsTree());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    if (to !== undefined) await user.keyboard(to);
+    if (zoomed) {
+      await waitFor(() => expect(view.container.querySelector("[data-crumb]")).not.toBeNull());
+    }
+    await waitFor(() => expect(focusedRow(view.container)).toBe(on));
+    await user.keyboard(key);
+    await waitFor(() =>
+      expect(rowReport(view.container), `${key} on ${on} at ${width} px`).toBe(report)
+    );
+    expect(focusedRow(view.container), `${key} on ${on} at ${width} px moved the focus`).toBe(on);
+    expect(
+      view.container.querySelectorAll("[data-row-report]"),
+      `${key} at ${width} px said it at more than one place`
+    ).toHaveLength(1);
+    expect(
+      rowsFor(view.container, on)[0]?.querySelector("[data-row-report]"),
+      `${key} at ${width} px said it away from the row it was pressed on`
+    ).not.toBeNull();
+    await user.keyboard(next);
+    await waitFor(() => expect(focusedRow(view.container)).not.toBe(on));
+    expect(rowReport(view.container), `the move after ${key} at ${width} px`).toBeUndefined();
+    view.unmount();
+  }
+}
+
+// At 1440 and at 390 px each key below moved nothing and said nothing: Home, `k` and Up on the
+// first row, End, `j` and Down on the last, Right on a row with nothing under it, Left on a
+// top-level row of the whole tree with nothing to fold, and `.` on the row the tree is zoomed to
+// already. Each says so at the row it was pressed on, in the words of `KEY_REPORTS`, until the
+// next key or move.
+test("Home on the first row says it is the first row", async () => {
+  await expectNowhereToGo({
+    key: "{Home}",
+    next: "j",
+    on: "comment-1",
+    report: KEY_REPORTS.first_row,
+  });
+});
+
+test("k on the first row says it is the first row", async () => {
+  await expectNowhereToGo({ key: "k", next: "j", on: "comment-1", report: KEY_REPORTS.first_row });
+});
+
+test("Up on the first row says it is the first row", async () => {
+  await expectNowhereToGo({
+    key: "{ArrowUp}",
+    next: "j",
+    on: "comment-1",
+    report: KEY_REPORTS.first_row,
+  });
+});
+
+test("End on the last row says it is the last row", async () => {
+  await expectNowhereToGo({
+    key: "{End}",
+    next: "k",
+    on: "comment-2",
+    report: KEY_REPORTS.last_row,
+    to: "{End}",
+  });
+});
+
+test("j on the last row says it is the last row", async () => {
+  await expectNowhereToGo({
+    key: "j",
+    next: "k",
+    on: "comment-2",
+    report: KEY_REPORTS.last_row,
+    to: "j",
+  });
+});
+
+test("Down on the last row says it is the last row", async () => {
+  await expectNowhereToGo({
+    key: "{ArrowDown}",
+    next: "k",
+    on: "comment-2",
+    report: KEY_REPORTS.last_row,
+    to: "j",
+  });
+});
+
+test("Right on a row with nothing under it says so, the whole tree drawn or read one node at a time", async () => {
+  await expectNowhereToGo({
+    key: "{ArrowRight}",
+    next: "k",
+    on: "comment-2",
+    report: KEY_REPORTS.nothing_under,
+    to: "j",
+  });
+});
+
+test("Left on a top-level row of the whole tree with nothing to fold says the whole issue is drawn", async () => {
+  await expectNowhereToGo({
+    key: "{ArrowLeft}",
+    next: "j",
+    on: "comment-1",
+    report: KEY_REPORTS.whole_tree,
+  });
+});
+
+test(". on the row the tree is zoomed to says the tree is zoomed to it already", async () => {
+  await expectNowhereToGo({
+    key: ".",
+    next: "j",
+    on: "comment-1",
+    report: KEY_REPORTS.already_zoomed,
+    to: ".",
+    zoomed: true,
+  });
+});
+
+// Where the whole tree is drawn, Left on the row the tree is zoomed to folded nothing, since the
+// zoom's own row stays open, and moved nowhere, since its parent is above the zoom: it said
+// nothing. At 390 px the same key zooms back out, so the case is read at 1440 px alone.
+test("Left on the row the tree is zoomed to, the whole tree drawn, says the tree is zoomed to it already", async () => {
+  await expectNowhereToGo({
+    key: "{ArrowLeft}",
+    next: "j",
+    on: "comment-1",
+    report: KEY_REPORTS.already_zoomed,
+    to: ".",
+    widths: [1440],
+    zoomed: true,
+  });
+});
+
 // `q` and `w` each work out where they go from the tree as it stands, so pressed before the
 // reads the tree is built from have answered, the absence they say may be false - the question
 // may be in the asks' read still out. Until those reads hold an answer (`slots/body.tsx`) the key

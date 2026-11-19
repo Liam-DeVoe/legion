@@ -2672,13 +2672,62 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
   });
 });
 
+/** What axe's `target-size` rule (WCAG 2.2's 2.5.8) says of the crumbs the page draws: a line for
+ *  each crumb it fails or leaves for review, with the crumb's box and axe's own summary, and how
+ *  many crumbs it passed. A crumb is a button the reader presses to zoom out, so it is a target
+ *  whatever its tab index, but axe leaves an undersized target outside the tab order for review
+ *  rather than failing it, and every crumb is outside it (`tabIndex={-1}`): at 1440 by 900 px
+ *  the head's 16 px crumbs were no violation, each "incomplete", with axe's own words "Safe
+ *  clickable space has a diameter of 16px instead of at least 24px. Is this a target?". So a
+ *  crumb left for review is a fault here as one that fails is. */
+async function crumbTargets(
+  page: Page
+): Promise<{ readonly faults: readonly string[]; readonly passed: number }> {
+  const { incomplete, passes, violations } = await new AxeBuilder({ page })
+    .withRules(["target-size"])
+    .include("[data-crumb]")
+    .analyze();
+  const faults = await Promise.all(
+    [...violations, ...incomplete]
+      .flatMap((result) => result.nodes)
+      .map(async (node) => {
+        const selector = node.target
+          .map((part) => (Array.isArray(part) ? part.join(" ") : String(part)))
+          .join(" ");
+        const box = await page.locator(selector).evaluate((crumb) => {
+          const drawn = crumb.getBoundingClientRect();
+          return `${Math.round(drawn.width)} by ${Math.round(drawn.height)} px at ${Math.round(drawn.left)}, ${Math.round(drawn.top)}`;
+        });
+        return `${selector}, ${box}: ${(node.failureSummary ?? "").replace(/\s+/gu, " ")}`;
+      })
+  );
+  return { faults, passed: passes.flatMap((result) => result.nodes).length };
+}
+
+/** Every crumb the page draws passes axe's `target-size` rule, WCAG 2.2's 2.5.8, at `where`: it
+ *  is at least 24 by 24 px, or so spaced that a 24 px circle on it meets no other target. axe
+ *  fails none, leaves none for review and passes each one, so a line it read no crumb of fails
+ *  too. */
+async function expectCrumbTargets(page: Page, where: string): Promise<void> {
+  await expect
+    .poll(async () => (await crumbTargets(page)).faults, {
+      message: `at ${where} axe's target-size rule (WCAG 2.2's 2.5.8) fails a crumb`,
+    })
+    .toEqual([]);
+  expect(
+    (await crumbTargets(page)).passed,
+    `at ${where} axe's target-size rule passed fewer crumbs than the line draws`
+  ).toBe(await page.locator("[data-crumb]").count());
+}
+
 // c-tree, the crumb (the architect's ruling on a node's one line): where the tree is read one
 // node at a time, a crumb is the node's first line by that rule, cut at a word, never cut again
 // mid-word by its box, and a line that is a whole sentence carries no ellipsis after its own full
 // stop. The issue's crumb is its key. The Contents entry's half is left to the Contents pane's
 // own entries, which this tree does not hold yet.
 // SLOW(>=2s): the whole issue seeded and loaded at a phone's size on a reply's address, waited on
-// until the reply has the focus, then zoomed into and measured.
+// until the reply has the focus, then zoomed into and measured, axe's target-size rule run on it,
+// and the same loaded, zoomed into and read by axe again at 1440 by 900 px.
 test("a crumb draws its node's first line, cut at a word @phone @phone-only", async ({
   browser,
 }) => {
@@ -2773,6 +2822,25 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
     ).toBeLessThanOrEqual(drawn.oneLineTall + 1);
     // Nothing the zoom draws makes the page scroll sideways.
     await assertPageFits(page);
+
+    // WCAG 2.2's 2.5.8 as axe reads it (`target-size`), on this zoom two levels deep: at the
+    // iPhone 13's 390 by 664 px, and at 1440 by 900 px, zoomed the same way from the reply's
+    // address. At 1440 px, where `dispatch-inline-link` sets no padding, each crumb of the head
+    // was its 16 px line alone, 34 by 16 and 125 by 16 px, which axe left for review.
+    await page.setViewportSize({ height: 664, width: 390 });
+    await expectCrumbTargets(page, "390 by 664 px");
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "the reply's address does not focus its row at 1440 px",
+      })
+      .toBe(seeded.comments.replies[0] ?? "");
+    await page.keyboard.press(".");
+    await expect
+      .poll(() => crumbs.count(), { message: "no crumb is drawn at 1440 px" })
+      .toBeGreaterThan(1);
+    await expectCrumbTargets(page, "1440 by 900 px");
   });
 });
 
@@ -3773,10 +3841,13 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 // stands behind - is drawn at the row it was pressed on, once, and the reader's next move lets
 // it go. At 390 px, where the tree is read one node at a time, Left on a child of the row the
 // tree is zoomed to asked to zoom to that row, which is the zoom already, and said nothing: it
-// says so at the row, and on the zoom's own row it zooms back out.
-// SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for two keys pressed, then
-// loaded again at a phone's size on a reply's address, waited on until the reply has the focus,
-// for four keys more and a zoom out waited on.
+// says so at the row, and on the zoom's own row it zooms back out. At 1440 px Home on the first
+// row, End on the last and Right on a row with nothing under it moved nothing and said nothing,
+// and at 390 px so did `.` on the row the tree is zoomed to: each says so at its row, and the
+// next move lets it go.
+// SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for nine keys pressed,
+// then loaded again at a phone's size on a reply's address, waited on until the reply has the
+// focus, for five keys more and a zoom out waited on.
 test("a key with nowhere to go says so at its row, and the next move lets it go", async ({
   browser,
 }) => {
@@ -3805,6 +3876,45 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       issuePage(page).locator("[data-row-report]"),
       "the report stays after the reader moved on"
     ).toHaveCount(0);
+    /** The report of the key pressed `after` is drawn at the focused row, in `words`, and
+     *  nowhere else on the page. */
+    const reportedAt = async (after: string, words: string): Promise<void> => {
+      const at = (await focusedNodeId(page)) ?? "";
+      await expect(
+        nodeRow(page, at).first().locator("[data-row-report]"),
+        `${after} says nothing at the row`
+      ).toHaveText(words);
+      await expect(
+        issuePage(page).locator("[data-row-report]"),
+        `the report of ${after} is drawn at more than one place`
+      ).toHaveCount(1);
+    };
+    // The first press of each end key moves to its end, and the second has nowhere to go.
+    await pressToOutlineEnd(page, "Home");
+    await pressToOutlineEnd(page, "Home");
+    await reportedAt("Home on the first row", KEY_REPORTS.first_row);
+    await page.keyboard.press("j");
+    await expect(
+      issuePage(page).locator("[data-row-report]"),
+      "the report of Home on the first row stays after the reader moved on"
+    ).toHaveCount(0);
+    await pressToOutlineEnd(page, "End");
+    await pressToOutlineEnd(page, "End");
+    await reportedAt("End on the last row", KEY_REPORTS.last_row);
+    await page.keyboard.press("k");
+    await expect(
+      issuePage(page).locator("[data-row-report]"),
+      "the report of End on the last row stays after the reader moved on"
+    ).toHaveCount(0);
+    const leaf =
+      (await drawnRows(page)).find((row) => row.visible && row.expanded === null)?.id ?? "";
+    expect(leaf, "the outline draws no row with nothing under it").not.toBe("");
+    await focusRow(page, leaf);
+    await page.keyboard.press("ArrowRight");
+    await reportedAt("Right on a row with nothing under it", KEY_REPORTS.nothing_under);
+    expect(await focusedNodeId(page), "Right on a row with nothing under it moved the focus").toBe(
+      leaf
+    );
 
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.first}`);
@@ -3825,6 +3935,15 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
     // head, a child of the issue, says the whole issue is drawn.
     await page.keyboard.press("ArrowUp");
     await expect.poll(() => focusedNodeId(page)).toBe(seeded.head);
+    // `.` on the zoom's own row asks for the zoom the tree holds already: it says so at the row,
+    // and zooms nowhere.
+    await page.keyboard.press(".");
+    await expect(
+      nodeRow(page, seeded.head).first().locator("[data-row-report]"),
+      ". on the row the tree is zoomed to says nothing at the row"
+    ).toHaveText(KEY_REPORTS.already_zoomed);
+    await expect(crumbs, ". on the row the tree is zoomed to zoomed elsewhere").toHaveCount(1);
+    expect(await focusedNodeId(page), ". on the zoom's own row moved the focus").toBe(seeded.head);
     await page.keyboard.press("ArrowLeft");
     await expect(crumbs, "Left on the zoom's own row did not zoom out").toHaveCount(0);
     await expect

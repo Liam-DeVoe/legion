@@ -936,22 +936,31 @@ export function IssueTree({
               // `[data-issue-header]`, `[data-node-row]`), none of which holds the crumb line:
               // `min-h-0!` and `min-w-0!` take the floor off, since a layered utility wins over
               // an unlayered rule only with `!`. A 44 px crumb was a third of the head the first
-              // open question needs on a phone. Its box is 28 px tall instead, its 16 px line and
-              // the 6 px of padding above and below that `dispatch-inline-link` gives it, over
-              // WCAG 2.2's 24 px (2.5.8). Measured in Chromium at 390 by 664 and 1024 by 768 px,
-              // on crumbs of one line of words each: each crumb 28 px tall (a
-              // five-character key's 34 px wide) and the line 28 px, one crumb tall, where the
-              // floor made each crumb at least 44 by 44 px and the line 44 px; on a copy of a long
-              // real issue at 390 by 664 px, the line one zoom draws is 28 px where it was 44, and
-              // the one a second zoom draws 96 px where it was 112. Its display is left to the
-              // floor's `inline-flex`: the line is a flex box, which makes each crumb a block box
+              // open question needs on a phone. Its box is 28 px tall instead below 1280 px, its
+              // 16 px line and the 6 px of padding above and below that `dispatch-inline-link`
+              // gives it there, and 24 px from 1280 px up, where that class gives none and `py-1`
+              // gives 4 px: WCAG 2.2's 24 px (2.5.8) at every width. `py-1` is a layered utility,
+              // so below 1280 px the unlayered 6 px still wins. A crumb is pressed to zoom out, so
+              // it is a target whatever its tab index, and axe's `target-size` rule leaves a
+              // target outside the tab order for review rather than failing it: with no padding
+              // of its own, at 1440 by 900 px each crumb was its 16 px line alone, 34 by 16 and
+              // 125 by 16 px on a zoom two levels deep, which axe left for review with a safe
+              // space 16 px across. Measured in Chromium on that zoom with `py-1`: 34 by 24 and
+              // 125 by 24 px at 1440 by 900 px, and 34 by 28 and 125 by 28 px at 390 by 664 px,
+              // axe passing every crumb at both. Measured at 390 by 664 and 1024 by 768 px, on
+              // crumbs of one line of words each: each crumb 28 px tall (a five-character key's
+              // 34 px wide) and the line 28 px, one crumb tall, where the floor made each crumb
+              // at least 44 by 44 px and the line 44 px; on a copy of a long real issue at 390 by
+              // 664 px, the line one zoom draws is 28 px where it was 44, and the one a second
+              // zoom draws 96 px where it was 112. Its display is left to the floor's
+              // `inline-flex`: the line is a flex box, which makes each crumb a block box
               // whatever its display, and `inline-block`, `inline` and `block` drew the same box.
               // It draws one line for a node, so it is the node's first line (`firstLineOf`),
               // cut at a word from the words every one-line drawing of a node is cut from
               // (`lineWords`), and it wraps rather than being cut again mid-word by its box; the
               // issue is named by its key, since the header above draws its title, and a node
               // with no words by its kind's word, never its id, which is no name a reader reads.
-              className="dispatch-inline-link min-h-0! min-w-0! max-w-full text-left underline [overflow-wrap:anywhere]"
+              className="dispatch-inline-link min-h-0! min-w-0! max-w-full py-1 text-left underline [overflow-wrap:anywhere]"
               data-crumb={above.id}
               key={above.id}
               onClick={() => zoomTo(above.id)}
