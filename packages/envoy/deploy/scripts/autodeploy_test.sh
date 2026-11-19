@@ -15,8 +15,14 @@ schema="$root/schema"
 # are written), and the tag of every read it made, in order.
 manifests="$root/manifests"
 manifest_log="$root/manifest.log"
-# The real timeout, which the stand-in below hands the deployer's manifest reads to.
+# The bound each call the deployer makes through `timeout` is given, one `<call> <seconds>` line
+# each (the timeout stand-in below), and the clock the pass's deadline is read against: the real
+# one, moved on by the seconds this file holds (the date stand-in below).
+bounds_log="$root/bounds"
+clock="$root/clock"
+# The real timeout and date, which the stand-ins below hand calls to.
 real_timeout=$(command -v timeout)
+real_date=$(command -v date)
 mkdir -p "$compose" "$backups" "$bin" "$tools"
 # The database password, percent-encoded in DATABASE_URL as s%40cret-canary. Neither spelling may
 # appear in the deployer's output or in any process's arguments.
@@ -40,24 +46,58 @@ EOF
   # level. A migration applied below the highest one changes the set and leaves max(version) where
   # it was.
   seq 1 112 >"$schema"
-  rm -f "$schema.up" "$schema.running" "$schema.candidate" "$schema.held" "$schema.key" "$manifests" "$manifests.hung"
+  rm -f "$schema.up" "$schema.running" "$schema.candidate" "$schema.held" "$schema.key" "$schema.refused" "$schema.pulled" \
+    "$schema.passes" "$manifests" "$manifests.hung"
   touch "$schema.running"
   : >"$log"
   : >"$argv"
   : >"$manifest_log"
+  : >"$bounds_log"
+  printf '0\n' >"$clock"
 }
 # deployed_tag_is <tag>: the tag compose/.env says is deployed.
 deployed_tag_is() {
   sed -i -E "s/^ENVOY_IMAGE_TAG=.*/ENVOY_IMAGE_TAG=$1/" "$compose/.env"
 }
 
+# jj answers the walk's list of commits from AUTODEPLOY_TEST_COMMITS, newest first, and the order
+# of two commits from the same list: the newest published commit is `older` than the deployed one
+# when the deployed one comes before it there, and `newer` when it does not, as for a deployed tag
+# that names no commit the list holds. AUTODEPLOY_TEST_ORDER_FAILS=1 makes it answer no order.
 cat >"$bin/jj" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *" git fetch"*) ;;
   *"ancestors(main@origin, 30)"*) printf '%s\n' ${AUTODEPLOY_TEST_COMMITS:-new-image} ;;
   *"description.first_line()"*) printf 'test deployment\n' ;;
+  *"contained_in"*)
+    [[ "${AUTODEPLOY_TEST_ORDER_FAILS:-}" != 1 ]] || exit 1
+    for arg in "$@"; do
+      case "$arg" in
+        'present("'*) candidate=${arg#present(\"}; candidate=${candidate%\")} ;;
+        *'contained_in('*) deployed=${arg#*::present(\\\"}; deployed=${deployed%%\\\"*} ;;
+      esac
+    done
+    order=newer
+    seen=
+    for commit in ${AUTODEPLOY_TEST_COMMITS:-new-image}; do
+      [[ "$commit" == "$deployed" ]] && seen=1
+      [[ "$commit" == "$candidate" && -n "$seen" ]] && order=older
+    done
+    printf '%s\n' "$order"
+    ;;
 esac
+EOF
+# date answers `date +%s`, the pass's clock, as the real clock plus the seconds
+# $AUTODEPLOY_TEST_CLOCK holds, which a stand-in below moves on to stand for time a call took
+# without the case waiting it out; every other date it answers as the real one does.
+cat >"$bin/date" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == "+%s" ]]; then
+  printf '%s\n' "$(($("$AUTODEPLOY_TEST_REAL_DATE" +%s) + $(cat "$AUTODEPLOY_TEST_CLOCK")))"
+  exit 0
+fi
+exec "$AUTODEPLOY_TEST_REAL_DATE" "$@"
 EOF
 # docker runs a container's command for real, as the container would: in an environment holding
 # only the variables passed by name with -e, and with the fake psql and pg_dump below on its PATH.
@@ -66,11 +106,19 @@ EOF
 #
 # A manifest read records its tag in $AUTODEPLOY_TEST_MANIFEST_LOG and answers what a
 # `<tag> <answer>` line of $AUTODEPLOY_TEST_MANIFESTS says for that tag: `late:<s>`, the manifest
-# after <s> seconds; `unknown`, the registry's answer for a tag it does not hold, as ghcr.io words
-# it; `unknown-after:<s>`, that answer after <s> seconds; `refused`, a rate limit's refusal; and
-# `hang`, no answer at all, as a read whose pid and start time it records in
-# $AUTODEPLOY_TEST_MANIFESTS.hung. A tag with no line is published, at once. A wait ends its sleep
-# when the read is stopped, so a stopped read leaves no process of the stand-in's behind.
+# after <s> seconds; `clock:<s>`, the manifest after the pass's clock moved on <s> seconds;
+# `unknown`, the registry's answer for a tag it does not hold, as ghcr.io words it;
+# `unknown-after:<s>` and `unknown-clock:<s>`, that answer after <s> seconds, or after the clock
+# moved on <s>; `refused`, a rate limit's refusal; `refused-once`, that refusal to the first read
+# alone and the manifest to every later one; and `hang`, no answer at all, as a read whose pid and
+# start time it records in $AUTODEPLOY_TEST_MANIFESTS.hung. A tag with no line is published, at
+# once. A wait ends its sleep when the read is stopped, so a stopped read leaves no process of the
+# stand-in's behind.
+#
+# A container run (the database clients) never answers with AUTODEPLOY_TEST_RUN_HANG_AFTER_UP=1
+# once the new image was started; a pull fails with AUTODEPLOY_TEST_PULL_FAIL=1, and the first
+# pull alone with AUTODEPLOY_TEST_PULL_FAIL_ONCE=1; a stop never answers with
+# AUTODEPLOY_TEST_STOP_HANG=1.
 cat >"$bin/docker" <<'EOF'
 #!/usr/bin/env bash
 held_migration_commits() {
@@ -80,6 +128,9 @@ held_migration_commits() {
     printf '%s\n' "$AUTODEPLOY_TEST_MIGRATE_ON_STOP" >>"$AUTODEPLOY_TEST_SCHEMA"
     touch "$AUTODEPLOY_TEST_SCHEMA.held"
   fi
+}
+advance() {
+  printf '%s\n' "$(($(cat "$AUTODEPLOY_TEST_CLOCK") + $1))" >"$AUTODEPLOY_TEST_CLOCK"
 }
 case "$1" in
   manifest)
@@ -95,9 +146,17 @@ case "$1" in
     case "$answer" in
       '') exit 0 ;;
       late:*) pause "${answer#late:}"; exit 0 ;;
+      clock:*) advance "${answer#clock:}"; exit 0 ;;
       unknown) printf 'manifest unknown\n' >&2; exit 1 ;;
       unknown-after:*) pause "${answer#unknown-after:}"; printf 'manifest unknown\n' >&2; exit 1 ;;
+      unknown-clock:*) advance "${answer#unknown-clock:}"; printf 'manifest unknown\n' >&2; exit 1 ;;
       refused) printf 'toomanyrequests: retry later\n' >&2; exit 1 ;;
+      refused-once)
+        [[ -e "$AUTODEPLOY_TEST_SCHEMA.refused" ]] && exit 0
+        touch "$AUTODEPLOY_TEST_SCHEMA.refused"
+        printf 'toomanyrequests: retry later\n' >&2
+        exit 1
+        ;;
       hang)
         printf '%s %s\n' "$$" "$(cut -d' ' -f22 "/proc/$$/stat")" >>"$AUTODEPLOY_TEST_MANIFESTS.hung"
         exec /bin/sleep 3600
@@ -107,6 +166,9 @@ case "$1" in
     ;;
   run)
     printf 'docker %s\n' "$*" >>"$AUTODEPLOY_TEST_ARGV"
+    if [[ "${AUTODEPLOY_TEST_RUN_HANG_AFTER_UP:-}" == 1 && -e "$AUTODEPLOY_TEST_SCHEMA.up" ]]; then
+      exec /bin/sleep 3600
+    fi
     shift
     names=()
     while [[ "$1" == -* ]]; do
@@ -134,6 +196,10 @@ case "$1" in
         if [[ "${AUTODEPLOY_TEST_PULL_FAIL:-}" == 1 ]]; then
           exit 1
         fi
+        if [[ "${AUTODEPLOY_TEST_PULL_FAIL_ONCE:-}" == 1 && ! -e "$AUTODEPLOY_TEST_SCHEMA.pulled" ]]; then
+          touch "$AUTODEPLOY_TEST_SCHEMA.pulled"
+          exit 1
+        fi
         ;;
       *" up "*)
         if [[ "${ENVOY_IMAGE_TAG:-}" == new-image ]]; then
@@ -150,6 +216,9 @@ case "$1" in
       *" stop "*)
         if [[ "${AUTODEPLOY_TEST_STOP_FAIL:-}" == 1 ]]; then
           exit 1
+        fi
+        if [[ "${AUTODEPLOY_TEST_STOP_HANG:-}" == 1 ]]; then
+          exec /bin/sleep 3600
         fi
         held_migration_commits
         if [[ "${AUTODEPLOY_TEST_STOP_LEAVES_RUNNING:-}" != 1 ]]; then
@@ -170,7 +239,8 @@ case "$1" in
 esac
 EOF
 # curl answers /healthz 200 with NATS connected, but for new-image with
-# AUTODEPLOY_TEST_CANDIDATE_NATS set, which it reports as `nats`.
+# AUTODEPLOY_TEST_CANDIDATE_NATS set, which it reports as `nats`. /auth/start redirects to the
+# wrong origin, which fails the deploy's origin check, unless AUTODEPLOY_TEST_ORIGIN_OK=1.
 cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
@@ -182,36 +252,73 @@ case "$*" in
     printf '{"ok":true,"db":true,"nats":%s}' "$nats"
     ;;
   *"/auth/start"*)
-    printf 'https://github.com/login/oauth/authorize?redirect_uri=http%%3A%%2F%%2Fwrong.test%%3A8766%%2Fauth%%2Fcallback'
+    host=wrong.test
+    [[ "${AUTODEPLOY_TEST_ORIGIN_OK:-}" == 1 ]] && host=browser.test
+    printf 'https://github.com/login/oauth/authorize?redirect_uri=http%%3A%%2F%%2F%s%%3A8766%%2Fauth%%2Fcallback' "$host"
     ;;
 esac
 EOF
 # The health check's three-second waits pass at once, so a check that never passes fails in no
 # time. A case whose subject is how long the deployer takes, such as the poll of the migration
 # key against its deadline, sets AUTODEPLOY_TEST_SLEEP_REAL=1 and gets the real sleep instead;
-# every other case keeps its speed.
+# every other case keeps its speed. A case of the continuous loop sets
+# AUTODEPLOY_TEST_LOOP_PASSES=<n>: the loop's own wait between two passes (a sleep of POLL) is
+# counted, and the n-th ends the loop with SIGTERM, as its supervisor's stop would, after its n-th
+# pass.
 cat >"$bin/sleep" <<'EOF'
 #!/usr/bin/env bash
+if [[ -n "${AUTODEPLOY_TEST_LOOP_PASSES:-}" && "$*" == "${POLL:-}" ]]; then
+  printf 'pass\n' >>"$AUTODEPLOY_TEST_SCHEMA.passes"
+  if (($(wc -l <"$AUTODEPLOY_TEST_SCHEMA.passes") >= AUTODEPLOY_TEST_LOOP_PASSES)); then
+    kill -TERM "$PPID"
+    exit 0
+  fi
+fi
 if [[ "${AUTODEPLOY_TEST_SLEEP_REAL:-}" == 1 ]]; then
   exec /bin/sleep "$@"
 fi
 EOF
-# timeout records the bound a database client container was given and then runs it, so a case can
-# read what each try for the migration key was allowed. It bounds nothing itself: whatever the
-# duration, 0 (pg_client's unbounded) included, the command runs as it would have, so every case
-# runs as it did before this stand-in existed. Only a container run is recorded, because the
-# deployer also bounds its compose and manifest runs this way, and a case that reaches no client
-# reads an empty argument log as proof that nothing ran. A manifest read is the exception: it goes
-# to the real timeout, because the registry-read cases read how the deployer's deadline ends it.
+# timeout records the bound each call of the deployer is given, one `<call> <seconds>` line in
+# $AUTODEPLOY_TEST_BOUNDS: `manifest <tag>`, `compose <command>` or `run` (a database client
+# container, which it also records in the argument log as it always has). A manifest read goes to
+# the real timeout, because the registry-read cases read how the pass's deadline ends it. Every
+# other call it runs unbounded, as it would have run, so every case runs as it did before this
+# stand-in existed, unless AUTODEPLOY_TEST_TIMEOUT_CAP is set: then each call goes to the real
+# timeout too. And under that cap a call is stopped after the cap's seconds, where its bound is
+# longer, and the pass's clock (date, above) moves on to where the bound ends: a case reads in
+# seconds what the deployer does when a call runs out the pass's deadline of an hour.
 cat >"$bin/timeout" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$2 $3" == "docker run" ]]; then
-  printf 'timeout %s\n' "$*" >>"$AUTODEPLOY_TEST_ARGV"
-fi
-if [[ "$2 $3" == "docker manifest" ]]; then
-  exec "$AUTODEPLOY_TEST_REAL_TIMEOUT" "$@"
+bound=$1
+case "$2 $3" in
+  "docker run")
+    call=run
+    printf 'timeout %s\n' "$*" >>"$AUTODEPLOY_TEST_ARGV"
+    ;;
+  "docker manifest") call="manifest ${5##*:}" ;;
+  "docker compose") call="compose $8" ;;
+  *) call="$2" ;;
+esac
+printf '%s %s\n' "$call" "$bound" >>"$AUTODEPLOY_TEST_BOUNDS"
+if [[ "$call" == manifest* || -n "${AUTODEPLOY_TEST_TIMEOUT_CAP:-}" ]]; then
+  limit=$bound
+  cap=${AUTODEPLOY_TEST_TIMEOUT_CAP:-$bound}
+  ((cap < bound)) && limit=$cap
+  status=0
+  "$AUTODEPLOY_TEST_REAL_TIMEOUT" "$limit" "${@:2}" || status=$?
+  if ((status == 124 && limit < bound)); then
+    printf '%s\n' "$(($(cat "$AUTODEPLOY_TEST_CLOCK") + bound - limit))" >"$AUTODEPLOY_TEST_CLOCK"
+  fi
+  exit "$status"
 fi
 exec "${@:2}"
+EOF
+# The container's own timeout, which each schema read's psql runs under, records the bound it
+# was given in the argument log and then runs psql under the real timeout.
+cat >"$tools/timeout" <<'EOF'
+#!/usr/bin/env bash
+printf 'container-timeout %s\n' "$1" >>"$AUTODEPLOY_TEST_ARGV"
+exec "$AUTODEPLOY_TEST_REAL_TIMEOUT" "$@"
 EOF
 # The fake libpq, which splits a URL as libpq does rather than as the deployer does: the
 # credentials run to the first @ before the first /, a raw ? included, and a query key or value is
@@ -371,15 +478,21 @@ source "$AUTODEPLOY_TEST_TOOLS/libpq.sh"
 connection_password pg_dump "$@" || exit 1
 printf 'backup'
 EOF
-chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$tools/psql" "$tools/pg_dump"
+chmod +x "$bin/jj" "$bin/date" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$tools/timeout" "$tools/psql" "$tools/pg_dump"
 
-deploy_once() {
+# deployer runs the deployer with the stand-ins first on PATH and its arguments: deploy_once is one
+# pass, as `--once`, and the continuous loop is the deployer with none.
+deployer() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
     AUTODEPLOY_TEST_TOOLS="$tools" AUTODEPLOY_TEST_PASSWORD="${test_password-$password}" REPO="$repo" COMPOSE_DIR="$compose" \
     AUTODEPLOY_TEST_MANIFESTS="$manifests" AUTODEPLOY_TEST_MANIFEST_LOG="$manifest_log" \
-    AUTODEPLOY_TEST_REAL_TIMEOUT="$real_timeout" \
+    AUTODEPLOY_TEST_REAL_TIMEOUT="$real_timeout" AUTODEPLOY_TEST_REAL_DATE="$real_date" \
+    AUTODEPLOY_TEST_BOUNDS="$bounds_log" AUTODEPLOY_TEST_CLOCK="$clock" \
     BACKUPS="$backups" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
-    "$(dirname "$0")/autodeploy.sh" --once 2>&1
+    "$(dirname "$0")/autodeploy.sh" "$@" 2>&1
+}
+deploy_once() {
+  deployer --once
 }
 fail() {
   printf '%s\n' "$1" >&2
@@ -653,26 +766,26 @@ if [[ "$output" != *"could not read the schema version"*"not deploying new-image
   fail 'deployer did not report the unreadable schema version and stop once its deadline had passed'
 fi
 
-# Each try is bounded by what the deadline leaves, never by a fresh minute of its own: a try that
-# started a second before the deadline would otherwise end a minute past it, while the script's
-# comments and store.go promise a read that ends inside the deadline. The timeout stand-in
-# recorded the bound every client container was given, so this reads those bounds back.
+# Each try's psql is bounded by what the deadline leaves, never by a fresh minute of its own: a try
+# that started a second before the deadline would otherwise end a minute past it, while the
+# script's comments and store.go promise a read that ends inside the deadline. The container's
+# timeout stand-in recorded the bound every try's psql was given, so this reads those bounds back.
 fresh_env
 printf 'always\n' >"$schema.key"
 if output=$(SCHEMA_READ_DEADLINE=3 AUTODEPLOY_TEST_SLEEP_REAL=1 deploy_once); then
   fail 'deployer deployed behind a key no session released under a three-second deadline'
 fi
 no_secret 'the bounds the tries were given'
-bounds=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk '{print $2}' || true)
+bounds=$(grep -o '^container-timeout [0-9]*$' "$argv" | awk '{print $2}' || true)
 if [[ -z "$bounds" ]]; then
-  fail 'no container run of the schema read recorded the bound it was given'
+  fail "no try of the schema read recorded the bound its psql was given"
 fi
 if [[ $(printf '%s\n' "$bounds" | wc -l) -ne $(grep -cF "$schema_try" "$argv") ]]; then
   fail 'the bounds recorded are not one for each try for the migration key'
 fi
 while IFS= read -r bound; do
   if ((bound < 1 || bound > 3)); then
-    fail "a try for the migration key was given $bound seconds under a three-second deadline: 0 is unbounded to pg_client, and anything past the deadline is a fresh timeout that outlives it"
+    fail "a try for the migration key was given $bound seconds under a three-second deadline: 0 is no bound to timeout, and anything past the deadline is a fresh timeout that outlives it"
   fi
 done <<<"$bounds"
 # And the default deadline is what it was for an operator: against a free key the first try still
@@ -681,10 +794,18 @@ fresh_env
 if output=$(deploy_once); then
   fail 'deployer did not fail after the origin check rejected the deployment it read the schema for'
 fi
-first=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk 'NR == 1 {print $2}' || true)
+first=$(grep -o '^container-timeout [0-9]*$' "$argv" | awk 'NR == 1 {print $2}' || true)
 if ((first < 1 || first > 60)); then
   fail "the first try for the migration key was given $first seconds, not the minute the default deadline leaves it"
 fi
+# The container a try runs in is Docker's to start, and its start has no bound of its own: it is
+# given what the pass's deadline leaves, an hour by default, so a Docker that starts it slowly is
+# waited for.
+while IFS= read -r bound; do
+  if ((bound < 3570 || bound > 3600)); then
+    fail "a database client container was given $bound seconds, not what the pass's deadline of 3600 s leaves"
+  fi
+done < <(awk '$1 == "run" {print $2}' "$bounds_log")
 
 # Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and
 # [0-9] also match non-ASCII characters, so a grammar that left the locale in force would accept
@@ -800,27 +921,48 @@ still_hung() {
   fi
 }
 
-# A registry that answers late still answers: a manifest read waits as long as
-# MANIFEST_READ_DEADLINE leaves, so the newest commit, the one deployed, reads as published and
-# nothing is deployed.
-fresh_env
-deployed_tag_is new-image
-printf 'new-image late:2\n' >"$manifests"
-if ! output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' MANIFEST_READ_DEADLINE=6 deploy_once); then
-  fail 'deployer failed a pass whose registry answered late, inside MANIFEST_READ_DEADLINE'
-fi
-if [[ -s "$log" ]] || [[ $(<"$manifest_log") != new-image ]] || [[ "$output" == *"not deploying"* ]]; then
-  fail 'deployer did not take a late answer as the newest commit published, and leave the deployed image as it was'
-fi
+# bounds_of <call>: the bounds the deployer gave the calls the timeout stand-in records as <call>,
+# in order, one a line.
+bounds_of() {
+  awk -v call="$1" '{ bound = $NF; $NF = ""; sub(/ $/, ""); if ($0 == call) print bound }' "$bounds_log"
+}
 
-# A read the registry never answers is no proof the image is missing. When the deadline passes the
-# read is stopped and named on one line, the pass fails, and old-image, behind it, is neither asked
-# about nor deployed over new-image, which already runs.
+# A registry that answers late still answers: a manifest read has no bound of its own and waits as
+# long as the pass's deadline leaves, so the newest commit, the one deployed, reads as published
+# and nothing is deployed. The read is given what the pass's deadline leaves, read here at two
+# deadlines far apart, the default hour and two hours: a read cut at a bound of its own, fixed or a
+# cap under the deadline, is given less at one of them at least.
+for pass in '' 7200; do
+  fresh_env
+  deployed_tag_is new-image
+  printf 'new-image late:2\n' >"$manifests"
+  ok=0
+  if [[ -z "$pass" ]]; then
+    output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' deploy_once) || ok=$?
+  else
+    output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' PASS_DEADLINE="$pass" deploy_once) || ok=$?
+  fi
+  if ((ok != 0)); then
+    fail "deployer failed a pass whose registry answered late, inside PASS_DEADLINE=${pass:-3600}"
+  fi
+  if [[ -s "$log" ]] || [[ $(<"$manifest_log") != new-image ]] || [[ "$output" == *"not deploying"* ]]; then
+    fail 'deployer did not take a late answer as the newest commit published, and leave the deployed image as it was'
+  fi
+  read_bound=$(bounds_of 'manifest new-image')
+  if [[ -z "$read_bound" ]] || ((read_bound < ${pass:-3600} - 30 || read_bound > ${pass:-3600})); then
+    fail "the manifest read was given ${read_bound:-no bound} seconds under PASS_DEADLINE=${pass:-3600}, not what the pass's deadline leaves"
+  fi
+done
+
+# A read the registry never answers is no proof the image is missing. When the pass's deadline
+# passes the read is stopped and named on one line, the pass fails, and old-image, behind it, is
+# neither asked about nor deployed over new-image, which already runs. (The timeout stand-in's cap
+# stops the read two seconds in and moves the pass's clock on to where its bound ends.)
 fresh_env
 deployed_tag_is new-image
 printf 'new-image hang\n' >"$manifests"
 began=$SECONDS
-if output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' MANIFEST_READ_DEADLINE=3 deploy_once); then
+if output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' AUTODEPLOY_TEST_TIMEOUT_CAP=2 deploy_once); then
   fail 'deployer passed a pass whose registry read never answered'
 fi
 took=$((SECONDS - began))
@@ -832,14 +974,14 @@ fi
 if [[ ! -s "$manifests.hung" ]]; then
   fail 'the manifest read that never answers never ran, so this case proves nothing'
 fi
-if [[ "$output" != *"docker manifest inspect example.test/dispatch:new-image did not answer within MANIFEST_READ_DEADLINE (3s); not deploying"* ]]; then
-  fail 'deployer did not name the manifest read that ran out its deadline'
+if [[ "$output" != *"docker manifest inspect example.test/dispatch:new-image had not answered when the pass's deadline (PASS_DEADLINE=3600s) passed; not deploying"* ]]; then
+  fail "deployer did not name the manifest read that ran out the pass's deadline"
 fi
 if [[ -s "$log" ]] || [[ $(<"$manifest_log") != new-image ]] || [[ "$output" == *"main has a newer published image"* ]]; then
   fail 'deployer went past a manifest read that never answered, to an older image'
 fi
-if ((took > 20)); then
-  fail "deployer took ${took}s over a manifest read with a 3s deadline"
+if ((took > 30)); then
+  fail "deployer took ${took}s over a manifest read the stand-in stopped two seconds in"
 fi
 
 # An answer that does not say the image is missing, a rate limit here, proves nothing either: it is
@@ -866,22 +1008,190 @@ if [[ $(<"$manifest_log") != $'new-image\nold-image' ]] || [[ -s "$log" ]] || [[
   fail 'deployer did not pass over a commit the registry does not hold to old-image, which is deployed'
 fi
 
-# The deadline bounds the whole walk, not each read: a slow answer for a commit the registry does
-# not hold spends four of its ten seconds, and the next read gets the six or so that are left, so
-# the pass ends near ten seconds. A read given the whole deadline again would end it near fourteen.
-# Under load the first read can take longer, and the deadline can then pass before the second read
-# starts, which the deployer says in other words; either way the second read gets no more than
-# what is left.
+# The pass's deadline bounds every read of the walk, not each read afresh: a commit the registry
+# says it does not hold, whose answer took 1,000 s of the pass (the stand-in moves the pass's clock
+# on), leaves the next read what is left, about 2,600 s, and not a fresh hour. These are the
+# bounds the deployer gave each read, so time the pass spent before its first read changes nothing
+# here.
 fresh_env
-printf 'new-image unknown-after:4\nold-image late:30\n' >"$manifests"
-began=$SECONDS
-if output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' MANIFEST_READ_DEADLINE=10 deploy_once); then
-  fail 'deployer passed a pass whose second manifest read outlived the deadline left to it'
+printf 'new-image unknown-clock:1000\n' >"$manifests"
+if ! output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' deploy_once); then
+  fail 'deployer failed a pass whose first read answered 1,000 s in, inside its hour'
 fi
-took=$((SECONDS - began))
-if [[ "$output" != *"docker manifest inspect example.test/dispatch:old-image did not answer within MANIFEST_READ_DEADLINE (10s); not deploying"* &&
-  "$output" != *"MANIFEST_READ_DEADLINE (10s) passed before docker manifest inspect example.test/dispatch:old-image could run; not deploying"* ]] ||
-  [[ $(<"$manifest_log") != new-image* ]] || [[ -s "$log" ]] || ((took > 13)); then
-  fail "deployer did not give the second manifest read only what the deadline left (${took}s taken)"
+first_read=$(bounds_of 'manifest new-image')
+second_read=$(bounds_of 'manifest old-image')
+if [[ -z "$first_read" || -z "$second_read" ]] || ((second_read > first_read - 1000 || second_read < first_read - 1030)); then
+  fail "the walk gave its reads ${first_read:-no bound} and then ${second_read:-no bound} seconds: the second read was not given what the first left of the pass's deadline"
 fi
-printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential, pull-retry and registry-read cases: PASS'
+
+# A read the pass's deadline has left no time for is not started, and the pass fails naming that
+# deadline: a read handed the 0 seconds left would run under `timeout 0`, which is no bound at all.
+# The newest commit's answer, that the registry holds no such image, comes past the pass's hour.
+fresh_env
+printf 'new-image unknown-clock:3700\nold-image late:20\n' >"$manifests"
+if output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' deploy_once); then
+  fail "deployer passed a pass whose deadline passed during its walk"
+fi
+if [[ "$output" != *"the pass's deadline (PASS_DEADLINE=3600s) passed before docker manifest inspect example.test/dispatch:old-image could start; not deploying"* ]] ||
+  [[ $(<"$manifest_log") != new-image ]] || [[ -s "$log" ]]; then
+  fail "deployer started a manifest read after the pass's deadline had passed, or did not name the deadline"
+fi
+
+# A walk has no bound of its own: thirty commits, the newest twenty-nine of which the registry says
+# it does not hold, each saying so 110 s in (the pass's clock moves on), are read to the end, to
+# the thirtieth, which is deployed, inside the pass's hour. A walk with a deadline of its own fails
+# such a pass after reads that all answered.
+fresh_env
+for commit in $(seq -f 'c%02g' 1 29); do
+  printf '%s unknown-clock:110\n' "$commit"
+done >"$manifests"
+deployed_tag_is c30
+if ! output=$(AUTODEPLOY_TEST_COMMITS="$(seq -f 'c%02g' 1 30)" deploy_once); then
+  fail "deployer failed a walk of thirty reads that all answered inside the pass's deadline"
+fi
+if [[ $(wc -l <"$manifest_log") -ne 30 ]] || [[ -s "$log" ]] || [[ "$output" == *"not deploying"* ]]; then
+  fail 'deployer did not read all thirty commits of a walk whose reads all answered'
+fi
+
+# The deployer never deploys a commit older than the deployed one. The registry answers that it
+# holds no image of the running commit (it was removed, or IMAGE names another repository), so the
+# walk reaches its parent, which is published: the repository's history says that commit is an
+# ancestor of the deployed one, and the deployer names both and deploys nothing.
+fresh_env
+deployed_tag_is new-image
+printf 'new-image unknown\n' >"$manifests"
+if ! output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' deploy_once); then
+  fail 'deployer failed a pass whose newest published commit is older than the deployed one'
+fi
+if [[ "$output" != *"the newest published main commit, old-image, is an ancestor of the deployed new-image; deploying nothing older over it"* ]] ||
+  [[ -s "$log" ]] || [[ "$output" == *"newer published image"* ]]; then
+  fail 'deployer deployed a commit older than the deployed one, or did not name both'
+fi
+# An order jj does not answer deploys nothing: a deploy needs the answer that the commit is newer,
+# not the absence of the answer that it is older.
+fresh_env
+if output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' AUTODEPLOY_TEST_ORDER_FAILS=1 deploy_once); then
+  fail "deployer passed a pass whose commits' order it could not read"
+fi
+if [[ "$output" != *"could not read from $repo whether new-image is older than the deployed old-image; not deploying"* ]] || [[ -s "$log" ]]; then
+  fail "deployer deployed a commit whose order against the deployed one it could not read"
+fi
+# The control: a newer commit, the deployed one's child, still deploys (to the origin check's
+# rollback here).
+fresh_env
+if output=$(AUTODEPLOY_TEST_COMMITS='new-image old-image' deploy_once); then
+  fail 'deployer did not fail at the origin check of a newer commit'
+fi
+if [[ "$output" != *"main has a newer published image: new-image (deployed old-image)"*"rolling back to old-image"* ]]; then
+  fail 'deployer did not deploy a commit newer than the deployed one'
+fi
+
+# Each call of a deploy and of its rollback is given what the pass's deadline leaves, and the pull
+# and the up their own bound where that is less: the pull's 900 s, after which nothing has
+# changed, and the up's 300 s, the deploy's limit for the new image's start. The rollback's stop,
+# its confirmation and its own up have no bound of their own: each gets what the pass leaves.
+fresh_env
+if output=$(deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment'
+fi
+pull=$(bounds_of 'compose pull')
+ups=$(bounds_of 'compose up' | paste -sd' ')
+stop=$(bounds_of 'compose stop')
+ps=$(bounds_of 'compose ps')
+if [[ "$pull" != 900 || "${ups%% *}" != 300 ]]; then
+  fail "the pull was given ${pull:-no bound} and the up ${ups%% *} seconds, not their own 900 and 300"
+fi
+for named in "stop $stop" "ps $ps" "rollback-up ${ups##* }"; do
+  bound=${named##* }
+  if [[ -z "$bound" ]] || ((bound < 3570 || bound > 3600)); then
+    fail "the rollback's ${named%% *} was given ${bound:-no bound} seconds, not what the pass's deadline of 3600 s leaves"
+  fi
+done
+# Where the pass has less left than a step's own bound, the step gets what is left: the newest
+# commit's manifest read took 3,000 s of the pass (the stand-in moves the pass's clock on), so the
+# pull gets about 600 s, not its 900, and the rollback's stop what is left after that.
+fresh_env
+printf 'new-image clock:3000\n' >"$manifests"
+if output=$(deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment'
+fi
+pull=$(bounds_of 'compose pull')
+stop=$(bounds_of 'compose stop')
+if [[ -z "$pull" || -z "$stop" ]] || ((pull < 570 || pull > 600 || stop < 570 || stop > 600)); then
+  fail "with 600 s of the pass left, the pull was given ${pull:-no bound} and the rollback's stop ${stop:-no bound} seconds, not what the pass left"
+fi
+
+# A stop that never answers still fails, named as having run out the pass's deadline, and the
+# rollback is refused as for a failed stop; so does a schema read whose container never answers.
+# (The timeout stand-in's cap ends each two seconds in and moves the pass's clock on to where its
+# bound ends.)
+fresh_env
+if output=$(AUTODEPLOY_TEST_STOP_HANG=1 AUTODEPLOY_TEST_TIMEOUT_CAP=2 deploy_once); then
+  fail 'deployer passed a pass whose rollback stop never answered'
+fi
+if [[ "$output" != *"could not stop new-image (it had not answered when the pass's deadline, PASS_DEADLINE=3600s, passed), so refusing to roll back to old-image"* ]] ||
+  [[ $(grep -c ' up ' "$log") -ne 1 ]]; then
+  fail "deployer did not name a rollback stop that ran out the pass's deadline, or rolled back without it"
+fi
+fresh_env
+if output=$(AUTODEPLOY_TEST_RUN_HANG_AFTER_UP=1 AUTODEPLOY_TEST_TIMEOUT_CAP=2 deploy_once); then
+  fail 'deployer passed a pass whose schema read after the stop never answered'
+fi
+if [[ "$output" != *"could not read the schema version after stopping new-image (status 124 (it had not answered when the pass's deadline, PASS_DEADLINE=3600s, passed)), so refusing to roll back to old-image"* ]] ||
+  [[ $(grep -c ' up ' "$log") -ne 1 ]]; then
+  fail "deployer did not name a schema read that ran out the pass's deadline, or rolled back without it"
+fi
+
+# The continuous loop survives a failed pass, whatever failed: the pass logs its named line and
+# ends, the loop says so and runs the next pass after POLL, and that pass deploys once the registry
+# answers. Here the first read is refused, or the first pull fails, and the next pass deploys
+# new-image. The loop is still running at its third wait, where the case stops it. A single run of
+# the same failed pass exits 1 (the refused read and the failed pull above).
+for failure in refused-read AUTODEPLOY_TEST_PULL_FAIL_ONCE; do
+  fresh_env
+  once=AUTODEPLOY_TEST_NONE
+  if [[ "$failure" == refused-read ]]; then
+    printf 'new-image refused-once\n' >"$manifests"
+  else
+    once=$failure
+  fi
+  status=0
+  output=$(export "$once=1" && POLL=1 AUTODEPLOY_TEST_LOOP_PASSES=3 AUTODEPLOY_TEST_ORIGIN_OK=1 \
+    AUTODEPLOY_TEST_COMMITS='new-image old-image' deployer) || status=$?
+  if ((status != 143)) || [[ $(wc -l <"$schema.passes") -ne 3 ]]; then
+    fail "the continuous loop ended with status $status after a failed pass ($failure), before the case stopped it at its third wait"
+  fi
+  if [[ "$output" != *"the pass failed (exit 1); the next pass starts in 1s"*"deployed new-image"* ]] ||
+    [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=new-image"* ]]; then
+    fail "the continuous loop did not run the next pass after a failed one ($failure) and deploy new-image"
+  fi
+done
+
+# A setting of seconds with a unit, or that is no whole number above 0, is refused at the start by
+# name, before any pass reads anything, where bash would read it as an arithmetic error; and a
+# pass deadline that leaves a rollback no time is refused naming both numbers.
+for setting in PASS_DEADLINE=3600s POLL=5m SCHEMA_READ_DEADLINE=1.5 PASS_DEADLINE=0; do
+  fresh_env
+  status=0
+  output=$(export "${setting?}" && deploy_once) || status=$?
+  if ((status != 2)) || [[ "$output" != "${setting%%=*} is ${setting#*=}, which is no whole number of seconds"* ]] ||
+    [[ -s "$manifest_log" || -s "$log" ]]; then
+    fail "deployer did not refuse $setting at its start, by name, before reading anything"
+  fi
+done
+fresh_env
+status=0
+output=$(PASS_DEADLINE=1559 deploy_once) || status=$?
+if ((status != 2)) || [[ "$output" != "PASS_DEADLINE is 1559s, below the 1560s a pass needs: 1380s for its deploy steps (the pull 900s, the up 300s, the health check 180s) and 180s for its rollback's longest step; not starting" ]] ||
+  [[ -s "$manifest_log" ]]; then
+  fail 'deployer did not refuse a pass deadline that leaves its rollback no time, naming both numbers'
+fi
+# The control: the least pass deadline the deployer takes starts a pass.
+fresh_env
+if output=$(PASS_DEADLINE=1560 deploy_once); then
+  fail 'deployer did not fail at the origin check under PASS_DEADLINE=1560'
+fi
+if [[ "$output" != *"rolling back to old-image"* ]]; then
+  fail 'deployer refused the least pass deadline it takes'
+fi
+printf '%s\n' 'autodeploy rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential, pull-retry, registry-read, pass-deadline, commit-order, continuous-loop and settings cases: PASS'

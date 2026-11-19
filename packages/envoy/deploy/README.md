@@ -92,9 +92,37 @@ such manifest. Silence and every other answer (a refused credential, a rate
 limit, a server error) prove nothing about the image, and walking past such a
 commit could deploy an image older than the one running, and older than its
 database's schema. So the deployer logs that read, naming the image, and fails
-the pass with nothing deployed. `MANIFEST_READ_DEADLINE` (300 seconds by default)
-bounds the whole walk: each read waits as long as that deadline leaves, so a
-registry that answers slowly is still read.
+the pass with nothing deployed.
+
+`PASS_DEADLINE` (3600 seconds by default) is a pass's one deadline, counted from
+its start. Every call of the pass that waits on the registry, Docker or the
+database is given the time it leaves: each manifest read (the walk of the 30
+commits has no bound of its own), the backup, each schema read's container, and
+the rollback's stop, its check that the stop took, and its `up`. A call that
+answers slowly is waited for; one that has not answered when the pass's time is
+spent is stopped and named as having run out the pass's deadline, and the pass
+fails. Three steps of a deploy keep a bound of their own, each cut to what the
+pass leaves: the pull's 900 seconds (a pull that runs it out changes nothing, and
+the next pass pulls again), the `up`'s 300 seconds (the deploy's limit for the
+new image's start: a start that has not finished within it is rolled back), and
+the health check's 180 at most (below). Those three add up to 1380 seconds. A
+`PASS_DEADLINE` below that sum plus the rollback's longest bounded step (its own
+health check, or `SCHEMA_READ_DEADLINE` where that is longer), 1560 seconds by
+default, is refused at start, naming both numbers. The deadline is the pass's,
+not the poll's: a rollback comes after the deploy's own steps, so a deadline as
+short as `POLL` would leave a slow deploy's rollback no time. `POLL`,
+`PASS_DEADLINE` and `SCHEMA_READ_DEADLINE` are whole numbers of seconds, and a
+value with a unit, such as `300s`, is refused at start by name.
+
+It never deploys a commit older than the deployed one. The walk passes over a
+commit the registry says it holds no image of, and where that commit is the
+deployed one (its image was removed, or `IMAGE` names another repository), the
+commit the walk reaches next is older. So the deployer deploys the newest
+published commit only when the history of `REPO` says it is not an ancestor of
+the deployed commit. An ancestor is logged on one line naming both commits, and
+nothing is deployed; an order `jj` does not answer fails the pass. A deployed tag
+that names no commit of the repository (`local`, a release tag) has no history
+to be older than, and the newest published commit replaces it.
 
 Two releases of Dispatch never serve the database together in this compose deployment:
 `docker compose up -d --no-deps dispatch` stops and removes the old container before it starts the
@@ -115,7 +143,12 @@ smoke check:
 cd packages/envoy/deploy
 scripts/autodeploy.sh --once
 ```
-The health check waits, up to 90 seconds, for `/healthz` to answer `200` with
+In the continuous loop each pass runs as a process of its own, a `--once` run.
+A pass that fails logs its own line and ends, the loop logs that it failed, and
+the next pass starts after `POLL`. One pass, `--once`, exits 1 when it fails.
+
+The health check asks `/healthz` up to 30 times, 3 seconds apart and each
+request bounded at 3 seconds, 180 seconds at most, for `200` with
 NATS connected: `"nats": false` fails it, and `"nats": null` (NATS turned off)
 passes. Dispatch serves while NATS is down or refuses its credential, so a
 `200` alone would keep an image whose NATS connection fails; such an image is
@@ -154,8 +187,11 @@ out-of-order migration only through the max. The first deploy under a new tag
 records the set.
 
 The deployer's database clients (`pg_dump` for the backup, `psql` for the schema
-version) run in the `pg_dump` image under `docker run --init`, so the bound
-`timeout` puts on the schema read also ends a hung connection. Each gets
+version) run in the `pg_dump` image under `docker run --init`, so the `timeout`
+the pass's deadline puts on a container also ends a hung connection. Each try of
+the schema read bounds its `psql` inside the container by what
+`SCHEMA_READ_DEADLINE` leaves, so the deadline bounds the database's answers and
+not Docker's start of the container. Each client gets
 `DATABASE_URL` with its password removed as its argument, and the password as
 `PGPASSWORD`; docker reads both from the deployer's environment by name. So no
 process's arguments carry the password, the containers' included, which are host

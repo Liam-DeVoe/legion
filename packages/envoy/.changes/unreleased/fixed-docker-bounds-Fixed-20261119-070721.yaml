@@ -4,10 +4,18 @@ body: |-
   no answer as an image that is not there. Each `docker manifest inspect` had a fixed 60 s bound,
   and a read that ran it out, or that the registry refused, made the deployer pass over that
   commit and deploy an older one, over the newer image already running and its schema. A commit
-  is now passed over only when the registry answers that it holds no such manifest. Any other
+  is now passed over only when the registry answers that it holds no such manifest; any other
   outcome is logged on one line that names the image read, and the pass fails with nothing
-  deployed. The reads wait as long as `MANIFEST_READ_DEADLINE` (300 s by default) leaves, over the
-  whole walk of main's last 30 commits.
+  deployed. The deployer never deploys a commit that the repository's history says is an
+  ancestor of the deployed one. A pass has one deadline, `PASS_DEADLINE` (3600 s by default,
+  counted from its start): each manifest read, the backup, the schema reads' containers and the
+  rollback's stop, check and start wait as long as it leaves, where the rollback's stop had a
+  fixed 120 s, its check 60 s and its start 300 s, and the schema read's container start shared
+  the read's 60 s, so a slow Docker no longer refuses a rollback. The pull keeps its 900 s and the
+  deploy's start its 300 s, each cut to what the pass leaves. In the continuous loop a failed pass
+  no longer ends the deployer: the next pass runs after `POLL`. A setting of seconds with a unit,
+  such as `300s`, and a `PASS_DEADLINE` that leaves a rollback no time are refused at start by
+  name.
 time: 2026-11-19T07:07:21Z
 custom:
   Issue: fixed-docker-bounds

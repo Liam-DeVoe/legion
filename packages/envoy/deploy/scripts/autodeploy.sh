@@ -14,12 +14,27 @@ COMPOSE_ENV="$COMPOSE_DIR/.env"
 PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16.11-alpine}"
 # SCHEMA_READ_DEADLINE is how long schema_applied polls the migration advisory key before it
 # gives up on reading the applied set. It bounds the whole read and not merely the start of its
-# last try: each try's own timeout is the time this deadline leaves, capped at a minute.
+# last try: each try's psql is given the time this deadline leaves, capped at a minute.
 SCHEMA_READ_DEADLINE="${SCHEMA_READ_DEADLINE:-60}"
-# MANIFEST_READ_DEADLINE is how long newest_published_main may wait on the registry, over all the
-# commits it asks about. It bounds the whole walk, not one read: each read is given the time this
-# deadline leaves. A read still unanswered when it passes fails the pass, and nothing is deployed.
-MANIFEST_READ_DEADLINE="${MANIFEST_READ_DEADLINE:-300}"
+# PASS_DEADLINE is how long one pass may take, in whole seconds, counted from its start. It is the
+# pass's one deadline: every call of the pass that waits on the registry, Docker or the database
+# is given the time it leaves (pass_bound), so a call that answers slowly is waited for, and only
+# one that has not answered when the pass's time is spent is stopped, named as having run out the
+# pass's deadline. Three steps of a deploy keep a bound of their own, each cut to what the pass
+# leaves: PULL_BOUND, UP_BOUND and the health check's HEALTH_BOUND. The deadline is the pass's and
+# not the poll's: a deploy's rollback comes after those three, so a deadline as short as POLL would
+# leave every slow deploy's rollback no time, and the rollback would be refused.
+PASS_DEADLINE="${PASS_DEADLINE:-3600}"
+# PULL_BOUND is the pull's own bound. A pull that runs it out changes nothing: the previous image
+# still serves, and the next pass pulls again.
+PULL_BOUND=900
+# UP_BOUND is the deploy's limit for the new image's start, `docker compose up -d`: a start that
+# has not finished within it is rolled back, and the previous image serves again.
+UP_BOUND=300
+# HEALTH_TRIES is how many times wait_for_health asks /healthz, 3 s apart, each request bounded at
+# 3 s, so HEALTH_BOUND is the most one health check takes.
+HEALTH_TRIES=30
+HEALTH_BOUND=$((HEALTH_TRIES * 6))
 
 case "$#" in
   0)
@@ -38,10 +53,64 @@ case "$#" in
     ;;
 esac
 
+# Each setting of seconds is a whole number above 0, or the deployer refuses to start: bash reads
+# `300s` as an arithmetic error, which a walk that reads it fails on and takes for no image at all.
+for setting in POLL PASS_DEADLINE SCHEMA_READ_DEADLINE; do
+  if [[ ! "${!setting}" =~ ^[1-9][0-9]{0,8}$ ]]; then
+    printf '%s is %q, which is no whole number of seconds from 1 to 999999999 (write 300, not 300s or 5m); not starting\n' \
+      "$setting" "${!setting}" >&2
+    exit 2
+  fi
+done
+# The pass's deadline leaves a rollback its time: a pass whose deploy steps each run out their own
+# bound still has its rollback's longest bounded step left, the health check of the previous image
+# or the schema read after the stop, whichever is the longer. The rollback's other steps have no
+# bound of their own and take what is left.
+rollback_longest=$((SCHEMA_READ_DEADLINE > HEALTH_BOUND ? SCHEMA_READ_DEADLINE : HEALTH_BOUND))
+PASS_DEADLINE_MINIMUM=$((PULL_BOUND + UP_BOUND + HEALTH_BOUND + rollback_longest))
+if ((PASS_DEADLINE < PASS_DEADLINE_MINIMUM)); then
+  printf 'PASS_DEADLINE is %ss, below the %ss a pass needs: %ss for its deploy steps (the pull %ss, the up %ss, the health check %ss) and %ss for its rollback'"'"'s longest step; not starting\n' \
+    "$PASS_DEADLINE" "$PASS_DEADLINE_MINIMUM" "$((PULL_BOUND + UP_BOUND + HEALTH_BOUND))" "$PULL_BOUND" "$UP_BOUND" "$HEALTH_BOUND" "$rollback_longest" >&2
+  exit 2
+fi
+
 mkdir -p "$BACKUPS"
 
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+}
+
+# clock is the time the pass's deadline is read against, in whole seconds since the epoch.
+clock() {
+  date +%s
+}
+
+# pass_bound <call> [own] prints the seconds <call> may wait: what the pass's deadline leaves, or
+# own, the call's own bound, where that is less. Once the deadline has passed it logs, on stderr,
+# that <call> could not start, naming the deadline, and fails, printing nothing: no call is ever
+# handed 0, which `timeout` and pg_client read as no bound at all. <call> says what is not done.
+pass_bound() {
+  local left=$((pass_deadline - $(clock)))
+  if ((left < 1)); then
+    log "the pass's deadline (PASS_DEADLINE=${PASS_DEADLINE}s) passed before $1" >&2
+    return 1
+  fi
+  if [[ -n "${2:-}" ]] && ((left > $2)); then
+    left=$2
+  fi
+  printf '%s\n' "$left"
+}
+
+# bound_note <status> [own] prints, for a call `timeout` stopped (status 124), the words that say
+# which bound stopped it: the pass's deadline, where that has passed, or else the call's own bound
+# of own seconds. It prints nothing for any other status.
+bound_note() {
+  (($1 == 124)) || return 0
+  if (($(clock) >= pass_deadline)); then
+    printf " (it had not answered when the pass's deadline, PASS_DEADLINE=%ss, passed)" "$PASS_DEADLINE"
+  elif [[ -n "${2:-}" ]]; then
+    printf ' (it ran out its own %ss)' "$2"
+  fi
 }
 
 compose() {
@@ -125,11 +194,12 @@ database_url_split() {
   db_url="${1%%://*}://${userinfo%%:*}@${1#*@}"
 }
 
-# pg_client runs shell command $2 in the pg_dump image, bounded at $1 seconds (0: unbounded), with
-# the connection in its environment: DATABASE_URL (db_url) and PGPASSWORD (db_password), each passed
-# to docker by name, so docker reads the value from this process's environment. --init runs the
-# command under an init that passes on the signal docker forwards when `timeout` fires; as PID 1
-# the shell would ignore it, and the container would outlive the bound.
+# pg_client runs shell command $2 in the pg_dump image, bounded at $1 seconds, with the connection
+# in its environment: DATABASE_URL (db_url) and PGPASSWORD (db_password), each passed to docker by
+# name, so docker reads the value from this process's environment. Every caller takes $1 from
+# pass_bound, which never gives 0, the value `timeout` reads as no bound. --init runs the command
+# under an init that passes on the signal docker forwards when `timeout` fires; as PID 1 the shell
+# would ignore it, and the container would outlive the bound.
 pg_client() {
   PGPASSWORD="$db_password" DATABASE_URL="$db_url" timeout "$1" \
     docker run --init --rm --network host -e PGPASSWORD -e DATABASE_URL "$PG_DUMP_IMAGE" sh -c "$2"
@@ -172,16 +242,18 @@ pg_client() {
 # wait out its lock_timeout), and under ON_ERROR_STOP=1 that failure ends psql non-zero, which
 # would end this read in its caller rather than try the key again. Once the deadline passes with
 # the key still held the read fails, and the caller refuses to deploy rather than wait for ever.
-# The deadline bounds the whole read, not merely the start of its last try: each try's timeout is
-# the time the deadline leaves, capped at the minute a try is given where the deadline leaves
-# more, so a try that starts a second before the deadline ends at it rather than a minute past
+# The deadline bounds the database's answers, not Docker's: each try's psql is given the time the
+# deadline leaves, capped at the minute a try is given where the deadline leaves more, inside the
+# container, so a try that starts a second before the deadline ends at it rather than a minute past
 # it. With SCHEMA_READ_DEADLINE where it stands, a first try against a free key still gets the
-# whole minute.
+# whole minute. The container's start is Docker's: it waits as long as the pass's deadline leaves
+# (pass_bound), since a Docker that creates a container slowly still answers, and a start refused
+# at a bound of its own would refuse a rollback and leave Dispatch for a person.
 #
 # psql's stderr is dropped, since its diagnostics can quote the connection; a failure prints
 # nothing and returns psql's status, or 1 for an answer that is no list of versions.
 schema_applied() {
-  local sql answer versions line count max digest deadline try left
+  local sql answer versions line count max digest deadline try left bound
   # The script reaches psql on its standard input, since \gset and \if are psql's own and -c
   # takes SQL alone. The here-document is the container shell's, so the script travels as part of
   # sh -c's argument (pg_client) and nothing of it reaches psql's own arguments; it carries no
@@ -209,10 +281,11 @@ PSQL
     # What this try is given: the time the deadline leaves, capped at a minute. That is how the
     # read ends inside the deadline rather than a timeout past it, where a try starting a second
     # before the deadline would otherwise get a minute of its own. The test above has left at
-    # least a second, and pg_client must never be given 0: it reads 0 as unbounded.
+    # least a second, so the container's `timeout` is never given 0, which it reads as no bound.
     left=$((deadline - SECONDS))
     ((left > 60)) && left=60
-    answer=$(pg_client "$left" "$sql" 2>/dev/null) ||
+    bound=$(pass_bound "the schema read's container could start") || return 1
+    answer=$(pg_client "$bound" "timeout $left $sql" 2>/dev/null) ||
       return
     [[ "$answer" == t || "$answer" == t$'\n'* ]] && break
     # f: another session holds the key. Any other answer is none of this read's.
@@ -270,29 +343,25 @@ schema_label() {
 # pass would start an image older than its database's schema. So such a read is logged, naming the
 # image it asked for, and returns 2, which fails the pass with nothing deployed.
 #
-# A read has no bound of its own. It waits as long as MANIFEST_READ_DEADLINE leaves, since a
-# registry that answers slowly still answers, and nothing else in the pass waits on this read.
-# `timeout` stops a read when that deadline passes. `docker manifest inspect` asks the registry
-# and makes nothing on this host, so a stopped read leaves nothing to remove. The log lines go to
-# stderr, because the caller reads this function's stdout as the commit.
+# A read has no bound of its own, and the walk none either. Each read waits as long as the pass's
+# deadline leaves (pass_bound), since a registry that answers slowly still answers, and only a
+# read that has not answered when the pass's time is spent is stopped, named as having run out
+# the pass's deadline. `docker manifest inspect` asks the registry and makes nothing on this host,
+# so a stopped read leaves nothing to remove. The log lines go to stderr, because the caller reads
+# this function's stdout as the commit.
 newest_published_main() {
-  local sha answer status deadline left
+  local sha answer status bound
   jj -R "$REPO" git fetch >/dev/null 2>&1
-  deadline=$((SECONDS + MANIFEST_READ_DEADLINE))
   while IFS= read -r sha; do
-    left=$((deadline - SECONDS))
-    if ((left < 1)); then
-      log "MANIFEST_READ_DEADLINE (${MANIFEST_READ_DEADLINE}s) passed before docker manifest inspect $IMAGE:$sha could run; not deploying" >&2
-      return 2
-    fi
-    if answer=$(timeout "$left" docker manifest inspect "$IMAGE:$sha" 2>&1 >/dev/null); then
+    bound=$(pass_bound "docker manifest inspect $IMAGE:$sha could start; not deploying") || return 2
+    if answer=$(timeout "$bound" docker manifest inspect "$IMAGE:$sha" 2>&1 >/dev/null); then
       printf '%s\n' "$sha"
       return 0
     else
       status=$?
     fi
     if ((status == 124)); then
-      log "docker manifest inspect $IMAGE:$sha did not answer within MANIFEST_READ_DEADLINE (${MANIFEST_READ_DEADLINE}s); not deploying" >&2
+      log "docker manifest inspect $IMAGE:$sha had not answered when the pass's deadline (PASS_DEADLINE=${PASS_DEADLINE}s) passed; not deploying" >&2
       return 2
     fi
     case "$answer" in
@@ -325,14 +394,16 @@ oauth_redirect_uri() {
     python3 -c 'import sys, urllib.parse as u; query = u.parse_qs(u.urlparse(sys.stdin.read()).query); print(query.get("redirect_uri", [""])[0])'
 }
 
-# wait_for_health waits up to 90 s for /healthz on port $1 to answer 200 with NATS connected, or
-# turned off (`nats` null). Dispatch serves while NATS is down or refuses its credential, so a 200
-# alone would keep an image whose NATS connection fails; reading `nats` rolls such an image back, as
-# when Dispatch exited at boot without NATS. A NATS outage fails the previous image's check too.
+# wait_for_health asks /healthz on port $1, up to HEALTH_TRIES times 3 s apart and each request
+# bounded at 3 s (HEALTH_BOUND, 180 s, at most), to answer 200 with NATS connected, or turned off
+# (`nats` null). It is the deploy's health limit, and it asks Dispatch, not Docker. Dispatch serves
+# while NATS is down or refuses its credential, so a 200 alone would keep an image whose NATS
+# connection fails; reading `nats` rolls such an image back, as when Dispatch exited at boot without
+# NATS. A NATS outage fails the previous image's check too.
 wait_for_health() {
   local port="$1"
   local attempt
-  for ((attempt = 0; attempt < 30; attempt++)); do
+  for ((attempt = 0; attempt < HEALTH_TRIES; attempt++)); do
     sleep 3
     if curl -sf --max-time 3 "http://127.0.0.1:$port/healthz" |
       python3 -c 'import json, sys; sys.exit(json.load(sys.stdin).get("nats") is False)' 2>/dev/null; then
@@ -342,16 +413,23 @@ wait_for_health() {
   return 1
 }
 
+# rollback starts $previous again. Its `up` has no bound of its own and waits as long as the pass's
+# deadline leaves: Dispatch is down until it returns, and a Docker that starts a container slowly
+# still answers, so a bound of its own would only turn a slow rollback into one a person finishes.
 rollback() {
   local previous="$1"
   local dispatchPort="$2"
+  local bound
+  local status=0
   sed -i -E "s|^ENVOY_IMAGE_TAG=.*|ENVOY_IMAGE_TAG=$previous|" "$COMPOSE_ENV"
-  if ! compose 300 up -d --no-deps dispatch; then
-    log "rollback compose failed for $previous"
+  bound=$(pass_bound "the rollback's docker compose up of $previous could start") || return 1
+  compose "$bound" up -d --no-deps dispatch || status=$?
+  if ((status != 0)); then
+    log "rollback compose failed for $previous$(bound_note "$status")"
     return 1
   fi
   if ! wait_for_health "$dispatchPort"; then
-    log "rollback to $previous did not become healthy within 90s"
+    log "rollback to $previous did not become healthy in $HEALTH_TRIES tries 3 s apart"
     return 1
   fi
 }
@@ -369,6 +447,11 @@ rollback() {
 # While the tag that wrote it is still deployed, it is compared the old way, so a retry in flight
 # across the upgrade keeps the safety it started with; the first deploy under a new tag records the
 # set.
+#
+# Its stop, its confirmation and its schema read's container have no bound of their own: each
+# waits as long as the pass's deadline leaves. Docker answers each of them, slowly on a loaded
+# host, and a bound of its own that fired would refuse the rollback and leave Dispatch stopped for
+# a person; only a call that has not answered when the pass's time is spent fails, named.
 roll_back_or_stop() {
   local sha="$1"
   local previous="$2"
@@ -376,20 +459,25 @@ roll_back_or_stop() {
   local dispatchPort="$4"
   local running
   local now
-  local status
+  local status=0
   local refusing
+  local bound
   refusing="so refusing to roll back to $previous, which runs against schema $(schema_label "$baseline"), and forward recovery is required"
-  if ! compose 120 stop dispatch; then
-    log "could not stop $sha, $refusing"
+  bound=$(pass_bound "docker compose stop of $sha could start, $refusing") || return 1
+  compose "$bound" stop dispatch || status=$?
+  if ((status != 0)); then
+    log "could not stop $sha$(bound_note "$status"), $refusing"
     return 1
   fi
-  if ! running=$(compose 60 ps --status running -q dispatch) || [[ -n "$running" ]]; then
-    log "could not confirm $sha stopped, $refusing"
+  bound=$(pass_bound "docker compose ps could confirm $sha stopped, $refusing") || return 1
+  running=$(compose "$bound" ps --status running -q dispatch) || status=$?
+  if ((status != 0)) || [[ -n "$running" ]]; then
+    log "could not confirm $sha stopped$(bound_note "$status"), $refusing"
     return 1
   fi
   now=$(schema_applied) || {
     status=$?
-    log "could not read the schema version after stopping $sha (status $status), $refusing"
+    log "could not read the schema version after stopping $sha (status $status$(bound_note "$status")), $refusing"
     return 1
   }
   if schema_changed "$baseline" "$now"; then
@@ -407,7 +495,7 @@ deploy() {
   local db_url
   local db_password
   local dispatchPort
-  local status
+  local status=0
   local before
   local recorded
   local baseline
@@ -415,6 +503,7 @@ deploy() {
   local origin
   local redirect
   local expected
+  local bound
 
   previous=$(deployed_tag)
   origin=$(env_value DISPATCH_SERVER_URL)
@@ -435,7 +524,7 @@ deploy() {
   dispatchPort="${dispatchPort:-8766}"
   before=$(schema_applied) || {
     status=$?
-    log "could not read the schema version (status $status); not deploying $sha"
+    log "could not read the schema version (status $status$(bound_note "$status")); not deploying $sha"
     return 1
   }
   # ENVOY_IMAGE_SCHEMA is <tag>:<value>, where <value> stands for the set of migrations the
@@ -458,24 +547,30 @@ deploy() {
     fi
   fi
   dump="$BACKUPS/pre-${sha:0:12}-$(date -u +%Y%m%dT%H%M%SZ).dump"
+  bound=$(pass_bound "the backup could start; not deploying $sha") || return 1
   # shellcheck disable=SC2016 # $DATABASE_URL expands in the container's shell, from its environment
-  if ! pg_client 0 'pg_dump -Fc "$DATABASE_URL"' >"$dump"; then
-    log "backup failed; not deploying $sha"
+  pg_client "$bound" 'pg_dump -Fc "$DATABASE_URL"' >"$dump" || status=$?
+  if ((status != 0)); then
+    log "backup failed$(bound_note "$status"); not deploying $sha"
     rm -f "$dump"
     return 1
   fi
   prune_backups
-  if ! compose_with_tag "$sha" 900 pull -q dispatch; then
-    log "could not pull $sha; $previous still serves"
+  bound=$(pass_bound "the pull of $sha could start; $previous still serves" "$PULL_BOUND") || return 1
+  compose_with_tag "$sha" "$bound" pull -q dispatch || status=$?
+  if ((status != 0)); then
+    log "could not pull $sha$(bound_note "$status" "$bound"); $previous still serves"
     return 1
   fi
-  if ! compose_with_tag "$sha" 300 up -d --no-deps dispatch; then
-    log "compose up failed for $sha"
+  bound=$(pass_bound "the up of $sha could start; $previous still serves" "$UP_BOUND") || return 1
+  compose_with_tag "$sha" "$bound" up -d --no-deps dispatch || status=$?
+  if ((status != 0)); then
+    log "compose up failed for $sha$(bound_note "$status" "$bound")"
     roll_back_or_stop "$sha" "$previous" "$baseline" "$dispatchPort"
     return 1
   fi
   if ! wait_for_health "$dispatchPort"; then
-    log "deployed $sha but /healthz did not answer 200 with NATS connected within 90s"
+    log "deployed $sha but /healthz did not answer 200 with NATS connected in $HEALTH_TRIES tries 3 s apart"
     roll_back_or_stop "$sha" "$previous" "$baseline" "$dispatchPort"
     return 1
   fi
@@ -494,13 +589,44 @@ deploy() {
   log "deployed $sha ($(jj -R "$REPO" log -r "$sha" --no-graph -T 'description.first_line()' | cut -c1-90)); login origin $origin verified; backup $dump"
 }
 
+# commit_order <sha> <deployed> prints `older` when <sha> is an ancestor of the deployed commit,
+# and `newer` when it is not, read from the history of the repository the walk reads. A deployed
+# tag that names no commit the repository knows (`local`, a release tag set by hand) has no history
+# for <sha> to be older than, so the answer is `newer`: the newest published main replaces it, as
+# it always has. Where jj answers neither, it prints nothing.
+commit_order() {
+  jj -R "$REPO" log --no-graph -r "present(\"$1\")" \
+    -T "if(self.contained_in(\"::present(\\\"$2\\\")\"), \"older\", \"newer\") ++ \"\\n\""
+}
+
+# run_once is one pass, against the pass's deadline (PASS_DEADLINE, counted from here). It never
+# deploys a commit older than the deployed one: the walk passes over a commit the registry says it
+# holds no image of, and where that is the deployed commit itself (its image was removed, or IMAGE
+# names another repository), the commit it reaches next is older. So the newest published commit
+# is deployed only when the repository's history says it is not an ancestor of the deployed one;
+# an ancestor is named on one line with the deployed commit and nothing is deployed, and an order
+# jj cannot read fails the pass, since a deploy needs the answer `newer`, not the absence of
+# `older`.
 run_once() {
-  local sha status
+  local sha status deployed order
+  pass_deadline=$(($(clock) + PASS_DEADLINE))
   if sha=$(newest_published_main); then
-    if [[ "$sha" != "$(deployed_tag)" ]]; then
-      log "main has a newer published image: $sha (deployed $(deployed_tag))"
-      deploy "$sha"
-    fi
+    deployed=$(deployed_tag)
+    [[ "$sha" != "$deployed" ]] || return 0
+    order=$(commit_order "$sha" "$deployed") || order=
+    case "$order" in
+      newer)
+        log "main has a newer published image: $sha (deployed $deployed)"
+        deploy "$sha"
+        ;;
+      older)
+        log "the newest published main commit, $sha, is an ancestor of the deployed $deployed; deploying nothing older over it"
+        ;;
+      *)
+        log "could not read from $REPO whether $sha is older than the deployed $deployed; not deploying"
+        return 1
+        ;;
+    esac
   else
     status=$?
     # 2: a read that proves nothing, which newest_published_main has logged.
@@ -514,8 +640,12 @@ if [[ "$once" == true ]]; then
   exit 0
 fi
 
+# The continuous loop runs each pass as a process of its own, a --once run, so a pass ends under
+# set -e as one run does, and a failed pass ends that process alone: it has logged its one named
+# line, the loop logs that it failed, and the next pass tries again after POLL. A `run_once ||`
+# here would turn set -e off inside every pass.
 log "autodeploy started; deployed=$(deployed_tag)"
 while true; do
-  run_once
+  "$BASH" "$0" --once || log "the pass failed (exit $?); the next pass starts in ${POLL}s"
   sleep "$POLL"
 done

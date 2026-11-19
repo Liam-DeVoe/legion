@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +47,9 @@ const (
 	// the one this launcher made and role-init binds (testPGLog).
 	testPGLogVariable = "LEGION_TESTPG_LOG"
 	testPGLogName     = "server.log"
+	// testPGDeadlineVariable is how that script is told its caller's deadline, in whole seconds
+	// since the epoch (testPGDeadline): every wait of the script takes the time it leaves.
+	testPGDeadlineVariable = "LEGION_TESTPG_DEADLINE"
 	// testPGProgram is that script, on the image's PATH.
 	testPGProgram = "legion-testpg"
 )
@@ -111,24 +116,31 @@ func testPGEnv(env []string, serves bool) []string {
 // roles, whose agents then read the refusal in the container's log, where a launcher that failed
 // its container would instead cost the issue every role it was serving.
 //
+// The first attempt is this call's to bound, as the caller of runTestPG, and it gives that one
+// testPGBootBudget, the share of the pod's boot it may take. A tick has no deadline but ctx's
+// end: it waits as long as the start it finds takes, and the ticker drops the ticks that fall
+// due meanwhile, so no second start waits behind it.
+//
 // The server's log is made before that first attempt, so every role started after it has a file
 // to bind even when the attempt failed before `initdb` wrote one: without it such a role would
 // hold the image's empty mount point for its whole generation and see nothing of what the server
 // a later tick starts logs. A log that cannot be made is logged as the script's failures are.
 func serveTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard) <-chan struct{} {
-	// The interval is read here, in the caller's own goroutine, and not inside the one below: it
-	// is a package variable a test shortens, and a goroutine still reading it after the test
-	// restored it is a data race the race detector fails the test for.
+	// The interval and the boot budget are read here, in the caller's own goroutine, and not
+	// inside the one below: each is a package variable a test shortens, and a goroutine still
+	// reading one after the test restored it is a data race the race detector fails the test for.
 	interval := testPGInterval
 	if err := makeTestPGLog(cfg.RolesDir); err != nil {
 		log.linef("launcher: test database: %v", err)
 	}
-	ensure := func() {
+	ensure := func(ctx context.Context) {
 		if err := runTestPG(ctx, cfg, log, guard, "ensure"); err != nil {
 			log.linef("launcher: test database: %v", err)
 		}
 	}
-	ensure()
+	boot, cancel := context.WithTimeout(ctx, testPGBootBudget)
+	ensure(boot)
+	cancel()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -139,7 +151,7 @@ func serveTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard)
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				ensure()
+				ensure(ctx)
 			}
 		}
 	}()
@@ -163,27 +175,52 @@ func makeTestPGLog(rolesDir string) error {
 	return file.Close()
 }
 
-// testPGBound is how long one run of the script may take. The first `ensure` runs before the
-// launcher serves any role, and the daemon's boot timeout for a pod is 120 s by default, so an
-// `ensure` that hangs — a lock a dead holder still owns, a disk that does not answer — must not
-// take the pod's whole boot with it. `flock` inside the script waits up to 180 s of its own, which
-// this bound cuts short deliberately: a role starting without its test database and a line in the
-// log is better than a pod the daemon gives up on. A test shortens it.
-var testPGBound = 60 * time.Second
+// testPGBootBudget is the deadline of the launcher's first `ensure`, which serveTestPG, its
+// caller, gives it. That `ensure` runs before the launcher serves any role, and so before the
+// launcher connects to the daemon, which gives a pod worker_boot_timeout_seconds to connect: 120 s
+// by default, counted from the pod's creation and spent on its image pull and start too. The
+// launcher is not told that setting, so the first `ensure` may take half its default. Every later
+// `ensure` has no deadline of its own. At this one the script's whole process group is stopped
+// (runTestPG), and the roles start without the test database, with a line in the container's log,
+// which is better than a pod the daemon gives up on; the next tick carries the start on, since
+// each step of the script is idempotent and a postmaster already launched runs in a session of its
+// own. A test shortens it.
+var testPGBootBudget = 60 * time.Second
+
+// testPGDeadline is the script's environment entry for ctx's deadline: LEGION_TESTPG_DEADLINE,
+// the deadline in whole seconds since the epoch, rounded down, so each wait of the script ends at
+// or before it and names what it waited for; none where ctx has no deadline, and then the script's
+// waits have no bound but this caller's stop of its process group.
+func testPGDeadline(ctx context.Context) []string {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil
+	}
+	return []string{testPGDeadlineVariable + "=" + strconv.FormatInt(deadline.Unix(), 10)}
+}
+
+// testPGEnviron is this process's environment for one run of the script, with deadline, from
+// testPGDeadline, in place of whatever LEGION_TESTPG_DEADLINE this process inherited, and extra
+// after it.
+func testPGEnviron(deadline []string, extra ...string) []string {
+	return append(append(withoutEnv(os.Environ(), testPGDeadlineVariable), deadline...), extra...)
+}
 
 // runTestPG runs one command of the image's script with the DSN it must serve, the directory it
 // must serve it from and the file it must log to, writing its output to the container's log
 // behind a prefix of its own, so a refusal reads apart from a role's lines. Its process is held
-// out of the reaper's pass (pidGuard) until this wait has read its exit. WaitDelay makes the kill
-// at testPGBound final: without it a child that keeps the output pipe open — the postmaster
-// `pg_ctl` leaves running — would hold this wait past the bound.
+// out of the reaper's pass (pidGuard) until this wait has read its exit.
+//
+// It waits as long as ctx allows and has no bound of its own: ctx is its caller's, serveTestPG's
+// boot budget for the first `ensure` and the launcher's own for a tick. The script is told ctx's
+// deadline (testPGDeadline). When ctx ends first, the script's whole process group is stopped and
+// waited out (procgroup.Configure): a kill of the script alone would leave the start `flock`
+// holds running, unseen by any later wait.
 func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, command string) error {
-	bounded, cancel := context.WithTimeout(ctx, testPGBound)
-	defer cancel()
 	out, _ := log.writers(testPGProgram)
-	cmd := exec.CommandContext(bounded, testPGProgram, command)
-	cmd.WaitDelay = time.Second
-	cmd.Env = append(os.Environ(),
+	cmd := exec.CommandContext(ctx, testPGProgram, command)
+	killed := procgroup.Configure(cmd)
+	cmd.Env = testPGEnviron(testPGDeadline(ctx),
 		TestPGVariable+"="+TestPGDSN,
 		testPGDirVariable+"="+testPGDir(cfg.RolesDir),
 		testPGLogVariable+"="+testPGLog(cfg.RolesDir),
@@ -195,8 +232,9 @@ func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, c
 	}
 	defer guard.done(pid)
 	if err := cmd.Wait(); err != nil {
-		if bounded.Err() != nil && ctx.Err() == nil {
-			return fmt.Errorf("%s %s did not finish within %s", testPGProgram, command, testPGBound)
+		if killed() {
+			return fmt.Errorf("%s %s did not finish before its caller's deadline (%w), so its process group was stopped",
+				testPGProgram, command, context.Cause(ctx))
 		}
 		return fmt.Errorf("%s %s: %w", testPGProgram, command, err)
 	}
@@ -214,53 +252,113 @@ func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, c
 //
 // Each step waits as long as ctx allows, and has no bound of its own: ctx carries the probe's own
 // deadline (`--probe-budget`, the attempt's budget less the time the daemon keeps to read the
-// pod's log). A fixed bound here could fire while the server still works — `initdb`, a cold start
-// and a database's file copy are slow on a loaded node — and so refuse an image the probe's
-// budget has room to prove. Inside a step, the script's own waits still apply (`flock -w 180`,
-// `pg_ctl --timeout 120`). A step that runs past ctx's end is stopped with its whole process group
-// (procgroup.Configure). A kill of the script alone would leave its `flock` and the start that
-// `flock` holds running, and that start would go on to start a server after the `stop` below had
-// found none to stop. The server is then stopped, after ctx's end too, and the error names the
-// step that ran out.
+// pod's log). A fixed bound could fire while the server still works — `initdb`, a cold start, a
+// database's file copy and a shutdown checkpoint are slow on a loaded node — and so refuse an
+// image the probe's budget has room to prove. The script is told the same deadline
+// (testPGDeadline), and each of its own waits takes the time it leaves. A step that runs past
+// ctx's end is stopped with its whole process group (procgroup.Configure): a kill of the script
+// alone would leave its `flock` and the start that `flock` holds running, and that start would go
+// on to start a server after the stop below had found none to stop. The error names the step that
+// ran out, on one line with what it printed.
+//
+// The server is stopped whatever the steps answered, and the stop waits as long as ctx allows,
+// as the steps do. Where ctx has already ended, the stop still runs, under ctx's values but not
+// its end, and with a deadline that has passed, so the script asks for the shutdown and waits for
+// none. The probe then reads whether a process of the server still runs (testPGServerProcesses)
+// and names it. A failed stop and a server left running are named after the step's own failure,
+// on the same line.
 func CheckTestPostgres(ctx context.Context, dir string) error {
-	env := append(os.Environ(), TestPGVariable+"="+TestPGDSN, testPGDirVariable+"="+dir)
-	run := func(ctx context.Context, name string, argv ...string) error {
+	base := []string{TestPGVariable + "=" + TestPGDSN, testPGDirVariable + "=" + dir}
+	run := func(ctx context.Context, env []string, name string, argv ...string) error {
 		cmd := exec.CommandContext(ctx, name, argv...)
 		killed := procgroup.Configure(cmd)
 		cmd.Env = env
 		output, err := cmd.CombinedOutput()
+		said := oneLine(string(output))
 		if killed() {
 			stopped := fmt.Errorf("the pod's own test database: %s %s did not finish before the probe's context ended (%w), so its process group was stopped",
 				name, strings.Join(argv, " "), context.Cause(ctx))
-			if said := strings.TrimSpace(string(output)); said != "" {
+			if said != "" {
 				return fmt.Errorf("%w; it printed: %s", stopped, said)
 			}
 			return stopped
 		}
 		if err != nil {
-			return fmt.Errorf("the pod's own test database: %s %s: %w: %s",
-				name, strings.Join(argv, " "), err, strings.TrimSpace(string(output)))
+			return fmt.Errorf("the pod's own test database: %s %s: %w: %s", name, strings.Join(argv, " "), err, said)
 		}
 		return nil
 	}
+	env := testPGEnviron(testPGDeadline(ctx), base...)
 	// The database is named for the probe alone, and dropped again, so the cluster the probe
-	// leaves behind holds nothing of it; the server is stopped whatever the steps answered. It is a
-	// file copy of template1, as every database the module's tests make is (docs/testing.md).
+	// leaves behind holds nothing of it. It is a file copy of template1, as every database the
+	// module's tests make is (docs/testing.md).
 	steps := [][]string{
 		{testPGProgram, "check"},
 		{testPGProgram, "ensure"},
 		{"psql", "-X", "-q", TestPGDSN, "-c", "create database legion_probe_testpg strategy file_copy"},
 		{"psql", "-X", "-q", TestPGDSN, "-c", "drop database legion_probe_testpg with (force)"},
 	}
-	// The stop runs under ctx's values but not its end: a probe whose deadline passed still stops
-	// the server it started. `legion-testpg stop` bounds its own wait for the server to exit
-	// (`pg_ctl --timeout`), and the probe Sandbox deletes the pod after its reserve in any case.
-	stop := func() error { return run(context.WithoutCancel(ctx), testPGProgram, "stop") }
+	stop := func() error {
+		var err error
+		if ctx.Err() == nil {
+			err = run(ctx, env, testPGProgram, "stop")
+		} else {
+			passed := []string{testPGDeadlineVariable + "=" + strconv.FormatInt(time.Now().Unix(), 10)}
+			err = run(context.WithoutCancel(ctx), testPGEnviron(passed, base...), testPGProgram, "stop")
+		}
+		data := filepath.Join(dir, "data")
+		if running := testPGServerProcesses("/proc", data); len(running) > 0 {
+			left := fmt.Errorf("the pod's own test database: the server in %s still runs after the stop: %s", data, strings.Join(running, ", "))
+			if err != nil {
+				return fmt.Errorf("%w; %w", err, left)
+			}
+			return left
+		}
+		return err
+	}
 	for _, step := range steps {
-		if err := run(ctx, step[0], step[1:]...); err != nil {
-			_ = stop()
+		if err := run(ctx, env, step[0], step[1:]...); err != nil {
+			if stopped := stop(); stopped != nil {
+				return fmt.Errorf("%w; and the stop after it: %w", err, stopped)
+			}
 			return err
 		}
 	}
 	return stop()
+}
+
+// testPGServerProcesses names each process of the /proc mounted at proc that belongs to the
+// server whose data directory is data, as `pid <n> (<name>)`, in pid order: a process whose
+// working directory is data, as the postmaster's is from its first steps and every backend's after
+// it, or whose arguments name data, as the postmaster's do from the moment pg_ctl starts it, before
+// it has written postmaster.pid. So a postmaster the stop found no pid file for is still found. A
+// process that is gone, a zombie and one this process may not read are passed over: none of them
+// holds the cluster.
+func testPGServerProcesses(proc, data string) []string {
+	pids, err := procPIDs(proc)
+	if err != nil {
+		return []string{fmt.Sprintf("unknown (%s could not be read: %v)", proc, err)}
+	}
+	resolved := data
+	if real, err := filepath.EvalSymlinks(data); err == nil {
+		resolved = real
+	}
+	self := os.Getpid()
+	slices.Sort(pids)
+	var running []string
+	for _, pid := range pids {
+		if pid == self {
+			continue
+		}
+		entry := filepath.Join(proc, strconv.Itoa(pid))
+		cwd, cwdErr := os.Readlink(filepath.Join(entry, "cwd"))
+		cmdline, _ := os.ReadFile(filepath.Join(entry, "cmdline"))
+		args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+		if (cwdErr != nil || cwd != resolved) && !slices.Contains(args, data) && !slices.Contains(args, resolved) {
+			continue
+		}
+		name, _ := os.ReadFile(filepath.Join(entry, "comm"))
+		running = append(running, fmt.Sprintf("pid %d (%s)", pid, strings.TrimSpace(string(name))))
+	}
+	return running
 }
