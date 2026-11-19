@@ -260,3 +260,53 @@ test("the resize row that crosses 1280 px in both directions and reads every ani
     await context.close();
   }
 });
+
+// The shell's two halves must read one breakpoint whatever the reader's default font size. The
+// `xl:` classes that show the sidebar compile to `@media (width >= 80rem)`, and a media query's
+// rem is the browser's default font size, while the compact bar with its Menu follows
+// `COMPACT_VIEWPORT_QUERY`, written in pixels. A reader who set a 20 px default font meets a
+// 1440 px window in which the sidebar waits for 1600 px and the Menu stopped at 1279 px, so no
+// way to the navigation is drawn at all; at a 12 px font the bar's Menu goes at 1280 px while the
+// sidebar has shown since 960 px (INFRA-341, testing round 17, at 1808df5f).
+test("a reader whose default font is 20 px or 12 px is drawn a way to the navigation at every width", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    const cdp = await context.newCDPSession(page);
+    for (const [fontSize, width] of [
+      [20, 1440],
+      [20, 1300],
+      [12, 1100],
+      [16, 1440],
+      [16, 1100],
+    ] as const) {
+      await cdp.send("Page.setFontSizes", { fontSizes: { fixed: 13, standard: fontSize } });
+      await page.setViewportSize({ height: 900, width });
+      await page.goto("/inbox");
+      await expect(page.getByTestId("main-content")).toBeVisible();
+      const ways = await page.evaluate(() => {
+        const shown = (selector: string) =>
+          [...document.querySelectorAll<HTMLElement>(selector)].some(
+            (element) => element.checkVisibility() && element.getBoundingClientRect().width > 0
+          );
+        return {
+          menu: shown('button[aria-label="Open navigation"]'),
+          rail: shown('aside[aria-label="Collapsed sidebar"]'),
+          sidebar: shown('aside[aria-label="Navigation"]:not([aria-modal])'),
+        };
+      });
+      expect(
+        ways.menu || ways.rail || ways.sidebar,
+        `at ${width} px with a ${fontSize} px default font: ${JSON.stringify(ways)}`
+      ).toBe(true);
+      expect(
+        ways.menu && (ways.rail || ways.sidebar),
+        `at ${width} px with a ${fontSize} px default font both layouts draw: ${JSON.stringify(ways)}`
+      ).toBe(false);
+    }
+  } finally {
+    await context.close();
+  }
+});
