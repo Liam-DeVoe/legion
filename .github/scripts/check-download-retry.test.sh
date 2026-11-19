@@ -12489,6 +12489,53 @@ YAML
   check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 done
 
+# T8. A glob bash matches under `shopt -s nocaseglob`, which the gate's pattern, matched with
+# case, does not. With that option set, bash expands `R38-FE[T]CH.SH` to r38-fetch.sh, which
+# retries at 180 s (1050 s); without it the word names no file, and flock fails. At 046b589eb4ca
+# each step passed under a 17-minute key, 1020 s, while the same words in a run's place, or
+# after bash, are refused (dispatch://INFRA-1545, the tester's round-40 battery, D37 to D40).
+# The option is literal text a static reader sees. Each case asks only that the gate exits 1
+# with no traceback, so a refusal by name or a charged figure both pass it.
+echo "case: r40 T8 a run after a cd whose word matches only under nocaseglob is not passed under its retries"
+root=$(fixture r40-T8-run-after-cd)
+cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the fetching script through a glob matched without case
+        timeout-minutes: 17
+        run: |
+          shopt -s nocaseglob
+          cd .github/scripts && ./R38-FE[T]CH.SH
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: r40 T8 an argument of flock whose word matches only under nocaseglob is not passed under its retries"
+root=$(fixture r40-T8-flock-argument)
+cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the fetching script under flock through a glob matched without case
+        timeout-minutes: 17
+        run: |
+          shopt -s nocaseglob
+          flock /tmp/l .github/scripts/R38-FE[T]CH.SH
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
 # W10 and W11. W1, W2, W6 and W9 above share one cure: the gate reads the `.sh` scripts directly
 # in .github/scripts/ and no other file there, so every other file under that directory, at any
 # depth, is refused by name at its line 1, whatever its name, its first line or its text, but a
