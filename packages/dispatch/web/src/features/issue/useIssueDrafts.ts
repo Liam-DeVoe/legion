@@ -40,10 +40,13 @@ export interface IssueDrafts {
 
 const routePattern = /^(role:[a-z0-9-]+|session:[0-9a-f-]{16,})$/;
 
-/** Whose value a field's draft is (decision 332): "issue", a value the issue gave the field;
- *  "typed", text the reader typed and has not ended since, or ended on a value the hook refused
- *  (an empty title, a closed issue); "ended", a choice the reader ended - queued, out, or refused
- *  by Dispatch and not yet sent. */
+/** Whose value a field's draft is (decision 332). "issue": the issue's value, which the draft
+ *  follows while nothing is out. "typed": text the reader typed that differs from the value it
+ *  was judged against at its last keystroke, or was typed while a value was queued, and that no
+ *  end has chosen since. "ended": a choice the reader ended - queued, out, or refused by Dispatch
+ *  and not yet sent - and, while a write is out, the value out, as a discard or an unchanged end
+ *  puts it back or a keystroke with nothing queued returns the draft to it. A refused end (an
+ *  empty title, a closed issue) keeps whichever the draft was. */
 type Own = "issue" | "typed" | "ended";
 
 /** One field's draft (decisions 315 and 332). */
@@ -56,8 +59,8 @@ interface FieldState {
   draft: string;
   /** Whose the draft is. Only a draft that is the issue's follows the issue's value. */
   own: Own;
-  /** The reader's last ended choice, normalized, until it is sent, discarded or replaced, or the
-   *  reference becomes it; else null. */
+  /** The reader's last ended choice, normalized, until it is sent, discarded or replaced, a
+   *  refused end drops it, or the reference becomes it; else null. */
   queued: string | null;
 }
 
@@ -112,19 +115,6 @@ const changed = (rules: FieldRules, state: FieldState): boolean =>
 const dropQueuedReference = (state: FieldState): FieldState =>
   state.queued === reference(state) ? { ...state, queued: null } : state;
 
-/** What an answer leaves of a field's draft: a queued value the reference has become is
- *  dropped, and an ended choice the issue now holds, with nothing out and nothing left to send,
- *  is the issue's value. */
-function answered(rules: FieldRules, state: FieldState): FieldState {
-  const next = dropQueuedReference(state);
-  const held =
-    next.own === "ended" &&
-    next.out === null &&
-    next.queued === null &&
-    rules.normalize(next.draft) === next.server;
-  return held ? { ...next, own: "issue" } : next;
-}
-
 /** What the end of an edit does with a field's draft: queues it to be sent, finds nothing to
  *  send, or refuses it (a closed issue, or a value Dispatch would not take). */
 type RequestOutcome = "queued" | "unchanged" | "refused";
@@ -138,46 +128,58 @@ function requestOutcome(rules: FieldRules, state: FieldState, closed: boolean): 
  * One field's draft, as one pure step per event. `reference` is the value out, else the
  * issue's, and a draft is `changed` when its text normalized differs from it. `queued` is the
  * reader's last ended choice not yet sent (decision 324), which the hook's drain sends once the
- * guard lets a write go. `own` says whose the draft is (decision 332): the issue's, text the
- * reader typed and has not ended since, or a choice the reader ended.
+ * guard lets a write go. `own` says whose the draft is (decision 332).
  *
- * - `write(text)`, the reader's typing: the draft is the text, and typed; nothing else moves.
- *   Typing ends no edit, so it neither chooses a value nor withdraws one, even typed back to the
- *   value out or the issue's: the value queued stays the reader's last ended choice, and the end
- *   of the edit chooses again. Moved with each keystroke, the queued value went as the write
- *   ahead of it landed, half typed, and the title the reader had saved never went; withdrawn by
- *   a draft typed back, an undo queued under the issue's own value was lost to a keystroke and
- *   its deletion.
+ * - `write(text)`, the reader's typing: the draft is the text. Typing ends no edit, so it neither
+ *   chooses a value nor withdraws one, even typed back to the value out or the issue's: the value
+ *   queued stays the reader's last ended choice, and the end of the edit chooses again. Moved
+ *   with each keystroke, the queued value went as the write ahead of it landed, half typed, and
+ *   the title the reader had saved never went; withdrawn by a draft typed back, an undo queued
+ *   under the issue's own value was lost to a keystroke and its deletion.
+ *   What a keystroke decides is whose the draft is. One that leaves it equal to the reference,
+ *   with nothing queued, hands it back. With nothing out it is then the issue's, so a character
+ *   typed and deleted leaves the draft following the issue, and the end of the edit sends no old
+ *   title over the one another reader set since. With a write out it is then the value out, the
+ *   reader's ended choice, as a discard or an unchanged end makes it, so a refusal of that write
+ *   leaves the refused title in the field. With a value queued no keystroke hands the draft back:
+ *   while a value waits to be sent the draft does not follow the issue's value (decision 324).
+ *   Any other keystroke makes the draft typed.
  * - `request`, the end of an edit, a blur, a switch's send: the reader's choice, which replaces
  *   any value queued. Refused for a closed issue or a value Dispatch would not take, it asks for
- *   nothing and keeps whose the draft is; an unchanged draft takes the reference and asks for
- *   nothing; a changed one is queued as its text normalized, an ended choice, which the hook's
- *   drain then sends.
+ *   nothing, keeps whose the draft is, and drops the value queued: an end on an empty title is
+ *   the reader's last act, and it cleared the title (decision 324). An unchanged draft takes the
+ *   reference and asks for nothing; a changed one is queued as its text normalized, an ended
+ *   choice, which the hook's drain then sends.
  * - `discard`, Escape or Cancel: the draft takes the reference and asks for nothing. While a
  *   write is out that is the value out, the value the issue is about to hold (decision 316).
  * - A draft that `request` or `discard` puts back to the reference is the reader's ended choice
  *   while a write is out, since the value out is one, and the issue's when nothing is out.
  * - `sent(value)`, the guard let the write go: the value is out, and nothing is queued.
  * - `server(value)`, a prop change or a landing's answer: a draft that is the issue's takes the
- *   value while nothing is out. A typed or ended draft stays, whatever the value: judged against
- *   the issue's value now, a draft another reader set the issue to read as not changed, and,
- *   moved on to that reader's next title, it showed a title the reader never typed, which the end
- *   of the edit then did not send. While a value is out the reference stays that value.
+ *   value while nothing is out. A typed or ended draft stays, whatever the value, and stays the
+ *   reader's even when the value equals it, since no keystroke judged it: handed back then, it
+ *   followed that reader's next title, which the reader never typed, and the end of the edit sent
+ *   nothing. While a value is out the reference stays that value.
  * - `settled(landed)`, this field's write ended: a landed write's draft that is still its value
- *   takes the value it landed with, and an ended choice is then the issue's; text the reader
- *   typed again after the write went stays typed, their open text. A refusal keeps the draft,
- *   and whose it is, which is then changed against the issue's value: the reader's unsent
- *   choice, which Retry and the end of the next edit send.
+ *   takes the value it landed with. A refusal keeps the draft, which is then judged against the
+ *   issue's value: the reader's unsent choice, which Retry and the end of the next edit send.
+ *   Here, and on no `server` event, the draft is handed back to the issue: it is the issue's
+ *   again once nothing is queued, it equals the issue's value, and either the write landed with
+ *   it or it was the reader's ended choice, as an undo to the issue's own value is once a refusal
+ *   of the write ahead of it leaves the issue on that value. Otherwise it stays whose it was:
+ *   text the reader typed on after the write went stays typed, their open text.
  *
  * After `server` and `settled` a queued value is kept: it was valid when the reader ended the
  * edit that chose it, and a new reference does not undo that choice. It is dropped only once the
- * new reference is that value, which leaves it nothing to send. An ended choice the issue then
- * holds, with nothing out and nothing queued, is the issue's value, and follows it from then on.
+ * new reference is that value, which leaves it nothing to send.
  */
 function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): FieldState {
   switch (event.type) {
-    case "write":
-      return { ...state, draft: event.text, own: "typed" };
+    case "write": {
+      const back = state.queued === null && rules.normalize(event.text) === reference(state);
+      const own: Own = back ? (state.out === null ? "issue" : "ended") : "typed";
+      return { ...state, draft: event.text, own };
+    }
     case "request": {
       const outcome = requestOutcome(rules, state, event.closed);
       if (outcome === "queued") {
@@ -202,7 +204,7 @@ function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): F
       return { ...state, out: event.value, queued: null };
     case "server": {
       const follows = state.out === null && state.own === "issue";
-      return answered(rules, {
+      return dropQueuedReference({
         ...state,
         draft: follows ? event.value : state.draft,
         server: event.value,
@@ -211,12 +213,16 @@ function reduceField(rules: FieldRules, state: FieldState, event: FieldEvent): F
     case "settled": {
       if (state.out === null) return state;
       const took = event.landed && rules.normalize(state.draft) === state.out;
-      return answered(rules, {
+      const next = dropQueuedReference({
         ...state,
         draft: took ? state.server : state.draft,
         out: null,
-        own: took && state.own === "ended" ? "issue" : state.own,
       });
+      const back =
+        next.queued === null &&
+        rules.normalize(next.draft) === next.server &&
+        (took || state.own === "ended");
+      return back ? { ...next, own: "issue" } : next;
     }
   }
 }

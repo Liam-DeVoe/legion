@@ -186,9 +186,14 @@ const alphabet = [
   "land",
   "refuse",
   "otherReader",
+  "otherShown",
+  "otherOwed",
+  "otherOut",
   "otherFieldLands",
 ] as const;
 type EventName = (typeof alphabet)[number];
+/** The events by which another reader sets the issue to a title of the reader's own. */
+type OwnTitleEvent = "otherShown" | "otherOwed" | "otherOut";
 type Invariant = "I1" | "I2" | "I3" | "I4" | "I5" | "I6" | "I7";
 
 interface Finding {
@@ -206,6 +211,9 @@ const answers: Partial<Record<EventName, true>> = {
   land: true,
   refuse: true,
   otherReader: true,
+  otherShown: true,
+  otherOwed: true,
+  otherOut: true,
   otherFieldLands: true,
 };
 
@@ -213,7 +221,10 @@ const answers: Partial<Record<EventName, true>> = {
  * A session and a small model of its reader: what the field holds by their own record, what they
  * last chose and still wait to see sent, what they put away, and what has been sent, which is
  * what the invariants are judged against. The model never takes a choice from the hook's draft:
- * a hook that put a wrong value in the draft would have it counted as the reader's choice.
+ * a hook that put a wrong value in the draft would have it counted as the reader's choice. Whose
+ * the field is, the reader's or the issue's, is taken from decision 332's words, not from the
+ * hook's rules: a keystroke decides it, and so does the settle of the title's own write, while
+ * another reader's title never does.
  */
 class Reader {
   readonly session = new Session();
@@ -242,25 +253,28 @@ class Reader {
    *  it as it is, as the new header's switch leaves the edit open. */
   private editing = false;
   /**
-   * The reader's own choice the field may show: the text of the last type event, or what an
-   * escape, or an end that chose nothing, put back while a write was out; none after one of
-   * those with nothing out, nor once a write that carried it, sent after it was typed, has
-   * landed, since the issue then holds it. By the same rule it is none once the issue's title
-   * comes to be the reader's owed choice and it is that choice, untyped since they chose it, as a
-   * refusal or another reader can make it: a hide is an end that leaves the editor open, and once
-   * the reader's ended choice is the issue's title the open editor follows the issue, as it does
-   * once a hide's write lands. Text typed after the choice stays theirs, whatever it is.
+   * The reader's own text the field shows by their record, or none while the field is the
+   * issue's and follows the issue's title (decision 332). A type event sets it to its text,
+   * unless that text is the title it is judged against - the title out while one is, else the
+   * issue's - with nothing owed: that hands the field back, to the issue with nothing out, and
+   * with a write out to the title out, the reader's ended choice, as an escape or an end that
+   * chose nothing puts it back (`putBack`). It is none once the title write's own landing or
+   * refusal leaves the field the issue's (`settle`). Another reader's title never clears it, not
+   * even one equal to it: no keystroke judged that title.
    */
   lastTyped: string | null = null;
   /**
-   * Whether `lastTyped` went in a write after the reader typed it. Typed again after its write
-   * went (the title out typed back), it is the reader's open text, and that write's landing
-   * leaves it the reader's.
+   * Whether `lastTyped` is text I6 holds the open editor to: the reader typed it, it differed
+   * from the title it was judged against at the keystroke that left it, or was typed while a
+   * choice was owed, and no write has landed with it since.
    */
-  private typedSent = false;
-  /** Whether the reader typed since the last end, or hide that chose a title: their text then is
-   *  their open text, not the choice they ended. */
-  private typedSinceChoice = false;
+  private marked = false;
+  /**
+   * Whether `lastTyped` is the reader's ended choice: the title an end or a hide chose, or the
+   * title out that a keystroke back to it with nothing owed, an escape or an end that chose
+   * nothing puts back while that write is out. A keystroke that marks the text ends it.
+   */
+  private ended = false;
   /** The drafts an escape put away, until the reader types one of them again. */
   private readonly discarded = new Set<string>();
   private lastTitleWrite: TitleWrite | null = null;
@@ -278,9 +292,36 @@ class Reader {
       case "land":
       case "refuse":
         return this.session.out !== null;
+      case "otherShown":
+      case "otherOwed":
+      case "otherOut":
+        return this.ownTitles()[event] !== undefined;
       default:
         return true;
     }
+  }
+
+  /**
+   * The titles of the reader's own that another reader can set the issue to: the title the field
+   * shows by the reader's record, their owed choice, and the title out. Each is there only where
+   * it is a title other than the issue's, which would change nothing, and other than the one an
+   * event before it in this list sets, which would play that event's branch again.
+   */
+  private ownTitles(): Partial<Record<OwnTitleEvent, string>> {
+    const { session } = this;
+    const titles: Partial<Record<OwnTitleEvent, string>> = {};
+    const taken = new Set([session.issue.title.trim()]);
+    const candidates: [OwnTitleEvent, string | null][] = [
+      ["otherShown", this.shown()],
+      ["otherOwed", this.owed],
+      ["otherOut", session.out?.title ?? null],
+    ];
+    for (const [event, title] of candidates) {
+      if (title === null || taken.has(title)) continue;
+      taken.add(title);
+      titles[event] = title;
+    }
+    return titles;
   }
 
   /**
@@ -316,9 +357,9 @@ class Reader {
       case "typeOut":
         return this.type(session.out?.title ?? "");
       case "typeMore":
-        // One character onto the end of the draft, as a reader goes on writing without ending
-        // the edit.
-        return this.type(`${session.drafts.title}x`);
+        // One character onto the end of what the field shows by the reader's record, as a reader
+        // goes on writing without ending the edit.
+        return this.type(`${this.shown()}x`);
       case "end":
         this.checkField();
         this.choose();
@@ -348,36 +389,71 @@ class Reader {
       case "land": {
         this.titleWriteOut = null;
         this.stopped = false;
-        // A choice the landing write carried, sent after the reader typed it, is the issue's now:
-        // a field left on it once another reader changes the title shows a stale title, not the
-        // reader's own.
         const landed = session.out?.title;
-        if (this.typedSent && landed !== undefined && landed === this.lastTyped?.trim()) {
-          this.lastTyped = null;
-        }
+        if (landed !== undefined) this.settle(landed, this.shown() === landed);
         return session.land();
       }
       case "refuse":
         if (this.titleWriteOut !== null) this.titleWriteOut.refused = true;
         this.titleWriteOut = null;
         this.stopped = true;
+        if (session.out?.title !== undefined) this.settle(session.issue.title.trim(), false);
         return session.refuse();
       case "otherReader":
         this.others += 1;
         return session.otherReader(`o${this.others}`);
+      case "otherShown":
+      case "otherOwed":
+      case "otherOut":
+        return session.otherReader(this.ownTitles()[event] ?? "");
       case "otherFieldLands":
         this.picks += 1;
         return session.otherFieldLands(`p${this.picks}`);
     }
   }
 
+  /**
+   * A keystroke (decision 332). One that leaves the field on the title it is judged against - the
+   * title out while one is, else the issue's - with nothing owed hands the field back: with
+   * nothing out it is the issue's, and with a write out it is the title out, the reader's ended
+   * choice. Any other keystroke makes the field the reader's typed text, the change mark: with a
+   * choice owed the field does not follow the issue (decision 324), so even a keystroke back to
+   * the title it is judged against leaves it the reader's.
+   */
   private type(value: string): IssueUpdateInput[] {
-    this.lastTyped = value;
-    this.typedSent = false;
-    this.typedSinceChoice = true;
+    const { session } = this;
+    const against = (session.out?.title ?? session.issue.title).trim();
+    if (this.owed === null && value.trim() === against) {
+      this.putBack();
+    } else {
+      this.lastTyped = value;
+      this.marked = true;
+      this.ended = false;
+    }
     this.editing = true;
     this.discarded.delete(value.trim());
-    return this.session.type(value);
+    return session.type(value);
+  }
+
+  /**
+   * The title write out lands or is refused, and the issue's title is then `title` (decision
+   * 332). An owed choice the issue's title has become has nothing left to send (decision 324). A
+   * write that landed with the field's text has seen it land, which I6 then no longer holds. And
+   * this is the one place the field is handed back to the issue after a send or an end: it is the
+   * issue's again when nothing is owed, it shows the issue's title, and the write landed with it
+   * or it was the reader's ended choice, as an undo to the issue's own title is once a refusal of
+   * the write ahead of it leaves the issue on that title.
+   */
+  private settle(title: string, landedWithIt: boolean): void {
+    if (this.owed === title) this.owed = null;
+    if (landedWithIt) this.marked = false;
+    const handedBack =
+      this.owed === null && this.shown() === title && (landedWithIt || this.ended);
+    if (handedBack) {
+      this.lastTyped = null;
+      this.marked = false;
+      this.ended = false;
+    }
   }
 
   /**
@@ -406,19 +482,21 @@ class Reader {
     this.chosen = shown !== "" && shown !== against ? shown : null;
     this.owed = this.chosen;
     this.stopped = false;
-    this.typedSinceChoice = false;
-    if (this.chosen === null && shown !== "") this.putBack();
+    if (this.chosen !== null) this.ended = true;
+    else if (shown !== "") this.putBack();
   }
 
   /**
-   * The field put back to the title it is judged against. While a title write is out that is the
+   * The field put back to the title it is judged against, by an escape, an end that chose
+   * nothing, or a keystroke back to it with nothing owed. While a title write is out that is the
    * title the write carries: the reader chose it when they ended the edit that sent it, so it is
-   * their choice again, and a refusal of that write leaves it in the field as the choice not yet
-   * sent. With nothing out it is the issue's title, which is no choice of theirs.
+   * their ended choice again, and a refusal of that write leaves it in the field as the choice not
+   * yet sent. With nothing out it is the issue's title, which is no choice of theirs.
    */
   private putBack(): void {
     this.lastTyped = this.session.out?.title ?? null;
-    this.typedSent = this.lastTyped !== null;
+    this.marked = false;
+    this.ended = this.lastTyped !== null;
   }
 
   private judge(input: IssueUpdateInput): Finding[] {
@@ -441,17 +519,14 @@ class Reader {
       findings.push({ invariant: "I2", read: `sent ${quoted}, which an escape had put away` });
     }
     // A title sent again is the reader's choice again once the issue has moved off it, as another
-    // reader can move it: only a title still the one it is judged against goes twice for nothing.
-    // Writes go one at a time, so at a send nothing is out and that is the issue's title; the
-    // title out is read only in case that ever changes.
+    // reader can move it: only a title still the issue's goes twice for nothing.
     const previous = this.lastTitleWrite;
-    const against = this.titleWriteOut?.title ?? this.session.issue.title.trim();
+    const against = this.session.issue.title.trim();
     if (previous !== null && previous.title === title && !previous.refused && against === title) {
       findings.push({ invariant: "I3", read: `sent ${quoted} twice in a row` });
     }
     this.chosen = null;
     if (title === this.owed) this.owed = null;
-    if (title === this.lastTyped?.trim()) this.typedSent = true;
     const write = { title, refused: false };
     this.lastTitleWrite = write;
     this.titleWriteOut = write;
@@ -460,26 +535,25 @@ class Reader {
 
   /**
    * I6 and I5, judged once an event is over. I6 holds the open editor to the text the reader
-   * last typed in it; once the issue has made that text its own (`lastTyped` cleared), there is
-   * no typed text of theirs left for it to hold. I5 holds an owed choice to being sent, as the
-   * line allows, and to being held by the hook meanwhile, queued or as the field's text.
+   * typed in it that the change mark covers (`marked`): text that differed from the title it was
+   * judged against at its last keystroke, or was typed while a choice was owed, and has not yet
+   * seen land. Once the field is the issue's (`lastTyped` cleared) there is no text of theirs
+   * left for it to hold. I5 holds an owed choice to being sent, as the line allows, and to being
+   * held by the hook meanwhile, queued or as the field's text. Another reader's title clears no
+   * text of the reader's: it only leaves nothing to send of an owed choice it is the title of, as
+   * the title the choice is judged against.
    */
   private afterEvent(event: EventName): Finding[] {
     const { session } = this;
     const findings: Finding[] = [];
     const draft = session.drafts.title.trim();
     const typed = this.lastTyped?.trim() ?? null;
-    if (this.editing && typed !== null && answers[event] && draft !== typed) {
+    if (this.editing && this.marked && typed !== null && answers[event] && draft !== typed) {
       const read = `the open editor holds ${JSON.stringify(draft)} where the reader typed ${JSON.stringify(typed)}`;
       findings.push({ invariant: "I6", read });
     }
     const against = (session.out?.title ?? session.issue.title).trim();
-    if (this.owed === against) {
-      if (session.out === null && typed === against && !this.typedSinceChoice) {
-        this.lastTyped = null;
-      }
-      this.owed = null;
-    }
+    if (this.owed === against) this.owed = null;
     if (this.owed === null) return findings;
     const owed = JSON.stringify(this.owed);
     if (!session.drafts.titleQueued && draft !== this.owed) {
@@ -753,10 +827,12 @@ test("the issue's title typed back behind a queued save, with no end, lets the s
 // A title saved while a status write is out waits behind it, one write of the issue's fields at a
 // time. Another reader sets the issue to that very title meanwhile, so it has nothing left to
 // send: sent as the status write lands, it would be a second write of a title the issue holds.
-// The reader's ended choice is then the issue's title, with nothing out and nothing owed, so the
-// field is the issue's again and follows the next title another reader sets (decision 332): left
-// the reader's, it held a title the issue had moved off, which the next end would send.
-test("a title queued behind another field's write is not sent once another reader sets the issue to it, and the field then follows the issue's title", () => {
+// The field stays the reader's ended choice all the same: only the settle of the title's own
+// write hands a field back to the issue, never another reader's title (decision 332), and no
+// title write settles here. So the field keeps that title as another reader sets the next one,
+// and the end of the next edit would send it over theirs. Main's hook keeps the title in the
+// field too, but sends it again as the status write lands: [status, title].
+test("a title queued behind another field's write is not sent once another reader sets the issue to it, and the field keeps it, the reader's ended choice, through that reader's next title", () => {
   const session = new Session();
   session.step(() => session.drafts.requestStatusSubmit("done"));
   session.type("X");
@@ -769,7 +845,7 @@ test("a title queued behind another field's write is not sent once another reade
   });
   session.otherReader("Plan the review");
   expect({ title: session.drafts.title, sent: session.received }).toEqual({
-    title: "Plan the review",
+    title: "X",
     sent: [{ status: "done" }],
   });
 });
