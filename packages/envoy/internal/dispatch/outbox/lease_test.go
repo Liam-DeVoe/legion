@@ -490,17 +490,6 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // within six seconds of the kill.
 const standbyTakesWithin = 6 * time.Second
 
-// requireDatabaseInCI fails t, naming the variable to set, where CI is set and
-// DISPATCH_TEST_DATABASE_URL is not. storetest.Open skips a test without a database, and go test
-// reads a skip as a pass, so a row that is the check of a requirement would pass in CI with
-// nothing run. Every CI runner sets CI.
-func requireDatabaseInCI(t *testing.T) {
-	t.Helper()
-	if ci := os.Getenv("CI"); ci != "" && os.Getenv(storetest.DatabaseURLEnv) == "" {
-		t.Fatalf("%s must be set to run this row where CI is set (CI=%q): without it the row skips, and go test reads the skip as a pass", storetest.DatabaseURLEnv, ci)
-	}
-}
-
 // killedHolderEnv names, to a child of this test binary, the database on which the child holds the
 // publisher hold until it is killed (runKilledHolder): the holder the killed-holder row kills.
 const killedHolderEnv = "DISPATCH_OUTBOX_TEST_KILLED_HOLDER_DATABASE_URL"
@@ -605,7 +594,6 @@ func (h *killedHolder) wait() {
 // a statement that waited included; the renewal at the moment its statement started, which is
 // before the kill, so take - renewal is at or above take - kill, and the row fails on it.
 func TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill(t *testing.T) {
-	requireDatabaseInCI(t)
 	database := storetest.Open(t)
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
@@ -954,7 +942,6 @@ func (p *reconnectingUnderLock) Connected() bool {
 // the one at the grace's end holds the hand-over back. Unbounded, the two reads alone took twice
 // reconnectAttemptHolds.
 func TestAHolderWhoseClientIsMidReconnectGivesThePublisherUpOnTime(t *testing.T) {
-	requireDatabaseInCI(t)
 	database := storetest.Open(t)
 	outbox := New(Deps{Store: database, Publisher: &reconnectingUnderLock{}})
 	ctx, cancel := context.WithCancel(context.Background())

@@ -8,7 +8,8 @@ body: |-
   reports itself lost 1 s before its row lapses instead of 2 s, so a renewal still has 4 s from
   the last confirmed one. A holder gives the hold up after 2 s without NATS instead of 3 s, and its
   reads of its NATS client's state no longer wait out a reconnect attempt, which holds the client
-  for up to five seconds through a silent cut. `/healthz` no longer waits out that attempt either,
-  so it answers through a silent cut of NATS. The cost: a holder whose renewal is late stops
-  publishing 1 s, not 2 s, before a standby may take the hold, and a NATS outage of 2 to 3 s now
-  hands the hold to the other process.
+  for up to five seconds through a silent cut. Dispatch's `/healthz` no longer waits out that
+  attempt either, so it answers through a silent cut of NATS, and nor does an envoy-listener's
+  `/healthz` for its role lane's client. The cost: a holder whose renewal is late stops publishing
+  1 s, not 2 s, before a standby may take the hold, and a NATS outage of 2 to 3 s now hands the
+  hold to the other process.

@@ -1133,9 +1133,7 @@ func parkedCommitTrial() (int, bool) {
 // the case in a child process of this test binary with one trial's commit parked for good and
 // requires the child to print the case's own --- FAIL line inside a deadline of its own.
 func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
-	if os.Getenv(storetest.DatabaseURLEnv) == "" {
-		t.Skip(storetest.DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
-	}
+	storetest.SkipWithoutDatabase(t)
 	if _, parked := parkedCommitTrial(); parked {
 		t.Skip("the child process runs the case, not this test")
 	}

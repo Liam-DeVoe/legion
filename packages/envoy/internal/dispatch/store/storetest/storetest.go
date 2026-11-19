@@ -61,17 +61,16 @@ var shared struct {
 	dropFails []string
 }
 
-// Open returns a store on a new database carrying every migration, dropped after t ends. It skips
-// t when DISPATCH_TEST_DATABASE_URL is unset.
+// Open returns a store on a new database carrying every migration, dropped after t ends. Without
+// DISPATCH_TEST_DATABASE_URL it skips t, or fails it on a GitHub Actions runner
+// (SkipWithoutDatabase).
 func Open(t testing.TB) *store.Store {
 	t.Helper()
 	if !shared.main {
 		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
 	}
+	SkipWithoutDatabase(t)
 	raw := os.Getenv(DatabaseURLEnv)
-	if raw == "" {
-		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
-	}
 	shared.once.Do(func() { shared.err = prepare(raw) })
 	if shared.err != nil {
 		t.Fatalf("prepare migrated template database: %v", shared.err)
@@ -95,6 +94,26 @@ func Open(t testing.TB) *store.Store {
 // rather than a copy through the write-ahead log (the package comment says why).
 func cloneStatement(name string) string {
 	return "create database " + name + " template " + shared.template + " strategy file_copy"
+}
+
+// GitHubActionsEnv is the variable GitHub sets to true on every Actions runner.
+const GitHubActionsEnv = "GITHUB_ACTIONS"
+
+// SkipWithoutDatabase skips t when DISPATCH_TEST_DATABASE_URL is unset, so a Postgres-backed test
+// runs wherever a database is named and nowhere else - except on a GitHub Actions runner
+// (GITHUB_ACTIONS=true), where it fails t naming the variable: go test reads a skip as a pass, so
+// a CI job whose database went missing would pass having run none of these tests. It keys on
+// GITHUB_ACTIONS, not on CI, because development machines set CI for their own tools and run
+// these packages without a database.
+func SkipWithoutDatabase(t testing.TB) {
+	t.Helper()
+	if os.Getenv(DatabaseURLEnv) != "" {
+		return
+	}
+	if os.Getenv(GitHubActionsEnv) == "true" {
+		t.Fatal(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests on a GitHub Actions runner: without it the test would skip, and go test reads a skip as a pass")
+	}
+	t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 }
 
 // Main runs the package's tests, waits for their databases to drop, then drops the template Open
