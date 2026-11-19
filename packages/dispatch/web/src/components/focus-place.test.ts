@@ -2023,3 +2023,49 @@ test("a character typed with AltGr or Option in a text field makes no press, so 
     }
   }
 });
+
+// (bk) A date box fires its `change` at the reader's pick - in its picker, or with the digit that
+// completes the date - and not on blur, as a text field does, so that change is a press of theirs
+// (`isPress`). INFRA-3135, round 18 (the tester's): the search bar's Filter panel draws its
+// Updated since box only while no date is set (`SearchPalette.tsx`), so the pick takes the
+// focused box away. At e9ed2743 the rescue reads that as a loss the reader did not cause, passes
+// over the Author box before it and lands on the Status trigger, in Chromium, Firefox and WebKit
+// at 1440 and 390 px (builds Job infra-3135-r18xh); at 90fa8211 the focus goes to the Author box,
+// the nearest control before the date box, as a loss the reader caused does in (u).
+test("a date picked in a date box is the reader's press, so the box's removal walks back to the control before it", async () => {
+  for (const typed of [false, true]) {
+    for (const withFocusout of [true, false]) {
+      await withRescue(async () => {
+        mainOf("Search");
+        const panel = document.createElement("div");
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute(PANEL_ATTRIBUTE, "");
+        const status = buttonIn(panel, "Status");
+        const author = document.createElement("input");
+        author.setAttribute("aria-label", "Author");
+        panel.append(author);
+        const since = document.createElement("input");
+        since.type = "date";
+        since.setAttribute("aria-label", "Updated since");
+        panel.append(since);
+        document.body.append(panel);
+        since.focus();
+        // The digit that completes the date, or no key at all: a pick in the picker presses none.
+        if (typed) {
+          for (const type of ["keydown", "keyup"]) {
+            since.dispatchEvent(
+              new KeyboardEvent(type, { bubbles: true, code: "Digit9", key: "9" })
+            );
+          }
+        }
+        since.dispatchEvent(new Event("input", { bubbles: true }));
+        since.dispatchEvent(new Event("change", { bubbles: true }));
+        if (withFocusout) lose(since);
+        else since.remove();
+        await settled();
+        expect(author).toHaveFocus();
+        expect(status).not.toHaveFocus();
+      });
+    }
+  }
+});
