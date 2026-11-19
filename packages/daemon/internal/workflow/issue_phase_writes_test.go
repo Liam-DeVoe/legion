@@ -18,9 +18,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// tryInTx runs write in a transaction of its own, with the commit scope applyInTx gives, and
-// answers its error: a write that fails is rolled back, and one that does not is committed.
-func tryInTx(t *testing.T, pool *pgxpool.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {
+// tryInTx runs write in a transaction of its own, as a fact of engine's applies it, with the commit
+// scope and the settle of the runs its writes end that factTx gives (Engine.OpenFact,
+// Engine.SettleFact), and answers its error: a write that fails is rolled back, and one that does
+// not is settled and committed.
+func tryInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, write func(ctx context.Context, tx pgx.Tx) error) error {
 	t.Helper()
 	tx, err := pool.Begin(t.Context())
 	if err != nil {
@@ -28,8 +30,12 @@ func tryInTx(t *testing.T, pool *pgxpool.Pool, write func(ctx context.Context, t
 	}
 	defer tx.Rollback(t.Context())
 	ctx, committed := intake.WithCommitHooks(t.Context())
+	ctx = engine.OpenFact(ctx)
 	if err := write(ctx, tx); err != nil {
 		return err
+	}
+	if err := engine.SettleFact(ctx, tx); err != nil {
+		t.Fatalf("settle: %v", err)
 	}
 	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatalf("commit: %v", err)
@@ -178,7 +184,7 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 			forgeTaskPlace(t, pool, root.Key, tc.generation, tc.place)
 			before := issueOf(t, pool, engine, root.Key)
 
-			err := tryInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			err := tryInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				return tc.write(ctx, tx, engine, before)
 			})
 
@@ -204,7 +210,7 @@ func TestARootLeavingUnderTheOperatorsTreeEndsItsTask(t *testing.T) {
 	seedOperatorTree(t, pool, root.Tree)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 
-	if err := tryInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	if err := tryInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, root.Key)
 		if err != nil {
 			return err
