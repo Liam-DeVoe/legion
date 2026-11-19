@@ -52,6 +52,7 @@ var (
 	markRawPayload = proseMark{why: "a value the server reads as a number, an id, a time or null"}
 	markPending    = proseMark{why: "a write the caller has not sent, which the server reads to find its reader and stores nothing of"}
 	markNotAKind   = proseMark{why: "a priority's text, which is not a kind of text the reviewer reads (INFRA-3231 R5: asks, issues, comments, messages, documents and decision blocks)"}
+	markRatingWhy  = proseMark{why: "a retro's reason for its rating of the plan its issue ran, which is not a kind of text the reviewer reads (INFRA-3231 R5: asks, issues, comments, messages, documents and decision blocks)"}
 	markHeldEdit   = proseMark{why: "a held text's own wording, which the reviewer reads again before the text posts (held_routes.go): no person reads it until then"}
 	markHeldReason = proseMark{why: "the writer's reason for posting its held text as written, which Dispatch records and no person reads"}
 	markDraft      = proseMark{why: "a draft the reviewer reads and stores nothing of (reviewer_draft.go)"}
@@ -114,6 +115,9 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 		"role": markIdentifier, "type": markIdentifier, "agent": markName, "session": markPerson,
 		"model": markIdentifier,
 	},
+	reflect.TypeFor[stepRatingInput](): {"rating_reason": markRatingWhy},
+	reflect.TypeFor[planRecordInput](): {"source": markEnum, "artifact_id": markIdentifier},
+	reflect.TypeFor[planTaskInput]():   {"id": markIdentifier, "steps": markIdentifier},
 	reflect.TypeFor[checkResultInput](): {
 		"run": markProse, "observed": markProse, "negative_control": markProse,
 		"check": markIdentifier, "role": markEnum, "surface": markEnum, "commit": markIdentifier,
