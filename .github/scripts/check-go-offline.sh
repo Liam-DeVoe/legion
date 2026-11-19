@@ -78,9 +78,14 @@
 #        it, saying why the command reads no module, why it is no test, or which job alone runs
 #        it, for a reader to judge;
 #      a file reason: a comment holding `go-offline-file: <why>` within the file's first 40
-#        lines, which this refuses in a test file and in any file a required workflow names
-#        (ci.yaml and every local workflow it calls, whose jobs ci-ok judges), so no file a
-#        required job runs can wave its sites through at once.
+#        lines, which this refuses in a test file, in any file a required workflow names
+#        (ci.yaml and every local workflow it calls, whose jobs ci-ok judges), and in any file
+#        rule 2's walk reaches from a step of a required workflow by a path it reads (a script
+#        the step runs or sources, one that script runs in turn, a program it hands to python3,
+#        node or bun or runs by its path, a TypeScript file under a test run's directory), so no
+#        file a required job runs can wave its sites through at once. A script the walk only
+#        guesses from a variable's name, or one a TypeScript file names in a string (which a test
+#        may read as text), is not held to this.
 #    Its limits, each a form this reads as no site: a go binary a function is handed as a
 #    parameter or returns, or one held in a struct field or a map (this follows a name to its
 #    assignments, not a value through a call or a structure); an argv built by spreading another
@@ -174,6 +179,10 @@ errors = []
 counts = dict.fromkeys(("go", "ts", "py", "sh"), 0)
 read = dict.fromkeys(("go", "ts", "py", "sh"), 0)
 offline_count = reason_count = file_reason_count = 0
+# Each file whose file reason no test name and no required workflow's text refuses: (path, language,
+# lines, the go commands it would cover). Rule 2's walk decides it: refused in a file a step of a
+# required workflow reaches.
+file_reasons = []
 workflows = walk.required_workflows()
 if not workflows:
     scan.unknown("no .github/workflows/ci.yaml here, so no workflow is known to be required")
@@ -201,6 +210,7 @@ for path, lang in scan.sources(shebang=True):
             errors.append((path, 1, f"a go-offline-file reason, which this file may not carry: {refusal}; "
                                     "give each of its go commands its own"))
             file_reason = False
+    covered = []
     for index, is_offline in found:
         counts[lang] += 1
         if is_offline:
@@ -208,24 +218,39 @@ for path, lang in scan.sources(shebang=True):
         elif sites.reasoned(raw, index, lang):
             reason_count += 1
         elif file_reason:
-            file_reason_count += 1
+            covered.append(index)
         else:
             errors.append((path, index + 1, "a go command with no GOPROXY=off and no go-offline reason: "
                            + raw[index].strip()))
+    if file_reason:
+        file_reasons.append((path, lang, raw, covered))
 
 blind = [lang for lang, n in read.items() if n == 0]
 if blind:
     scan.unknown(f"read no {', '.join(blind)} file under {os.getcwd()}, so their go commands are unseen")
+
+# --- 2. Each job's steps, walked in order: each offline build a step reaches is fetched before it.
+jobs_checked, reach_checked, reach_reasoned, reached = walk.check_jobs(errors, workflows)
+walked = (f"each of the {jobs_checked} steps that run testbuild's tests comes after its fetch, and each of the "
+          f"{reach_checked} steps that reach an offline build comes after a fetch of what it builds "
+          f"({reach_reasoned} say why they need none)")
+
+# A file reason in a file a step of a required workflow reaches (a script it runs or sources, one
+# that script runs, a program it runs, a test run's TypeScript) is refused, with the go commands it
+# would cover: a required job runs them.
+for path, lang, raw, covered in file_reasons:
+    where = reached.by(path, lang)
+    if where is None:
+        file_reason_count += len(covered)
+        continue
+    errors.append((path, 1, f"a go-offline-file reason, which this file may not carry: a step of a required "
+                            f"workflow reaches it ({where}); give each of its go commands its own"))
+    errors += [(path, index + 1, "a go command with no GOPROXY=off and no go-offline reason: " + raw[index].strip())
+               for index in covered]
 summary = (f"{sum(counts.values())} go commands of {sum(read.values())} files read (Go {counts['go']}, "
            f"TypeScript {counts['ts']}, Python {counts['py']}, shell {counts['sh']})")
 clauses = [f"every one of the {summary} runs with GOPROXY=off ({offline_count}), carries a reason ({reason_count}) "
-           f"or is in a file whose reason covers it ({file_reason_count})"]
-
-# --- 2. Each job's steps, walked in order: each offline build a step reaches is fetched before it.
-jobs_checked, reach_checked, reach_reasoned = walk.check_jobs(errors)
-clauses.append(f"each of the {jobs_checked} steps that run testbuild's tests comes after its fetch, and each of the "
-               f"{reach_checked} steps that reach an offline build comes after a fetch of what it builds "
-               f"({reach_reasoned} say why they need none)")
+           f"or is in a file whose reason covers it ({file_reason_count})", walked]
 
 # --- 3. In every job of a required workflow, each step that runs go-fetch.sh comes after a step of
 # the same job that restores ~/go/pkg/mod.

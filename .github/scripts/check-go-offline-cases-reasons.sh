@@ -86,3 +86,56 @@ check "on line 40: exits 0" "$(is "$status" 0)"
 check "on line 40: covers the command" "$(contains "$out" 'is in a file whose reason covers it (1)')"
 file_reason_at file-reason-line-41 41
 refused tools/list-deps.sh 42
+
+# reached_reason <name> <workflow>: a fixture whose tools/inner.sh holds a file reason and a go
+# command, run by tools/outer.sh, which a step of <workflow> runs ("ci" adds it to ci.yaml,
+# "nightly" to a workflow outside the required set); run through the check.
+reached_reason() {
+  root=$(fixture "$1")
+  put "$root" tools/inner.sh <<'EOF'
+#!/usr/bin/env bash
+# go-offline-file: a person runs this by hand; no CI job runs it.
+go list -deps ./... >/dev/null
+EOF
+  printf '#!/usr/bin/env bash\nbash "$(dirname "$0")/inner.sh"\n' | put "$root" tools/outer.sh
+  if [ "$2" = ci ]; then
+    printf '      - name: List the modules\n        run: bash tools/outer.sh\n' >>"$root/.github/workflows/ci.yaml"
+  else
+    printf '      - name: List the modules\n        run: bash tools/outer.sh\n' | nightly "$root"
+  fi
+  run_check "$root"
+}
+
+echo "case: a go-offline-file reason in a script a required job reaches through another script is refused"
+reached_reason file-reason-reached ci
+check "fails" "$(is "$status" 1)"
+check "refuses the reason, naming the step that reaches it" \
+  "$(contains "$out" 'tools/inner.sh:1: a go-offline-file reason, which this file may not carry: a step of a required workflow reaches it (.github/workflows/ci.yaml job lint, step "List the modules")')"
+check "and refuses the command it would cover" "$(contains "$out" 'tools/inner.sh:3: a go command with no GOPROXY=off')"
+reached_reason file-reason-reached-outside nightly
+check "reached only from a workflow outside the required set: exits 0" "$(is "$status" 0)"
+check "and its reason covers the command" "$(contains "$out" 'is in a file whose reason covers it (1)')"
+
+echo "case: a go-offline-file reason in a program a required job runs, or in TypeScript a required test run loads, is refused"
+root=$(fixture file-reason-program)
+put "$root" tools/list_deps.py <<'EOF'
+# go-offline-file: a person runs this by hand.
+import subprocess
+subprocess.run(["go", "list", "-deps", "./..."])
+EOF
+# ci.yaml names tools/run.sh alone, which hands the program to python3.
+printf '#!/usr/bin/env bash\npython3 "$(dirname "$0")/list_deps.py"\n' | put "$root" tools/run.sh
+printf '      - name: List the modules\n        run: bash tools/run.sh\n' >>"$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "a python3 program: refused" \
+  "$(contains "$out" 'tools/list_deps.py:1: a go-offline-file reason, which this file may not carry: a step of a required workflow reaches it')"
+root=$(fixture file-reason-test-run)
+put "$root" packages/web/src/build.ts <<'EOF'
+// go-offline-file: a person runs this by hand.
+export const build = () => Bun.spawnSync(["go", "build", "./..."]);
+EOF
+printf '      - name: Test the web package\n        run: bun test\n        working-directory: packages/web\n' \
+  >>"$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "TypeScript under a bun test run's directory: refused" \
+  "$(contains "$out" 'packages/web/src/build.ts:1: a go-offline-file reason, which this file may not carry: a step of a required workflow reaches it')"

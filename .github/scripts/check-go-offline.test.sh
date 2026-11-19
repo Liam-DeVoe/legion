@@ -13,8 +13,10 @@
 # body, a skipped directory, a file with no shebang); a reason six lines up is too far, and a
 # Python file that does not parse is refused. The header's limits are not planted: they are what
 # the check does not read. Its file reason: counted within the first 40 lines and not on line 41;
-# refused in a test file, and in a file ci.yaml or a workflow ci.yaml calls names, but not in one
-# only a workflow outside that set or a comment names. Its second rule: a job of any workflow that
+# refused in a test file, in a file ci.yaml or a workflow ci.yaml calls names, and in one a step of
+# those reaches (through another script, as a program a script hands to python3, or as TypeScript
+# under a test run's directory), but not in one only a workflow outside that set or a comment
+# names or reaches. Its second rule: a job of any workflow that
 # runs internal/daemon's tests, which build envoy commands through testbuild.EnvoyBinary, is
 # refused when no step before that one runs `.github/scripts/go-fetch.sh deps packages/envoy` of
 # every such command - a step with none, one after, one that leaves a command out, one in another

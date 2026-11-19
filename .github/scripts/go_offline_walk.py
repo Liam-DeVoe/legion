@@ -49,6 +49,9 @@ FLAGS_WITH_VALUES = {"-o", "-C", "-ldflags", "-gcflags", "-asmflags", "-tags", "
 RUNNERS = (["bun", "test"], ["bunx", "playwright", "test"], ["npx", "playwright", "test"], ["bun", "x", "playwright", "test"])
 TEST_PATH = re.compile(r"\.(?:test|spec|e2e)\.[cm]?[jt]sx?$")
 REPO = "/@repo"
+# A program a step hands its file to, and the files a step runs by their own path.
+PROGRAMS = {"python", "python3", "node", "bun", "tsx", "ts-node"}
+PROGRAM_FILES = (".py", ".ts", ".mts", ".cts", ".js", ".mjs", ".cjs")
 # Filled by read_testbuild: each command a daemon test builds through testbuild.EnvoyBinary, and
 # each directory such a test is in.
 built, users = set(), set()
@@ -109,10 +112,13 @@ class Need(tuple):
 
 class Reach:
     """What one step reaches: the needs of the offline builds it runs, whether it runs tests built
-    through testbuild, and the fetches it makes."""
+    through testbuild, the fetches it makes, and the files it runs: each script it runs or
+    sources, each program it hands to python3, node or bun, and the directory of each test run
+    (trees), whose TypeScript the run loads."""
 
     def __init__(self):
         self.needs, self.testbuild, self.fetches, self.tools = [], False, {}, set()
+        self.files, self.trees = set(), set()
 
 
 # Filled by index, file by file, as rule 1 reads every file: every shell file, by name, and what
@@ -165,10 +171,11 @@ class Walk:
     def __init__(self):
         self.parsed, self.memo = {}, {}
 
-    def remembered(self, key, reach, walk):
+    def remembered(self, key, reach, walk, files=True):
         """Walk a script or a function once for each place, arguments and environment it is run
-        with, into a Reach of its own, and add what that found to reach. A walk under way counts as
-        empty, so a function that calls itself ends."""
+        with, into a Reach of its own, and add what that found to reach: the files it runs too,
+        unless files is False. A walk under way counts as empty, so a function that calls itself
+        ends."""
         found = self.memo.get(key)
         if found is None:
             found = self.memo[key] = Reach()
@@ -178,6 +185,9 @@ class Walk:
         for module, packages in found.fetches.items():
             reach.fetches.setdefault(module, set()).update(packages)
         reach.tools |= found.tools
+        if files:
+            reach.files |= found.files
+        reach.trees |= found.trees
 
     def commands(self, path):
         if path not in self.parsed:
@@ -303,6 +313,8 @@ class Walk:
                     lines, where, cwd, args, inherited, vars_, functions, into, depth + 1, True))
             elif verb in (".", "source") and k + 1 < len(values):
                 for script in self.scripts(values[k + 1], command.words[origin[k + 1]], cwd):
+                    if values[k + 1] is not None:  # a path read, not one guessed from a variable's name
+                        reach.files.add(script)
                     self.walk(self.commands(script), script, cwd, params, exported, vars_, functions, reach,
                               depth + 1)
             elif verb in ("bash", "sh") or (verb or "").endswith(".sh"):
@@ -313,12 +325,23 @@ class Walk:
                     for script in self.scripts(values[at], command.words[origin[at]], cwd):
                         self.remembered(("script", script, cwd, tuple(args), state), reach, lambda into, s=script: (
                             self.walk(self.commands(s), s, cwd, args, inherited, {}, {}, into, depth + 1)))
+                        if values[at] is not None:
+                            reach.files.add(script)
             elif any(values[k:k + len(r)] == r for r in RUNNERS):
                 runner = next(r for r in RUNNERS if values[k:k + len(r)] == r)
                 # Playwright loads its config, and the harness that config starts, whatever specs it
                 # is given: its whole directory is what it reaches. bun test reaches what it names.
                 paths = [] if "playwright" in runner else values[k + len(runner):]
                 self.runner(paths, cwd, inherited, reach, depth)
+            elif verb in PROGRAMS or verb.endswith(PROGRAM_FILES):
+                # A program a step runs by its path, or hands to python3, node or bun: a file it runs,
+                # which rule 1's file reason may not cover. It is not walked: its language is no shell.
+                at = k if verb.endswith(PROGRAM_FILES) else next(
+                    (j for j in range(k + 1, len(values)) if values[j] and not values[j].startswith("-")
+                     and values[j] != "run"), None)
+                program = in_repo(join(cwd, values[at])) if at is not None else None
+                if program and os.path.isfile(program):
+                    reach.files.add(program)
             if any(v and v.endswith("go-fetch.sh") for v in values):
                 self.fetch(values, cwd, reach)
 
@@ -401,6 +424,7 @@ class Walk:
         roots = [os.path.normpath(os.path.join(here, v)) for v in args
                  if v and not v.startswith("-") and (os.path.isdir(os.path.join(here, v)) or (
                      os.path.isfile(os.path.join(here, v)) and TEST_PATH.search(v)))] or [here]
+        reach.trees.update(roots)
         inside = [p for p in set(ts_scripts) | set(ts_go_needs)
                   if any(r == "." or p == r or p.startswith(r.rstrip("/") + "/") for r in roots)]
         for ts in sorted(inside):
@@ -411,8 +435,10 @@ class Walk:
                 near = [s for s in candidates if s.startswith(package + "/")]
                 for script in near or (candidates if len(candidates) == 1 else []):
                     here_ = join(REPO, os.path.dirname(script))
+                    # A script a TypeScript file names in a string may be read as text, not run, so
+                    # it is walked for its builds and is no file this step is known to run.
                     self.remembered(("script", script, here_, (), offline(env)), reach, lambda into, s=script, h=here_: (
-                        self.walk(self.commands(s), s, h, [], env, {}, {}, into, depth + 1)))
+                        self.walk(self.commands(s), s, h, [], env, {}, {}, into, depth + 1)), files=False)
 
     @staticmethod
     def fetch(values, cwd, reach):
@@ -480,13 +506,32 @@ def step_reasoned(raw_lines, step, run):
                for k, line in enumerate(raw_lines))
 
 
-def check_jobs(errors):
+class Reached:
+    """The files steps of the required workflows run, as rule 2's walk reaches them: each with the
+    step that first reaches it; and each test run's directory, whose TypeScript it loads."""
+
+    def __init__(self):
+        self.files, self.trees = {}, {}
+
+    def by(self, path, lang):
+        """The step that reaches a file, or None."""
+        if path in self.files:
+            return self.files[path]
+        if lang == "ts":
+            return next((w for t, w in sorted(self.trees.items())
+                         if t == "." or path == t or path.startswith(t.rstrip("/") + "/")), None)
+        return None
+
+
+def check_jobs(errors, workflows=()):
     """Rule 2 over every job of every workflow, its steps walked in order: each step that runs
     testbuild's tests with no fetch of the commands they build before it, and each that reaches an
     offline build no step before it fetches, adds an error. (The steps that run testbuild's tests,
-    the steps that reach an offline build, and those of them that say why they need none.)"""
+    the steps that reach an offline build, those of them that say why they need none, and the
+    files the steps of the workflows `workflows` names reach: a Reached.)"""
     walker = Walk()
     jobs_checked = reach_checked = reach_reasoned = 0
+    reached = Reached()
     if os.path.isfile(TESTBUILD) and not users:
         scan.unknown(f"{TESTBUILD} exists and no daemon test calls testbuild.EnvoyBinary with a command, so the "
                      "jobs that run one are unseen")
@@ -506,9 +551,16 @@ def check_jobs(errors):
                 workdir = os.path.normpath(step.get("working-directory", job_dir))
                 name = step.get("name") or run.strip().splitlines()[0]
                 reach = Reach()
-                # A step whose text names no go, no script, no bun and no Playwright reaches none.
-                if re.search(r"go|\.sh\b|\bbun|playwright|\bsource\b|(?:^|[;&|(]\s*)\.\s", run, re.M):
+                # A step whose text names no go, no script, no program and no test run reaches none.
+                if re.search(r"go|\.sh\b|\bbun|playwright|\bsource\b|(?:^|[;&|(]\s*)\.\s|\bpython|\bnode\b|\btsx\b"
+                             r"|\.py\b|\.[cm]?[jt]s\b", run, re.M):
                     walker.run(run, str(workflow), workdir, reach)
+                if str(workflow) in workflows:
+                    where = f"{workflow} job {job_id}, step \"{name}\""
+                    for path in reach.files:
+                        reached.files.setdefault(path, where)
+                    for tree in reach.trees:
+                        reached.trees.setdefault(tree, where)
                 if reach.testbuild and users:
                     jobs_checked += 1
                     if not testbuild_fetched:
@@ -542,4 +594,4 @@ def check_jobs(errors):
     if os.path.isfile(TESTBUILD) and jobs_checked == 0:
         scan.unknown(f"{', '.join(sorted(users))} call testbuild.EnvoyBinary and no step of any workflow was seen to "
                      "run their tests, so the jobs that run one are unseen")
-    return jobs_checked, reach_checked, reach_reasoned
+    return jobs_checked, reach_checked, reach_reasoned, reached
