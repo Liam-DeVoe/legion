@@ -88,8 +88,9 @@ type BlockIndexTick struct {
 	// tick reads, Marked how many documents an artifact.version, artifact.created or issue.created
 	// event among them named that it marked owed a block index, Comments how many comments a
 	// comment.created or comment.answered event among them named whose rows it gave their nodes,
-	// and AnotherBuild whether a live server process of another build served, which the tick
-	// reports and which decides nothing (readEventsAfterCursor).
+	// and AnotherBuild whether a live server process of another build served, which decides
+	// nothing of which events the tick reads and makes it owe the object pass
+	// (readEventsAfterCursor).
 	Events       int
 	Marked       int
 	Comments     int
@@ -216,8 +217,8 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// comments= the documents it marked owed and the comments it gave their nodes from those
 		// events, object_nodes= and orphans_gone= the rows the object pass gave their nodes and the
 		// orphaned document nodes it stated gone, and another_build= whether a live server process
-		// of another build served, which the tick reports and which decides nothing
-		// (readEventsAfterCursor).
+		// of another build served, which decides nothing of which events the tick reads and makes
+		// it owe the object pass (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,

@@ -131,7 +131,8 @@ const markVersionedDocuments = `
 // forward, with two builds serving at once or none of this code serving for a while, leaves a
 // write of that release unread. tick.AnotherBuild says whether a live server process of another
 // build serves (processes.Live: a process whose Commit is not this build's own); the tick reports
-// it, and the `dispatch: block index` line prints it, and it decides nothing.
+// it, and the `dispatch: block index` line prints it. It decides nothing of which events the tick
+// reads; it makes the tick owe the object pass, as below.
 //
 // The cursor is this build's row of block_index_event_cursors (migration 20261118115645). The
 // build's first tick that reads a proven horizon inserts the row, at the earlier of the newest
@@ -311,9 +312,9 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 // first deploy's whole backlog never holds the block-index lease in one tick: a pass that stops
 // with rows left leaves its debt and makes the tick full, and the next one runs blockIndexStep
 // later. At the backfill's batch size of 200 it writes the nodes of up to 800 rows a tick. Rows no
-// pass can write - a refused party, a node held in another project - spend none of it and take no
-// lock: each pass reads them again, two index reads for each 200 of them (graphcensus's
-// writeObjectKind).
+// pass can write - a refused party, a node held in another project, live or gone - spend none of
+// it and open no transaction: each pass leaves them before it writes a batch, and reads them
+// again, two index reads for each 200 of them (graphcensus's writeObjectKind).
 const objectPassBatches = 4
 
 // orphanedNodesSwept bounds the orphaned document nodes one tick states gone, each in a
@@ -322,11 +323,14 @@ const objectPassBatches = 4
 const orphanedNodesSwept = 20
 
 // objectPassInterval is the longest a process of this build goes without finishing the object
-// pass: a tick owes it once this long has passed since the process's last pass finished
-// (Service.objectPassFinished). A conversation's file that a build before this one uploads appends
-// no event, so no event a tick reads names it, and it waits for its node this long and one tick at
-// most. A pass with nothing to write reads the four tables whole, 97 to 190 ms at production's row
-// counts, so each process spends that once in this interval.
+// pass: beside the ticks that owe it while another build serves, on the first tick after one did,
+// and on events that name a row with no node (readEventsAfterCursor), a tick owes it once this
+// long has passed since the process's last pass finished (Service.objectPassFinished). A
+// conversation's file that a build before this one uploads appends no event, so no event a tick
+// reads names it: while that build serves, every tick owes the pass, and once none does, the file
+// waits for its node this long and one tick at most. A pass with nothing to write reads the four
+// tables whole, 97 to 190 ms at production's row counts, so each process spends that once in this
+// interval while this build serves alone, and on every tick while another build serves.
 const objectPassInterval = 10 * time.Minute
 
 // rollNow is the debt a tick answers while another build serves before any horizon is proven
@@ -345,8 +349,9 @@ var rollNow time.Time
 // backfill again: an issue it creates, its spec, a document it uploads, a conversation's file,
 // whose upload appends no event, an ask and a message. And its removal of a document states
 // nothing, so the node this build wrote for it stands live behind no row. So the pass reads rows,
-// not events, on the ticks that owe it (readEventsAfterCursor): one whose events name such a row
-// or such a node, each process's first, and one an interval after the process's last pass. A
+// not events, on the ticks that owe it (readEventsAfterCursor): every tick while another build
+// serves and the first after one did, one whose events name such a row or such a node, each
+// process's first, and one an interval after the process's last pass. A
 // document node with no row behind it can mean nothing else: every writer of this build writes a
 // node in the transaction that writes its row, and the pass writes one only for a row that stands
 // under the owner locks it takes. The sweep states such a node gone as this build's own removal of

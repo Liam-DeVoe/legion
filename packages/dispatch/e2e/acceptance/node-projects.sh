@@ -314,9 +314,11 @@ envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
 pass "$section" "backfill-graph-store runs"
 census_complete "$section" "after the backfill"
 
-# The server's block-index tick runs the object pass on the first tick that joins the build's
-# cursor, on a tick whose events name a row with no node (graphcensus.EventsOweObjectPass), and
-# once 10 minutes have passed since its last pass finished (docs' objectPassInterval): the pass
+# The server's block-index tick runs the object pass on every tick while a process of another
+# build serves and the first tick after one did, on the first tick that joins the build's cursor,
+# on a tick whose events name a row with no node (graphcensus.EventsOweObjectPass), and once 10
+# minutes have passed since its last pass finished (docs' objectPassInterval); the server this
+# script starts is the only build serving, so no tick here owes it for another build. The pass
 # writes the node of every row that names none and cures every node no row stands behind (docs'
 # writeObjectNodesAnotherBuildWrote). The sections below take a row's node away or remove a row as
 # an earlier build would, and read the census before any backfill, so a pass among them would cure
