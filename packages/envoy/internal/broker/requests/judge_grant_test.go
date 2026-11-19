@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,8 +169,10 @@ func bootedJudgeFixture(t *testing.T) (m *Machine, session string, key *ecdsa.Pr
 // session got at once. The pod boots on the edited file, so its chain, which holds a judge's
 // approval to the rules in force, refuses the grant as well, and so does stillAllowed's judge arm;
 // either refusal alone would leave the grant live, and booting the decided file again would
-// release it. No request reuses the grant whose judge was lowered: a request for its 600 seconds
-// is refused when it is written, the judge now granting at most 599.
+// release it. The chain's own line (GrantChainInvalidMessage) is still written beside the end,
+// once, so an operator who reads those lines finds this grant there as before. No request reuses
+// the grant whose judge was lowered: a request for its 600 seconds is refused when it is written,
+// the judge now granting at most 599.
 func TestARulesEditUnderAJudgedGrantEndsItForGood(t *testing.T) {
 	names := []string{"DEEL_API_KEY", "AUTO_TOKEN"}
 	for _, c := range []struct {
@@ -184,11 +187,13 @@ func TestARulesEditUnderAJudgedGrantEndsItForGood(t *testing.T) {
 		{name: "the rules no longer name the secret", edit: withoutEntry("DEEL_API_KEY"), reuse: true},
 	} {
 		path := map[bool]string{false: "the release", true: "the next request"}[c.reuse]
+		at := map[bool]string{false: "values", true: "reuse"}[c.reuse]
 		t.Run(c.name+", at "+path, func(t *testing.T) {
 			m, session, key, boot := bootedJudgeFixture(t)
 			judged := judgedGrant(t, m, session, key, 600, names...)
 			decided := m.Airlock
 			boot(c.edit(decided))
+			capture := captureRecords(t)
 
 			if c.reuse {
 				again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes again", 600, names...), "", nil)
@@ -201,6 +206,13 @@ func TestARulesEditUnderAJudgedGrantEndsItForGood(t *testing.T) {
 			if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
 				t.Fatalf("after %s under the edited rules: revoked_by %q with %d grant.revoked rows by %s; want the grant ended once for good", path, by, audits, GrantEndedActor)
 			}
+			lines := chainLines(t, capture)
+			if len(lines) != 1 || lines[0]["grant"] != judged || lines[0]["at"] != at {
+				t.Fatalf("the %q lines after %s are %v; want one naming grant %s at=%s", GrantChainInvalidMessage, path, lines, judged, at)
+			}
+			if reason, _ := lines[0]["reason"].(string); !strings.HasPrefix(reason, ErrGrantChainInvalid.Error()) {
+				t.Fatalf("the line's reason is %q; want ErrGrantChainInvalid's text", reason)
+			}
 
 			boot(decided)
 			if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "AUTO_TOKEN") != "" {
@@ -208,18 +220,6 @@ func TestARulesEditUnderAJudgedGrantEndsItForGood(t *testing.T) {
 			}
 		})
 	}
-}
-
-// deelAsAdmin is the fixture's own DEEL_API_KEY tagged as an administrator's secret: the same
-// owner, tier and value, now carrying admin: "true" and, beside it, the two things policy.TagRules
-// demands of such a secret — a requesters list naming the person every session below is signed
-// in as, and a max-grant, an hour here (policytest.FixtureMaxGrant), which is longer than any
-// grant this file makes. Nothing else about the secret moves, so what answers below is the tag
-// and not a secret that changed hands or shrank its cap.
-func deelAsAdmin() secrets.LocalSecret {
-	admin := policytest.ListedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, fixtureOperator, "deel-v1")
-	admin.Tags[policy.TagAdmin] = policy.AdminTrue
-	return admin
 }
 
 // TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone: a person approves every release
@@ -248,7 +248,7 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 		}
 
 		before := m.Policy.Get().Version
-		retag(t, m, deelAsAdmin())
+		retag(t, m, adminSecret("DEEL_API_KEY", "deel-v1"))
 		if m.Policy.Get().Version == before {
 			t.Fatalf("the policy version stood still at %s, so the re-checks this test is about never ran", before)
 		}
@@ -285,7 +285,7 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 			t.Fatalf("a request for the same name and lifetime while the secret is an ordinary one = %+v, %v; want the judged grant %s handed back", reused, err, judged)
 		}
 
-		retag(t, m, deelAsAdmin())
+		retag(t, m, adminSecret("DEEL_API_KEY", "deel-v1"))
 		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it once more", 600, "DEEL_API_KEY"), "", nil)
 		if err != nil || again.GrantID != nil || again.State != "pending" {
 			t.Fatalf("Create once the secret is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
@@ -294,16 +294,6 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 			t.Fatalf("the grant the reuse found = revoked_by %q with %d grant.revoked rows by %s; want the reuse to have ended it once", by, audits, GrantEndedActor)
 		}
 	})
-}
-
-// autoTokenAsAdmin is the fixture's own AUTO_TOKEN, the agent-tier key the operator's session gets
-// at once, tagged as an administrator's secret: the same owner and value, now human tier, since
-// policy.TagRules refuses an admin secret below it, and carrying the requesters list and the
-// max-grant the tag demands beside it, as deelAsAdmin does.
-func autoTokenAsAdmin() secrets.LocalSecret {
-	admin := policytest.ListedSecret("AUTO_TOKEN", fixtureOperator, policy.TierHuman, fixtureOperator, "auto-v1")
-	admin.Tags[policy.TagAdmin] = policy.AdminTrue
-	return admin
 }
 
 // TestAnAdministratorsTagOnAKeyGrantedAtOnceEndsTheJudgedGrantBesideIt: a judged grant may hold,
@@ -343,7 +333,7 @@ func TestAnAdministratorsTagOnAKeyGrantedAtOnceEndsTheJudgedGrantBesideIt(t *tes
 		}
 
 		before := m.Policy.Get().Version
-		retag(t, m, autoTokenAsAdmin())
+		retag(t, m, adminSecret("AUTO_TOKEN", "auto-v1"))
 		if m.Policy.Get().Version == before {
 			t.Fatalf("the policy version stood still at %s, so the re-checks this test is about never ran", before)
 		}
@@ -384,7 +374,7 @@ func TestAnAdministratorsTagOnAKeyGrantedAtOnceEndsTheJudgedGrantBesideIt(t *tes
 			t.Fatalf("a request for the same names and lifetime while AUTO_TOKEN is an ordinary key = %+v, %v; want the judged grant %s handed back", reused, err, judged)
 		}
 
-		retag(t, m, autoTokenAsAdmin())
+		retag(t, m, adminSecret("AUTO_TOKEN", "auto-v1"))
 		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes once more", 600, names...), "", nil)
 		if err != nil || again.GrantID != nil || again.State != "pending" {
 			t.Fatalf("Create once AUTO_TOKEN is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
@@ -398,6 +388,128 @@ func TestAnAdministratorsTagOnAKeyGrantedAtOnceEndsTheJudgedGrantBesideIt(t *tes
 			t.Fatalf("Values of the judged grant once the tag is gone = %+v, %v; want it still ended", release, err)
 		}
 	})
+}
+
+// TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause: a judged grant of DEEL_API_KEY,
+// which the judge decided, and of AUTO_TOKEN and ACME_TOKEN, which its session got at once.
+// ACME_TOKEN sorts first. Its owner first changes it so that it only pauses the grant: it now
+// wants an approval, or the policy no longer serves it, through a tag the loader refuses or a
+// value that is gone. The release refuses the grant and leaves it live, as a pause does. Then a
+// later key comes to end the grant for good: DEEL_API_KEY or AUTO_TOKEN tagged as an
+// administrator's, DEEL_API_KEY's requesters list dropping the session's person, DEEL_API_KEY
+// served from another source, or DEEL_API_KEY's max-grant lowered below the grant's 600 seconds;
+// or ACME_TOKEN's own max-grant is lowered while it still wants an approval. The release, or the
+// next request that would reuse the grant, must end it although ACME_TOKEN still pauses it, and
+// once every change is taken back the grant still releases nothing. No request reuses the grant
+// under a lowered max-grant: a request for its 600 seconds is refused when it is written, so the
+// release alone is asked.
+func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) {
+	names := []string{"DEEL_API_KEY", "AUTO_TOKEN", "ACME_TOKEN"}
+	released := func(release Release) bool {
+		return slices.ContainsFunc(names, func(name string) bool { return releasedValue(release, name) != "" })
+	}
+	lowered := func(s secrets.LocalSecret) secrets.LocalSecret {
+		s.Tags[policy.TagMaxGrant] = "5m"
+		return s
+	}
+	pauses := map[string]func(t *testing.T, m *Machine){
+		"ACME_TOKEN wants an approval": func(t *testing.T, m *Machine) {
+			retag(t, m, policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierHuman, "acme-v1"))
+		},
+		"ACME_TOKEN is not served under a tag the loader refuses": func(t *testing.T, m *Machine) {
+			refused := policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1")
+			refused.Tags[policy.TagAdmin] = "yes"
+			retag(t, m, refused)
+		},
+		"ACME_TOKEN is not served, its value gone": func(t *testing.T, m *Machine) {
+			fixtureStore(m).Delete(policytest.ID("ACME_TOKEN"))
+			retag(t, m)
+		},
+	}
+	ends := map[string]struct {
+		name   string
+		secret func() secrets.LocalSecret
+	}{
+		"DEEL_API_KEY is tagged as an administrator's": {"DEEL_API_KEY", func() secrets.LocalSecret { return adminSecret("DEEL_API_KEY", "deel-v1") }},
+		"AUTO_TOKEN is tagged as an administrator's":   {"AUTO_TOKEN", func() secrets.LocalSecret { return adminSecret("AUTO_TOKEN", "auto-v1") }},
+		"DEEL_API_KEY no longer lists the person": {"DEEL_API_KEY", func() secrets.LocalSecret {
+			return policytest.ListedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, otherPerson, "deel-v1")
+		}},
+		"DEEL_API_KEY is served from another source": {"DEEL_API_KEY", func() secrets.LocalSecret {
+			return policytest.TypeSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
+		}},
+		"DEEL_API_KEY allows at most 5 minutes": {"DEEL_API_KEY", func() secrets.LocalSecret {
+			return lowered(policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"))
+		}},
+		"ACME_TOKEN itself allows at most 5 minutes": {"ACME_TOKEN", func() secrets.LocalSecret {
+			return lowered(policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierHuman, "acme-v1"))
+		}},
+	}
+	type combination struct {
+		pause, end string
+		reuse      bool
+	}
+	var combinations []combination
+	for _, end := range []string{"DEEL_API_KEY is tagged as an administrator's", "AUTO_TOKEN is tagged as an administrator's", "DEEL_API_KEY no longer lists the person", "DEEL_API_KEY is served from another source"} {
+		for _, reuse := range []bool{false, true} {
+			combinations = append(combinations, combination{"ACME_TOKEN wants an approval", end, reuse})
+		}
+	}
+	combinations = append(combinations,
+		combination{"ACME_TOKEN wants an approval", "DEEL_API_KEY allows at most 5 minutes", false},
+		combination{"ACME_TOKEN wants an approval", "ACME_TOKEN itself allows at most 5 minutes", false},
+		combination{"ACME_TOKEN is not served under a tag the loader refuses", "DEEL_API_KEY is tagged as an administrator's", false},
+		combination{"ACME_TOKEN is not served under a tag the loader refuses", "DEEL_API_KEY is tagged as an administrator's", true},
+		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY is tagged as an administrator's", false},
+		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY is tagged as an administrator's", true},
+	)
+	for _, c := range combinations {
+		path := map[bool]string{false: "the release", true: "the next request"}[c.reuse]
+		t.Run(c.pause+", then "+c.end+", at "+path, func(t *testing.T) {
+			m, session, key := newJudgeFixture(t)
+			retag(t, m, policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1"))
+			judged := judgedGrant(t, m, session, key, 600, names...)
+			if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); err != nil || slices.ContainsFunc(names, func(name string) bool { return releasedValue(release, name) == "" }) {
+				t.Fatalf("Values before any change = %+v, %v; want all three keys released", release, err)
+			}
+
+			// The pause alone refuses the release and leaves the grant live.
+			pauses[c.pause](t, m)
+			if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
+				t.Fatalf("Values while %s = %+v, %v; want ErrGrantNotLive and nothing released", c.pause, release, err)
+			}
+			if by, audits := endedForGood(t, m, judged); by != "" || audits != 0 {
+				t.Fatalf("after the pause alone: revoked_by %q with %d grant.revoked rows; want the grant paused, not ended", by, audits)
+			}
+
+			// The end, while ACME_TOKEN still pauses the grant.
+			end := ends[c.end]
+			retag(t, m, end.secret())
+			if _, served := m.Policy.Get().Secrets[end.name]; !served {
+				t.Fatalf("the policy does not serve %s once %s; the test sets up nothing", end.name, c.end)
+			}
+			if c.reuse {
+				again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes again", 600, names...), "", nil)
+				if again.GrantID != nil {
+					t.Fatalf("Create once %s = %+v, %v; want no grant handed back", c.end, again, err)
+				}
+			} else if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
+				t.Fatalf("Values once %s = %+v, %v; want ErrGrantNotLive and nothing released", c.end, release, err)
+			}
+			if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
+				t.Errorf("after %s once %s while %s: revoked_by %q with %d grant.revoked rows by %s; want the grant ended once for good", path, c.end, c.pause, by, audits, GrantEndedActor)
+			}
+
+			// Every change taken back.
+			retag(t, m,
+				policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"),
+				policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1"),
+				policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1"))
+			if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
+				t.Errorf("Values once every change is taken back = DEEL_API_KEY %q, AUTO_TOKEN %q, ACME_TOKEN %q, %v; want ErrGrantNotLive and nothing released", releasedValue(release, "DEEL_API_KEY"), releasedValue(release, "AUTO_TOKEN"), releasedValue(release, "ACME_TOKEN"), err)
+			}
+		})
+	}
 }
 
 // TestAJudgedGrantOfASharedSecretIsEverySignedInPersonsToSeeAndEnd: the judge approves a shared

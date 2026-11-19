@@ -23,16 +23,21 @@ import (
 // record.JudgeActor of it.
 const judgeModel = "claude-opus-4-6"
 
-// adminSecretName is the administrator's credential these tests ask for, and adminSecret the
-// secret itself: human tier and the operator's own, carrying the requesters list and the hour's
-// cap the admin tag demands of a secret beside the tag (policy.TagRules, which refuses an admin
-// secret that is agent tier, lists nobody or caps nothing). A test that wants it puts it into
-// its own fixture's store rather than fixtureSecrets holding it, so every other test's policy
-// is the one it has always been.
+// adminSecretName is the administrator's credential these tests ask for. A test that wants it
+// puts it into its own fixture's store rather than fixtureSecrets holding it, so every other
+// test's policy is the one it has always been.
 const adminSecretName = "ADMIN_CONSOLE_KEY"
 
-func adminSecret() secrets.LocalSecret {
-	s := policytest.ListedSecret(adminSecretName, fixtureOperator, policy.TierHuman, fixtureOperator, "admin-v1")
+// adminSecret is the secret name, holding value, as an administrator's: human tier and the
+// operator's own, tagged admin: "true", and carrying beside the tag the two things
+// policy.TagRules demands of such a secret — a requesters list naming the person every session
+// of these tests is signed in as, and a max-grant of an hour (policytest.FixtureMaxGrant), which
+// is longer than any grant these tests make. A fixture secret retagged as this one keeps its
+// owner and value, so what answers is the tag and not a secret that changed hands or shrank its
+// cap; a key the operator's session gets at once (AUTO_TOKEN) becomes human tier with it, since
+// policy.TagRules refuses an admin secret below that.
+func adminSecret(name, value string) secrets.LocalSecret {
+	s := policytest.ListedSecret(name, fixtureOperator, policy.TierHuman, fixtureOperator, value)
 	s.Tags[policy.TagAdmin] = policy.AdminTrue
 	return s
 }
@@ -461,7 +466,7 @@ func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 // owner's to approve, which is the path a person has had all along.
 func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
-	retag(t, m, adminSecret())
+	retag(t, m, adminSecret(adminSecretName, "admin-v1"))
 	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the admin console", 600, adminSecretName)
 
 	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})

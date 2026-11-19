@@ -167,7 +167,7 @@ func TestJudgePolicyAnswersTheLivePolicy(t *testing.T) {
 // seconds a rules file gives it for the name, and this is the reading its admin check makes.
 func TestJudgePolicyReportsAnAdminSecret(t *testing.T) {
 	m, enr, _, approver := newFixture(t)
-	retag(t, m, adminSecret())
+	retag(t, m, adminSecret(adminSecretName, "admin-v1"))
 	decision, withheld, admin, err := m.JudgePolicy(t.Context(), enr, adminSecretName)
 	if err != nil || decision.Outcome != policy.Approval || decision.Approver != approver || withheld || !admin {
 		t.Fatalf("JudgePolicy(%s) = %+v, withheld %v, admin %v, %v; want an approval by %s that says the secret is an administrator's", adminSecretName, decision, withheld, admin, err, approver)

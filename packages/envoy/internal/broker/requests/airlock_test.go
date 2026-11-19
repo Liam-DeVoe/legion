@@ -146,6 +146,38 @@ func TestAChangedAirlockEntryEndsTheGrantsItAffects(t *testing.T) {
 	}
 }
 
+// TestTheNextRequestEndsAPersonsGrantWhoseEntryChanged: an edit to an entry ends every grant it
+// affects at the next request that would reuse one, a grant a person approved as much as one the
+// model judge decided. The session asks again for SHARED_KEY, whose grant its person approved:
+// while the entry stands the grant is handed back, and once the entry changed the request is not
+// handed that grant, the reuse ends it for good, and the request waits for a person afresh.
+func TestTheNextRequestEndsAPersonsGrantWhoseEntryChanged(t *testing.T) {
+	digests := map[string]string{"SHARED_KEY": "shared-one"}
+	m, enr, key := newAirlockFixture(t, digests)
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key", "SHARED_KEY"), "", nil)
+	if err != nil || pending.RecordID == nil {
+		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", pending, err)
+	}
+	kept, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
+	if err != nil || kept.GrantID == "" {
+		t.Fatalf("ApplyDecision(SHARED_KEY) = %+v, %v", kept, err)
+	}
+	reused, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key again", "SHARED_KEY"), "", nil)
+	if err != nil || reused.GrantID == nil || *reused.GrantID != kept.GrantID {
+		t.Fatalf("Create(SHARED_KEY) while its entry stands = %+v, %v; want the person's grant %s handed back", reused, err, kept.GrantID)
+	}
+
+	digests["SHARED_KEY"] = "shared-two"
+	reloadAirlock(t, m)
+	again, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read the shared key once more", "SHARED_KEY"), "", nil)
+	if err != nil || again.GrantID != nil || again.State != "pending" {
+		t.Fatalf("Create(SHARED_KEY) once its entry changed = %+v, %v; want no grant handed back and a new pending request", again, err)
+	}
+	if by, audits := endedForGood(t, m, kept.GrantID); by != GrantEndedActor || audits != 1 {
+		t.Fatalf("the person's grant: revoked_by %q with %d grant.revoked rows by %s; want the reuse to have ended it once", by, audits, GrantEndedActor)
+	}
+}
+
 // TestARequestApprovedAcrossARulesChangeIsReleasedUnderTheEntryItWasDecidedUnder: a request
 // waits on its person for up to half a day, and the rules file can roll while it waits. What a
 // release compares each name against is the entry that name was decided under, and for an

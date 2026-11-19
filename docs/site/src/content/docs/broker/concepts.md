@@ -677,8 +677,10 @@ The broker evaluates every name
   HTTP status code, Google's `invalid_rapt` or `rapt_required` subtype (any other is named
   `unknown`), or the class of a failed call, never the upstream's own text, and the broker logs it
   for its operator.
-  A grant ends for good when a release finds its secret's type changed
-  (removed, or changed to another type) or its lifetime over the current `max-grant`: that
+  A grant ends for good when a release, or a request that would reuse it, finds its secret's type
+  changed (removed, or changed to another type), and when a release finds its lifetime over the
+  current `max-grant`, whatever another secret of the grant answers: one the broker no longer
+  serves, or one that now wants an approval, only pauses the grant and hides no such end. That
   release answers `GRANT_NOT_LIVE` and writes a `grant.revoked` audit row by
   `broker:release-recheck`, and the session asks again. A release of a stored secret checks the
   policy again once it has read the store, so a retag to a type reread during that read releases
@@ -686,7 +688,7 @@ The broker evaluates every name
   to read the new tags, before storing its App key or login. That retag checks the value the
   secret holds, so a sign-in that may read it is refused while it is no value of that type
   ([manage a secret](/legion/broker/guides/manage-a-secret/#change-its-owner-tier-type-requesters-or-max-grant)).
-  A change reverted before any release finds
+  A change reverted before any release or reuse finds
   it leaves the grant as it was: it was approved for that secret, type and source, and its next
   release mints a token of that same type from that same frozen source, never the stored value. To
   end a grant, revoke it. A type secret the broker stops serving, such as one whose
@@ -1283,9 +1285,12 @@ back does not bring the grant back (`GRANT_NOT_LIVE`). Each release also re-chec
 secret's entry still gives the judge at least the grant's lifetime. A key its owner tags as an
 administrator's after the judge decided ends that grant for good too, at the release and at the
 next request that would reuse it, whether the judge decided that key or the session got it at
-once beside the judged ones: a person approves every release of one, so no judged grant goes on
-releasing it, and taking the tag off again does not bring the grant back: the session asks
-afresh, as a new request, which its person decides while the tag stands. The chain check
+once beside the judged ones, and whatever the grant's other keys answer: a key that now wants an
+approval, or that the broker no longer serves, only pauses the grant, and the broker reads every
+key before it answers that pause. A person approves every release of an administrator's secret,
+so no judged grant goes on releasing it, and taking the tag off again does not bring the grant
+back: the session asks afresh, as a new request, which its person decides while the tag stands.
+The chain check
 ([The audit record](#the-audit-record)) admits a judge's approval only on a record that names
 agent secrets alone, each one a key the rules still give the judge seconds of, and a lifetime
 within each one's seconds, so a forged record, and one a rules change left behind, release
