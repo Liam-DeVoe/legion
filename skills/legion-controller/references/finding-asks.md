@@ -65,7 +65,8 @@ You file an issue only when nobody owns that code.
    ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
    When one matches, send nothing on and file nothing:
    reply `Not filed: dispatch://<ROOT> owns it; write to role:<its architect's token>` under the
-   evidence, with the token `issues.<ROOT>.architect.locator.claim` names, so the role writes to
+   evidence, with the token `issues.<ROOT>.architect.locator.claim` names or, when it names
+   none, `legion-<project>-<root key, lower case>-architect`, as in step 2, so the role writes to
    that tree itself. A second issue would split the work.
 4. No running tree owns that code: file it on the repository where the fix belongs, in the
    project that repository maps to, or in your own project when Dispatch maps it to none:

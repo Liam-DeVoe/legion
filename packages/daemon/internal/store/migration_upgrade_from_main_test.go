@@ -67,8 +67,8 @@ import (
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
-// that version stands above every other of this list but this change's 20261117113130 and
-// dispatch://INFRA-4109's 20261117200337, so an upgrade of a database main migrated applies it
+// that version stands above every other of this list but this change's 20261117113130 and the
+// update ask's mark cutover 20261117200337, so an upgrade of a database main migrated applies it
 // just before those two; it adds pull_requests.statuses at its default, the empty list, and it
 // touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
