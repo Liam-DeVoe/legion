@@ -49,7 +49,7 @@ type personNodes struct {
 // to, each with the relations that tie it there. $1 is the canonical login.
 //
 // Both arms read the tuples whose far end is the person's node or a session of theirs, which is
-// the inbound read graph_tuples_inbound serves, and each keeps the newest tuple per far end
+// the inbound read graph_tuples_as_of_in serves, and each keeps the newest tuple per far end
 // while that newest one asserts - the current-tuple rule graphstore.CurrentIn and
 // graphstore.CurrentOut read a node by, spliced here as graphstore.CurrentTupleRead.
 //

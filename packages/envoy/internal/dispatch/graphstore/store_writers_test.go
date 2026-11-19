@@ -29,20 +29,11 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same ones docs' register of the tree's passes scans for
-// (storeWriterCall), and the session writers beside them: Write, WriteUncaused and Caused in a
-// caller's transaction, and QueueWrite, QueueNodes and QueueCaused, the same writes queued on a
-// write phase's batch; WriteArms and WriteArmsUncaused spliced into a caller's statement;
-// Authored, Reached and SessionRecorded, which run those arms for the writers that record an
-// author, a reached session and a session an ask names, and QueueAuthored, QueueReached and
-// QueueSessionRecorded, which queue them; and EraseNode, the erase's delete of a node and its
-// tuples. Each is a function of the package, never a method, so a call of one is named by the
-// package and found here wherever it is made. A write that holds a statement of its own instead
-// is found by rawStoreWrite, and none outside this package may hold one.
-var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"QueueWrite", "QueueNodes", "QueueCaused",
-	"Authored", "Reached", "SessionRecorded", "QueueAuthored", "QueueReached", "QueueSessionRecorded",
-	"EraseNode"}
+// package goes through (WriteFunctions), the same ones docs' register of the tree's passes scans
+// for (storeWriterCall), and the session writers beside them, held in the package itself so api's
+// scan of the projections' writers reads the same list. A write that holds a statement of its own
+// instead is found by rawStoreWrite, and none outside this package may hold one.
+var storeWriteFunctions = WriteFunctions()
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any

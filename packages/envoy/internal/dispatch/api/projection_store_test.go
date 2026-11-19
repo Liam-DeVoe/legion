@@ -7,6 +7,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,11 +42,12 @@ var projectedTables = []string{"block_refs", "comments", "document_blocks"}
 // writes the row's node in the store first, and the two commit together or not at all.
 //
 // The source scan is coverage - it names every statement that writes a projected table, so a new
-// writer cannot arrive unnoticed, and holds each one that makes or unmakes a row or sets a column
-// a tuple projects to the store writer's call path - and the Postgres halves are the proof: a
-// failure injected between the two writes leaves neither side, a row whose node was never
-// written is refused inside the statement that writes it, the real write paths leave every row
-// they insert with its node and its tuples from the transaction that inserted the row, and an
+// writer cannot arrive unnoticed, refuses one whose table is built at runtime at a site the test
+// does not name (runtimeTableSites), and holds each one that makes or unmakes a row or sets a
+// column a tuple projects to the store writer's call path - and the Postgres halves are the
+// proof: a failure injected between the two writes leaves neither side, a row whose node was
+// never written is refused inside the statement that writes it, the real write paths leave every
+// row they insert with its node and its tuples from the transaction that inserted the row, and an
 // update of a column a tuple projects carries the transaction of the tuple it appended.
 func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 	ctx := context.Background()
@@ -108,12 +111,22 @@ var projectedColumns = map[string]string{
 	// A document_blocks row's parent_block_id is its block's part_of tuple, to the block of the
 	// same document that holds it (refs/blocks.go).
 	"parent_block_id": "the block's part_of tuple",
-	// A comment's anchor is its anchored_to tuple, to the artifact the anchor names
-	// (graphstore.CommentFacts). The anchor's orphaned key is no part of that tuple, so a
-	// jsonb_set of that key alone sets no projected column (orphanedKeyAlone). The scan cannot
-	// tell which keys any other write of the anchor moves, so it holds every other one.
+	// A block_refs row's source_seq is the event that stamped it, which the backfill reads as the
+	// cause of the row's tuple and as that tuple's legacy_source_seq (graphcensus's
+	// backfillBlockRefs), and which a pass's own tuple takes from its cause where the row is
+	// stamped in the same transaction (graphstore.UncausedTuple's LegacyFromCause).
+	"source_seq": "the link's tuple, as its legacy_source_seq",
+	// A comment's anchor is its anchored_to tuple, to the artifact the anchor's artifact_id key
+	// names (graphstore.CommentFacts). A jsonb_set of the anchor's other keys alone keeps that
+	// artifact and sets no projected column (anchorWrite); a write of the whole anchor, or of its
+	// artifact_id key, sets it.
 	"anchor": "the comment's anchored_to tuple",
 }
+
+// anchorKeysOutsideTheTuple are the keys of a comment's anchor that its anchored_to tuple does
+// not state: where in the artifact the anchor sits and whether it still finds its text. A
+// jsonb_set of these alone sets no projected column.
+var anchorKeysOutsideTheTuple = []string{"block_id", "orphaned", "quote"}
 
 // updateSet matches what follows an update's table up to its assignments: the alias the
 // statement may give the table, and set.
@@ -123,27 +136,29 @@ var updateSet = regexp.MustCompile(`(?is)^\s+(?:(?:as\s+)?\w+\s+)?set\b`)
 // parentheses and quotes.
 var setListEnd = regexp.MustCompile(`(?i)\b(?:from|where|returning)\b`)
 
-// assignedColumn matches a column an assignment names. anchorColumn and orphanedKey match the
-// first two arguments of the one jsonb_set orphanedKeyAlone reads as no projected column: the
-// anchor itself, and the path of its orphaned key.
+// assignedColumn matches a column an assignment names. anchorColumn and anchorKeyPath match the
+// first two arguments of a jsonb_set anchorKeys reads: the anchor itself, and the path of one of
+// its keys.
 var (
 	assignedColumn = regexp.MustCompile(`^[a-z_][a-z0-9_$]*$`)
 	anchorColumn   = regexp.MustCompile(`(?i)^(?:\w+\.)?anchor$`)
-	orphanedKey    = regexp.MustCompile(`(?i)^'\{\s*"?orphaned"?\s*\}'(?:\s*::\s*text\s*\[\s*\])?$`)
+	anchorKeyPath  = regexp.MustCompile(`(?i)^'\{\s*"?([a-z_][a-z0-9_]*)"?\s*\}'(?:\s*::\s*text\s*\[\s*\])?$`)
 )
 
-// The store's own writers, as a call names them. Everything that writes graph_nodes and
-// graph_tuples goes through one of them (internal/dispatch/graphstore). WriteUncaused is Write
-// split at the seam between writing the node row and appending the facts under it, for a writer
-// whose event is appended after the row it writes; it writes the same node rows. QueueWrite,
-// QueueNodes and QueueAuthored are Write, WriteUncaused's node write and Authored queued on a
-// write phase's batch (store.WriteBatch), which is how a route or a background pass that plans
-// its writes in a read phase writes them.
-var storeWriters = []string{
-	"func:graphstore.Write", "func:graphstore.WriteUncaused",
-	"func:graphstore.WriteArms", "func:graphstore.Authored",
-	"func:graphstore.QueueWrite", "func:graphstore.QueueNodes", "func:graphstore.QueueAuthored",
-}
+// storeWriters are the store's own writers as a call names them: every function of graphstore a
+// write of graph_nodes and graph_tuples from outside it goes through (graphstore.WriteFunctions),
+// the one list graphstore's register of the store's write sites reads too
+// (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row follows
+// (Write, WriteUncaused, QueueWrite, QueueNodes), the append of what a write stated under its
+// event (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's
+// delete of a node and its tuples (EraseNode), beside which the erase deletes the node's rows.
+var storeWriters = func() []string {
+	var calls []string
+	for _, name := range graphstore.WriteFunctions() {
+		calls = append(calls, "func:graphstore."+name)
+	}
+	return calls
+}()
 
 // projectionWrite is one statement of the sources that writes a projected table. held marks one
 // the store writer's call path must hold: an insert, a delete, or an update that sets a column a
@@ -168,7 +183,7 @@ type sourceFunction struct {
 }
 
 // projectionSources is the repository's call graph as a name-resolved approximation, with every
-// projection write found in it.
+// projection write found in it and every write whose table is built at runtime.
 type projectionSources struct {
 	functions map[string]*sourceFunction
 	// byCall answers the functions a call key names: a plain function by its package and
@@ -176,7 +191,10 @@ type projectionSources struct {
 	// checker and a method call inside a package is resolved well enough by its name.
 	byCall map[string][]string
 	writes []projectionWrite
-	files  int
+	// runtime is every statement whose table the scan cannot read, since its name is built at
+	// runtime; runtimeTableSites says which of them reach a projected table.
+	runtime []runtimeTableWrite
+	files   int
 }
 
 // readProjectionWriters parses every non-test Go source of the repository and answers its call
@@ -217,8 +235,8 @@ func readProjectionWriters(t *testing.T) *projectionSources {
 	return sources
 }
 
-// read records one parsed file: the functions it declares, the calls each makes and the
-// projection writes in its string literals.
+// read records one parsed file: the functions it declares, the calls each makes, the projection
+// writes in its string literals, and the writes whose table it builds at runtime.
 func (s *projectionSources) read(fset *token.FileSet, file *ast.File, name string) {
 	pkg := file.Name.Name
 	imports := map[string]string{}
@@ -247,11 +265,21 @@ func (s *projectionSources) read(fset *token.FileSet, file *ast.File, name strin
 		held := &sourceFunction{key: key, file: name, line: fset.Position(function.Pos()).Line}
 		s.functions[key] = held
 		s.byCall[index] = append(s.byCall[index], key)
+		// A concatenation is read once, from its outermost +; its inner ones are marked here.
+		inner := map[*ast.BinaryExpr]bool{}
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			switch found := node.(type) {
 			case *ast.CallExpr:
-				if call := callKey(pkg, imports, found.Fun); call != "" {
+				call := callKey(pkg, imports, found.Fun)
+				if call != "" {
 					held.calls = append(held.calls, call)
+				}
+				if call == "func:fmt.Sprintf" {
+					s.runtime = append(s.runtime, formattedTableWrites(fset, found, name, key)...)
+				}
+			case *ast.BinaryExpr:
+				if found.Op == token.ADD && !inner[found] {
+					s.runtime = append(s.runtime, concatenatedTableWrites(fset, concatenation(found, inner), name, key)...)
 				}
 			case *ast.BasicLit:
 				if found.Kind != token.STRING {
@@ -310,14 +338,26 @@ func projectionClauses(text string) []matchedClause {
 
 // updateClause reads what an update of table sets, rest being the statement after the table's
 // name, and answers how the scan names the update and whether it sets a column a tuple
-// projects. An assignment the scan cannot read is held as one that does.
+// projects (updateSets).
 func updateClause(table, rest string) (string, bool) {
+	named, held := updateSets(rest)
+	if named == nil {
+		return "update " + table + ", whose set list the scan cannot read", held
+	}
+	return "update " + table + " setting " + strings.Join(named, ", "), held
+}
+
+// updateSets reads the set list of an update, rest being the statement after the table's name:
+// each assignment as the scan names it, and whether one sets a column a tuple projects. An
+// assignment the scan cannot read is held as one that does, and so is a set list it cannot find,
+// for which it answers no names.
+func updateSets(rest string) ([]string, bool) {
 	set := updateSet.FindStringIndex(rest)
 	if set == nil {
-		return "update " + table + ", whose set list the scan cannot read", true
+		return nil, true
 	}
 	assignments, _ := splitOutside(rest[set[1]:], setListEnd)
-	var named []string
+	named := []string{}
 	held := false
 	for _, assignment := range assignments {
 		target, value, ok := strings.Cut(assignment, "=")
@@ -330,8 +370,10 @@ func updateClause(table, rest string) (string, bool) {
 		for _, column := range columns {
 			states, projected := projectedColumns[column]
 			switch {
-			case column == "anchor" && len(columns) == 1 && orphanedKeyAlone(value):
-				named = append(named, "the anchor's orphaned key alone")
+			case column == "anchor" && len(columns) == 1:
+				write, projects := anchorWrite(value)
+				named = append(named, write)
+				held = held || projects
 			case projected:
 				named = append(named, column+" ("+states+")")
 				held = true
@@ -340,7 +382,7 @@ func updateClause(table, rest string) (string, bool) {
 			}
 		}
 	}
-	return "update " + table + " setting " + strings.Join(named, ", "), held
+	return named, held
 }
 
 // assignedColumns answers the columns the target of one assignment names - one column, or a
@@ -366,23 +408,311 @@ func assignedColumns(target string) []string {
 	return columns
 }
 
-// orphanedKeyAlone reports whether value, what an assignment gives a comment's anchor, is a
-// jsonb_set of that anchor's orphaned key and nothing more: the one write of the anchor that
-// leaves the artifact its anchored_to tuple names where it was.
-func orphanedKeyAlone(value string) bool {
+// anchorWrite names what value, what an assignment gives a comment's anchor, writes of it, and
+// whether that sets the column the anchored_to tuple projects. A jsonb_set of keys of
+// anchorKeysOutsideTheTuple alone, one over another, keeps the artifact that tuple names and
+// sets nothing it projects. A jsonb_set of the artifact_id key sets it, and so does every other
+// write of the anchor - the whole anchor, or a key the scan cannot tell from the artifact's.
+func anchorWrite(value string) (string, bool) {
+	keys, readable := anchorKeys(value)
+	if !readable || len(keys) == 0 {
+		return "anchor (" + projectedColumns["anchor"] + ")", true
+	}
+	slices.Sort(keys)
+	keys = slices.Compact(keys)
+	named := "the anchor's " + strings.Join(keys, " and ") + " key"
+	if len(keys) > 1 {
+		named += "s"
+	}
+	for _, key := range keys {
+		if !slices.Contains(anchorKeysOutsideTheTuple, key) {
+			return named + " (" + projectedColumns["anchor"] + ")", true
+		}
+	}
+	return named, false
+}
+
+// anchorKeys reads value as the anchor itself or a jsonb_set of one key of what it is given,
+// that being the anchor or another such jsonb_set, and answers the keys it sets, innermost first.
+// It answers false for any other value.
+func anchorKeys(value string) ([]string, bool) {
 	value = strings.TrimSpace(value)
+	if anchorColumn.MatchString(value) {
+		return []string{}, true
+	}
 	open := strings.IndexByte(value, '(')
 	if open < 0 || !strings.EqualFold(strings.TrimSpace(value[:open]), "jsonb_set") {
-		return false
+		return nil, false
 	}
 	inside := value[open+1:]
 	arguments, end := splitOutside(inside, nil)
 	if end == len(inside) || inside[end] != ')' || strings.TrimSpace(inside[end+1:]) != "" {
-		return false
+		return nil, false
 	}
-	return (len(arguments) == 3 || len(arguments) == 4) &&
-		anchorColumn.MatchString(strings.TrimSpace(arguments[0])) &&
-		orphanedKey.MatchString(strings.TrimSpace(arguments[1]))
+	if len(arguments) != 3 && len(arguments) != 4 {
+		return nil, false
+	}
+	path := anchorKeyPath.FindStringSubmatch(strings.TrimSpace(arguments[1]))
+	if path == nil {
+		return nil, false
+	}
+	keys, readable := anchorKeys(arguments[0])
+	if !readable {
+		return nil, false
+	}
+	return append(keys, strings.ToLower(path[1])), true
+}
+
+// --- the writes whose table is built at runtime -----------------------------------------
+
+// runtimeTableWrite is one statement of the sources whose table name is built at runtime, so the
+// scan cannot read which table it writes: its verb, the expression its table is named by, and
+// the text after that table, each runtime part of it written as {expression}.
+type runtimeTableWrite struct {
+	file, inside string
+	line         int
+	verb, table  string
+	rest         string
+}
+
+// site is how runtimeTableSites names the statement's site: its file, its function and its
+// head, which no edit elsewhere in the file moves.
+func (w runtimeTableWrite) site() string {
+	return w.file + "#" + w.inside + ": " + w.verb + " " + w.table
+}
+
+// runtimeTableSite is what the test says of one site whose table is built at runtime: the
+// projected tables its table can be, none for a site that never writes one, and, for an update
+// of one of them, what it sets, as the scan names the set list it reads after the table
+// (updateSets).
+type runtimeTableSite struct {
+	tables []string
+	sets   []string
+}
+
+// runtimeTableSites names every statement of the sources whose table name is built at runtime,
+// by its site (runtimeTableWrite.site). The scan cannot read such a table, so a statement at a
+// site this list does not name fails the test, and so does a site it names where no such
+// statement stands any longer. A site that reaches a projected table is then held as a statement
+// naming that table is: its insert or delete to the store writer's call path, and its update
+// there too where it sets a column a tuple projects.
+var runtimeTableSites = map[string]runtimeTableSite{
+	// The one-time pin of a legacy quote anchor's block, over asks and then comments
+	// (BackfillAnchorBlocks): the anchor's block_id key alone, which keeps its artifact.
+	"packages/envoy/internal/dispatch/docs/anchor_blocks.go#docs.*Service.backfillAnchorBlock: update table": {
+		tables: []string{"comments"}, sets: []string{"the anchor's block_id key"},
+	},
+	// A version's refresh of the anchors on its document, over asks and comments: the anchor's
+	// quote and orphaned keys alone, which keep its artifact.
+	"packages/envoy/internal/dispatch/docs/anchor_refresh.go#docs.*Service.refreshAnchors: update update.table": {
+		tables: []string{"comments"}, sets: []string{"the anchor's orphaned and quote keys"},
+	},
+	// The erase, beside its delete of the node and its tuples (graphstore.EraseNode): first the
+	// rows whose foreign key into a projection row is required, which are a comment's mentions,
+	// deliveries and its blocks' tables and no projected table (grapherase's referencesTo), then
+	// the node's projection rows themselves.
+	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply: delete from reference.Table": {},
+	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply: delete from held.Table": {
+		tables: []string{"block_refs", "comments", "document_blocks"},
+	},
+	// The block index of a comment, a message and an ask, over the item's own tables (refs'
+	// itemTables): its block state, blocks, block texts and block links, none of them projected.
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueRecordIndexed: update i.tables.state":  {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.clearItemWindowsOwed: update tables.state":               {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueStateLock: insert into i.tables.state": {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: update tables.blocks":          {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.blocks":     {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlocks: insert into tables.texts":      {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: delete from tables.refs":    {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: insert into tables.refs":    {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.markItemBlocksOwed: update tables.state":                 {},
+	// The stamp of an item's block links (refs.Stamp): comment_block_refs, message_block_refs or
+	// ask_block_refs, never block_refs, whose stamp is a statement of its own beside it.
+	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {},
+	// The settle of one source an owed-index queue held: block_grammar_owed or refs_grammar_owed.
+	"packages/envoy/internal/dispatch/refs/rebuild.go#refs.OwedQueue.settleOwedStatement: delete from queue.table": {},
+	// The daemon's kept decisions and approvals, parked_decisions and readmitted_approvals, in a
+	// database of its own.
+	"packages/daemon/internal/record/store.go#record.*Postgres.MoveKeptClaims: update table":      {},
+	"packages/daemon/internal/store/kept_decisions.go#store.tellKeptDecisions: delete from table": {},
+	"packages/daemon/internal/store/kept_decisions.go#store.releaseKeptDecisions: update table":   {},
+}
+
+// runtimeTableHead matches a literal that ends where a write's table begins, the expression
+// after it in a concatenation naming that table; formattedTableHead matches the head of a write
+// whose table a format's verb names.
+var (
+	runtimeTableHead   = regexp.MustCompile(`(?is)\b(insert\s+into|delete\s+from|update)\s+(?:only\s+)?$`)
+	formattedTableHead = regexp.MustCompile(`(?is)\b(insert\s+into|delete\s+from|update)\s+(?:only\s+)?%[sv]`)
+)
+
+// statementGoesOn matches, by verb, how a statement's text goes on past its table: an update's
+// alias and set, a delete's alias and where, using or returning or nothing more, an insert's
+// column list or rows. A head followed by anything else - `update %s: %w`, or a write step's
+// description, `"update " + table + " anchor"` - is prose and no statement.
+var statementGoesOn = map[string]*regexp.Regexp{
+	"update":      updateSet,
+	"delete from": regexp.MustCompile(`(?is)^(?:\s+(?:as\s+)?\w+)?\s*(?:$|;|\b(?:where|using|returning)\b)`),
+	"insert into": regexp.MustCompile(`(?is)^(?:\s+as\s+\w+)?\s*(?:\(|\b(?:select|values|default\s+values|overriding|with)\b)`),
+}
+
+// concatenation flattens the + chain at expression into its parts, marking each inner + of it.
+func concatenation(expression ast.Expr, inner map[*ast.BinaryExpr]bool) []ast.Expr {
+	binary, ok := expression.(*ast.BinaryExpr)
+	if !ok || binary.Op != token.ADD {
+		return []ast.Expr{expression}
+	}
+	inner[binary] = true
+	return append(concatenation(binary.X, inner), concatenation(binary.Y, inner)...)
+}
+
+// stringLiteral answers a string literal and its text, and false for any other expression.
+func stringLiteral(expression ast.Expr) (*ast.BasicLit, string, bool) {
+	literal, ok := expression.(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return nil, "", false
+	}
+	text, err := strconv.Unquote(literal.Value)
+	if err != nil {
+		text = literal.Value
+	}
+	return literal, text, true
+}
+
+// literalLine is the line of the text at offset in literal: a raw literal spans lines.
+func literalLine(fset *token.FileSet, literal *ast.BasicLit, text string, offset int) int {
+	line := fset.Position(literal.Pos()).Line
+	if strings.HasPrefix(literal.Value, "`") {
+		line += strings.Count(text[:offset], "\n")
+	}
+	return line
+}
+
+// concatenatedTableWrites finds each write in a concatenation whose table is the part after a
+// literal ending at a write's head: `update ` + tables.state + ` set ...`.
+func concatenatedTableWrites(fset *token.FileSet, parts []ast.Expr, file, inside string) []runtimeTableWrite {
+	var found []runtimeTableWrite
+	for index := range len(parts) - 1 {
+		literal, text, ok := stringLiteral(parts[index])
+		if !ok {
+			continue
+		}
+		head := runtimeTableHead.FindStringSubmatchIndex(text)
+		if head == nil {
+			continue
+		}
+		var rest strings.Builder
+		for _, part := range parts[index+2:] {
+			if _, text, ok := stringLiteral(part); ok {
+				rest.WriteString(text)
+			} else {
+				rest.WriteString("{" + types.ExprString(part) + "}")
+			}
+		}
+		verb := strings.ToLower(strings.Join(strings.Fields(text[head[2]:head[3]]), " "))
+		if !statementGoesOn[verb].MatchString(rest.String()) {
+			continue
+		}
+		found = append(found, runtimeTableWrite{
+			file: file, inside: inside, line: literalLine(fset, literal, text, head[0]),
+			verb: verb, table: types.ExprString(parts[index+1]), rest: rest.String(),
+		})
+	}
+	return found
+}
+
+// formattedTableWrites finds each write in a fmt.Sprintf format whose table one of the format's
+// verbs names: `update %s set ...`, the table being the argument that verb takes.
+func formattedTableWrites(fset *token.FileSet, call *ast.CallExpr, file, inside string) []runtimeTableWrite {
+	if len(call.Args) == 0 {
+		return nil
+	}
+	literal, format, ok := stringLiteral(call.Args[0])
+	if !ok {
+		return nil
+	}
+	var found []runtimeTableWrite
+	for _, head := range formattedTableHead.FindAllStringSubmatchIndex(format, -1) {
+		rest := format[head[1]:]
+		verb := strings.ToLower(strings.Join(strings.Fields(format[head[2]:head[3]]), " "))
+		if !statementGoesOn[verb].MatchString(rest) {
+			continue
+		}
+		table := "an argument the call does not pass"
+		if argument := 1 + formatVerbs(format[:head[1]-2]); argument < len(call.Args) {
+			table = types.ExprString(call.Args[argument])
+		}
+		found = append(found, runtimeTableWrite{
+			file: file, inside: inside, line: literalLine(fset, literal, format, head[0]),
+			verb: verb, table: table, rest: rest,
+		})
+	}
+	return found
+}
+
+// formatVerbs counts the verbs of a format, each of which takes one argument; %% takes none.
+func formatVerbs(format string) int {
+	verbs := 0
+	for index := 0; index < len(format); index++ {
+		if format[index] != '%' {
+			continue
+		}
+		if index+1 < len(format) && format[index+1] == '%' {
+			index++
+			continue
+		}
+		verbs++
+	}
+	return verbs
+}
+
+// runtimeTableWrites holds every write the sources build their table for at runtime to
+// runtimeTableSites, and answers the writes of a projected table the named ones make, with how
+// many sites it matched. It fails on a write at a site the list does not name, on a site it
+// names where no such write stands any longer, and on an update the list says sets other than
+// the scan reads.
+func (s *projectionSources) runtimeTableWrites(t *testing.T) ([]projectionWrite, int) {
+	t.Helper()
+	matched := map[string]bool{}
+	var writes []projectionWrite
+	for _, write := range s.runtime {
+		key := write.site()
+		site, named := runtimeTableSites[key]
+		if !named {
+			t.Errorf("%s:%d %s %s inside %s: the statement's table is built at runtime, so the scan cannot read which table it writes: runtimeTableSites names each such site, here %q, with the projected tables it reaches and the columns it sets",
+				write.file, write.line, write.verb, write.table, write.inside, key)
+			continue
+		}
+		matched[key] = true
+		if len(site.tables) == 0 {
+			t.Logf("%s:%d %s %s in %s: a table built at runtime, which the test names as no projected table", write.file, write.line, write.verb, write.table, write.inside)
+			continue
+		}
+		held := true
+		if write.verb == "update" {
+			var named []string
+			named, held = updateSets(write.rest)
+			if !slices.Equal(named, site.sets) {
+				t.Errorf("%s:%d update %s inside %s: runtimeTableSites says it sets %q, and the scan reads it setting %q",
+					write.file, write.line, write.table, write.inside, site.sets, named)
+			}
+		}
+		for _, table := range site.tables {
+			clause := write.verb + " " + table + " (its table built at runtime: " + write.table + ")"
+			if write.verb == "update" {
+				clause, _ = updateClause(table+" (its table built at runtime: "+write.table+")", write.rest)
+			}
+			writes = append(writes, projectionWrite{
+				table: table, file: write.file, line: write.line, clause: clause, inside: write.inside, held: held,
+			})
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(runtimeTableSites)) {
+		if !matched[key] {
+			t.Errorf("runtimeTableSites names %q, and no statement whose table is built at runtime stands there any longer: the list names the sites the scan cannot read, so that one comes out of it", key)
+		}
+	}
+	return writes, len(matched)
 }
 
 // splitOutside splits text at its commas that stand outside parentheses, quotes and SQL
@@ -488,6 +818,9 @@ func receiverName(fields *ast.FieldList) string {
 // reaches it: the two then run in one call, and so in one transaction. The block index's own
 // link writer is the second case - refs.IndexBlocks writes the nodes and calls it.
 //
+// A statement whose table is built at runtime is held as the projected tables runtimeTableSites
+// says it reaches (runtimeTableWrites), and fails where the list does not name its site.
+//
 // The scan is held to finding the seed's write of comments too (seedCommentsWrite): it is the
 // one writer of comments outside internal/dispatch, so a scan that read less of the repository
 // than it should would still find the other two writers and pass without it.
@@ -497,9 +830,11 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 	if len(sources.writes) == 0 {
 		t.Fatalf("the scan over %d Go source found no write of a projected table, and the three writers of comments alone are known", sources.files)
 	}
+	runtimeWrites, sites := sources.runtimeTableWrites(t)
+	writes := slices.Concat(sources.writes, runtimeWrites)
 	var comments []string
 	held, listed := 0, 0
-	for _, write := range sources.writes {
+	for _, write := range writes {
 		if write.table == "comments" {
 			comments = append(comments, write.file+"#"+write.inside)
 		}
@@ -521,8 +856,8 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 			t.Logf("%s:%d %s in %s, %s", write.file, write.line, write.clause, write.inside, path)
 		}
 	}
-	t.Logf("%d writes of a projected table found: %d held to the store writer's call path, %d updates of columns no tuple projects listed",
-		len(sources.writes), held, listed)
+	t.Logf("%d writes of a projected table found: %d held to the store writer's call path, %d updates of columns no tuple projects listed; %d statements whose table is built at runtime, at %d sites the test names",
+		len(writes), held, listed, len(sources.runtime), sites)
 	if !slices.Contains(comments, seedCommentsWrite) {
 		t.Errorf("the scan found the writes of comments in %v and not the seed's, %s: the seed is one of the writers of comments this check holds to the store writer's path",
 			comments, seedCommentsWrite)
