@@ -51,8 +51,10 @@ type Change struct {
 // The kinds of delivery change (Change.Kind), each the kind a table's trigger logs, so a reader of
 // the log compares with these rather than spell one again. The delivery intake's five
 // (pull_request, run, run_job, session_group, settings) are written into delivery_changes by their
-// triggers (delivery_change_log, migration 0100); the eval and Legion kinds (issue_facts and the
-// rest) are recorded in the outbox and moved into the log by DrainPending.
+// triggers (delivery_change_log, migration 0100), but for a settings change of a repository's
+// mapping, which repo_projects' trigger records in the outbox (migration 20261117100020); the eval
+// and Legion kinds (issue_facts and the rest) are recorded in the outbox too, and DrainPending
+// moves the outbox's rows into the log.
 const (
 	ChangeKindPullRequest  = "pull_request"
 	ChangeKindRun          = "run"
@@ -101,9 +103,8 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.
 //   - First, with LockChanges: every write of the session groups (writeSessionGroup, after the
-//     reads that decide it) and of a repository's project mapping (LockRepoProjectWrite, which
-//     every writer of repo_projects goes through); and the drain (DrainPending), which takes it
-//     before it locks the pending rows it moves.
+//     reads that decide it); and the drain (DrainPending), which takes it before it locks the
+//     pending rows it moves.
 //
 // Last is not after every row lock in a statement that changes several rows of a table with a
 // foreign key: Postgres fires the after-row triggers at the statement's end row by row, each row's
@@ -119,9 +120,9 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 // first, for the rest of its transaction, so those transactions are short and do their reads
 // before it.
 //
-// No eval, refresher or Legion facts write takes it: their changes wait in the outbox
-// (delivery_changes_pending, migration 20261117100001), and the drain moves them into the log in a
-// short transaction of its own after they commit.
+// No eval, refresher, Legion facts or repository mapping write takes it: their changes wait in the
+// outbox (delivery_changes_pending, migrations 20261117100001 and 20261117100020), and the drain
+// moves them into the log in a short transaction of its own after they commit.
 func LockChanges(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, lockChangesStatement); err != nil {
 		return fmt.Errorf("take the delivery change log's lock: %w", err)
@@ -143,23 +144,24 @@ func queueLockChanges(batch *pgx.Batch) {
 const drainBatch = 250
 
 // DrainPending moves every committed pending change row (delivery_changes_pending, the outbox the
-// eval and Legion tables' triggers record their changes in) into delivery_changes, and answers how
-// many it moved. It moves them a batch at a time (DrainPendingBatch), each batch one statement of
-// its own, delivery_changes_drain (migration 20261117100001), never a statement of a caller's
-// transaction, and moves another batch while a whole one moved. So it holds the change log's lock
-// for one batch's statement and its commit at a time, whatever the burst: each batch takes the lock
-// first, before the pending rows it deletes, and moves the lowest pending ids in id order, keeping
-// each row's at. Where nothing is pending it answers 0 and takes no lock. Two drains take turns on
-// the lock, and each pending row is moved exactly once.
+// eval and Legion tables' triggers and repo_projects' record their changes in) into
+// delivery_changes, and answers how many it moved. It moves them a batch at a time
+// (DrainPendingBatch), each batch one statement of its own, delivery_changes_drain (migration
+// 20261117100001), never a statement of a caller's transaction, and moves another batch while a
+// whole one moved. So it holds the change log's lock for one batch's statement and its commit at
+// a time, whatever the burst: each batch takes the lock first, before the pending rows it deletes,
+// and moves the lowest pending ids in id order, keeping each row's at. Where nothing is pending it
+// answers 0 and takes no lock. Two drains take turns on the lock, and each pending row is moved
+// exactly once.
 //
 // A pending row's id is drawn at its insert and not at its commit, so seq follows the order the
 // drains move rows in, not the order their writers committed in; every seq is still drawn under
 // the lock (LockChanges), so a reader's cursor never skips a moved row. Its callers: each Legion
 // facts pass, right after its commit; the live hub, before each read of the log; the refresher, at
 // the start of each pass; and the server's boot, before it serves. An eval write, the registry's
-// and the refresher's, drains one batch instead (DrainPendingBatch), so a route that answers after
-// its drain waits for one batch at most, whatever backlog another writer left: those callers move
-// the rest.
+// and the refresher's, and every write of a repository's mapping (DrainRepoProjectChange) drain
+// one batch instead (DrainPendingBatch), so a route that answers after its drain waits for one
+// batch at most, whatever backlog another writer left: those callers move the rest.
 //
 // A writer killed between its commit and its drain loses no change: its pending rows committed
 // with its write, and the next drain of any process moves them, whichever runs first:
@@ -168,8 +170,8 @@ const drainBatch = 250
 //     notification on ChangesChannel wakes at the writer's commit. Only a process where a page
 //     subscribes has one running: a hub starts its listener at its first subscription and stops it
 //     when its last one leaves, and drains nothing while no page subscribes;
-//   - the next eval write's, one batch, the lowest ids first (evals' drainChanges), so a row behind
-//     a whole batch of others waits for a later drain;
+//   - the next eval or mapping write's, one batch, the lowest ids first (evals' drainChanges,
+//     DrainRepoProjectChange), so a row behind a whole batch of others waits for a later drain;
 //   - the next Legion facts pass's, every pending row, after its commit (legionfacts' writePass);
 //   - the day-row refresher's next pass, every pending row, at its start (evals' refresh). The
 //     rows' notification wakes the refresher of every live process, and the process that holds the

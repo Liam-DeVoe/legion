@@ -319,6 +319,38 @@ func TestCreatingATakenProjectKeyIsRefusedForABearerAndACookie(t *testing.T) {
 	}
 }
 
+// A create of a key a project holds is refused 409 PROJECT_EXISTS whatever its `evals-md` is,
+// here a file, a state the registry expects of a project and whose seed it refuses
+// (EVALS_DOCUMENT_NOT_A_DOCUMENT). The create reads that the key is taken before it seeds
+// anything: a seed run on the existing project first answered the create with that refusal, as
+// 500 INTERNAL. The project keeps the name it was created with.
+func TestCreatingATakenProjectKeyWhoseEvalsDocumentIsAFileIsRefusedProjectExists(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "FILED", "name": "Filed",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create FILED: status=%d body=%s", response.Code, response.Body.String())
+	}
+	tag, err := database.Pool.Exec(t.Context(), `
+		update artifacts set kind = 'file'
+		where project_key = 'FILED' and issue_key is null and session_id is null and slug = $1
+	`, evals.DocumentSlug)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("make FILED's %s a file: %v, %d rows", evals.DocumentSlug, err, tag.RowsAffected())
+	}
+	again := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "FILED", "name": "Filed again",
+	}, "alice")
+	if again.Code != http.StatusConflict || !strings.Contains(again.Body.String(), `"code":"PROJECT_EXISTS"`) {
+		t.Fatalf("a create of FILED while its %s is a file: status=%d body=%s, want 409 PROJECT_EXISTS",
+			evals.DocumentSlug, again.Code, again.Body.String())
+	}
+	var name string
+	if err := database.Pool.QueryRow(t.Context(), `select name from projects where key = 'FILED'`).Scan(&name); err != nil || name != "Filed" {
+		t.Fatalf("FILED is named %q (%v) after the refused create, want Filed", name, err)
+	}
+}
+
 // Every route that takes a project key refuses a bad one with the same description of the rule,
 // so an agent learns the rule once, whichever route it called. The rule is contracts'
 // PROJECT_KEY_RULE, generated into Go, which the dispatch command's own refusal gives too.

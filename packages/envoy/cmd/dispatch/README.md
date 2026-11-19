@@ -1499,7 +1499,7 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   The release before this one polls the row every 30 s and may run beside it during a roll.
 
 - The eval day-row refresher (`evals.Store.RunRefresher`, lease `eval-days`) keeps every project's `eval_days` true to its inputs.
-  It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`), as does that of `repo_projects` (`20261117100020`), and the triggers of `issue_facts`, `issue_filings` and the eval tables notify as they record their changes in the change log's outbox (`20261117100001`), and by `dispatch_events`.
+  It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`), and the triggers of `repo_projects` (`20261117100020`), `issue_facts`, `issue_filings` and the eval tables notify as they record their changes in the change log's outbox (`20261117100001`), and by `dispatch_events`.
   Passes start at least 10 s apart.
   The first pass of each process seeds every project's evals (`evals.Store.Ensure`, the catalogue this build states), and each later pass every project no seed has reached (one made by SQL), each project whose seed failed, and each whose seed was refused because its `evals-md` is a file once that artifact is a document again.
   A pass first moves the outbox's pending changes into the change log (`delivery.DrainPending`), then reads the changes and the events after its two cursors (`eval_days_cursor`, `20261117100021`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
@@ -1530,10 +1530,10 @@ A process that finds it held tries again
 **Boot passes** run once at start:
 
 - The drain of the delivery change log's outbox (`delivery.DrainPending`, `20261117100001`) runs once, before the process serves, with no lease: two drains take turns on the change log's lock and move each pending change once.
-  An eval write records its changes in the outbox and moves one batch of it, the lowest ids first, right after its commit, and a Legion facts pass moves every pending change right after its commit.
+  An eval write and a repository mapping write each record their changes in the outbox and move one batch of it, the lowest ids first, right after their commit (`delivery.DrainRepoProjectChange` for a mapping), and a Legion facts pass moves every pending change right after its commit.
   A pending row left by a writer killed between its commit and its drain is moved by the next drain of any process, or else by the next process's boot before it serves (`delivery.DrainPending` states the bound).
   This drain is that boot's: it moves what such a write left while no process was alive, logs `dispatch: moved the delivery changes left pending into the change log` with `moved=<n>`, and its own notification wakes every hub listening by then; this process's refresher reads the moved changes on its first pass.
-  A drain that fails is logged and the boot goes on, since the hub, the refresher, the eval writes and the Legion facts passes drain again.
+  A drain that fails is logged and the boot goes on, since the hub, the refresher, the eval and mapping writes and the Legion facts passes drain again.
 
 - The embedding coverage pass (`embedqueue.Cover`, Search below) runs once, with no lease.
   Its identity steps and the step that records each issue's inputs (`recordIssueSources`) run again after it:

@@ -17,6 +17,18 @@
 -- delivery settings move those two alone. ref, t_old and t_new are null, as a settings change's
 -- are.
 --
+-- The trigger records the change in the change log's outbox (delivery_change_log_pending,
+-- 20261117100001), which takes no lock, and a drain moves it into delivery_changes after the
+-- writer commits: every writer of a mapping drains one batch right after its commit
+-- (delivery.DrainRepoProjectChange). So no mapping write takes the change log's lock (6900)
+-- inside its transaction, in this release or the one before it. The release before this one
+-- writes a mapping under the repository's advisory lock, then its projects' owner locks, then the
+-- row for update (api's lockRepoProjectWrite in that release), so a trigger that logged into
+-- delivery_changes directly would take 6900 in that write's update, after those locks; a write of
+-- this release that took 6900 before the repository's lock would wait for that lock holding 6900,
+-- and two writes of one repository, one of each build, would each wait for the other until
+-- Postgres ended one (40P01).
+--
 -- An update that changes nothing the mapping decides logs nothing, as every other trigger of the
 -- log logs no write that leaves a row's content as it was. The row's created_by and created_at say
 -- who wrote the mapping and when, and decide no day row, and the settings route's upsert
@@ -24,17 +36,22 @@
 -- another person would otherwise log a change that begins every walk of the day rows again. So an
 -- update logs one only where the row moved in a column other than those two. Its own migration, as
 -- 0101 to 0106 each add one table's trigger: the transaction holds repo_projects's lock alone, for
--- milliseconds. The release before this one never reads a settings change's repo, and a settings
--- change is one it already reads, so the two roll together.
+-- milliseconds.
+--
+-- The release before this one fires this trigger too, and its write leaves a pending row, which
+-- this release's drains move: the boot's, the live hub's before each read, the refresher's at the
+-- start of each pass, and every eval or mapping write's after its commit. The release before this
+-- one never reads a settings change's repo, and a settings change is one it already reads once a
+-- drain has moved it, so the two roll together.
 --
 -- The census answers 0: one function and one trigger, reading and rewriting no row.
 create function repo_projects_changed() returns trigger language plpgsql as $$
 begin
   if tg_op = 'DELETE' then
-    perform delivery_change_log('settings', null, old.repo, null, null, null);
+    perform delivery_change_log_pending('settings', null, old.repo, null, null, null);
   elsif tg_op = 'INSERT'
      or (to_jsonb(old) - 'created_by' - 'created_at') is distinct from (to_jsonb(new) - 'created_by' - 'created_at') then
-    perform delivery_change_log('settings', null, new.repo, null, null, null);
+    perform delivery_change_log_pending('settings', null, new.repo, null, null, null);
   end if;
   return null;
 end $$;
