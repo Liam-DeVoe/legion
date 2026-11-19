@@ -23,20 +23,19 @@ import (
 // is read in Go before a later statement is sent, so each value a later statement needs from an
 // earlier one is derived in the later statement's SQL: an event's id (LatestEvent), and which
 // nodes a node write made or moved, which the node rows themselves carry until the statement that
-// states those facts reads them (nodeMark).
+// states those facts reads them (nodeMarks).
 
 // writeFunctions are the functions a write of graph_nodes and graph_tuples from outside this
-// package goes through: Write, WriteUncaused and Caused in a caller's transaction, and QueueWrite,
-// QueueNodes and QueueCaused, the same writes queued on a write phase's batch; WriteArms and
-// WriteArmsUncaused spliced into a caller's statement; Authored, Reached and SessionRecorded,
-// which run those arms for the writers that record an author, a reached session and a session an
-// ask names, and QueueAuthored, QueueReached and QueueSessionRecorded, which queue them;
-// EraseNode, the erase's delete of a node and its tuples; and FillScopes, the backfill's fill of
-// the project of a node stored with none. Each is a function of the package, never a method, so a
-// call of one is named by the package wherever it is made.
-var writeFunctions = [...]string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
+// package goes through: Write and Caused in a caller's transaction, and QueueWrite, QueueNodes
+// and QueueCaused, the same writes queued on a write phase's batch; WriteArms and
+// WriteArmsUncaused spliced into a caller's statement; QueueAuthored, QueueReached and
+// QueueSessionRecorded, which queue those arms for the writers that record an author, a reached
+// session and a session an ask names; EraseNode, the erase's delete of a node and its tuples; and
+// FillScopes, the backfill's fill of the project of a node stored with none. Each is a function of
+// the package, never a method, so a call of one is named by the package wherever it is made.
+var writeFunctions = [...]string{"Write", "WriteArms", "WriteArmsUncaused", "Caused",
 	"QueueWrite", "QueueNodes", "QueueCaused",
-	"Authored", "Reached", "SessionRecorded", "QueueAuthored", "QueueReached", "QueueSessionRecorded",
+	"QueueAuthored", "QueueReached", "QueueSessionRecorded",
 	"EraseNode", "FillScopes"}
 
 // WriteFunctions is the name of every function of this package a write of the store from outside
@@ -101,14 +100,14 @@ func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
 // tuples: the node first because the projection row's foreign key names it, the event after both
 // because it records what the request did, and the tuples last because each one holds the event
 // that caused it and no tuple may be updated to learn it afterwards. So its nodes go in at the
-// sentinel, marked with what the node write did to each (nodeMark), and QueueCaused, queued after
+// sentinel, marked with what the node write did to each (nodeMarks), and QueueCaused, queued after
 // the event in the same transaction, moves them onto it and appends every fact of the write under
 // it.
 //
 // It is the one shape of that write for every writer it applies to: a comment's request (api's
 // commentStoreWrite), a version's block index (refs.BlockIndexing), a follow of an ask
-// (asks.Followed) and the settle of a delivery attempt (Reached). A writer with nothing to state
-// holds the zero Uncaused, for which Caused writes nothing.
+// (asks.Followed) and the settle of a delivery attempt (QueueReached). A writer with nothing to
+// state holds the zero Uncaused, for which Caused writes nothing.
 type Uncaused struct {
 	// Nodes are the nodes the write wrote. QueueCaused moves each its node write made or moved
 	// onto the event, and, for a write of PlanUncaused, each still at the sentinel, so a node an
@@ -117,7 +116,7 @@ type Uncaused struct {
 	// Tuples are the facts the write states, each appended under the event by Caused, the base
 	// attributes its node write stated among them, which stand after the first baseAt of these.
 	Tuples []UncausedTuple
-	// mark is what the node write left on the rows it made or moved (nodeMark), 0 for a write
+	// mark is what the node write left on the rows it made or moved (nodeMarks), 0 for a write
 	// that marked none.
 	mark int64
 	// baseAt is how many of Tuples the base attributes the node write states follow.
@@ -150,20 +149,10 @@ type UncausedTuple struct {
 	LegacyFromCause bool
 }
 
-// WriteUncaused writes the nodes of the write PlanUncaused holds at once, as a batch of their own
-// (QueueNodes), for a writer with no write phase to queue them on, and answers that write.
-func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) (Uncaused, error) {
-	write := PlanUncaused(nodes, stated)
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueNodes(b, write) }); err != nil {
-		return Uncaused{}, err
-	}
-	return write, nil
-}
-
 // PlanUncaused is a write whose nodes are written before the event that causes it exists, held
 // for that event, and planned before anything is queued: the nodes, at the sentinel, the writer's
 // own facts, stated, and the mark its node write will leave on the rows it makes or moves
-// (nodeMark), from which the statement QueueCaused queues derives the base attributes that node
+// (nodeMarks), from which the statement QueueCaused queues derives the base attributes that node
 // write states, after the writer's own. It writes nothing: the writer queues the node write where
 // it makes it (QueueNodes), before the projection row that names the node, and QueueCaused after
 // its event, and it holds the write between the two, in its read phase if it has one, so both
@@ -268,7 +257,7 @@ func BaseAttributes() []string { return slices.Clone(baseAttributes[:]) }
 // without building the list.
 func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:], kind) }
 
-// The base attributes a node write states for one node, as nodeMark carries them, and
+// The base attributes a node write states for one node, as its mark carries them (nodeMarks), and
 // markAttributes the room the mark leaves for them.
 const (
 	markVisibility = 1 << iota
@@ -285,17 +274,17 @@ var markMade = strconv.Itoa(markVisibility|markState) +
 	` + case when project_key is not null then ` + strconv.Itoa(markProject) + ` else 0 end` +
 	` + case when parties is not null then ` + strconv.Itoa(markParties) + ` else 0 end`
 
-// nodeMark is what a node write leaves on each row it made or moved, until the statement that
-// states that write's facts reads it and moves the row onto its cause (queueAppend): a negative
-// source_event, -(mark*markAttributes + attributes), where mark names the write and attributes
-// are the base attributes it states for the node (markVisibility, markState, and markProject and
-// markParties for a node it made carrying them or a node already there it gave them). No
-// event has a negative id, and a row carries the mark only between two statements of one
-// transaction, the node write and the append, which run in one write phase or one after the other
-// in a transaction that holds the node's row from the first: no other transaction sees it, and
-// the transaction's commit follows the append. That is how the append knows which nodes the write
-// made and which it moved, and which attribute of each moved, without reading the node write's
-// result back in Go between the two.
+// nodeMarks draws the mark a node write leaves on each row it made or moved, until the statement
+// that states that write's facts reads it and moves the row onto its cause (queueAppend): a
+// negative source_event, -(mark*markAttributes + attributes), where mark names the write and
+// attributes are the base attributes it states for the node (markVisibility, markState, and
+// markProject and markParties for a node it made carrying them or a node already there it gave
+// them). No event has a negative id, and a row carries the mark only between two statements of
+// one transaction, the node write and the append, which run in one write phase or one after the
+// other in a transaction that holds the node's row from the first: no other transaction sees it,
+// and the transaction's commit follows the append. That is how the append knows which nodes the
+// write made and which it moved, and which attribute of each moved, without reading the node
+// write's result back in Go between the two.
 //
 // The mark is drawn from a counter of the process, so two writes of one transaction never share
 // one. A node two writes of one transaction write before the first states its facts carries the
@@ -338,7 +327,7 @@ func markedAttributes(row string) string {
 // (Node.Restates) keeps its row's visibility, and its row's state unless that state or the node's
 // is gone: its writer says only whether the node is there, so the row moves to gone when the
 // writer says gone, and to the writer's state only from gone. Both statements leave mark, which
-// the write's caller drew (nextNodeMark), on the rows they made or moved (nodeMark).
+// the write's caller drew (nextNodeMark), on the rows they made or moved (nodeMarks).
 //
 // A write naming a project for a node the row holds in another is refused with ErrProjectMoved,
 // whether or not anything else of the node moved, and the row keeps its project either way: a
@@ -383,7 +372,7 @@ func markedAttributes(row string) string {
 // arrays' sizes, as a cached statement is planned from its sixth run on, a join of two such lists
 // is a nested loop that rescans one per row of the other, which measured 3,009 ms against 193 ms
 // over a 1,999-block version, so what the write did to each node rides on the node's own row
-// instead (nodeMark).
+// instead (nodeMarks).
 func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) error {
 	if len(nodes) == 0 {
 		return nil
@@ -516,7 +505,7 @@ type appending struct {
 	// written with.
 	tuples []Tuple
 	// nodes are the nodes the write wrote, and mark what its node write left on the rows it made
-	// or moved (nodeMark), 0 for none.
+	// or moved (nodeMarks), 0 for none.
 	nodes []Node
 	mark  int64
 	// baseAt is how many of tuples the base attributes follow.
@@ -537,7 +526,7 @@ type appending struct {
 // their cause: the relations first and then the attributes, each in the order the caller stated
 // them, with the base attributes the node write states standing after the first baseAt of the
 // caller's tuples, one node at a time in the order the nodes were given, visibility, state,
-// project, parties (nodeMark); and, beside them, every node the node write marked set at its
+// project, parties (nodeMarks); and, beside them, every node the node write marked set at its
 // cause, with, where sentinel says so, every node still at the sentinel. The rows the move reads
 // are the ones the node write already locked, so the statement takes no node row the write did
 // not hold before, and it reads the marks as its own snapshot holds them, before its own move.

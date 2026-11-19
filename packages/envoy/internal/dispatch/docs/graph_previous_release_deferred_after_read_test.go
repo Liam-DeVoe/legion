@@ -166,7 +166,7 @@ type deferredVersion struct {
 // issue's own counter as that release's events.Append does, and clears the pending settlement.
 // It indexes no block: migration 0122's trigger leaves the version null, and nothing here touches
 // store_owed_at. That release's version write indexes the version's own text with the whole
-// grammar all the same (refs.settleOwed), so the row the version's insert owes the re-index queue
+// grammar all the same (refs.SettleOwed), so the row the version's insert owes the re-index queue
 // is settled here, as moveLinkAsThePreviousRelease settles it, and the version's event is the only
 // way left for this build to reach the document.
 func deferAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, document, slug string) deferredVersion {

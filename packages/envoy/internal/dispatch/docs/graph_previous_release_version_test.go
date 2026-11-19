@@ -453,7 +453,7 @@ func registerProcess(t *testing.T, database *store.Store, commit string) func() 
 //
 // That release's version write also settles the row the version's insert owes the re-index queue
 // (refs_grammar_owed, migration 20261103205041), since it indexes the version's own text with the
-// whole grammar in the same transaction (refs.settleOwed). The stand-in leaves that row, and this
+// whole grammar in the same transaction (refs.SettleOwed). The stand-in leaves that row, and this
 // build's drain of it would owe the document a block index with this build's own mark
 // (oweDocumentIndex): a mark that release never sets. So the row is settled here, before any
 // tick runs, and the only way left for this build to reach the document is the version's event.
@@ -498,7 +498,7 @@ func moveLinkAsThePreviousRelease(t *testing.T, database *store.Store, service *
 // pass of version 1, which writes every block row and the inner paragraph's link row naming no
 // node and states nothing in the store (indexVersionAsThePreviousRelease). The link takes its kind
 // and far end from like, a link to the same issue. The version's insert owes the re-index queue a
-// row, which that release's write settles as it indexes the text (refs.settleOwed), so it is
+// row, which that release's write settles as it indexes the text (refs.SettleOwed), so it is
 // settled here too, as moveLinkAsThePreviousRelease settles its own. It answers the document, its
 // link and the event that created it.
 func createAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, slug string, like blockLinkRow) (string, blockLinkRow, int64) {

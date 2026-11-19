@@ -21,9 +21,9 @@ import (
 // after it names no node, and the census refuses it until someone runs the backfill again, which
 // nothing tells anyone to do. Every tick of this build reads the events after its cursor, and gives
 // each comment those two events name whose row names no node the backfill's own write for that
-// row, in the tick's transaction (readEventsAfterCursor, writeCommentsTheEventsName): the
-// comment's node, the facts its row projects and who wrote it, with the event that stored it as
-// their cause.
+// row, in the tick's transaction (readEventsAfterCursor, through graphcensus.CommentsNamingNoNode
+// and graphcensus.CommentWrite's Queue): the comment's node, the facts its row projects and who
+// wrote it, with the event that stored it as their cause.
 //
 // The stand-in for that release writes the rows and appends the events as its API does: a
 // person's comment on issue CORE-1 with its comment.created, and a session's reply to it with its

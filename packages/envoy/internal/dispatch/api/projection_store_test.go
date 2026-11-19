@@ -144,6 +144,10 @@ var projectedColumns = map[string]map[string]string{
 		// The artifact that owns the comment is the far end of its owned_by tuple, by that
 		// artifact's ref_key (graphstore.CommentFacts).
 		"artifact_id": "the comment's owned_by tuple",
+		// The comment's issue, with its artifact_id and its id, finds the comment.created event
+		// the backfill takes as the cause of every tuple it states for the comment
+		// (graphcensus's readCommentRows).
+		"issue_key": "the comment's tuples, as the event that is their cause",
 	},
 	"document_blocks": {
 		"node_kind":    "the row's node",
@@ -161,6 +165,10 @@ var projectedColumns = map[string]map[string]string{
 		"parent_block_id": "the block's part_of tuple",
 		// The in_document tuple is dated from the row's own created_at (refs.TupleInDocument).
 		"created_at": "the block's in_document tuple, as its time",
+		// The version the block was last written at finds the artifact.version event the
+		// backfill takes as the cause of the block's in_document, visibility and state tuples
+		// (graphcensus's readBlockRows).
+		"changed_version": "the block's in_document, visibility and state tuples, as the event that is their cause",
 	},
 	"block_refs": {
 		"node_kind":    "the row's node",
@@ -296,9 +304,9 @@ var (
 // write of graph_nodes and graph_tuples from outside it goes through (graphstore.WriteFunctions),
 // the one list graphstore's register of the store's write sites reads too
 // (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row follows
-// (Write, WriteUncaused, QueueWrite, QueueNodes), the append of what a write stated under its
-// event (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's
-// delete of a node and its tuples (EraseNode), beside which the erase deletes the node's rows.
+// (Write, QueueWrite, QueueNodes), the append of what a write stated under its event (Caused,
+// QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's delete of a
+// node and its tuples (EraseNode), beside which the erase deletes the node's rows.
 var storeWriters = func() []string {
 	var calls []string
 	for _, name := range graphstore.WriteFunctions() {
@@ -972,22 +980,29 @@ func receiverName(fields *ast.FieldList) string {
 // A statement whose table is built at runtime is held as the projected tables runtimeTableSites
 // says it reaches (runtimeTableWrites), and fails where the list does not name its site.
 //
-// The scan is held to finding the seed's write of comments too (seedCommentsWrite): it is the
-// one writer of comments outside internal/dispatch, so a scan that read less of the repository
-// than it should would still find the other two writers and pass without it.
+// The writers of comments are held to the five commentsRowWriters names, each by the function
+// the scan reports its statement in: a sixth function that makes, unmakes or sets a projected
+// column of a comments row fails, even where a store write reaches it, and so does one of the
+// five the scan no longer finds there. The seed's is one of them, the one writer of comments
+// outside internal/dispatch, so a scan that read less of the repository than it should fails
+// too rather than passing on the writers it did find.
 func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources) {
 	t.Helper()
 	covered, from := sources.reachedByAStoreWrite()
 	if len(sources.writes) == 0 {
-		t.Fatalf("the scan over %d Go source found no write of a projected table, and the three writers of comments alone are known", sources.files)
+		t.Fatalf("the scan over %d Go source found no write of a projected table, and the %d writers of comments alone are known (commentsRowWriters)",
+			sources.files, len(commentsRowWriters))
 	}
 	runtimeWrites, sites := sources.runtimeTableWrites(t)
 	writes := slices.Concat(sources.writes, runtimeWrites)
-	var comments []string
+	// commentWrites is every held statement of comments by the function it is in, as
+	// commentsRowWriters names one.
+	commentWrites := map[string][]string{}
 	held, listed := 0, 0
 	for _, write := range writes {
-		if write.table == "comments" {
-			comments = append(comments, write.file+"#"+write.inside)
+		if write.table == "comments" && write.held {
+			site := write.file + "#" + write.inside
+			commentWrites[site] = append(commentWrites[site], fmt.Sprintf("%s at line %d", write.clause, write.line))
 		}
 		_, reached := covered[write.inside]
 		path := "which no store write reaches"
@@ -1009,16 +1024,34 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 	}
 	t.Logf("%d writes of a projected table found: %d held to the store writer's call path, %d updates of columns no tuple projects listed; %d statements whose table is built at runtime, at %d sites the test names",
 		len(writes), held, listed, len(sources.runtime), sites)
-	if !slices.Contains(comments, seedCommentsWrite) {
-		t.Errorf("the scan found the writes of comments in %v and not the seed's, %s: the seed is one of the writers of comments this check holds to the store writer's path",
-			comments, seedCommentsWrite)
+	for _, site := range slices.Sorted(maps.Keys(commentWrites)) {
+		if !slices.Contains(commentsRowWriters, site) {
+			t.Errorf("%s makes, unmakes or sets a projected column of a comments row (%s), and it is none of the %d writers of comments the check names (commentsRowWriters): a new writer of comments is one the check's own words name before this test admits it",
+				site, strings.Join(commentWrites[site], "; "), len(commentsRowWriters))
+			continue
+		}
+		t.Logf("writer of comments %s: %s", site, strings.Join(commentWrites[site], "; "))
+	}
+	for _, site := range commentsRowWriters {
+		if _, found := commentWrites[site]; !found {
+			t.Errorf("commentsRowWriters names %s, and the scan found no statement there that makes, unmakes or sets a projected column of a comments row: either that writer moved and the list follows it, or the scan read less of the repository than it should",
+				site)
+		}
 	}
 }
 
-// seedCommentsWrite is the seed's write of comments, by the file it is in and the function that
-// issues it, as the scan names a write: cmd/dispatch-seed writes the comments of its plan in
-// batches, each beside the nodes the batch's rows project.
-const seedCommentsWrite = "packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments"
+// commentsRowWriters are the functions whose statements make or unmake a comments row or set a
+// column of it a tuple projects, by the file each is in and the function that issues the
+// statement, as the scan names a write: the comment create, the comment reply, the seed's
+// batches of comments, each beside the nodes the batch's rows project, the comment write of the
+// backfill and of the block-index tick, and the erase (c-projection-write, Verification v108).
+var commentsRowWriters = []string{
+	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.createCommentFor",
+	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
+	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
+	"packages/envoy/internal/dispatch/graphcensus/backfill.go#graphcensus.CommentWrite.Queue",
+	"packages/envoy/internal/dispatch/grapherase/erase.go#grapherase.*Erasure.apply",
+}
 
 // reachedByAStoreWrite answers every function a store write reaches, with the function each was
 // first reached from, so a path can be read back.
@@ -1939,10 +1972,11 @@ func (r *projectionRun) moverBlocks(t *testing.T, ctx context.Context) []moverBl
 // The version that edit settles into is indexed in its own transaction, which appends the
 // part_of tuple from the block to the document and the retraction of its part_of the quote, and
 // updates the block's document_blocks row to name no parent, the column that tuple projects
-// (reconcileBlockParents, refs/block_nodes.go): the row's xmin must be that tuple's. The block's
-// node is not written again, because nothing of it moved, so its xmin is printed beside the two
-// and compared with neither. An update of a column no tuple projects - a comment's body, its
-// resolution, a block's text - is the foreign key's and the census's to hold, not this one's.
+// (planBlockParents and queueBlockParents, refs/block_nodes.go): the row's xmin must be that
+// tuple's. The block's node is not written again, because nothing of it moved, so its xmin is
+// printed beside the two and compared with neither. An update of a column no tuple projects - a
+// comment's body, its resolution, a block's text - is the foreign key's and the census's to hold,
+// not this one's.
 func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	before := run.moverBlocks(t, ctx)

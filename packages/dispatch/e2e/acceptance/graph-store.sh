@@ -550,7 +550,7 @@ want_value G5 "the mention's delivery is a delivered_to tuple into that session"
 # holds stopped: it knows that session by its known-session record and no plugin runs it, so the
 # send is stored for it and answered `state: stopped`, and Dispatch records the attempt `queued`
 # (cybermonklabs/legion#2643). A queued attempt is one the listener took (model.DeliveryTaken), so
-# its settle writes the session's node (graphstore.Reached) and the outbox's record of its receipt
+# its settle writes the session's node (graphstore.QueueReached) and the outbox's record of its receipt
 # states the comment delivered to that session, once (outbox's mentionReached). Before #2643 the
 # same send ended failed, wrote no node, and a fallback copy carried the comment instead.
 #
@@ -997,7 +997,7 @@ expect G13 "what the proved session wrote stays that session's and is on no pers
 # even where every read of the store agrees with it; and each kind it holds holds at least one
 # tuple of this run (tuples_carry).
 #
-#   - authored_by is the comment's own write (graphstore.Authored): the comment's author, the
+#   - authored_by is the comment's own write (graphstore.QueueAuthored): the comment's author, the
 #     event that stored the comment by that author - comment.created, or comment.answered for a
 #     reply (G12) - and the comment's own time, each equal to the record's.
 #   - alias_of is appended by that same write beside it (graphstore's aliases): the actor of the
@@ -1028,7 +1028,7 @@ expect G13 "what the proved session wrote stays that session's and is on no pers
 #     comment's project, the third base attribute this run's nodes carry: a comment's by its own
 #     write at its own time; a person's and a session's that wrote by the comment that
 #     first named them, at that comment's time; a session's an attempt reached by the settle of
-#     that attempt, at the attempt's time (graphstore.Reached), or by an answer it gave, at the
+#     that attempt, at the attempt's time (graphstore.QueueReached), or by an answer it gave, at the
 #     answer's (api's queueAnsweredDelivery); a follower's by the follow, no earlier than it
 #     (asks.Follow); and a role's, a page's, and a session's a copy of a comment reached, by the
 #     outbox, under the same events its claims are stated under, at no earlier time.
