@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { type DispatchWritingBox, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, a key and an edit into the control a send holds disabled, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
@@ -195,6 +195,14 @@ let architectureRead: Mock<typeof api.getArchitecture>;
 let searchRead: Mock<typeof api.search>;
 let knownRead: Mock<typeof api.getKnownSessions>;
 let summaryRead: Mock<typeof api.getIssueSummary>;
+// The pills read the draft through the parse (`draftReading`), and a quote is drawn by the lazy
+// Markdown engine, and several rows read them on the fake clock, where the engine's load cannot
+// land. The rows run in random order, so the file loads the engine before its first row,
+// whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 beforeEach(() => {
   collaboratorsRead = spyOn(api, "getIssueCollaborators").mockResolvedValue(issueCollaborators());
   architectureRead = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());

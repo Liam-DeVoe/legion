@@ -2586,7 +2586,6 @@ test("a refused send keeps the message on screen and says why", async () => {
 // formatting is drawn, and a mention the picker wrote reads as the party's name. Drawn as the
 // characters typed, the turn would keep the asterisks.
 test("a held message reads as the message it becomes, never as the source typed", async () => {
-  await warmMarkdownRenderer();
   const user = userEvent.setup();
   spies.push(
     spyOn(api, "createAgentMessage").mockRejectedValue(

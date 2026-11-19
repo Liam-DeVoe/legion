@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
@@ -62,6 +62,7 @@ import {
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { relativeTimeLabel, Timestamp } from "../refs/Timestamp";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS, STATE_LINES } from "./page-words";
@@ -217,6 +218,13 @@ interface Stubs {
 }
 
 let stubs: Stubs;
+
+// A control's stored words - a step's reason, a person's line - are drawn by the lazy Markdown
+// engine, and the rows read each element's marks as soon as the control mounts. The rows run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 beforeEach(() => {
   stubs = {
