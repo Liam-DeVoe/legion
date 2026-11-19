@@ -18982,7 +18982,7 @@ console.log(JSON.stringify(args));
   test("a Dispatch answering 503 with nothing cached logs one line per failure episode, whether the request shows the failure or keeps the line sent", async () => {
     const id = "ses_answers_503";
     process.env.DISPATCH_URL = "http://dispatch-503.test";
-    process.env.DISPATCH_TOKEN = "answers-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     let answering = false;
     const reads: string[] = [];
     globalThis.fetch = async (input, init) => {
