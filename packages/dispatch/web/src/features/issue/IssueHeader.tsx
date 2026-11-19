@@ -591,6 +591,8 @@ export function IssueHeader({
               {whoseTurn}
             </span>
           )}
+          {/* The priorities the issue advances, each the chip of its place in the order, and the
+              picker's "+": no word and no title on the row, so they take what a tag takes. */}
           <IssuePriorityLine disabled={isClosed} issue={issue} />
           {issue.created_by == null ? null : (
             <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>

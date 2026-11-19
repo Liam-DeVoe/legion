@@ -13,9 +13,9 @@ import { writesOf } from "../writes/write-store";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
 /**
- * The issue header's `Advances` item (INFRA-2947, R16 and R3): what it draws for a priority of
- * the issue's own and for one it inherits, what it draws for an issue that advances none, and
- * the writes its picker, the shared `MultiSelect`, makes when it closes.
+ * The priorities of the issue header's row of chips (INFRA-2947, R16 and R3): what it draws for a
+ * priority of the issue's own and for one it inherits, what it draws for an issue that advances
+ * none, and the writes its picker, the shared `MultiSelect`, makes when it closes.
  */
 
 function priority(id: string, title: string): PriorityRow {
@@ -113,8 +113,9 @@ test("the line names the priority an issue advances, by its order and title, and
       name: "#2 Rocq and Lean speed work restarted",
     });
     expect(link).toHaveAttribute("href", "/priorities/rocq-lean");
-    expect(view.q.getByTestId("issue-advances")).toHaveTextContent("Advances");
-    expect(view.q.queryByText("inherited")).toBeNull();
+    expect(link).toHaveTextContent("#2");
+    expect(view.q.getByRole("group", { name: "Advances" })).toContainElement(link);
+    expect(view.q.queryByRole("link", { name: /inherited/ })).toBeNull();
     // The issue's own relation is the issue's to retract, so the picker holds it ticked.
     await user.click(view.trigger());
     const listbox = await view.picker();
@@ -126,13 +127,18 @@ test("the line names the priority an issue advances, by its order and title, and
   }
 });
 
-test("a priority an issue inherits says so on the same line, and is not the child's to remove", async () => {
+test("a priority an issue inherits says so in its chip's name and tooltip, and is not the child's to remove", async () => {
   const user = userEvent.setup();
   const view = renderLine([{ id: "oss-verify", inherited: true }]);
   try {
-    const link = await view.q.findByRole("link", { name: "#3 OSS Verify: curl, TLS and Rustls" });
+    const link = await view.q.findByRole("link", {
+      name: "#3 OSS Verify: curl, TLS and Rustls, inherited",
+    });
     expect(link).toHaveAttribute("href", "/priorities/oss-verify");
-    view.q.getByText("inherited");
+    expect(link).toHaveAttribute(
+      "title",
+      "OSS Verify: curl, TLS and Rustls, inherited from an issue above"
+    );
     // The picker offers no row for it: that relation is the ancestor's, and a row is a toggle.
     await user.click(view.trigger());
     const listbox = await view.picker();
@@ -156,6 +162,34 @@ test("an issue that advances none carries no line and no empty label, and reads 
     expect(view.trigger()).toHaveAttribute("aria-haspopup", "listbox");
     // The list of priorities waits for that control: an issue advancing none reads nothing.
     await waitFor(() => expect(view.listPriorities).not.toHaveBeenCalled());
+  } finally {
+    view.unmountAll();
+  }
+});
+
+// The issue header's details row holds the line beside the labels and the route, which is no room
+// for a priority's title: each priority is a chip of its place alone, its title in its name and in
+// the shared tooltip, and no word stands before them.
+test("each priority is a chip whose visible text is its #N alone, and the line draws no Advances", async () => {
+  const view = renderLine([
+    { id: "rocq-lean", inherited: false },
+    { id: "evals-now", inherited: true },
+  ]);
+  try {
+    const own = await view.q.findByRole("link", { name: "#2 Rocq and Lean speed work restarted" });
+    const inherited = view.q.getByRole("link", {
+      name: "#1 Evals collecting data now, inherited",
+    });
+    expect(own.textContent).toBe("#2");
+    expect(inherited.textContent).toBe("#1");
+    expect(own).toHaveAttribute("title", "Rocq and Lean speed work restarted");
+    expect(inherited).toHaveAttribute(
+      "title",
+      "Evals collecting data now, inherited from an issue above"
+    );
+    // Nothing of the line is a word: the two chips and the picker's "+".
+    expect(view.container.textContent).toBe("#2#1+");
+    expect(view.q.queryByText("Advances")).toBeNull();
   } finally {
     view.unmountAll();
   }

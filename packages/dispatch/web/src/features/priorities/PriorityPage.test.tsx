@@ -3,7 +3,7 @@ import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the click below leaves the page with the focus still in the title's field, which user-event has no form for: its click moves the focus first, and the field's blur would write before the page goes.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptWrites } from "../../__tests__/kept-sends-harness";
@@ -218,17 +218,50 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   return { client, editors, listing, patch, priorities, reload, view, writtenElsewhere };
 }
 
+/** The page's own heading, the priority's title, in its header: the description is drawn as the
+ *  markdown it is, and may hold a first-level heading of its own. */
+function titleHeading(): HTMLElement {
+  return within(screen.getByTestId("priority-header")).getByRole("heading", { level: 1 });
+}
+
+/** The title's field, opened as a reader opens it: a click on the heading the title reads as. */
+async function openTitle(user: UserEvent): Promise<HTMLTextAreaElement> {
+  await user.click(await waitFor(titleHeading));
+  return screen.getByRole("textbox", { name: "Title" }) as HTMLTextAreaElement;
+}
+
+// A title as long as production's run (up to 94 characters) reads whole, as the heading of the
+// page: it is no field until the reader opens it, as an issue's title is in its header.
+test("the title is a heading holding the whole title, and no field shows until it is clicked", async () => {
+  const user = userEvent.setup();
+  const long =
+    "Every Legion phase worker reaches a merged pull request without a person's hand in between it";
+  const { writtenElsewhere } = page();
+  await screen.findByRole("link", { name: "‹ Priorities" });
+  writtenElsewhere({ title: long });
+  const heading = await screen.findByRole("heading", { level: 1, name: long });
+  expect(heading.textContent).toBe(long);
+  expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
+  await user.click(heading);
+  const title = screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
+  expect(title.value).toBe(long);
+  expect(document.activeElement).toBe(title);
+  expect(heading.contains(title)).toBe(true);
+});
+
 test("the header carries the title in place and the owner, and no line of order or counts", async () => {
+  const user = userEvent.setup();
   page();
-  const title = await screen.findByRole("textbox", { name: "Title" });
-  expect((title as HTMLInputElement).value).toBe("Rocq and Lean speed work restarted");
+  expect((await waitFor(titleHeading)).textContent).toBe("Rocq and Lean speed work restarted");
   // The order and the counts are the priorities list's to show (INFRA-3221, R13): this page
   // carries no line about either.
   expect(screen.queryByText("#2")).toBeNull();
   expect(screen.queryByText(/in the order|#\d/)).toBeNull();
   expect(screen.queryByText(/\b(Active|In flight|Triage, Todo|Backlog, icebox) \d/)).toBeNull();
-  // The owner is the picker the page is drawn as: it offers the owners the deployment already
-  // uses and takes one nobody has written yet, so it is a combobox and not a plain field.
+  // The owner is a chip, which opens into the picker the field is drawn as: it offers the owners
+  // the deployment already uses and takes one nobody has written yet, so it is a combobox and not
+  // a plain field.
+  await user.click(screen.getByRole("button", { name: "Owner BET and LINUX controllers" }));
   expect(screen.getByRole("combobox", { name: "Owner" })).toBeDefined();
   expect(screen.getByRole("link", { name: "‹ Priorities" }).getAttribute("href")).toBe(
     "/priorities"
@@ -316,10 +349,10 @@ test("the reader's description kept beside the editor outlives the disclosure cl
 test("a title the reader empties writes nothing, and left, shows the title again", async () => {
   const user = userEvent.setup();
   const { patch } = page();
-  const title = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
+  const title = await openTitle(user);
   await user.clear(title);
   await user.tab();
-  expect(title.value).toBe("Rocq and Lean speed work restarted");
+  expect(titleHeading().textContent).toBe("Rocq and Lean speed work restarted");
   expect(patch).not.toHaveBeenCalled();
 });
 
@@ -328,7 +361,7 @@ test("a title the reader empties writes nothing, and left, shows the title again
 test("the title holds no more than an issue title may, so no longer title is sent", async () => {
   const user = userEvent.setup();
   const { patch } = page();
-  const title = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
+  const title = await openTitle(user);
   expect(title.maxLength).toBe(ISSUE_TITLE_MAX);
   await user.clear(title);
   await user.paste("t".repeat(ISSUE_TITLE_MAX + 1));
@@ -345,7 +378,7 @@ test("the title's notice stands outside the heading, which is named by the title
   // however long the typing takes here.
   const user = userEvent.setup({ delay: null });
   const { patch, writtenElsewhere } = page();
-  const title = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
+  const title = await openTitle(user);
   await onFakeClock(async () => {
     await user.type(title, ", mine");
     writtenElsewhere({ title: "Written elsewhere" });
@@ -358,9 +391,15 @@ test("the title's notice stands outside the heading, which is named by the title
   // notice, which is drawn outside it.
   const heading = screen.getByRole("heading", { level: 1, name: "Written elsewhere" });
   expect(heading.contains(title)).toBe(true);
-  // The field and its notice stay tied all the same.
+  expect(heading.contains(notice)).toBe(false);
+  // The field and its notice stay tied all the same, and so do the heading and the notice once
+  // the reader has left the field.
   expect(notice.id).not.toBe("");
   expect(title.getAttribute("aria-describedby")).toBe(notice.id);
+  await user.tab();
+  expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
+  expect(heading.getAttribute("aria-describedby")).toBe(notice.id);
+  expect(patch).not.toHaveBeenCalled();
 });
 
 test("the keyboard reaches the description's editor from the disclosure above it", async () => {
@@ -395,20 +434,25 @@ test("an empty description is, for a writer, the prompt above the empty editor",
   expect(box.getAttribute("contenteditable")).toBe("true");
 });
 
-test("the owner is a control beside the title and writes the owner", async () => {
+test("the owner is a chip beside the title, which opens into its field and writes the owner", async () => {
   const user = userEvent.setup();
   const { patch } = page();
-  const owner = await screen.findByRole("combobox", { name: "Owner" });
+  await user.click(await screen.findByRole("button", { name: "Owner BET and LINUX controllers" }));
+  const owner = screen.getByRole("combobox", { name: "Owner" });
+  expect(document.activeElement).toBe(owner);
   await user.clear(owner);
   await user.type(owner, "LINUX controller");
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.[1]).toEqual({ owner: "LINUX controller" });
+  // Left, the field is the chip again, reading what the reader wrote.
+  expect(screen.queryByRole("combobox", { name: "Owner" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Owner LINUX controller" })).toBeDefined();
 });
 
 test("the page carries no tab strip, no version control and no delete", async () => {
   page();
-  await screen.findByRole("textbox", { name: "Title" });
+  await waitFor(titleHeading);
   expect(screen.queryByRole("tablist")).toBeNull();
   expect(screen.queryAllByRole("tab")).toEqual([]);
   expect(screen.queryByRole("button", { name: /delete|retire|remove/i })).toBeNull();
@@ -433,6 +477,23 @@ test("the work under the priority is the issues table, scoped and under its own 
   ).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
+});
+
+// The work table opens with what a reader of one priority's work reads first, so Title, which
+// takes what the others leave, is wide enough to read beside the margin. Every other column of
+// the Issues table is one tick away under Columns.
+test("the work table opens with the issue, its title, its status and its project", async () => {
+  const user = userEvent.setup();
+  page("rocq-lean", [issue("CORE-1", ["rocq-lean"])]);
+  const work = await screen.findByRole("region", { name: "Work advancing this priority" });
+  await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 });
+  await user.click(within(work).getByRole("button", { name: "Columns" }));
+  const menu = screen.getByRole("dialog", { name: "Columns" });
+  for (const name of ["Key", "Title", "Status", "Project"])
+    expect(within(menu).getByRole("checkbox", { name })).toBeChecked();
+  for (const name of ["Claimed by", "Updated", "Priority", "Queue", "Epic", "Assignee"])
+    expect(within(menu).getByRole("checkbox", { name })).not.toBeChecked();
+  await user.keyboard("{Escape}");
 });
 
 test("j, k, x and Enter act on the work rows, the one table the page draws", async () => {
@@ -534,7 +595,7 @@ async function refusedTitle(
   // The clock is held, so the typing does not rest and write part of it before the reader leaves
   // the field, however long the typing takes here.
   const user = userEvent.setup({ delay: null });
-  const title = await screen.findByRole("textbox", { name: "Title" });
+  const title = await openTitle(user);
   priorities.mockResolvedValue(writtenOver("rocq-lean", { title: "Theirs" }));
   patch.mockRejectedValueOnce(PRIORITY_TITLE_CHANGED);
   await onFakeClock(async () => {
@@ -543,7 +604,8 @@ async function refusedTitle(
   await user.tab();
   const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
   expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
-  expect(title).toHaveValue("Theirs");
+  // Left, the field is the heading again, which reads the other person's title.
+  expect(titleHeading().textContent).toBe("Theirs");
   return { notice, user };
 }
 
@@ -554,7 +616,7 @@ async function keptTitle(writtenElsewhere: (overrides: Partial<PriorityRow>) => 
   // The clock is held, so the typing has not rested when the other person's title arrives,
   // however long the typing takes here.
   const user = userEvent.setup({ delay: null });
-  const title = await screen.findByRole("textbox", { name: "Title" });
+  const title = await openTitle(user);
   await onFakeClock(async () => {
     await user.type(title, ", mine");
     writtenElsewhere({ title: "Theirs" });
@@ -656,7 +718,7 @@ test.each(titleFlows)("a title %s outlives a reload, and keeping theirs lets it 
   expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   expect(writesOf(client).rows()).toEqual([]);
   expect(keptWrites()).toEqual([]);
-  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Theirs");
+  expect(titleHeading().textContent).toBe("Theirs");
   expect(patch).toHaveBeenCalledTimes(sent ? 1 : 0);
 });
 
@@ -684,9 +746,7 @@ test("going to another priority's page hands the title another person's change r
   const { client, patch, priorities } = page();
   const { user } = await refusedTitle(priorities, patch);
   await user.click(screen.getByRole("link", { name: "The runbook's page" }));
-  await waitFor(() =>
-    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("The fleet has a runbook")
-  );
+  await waitFor(() => expect(titleHeading().textContent).toBe("The fleet has a runbook"));
   const line = await screen.findByTestId("pending-writes");
   expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(
     `${ROWS[1]?.title}, mine`
@@ -704,7 +764,7 @@ test("a title typed while a refused one waits for its read is on the shell's lin
   // The clock is held, so no typing rests long enough to write before the field leaves.
   const user = userEvent.setup({ delay: null });
   const { client, patch, priorities } = page();
-  const title = await screen.findByRole("textbox", { name: "Title" });
+  const title = await openTitle(user);
   // The read the refusal starts never answers, so the refused write's text waits for it.
   priorities.mockImplementation(() => Promise.withResolvers<Priorities>().promise);
   patch.mockRejectedValueOnce(PRIORITY_TITLE_CHANGED);
@@ -716,7 +776,9 @@ test("a title typed while a refused one waits for its read is on the shell's lin
       await settle();
     });
     expect(writes.rows()).toMatchObject([{ claimed: true, status: "refused" }]);
-    await user.type(title, ", more");
+    // Left, the field is the heading again, which the reader opens to write on.
+    await user.click(titleHeading());
+    await user.type(screen.getByRole("textbox", { name: "Title" }), ", more");
     // A click alone, which leaves the focus in the field as it goes with the page.
     fireEvent.click(screen.getByRole("link", { name: "‹ Priorities" }));
   });

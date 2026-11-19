@@ -1386,7 +1386,8 @@ test("in Details' row every word of the claim wraps, and none is held whole agai
 
 // Inside `NoTooltips` the priorities' picker trigger in a row of Details is, from `md`, as tall as
 // the controls beside it there (the repository's text and the box it opens, `main`'s input, read
-// from a row of Details), and keeps the 44 px below `md`. Outside, its class is `main`'s.
+// from a row of Details), and keeps the 44 px below `md`. Outside, it is the 28 px pill of the
+// issue header's details row from `md` (INFRA-2947).
 test("the priorities' trigger has the height of its siblings in Details", async () => {
   const user = userEvent.setup();
   const repository = draw(
@@ -1421,7 +1422,7 @@ test("the priorities' trigger has the height of its siblings in Details", async 
         expect(classOf(trigger)).toEqual(expect.arrayContaining(["min-h-11", "py-2", "md:py-1"]));
       } else {
         expect(trigger.getAttribute("class")).toBe(
-          "inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100"
+          "inline-flex min-h-11 min-w-7 shrink-0 items-center justify-center rounded-full px-2 text-sm leading-none whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-7 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400"
         );
       }
     } finally {
@@ -2044,16 +2045,18 @@ test("the default shapes keep main's class strings", async () => {
     // `main`'s features/issue/IssueLabels.tsx: the line at `variant="rail"`.
     "IssueLabels rail line": "relative flex shrink-0 flex-nowrap items-center gap-1",
 
-    "IssuePriorityLine line":
-      "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
-    "IssuePriorityLine entry": "flex shrink-0 items-center gap-1",
-    "IssuePriorityLine link":
-      "dispatch-inline-link shrink-0 whitespace-nowrap underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
-    "IssuePriorityLine inherited": "shrink-0 text-xs text-slate-500 dark:text-slate-400",
+    // INFRA-2947's features/priorities/IssuePriorityLine.tsx, outside `NoTooltips`: the line in
+    // the issue header's details row, each priority's link and the chip it holds
+    // (`PriorityChip.tsx`), an inherited one's, and the picker's trigger; then the refusal of the
+    // priorities' read and that of a save, which keep their width, as the row scrolls.
+    "IssuePriorityLine line": "flex shrink-0 items-center gap-1",
+    "IssuePriorityLine link": "group inline-flex shrink-0 items-center",
+    "IssuePriorityLine chip":
+      "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-transparent bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
+    "IssuePriorityLine inherited chip":
+      "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-dashed border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400",
     "IssuePriorityLine trigger":
-      "inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100",
-    // `main`'s features/priorities/IssuePriorityLine.tsx: the refusal of the priorities' read and
-    // that of a save.
+      "inline-flex min-h-11 min-w-7 shrink-0 items-center justify-center rounded-full px-2 text-sm leading-none whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-7 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
     "IssuePriorityLine priorities unread": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
     "IssuePriorityLine not saved": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
 
@@ -2548,9 +2551,12 @@ test("the default shapes keep main's class strings", async () => {
     const advances = within(caseOf(view, "priorities"));
     const priorityLink = advances.getByRole("link", { name: /Rocq and Lean/ });
     classAt("IssuePriorityLine line", advances.getByTestId("issue-advances"));
-    classAt("IssuePriorityLine entry", priorityLink.parentElement);
     classAt("IssuePriorityLine link", priorityLink);
-    classAt("IssuePriorityLine inherited", advances.getByText("inherited"));
+    classAt("IssuePriorityLine chip", priorityLink.firstElementChild);
+    classAt(
+      "IssuePriorityLine inherited chip",
+      advances.getByRole("link", { name: /, inherited$/ }).firstElementChild
+    );
     classAt(
       "IssuePriorityLine trigger",
       advances.getByRole("button", { name: CONTROL_LABELS.edit_priorities })

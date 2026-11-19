@@ -72,9 +72,10 @@ const NONE_LIVE =
 
 /** The columns each fault list opens with, by their headers (INFRA-2947, R6): the issue, its
  *  title, its status, who holds it, how long it has stood and its project; and on the parked
- *  list when it was moved there and by whom. Every other column of the Issues table opens
- *  hidden, for a reader to show from its column control; no list has a Reason column until a
- *  reason is recorded (dispatch://INFRA-2934). */
+ *  list when it was moved there and by whom, beside the priority it is parked under. There the
+ *  move is how long the work has stood, so Updated opens hidden, one tick away under Columns.
+ *  Every other column of the Issues table opens hidden, for a reader to show from its column
+ *  control; no list has a Reason column until a reason is recorded (dispatch://INFRA-2934). */
 const FAULT_COLUMNS = ["Key", "Title", "Status", "Claimed by", "Updated", "Project"] as const;
 const PARKED_COLUMNS = ["Advances", "Moved there"] as const;
 const HIDDEN_COLUMNS = [
@@ -210,6 +211,18 @@ const PHONE = { height: 844, width: 390 } as const;
 
 const section = (page: Page, label: string): Locator =>
   page.locator(`section[aria-label="${label}"]`);
+
+/** A priority's title on its own page: the heading of the page's header, which the description,
+ *  drawn as the markdown it is, may hold first-level headings beside. */
+const titleHeading = (page: Page): Locator =>
+  page.getByTestId("priority-header").getByRole("heading", { level: 1 });
+
+/** The box a priority's title is written in, which a click on its heading opens, as the reader
+ *  opens it. */
+async function openTitle(page: Page): Promise<Locator> {
+  await titleHeading(page).click();
+  return page.getByRole("textbox", { name: "Title" });
+}
 
 /** Where a section's box starts down the page, which is what says one part of a page stands
  *  above or below another, or has moved. Read once the section shows. */
@@ -582,10 +595,12 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect(parked.getByRole("table")).toHaveAccessibleName(PARKED_TABLE);
     await expect(page.getByRole("table")).toHaveCount(1);
     await expectRowOrder(parkedTable, [`${seed.archive} Ledger archive`]);
+    // It opens with the fault's columns but Updated, beside the priority each row is parked under
+    // and the move, which is how long the work has stood.
     await expectColumns(
       parkedTable,
-      [...FAULT_COLUMNS, ...PARKED_COLUMNS],
-      [...HIDDEN_COLUMNS.filter((name) => name !== "Advances"), "Reason"]
+      [...FAULT_COLUMNS.filter((name) => name !== "Updated"), ...PARKED_COLUMNS],
+      [...HIDDEN_COLUMNS.filter((name) => name !== "Advances"), "Updated", "Reason"]
     );
     await expect.poll(() => tablesOverflow(page)).toEqual({ [PARKED_TABLE]: 0 });
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
@@ -605,7 +620,13 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     // Nobody claimed this one: this column says who holds the work, so it is empty here, as
     // every Issues table draws an issue nobody holds.
     await expect(await childCell("Claimed by")).toHaveText("");
-    await expect((await childCell("Updated")).locator("time")).toHaveCount(1);
+    // Updated is one tick away under Columns, unticked.
+    await parked.getByRole("button", { name: "Columns" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Columns" }).getByRole("checkbox", { name: "Updated" })
+    ).not.toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Columns" })).toHaveCount(0);
     // Moved there: the moment the seed moved it into the backlog, and who moved it.
     const moved = await childCell("Moved there");
     await expect(moved.locator("time")).toHaveCount(1);
@@ -866,12 +887,15 @@ test("a priority row opens its description, its title its page, and what is writ
 
     // Renamed and described on its own page, which its title opens: no edit mode and no Save
     // there, so leaving each field writes it, and the list it is read from again names it so.
+    // The title reads as the page's heading until a click opens it.
     const renamed = "Cut the review queue in half";
     const explained = "Every review is answered within a day.";
     await page.getByRole("link", { exact: true, name: seed.titles[1] }).click();
     await expect(page).toHaveURL(`/priorities/${seed.ids[1]}`);
-    await page.getByRole("textbox", { name: "Title" }).fill(renamed);
-    await page.getByRole("textbox", { name: "Title" }).blur();
+    const ownTitle = await openTitle(page);
+    await ownTitle.fill(renamed);
+    await ownTitle.blur();
+    await expect(titleHeading(page)).toHaveText(renamed);
     const ownEditor = page.getByRole("textbox", { exact: true, name: "Description" });
     await ownEditor.click();
     await page.keyboard.type(explained);
@@ -957,10 +981,13 @@ test("a priority row opens its description, its title its page, and what is writ
   }
 });
 
-// @firefox: Firefox starts no HTML drag whose `dragstart` carries no data, so the grip writes the
-// id it moves into the drag (`priorities-columns.tsx`); a drag that carried none moved nothing
-// there. @webkit: WebKit dispatches the drag's `dragover` and `drop` to the row under it by its
-// own rule, which the row's `preventDefault` must meet for the drop to land.
+// @firefox: this row proves that a drag by the grip writes the order in Firefox as in Chromium.
+// It does not prove the grip's `setData` line (`priorities-columns.tsx`), which a person's Firefox
+// needs, since it starts no HTML drag whose `dragstart` carries no data: Playwright's Firefox
+// passes this row with that line taken out. The unit row "dragging a row onto another writes the
+// place it landed" (`PrioritiesPage.test.tsx`) is what holds it. @webkit: WebKit dispatches the
+// drag's `dragover` and `drop` to the row under it by its own rule, which the row's
+// `preventDefault` must meet for the drop to land.
 // SLOW(>=2s): the seed, a priority added, a row dragged, and a reload that reads the order back.
 test("a priority added through the form and a row dragged write the order, which reads back after a reload @firefox @webkit", async ({
   browser,
@@ -1111,8 +1138,9 @@ test("another person's rename and delete of a priority redraw an open page with 
     const renamed = "Retire the old ledger for good";
     const writer = await bob.newPage();
     await writer.goto(`/priorities/${seed.ids[2]}`);
-    await writer.getByRole("textbox", { name: "Title" }).fill(renamed);
-    await writer.getByRole("textbox", { name: "Title" }).blur();
+    const writersTitle = await openTitle(writer);
+    await writersTitle.fill(renamed);
+    await writersTitle.blur();
     await expectRowOrder(priorities, [
       `#1 ${seed.titles[0]}`,
       `#2 ${seed.titles[1]}`,
@@ -1158,16 +1186,25 @@ test("a priority's own page writes its title and description and lists only its 
     await page.goto(`/priorities/${seed.ids[0]}`);
 
     await expect(page.getByRole("link", { name: "‹ Priorities" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(seed.titles[0]);
-    await expect(page.getByRole("combobox", { name: "Owner" })).toHaveValue("alice");
+    // The header's heading is the title, whole, and no field shows until a click opens it. The
+    // owner is a chip under it, which a click opens into its field; left, it is the chip again.
+    await expect(titleHeading(page)).toHaveText(seed.titles[0]);
+    await expect(page.getByRole("textbox", { name: "Title" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Owner alice" }).click();
+    const owner = page.getByRole("combobox", { name: "Owner" });
+    await expect(owner).toHaveValue("alice");
+    await owner.blur();
+    await expect(owner).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Owner alice" })).toBeVisible();
     // One page and no tab strip: everything of the priority is on this page, and what happened
     // to it is in the margin beside it.
     await expect(page.getByRole("tablist")).toHaveCount(0);
     await expect(page.getByRole("tab")).toHaveCount(0);
 
     const retitled = "Ship the daemon to every machine";
-    await page.getByRole("textbox", { name: "Title" }).fill(retitled);
-    await page.getByRole("textbox", { name: "Title" }).blur();
+    const title = await openTitle(page);
+    await title.fill(retitled);
+    await title.blur();
 
     // The description is the editor Dispatch's documents are written in (`features/doc/
     // editor.ts`), named for the description: the markdown it is, drawn as a heading and a
@@ -1221,7 +1258,7 @@ test("a priority's own page writes its title and description and lists only its 
       (await listPriorities()).priorities?.find((one) => one.id === seed.ids[0]);
     await expect.poll(async () => (await stored())?.description ?? "").toContain("written down");
     await page.reload();
-    await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(retitled);
+    await expect(titleHeading(page)).toHaveText(retitled);
     await expect(editor.getByRole("listitem").last()).toHaveText(line);
     await expect(editor.getByRole("listitem").last().locator("strong")).toHaveText("roll-back");
     const row = await stored();
@@ -1278,10 +1315,12 @@ test("what a reader types into a priority survives a reload made before the typi
     // The title, typed and the page reloaded at once: inside the half second a write waits for
     // the typing to rest. Leaving by a reload or by closing the tab is leaving the field as much
     // as a click elsewhere is, and what the reader typed is theirs.
-    const title = page.getByRole("textbox", { name: "Title" });
-    await expect(title).toHaveValue(seed.titles[0]);
+    // The title is the header's heading, which a click opens into the box it is written in.
+    const title = titleHeading(page);
+    await expect(title).toHaveText(seed.titles[0]);
     await pauseClock(page);
     await title.click();
+    await expect(page.getByRole("textbox", { name: "Title" })).toBeFocused();
     await page.keyboard.press("End");
     await page.keyboard.type(" now");
     await page.reload();
@@ -1359,6 +1398,8 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
         if (answer.status() === 409) refused.push(sent.postData() ?? "");
       }
     });
+    // The title is the header's heading, which a click opens into the box it is written in.
+    const heading = titleHeading(page);
     const title = page.getByRole("textbox", { name: "Title" });
     const notice = page.getByRole("alert", { name: "Title, changed by another person" });
 
@@ -1372,8 +1413,8 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
       await route.continue();
     });
     await page.goto(`/priorities/${seed.ids[0]}`);
-    await expect(title).toHaveValue(seed.titles[0]);
-    await title.click();
+    await expect(heading).toHaveText(seed.titles[0]);
+    await heading.click();
     await page.keyboard.press("End");
     await page.keyboard.type(" first");
     await title.blur();
@@ -1383,13 +1424,24 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
     await expect(notice).toContainText(`${seed.titles[0]} first`);
     await expect.poll(() => refused.length).toBe(1);
     // She uses her text, and it lands over Bob's.
+    const used = page.waitForResponse(
+      (answer) =>
+        answer.request().method() === "PATCH" &&
+        answer.url().endsWith(`/api/v1/priorities/${seed.ids[0]}`)
+    );
     await notice.getByRole("button", { name: "Use my text" }).click();
+    await used;
     await expect
       .poll(
         async () =>
           (await listPriorities()).priorities?.find((one) => one.id === seed.ids[0])?.title
       )
       .toBe(`${seed.titles[0]} first`);
+    // The page has taken Dispatch's answer to that write once the shell's line of pending
+    // writes, which names the write from its press until its answer is taken, is gone: the
+    // answer has reached the page by now, so only then does the absence of a refusal say
+    // anything.
+    await expect(page.getByTestId("pending-writes")).toHaveCount(0);
     // Her text is written, so nothing on the page says it was not - neither a refusal nor a
     // conflict on the shell's line - and no control on it sends the refused body again.
     await expect(page.getByText(/^Not saved/)).toHaveCount(0);
@@ -1406,13 +1458,13 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
       }
       await route.continue();
     });
-    await title.click();
+    await heading.click();
     await page.keyboard.press("End");
     await page.keyboard.type(" second");
     await title.blur();
     await patchPriority(seed.ids[0], { title: "Bob's second rename" }, { login: "bob" });
     await page.reload();
-    await expect(title).toHaveValue("Bob's second rename");
+    await expect(heading).toHaveText("Bob's second rename");
     await expect.poll(() => refused.length).toBe(2);
     // The page has taken the resumed write's 409 once its notice holds her text: after the
     // reload no write of hers is out, so only that refusal draws it. Only then does the line's
@@ -1436,13 +1488,28 @@ test("an issue's header names the priorities it advances and links to each", asy
     const page = await context.newPage();
     await priorityPage(page);
     await page.goto(`/issues/${seed.rollout}`);
-    const line = page.getByTestId("issue-advances");
-    await expect(line).toContainText("Advances");
+    // Each priority is a chip of its place alone, the first item of the header's details row,
+    // with its title in its name and its tooltip: no word of the header says "Advances", and no
+    // row of the header is the priorities'. At 1440 by 900 the chip is in view with the row
+    // unscrolled, so no title pushes the rest of the row out of sight.
+    const header = page.getByTestId("issue-header");
+    const rail = header.getByTestId("issue-metadata-rail");
+    const line = rail.getByTestId("issue-advances");
     const link = line.getByRole("link", { name: `#1 ${seed.titles[0]}` });
     await expect(link).toBeVisible();
+    await expect(link).toHaveText("#1");
+    await expect(link).toHaveAttribute("title", seed.titles[0]);
+    await expect(header).not.toContainText("Advances");
+    expect(await rail.evaluate((element) => element.scrollLeft)).toBe(0);
+    const railBox = await rail.boundingBox();
+    const lineBox = await line.boundingBox();
+    expect((lineBox?.x ?? Number.NaN) + (lineBox?.width ?? 0)).toBeLessThanOrEqual(
+      (railBox?.x ?? Number.NaN) + (railBox?.width ?? 0)
+    );
+    expect(lineBox?.width ?? Number.POSITIVE_INFINITY).toBeLessThan(120);
     await link.click();
     await expect(page).toHaveURL(`/priorities/${seed.ids[0]}`);
-    await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(seed.titles[0]);
+    await expect(titleHeading(page)).toHaveText(seed.titles[0]);
 
     // An issue that advances none carries no line at all: no label, no name, only the trigger of
     // the picker that places it under a priority.
@@ -1456,8 +1523,14 @@ test("an issue's header names the priorities it advances and links to each", asy
     // row the child could add is read first, so the absence is read off a list that has loaded.
     await page.goto(`/issues/${seed.child}`);
     const inherited = page.getByTestId("issue-advances");
-    await expect(inherited.getByRole("link", { name: `#3 ${seed.titles[2]}` })).toBeVisible();
-    await expect(inherited).toContainText("inherited");
+    const parked = inherited.getByRole("link", { name: `#3 ${seed.titles[2]}` });
+    await expect(parked).toBeVisible();
+    await expect(parked).toHaveText("#3");
+    await expect(parked).toHaveAccessibleName(`#3 ${seed.titles[2]}, inherited`);
+    await expect(parked).toHaveAttribute(
+      "title",
+      `${seed.titles[2]}, inherited from an issue above`
+    );
     await page.getByRole("button", { name: "Edit priorities" }).click();
     const offered = page.getByRole("listbox", { name: "Priorities options" });
     await expect(
@@ -1654,7 +1727,8 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     const kept = line.getByRole("link", { name: `#1 ${seed.titles[0]}` });
     const deleted = line.locator(`a[href="/priorities/${seed.ids[2]}"]`);
     await expect(kept).toBeVisible();
-    await expect(deleted).toHaveText(`#3 ${seed.titles[2]}`);
+    await expect(deleted).toHaveText("#3");
+    await expect(deleted).toHaveAccessibleName(`#3 ${seed.titles[2]}`);
 
     // Another person retires #3 over the API. The open header stops naming it, by its title or
     // by its id, with no reload: the issue's read is fetched again, so the set the next write
@@ -1704,7 +1778,7 @@ test("a priority's page offers no versions and no delete, and carries no line ab
     await priorityPage(page);
     await page.goto(`/priorities/${seed.ids[0]}`);
     const main = page.getByTestId("main-content");
-    await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(seed.titles[0]);
+    await expect(titleHeading(page)).toHaveText(seed.titles[0]);
 
     // The description is an attribute of the node and not a Dispatch document, so nothing here
     // offers its versions, and there is no delete: a priority is retired by its state.

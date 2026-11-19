@@ -469,13 +469,14 @@ function visits(seed: Seeded): readonly Visit[] {
       url: "/priorities",
     },
     {
-      // Three reads, each its own request: the priority itself, which the title and the owner
-      // are written in where they are read (alice is a person, and every priority write is the
-      // deployment's), the issues advancing it under them, and the history in the margin.
+      // Three reads, each its own request: the priority itself, whose title is the header's
+      // heading and whose owner the chip under it, each a control that opens where it is read
+      // (alice is a person, and every priority write is the deployment's), the issues advancing
+      // it under them, and the history in the margin.
       route: "/priorities/:id",
       shows: (page) => [
-        page.getByRole("textbox", { name: "Title" }),
-        page.getByRole("combobox", { name: "Owner" }),
+        page.getByTestId("priority-header").getByRole("heading", { level: 1 }),
+        page.getByTestId("priority-header").getByRole("button", { name: /^Owner / }),
         page.locator('section[aria-label="Description"]'),
         page.locator('section[aria-label="Work advancing this priority"]'),
         page.getByRole("complementary", { name: "Margin" }),

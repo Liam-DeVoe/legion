@@ -61,10 +61,13 @@ const NO_PRIORITY_LAYOUT = {
 } as const;
 const PARKED_LAYOUT = {
   key: "priorities-parked",
-  opens: [...FAULT_OPENS, "advances", "moved"],
-  // Two columns more than the other list's: its statuses are backlog and icebox alone, whose
-  // pills are narrower than the in-flight statuses', and a move is a time and a name, which
-  // wrap. The Advances column is sized for its chips by its own declaration.
+  // When the work was moved there is how long it has stood as it is, which is what Updated says
+  // on the other list, so Updated opens hidden here, one tick away under Columns, and the room
+  // it leaves is Title's.
+  opens: [...FAULT_OPENS.filter((id) => id !== "updated"), "advances", "moved"],
+  // Its statuses are backlog and icebox alone, whose pills are narrower than the in-flight
+  // statuses', and a move is a time and a name, which wrap. The Advances column is sized for its
+  // chips by its own declaration.
   widths: {
     ...FAULT_WIDTHS,
     status: { min: 112, size: 112 },

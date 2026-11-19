@@ -86,8 +86,11 @@ function take(held: Held, markdown: string): void {
  *
  * The editor is the one control here, a textbox named by `label`, which the keyboard reaches
  * as it reaches any field; the box around it shows the focus ring while the editor holds it.
+ * Where a page holds the description in a card of its own (`boxed={false}`), the card is that
+ * box: the editor draws no border, only the focus ring, and its words start where the card's do.
  */
 export function PriorityDescription({
+  boxed = true,
   canWrite,
   description,
   kept: keptByPage,
@@ -95,6 +98,8 @@ export function PriorityDescription({
   onKeptChange,
   onSave,
 }: {
+  /** Whether the editor draws a box of its own; a page that draws it in a card draws none. */
+  boxed?: boolean;
   canWrite: boolean;
   description: string;
   /** The reader's texts kept beside the editor, where the page holds them rather than the
@@ -284,7 +289,7 @@ export function PriorityDescription({
       {drawn ? (
         // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: dispatch:// link clicks bubble here, as they do on a document; the editor handles the keyboard's activation of its own links.
         <div
-          className={`dispatch-doc dispatch-description rounded-md border px-2 py-1 has-focus-visible:ring-2 ${borderDefault} ${hasFocusVisibleRing}`}
+          className={`dispatch-doc dispatch-description rounded-md px-2 py-1 has-focus-visible:ring-2 ${boxed ? `border ${borderDefault}` : "-mx-2"} ${hasFocusVisibleRing}`}
           data-read-only={!canWrite}
           onBlur={(event) => {
             if (

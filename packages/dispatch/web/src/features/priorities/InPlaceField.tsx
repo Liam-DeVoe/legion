@@ -1,13 +1,28 @@
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import {
-  borderDefault,
+  bgTransparent,
+  borderStrongHover,
+  borderTransparent,
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
+  focusBorder,
   focusVisibleRing,
-  surfaceBg,
-  textPrimaryOnCanvas,
+  inputClasses,
+  surfaceMutedStrongBg,
+  textPrimaryOnSurface,
+  textSecondaryHoverToPrimary,
+  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { arrival, NOTHING_KEPT } from "./field-arrival";
 
@@ -27,8 +42,7 @@ export const SAVE_AFTER_MS = 500;
  * picks. It is an alert, since the reader's text has just left the field they were writing in.
  * A one-line field names it as what describes it (`aria-describedby`, by `id`), so the two stay
  * tied wherever it is drawn (`InPlaceField`'s `noticeAt`). It is drawn in spans and buttons
- * alone, since the owner's field on the priority's page, which draws it beside itself, stands in
- * a span.
+ * alone, so it may stand wherever a field may, a span included.
  */
 export function ChangedMeanwhile({
   id,
@@ -106,6 +120,21 @@ function heldText(draft: string, base: string, required: boolean): string {
   return required && typed === "" ? base : typed;
 }
 
+/** The type an issue's title is drawn in, in its header (`IssueHeader.tsx`): a field drawn as a
+ *  heading reads in it, and so does the box it opens into. */
+const TITLE_TYPE = "text-[22px] leading-7 font-semibold tracking-tight";
+
+/** The box of a field drawn as a heading (`closed="heading"`), and of the heading a reader who
+ *  may not write it reads: the width of its line, and its words set in by the padding the open
+ *  box writes in, which the negative margin gives back, so the words start where the rows under
+ *  the heading do and stay put as it opens. */
+export const HEADING_BOX = `-mx-2 min-w-0 break-words rounded-lg border px-2 py-1 md:py-0 ${TITLE_TYPE} ${borderTransparent} ${textPrimaryOnSurface}`;
+
+/** A label chip's shape and tone (`IssueLabels.tsx`), which a field drawn as a chip
+ *  (`closed="chip"`) and the chip a reader who may not write it reads both take. Its words wrap
+ *  inside it rather than run past the row it stands in. */
+export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 rounded-full px-3 py-1 text-left text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`;
+
 /**
  * A one-line field edited where it is read: no edit mode, no Save button. What the reader types
  * is kept here until it rests, then written once; leaving the field writes it immediately, and
@@ -127,9 +156,18 @@ function heldText(draft: string, base: string, required: boolean): string {
  * those texts (`kept`, `onKeptChange`) - a priority's title, whose texts the write store holds
  * (`usePriorityWrites`) - they outlive the field, the page and a reload, and a field drawn again
  * shows them again. Else the field holds them itself, and they go with it: the owner's field.
+ *
+ * Drawn `closed`, the field reads as its text until the reader opens it, and closes as they leave
+ * it; what it writes, and when, is the same. A heading (`closed="heading"`) is the page's heading,
+ * in an issue title's type, as an issue's header draws its title: a click, the focus, Enter or
+ * Space opens it, and open, the heading holds a box in the same type that wraps as the heading
+ * does, so every word of a long title stays in view as it is written, and nothing under it moves
+ * as it opens and closes. A chip (`closed="chip"`) reads the field's name and its text in a label
+ * chip's shape (`FIELD_CHIP`), and a click opens it into the plain box, its name beside it. While
+ * it is closed, the heading or the chip is what names the notice as what describes it.
  */
 export function InPlaceField({
-  id,
+  closed,
   kept: keptByPage,
   label,
   maxLength,
@@ -141,8 +179,9 @@ export function InPlaceField({
   required = false,
   value,
 }: {
-  /** The field's own id, where a visible label points at it rather than wrapping it. */
-  id?: string;
+  /** What the field is while the reader is not writing in it: the page's heading, or a chip.
+   *  Absent, it is always open: the plain bordered box. */
+  closed?: "chip" | "heading";
   /** The reader's texts kept beside the field, where the page holds them rather than the field -
    *  a priority's title, in the write store (`usePriorityWrites`): `onKeptChange` hears each
    *  change of them. */
@@ -152,15 +191,16 @@ export function InPlaceField({
    *  (`ISSUE_TITLE_MAX`): a longer text is never typed into the field, so never sent. */
   maxLength?: number;
   /** Where the notice of the reader's kept texts is drawn, where the page gives it a place of its
-   *  own: a field standing in a heading would else draw it inside the heading, whose name would
-   *  then carry the notice's words. `null` is a place not drawn yet, which holds no notice until
-   *  it is; absent, the notice is drawn beside the field. */
+   *  own: a field standing in a row of chips would else draw it inside the row. `null` is a place
+   *  not drawn yet, which holds no notice until it is; absent, the notice is drawn beside the
+   *  field, after a heading's heading. */
   noticeAt?: HTMLElement | null;
   onKeptChange?: (kept: readonly string[]) => void;
   onSave: (next: string) => void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
   options?: readonly string[];
+  /** What the open box shows while it is empty, and a chip reads while its text is. */
   placeholder?: string;
   /** Whether the text may not be empty, as a title may not: an empty one is never written. */
   required?: boolean;
@@ -174,6 +214,11 @@ export function InPlaceField({
   const setKept = onKeptChange ?? setOwnKept;
   const timer = useRef<number | undefined>(undefined);
   const noticeId = useId();
+  const fieldId = useId();
+  // Whether the reader has opened a field drawn `closed`; any other is always open.
+  const [opened, setOpened] = useState(false);
+  const open = closed === undefined || opened;
+  const box = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   // Where the field stands against the server's text (`FieldStand`): what the edit started from,
   // and the texts written that the server has not answered with yet, oldest first.
   const base = useRef(value);
@@ -224,6 +269,24 @@ export function InPlaceField({
     };
   }, []);
 
+  // Opened, the box takes the focus, the caret after the text, where the reader goes on writing.
+  useEffect(() => {
+    const node = box.current;
+    if (!opened || node === null) return;
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  }, [opened]);
+
+  // A heading's box is as tall as the text it holds, so the title wraps in it as it does in the
+  // heading, and what stands under it keeps its place as the field opens, closes or takes a line.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `draft` and `opened` are the triggers; the box is read as it stands
+  useLayoutEffect(() => {
+    const node = box.current;
+    if (closed !== "heading" || node === null) return;
+    node.style.height = "auto";
+    node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
+  }, [closed, draft, opened]);
+
   // One of the reader's kept texts, put back in the field and written at once.
   const putBack = (text: string) => {
     stopTimer(timer);
@@ -243,39 +306,106 @@ export function InPlaceField({
         onUse={putBack}
       />
     );
-  // A plain bordered field: it is the text's one reading, written where it is read, so nothing
-  // hides it until the reader hovers it.
+  const describedBy = notice === null ? undefined : noticeId;
+  const placed = noticeAt ? createPortal(notice, noticeAt) : notice;
+  // What the open box does, in every shape: it is the one place the reader writes the text.
+  const typing = {
+    "aria-describedby": describedBy,
+    "aria-label": label,
+    maxLength,
+    onBlur: () => {
+      save();
+      setDraft((typed) => heldText(typed, base.current, required));
+      setOpened(false);
+    },
+    onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      // A heading's box is a textarea, so its title wraps as the heading does; it holds one line
+      // all the same, and a line break pasted into it goes, as a one-line field drops it.
+      setDraft(event.target.value.replace(/[\r\n]/g, ""));
+      stopTimer(timer);
+      timer.current = window.setTimeout(save, SAVE_AFTER_MS);
+    },
+    onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      // The Enter that ends an input method's composition takes the word composed, and is no
+      // Enter of the reader's: it neither writes nor leaves the field.
+      if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+      event.preventDefault();
+      save();
+      event.currentTarget.blur();
+    },
+    placeholder,
+    ref: (node: HTMLInputElement | HTMLTextAreaElement | null) => {
+      box.current = node;
+    },
+    value: draft,
+  };
+
+  if (closed === "heading") {
+    return (
+      <>
+        {open ? (
+          <h1 className={`-mx-2 min-w-0 ${TITLE_TYPE} ${textPrimaryOnSurface}`}>
+            <textarea
+              {...typing}
+              className={`block w-full resize-none overflow-hidden rounded-lg border px-2 py-1 outline-none md:py-0 ${TITLE_TYPE} ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+              rows={1}
+            />
+          </h1>
+        ) : (
+          <h1
+            aria-describedby={describedBy}
+            className={`cursor-text ${HEADING_BOX} ${borderStrongHover}`}
+            onClick={() => setOpened(true)}
+            onFocus={() => setOpened(true)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              setOpened(true);
+            }}
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: the heading is the title's edit control, as the issue title's heading is, and a keyboard reaches it by Tab.
+            tabIndex={0}
+          >
+            {draft}
+          </h1>
+        )}
+        {placed}
+      </>
+    );
+  }
+
   const listId = options === undefined ? undefined : `${label.replace(/\W+/g, "-")}-options`;
+  // A plain bordered field, in the border and the focus border of Dispatch's inputs: open, it is
+  // the text's one reading, written where it is read, so nothing hides it until the reader hovers
+  // it. Opened from a chip it is as tall as the chip it stands for, so the row keeps its height.
+  const field = (
+    <input
+      {...typing}
+      className={`${closed === undefined ? "w-full py-1" : "w-48 max-w-full py-0.5"} rounded-md border px-2 text-sm outline-none ${inputClasses(true)} ${textPrimaryOnSurface}`}
+      id={fieldId}
+      list={listId}
+      type="text"
+    />
+  );
   return (
     <>
-      <input
-        aria-describedby={notice === null ? undefined : noticeId}
-        aria-label={label}
-        className={`w-full rounded-md border px-2 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
-        id={id}
-        list={listId}
-        maxLength={maxLength}
-        onBlur={() => {
-          save();
-          setDraft((typed) => heldText(typed, base.current, required));
-        }}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          stopTimer(timer);
-          timer.current = window.setTimeout(save, SAVE_AFTER_MS);
-        }}
-        onKeyDown={(event) => {
-          // The Enter that ends an input method's composition takes the word composed, and is no
-          // Enter of the reader's: it neither writes nor leaves the field.
-          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
-          event.preventDefault();
-          save();
-          event.currentTarget.blur();
-        }}
-        placeholder={placeholder}
-        type="text"
-        value={draft}
-      />
+      {closed === undefined ? (
+        field
+      ) : open ? (
+        <span className="inline-flex min-h-11 max-w-full items-center gap-2 text-sm sm:min-h-7">
+          <label htmlFor={fieldId}>{label}</label>
+          {field}
+        </span>
+      ) : (
+        <button
+          aria-describedby={describedBy}
+          className={`${FIELD_CHIP} ${textSecondaryHoverToPrimary} outline-none focus-visible:ring-2 ${focusVisibleRing}`}
+          onClick={() => setOpened(true)}
+          type="button"
+        >
+          <span className="font-normal">{label}</span>
+          <span>{draft === "" ? placeholder : draft}</span>
+        </button>
+      )}
       {listId === undefined ? null : (
         <datalist id={listId}>
           {(options ?? []).map((option) => (
@@ -283,7 +413,7 @@ export function InPlaceField({
           ))}
         </datalist>
       )}
-      {noticeAt ? createPortal(notice, noticeAt) : notice}
+      {placed}
     </>
   );
 }

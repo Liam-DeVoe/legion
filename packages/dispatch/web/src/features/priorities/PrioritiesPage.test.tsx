@@ -402,18 +402,20 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   const parked = await screen.findByRole("table", {
     name: "Parked priority work table",
   });
-  // The parked list opens with those, the priority each issue is parked under, and the move.
+  // The parked list opens with those but Updated, the priority each issue is parked under, and
+  // the move: when the work was moved there is how long it has stood, so Updated opens hidden,
+  // one tick away.
   await user.click(
     within(screen.getByRole("region", { name: "Parked priority work" })).getByRole("button", {
       name: "Columns",
     })
   );
   const parkedMenu = screen.getByRole("dialog", { name: "Columns" });
-  for (const name of [...R6_COLUMNS, "Advances", "Moved there"])
+  for (const name of [...R6_COLUMNS.filter((one) => one !== "Updated"), "Advances", "Moved there"])
     expect(within(parkedMenu).getByRole("checkbox", { name })).toBeChecked();
   // No reason is recorded for a move until dispatch://INFRA-2934, so the list offers no Reason.
   expect(within(parkedMenu).queryByRole("checkbox", { name: "Reason" })).toBeNull();
-  for (const name of OTHER_COLUMNS)
+  for (const name of ["Updated", ...OTHER_COLUMNS])
     expect(within(parkedMenu).getByRole("checkbox", { name })).not.toBeChecked();
   await user.keyboard("{Escape}");
   // The parked read asks for the work whose own row names a priority, as the parked count does.
@@ -426,14 +428,16 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   });
 
   // The parked list names the project, each priority advanced by its place in the order with its
-  // title, linking to it, and when the work was moved there and by whom. A row answered with no
-  // move draws an empty Moved there cell: absent is absent, and that cell does not say a record
-  // is missing.
+  // title, linking to it, and when the work was moved there and by whom, which stands for how
+  // long it has stood: no Updated column opens beside it. A row answered with no move draws an
+  // empty Moved there cell: absent is absent, and that cell does not say a record is missing.
   const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
   expect(moved("Project").textContent).toBe("CORE");
-  expect(within(moved("Updated")).getByRole("time").getAttribute("datetime")).toBe(
-    "2026-11-01T00:00:00Z"
-  );
+  expect(
+    within(parked)
+      .getAllByRole("columnheader")
+      .some((header) => header.textContent?.startsWith("Updated"))
+  ).toBe(false);
   expect(
     within(moved("Advances"))
       .getByRole("link", { name: "#2 Linkage closure eval" })

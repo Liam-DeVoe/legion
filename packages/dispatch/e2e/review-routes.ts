@@ -349,13 +349,13 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "priority",
     path: (seed) => `/priorities/${seed.priority}`,
     pattern: "/priorities/:id",
-    // The title field, which is drawn with the priority itself and not with the skeleton; the
-    // margin's first act, which arrives with the history read beside it rather than with the
-    // page; and the work table's row for the in-flight issue the seed places under this
-    // priority, which is a second read again (`advancesIssuesQuery`). A page read on the title
-    // alone would be a page whose margin and whose work are both still empty boxes.
+    // The title's heading in the page's header, which is drawn with the priority itself and not
+    // with the skeleton; the margin's first act, which arrives with the history read beside it
+    // rather than with the page; and the work table's row for the in-flight issue the seed places
+    // under this priority, which is a second read again (`advancesIssuesQuery`). A page read on
+    // the title alone would be a page whose margin and whose work are both still empty boxes.
     ready: (page) => [
-      page.getByRole("textbox", { name: "Title" }),
+      page.getByTestId("priority-header").getByRole("heading", { level: 1 }),
       page.getByRole("complementary", { name: "Margin" }).getByRole("listitem").first(),
       page
         .getByRole("table", { name: "Priority issues table" })

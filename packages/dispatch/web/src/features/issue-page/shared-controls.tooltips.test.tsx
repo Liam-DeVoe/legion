@@ -1458,17 +1458,22 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Add a reason to send Request changes",
     ],
   ],
-  // The priorities' line draws `MultiSelect`'s picker: its links carry their titles, and while
-  // the picker is open its options do, as `MultiSelect` draws them.
+  // The priorities' line draws each priority as its chip (`PriorityChip`), which carries the
+  // whole title as its `title`, and says so of one inherited from an issue above; while the
+  // picker is open its options carry theirs, as `MultiSelect` draws them. These are INFRA-2947's
+  // chips, not `main`'s links.
   [
     mountNamed("IssuePriorityLine, its own priority and an inherited one"),
-    ["#2 Rocq and Lean speed work restarted", "#1 Evals collecting data now"],
+    [
+      "Rocq and Lean speed work restarted",
+      "Evals collecting data now, inherited from an issue above",
+    ],
   ],
   [
     mountNamed("IssuePriorityLine, adding a priority"),
     ["#1 Evals collecting data now", "#2 Rocq and Lean speed work restarted"],
   ],
-  [mountNamed("IssuePriorityLine, in a row of Details"), ["#2 Rocq and Lean speed work restarted"]],
+  [mountNamed("IssuePriorityLine, in a row of Details"), ["Rocq and Lean speed work restarted"]],
   [priorityLineAtCap, PRIORITIES_AT_CAP],
   [priorityLineLoading, []],
   [

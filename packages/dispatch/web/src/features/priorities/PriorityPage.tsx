@@ -4,19 +4,21 @@ import { type ReactNode, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { advancesIssuesQuery, prioritiesQuery } from "../../api/queries";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
+import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
 import {
+  borderDefault,
+  card,
   linkHoverText,
   linkText,
-  textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
 import { useKeymapScope } from "../shell/keymap";
-import { InPlaceField } from "./InPlaceField";
+import { FIELD_CHIP, HEADING_BOX, InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
 import { PriorityMargin } from "./PriorityMargin";
 import { buildPriorityItems, ownerOf } from "./priorities-model";
@@ -26,15 +28,27 @@ import { textWriteLabel, usePriorityWrites } from "./priority-writes";
 /** The address prefix the work under the priority keeps its own view under. */
 const WORK_PREFIX = "w";
 
-/** The owner field's id, which the visible "Owner" beside it points at. */
-const OWNER_FIELD = "priority-owner";
+/** The work table's own stored layout (`IssuesTable`): the issue, its title, its status and its
+ *  project, so Title, which takes what they leave, reads in two lines in the box a 1440 px window
+ *  leaves beside the margin. Every other column is one tick away under Columns, who holds the
+ *  issue and when it last changed among them; a project's own table keeps its own layout. */
+const WORK_LAYOUT = {
+  key: "priority-work",
+  opens: ["key", "title", "status", "project"],
+  widths: { project: { min: 72, size: 72 } },
+} as const;
+
+/** The way back to the priorities page, above the page's header as above an empty page. */
+const BACK = "‹ Priorities";
 
 /**
- * `/priorities/<id>`: one priority, edited where it is read. The title is written in the
- * header, the owner in the control beside it, and the description in the disclosure under
- * them; each is saved as it is written, because nothing else in Dispatch has an edit mode or a
- * Save button. The order is not a control here: it is the row's own place on the priorities
- * page, which is where it is dragged.
+ * `/priorities/<id>`: one priority, edited where it is read, in the shape an issue's page takes.
+ * The header is a card, as an issue's is (`IssueHeader.tsx`): the title is its heading, in an
+ * issue title's type, which a click opens into the box it is written in, and the owner is a chip
+ * in the row under it, which a click opens into its field. The description is a card under the
+ * header, with its disclosure, and the work under it after that. Each is saved as it is written,
+ * because nothing else in Dispatch has an edit mode or a Save button. The order is not a control
+ * here: it is the row's own place on the priorities page, which is where it is dragged.
  *
  * The description is an attribute of the priority node and not a Dispatch document, so this
  * page shows no versions, no comments on it and no anchors; there is no delete, since a
@@ -53,8 +67,9 @@ function PriorityView({ id }: { id: string }): ReactNode {
   const priorities = useQuery(prioritiesQuery());
   const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });
   const [open, setOpen] = useState(true);
-  // Where the title's notice of the reader's kept texts is drawn: under the heading, not in it.
-  const [titleNoticeAt, setTitleNoticeAt] = useState<HTMLElement | null>(null);
+  // Where the owner's notice of the reader's kept texts is drawn: under the header's row of
+  // chips, not inside it.
+  const [ownerNoticeAt, setOwnerNoticeAt] = useState<HTMLElement | null>(null);
   // The one priority this page shows, whose conflicts it settles with the reader
   // (`usePriorityWrites`).
   const shown = useMemo(() => [id], [id]);
@@ -97,95 +112,101 @@ function PriorityView({ id }: { id: string }): ReactNode {
   const item = items.find((candidate) => candidate.priority.id === id);
   if (item === undefined)
     return (
-      <div className="space-y-2">
-        <p className={textPrimaryOnCanvas}>No priority of that id is written.</p>
-        <Link className={`${linkText} ${linkHoverText}`} to={PRIORITIES_PATH}>
-          ‹ Priorities
-        </Link>
-      </div>
+      <EmptyState
+        action={
+          <Link className={`text-sm ${linkText} ${linkHoverText}`} to={PRIORITIES_PATH}>
+            {BACK}
+          </Link>
+        }
+        label="Priority empty state"
+        message="No priority of that id is written."
+      />
     );
 
-  const { description, title } = item.priority;
+  const { description, owner, title } = item.priority;
   const keptDescription = kept(id, "description", description);
   const owners = [...new Set(items.map(ownerOf))].sort((a, b) => a.localeCompare(b));
 
   return (
     <div className="flex flex-col gap-6 lg:flex-row">
-      <div className="min-w-0 flex-1 space-y-4">
+      <div className="min-w-0 flex-1 space-y-3">
         <Link className={`text-sm ${linkText} ${linkHoverText}`} to={PRIORITIES_PATH}>
-          ‹ Priorities
+          {BACK}
         </Link>
-        <header className="space-y-2">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className={`min-w-64 flex-1 text-2xl font-semibold ${textPrimaryOnCanvas}`}>
-              {canWrite ? (
-                <InPlaceField
-                  kept={kept(id, "title", title)}
-                  label="Title"
-                  maxLength={ISSUE_TITLE_MAX}
-                  noticeAt={titleNoticeAt}
-                  onKeptChange={(texts) => keep(id, "title", texts)}
-                  onSave={(next) => rename(id, next, title, textWriteLabel("title", title, next))}
-                  required
-                  value={title}
-                />
-              ) : (
-                title
-              )}
-            </h1>
-            {/* The title's notice, on a line of its own under the heading: drawn in the heading,
-                it would be read as part of the heading's name. Empty, it takes no room. */}
-            <div className="basis-full empty:hidden" ref={setTitleNoticeAt} />
-          </div>
-          <div
-            className={`flex flex-wrap items-center gap-x-6 gap-y-2 text-sm ${textSecondaryOnCanvas}`}
-          >
+        <header className={`min-w-0 rounded-xl border p-3 ${card}`} data-testid="priority-header">
+          {/* The title's notice of the reader's kept texts stands under the heading, outside it:
+              drawn in it, it would be read as part of the heading's name. */}
+          {canWrite ? (
+            <InPlaceField
+              closed="heading"
+              kept={kept(id, "title", title)}
+              label="Title"
+              maxLength={ISSUE_TITLE_MAX}
+              onKeptChange={(texts) => keep(id, "title", texts)}
+              onSave={(next) => rename(id, next, title, textWriteLabel("title", title, next))}
+              required
+              value={title}
+            />
+          ) : (
+            <h1 className={HEADING_BOX}>{title}</h1>
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             {canWrite ? (
-              <span className="flex items-center gap-2">
-                <label htmlFor={OWNER_FIELD}>Owner</label>
-                <InPlaceField
-                  id={OWNER_FIELD}
-                  label="Owner"
-                  onSave={(owner) =>
-                    patch.mutate({
-                      id,
-                      input: { owner },
-                      label: `Owner of the priority “${title}”`,
-                    })
-                  }
-                  options={owners}
-                  placeholder="Who holds it"
-                  value={item.priority.owner}
-                />
-              </span>
+              <InPlaceField
+                closed="chip"
+                label="Owner"
+                noticeAt={ownerNoticeAt}
+                onSave={(next) =>
+                  patch.mutate({
+                    id,
+                    input: { owner: next },
+                    label: `Owner of the priority “${title}”`,
+                  })
+                }
+                options={owners}
+                placeholder="Who holds it"
+                value={owner}
+              />
             ) : (
-              <span className="flex items-center gap-2">
-                <span>Owner</span>
+              <span className={FIELD_CHIP}>
+                {owner.trim() === "" ? null : <span className="font-normal">Owner</span>}
                 <span>{ownerOf(item)}</span>
               </span>
             )}
           </div>
+          {/* The owner's notice, on a line of its own under the chips. Empty, it takes no room. */}
+          <div className="empty:hidden" ref={setOwnerNoticeAt} />
         </header>
 
-        <section aria-label="Description" className="space-y-2">
+        {/* The disclosure's control is 44 px tall around its 20 px line, so the card's padding
+            above and below it is that much less than at its sides: its words stand 16 px in from
+            each edge, as the card's padding at its sides sets them. */}
+        <section
+          aria-label="Description"
+          className={`rounded-xl border px-4 py-1 ${card} ${borderDefault}`}
+        >
           <DisclosureToggle
             expanded={open}
             label={open ? "Description" : "Description, closed"}
             onToggle={() => setOpen((was) => !was)}
           />
           {/* Drawn while closed too where it keeps the reader's text beside it, so the notice of
-              a write another person's change refused is on the page whether it is open or not. */}
+              a write another person's change refused is on the page whether it is open or not.
+              The card is the editor's box, so the editor draws none of its own. */}
           {open || keptDescription.length > 0 ? (
-            <PriorityDescription
-              canWrite={canWrite}
-              description={description}
-              kept={keptDescription}
-              label="Description"
-              onKeptChange={(texts) => keep(id, "description", texts)}
-              onSave={(next) =>
-                describe(id, next, description, textWriteLabel("description", title, next))
-              }
-            />
+            <div className="space-y-2 pb-3">
+              <PriorityDescription
+                boxed={false}
+                canWrite={canWrite}
+                description={description}
+                kept={keptDescription}
+                label="Description"
+                onKeptChange={(texts) => keep(id, "description", texts)}
+                onSave={(next) =>
+                  describe(id, next, description, textWriteLabel("description", title, next))
+                }
+              />
+            </div>
           ) : null}
         </section>
 
@@ -205,7 +226,12 @@ function PriorityView({ id }: { id: string }): ReactNode {
                 ))}
             </p>
           )}
-          <IssuesTable listing={{ advances: id }} priorityTitles={titles} stateKey={WORK_PREFIX} />
+          <IssuesTable
+            layout={WORK_LAYOUT}
+            listing={{ advances: id }}
+            priorityTitles={titles}
+            stateKey={WORK_PREFIX}
+          />
         </section>
       </div>
       <PriorityMargin id={id} />
