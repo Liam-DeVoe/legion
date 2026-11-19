@@ -32,6 +32,7 @@ import {
   resultsCommand,
   searchCommand,
 } from "./issues";
+import { plansCommand } from "./plans";
 import { prioritiesCommand } from "./priorities";
 import { architectureSyncCommand, projectCommand, projectsCommand } from "./projects";
 import { readCommand } from "./read";
@@ -114,6 +115,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_handoff_write: acting(handoffWriteCommand),
   dispatch_handoff_read: acting(handoffReadCommand),
   dispatch_steps: acting(stepsCommand),
+  dispatch_plans: acting(plansCommand),
   dispatch_read: acting(readCommand),
   dispatch_answers: onSession(answersCommand),
   dispatch_whoami: onSession(whoamiCommand),
