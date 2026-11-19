@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -127,5 +128,33 @@ func TestUnspentCopyRegistrationOfAClaimInNoPodRecordsNothing(t *testing.T) {
 	h.ready()
 	if len(recorded.calls) != 0 {
 		t.Fatalf("a claim in no pod recorded %+v, want nothing", recorded.calls)
+	}
+}
+
+// A registration refused because another claim holds its session records no registration of the
+// pod: the session check runs before the record (register), so the refused role spends no copy
+// sent to its pod and the pod's next role still restores it. The negative control is the record
+// moved ahead of holdRecorded in register, where the refused registration records the pod.
+func TestUnspentCopyRegistrationRefusedForItsSessionRecordsNothing(t *testing.T) {
+	h := newHarness(t)
+	recorded := h.withPodRegistrations()
+	h.launchInPod("pod-uid-9")
+	other := claim.Token("legion-legion-legion-999-tester")
+	if holders, err := h.store.HoldSessions(h.ctx, "", other, []Hold{{Kind: HoldSessionID, Name: session}}); err != nil || len(holders) != 1 || holders[0] != other {
+		t.Fatalf("another claim's hold of %s = %v, %v, want it held for %s", session, holders, err, other)
+	}
+	err := h.handle(RequestRegister{
+		Claim:          h.token,
+		Generation:     h.generation(),
+		Session:        session,
+		SessionFile:    sessionFile,
+		CapabilityHash: []byte("capability"),
+		PluginContract: h.deps.PluginContract,
+	})
+	if refusal := (claim.Refusal{}); err == nil || !errors.As(err, &refusal) {
+		t.Fatalf("the registration of a session another claim holds returned %v, want the hold's refusal", err)
+	}
+	if len(recorded.calls) != 0 {
+		t.Fatalf("a registration refused for its session recorded %+v, want no registration of its pod", recorded.calls)
 	}
 }
