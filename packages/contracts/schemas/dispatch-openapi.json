@@ -659,6 +659,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -697,6 +707,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -753,6 +773,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Artifact"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -1018,6 +1048,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -1060,6 +1100,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -1176,6 +1226,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -1231,6 +1291,16 @@
                     "$ref": "#/components/schemas/AskWithTrees"
                   },
                   "type": "array"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -1301,6 +1371,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -1349,6 +1429,16 @@
                     "$ref": "#/components/schemas/ArtifactBlock"
                   },
                   "type": "array"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -1404,6 +1494,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BlockPath"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -1472,6 +1572,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -1523,6 +1633,16 @@
                     "$ref": "#/components/schemas/CommentWithTrees"
                   },
                   "type": "array"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -1590,6 +1710,16 @@
                       "type": "object"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -1678,6 +1808,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/AmbiguousTargetError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/IDAmbiguousError"
                     }
                   ]
                 }
@@ -1769,6 +1902,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -1823,6 +1966,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtifactReview"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -1884,6 +2037,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -1935,6 +2098,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -1982,6 +2155,16 @@
                     "$ref": "#/components/schemas/ArtifactReviewRead"
                   },
                   "type": "array"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -2040,6 +2223,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2095,6 +2288,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2146,6 +2349,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2204,6 +2417,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -2258,6 +2481,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Version"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -2326,6 +2559,16 @@
               "application/octet-stream": {},
               "text/markdown": {}
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -2388,6 +2631,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtifactReview"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -2503,6 +2756,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -2555,6 +2818,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AskWithTrees"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -2613,6 +2886,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AskWithTrees"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -2677,6 +2960,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2738,6 +3031,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2786,6 +3089,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AskFollowersRead"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -2846,6 +3159,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2902,6 +3225,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2957,6 +3290,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AskWithTrees"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -3249,6 +3592,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -3301,6 +3654,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommentWithTrees"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -3364,6 +3727,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3412,6 +3785,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ItemBlocks"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -3472,6 +3855,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3529,6 +3922,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3577,6 +3980,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommentWithTrees"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -3658,6 +4071,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "bearer",
@@ -3712,6 +4135,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommentWithTrees"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -7083,6 +7516,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -8301,6 +8744,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -8343,6 +8796,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -8391,6 +8854,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DocumentRead"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -8449,6 +8922,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DocumentRead"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -8912,6 +9395,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -8956,6 +9449,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ItemBlocks"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -9013,6 +9516,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MessageDelivery"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -9079,6 +9592,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AcceptedMessageDelivery"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -9161,6 +9684,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MessageReplyResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -11281,6 +11814,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any"
@@ -11337,6 +11880,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReferenceQuestions"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IDAmbiguousError"
                 }
               }
             }
@@ -20690,6 +21243,66 @@
         },
         "required": [
           "duration"
+        ],
+        "type": "object"
+      },
+      "IDAmbiguousError": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/IDCandidate"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidates",
+          "code",
+          "error"
+        ],
+        "type": "object"
+      },
+      "IDCandidate": {
+        "properties": {
+          "document": {
+            "type": "string"
+          },
+          "first_line": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "ask",
+              "comment",
+              "message",
+              "artifact",
+              "block"
+            ],
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "ref"
         ],
         "type": "object"
       },

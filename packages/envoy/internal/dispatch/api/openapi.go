@@ -274,7 +274,7 @@ func openAPIRequestBodyTypes() (map[reflect.Type]bool, []reflect.Type) {
 		}
 		reach(shape.Response, response, nil)
 		reach(shape.Advice, response, nil)
-		for _, answer := range slices.Concat(shape.Also, shape.Refusals) {
+		for _, answer := range slices.Concat(shape.Also, shape.Refusals, idRoutes[name].refusals()) {
 			reach(answer.Body, response, nil)
 		}
 	}
@@ -836,8 +836,8 @@ type openAPIAnswer struct {
 }
 
 // responses are every answer the row gives: its success with the shapes that ride it, each of the
-// row's other answers, each refusal richer than errorBody, and the default answer every other
-// refusal writes.
+// row's other answers, each refusal richer than errorBody - its handler's and the prefix layer's
+// in front of it (idRoute.refusals) - and the default answer every other refusal writes.
 func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31.Responses, error) {
 	answers := map[int]*openAPIAnswer{}
 	var order []int
@@ -893,7 +893,7 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			return nil, err
 		}
 	}
-	for _, refusal := range shape.Refusals {
+	for _, refusal := range slices.Concat(shape.Refusals, idRoutes[route.Method+" "+route.Pattern].refusals()) {
 		if err := add(refusal.Status, refusal.Body); err != nil {
 			return nil, err
 		}

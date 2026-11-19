@@ -323,6 +323,108 @@ func TestNoSchemaRequiresOneNameTwice(t *testing.T) {
 	}
 }
 
+// The 409 ID_AMBIGUOUS body is written in front of a route's handler, by the prefix layer, and by
+// the two reads that resolve an id written short in a query value, so no handler's own shape
+// would name it. The document names it all the same, at 409, on every route that can answer it
+// and on no other: a client generated from the document then reads that refusal as the type
+// the Go one is reflected into, and a route idRoutes adds answers it there unasked.
+func TestEveryRouteThatCanAnswerIDAmbiguousNamesItsBody(t *testing.T) {
+	tree, _ := readOpenAPITree(t)
+	want := map[string]bool{
+		// The two reads that resolve a prefix of their own (writeIDPrefixError).
+		"GET /api/v1/references":           true,
+		"GET /api/v1/references/questions": true,
+	}
+	for name, entry := range idRoutes {
+		if entry.resolves() {
+			want[name] = true
+		}
+	}
+	named := map[string]bool{}
+	for name, responses := range openAPIResponsesByRoute(tree) {
+		if slices.Contains(openAPIAnswerSchemas(responses["409"]), "IDAmbiguousError") {
+			named[name] = true
+		}
+	}
+	var wrong []string
+	for name := range want {
+		if !named[name] {
+			wrong = append(wrong, name+" can answer 409 ID_AMBIGUOUS and the document does not name IDAmbiguousError there")
+		}
+	}
+	for name := range named {
+		if !want[name] {
+			wrong = append(wrong, name+" resolves no id written short and the document names IDAmbiguousError there")
+		}
+	}
+	sort.Strings(wrong)
+	for _, found := range wrong {
+		t.Error(found)
+	}
+	if len(named) == 0 {
+		t.Fatal("no route names IDAmbiguousError, so this test proves nothing")
+	}
+}
+
+// Every refusal a route gives without a richer body of its own is the common {error, code}
+// (writeError), so every operation's default answer is that one schema, and a client reads the
+// refusal of any route as the type errorBody is reflected into.
+func TestEveryRouteAnswersTheCommonRefusalByDefault(t *testing.T) {
+	tree, _ := readOpenAPITree(t)
+	routes := openAPIResponsesByRoute(tree)
+	var wrong []string
+	for name, responses := range routes {
+		if got := openAPIAnswerSchemas(responses["default"]); !slices.Equal(got, []string{"ErrorBody"}) {
+			wrong = append(wrong, fmt.Sprintf("%s answers %v by default, not ErrorBody", name, got))
+		}
+	}
+	sort.Strings(wrong)
+	for _, found := range wrong {
+		t.Error(found)
+	}
+	if len(routes) == 0 {
+		t.Fatal("the document holds no operation, so this test proves nothing")
+	}
+}
+
+// openAPIResponsesByRoute is each operation's responses, by "<method> <pattern>" as the table
+// names its rows.
+func openAPIResponsesByRoute(tree any) map[string]map[string]any {
+	document, _ := tree.(map[string]any)
+	paths, _ := document["paths"].(map[string]any)
+	routes := map[string]map[string]any{}
+	for pattern, item := range paths {
+		operations, _ := item.(map[string]any)
+		for method, operation := range operations {
+			fields, _ := operation.(map[string]any)
+			responses, _ := fields["responses"].(map[string]any)
+			routes[strings.ToUpper(method)+" "+pattern] = responses
+		}
+	}
+	return routes
+}
+
+// openAPIAnswerSchemas names the component schemas one response answers as JSON: its schema's
+// reference, or each reference of its oneOf.
+func openAPIAnswerSchemas(response any) []string {
+	answer, _ := response.(map[string]any)
+	content, _ := answer["content"].(map[string]any)
+	media, _ := content["application/json"].(map[string]any)
+	schema, _ := media["schema"].(map[string]any)
+	shapes := []any{schema}
+	if oneOf, many := schema["oneOf"].([]any); many {
+		shapes = oneOf
+	}
+	var names []string
+	for _, shape := range shapes {
+		node, _ := shape.(map[string]any)
+		if reference, isString := node["$ref"].(string); isString {
+			names = append(names, strings.TrimPrefix(reference, openAPISchemaPrefix))
+		}
+	}
+	return names
+}
+
 // openAPITypeHolds answers whether a schema's `type`, which is one name or a list of them, holds
 // the one named.
 func openAPITypeHolds(declared any, want string) bool {

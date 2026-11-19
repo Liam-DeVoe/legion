@@ -2,6 +2,7 @@ import {
   AUTH_NO_IDENTITY,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
+  type DispatchServiceErrorShape,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -41,11 +42,8 @@ import type {
   CreateArtifactInput,
   DispatchEvent,
   DispatchUser,
-  DuplicateCandidate,
-  IDCandidate,
   IssueAskThreadRow,
   NewIssueSettings,
-  TargetCandidate,
   UserIssueState,
 } from "./types";
 
@@ -80,15 +78,9 @@ const utf8 = new TextEncoder();
 
 /** One item a refusal lists for the caller to choose between: the items an ambiguous id prefix
  *  names (`ID_AMBIGUOUS`), the issues a duplicate check found, or the positions an anchored
- *  quote resolved at. Each refusal's own `code` says which of the three its list holds. */
-export type ErrorCandidate = IDCandidate | DuplicateCandidate | TargetCandidate;
-
-interface ErrorPayload {
-  code?: string;
-  error?: string;
-  state?: UserIssueState;
-  candidates?: readonly ErrorCandidate[];
-}
+ *  quote resolved at - every candidate shape a refusal carries, read off the generated refusal
+ *  bodies. Each refusal's own `code` says which of them its list holds. */
+export type ErrorCandidate = NonNullable<DispatchServiceErrorShape["candidates"]>[number];
 
 export class ApiError extends Error {
   readonly code: string | undefined;
@@ -103,13 +95,13 @@ export class ApiError extends Error {
    *  undefined when the response carried none. */
   readonly retryAfterMs: number | undefined;
 
-  constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
+  constructor(status: number, payload: DispatchServiceErrorShape, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
     this.name = "ApiError";
     this.code = payload.code;
     this.status = status;
     this.state = payload.state;
-    this.candidates = payload.candidates;
+    this.candidates = payload.candidates ?? undefined;
     this.retryAfterMs = retryAfterMs;
   }
 }
@@ -629,7 +621,7 @@ function retryAfterMs(response: Response): number | undefined {
 }
 
 async function errorFrom(response: Response): Promise<ApiError> {
-  const payload = (await response.json().catch(() => ({}))) as ErrorPayload;
+  const payload = (await response.json().catch(() => ({}))) as DispatchServiceErrorShape;
   return new ApiError(response.status, payload, retryAfterMs(response));
 }
 
