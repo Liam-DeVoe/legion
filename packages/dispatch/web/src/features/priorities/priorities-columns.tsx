@@ -38,7 +38,7 @@ export interface PriorityRowActions {
   readonly onRename: (item: PriorityItem, title: string) => void;
   readonly onDescribe: (item: PriorityItem, description: string) => void;
   /** The reader's texts kept beside a priority's title or description while it shows another
-   *  person's, where the page reads `held`, and the change of them: held by the page
+   *  person's, where the page reads `held`, and the change of them: held in the write store
    *  (`usePriorityWrites`) rather than by the field, which a row scrolling away takes with it. */
   readonly kept: (id: string, attribute: EditedText, held: string) => readonly string[];
   readonly onKeep: (id: string, attribute: EditedText, texts: readonly string[]) => void;

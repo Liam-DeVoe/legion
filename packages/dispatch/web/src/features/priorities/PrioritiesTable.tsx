@@ -27,7 +27,7 @@ import { TableToolbar } from "./priority-table-controls";
 import { compareHeadings, facetCounts, headingOf } from "./priority-table-model";
 import { TableBodyRow } from "./priority-table-rows";
 import { useTableView } from "./priority-table-view";
-import { usePriorityWrites } from "./priority-writes";
+import { textWriteLabel, usePriorityWrites } from "./priority-writes";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** What a row of this table is, which its pager and its group headings count in. */
@@ -153,7 +153,7 @@ export function PrioritiesTable({
         item.priority.id,
         description,
         item.priority.description,
-        `Description of the priority “${item.priority.title}”`
+        textWriteLabel("description", item.priority.title, description)
       ),
     [describe]
   );
@@ -170,7 +170,7 @@ export function PrioritiesTable({
         item.priority.id,
         title,
         item.priority.title,
-        `Rename the priority “${item.priority.title}” to “${title}”`
+        textWriteLabel("title", item.priority.title, title)
       ),
     [rename]
   );

@@ -21,7 +21,7 @@ import { PriorityDescription } from "./PriorityDescription";
 import { PriorityMargin } from "./PriorityMargin";
 import { buildPriorityItems, ownerOf } from "./priorities-model";
 import { PRIORITIES_PATH } from "./priority-routes";
-import { usePriorityWrites } from "./priority-writes";
+import { textWriteLabel, usePriorityWrites } from "./priority-writes";
 
 /** The address prefix the work under the priority keeps its own view under. */
 const WORK_PREFIX = "w";
@@ -123,9 +123,7 @@ function PriorityView({ id }: { id: string }): ReactNode {
                   maxLength={ISSUE_TITLE_MAX}
                   noticeAt={titleNoticeAt}
                   onKeptChange={(texts) => keep(id, "title", texts)}
-                  onSave={(next) =>
-                    rename(id, next, title, `Rename the priority “${title}” to “${next}”`)
-                  }
+                  onSave={(next) => rename(id, next, title, textWriteLabel("title", title, next))}
                   required
                   value={title}
                 />
@@ -188,7 +186,7 @@ function PriorityView({ id }: { id: string }): ReactNode {
               label={`Description of ${item.order}`}
               onKeptChange={(texts) => keep(id, "description", texts)}
               onSave={(next) =>
-                describe(id, next, description, `Description of the priority “${title}”`)
+                describe(id, next, description, textWriteLabel("description", title, next))
               }
             />
           ) : null}

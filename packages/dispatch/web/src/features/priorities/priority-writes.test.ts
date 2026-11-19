@@ -413,7 +413,8 @@ test("a page that goes hands its refused title back, one drawn later offers it a
 
 // The reader's texts beside a field run newest first. Another person's text arriving while the
 // reader typed "Typed" has the field keep that ahead of the text a refused write brought back,
-// and the refused write's text keeps its place behind it, though the store carries it too.
+// and the refused write's text keeps its place behind it. The store holds both: the field's own
+// text is held there too, as a write the page holds, though none of it was sent.
 test("a field's kept texts stay newest first, a refused write's text keeping its place among them", async () => {
   const { answer, client, keep, kept, read, rename, sentAt } = pageWrites(SHOWS_P1);
   await read(0);
@@ -424,5 +425,58 @@ test("a field's kept texts stay newest first, a refused write's text keeping its
   await waitFor(() => expect(kept("Bob")).toEqual(["Mine"]));
   keep(["Typed", "Mine"]);
   expect(kept("Bob")).toEqual(["Typed", "Mine"]);
-  expect(writesOf(client).rows()).toMatchObject([{ claimed: true, detail: { text: "Mine" } }]);
+  expect(writesOf(client).rows()).toMatchObject([
+    { claimed: true, detail: { text: "Mine" }, status: "refused" },
+    { claimed: true, detail: { text: "Typed" }, sent: false, status: "refused" },
+  ]);
+});
+
+// A text the field keeps on its own, with no write of it refused, is held in the store as a
+// write another person's text refused, and offered at once: the field shows that text already.
+// One the field puts ahead of a text a newer write carries is held anew, so the store's order
+// stays the field's, and one the field drops lets its write go.
+test("a field's own kept texts are held in the store in the field's order, and a dropped one goes", async () => {
+  const { client, keep, kept, read, sentCount } = pageWrites(SHOWS_P1);
+  await read(0);
+  const writes = writesOf(client);
+  keep(["A"]);
+  keep(["B", "A"]);
+  expect(kept("Bob")).toEqual(["B", "A"]);
+  keep(["A", "B"]);
+  expect(kept("Bob")).toEqual(["A", "B"]);
+  expect(writes.rows()).toMatchObject([
+    { claimed: true, detail: { text: "B" }, sent: false, status: "refused" },
+    { claimed: true, detail: { text: "A" }, sent: false, status: "refused" },
+  ]);
+  keep(["A"]);
+  expect(writes.rows()).toMatchObject([{ detail: { text: "A" } }]);
+  keep([]);
+  expect(writes.rows()).toEqual([]);
+  expect(sentCount()).toBe(0);
+});
+
+// Another person's text arriving while the reader's write is out has the field keep the reader's
+// text on its own, and the store holds it. That write's refusal then carries the same text: the
+// held one goes, and the refused write keeps the text, so the shell's line never names it twice.
+// The text waits for the read the refusal's claim started, as a refused write's text does.
+test("a held text a refused write carries too goes, and the refused write keeps it", async () => {
+  const { answer, client, keep, kept, read, rename, sentAt } = pageWrites(SHOWS_P1);
+  await read(0);
+  rename("Mine", "Old");
+  await sentAt(0);
+  keep(["Mine"]);
+  const writes = writesOf(client);
+  expect(writes.rows()).toMatchObject([
+    { sent: true, status: "sending" },
+    { claimed: true, detail: { text: "Mine" }, sent: false, status: "refused" },
+  ]);
+  await answer(0, true);
+  await waitFor(() =>
+    expect(writes.rows()).toMatchObject([
+      { claimed: true, detail: { text: "Mine" }, sent: true, status: "refused" },
+    ])
+  );
+  expect(kept("Bob")).toEqual([]);
+  await read(1);
+  await waitFor(() => expect(kept("Bob")).toEqual(["Mine"]));
 });

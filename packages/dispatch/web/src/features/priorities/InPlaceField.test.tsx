@@ -269,9 +269,9 @@ test("a second change while the notice shows keeps both of the reader's texts, a
   expect(writes).toEqual(["Old name, mine"]);
 });
 
-/** The field as a page draws it that holds the reader's kept texts itself, as
- *  `usePriorityWrites` does, and takes the field off the page and draws it again, as a closed
- *  disclosure or a table row scrolled away does. */
+/** The field as a page draws it that holds the reader's kept texts rather than the field, as
+ *  `usePriorityWrites` does in the write store, and takes the field off the page and draws it
+ *  again, as a closed disclosure or a table row scrolled away does. */
 function PageHeldField({
   land,
   writes,

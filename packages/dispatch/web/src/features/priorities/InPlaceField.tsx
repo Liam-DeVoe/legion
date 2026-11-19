@@ -124,8 +124,9 @@ function heldText(draft: string, base: string, required: boolean): string {
  * stopped, and the reader's text is kept beside the field (`ChangedMeanwhile`) until they use it
  * again or let it go; where the page gives that notice a place of its own (`noticeAt`), it is
  * drawn there, and the field names it as what describes it either way. Where the page holds
- * those texts (`kept`, `onKeptChange`) they outlive the field, and a field drawn again shows
- * them again; else they go with it.
+ * those texts (`kept`, `onKeptChange`) - a priority's title, whose texts the write store holds
+ * (`usePriorityWrites`) - they outlive the field, the page and a reload, and a field drawn again
+ * shows them again. Else the field holds them itself, and they go with it: the owner's field.
  */
 export function InPlaceField({
   id,
@@ -142,8 +143,9 @@ export function InPlaceField({
 }: {
   /** The field's own id, where a visible label points at it rather than wrapping it. */
   id?: string;
-  /** The reader's texts kept beside the field, where the page holds them rather than the field:
-   *  `onKeptChange` hears each change of them. */
+  /** The reader's texts kept beside the field, where the page holds them rather than the field -
+   *  a priority's title, in the write store (`usePriorityWrites`): `onKeptChange` hears each
+   *  change of them. */
   kept?: readonly string[];
   label: string;
   /** The most characters the field holds, where Dispatch bounds the text, as it bounds a title

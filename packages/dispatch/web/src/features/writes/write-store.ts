@@ -254,6 +254,19 @@ interface WriteSpecBase<D, K> {
   readonly endsWithSession?: boolean;
 }
 
+/** The reader's own text a surface holds as a write a conflict refused, though no write of it went
+ *  out (`Writes.hold`): its kind and record, what the shell's line names it, the conflict that
+ *  stands for it (`isConflict`), the request a write of it would make, which a reload makes it
+ *  again from as it makes any refused write, and the target it is ordered on. */
+export interface HoldSpec<D, K> {
+  readonly kind: WriteKind<D, K>;
+  readonly detail: D;
+  readonly label: string;
+  readonly refusal: ApiError;
+  readonly request: WriteRequest;
+  readonly target?: string;
+}
+
 /** What became of a write: it landed (with Dispatch's answer, `null` for none), was refused, or
  *  the reader discarded its refusal. */
 export type WriteOutcome =
@@ -343,8 +356,9 @@ let watcher: ((store: Writes) => void) | undefined;
  * until the reader takes one - unless its surface shows refusals itself (`inline`), or it is never
  * shown (`quiet`), when it goes at once. One a surface takes to settle with the reader
  * (`WriteKind.claims`) stays too, kept as any refusal is, and is that surface's until the reader
- * settles it there (`settle`) or the surface goes (`unclaim`). A conflict (`isConflict`) refuses
- * the same body every time, so no Retry makes it again. A write belongs to the person who pressed
+ * settles it there (`settle`) or the surface goes (`unclaim`); so does a text of the reader's a
+ * surface holds though no write of it was sent (`hold`). A conflict (`isConflict`) refuses the
+ * same body every time, so no Retry makes it again. A write belongs to the person who pressed
  * it: a session that lapses (whoami answers 401, or the write itself is answered 401) stops every
  * write's trying and starts none, but keeps them all, in memory and in storage, until someone
  * signs in - the same person's sign-in takes them up again, and anyone else's drops every write of
@@ -633,6 +647,58 @@ export class Writes {
     if (!isConflict(entry.write.refusal)) return false;
     this.#show(entry, { ...entry.write, claimed: true });
     return true;
+  }
+
+  /** Holds the reader's own text for a surface that kept it on its own, as another person's text
+   *  arrived over it, where no write of it was refused: made as a write the conflict `spec.refusal`
+   *  refused already, which the surface has claimed (`claim`). It is never sent, and no Retry
+   *  sends it, since its refusal is a conflict (`isConflict`). From there it is any claimed
+   *  write: kept for a reload, which takes it up refused, the surface's until the reader settles
+   *  it there (`settle`) or the surface goes (`unclaim`), and the shell's line's in between. No
+   *  outcome is told, since nothing was pressed. Answers its id. A refusal that is no conflict is
+   *  a page bug, refused at once: a Retry of it would send a write the reader never pressed. */
+  hold<D, K>(spec: HoldSpec<D, K>): number {
+    const { refusal, request } = spec;
+    if (!isConflict(refusal)) {
+      throw new TypeError(`${spec.label}: a held write stands for a conflict (HoldSpec.refusal)`);
+    }
+    const login = signedInLogin(this.#client);
+    const entry: Entry = {
+      attempt: (bounds) => api.send(request, bounds),
+      endsWithSession: false,
+      expiry: undefined,
+      file: undefined,
+      held: false,
+      keeping: undefined,
+      press: undefined,
+      request,
+      stop: new AbortController(),
+      turn: undefined,
+      unkept: false,
+      write: {
+        claimed: true,
+        detail: spec.detail,
+        id: this.#nextId(),
+        inline: false,
+        joined: this.#nextJoin(),
+        key: newSendKey(),
+        kind: spec.kind.name,
+        label: spec.label,
+        login,
+        presentation: "indicator",
+        pressedAt: Date.now(),
+        refusal,
+        retried: false,
+        sent: false,
+        signingOutElsewhere: login !== undefined && this.#signingOutElsewhere.has(login),
+        status: "refused",
+        target: spec.target,
+        uploaded: undefined,
+      },
+    };
+    this.#entries.set(entry.write.id, entry);
+    this.#update(entry, entry.write);
+    return entry.write.id;
   }
 
   /** Hands the claimed write `id` back to the shell's line, its draft to copy and Discard beside

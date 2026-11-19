@@ -76,9 +76,11 @@ function take(held: Held, markdown: string): void {
  * and no write of theirs is out, so leaving the editor never writes the old text back over it.
  * Else it is taken in all the same, the waiting write is stopped, and the reader's text is kept
  * beside the editor (`ChangedMeanwhile`) until they use it again or let it go. Where the page
- * holds those texts (`kept`, `onKeptChange`) they outlive the editor - a row of the table
- * scrolled away - and an editor drawn again shows them again, and the page draws the editor
- * while it holds any, a closed disclosure included; else they go with it.
+ * holds those texts (`kept`, `onKeptChange`) - in the write store, as the priority's page and
+ * the priorities table do (`usePriorityWrites`) - they outlive the editor, the page and a
+ * reload: a row of the table scrolled away, or the page left, and an editor drawn again shows
+ * them again, and the page draws the editor while it holds any, a closed disclosure included.
+ * Else the editor holds them itself, and they go with it.
  * A reader who may not write reads it in the same editor, read-only; with none written, they
  * read that none is, and a writer reads it above the empty editor.
  *
@@ -96,7 +98,8 @@ export function PriorityDescription({
   canWrite: boolean;
   description: string;
   /** The reader's texts kept beside the editor, where the page holds them rather than the
-   *  editor: `onKeptChange` hears each change of them. */
+   *  editor - in the write store (`usePriorityWrites`): `onKeptChange` hears each change of
+   *  them. */
   kept?: readonly string[];
   /** What the description is called, which names the priority it belongs to: "Description of
    *  P3". The editor carries it as its accessible name. */

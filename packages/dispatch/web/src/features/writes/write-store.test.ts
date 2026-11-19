@@ -2138,3 +2138,70 @@ test("a resumed conflict a surface claims comes back claimed, and one claimed la
     }
   });
 });
+
+// A text of the reader's a surface kept on its own, with no write of it refused, is held as a
+// conflict that surface has claimed: kept for a reload as any refusal is, never sent, no Retry of
+// it sends anything, and no outcome is told, since nothing was pressed. From there it is any
+// claimed conflict: handed back to the line, taken up refused by a reload, taken again, and let
+// go once the reader settles it. A refusal that is no conflict is no hold at all.
+test("a text a surface holds is a claimed conflict nothing sends, kept for a reload until the reader settles it", async () => {
+  await onFakeClock(async () => {
+    const { tab, writes } = storeOf();
+    const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
+    const outcomes: string[] = [];
+    const stop = writes.onOutcome((outcome) => outcomes.push(outcome.kind));
+    const spec = {
+      detail: { text: "Mine" },
+      kind: claimedWrite,
+      label: "Rename the priority",
+      refusal: changed,
+      request: patch,
+    };
+    try {
+      expect(() => writes.hold({ ...spec, refusal: verdict })).toThrow(TypeError);
+      expect(writes.rows()).toEqual([]);
+
+      const id = writes.hold(spec);
+      expect(row(writes)).toMatchObject({
+        claimed: true,
+        id,
+        refusal: changed,
+        sent: false,
+        status: "refused",
+      });
+      const key = row(writes)?.key ?? "";
+      expect(tab.kept(key)).toMatchObject({
+        detail: { text: "Mine" },
+        sent: false,
+        state: keptConflict,
+      });
+      writes.retry(id);
+      await tick(60_000);
+      expect(row(writes)).toMatchObject({ claimed: true, status: "refused" });
+      writes.unclaim(id);
+      expect(row(writes)).toMatchObject({ claimed: false, status: "refused" });
+
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      after.resume("alice");
+      await settle();
+      const resumed = row(after);
+      expect(resumed).toMatchObject({ claimed: false, kind: claimedWrite.name, status: "refused" });
+      expect(resumed?.status === "refused" && resumed.refusal).toMatchObject({
+        code: "PRIORITY_CHANGED",
+        status: 409,
+      });
+      after.retry(resumed?.id ?? 0);
+      await settle();
+      expect(after.claim(resumed?.id ?? 0)).toBe(true);
+      expect(after.settle(resumed?.id ?? 0)).toBe(true);
+      expect(after.rows()).toEqual([]);
+      expect(tab.kept(key)).toBeUndefined();
+      expect(send).not.toHaveBeenCalled();
+      expect(outcomes).toEqual([]);
+    } finally {
+      stop();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});

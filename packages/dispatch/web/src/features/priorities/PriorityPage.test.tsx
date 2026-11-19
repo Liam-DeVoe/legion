@@ -602,3 +602,87 @@ test("going to another priority's page hands the title another person's change r
   expect(writesOf(client).rows()).toMatchObject([{ claimed: false, status: "refused" }]);
   expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
 });
+
+/** The reader writes `, mine` at the end of the title, and another person's `Theirs` reaches the
+ *  page before the typing rests: the field keeps the reader's text beside the title on its own,
+ *  with no write of it sent and none refused. Answers the notice the page then draws. */
+async function keptTitle(writtenElsewhere: (overrides: Partial<PriorityRow>) => void) {
+  const user = userEvent.setup();
+  const title = await screen.findByRole("textbox", { name: "Title" });
+  await user.type(title, ", mine");
+  writtenElsewhere({ title: "Theirs" });
+  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
+  expect(title).toHaveValue("Theirs");
+  return { notice, user };
+}
+
+// A text the field kept on its own as another person's arrived is the store's, as a refused
+// write's text is, though no write of it was sent: leaving the page hands it to the shell's line,
+// which offers it to copy in a conflict's words with no Retry, and the page drawn again offers it
+// beside the title once more. Using it writes it over the other person's title as a press of its
+// own, and nothing of it stays, in the store or in what the tab keeps.
+test("a title the field kept as another person's arrived outlives leaving the page, and using it lets it go", async () => {
+  const { client, patch, writtenElsewhere } = page();
+  const { user } = await keptTitle(writtenElsewhere);
+  expect(patch).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("pending-writes")).toBeNull();
+  // The store holds it, as a write the page holds that another person's text refused, though
+  // none of it was sent: the reader's text, over the title the field took in.
+  expect(writesOf(client).rows()).toMatchObject([
+    {
+      claimed: true,
+      detail: { attribute: "title", expected: "Theirs", text: `${ROWS[1]?.title}, mine` },
+      sent: false,
+      status: "refused",
+    },
+  ]);
+
+  await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
+  const line = await screen.findByTestId("pending-writes");
+  expect(
+    within(line).getByText(
+      "Not saved because another person changed it: Rename the priority “Theirs” to “Rocq and Lean speed work restarted, mine”"
+    )
+  ).toBeDefined();
+  expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(
+    `${ROWS[1]?.title}, mine`
+  );
+  expect(within(line).queryByRole("button", { name: "Retry" })).toBeNull();
+
+  await user.click(screen.getByRole("link", { name: "Back to the priority" }));
+  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
+  expect(screen.queryByTestId("pending-writes")).toBeNull();
+  expect(patch).not.toHaveBeenCalled();
+
+  await user.click(within(notice).getByRole("button", { name: "Use my text" }));
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
+    "rocq-lean",
+    { expected: { title: "Theirs" }, title: `${ROWS[1]?.title}, mine` },
+  ]);
+  await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+  expect(keptWrites()).toEqual([]);
+});
+
+// A reload takes that text up from what the tab kept, as it takes up a refused write, and the
+// page drawn on it offers the text beside the title as the page before did. Keeping the other
+// person's title lets it go, and nothing of it is kept or sent.
+test("a title the field kept as another person's arrived outlives a reload, and keeping theirs lets it go", async () => {
+  const { patch, reload, writtenElsewhere } = page();
+  await keptTitle(writtenElsewhere);
+  expect(keptWrites()).toHaveLength(1);
+  const client = reload();
+  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
+  expect(writesOf(client).rows()).toMatchObject([{ claimed: true, status: "refused" }]);
+  expect(screen.queryByTestId("pending-writes")).toBeNull();
+
+  await userEvent.setup().click(within(notice).getByRole("button", { name: "Keep their text" }));
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+  expect(writesOf(client).rows()).toEqual([]);
+  expect(keptWrites()).toEqual([]);
+  expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Theirs");
+  expect(patch).not.toHaveBeenCalled();
+});
