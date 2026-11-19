@@ -79,15 +79,18 @@ exec nsenter -t "$init" -U -m -p -i --preserve-credentials -- sh -c '"'$role_shi
 # in a process group of its own (Setpgid, internal/launcher/roleinit_linux.go runRoleShim), and Oh
 # My Pi, the shim's child, is in that group. The container's user owns the role's user namespaces,
 # so it may signal them. No shim, two of them, or a shim that is not the leader of its own group
-# is refused rather than signalled, since that group would be someone else's.
+# is refused rather than signalled, since that group would be someone else's. It reads /proc in one
+# pass: one grep reads every process's PPid (-s: a process that ends between the listing and the
+# read is no child), and only INIT's children are read further, so a host with tens of thousands of
+# processes costs one grep rather than a sed for each of them.
 # shellcheck disable=SC2016  # expanded by the pod's shell
 role_kill_sh='
 init=$1 shim= proc=${proc_root:-/proc}
-for d in "$proc"/[0-9]*; do
-  [ "$(sed -n "s/^PPid:[[:space:]]*//p" "$d/status" 2>/dev/null)" = "$init" ] || continue
-  [ "$(tr "\0" "\n" 2>/dev/null <"$d/cmdline" | sed -n 2p)" = worker-shim ] || continue
-  [ -z "$shim" ] || { echo "role-init $init runs two worker-shims: $shim and ${d##*/}" >&2; exit 1; }
-  shim=${d##*/}
+children=$(cd "$proc" && grep -s -H "^PPid:" [0-9]*/status | awk -F "[/:\t ]+" -v init="$init" "\$4 == init { print \$1 }")
+for c in $children; do
+  [ "$(tr "\0" "\n" 2>/dev/null <"$proc/$c/cmdline" | sed -n 2p)" = worker-shim ] || continue
+  [ -z "$shim" ] || { echo "role-init $init runs two worker-shims: $shim and $c" >&2; exit 1; }
+  shim=$c
 done
 [ -n "$shim" ] || { echo "role-init $init runs no worker-shim" >&2; exit 1; }
 group=$(sed "s/.*) //" "$proc/$shim/stat" | cut -d" " -f3)

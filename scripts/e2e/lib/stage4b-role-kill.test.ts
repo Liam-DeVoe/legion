@@ -30,7 +30,7 @@ const alive = (pid: number) => {
 };
 
 // The polls below wait on real processes (an exec, a SIGKILL's delivery) that no fake clock drives,
-// and role_kill_sh reads every process of the host's /proc, so a busy host takes seconds.
+// and role_kill_sh reads all of the host's /proc in one pass, so a busy host takes seconds.
 describe("role_kill_sh", () => {
   test("kills the shim's group and leaves a detached helper of the role-init alone", async () => {
     const init = Bun.spawn(
