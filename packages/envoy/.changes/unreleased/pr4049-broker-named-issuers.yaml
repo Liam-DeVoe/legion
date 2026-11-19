@@ -19,7 +19,7 @@ body: |-
   `=<issuer name>[,<issuer name>…]`, the issuers its account's token is taken from. An entry that
   names none takes the first issuer of the list alone, so an existing entry keeps its meaning. A
   listed account's token from another issuer is `403 ACCOUNT_NOT_LISTED`. A token login's
-  credential records the issuer whose token made it (migration 0034), and it stops working once
+  credential records the issuer whose token made it (migration 0035), and it stops working once
   the account's entry no longer names that issuer.
   `BROKER_EXCHANGE_K8S_ISSUER` names, by their names in `BROKER_K8S_OIDC_ISSUER` and separated by
   commas, the issuers whose tokens the token exchange takes. It is required with
