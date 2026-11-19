@@ -297,10 +297,6 @@ export function ProofDocument({
   /** Whether the issue was closed when the access effect last ran, so it sees a reopen. */
   const wasClosedRef = useRef(isClosed);
   const schemaReadOnlyRef = useRef(false);
-  /** The admission of the socket the connection holds now: whether it is read-only, or undefined
-   *  until that socket's admission arrives. `schemaReadOnlyRef` keeps the last admission any
-   *  socket reported, which can be an earlier socket's, so a reopen reads this one instead. */
-  const socketAdmissionRef = useRef<boolean | undefined>(undefined);
   const userRef = useRef(user);
   const highlightTermRef = useRef(highlightTerm);
   // The thread the host draws below one block, and the mark it highlights: both are read through
@@ -362,8 +358,8 @@ export function ProofDocument({
   const readmitRef = useRef<(() => void) | undefined>(undefined);
   /** Has this document admitted again, the one way in: a blocked admission has no connection to
    *  readmit, so it re-reads the text and connects (`readmitRef`, set only while it is blocked);
-   *  a live one closes its socket, which the provider reconnects, and the server decides that
-   *  socket's admission afresh - which is what a reopened issue needs, since the admission of the
+   *  a live one asks its connection to be admitted again (`DocumentConnection.readmit` says which
+   *  sockets that closes) - which is what a reopened issue needs, since the admission of the
    *  socket it has is the closed issue's. The new admission reaches `onAdmission` and the pending
    *  sync alike, so the rows the read-only admission kept are restored and sent. */
   const readmit = useCallback(() => {
@@ -705,7 +701,6 @@ export function ProofDocument({
     setLoadError(undefined);
     setAdmission(undefined);
     schemaReadOnlyRef.current = false;
-    socketAdmissionRef.current = undefined;
     setSchemaReadOnly(false);
     // A transport or editor chunk that fails while online (after `DeploymentResilience` has
     // spent its reload) would otherwise leave the document "connecting" forever. Once failed,
@@ -907,7 +902,6 @@ export function ProofDocument({
             schemaCreatable: compiledSchemaCreatable,
             schemaVersion: compiledBlockSchema.version,
             onAdmission: (readOnly) => {
-              socketAdmissionRef.current = readOnly;
               schemaReadOnlyRef.current = readOnly;
               setSchemaReadOnly(readOnly);
               editor?.setAccess(editorAccess(page, isClosedRef.current, readOnly));
@@ -931,12 +925,6 @@ export function ProofDocument({
               refusalTimer = window.setTimeout(admit, delay);
             },
             onStatus: (status) => {
-              // A socket's admission arrives after the socket is connected. Any other status means
-              // the socket closed or the provider is connecting another, whose admission is still
-              // to come.
-              if (status !== "connected") {
-                socketAdmissionRef.current = undefined;
-              }
               if (!failed) {
                 setConnection(status);
               }
@@ -1090,35 +1078,14 @@ export function ProofDocument({
   // The server admits every socket on a closed issue's document read-only, and decides a socket's
   // admission once, as it connects. A reopened issue's document takes edits again, so the page has
   // its connection admitted again: until the new admission (`onAdmission`) replaces the closed
-  // one's, the socket is still read-only, and so is the editor. The reopen closes the issue's
-  // rooms itself, which readmits every browser on them, but only on the process that served the
-  // PATCH (`SetIssueClosed`); this covers the two sockets that close never reaches: one whose
-  // room another process holds, and one whose room the close could not close, each of which
-  // keeps the read-only admission it was given.
-  //
-  // So the page admits every socket again except one whose admission arrived read-write, which is
-  // already what the page wants. A socket whose admission has not arrived yet - just after the
-  // mount, or in the reconnect draw after a close - is admitted again too, because the page cannot
-  // tell which side of the reopen the server decided that admission on: decided before it, on
-  // another process, it is read-only, and keeping it would leave the editor read-only. Decided
-  // after it, it may be read-write already, and readmitting it costs one more reconnect. That is
-  // the trade: the page is never left read-only on an open issue, and pays at most one socket for
-  // it. A blocked admission has no socket and reads the text again. The room's close and the
-  // PATCH's answer race: the provider reconnects after a draw of up to two seconds, and a draw
-  // shorter than the wait for the answer opens a socket the reopened server has already admitted
-  // read-write before the page knows the issue is open. Readmitting that socket closed it for
-  // nothing, and a fourth socket opened (`e2e/close-withdraws-asks.e2e.ts`'s Reopen row, which
-  // counts three sockets, failed that way at random). The window the trade leaves is narrower -
-  // the PATCH's answer landing between a socket's connect and its admission - and that row counts
-  // sockets exactly, so it is the row that would show it.
+  // one's, the socket is still read-only, and so is the editor. The reopen's commit closes the
+  // issue's rooms on every process that hears it (`issueOpenChanged`), which readmits every
+  // browser on them; this covers the sockets that close never reaches, each of which keeps the
+  // read-only admission it was given.
   useEffect(() => {
     setQuoteRefusal(undefined);
     editorRef.current?.setAccess(editorAccess(page, isClosed, schemaReadOnlyRef.current));
-    if (
-      wasClosedRef.current &&
-      !isClosed &&
-      (readmitRef.current !== undefined || socketAdmissionRef.current !== false)
-    ) {
+    if (wasClosedRef.current && !isClosed) {
       readmit();
     }
     wasClosedRef.current = isClosed;
