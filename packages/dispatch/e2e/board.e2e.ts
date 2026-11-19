@@ -1220,7 +1220,9 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
     const held = await holdIssuePatches(page, issue.key);
     await page.goto("/projects/CORE");
     await openBoard(page);
-    await page.getByRole("button", { name: "Show lanes" }).click();
+    const lanesToggle = page.getByRole("button", { name: "Lanes", exact: true });
+    await lanesToggle.click();
+    await expect(lanesToggle).toHaveAttribute("aria-pressed", "true");
     const card = page.getByRole("article", { name: `${issue.key} Picked card` });
     const picker = card.getByRole("combobox", { name: `Priority of ${issue.key}` });
     await expect(picker).toHaveValue("3");
