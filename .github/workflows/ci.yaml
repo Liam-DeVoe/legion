@@ -1572,23 +1572,45 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-go-offline.test.sh'
+              # The cases it sources, one file per part of the check.
+              - '.github/scripts/check-go-offline-cases-*.sh'
               - '.github/scripts/check-go-offline.sh'
+              # The modules the check imports from its own directory: its rules and the shared reader.
+              - '.github/scripts/go_offline_sites.py'
+              - '.github/scripts/go_offline_walk.py'
+              - '.github/scripts/go_offline_restore.py'
               - '.github/scripts/source_scan.py'
+              - '.github/scripts/source_statements.py'
+              - '.github/scripts/source_env.py'
+              - '.github/scripts/source_python.py'
+              - '.github/scripts/source_shell.py'
             check_omp_offline_test: &check_omp_offline_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-omp-offline.test.sh'
               - '.github/scripts/check-omp-offline.sh'
+              # The modules of the shared reader the check imports from its own directory.
               - '.github/scripts/source_scan.py'
+              - '.github/scripts/source_statements.py'
+              - '.github/scripts/source_env.py'
+              - '.github/scripts/source_shell.py'
             source_scan_test: &source_scan_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/source_scan.test.sh'
               - '.github/scripts/source_scan.py'
-              # Its last two cases run both checks over a tree of its own, through the module.
+              - '.github/scripts/source_statements.py'
+              - '.github/scripts/source_env.py'
+              - '.github/scripts/source_python.py'
+              - '.github/scripts/source_shell.py'
+              # Its last two cases run both checks over a tree of their own, through the modules,
+              # and the go check through its rules' modules.
               - '.github/scripts/check-go-offline.sh'
+              - '.github/scripts/go_offline_sites.py'
+              - '.github/scripts/go_offline_walk.py'
+              - '.github/scripts/go_offline_restore.py'
               - '.github/scripts/check-omp-offline.sh'
             check_daemon_api_contract_test: &check_daemon_api_contract_test
               - *ci_router

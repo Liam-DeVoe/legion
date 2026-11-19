@@ -17,9 +17,9 @@
 # It reads test code: Go `_test.go` files and the files of a package directory named testbin, and
 # TypeScript and JavaScript `.test.` and `.spec.` files and the files under a directory named test,
 # tests or __tests__. Files under testdata, node_modules, dist, .git or .jj are not read. Each file
-# is read a statement at a time, as .github/scripts/source_scan.py reads it for check-go-offline.sh
-# too: a call's arguments across lines, and the value a name is bound to in its own function, a
-# function around it, or the file.
+# is read a statement at a time, as .github/scripts/source_statements.py reads it for
+# check-go-offline.sh too: a call's arguments across lines, and the value a name is bound to in its
+# own function, a function around it, or the file.
 #
 # The real binary is a value, whatever the name it is held under:
 #   - LEGION_TEST_OMP read from the environment (process.env.LEGION_TEST_OMP, Bun.env, an env
@@ -96,9 +96,10 @@
 # CI runs it in ci.yaml's lint job.
 set -euo pipefail
 
-# The shared reading of source files (source_scan.py) sits beside this script's own file, which a
-# test may link into a tree of its own: PYTHONPATH names that directory, and the scan reads the
-# tree this script stands in. PYTHONDONTWRITEBYTECODE keeps the import from leaving a __pycache__.
+# The shared reading of source files (source_scan.py and the source_*.py modules beside it) sits
+# beside this script's own file, which a test may link into a tree of its own: PYTHONPATH names
+# that directory, and the scan reads the tree this script stands in. PYTHONDONTWRITEBYTECODE keeps
+# the import from leaving a __pycache__.
 scripts=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 cd "$(dirname "$0")/../.."
 
@@ -108,6 +109,9 @@ import os
 import re
 
 import source_scan as scan
+from source_env import go_cmd_envs
+from source_shell import SHELLS, shell_command_word, shell_inner_scripts, shell_script
+from source_statements import _KEYWORDS, Source
 
 DOOR = "LEGION_TEST_OMP"
 REASON = re.compile(r"\bomp-offline:\s*\S")
@@ -128,7 +132,7 @@ NOT_NAMES = {"nil", "true", "false", "null", "undefined", "this", "append", "len
 # starts a program this cannot name from its text alone. A file whose every such call names its
 # program as a string that is neither the binary, a shell nor a program that runs another (env,
 # timeout, ...) starts nothing, and is not lexed: most test files start only git or go.
-WRAPPERS = scan.SHELLS | {"env", "command", "exec", "nice", "nohup", "time", "timeout", "flock", "builtin"}
+WRAPPERS = SHELLS | {"env", "command", "exec", "nice", "nohup", "time", "timeout", "flock", "builtin"}
 GO_EXEC_CALL = re.compile(r"\bexec\.Command(Context)?\(")
 GO_CONTEXT_ARGUMENT = re.compile(r"[^,()]*(?:\([^()]*\))?\s*,")
 GO_PROGRAM = re.compile(r"\s*\"([^\"\\\n]*)\"")
@@ -206,12 +210,12 @@ def shell_starts(text, line, program, depth=0):
     """The line of each command of a shell text whose program is the binary, in a $(...) and in a
     shell's -c, eval or heredoc too. program(word) says whether a word is the binary."""
     out = []
-    for command in scan.shell_script(text, line):
-        k = scan.shell_command_word(command)
+    for command in shell_script(text, line):
+        k = shell_command_word(command)
         if k is not None and program(command.values()[k]):
             out.append(command.line)
         if depth < 3:
-            for inner, inner_line in scan.shell_inner_scripts(command):
+            for inner, inner_line in shell_inner_scripts(command):
                 out += shell_starts(inner, inner_line, program, depth + 1)
     return out
 
@@ -379,7 +383,7 @@ class Reading:
     def plain_name(self, s, k):
         """Whether token k of s is a name whose value can hold the helper: no field, key or keyword."""
         t = s.tokens[k]
-        if t.kind != "ident" or t.value in NOT_NAMES or t.value in scan._KEYWORDS[self.lang]:
+        if t.kind != "ident" or t.value in NOT_NAMES or t.value in _KEYWORDS[self.lang]:
             return False
         if s.punct(k - 1, ".") or s.punct(k + 1, "."):
             return False
@@ -412,7 +416,7 @@ class Reading:
             t = src.tokens[k]
             if t.kind == "template":
                 for sub in t.subs:
-                    inner = scan.Source(src.text, self.lang, sub)
+                    inner = Source(src.text, self.lang, sub)
                     if any(call.callee in self.helpers for call in inner.calls()):
                         return True
                     if any(self.plain_name(inner, j) and self.name_holds(tok.value, k, inner.punct(j + 1, "("), depth)
@@ -459,7 +463,7 @@ class Reading:
     def template(self, index, table):
         """A template's text with each ${...} as a placeholder of the table."""
         def substitute(tokens):
-            inner = scan.Source(self.src.text, self.lang, tokens)
+            inner = Source(self.src.text, self.lang, tokens)
             return self.placeholder(table, lambda: bool(inner.tokens) and self.omp(0, len(inner.tokens), inner, index))
         return self.src.template_text(self.src.tokens[index], substitute)
 
@@ -536,7 +540,7 @@ IMPORT = re.compile(r"\bimport\s+(?:type\s+)?(?:([\w$]+)\s*,?\s*)?(?:\{([^}]*)\}
 
 def reading_of(path, lang):
     if path not in readings:
-        readings[path] = Reading(path, scan.Source(texts[path], lang))
+        readings[path] = Reading(path, Source(texts[path], lang))
     return readings[path]
 
 
@@ -660,7 +664,7 @@ def go_file(path):
             continue
         starts["go"] += 1
         line = src.line(call.at)
-        target, sets = src.go_cmd_envs(call)
+        target, sets = go_cmd_envs(src, call)
         held = False
         for a, b in sets:
             held = reading.holds(a, b, {f"{target}.Env": held})

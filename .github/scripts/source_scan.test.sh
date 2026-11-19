@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests for `source_scan.py`, the reading of source files check-go-offline.sh and
+# Tests for `source_scan.py` and the modules beside it (source_statements.py, source_env.py,
+# source_python.py, source_shell.py), the reading of source files check-go-offline.sh and
 # check-omp-offline.sh share: the language of a path (.mts and .cts are TypeScript, a .d.ts is no
 # source), the walk that skips a test's inputs, installed packages and links, the lexing of Go,
 # TypeScript and Python into code with comments blanked and string text blanked but for the
@@ -8,12 +9,12 @@
 # Last, one row both checks read through it: a .mts test that holds a quoted example of a start
 # and, in its control, the start itself; each check names the start and neither reads the example.
 #
-# Only what the module does. What each check makes of it stays in that check's own suite,
-# check-go-offline.test.sh and check-omp-offline.test.sh, each of which runs the module beside the
+# Only what the modules do. What each check makes of them stays in that check's own suite,
+# check-go-offline.test.sh and check-omp-offline.test.sh, each of which runs the modules beside the
 # real script rather than a copy.
 #
-# The module is symlinked into a temporary directory and imported the way the checks import it
-# (PYTHONPATH, no bytecode), so the code under test is the file CI runs. It needs a python3 with
+# The modules are symlinked into a temporary directory and imported the way the checks import them
+# (PYTHONPATH, no bytecode), so the code under test is the files CI runs. It needs a python3 with
 # PyYAML, which the go check imports.
 #
 # Run from anywhere: .github/scripts/source_scan.test.sh
@@ -29,15 +30,21 @@ trap 'rm -rf "$work"' EXIT
 source "$script_dir/test-lib.sh"
 
 mkdir -p "$work/module"
-ln -s "$script_dir/source_scan.py" "$work/module/source_scan.py"
+for module in source_scan source_statements source_env source_python source_shell; do
+  ln -s "$script_dir/$module.py" "$work/module/$module.py"
+done
 
-# py <statements> [argument ...]: runs the statements with the module as `scan` and the arguments in
-# sys.argv[1:], and echoes what they print.
+# py <statements> [argument ...]: runs the statements with the modules as `scan`, `statements`,
+# `env`, `python_ast` and `shell`, and the arguments in sys.argv[1:], and echoes what they print.
 py() {
   local statements=$1
   shift
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$work/module" python3 -c "import sys
+import source_env as env
+import source_python as python_ast
 import source_scan as scan
+import source_shell as shell
+import source_statements as statements
 $statements" "$@"
 }
 
@@ -118,7 +125,7 @@ check "and its last line" "$(is "$(sed -n 3p <<<"$out")" '     """; s = '"'"'  '
 check "an escaped newline continues the string" "$(is "$(sed -n 4p <<<"$out")" ' '"'"'; t = "go"')"
 
 echo "case: shell: a quoted command is one word, a \$(...) in double quotes runs, a comment and a heredoc's body run nothing"
-out=$(py 'print([c.values() for c in scan.shell_script(sys.stdin.read())])' <<'EOF'
+out=$(py 'print([c.values() for c in shell.shell_script(sys.stdin.read())])' <<'EOF'
 echo "go build $(go version)" # go list
 cat <<'TEXT'
 go build
@@ -130,9 +137,9 @@ check "each command's words, in order, an expansion as \\x00" \
   "$(is "$out" "[['echo', 'go build \\x00'], ['go', 'version'], ['cat'], ['\\x00/bin/go', 'build', './...']]")"
 
 # src_of <lang> <statements>: runs the statements with this harness's stdin read as `src`, a
-# scan.Source of that language.
+# statements.Source of that language.
 src_of() {
-  py "src = scan.Source(sys.stdin.read(), sys.argv[1])
+  py "src = statements.Source(sys.stdin.read(), sys.argv[1])
 $2" "$1"
 }
 
@@ -158,7 +165,7 @@ check "both tags" "$(is "$out" '$ Bun.$')"
 
 echo "case: Go: the Env of a Cmd is that variable's own, read after it"
 out=$(src_of go 'calls = [c for c in src.calls() if c.callee == "exec.Command"]
-print(src.go_cmd_env(calls[0]), src.go_cmd_env(calls[1]))' <<'EOF'
+print(env.go_cmd_env(src, calls[0]), env.go_cmd_env(src, calls[1]))' <<'EOF'
 package x
 
 func f() {
@@ -171,7 +178,7 @@ EOF
 )
 check "none for the first, the inherited environment then each setting for the second" \
   "$(is "$out" "None [('inherit',), ('set', 'A', 'b'), ('set', 'GOPROXY', 'off')]")"
-out=$(src_of go 'print(src.go_cmd_env(next(c for c in src.calls() if c.callee == "exec.Command")))' <<'EOF'
+out=$(src_of go 'print(env.go_cmd_env(src, next(c for c in src.calls() if c.callee == "exec.Command")))' <<'EOF'
 package x
 
 func f() {
@@ -184,7 +191,7 @@ EOF
 )
 check "through a name it is bound to, and an append to its own Env" \
   "$(is "$out" "[('set', 'GOPROXY', 'off'), ('inherit',), ('set', 'X', '1')]")"
-out=$(src_of go 'print([src.go_cmd_env(c) for c in src.calls() if c.callee == "exec.Command"])' <<'EOF'
+out=$(src_of go 'print([env.go_cmd_env(src, c) for c in src.calls() if c.callee == "exec.Command"])' <<'EOF'
 package x
 
 func f() {
@@ -199,7 +206,7 @@ check "an Env set after the variable is assigned again is the new command's alon
   "$(is "$out" "[None, [('inherit',), ('set', 'GOPROXY', 'off')]]")"
 
 echo "case: TypeScript: a call's own options' env, given in place or by a name"
-out=$(src_of ts 'print([src.ts_options_env(c, 1) for c in src.calls() if c.callee == "Bun.spawn"])' <<'EOF'
+out=$(src_of ts 'print([env.ts_options_env(src, c, 1) for c in src.calls() if c.callee == "Bun.spawn"])' <<'EOF'
 Bun.spawn(["go"], { cwd: x, env: { ...process.env, GOPROXY: "off" } });
 const env = { GOPROXY: "off" };
 Bun.spawn(["go"], { env });
@@ -231,9 +238,9 @@ check "Go, the nearest of two" "$(is "$out" '"go"')"
 
 echo "case: Python: an env= built by dict(), a ** spread and assignments to its keys"
 out=$(py 'import ast
-tree = scan.python_tree(sys.stdin.read())
+tree = python_ast.python_tree(sys.stdin.read())
 call = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "run"][0]
-print(scan.python_env_elements(call.keywords[0].value), scan.python_env_elements(call.keywords[1].value))' <<'EOF'
+print(python_ast.python_env_elements(call.keywords[0].value), python_ast.python_env_elements(call.keywords[1].value))' <<'EOF'
 def f():
     env = dict(os.environ, GOPROXY="off")
     env["X"] = "1"
@@ -243,10 +250,10 @@ EOF
 check "in the order they are made" \
   "$(is "$out" "[('unknown',), ('set', 'GOPROXY', 'off'), ('set', 'X', '1')] [('unknown',), ('set', 'GOPROXY', 'off')]")"
 check "an f-string's text, each {...} as a placeholder" \
-  "$(is "$(py 'import ast; print(repr(scan.python_text(ast.parse(sys.argv[1]).body[0].value)))' 'f"go list {pkg}"')" "'go list \\x00'")"
+  "$(is "$(py 'import ast; print(repr(python_ast.python_text(ast.parse(sys.argv[1]).body[0].value)))' 'f"go list {pkg}"')" "'go list \\x00'")"
 
 echo "case: shell: simple commands, nested ones, continued lines joined, and no heredoc body"
-out=$(py 'for c in scan.shell_script(sys.stdin.read()):
+out=$(py 'for c in shell.shell_script(sys.stdin.read()):
     print(":".join([str(c.line + 1), c.function or "-", str(c.pipe), " ".join(w.source() for w in c.words),
                     " ".join(n for n, _ in c.assigns)]))' <<'EOF'
 x=$(cd a && GOPROXY=off go build ./... \
@@ -265,11 +272,11 @@ check "each command once, in order, with its function, its pipeline index and it
   "$(is "$out" "$(printf '%s\n' '1:-:0::x' '1:-:0:cd a:' '1:-:0:go build ./... -o out:GOPROXY' '4:f:0:go list:' '4:f:1:xargs go vet:' '6:-:0:cat:' '9:-:0:go test:')")"
 
 echo "case: shell: a command's own settings, and the shell it hands more shell to"
-out=$(py 'c = scan.shell_script(sys.argv[1])[0]
-print(scan.shell_env_elements(c, c.values().index("go")))' 'GOPROXY=off env -u A B=c go build')
+out=$(py 'c = shell.shell_script(sys.argv[1])[0]
+print(shell.shell_env_elements(c, c.values().index("go")))' 'GOPROXY=off env -u A B=c go build')
 check "its prefix, then env's -u and NAME=value before the go" \
   "$(is "$out" "[('set', 'GOPROXY', 'off'), ('set', 'A', None), ('set', 'B', 'c')]")"
-out=$(py 'print([s for c in scan.shell_script(sys.stdin.read()) for s in scan.shell_inner_scripts(c)])' <<'EOF'
+out=$(py 'print([s for c in shell.shell_script(sys.stdin.read()) for s in shell.shell_inner_scripts(c)])' <<'EOF'
 bash -euo pipefail -c 'go vet'
 eval go build
 sh <<SCRIPT
@@ -375,7 +382,7 @@ check "the literal's parameter, f's own assignment, f's parameter inside that as
 
 echo "case: Go: the Env assignments of the Cmd a call makes, until its variable is assigned again"
 out=$(src_of go 'for c in [c for c in src.calls() if c.callee == "exec.Command"]:
-    target, sets = src.go_cmd_envs(c)
+    target, sets = env.go_cmd_envs(src, c)
     print(target, [src.text_of_tokens(*r) for r in sets])' <<'EOF'
 package x
 
@@ -413,14 +420,15 @@ EOF
 check "an argv by its name, cmd:, node's command and args; the chain; each operator's parts" \
   "$(is "$out" "$(printf '%s\n' 'omp "models" 1' '"git" "status" 0' '"omp" "models" 2' '$`omp models`.env({ A: "b" }).quiet()' "['a', 'b || c'] ['a ?? b', 'c']")")"
 
-# --- One row both checks read through this module ---------------------------------------------------
+# --- One row both checks read through these modules ------------------------------------------------
 
-# both <name>: a tree holding both checks and this module, a ci.yaml, a file of each language the
-# go check reads and a Go test file the Oh My Pi check reads. Echoes its root.
+# both <name>: a tree holding both checks, a ci.yaml, a file of each language the go check reads
+# and a Go test file the Oh My Pi check reads. Each check imports the modules from the directory
+# its link resolves to, this one. Echoes its root.
 both() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/packages/app" "$root/packages/web" "$root/tools"
-  for linked in check-go-offline.sh check-omp-offline.sh source_scan.py; do
+  for linked in check-go-offline.sh check-omp-offline.sh; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'name: CI\non: pull_request\njobs:\n  lint:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo lint\n' \
@@ -468,4 +476,4 @@ check "and nothing else" "$(contains "$go_out" '1 problems over the 1 go command
 check "the Oh My Pi check fails" "$(is "$omp_status" 1)"
 check "naming its start" "$(contains "$omp_out" '^::error file=packages/web/probe.test.mts,line=3::')"
 
-summary "source_scan.py"
+summary "source_scan.py and the modules beside it"
