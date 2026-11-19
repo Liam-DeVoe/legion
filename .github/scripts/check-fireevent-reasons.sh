@@ -37,7 +37,9 @@
 # `expect(el).toHaveAttribute(name, value)`, `expect(el).not.toHaveAttribute(name)` or
 # `expect(el).toHaveAttribute(name, expect.stringContaining(part))` (`expect.stringMatching(re)`),
 # not `expect(el.getAttribute(name))` compared by hand with `.toBe(`, `.toBeNull(`, `.toContain(`
-# or `.toMatch(`. The suite's sites of those hand-written shapes, and of their `.not` forms, were
+# or `.toMatch(`. Wherever `.toBe(` is named here, `.toEqual(` and `.toStrictEqual(` count too,
+# since on a string, a boolean or an element they compare what `.toBe(` does. The suite's sites
+# of those hand-written shapes, and of their `.not` forms, were
 # rewritten, and nothing but this keeps a new test from writing them again: between the merge that
 # moved the suite to the matchers (cybermonklabs/legion#2884) and this rule, the test files' focus
 # reads went from 3 to 126 and their attribute reads compared with `.toBe(` from 212 to 273. A site
@@ -102,9 +104,12 @@ for _ in range(4):
 # either side, at the top level of `expect`'s argument. A read of a property of the focused element
 # (`document.activeElement?.tagName`, `.matches(…)`) is not that element, and an argument it is
 # passed to (`pane.contains(document.activeElement)`) is not a comparison, so neither counts.
+COMPARE = r"(?:toBe|toEqual|toStrictEqual)"
 FOCUS = (
-    re.compile(r"\bexpect\(\s*document\.activeElement\s*\)\s*(?:\.not\s*)?\.toBe\("),
-    re.compile(rf"\bexpect\({BALANCED}*\)\s*(?:\.not\s*)?\.toBe\(\s*document\.activeElement\s*\)"),
+    re.compile(rf"\bexpect\(\s*document\.activeElement\s*\)\s*(?:\.not\s*)?\.{COMPARE}\("),
+    re.compile(
+        rf"\bexpect\({BALANCED}*\)\s*(?:\.not\s*)?\.{COMPARE}\(\s*document\.activeElement\s*\)"
+    ),
     re.compile(
         rf"\bexpect\({BALANCED}*?"
         r"(?:\bdocument\.activeElement\s*[!=]==?|[!=]==?\s*document\.activeElement\b(?!\s*[!?]?\.))"
@@ -113,10 +118,10 @@ FOCUS = (
 ATTRIBUTE = (
     re.compile(
         rf"\bexpect\({BALANCED}*?\.getAttribute\({BALANCED}*\)\s*\)"
-        r"\s*(?:\.not\s*)?\.(?:toBe|toBeNull|toContain|toMatch)\("
+        r"\s*(?:\.not\s*)?\.(?:toBe|toEqual|toStrictEqual|toBeNull|toContain|toMatch)\("
     ),
     re.compile(
-        rf"\bexpect\({BALANCED}*?\.hasAttribute\({BALANCED}*\)\s*\)\s*(?:\.not\s*)?\.toBe\("
+        rf"\bexpect\({BALANCED}*?\.hasAttribute\({BALANCED}*\)\s*\)\s*(?:\.not\s*)?\.{COMPARE}\("
     ),
 )
 

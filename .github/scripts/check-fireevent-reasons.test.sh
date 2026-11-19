@@ -285,6 +285,26 @@ check "names the toContain read" "$(contains "$out" 'rows.test.tsx:4')"
 check "names the toMatch read" "$(contains "$out" 'rows.test.tsx:5')"
 check "names the matcher to use" "$(contains "$out" 'expect.stringContaining(part)')"
 
+echo "case: a focus or attribute read compared with toEqual or toStrictEqual is refused"
+root=$(fixture equal)
+rows "$root" <<'EOF'
+test("a row", () => {
+  expect(row.getAttribute("aria-current")).toEqual("true");
+  expect(row.getAttribute("title")).toStrictEqual("Copy");
+  expect(row.hasAttribute("hidden")).toEqual(false);
+  expect(document.activeElement).toEqual(row);
+  expect(row).toStrictEqual(document.activeElement);
+});
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts all five" "$(contains "$out" '5 of 5 hand-written focus and attribute assertions')"
+check "names the getAttribute toEqual read" "$(contains "$out" 'rows.test.tsx:2')"
+check "names the getAttribute toStrictEqual read" "$(contains "$out" 'rows.test.tsx:3')"
+check "names the hasAttribute toEqual read" "$(contains "$out" 'rows.test.tsx:4')"
+check "names the activeElement toEqual read" "$(contains "$out" 'rows.test.tsx:5')"
+check "names the toStrictEqual(document.activeElement) read" "$(contains "$out" 'rows.test.tsx:6')"
+
 # Biome's formatter wraps a long assertion so: a line-by-line pattern would see neither the
 # `expect(` line nor the read below it as the shape.
 echo "case: an attribute read Biome wrapped onto lines of its own is refused at its expect"
