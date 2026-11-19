@@ -320,10 +320,11 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 // late where it is of the run the stop ended (ranUnreported); its first sentence is the reason the
 // task stores (LateReportOfStoppedTask). Every other report gets nil: the first report of a run an
 // event ended, whatever step the task stands at now, which handoff takes as it takes one on an
-// issue with no plan rows (leftPhaseReported); one of no run; one of the retro or the merge; one
-// of a task whose issue left the workflow (HANDOFF_NOT_CURRENT_PHASE); and one of a step other
-// than the one the stop ended. The refusal writes nothing itself: the caller answers it after the
-// lingering tree's and keeps the report's handoff record (spendLateHandoff).
+// issue with no plan rows (leftPhaseReported); one of no run; one of a run whose plan rows are
+// gone; one of the retro or the merge; one of a task whose issue left the workflow
+// (HANDOFF_NOT_CURRENT_PHASE); and one of a step other than the one the stop ended. The refusal
+// writes nothing itself: the caller answers it after the lingering tree's and keeps the report's
+// handoff record (spendLateHandoff).
 func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, past pastReport) (*intake.Refusal, error) {
 	if past != stoppedStepReported {
 		return nil, nil
