@@ -2247,9 +2247,12 @@ After the roll, the intake reads a project's daemon whole again in these cases, 
   The intake applies nothing of it, and the read finds again a daemon whose store was replaced.
 
 A project's whole reads start at least a minute apart, whatever their reason, and a good starting read holds back no read after it.
-A message that calls for a read inside that minute makes none: the intake records the read owed on the project's cursor, with the message's reason, and acknowledges the message.
-The owed read is made at the project's next message, boot, settings write or take-over once the minute has passed, and its log line names the first reason as `reason` and every reason it was owed for as `reasons`, for example `reasons=gap,boot`.
-So a burst of messages that each call for a read, forged or from a bug, makes one read a minute and holds no other project's messages for longer than that one read.
+A message that calls for a read inside that minute makes none: the intake records the read owed on the project's cursor, with the message's reason.
+The first message that owes the read goes back to the stream unacknowledged until the minute has passed, and its redelivery makes the read.
+For each such hand-back the intake logs `legion intake: a state message goes back to the stream until its project's owed whole read is due` at INFO, with the project, the message's sequences and the `delay`.
+The intake acknowledges every later message that joins the owed read, and a read that fails again sends the first message back for another minute.
+The read's log line names the first reason as `reason` and every reason it was owed for as `reasons`, for example `reasons=gap,boot`.
+So a burst of messages that each call for a read, forged or from a bug, makes one read a minute and holds no other project's messages for longer than that one read, each project that owes a read holds one message of the durable's window, and a project that goes quiet is at most a minute behind.
 While a read is owed, the intake applies each message that follows the cursor, and drops a gap, a boot that does not follow, a part that does not continue the held parts and a message of another store, since the read holds their events.
 While no good read has given a project's cursor a store, for example after a write of the setting whose first read failed, the intake applies no message of the project at all, so no message of the daemon the setting named before is applied.
 
@@ -2277,7 +2280,7 @@ It writes no state kind, the commit trigger runs for those kinds alone, and it p
 The kind check keeps every kind an earlier release writes, `phase_ended`, `conflict_confirm` and `merge_forward` among them, so it refuses nothing that release writes.
 Roll Dispatch back first, and then the daemon.
 A Dispatch of this release reads a daemon without the change once and records a failed read, since that daemon serves no `daemon.stateSeq`.
-That daemon sends no event, so Dispatch reads it again only at a take-over of the durable or at a write of a Legion setting (`startReasons` in `legion/intake.go`), and its board shows nothing between those reads.
+That daemon sends no event, so Dispatch reads it again only at a take-over of the durable or at a write of a Legion setting (`cursor.readFor` in `legion/intake.go`), and its board shows nothing between those reads.
 A write of that project's own setting reads it at once, and a take-over or a write of another project's setting reads it only a minute or more after the last read.
 Where a daemon was rolled back under a Dispatch of this release, `PUT` the project's Legion setting again with the same URL once the daemon runs this release again.
 The boot event of that roll forward follows the cursor and carries the same schema version the earlier daemon's state served, since the migration stayed applied, so nothing else has Dispatch read the state the earlier daemon wrote.

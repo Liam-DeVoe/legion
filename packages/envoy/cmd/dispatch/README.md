@@ -1606,8 +1606,11 @@ a message of another store, so a daemon whose store was replaced is found again;
 a message the database refuses for good (a Postgres error of SQLSTATE class 22 or 23), which the intake logs at WARN and finishes, and does not try again;
 and a read owed since one failed.
 A project's whole reads start at least a minute apart (`legion.ReadRetryAfter`), whatever their reason, and a good starting read holds back no read after it.
-A message that calls for a read inside that minute makes none: the cursor records the read owed with the message's reason (`legion_event_cursors.read_reasons`), the message is acknowledged, and the read is made at the project's next message, settings write or take-over once it is due.
-So a project has at most one whole read in flight and at most one owed, and a burst of messages that call for reads holds the durable's window for one read at the most.
+A message that calls for a read inside that minute makes none: the cursor records the read owed with the message's reason (`legion_event_cursors.read_reasons`).
+The first message that owes the read goes back to the stream unacknowledged, with a redelivery delay of the time left in the minute (`delivery.HeldMessage.HandBackAfter`), and the cursor names it as the read's holder (`read_holder`), so its redelivery makes the read;
+every later message that joins the owed read is acknowledged, and a read that fails again sends the holder back for another minute.
+The durable sets no `MaxDeliver`, so no redelivery of the holder counts toward a drop, and its two-minute ack wait is past the longest delay.
+So a project has at most one whole read in flight and at most one owed, a burst of messages that call for reads holds the durable's window for one read at the most, each project that owes a read holds one message of the window, and a project that goes quiet is at most a minute behind.
 While a read is owed, the intake applies a message that follows the cursor, and drops a gap, a boot that does not follow, a part that does not continue the held parts and a message of another store, since the owed read holds their events.
 A whole read that fails keeps the parts held, and a good one deletes them, since its snapshot holds them.
 A message whose first sequence is still past the next one after a good read it called for is no event of the daemon read, since the daemon commits each event before it publishes it.

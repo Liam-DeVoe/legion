@@ -108,11 +108,11 @@ func TestAFailedWholeReadSetsNoRun(t *testing.T) {
 	rig.start()
 	rig.awaitStartingRead("INFRA")
 
-	// A gap whose read the daemon refuses: the read is owed, and the message that called for it is
-	// taken, as a message is while a read is owed, under the rig's run.
+	// A gap whose read the daemon refuses: the read is owed under the rig's run, and the message
+	// that called for it goes back to the stream until the read is due.
 	daemon.refuses(http.StatusServiceUnavailable)
 	rig.publish("INFRA", change(20, "INFRA-1", moved("phase", "implementing")))
-	rig.settled()
+	rig.settledHolding(1)
 	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.run == nil || *c.run != rigRun {
 		t.Fatalf("after the refused gap read the cursor is %+v under the run %s, want a read owed under %s", c, orNone(c.run), rigRun)
 	}

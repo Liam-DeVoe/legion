@@ -329,6 +329,21 @@ func (m HeldMessage) HandBack() {
 	m.delivery.handBack(m.Msg)
 }
 
+// HandBackAfter hands the message back for redelivery in after: the handler's own answer that the
+// message is to come round again later, not now (legion.Intake's owed read). It is published only
+// while this delivery may still answer the durable (intakeDelivery.mayAnswer), and withheld
+// otherwise, the message left with the durable for the next holder's take-over, which hands it over
+// at once. A hand-back the server does not take is logged, and the durable's ack wait then
+// redelivers the message, later than asked but not never (redeliverAfter).
+func (m HeldMessage) HandBackAfter(after time.Duration) {
+	if !m.delivery.mayAnswer() {
+		slog.Warn("dispatch delivery: this delivery may no longer answer the durable, so the message is left with the durable for the next holder's take-over",
+			"subject", m.Msg.Subject, "delay", after)
+		return
+	}
+	redeliverAfter(m.Msg, after)
+}
+
 // intakeHoldLost is the line of an intake whose durable's hold is no longer its own, so it stops
 // delivering (run).
 const intakeHoldLost = "dispatch delivery: the intake's hold is lost; it stops delivering"

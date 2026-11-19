@@ -46,14 +46,20 @@
 -- - last_seq is the newest state sequence the project's observations reflect: the stateSeq a
 --   successful whole read served, or the seq of the newest transaction applied. Null while the row
 --   holds none, which is only while a read is owed.
--- - read_owed is a whole read owed: set by a whole read that failed, and by a message that calls
---   for a read inside a minute of the last one, and cleared by a read that succeeded.
--- - read_reasons is every reason the owed read is owed for (legion's ReadReason constants), in the
---   order they called for it, and empty while none is owed; the check holds the two together. The
---   read is recorded under the first and logged with them all.
+-- - read_reasons is every reason a whole read is owed for (legion's ReadReason constants), in the
+--   order they called for it, and empty while none is owed: a whole read that failed owes it for
+--   `retry`, a message that calls for a read inside a minute of the last one adds its reason, and a
+--   read that succeeded clears them. The read is recorded under the first and logged with them
+--   all.
+-- - read_owed is a whole read owed, which Postgres generates from read_reasons, so no write names
+--   it.
 -- - read_tried_at is when the whole read the next one waits a minute after was tried, whatever
 --   the next one's reason: each read but a good starting read sets it, and a good starting read
 --   clears it, since no message called for it.
+-- - read_holder is the stream sequence of the state message that holds the owed read: the
+--   message the intake sent back to the stream unacknowledged until the read is due, whose
+--   redelivery makes the read. Null where no message holds it. A read that succeeded clears it, and
+--   one that failed keeps it.
 -- - state_id is the id of the daemon's store (the state route's daemon.stateId, which every state
 --   message carries as stateId): a successful whole read sets it, and nothing else does. The
 --   intake applies no message of another id, and none at all while it is null, which is only while
@@ -115,12 +121,12 @@ create table legion_event_cursors (
   state_url text not null,
   run text,
   last_seq bigint,
-  read_owed boolean not null default false,
   read_reasons text[] not null default '{}',
+  read_owed boolean generated always as (cardinality(read_reasons) > 0) stored,
   read_tried_at timestamptz,
+  read_holder bigint,
   state_id text,
-  schema_version bigint,
-  check (read_owed = (cardinality(read_reasons) > 0))
+  schema_version bigint
 );
 
 create table legion_event_parts (

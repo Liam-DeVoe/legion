@@ -8,9 +8,11 @@ body: |-
   longer holds, a message of another store than the starting point's, a message the database
   refuses for good, and a read owed since one failed. The whole reads of one project start at
   least a minute apart, whatever their reason. A message that calls for a read sooner makes none:
-  Dispatch records the read as owed, acknowledges the message, and makes the read at the
-  project's next message, settings change or take-over after the minute. So a burst of such
-  messages makes one read a minute and does not stop the messages of other projects. A good whole
+  Dispatch records the read as owed, sends the first such message back to the stream with a delay
+  of the time left in the minute, and makes the read at its redelivery; every later message that
+  calls for the owed read is acknowledged. So a project that goes quiet is a minute behind at the
+  most, a burst of such messages makes one read a minute and holds one message of the consumer's
+  window, and the messages of other projects are not stopped. A good whole
   read takes the daemon's `daemon.stateRun` as the run of its starting point, so a boot message of
   that run that arrives after the read, at or below the read's sequence, makes no second read. It
   logs each whole read with the daemon run that served it, its first reason as `reason`, and each
@@ -25,7 +27,8 @@ body: |-
   whole read.
   `legion_reads` records each transaction the intake applies as a row of kind `events` at the
   daemon's commit time. `legion_event_cursors` records how far the observations of each project
-  follow its daemon and the whole read it owes, with the reasons for that read,
+  follow its daemon and the whole read it owes, with the reasons for that read and the stream
+  sequence of the message that holds it,
   `legion_event_parts` holds the parts of a split transaction, and
   `server_processes.legion_state_intake` tells a process of this build from one of an earlier
   build (migration `20261118212431_legion_events`). A call to a daemon waits up to 60 s, not 20 s.

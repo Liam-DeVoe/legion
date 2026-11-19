@@ -163,6 +163,28 @@ func (r *intakeRig) settled() {
 	})
 }
 
+// settledHolding waits for the intake to have answered every message the stream holds, held of
+// them by sending it back to the stream unacknowledged, each holding its project's owed whole read
+// (heldLine), and every other one by acknowledging it. The held messages are the consumer's only
+// messages waiting for an ack, and each has logged that it went back.
+func (r *intakeRig) settledHolding(held int) {
+	r.t.Helper()
+	stream, err := r.publisher.JS().StreamInfo(bus.Stream)
+	if err != nil {
+		r.t.Fatalf("read the stream: %v", err)
+	}
+	last := stream.State.LastSeq
+	var info *natsgo.ConsumerInfo
+	r.waitFor(20*time.Second, func() bool {
+		info, err = r.publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchLegionStateDurable)
+		return err == nil && info.Delivered.Stream >= last && info.NumPending == 0 && info.NumAckPending == held &&
+			len(r.logRecords(heldLine)) >= held
+	}, func() string {
+		return fmt.Sprintf("the intake has not answered through stream sequence %d with %d messages held (%d logged): %+v, %v",
+			last, held, len(r.logRecords(heldLine)), info, err)
+	})
+}
+
 // awaitWholeReads waits for want whole reads of any project to be recorded.
 func (r *intakeRig) awaitWholeReads(want int) {
 	r.t.Helper()
@@ -1032,9 +1054,10 @@ func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testin
 // TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner: a starting read the daemon answers
 // with a state that is no starting point, or with another project's, records a failed read naming
 // why and owes the read; a state of the project's own still records its observations. The cursor
-// then holds no store, so the messages that arrive meanwhile are finished unapplied and the cursor
-// stays where the failed read left it; neither the next message nor a settings change reads again
-// inside ReadRetryAfter, and the first message after it does.
+// then holds no store, so the messages that arrive meanwhile are not applied and the cursor stays
+// where the failed read left it; neither the next message nor a settings change reads again inside
+// ReadRetryAfter, and the first message after it does. The first message inside the minute holds
+// the owed read, so it goes back to the stream until the read is due, and the second is finished.
 func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 	issue := planning("INFRA")
 	for _, tc := range []struct {
@@ -1104,15 +1127,16 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 			}
 
 			// Inside ReadRetryAfter, the next message and a settings change read nothing. No good
-			// read has said which store the daemon counts in, so neither message is applied: each
-			// is finished, and the drop is logged once.
+			// read has said which store the daemon counts in, so neither message is applied: the
+			// first goes back to the stream until the read is due, the second is finished, and the
+			// drop is logged once.
 			before := currentValues(t, rig.database, "INFRA")
 			rig.clock.advance(ReadRetryAfter / 2)
 			rig.publish("INFRA", change(5, "INFRA-1", moved("phase", "implementing")))
-			rig.settled()
+			rig.settledHolding(1)
 			rig.intake.SettingsChanged(t.Context())
 			rig.publish("INFRA", change(6, "INFRA-1", claimMoved("planner", "idle")))
-			rig.settled()
+			rig.settledHolding(1)
 			if served := daemon.served(); served != 1 {
 				t.Fatalf("the daemon served %d reads inside a minute of the failed one, want none more", served)
 			}
@@ -1127,11 +1151,12 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 			}
 
 			// Past ReadRetryAfter, the next message reads the daemon again, and this time the
-			// read is good: the cursor takes its stateSeq and owes nothing.
+			// read is good: the cursor takes its stateSeq and owes nothing. The first message
+			// comes back from the stream only once its own delay has passed.
 			daemon.serves(daemonState("INFRA", 7, strings.Replace(issue, `"planning"`, `"testing"`, 1)))
 			rig.clock.advance(ReadRetryAfter/2 + time.Second)
 			rig.publish("INFRA", change(7, "INFRA-1", moved("phase", "testing")))
-			rig.settled()
+			rig.settledHolding(1)
 			if served := daemon.served(); served != 2 {
 				t.Fatalf("the daemon served %d reads, want one more once the minute had passed", served)
 			}
@@ -1557,7 +1582,7 @@ func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
 		rig.settled()
 		readsDaemon.serves(stateOfProject(t, step.state, reads))
 		var pending *wholeRead
-		if _, err := rig.intake.readWhole(t.Context(), readsSetting, []string{ReadReasonStart}, &pending); err != nil {
+		if _, err := rig.intake.readWhole(t.Context(), readOf(readsSetting, ReadReasonStart), &pending); err != nil {
 			t.Fatalf("%s: read its state whole for %s: %v", name, reads, err)
 		}
 		if last := readRecords(t, rig.database, reads); len(last) == 0 || !last[len(last)-1].ok || !last[len(last)-1].readAt.Equal(step.at) {
@@ -1683,7 +1708,8 @@ func (r *intakeRig) wholeReadReasons(project string) []string {
 // daemon counts in now. The daemon still serves the starting point's store, so the message is
 // dropped, and the drop is logged once, with both ids and the message's sequences. A second
 // message of that store inside ReadRetryAfter of the read makes no read: the read is owed for that
-// reason, and the daemon's own next message is applied meanwhile.
+// reason, the message goes back to the stream until the read is due, and the daemon's own next
+// message is applied meanwhile.
 func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -1695,7 +1721,7 @@ func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	rig.publishIn("INFRA", rig.run, otherStateID, at, false, change(11, "INFRA-1", moved("phase", "merging")))
 	rig.publishIn("INFRA", rig.run, otherStateID, at, false, change(12, "INFRA-1", moved("phase", "merging")))
-	rig.settled()
+	rig.settledHolding(1)
 
 	if after := observations(t, rig.database, "INFRA"); !slices.Equal(after, rows) {
 		t.Errorf("observations = %v, want the starting read's %v alone: a message of another store writes nothing", after, rows)
@@ -1723,7 +1749,7 @@ func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 	}
 
 	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
-	rig.settled()
+	rig.settledHolding(1)
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`}) {
 		t.Errorf("the phase's history is %v, want the starting read's planning, then the daemon's own message's implementing", got)
 	}
@@ -2126,9 +2152,10 @@ func TestAMessageWhoseSequenceItsEventsDoNotReachMovesNoCursor(t *testing.T) {
 // read of the newly named daemon fails, since it does not answer yet, so the cursor follows the new
 // daemon with no store, while the daemon named before still publishes under the same project, in
 // its own store and run, at its next sequences. None of its messages is applied, none gives the
-// cursor its store, and the drop is logged once. A minute on, its next message makes the owed read,
-// which takes the named daemon's state and store, and that message is dropped too, as one of
-// another store; the named daemon's own next event is applied.
+// cursor its store, and the drop is logged once; the first of them goes back to the stream until
+// the owed read is due. A minute on, its next message makes the owed read, which takes the named
+// daemon's state and store, and that message is dropped too, as one of another store; the named
+// daemon's own next event is applied.
 func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedBefore(t *testing.T) {
 	const namedRun, namedStore = "2c7e9a14-5b3d-4f86-a1e0-8d6c4b2f9e37", "6e1f3a8c-2d4b-4c97-b5a0-9f7e1d3c8b26"
 	rig := newIntakeRig(t)
@@ -2151,7 +2178,7 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 	// The daemon named before publishes on, under the rig's run and store, which are its own.
 	rig.publish("INFRA", change(2000001, "INFRA-1", moved("phase", "merging")))
 	rig.publish("INFRA", change(2000002, "INFRA-1", moved("phase", "merging")), change(2000003, "INFRA-1", claimMoved("planner", "idle")))
-	rig.settled()
+	rig.settledHolding(1)
 	if after := currentValues(t, rig.database, "INFRA"); !maps.Equal(after, before) {
 		t.Errorf("legion_current = %v, want %v: no message of the daemon the setting named before is applied", after, before)
 	}
@@ -2170,7 +2197,7 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 	named.serves(strings.Replace(strings.Replace(daemonState("INFRA", 5, implementing), rigStateID, namedStore, 1), rigRun, namedRun, 1))
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	rig.publish("INFRA", change(2000004, "INFRA-1", moved("phase", "merging")))
-	rig.settled()
+	rig.settledHolding(1)
 	reads = readRecords(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, true)
 	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 5 || c.stateID == nil || *c.stateID != namedStore {
@@ -2178,7 +2205,7 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 	}
 
 	rig.publishIn("INFRA", namedRun, namedStore, time.Now().UTC().Truncate(time.Microsecond), false, change(6, "INFRA-1", moved("phase", "testing")))
-	rig.settled()
+	rig.settledHolding(1)
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`, `"testing"`}) {
 		t.Errorf("the phase's history is %v, want the first daemon's read's planning, the named daemon's read's implementing and its event's testing, and no merging", got)
 	}
@@ -2190,10 +2217,11 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 
 // TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole: R3 applies a transaction the
 // daemon split over several messages whole, once every part has arrived. A whole read that fails
-// holds none of the parts' events, so it keeps the parts: here a gap's read fails, the first part
-// of a transaction that follows the cursor is held while the read is owed, and the retry a minute
-// on fails as well. The transaction's last part then applies all of it, every row at its commit
-// time, and no part is held after it.
+// holds none of the parts' events, so it keeps the parts: here a gap's read fails, and the gap goes
+// back to the stream until the retry is due; the first part of a transaction that follows the
+// cursor is held while the read is owed, and the retry a minute on fails as well. The
+// transaction's last part then applies all of it, every row at its commit time, and no part is
+// held after it.
 func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -2201,10 +2229,11 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 	rig.start()
 	rig.awaitStartingRead("INFRA")
 
-	// A gap whose read the daemon refuses: the read is owed, and the gap is not applied.
+	// A gap whose read the daemon refuses: the read is owed, the gap is not applied, and it goes
+	// back to the stream until the read is due.
 	daemon.refuses(http.StatusServiceUnavailable)
 	rig.publish("INFRA", change(15, "INFRA-1", moved("phase", "merging")))
-	rig.settled()
+	rig.settledHolding(1)
 	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.lastSeq == nil || *c.lastSeq != 10 {
 		t.Fatalf("the cursor after the refused gap read is %+v, want it at 10 with the read owed", c)
 	}
@@ -2212,7 +2241,7 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	rig.publishIn("INFRA", rig.run, rigStateID, at, true,
 		change(11, "INFRA-1", moved("phase", "implementing")), change(12, "INFRA-1", claimMoved("implementer", "launching")))
-	rig.settled()
+	rig.settledHolding(1)
 	if held := heldPartCount(t, rig.database, "INFRA"); held != 1 {
 		t.Fatalf("%d parts held, want the transaction's first", held)
 	}
@@ -2228,7 +2257,7 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 	}
 
 	rig.publishIn("INFRA", rig.run, rigStateID, at, false, change(13, "INFRA-1", moved("slot", nil)))
-	rig.settled()
+	rig.settledHolding(1)
 	var written []string
 	for _, row := range observedRows(t, rig.database, "INFRA") {
 		if row.at.Equal(at) {
@@ -2256,12 +2285,13 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 // and run, as forged messages or a bug's would), and a boot among them that does not follow, make
 // one whole read in the first minute: the first message's, which a good starting read does not
 // hold back. INFRA's daemon answers it late and holds it, and LINUX's messages are delivered and
-// applied while it is in flight. Each later message of the burst is finished as soon as the cursor
-// records the read owed, with its reason joined, so none waits on more than that one read and none
-// is applied: 300 reads at the daemon's 200 ms would take a minute, past what rig.settled waits.
-// LINUX's message behind the burst is applied too. A minute on, INFRA's daemon's own next event
-// makes the owed read, logged with both reasons and the first as its reason, and is applied after
-// it: one read more.
+// applied while it is in flight. The burst's second message is the first that owes the next read:
+// it goes back to the stream until the read is due, the one message of the durable's window INFRA
+// holds. Each later message of the burst is finished as soon as the cursor records its reason, so
+// none waits on more than that one read and none is applied: 300 reads at the daemon's 200 ms
+// would take a minute, past what rig.settledHolding waits. LINUX's message behind the burst is
+// applied too. A minute on, INFRA's daemon's own next event makes the owed read, logged with both
+// reasons and the first as its reason, and is applied after it: one read more.
 func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 	const burst = 300
 	rig := newIntakeRig(t)
@@ -2304,7 +2334,7 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 		t.Fatalf("INFRA's daemon was asked for %d reads while the burst's is held, want the starting read and that one", served)
 	}
 	release()
-	rig.settled()
+	rig.settledHolding(1)
 
 	if served := infra.served(); served != 2 {
 		t.Errorf("INFRA's daemon served %d reads, want the starting read and one for the whole burst", served)
@@ -2332,7 +2362,7 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 
 	rig.clock.advance(ReadRetryAfter)
 	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
-	rig.settled()
+	rig.settledHolding(1)
 	if served := infra.served(); served != 3 {
 		t.Errorf("INFRA's daemon served %d reads, want one more once the minute had passed", served)
 	}
@@ -2350,5 +2380,110 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 	}
 	if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"implementing"` {
 		t.Errorf("INFRA-1's phase is %s, want the daemon's own next event's implementing", phase)
+	}
+}
+
+// TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute: R3 makes an owed read within the
+// minute. INFRA's gap read is good, and a second gap reaches Dispatch inside the minute after it,
+// with little of the minute left (the intake's clock moved on); then INFRA's daemon goes quiet. The
+// second gap's message goes back to the stream unacknowledged, with a delay of the time left in the
+// minute, and its redelivery makes the owed read once the minute has passed, with no other message
+// of INFRA: the read comes within the time left and one redelivery. While it waits, INFRA's message
+// is the one message of the durable's window that waits for an ack, and LINUX's events are applied
+// throughout. That redelivery counts toward no drop: the durable's MaxDeliver is -1, no limit, and
+// the delay is below its ack wait (consumerConfig).
+func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
+	// left is what is left of INFRA's minute when its second gap arrives.
+	const left = 8 * time.Second
+	rig := newIntakeRig(t)
+	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	linux := newFakeDaemon(t, daemonState("LINUX", 20, planning("LINUX")))
+	seedLegionProject(t, rig.database, "INFRA", infra.URL)
+	seedLegionProject(t, rig.database, "LINUX", linux.URL)
+	rig.start()
+	rig.awaitWholeReads(2)
+
+	// A gap past 10 whose read is good: INFRA's next read waits ReadRetryAfter after it.
+	infra.serves(daemonState("INFRA", 12, strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)))
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+	reads := readRecords(t, rig.database, "INFRA")
+	requireWholeRead(t, reads[len(reads)-1], ReadReasonGap, true)
+	minuteEnds := reads[len(reads)-1].readAt.Add(ReadRetryAfter)
+
+	// left before the minute ends, a second gap: 13 never reaches Dispatch. Its read is owed, and
+	// INFRA publishes nothing after it.
+	rig.clock.advance(ReadRetryAfter - left)
+	infra.serves(daemonState("INFRA", 14, strings.Replace(planning("INFRA"), `"planning"`, `"testing"`, 1)))
+	rig.publish("INFRA", change(14, "INFRA-1", moved("phase", "testing")))
+	owed := time.Now()
+
+	// LINUX's events are applied while INFRA's read is owed. Once each is acknowledged, the window
+	// holds what waits for an ack, which is INFRA's message alone.
+	var waiting []int
+	for index, phase := range []string{"implementing", "testing", "reviewing"} {
+		seq := 21 + index
+		rig.publish("LINUX", change(seq, "LINUX-1", moved("phase", phase)))
+		var info *natsgo.ConsumerInfo
+		var applied int64
+		rig.waitFor(5*time.Second, func() bool {
+			var err error
+			if info, err = rig.publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchLegionStateDurable); err != nil {
+				return false
+			}
+			err = rig.database.Pool.QueryRow(t.Context(), `select coalesce(last_seq, 0) from legion_event_cursors where project = 'LINUX'`).Scan(&applied)
+			return err == nil && applied >= int64(seq) && info.NumPending == 0 && info.NumAckPending <= 1
+		}, func() string {
+			return fmt.Sprintf("LINUX's cursor is at %d while INFRA's read is owed, want its message %d applied and acknowledged: %+v", applied, seq, info)
+		})
+		waiting = append(waiting, info.NumAckPending)
+	}
+
+	// The owed read comes with no further message of INFRA: the second gap's redelivery makes it
+	// once the minute has passed.
+	within := left + 10*time.Second
+	rig.waitFor(time.Until(owed.Add(within)), func() bool { return infra.served() >= 3 }, func() string {
+		return fmt.Sprintf("INFRA's daemon served %d reads in the %s after the owed gap, want its owed read made with no further message, within the %s left of the minute and one redelivery",
+			infra.served(), time.Since(owed).Round(time.Second), left)
+	})
+	rig.awaitWholeReads(4)
+	rig.settled()
+
+	reads = readRecords(t, rig.database, "INFRA")
+	retried := reads[len(reads)-1]
+	requireWholeRead(t, retried, ReadReasonGap, true)
+	if retried.readAt.Before(minuteEnds) {
+		t.Errorf("the owed read is at %s, want it once the minute ended at %s", retried.readAt.Format(time.RFC3339Nano), minuteEnds.Format(time.RFC3339Nano))
+	}
+	if served := infra.served(); served != 3 {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read, the first gap's and the owed one", served)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 14 {
+		t.Errorf("INFRA's cursor is %+v, want it at the owed read's 14 with nothing owed", c)
+	}
+	if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"testing"` {
+		t.Errorf("INFRA-1's phase is %s, want the owed read's testing", phase)
+	}
+	holds := rig.logRecords(heldLine)
+	if len(holds) != 1 || holds[0]["project"] != "INFRA" || holds[0]["seq"] != float64(14) {
+		t.Fatalf("the messages sent back = %v, want INFRA's second gap once: its one redelivery made the read", holds)
+	}
+	if delay, _ := holds[0]["delay"].(float64); time.Duration(delay) < holdAtLeast || time.Duration(delay) > left {
+		t.Errorf("the second gap went back for %s, want the %s or less left of the minute", time.Duration(delay), left)
+	}
+	if !slices.Equal(waiting, []int{1, 1, 1}) {
+		t.Errorf("the messages waiting for an ack after each of LINUX's were %v, want INFRA's one each time", waiting)
+	}
+	if got := history(t, rig.database, "LINUX", "LINUX-1", FieldPhase); !slices.Equal(got,
+		[]string{`"planning"`, `"implementing"`, `"testing"`, `"reviewing"`}) {
+		t.Errorf("LINUX-1's phase history is %v, want the read's and each of its messages'", got)
+	}
+	info, err := rig.publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchLegionStateDurable)
+	if err != nil {
+		t.Fatalf("read the durable: %v", err)
+	}
+	if info.Config.MaxDeliver != -1 || info.Config.AckWait != stateAckWait || left >= info.Config.AckWait {
+		t.Errorf("the durable's MaxDeliver is %d and its AckWait %s, want -1, no limit, and %s, past the %s delay",
+			info.Config.MaxDeliver, info.Config.AckWait, stateAckWait, left)
 	}
 }
