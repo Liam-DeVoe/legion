@@ -288,8 +288,8 @@ func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 }
 
 // TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest: anyone may approve PRIV_HUMAN by owner and
-// tier, but a person outside PRIV is refused record.ErrNotApprover and the request stays pending;
-// a person on PRIV's list approves it.
+// tier, but a person outside PRIV is refused record.ErrNotApprover, approving or denying it, and
+// the request stays pending; a person on PRIV's list approves it.
 func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
@@ -297,11 +297,13 @@ func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 	if err != nil || request.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v; want pending", request, err)
 	}
-	if _, err := m.ApplyDecision(t.Context(), *request.RecordID, true, outsider); !errors.Is(err, record.ErrNotApprover) {
-		t.Fatalf("an approval by %s, outside PRIV = %v; want record.ErrNotApprover", outsider, err)
-	}
-	if got, err := m.Get(t.Context(), request.ID); err != nil || got.State != "pending" {
-		t.Fatalf("after the outsider's approval the request is %+v, %v; want pending", got, err)
+	for _, approve := range []bool{true, false} {
+		if _, err := m.ApplyDecision(t.Context(), *request.RecordID, approve, outsider); !errors.Is(err, record.ErrNotApprover) {
+			t.Fatalf("a decision (approve %v) by %s, outside PRIV = %v; want record.ErrNotApprover", approve, outsider, err)
+		}
+		if got, err := m.Get(t.Context(), request.ID); err != nil || got.State != "pending" {
+			t.Fatalf("after the outsider's decision (approve %v) the request is %+v, %v; want pending", approve, got, err)
+		}
 	}
 	if decision, err := m.ApplyDecision(t.Context(), *request.RecordID, true, insider); err != nil || decision.GrantID == "" {
 		t.Fatalf("an approval by %s, on PRIV's list = %+v, %v; want a grant", insider, decision, err)

@@ -14,7 +14,7 @@ the person a fleet machine's `BROKER_VM_EXCHANGE_ACCOUNTS` entry names, or the a
 Dispatch issue a Legion worker pod works on. Where none of these names a person, it waits in every
 person's Inbox, so no request waits where nobody sees it. Where that person may not see the
 request, because it belongs to a private project they are not on, it waits in the Inbox of
-everyone on the project. Anyone signed in may still decide it from
+everyone who may see it. Anyone signed in who may see it may still decide it from
 its page whether or not their Inbox lists it, and the first person to decide it decides it for
 everyone: it then leaves every Inbox.
 [Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) explains which

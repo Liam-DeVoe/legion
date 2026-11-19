@@ -2,7 +2,9 @@ package requests
 
 import (
 	"errors"
+	"fmt"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +19,39 @@ func wantListed(t *testing.T, m *Machine, recordID string, all, want []string) {
 		if _, got := listedRow(t, m, login, PendingStates{}, recordID); got != slices.Contains(want, login) {
 			t.Errorf("%s's list holds record %s: %v; want %v", login, recordID, got, slices.Contains(want, login))
 		}
+	}
+}
+
+// TestOtherPeoplesRowsCostTheListOneBound: a reader with no request of their own reads a list of
+// many people's requests, each naming its own operator as responsible and touching the public
+// TEAM, while Dispatch takes 300 ms to answer each question (slowAccess). Before the fallback
+// none of these rows was on the reader's list, and none asked Dispatch anything. Each now asks
+// whether its own person may see it, but all of them share listFallbackBound: once it is spent,
+// the rest are left off without a question, so the list costs at most the bound's worth of
+// questions, not two per row. It counts the questions Dispatch was asked, not time.
+func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
+	const rows = 20
+	const takes = 300 * time.Millisecond
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	for i := range rows {
+		operator := fmt.Sprintf("op%02d@example.com", i)
+		enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-slow-%02d", i), new(operator), nil)
+		if req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
+			t.Fatalf("Create = %+v, %v; want it pending", req, err)
+		}
+	}
+	answerFrom(t, m, dispatchRows(publicTeam))
+	var asked atomic.Int32
+	m.Projects = slowAccess{inner: m.Projects, takes: takes, asked: &asked}
+	listed, err := m.PendingForApprover(t.Context(), insider, PendingStates{})
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("PendingForApprover(%s) = %d rows, %v; want none: every row is another person's, who may see it", insider, len(listed), err)
+	}
+	t.Logf("the list asked Dispatch %d questions for %d other people's rows", asked.Load(), rows)
+	// Without the bound the list asks two questions per row (40 here, 12 s); with it, a 2 s bound
+	// asks at most 7. The test does not read listFallbackBound, so a bound taken away fails it.
+	if asked.Load() >= rows {
+		t.Fatalf("the list asked Dispatch %d questions for %d other people's rows; want fewer than one per row", asked.Load(), rows)
 	}
 }
 
