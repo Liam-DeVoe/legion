@@ -355,8 +355,8 @@ type ProjectAccess struct {
 	// releases the Legion Slack bot token to a private project's credentials for these channels
 	// alone.
 	SlackChannels []string `json:"slack_channels"`
-	// SlackChannelsChangedAt is when SlackChannels last changed, always present and null until
-	// the list's first write. A write of the list it already holds leaves it.
+	// SlackChannelsChangedAt is when SlackChannels last changed, always present and null until a
+	// write changes the list. A write of the list it already holds leaves it.
 	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
 	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
 	// rule admits each of them once they sign in.
@@ -390,13 +390,13 @@ type AccessAnswer struct {
 	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
 	SlackChannels []string `json:"slack_channels"`
 	// SlackChannelsChangedAt is when that list last changed, as ProjectAccess carries it: null
-	// until its first write.
+	// until a write changes the list.
 	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
 }
 
 // PrivateProjectChannels is one private project's Slack channels as the secrets broker reads
 // them (GET /api/v1/access/private-projects): the project's key, its channels, sorted and [] for
-// none, and when that list last changed, null until its first write.
+// none, and when that list last changed, null until a write changes the list.
 type PrivateProjectChannels struct {
 	Project                string     `json:"project"`
 	SlackChannels          []string   `json:"slack_channels" nullable:"false"`

@@ -26,10 +26,11 @@
 # empty; a run that cannot do so fails, naming the project.
 #
 # Its inputs are what with-harness.sh exports: DISPATCH_E2E_PORT (the server), DATABASE_URL (the
-# database it serves, on this machine) and DISPATCH_E2E_ACCESS_TOKEN_FILE. Without the switch the
-# harness exports no token file and the run stops there, exit 2, naming the switch; a file it
-# cannot read, or an empty one, stops it the same way, naming the file. The token is never printed
-# and never on a command line: curl reads its header from a file.
+# database it serves, on this machine; one naming no loopback host is refused, since the driver
+# writes it) and DISPATCH_E2E_ACCESS_TOKEN_FILE. Without the switch the harness exports no token
+# file and the run stops there, exit 2, naming the switch; a file it cannot read, or an empty one,
+# stops it the same way, naming the file. The token is never printed and never on a command line:
+# curl reads its header from a file.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` and the script exits 1.
@@ -60,25 +61,33 @@ if [[ ! -r "$token_file" || ! -s "$token_file" ]]; then
 fi
 require_commands curl jq psql
 
-work_dir
-readonly base="http://127.0.0.1:$DISPATCH_E2E_PORT"
 # shellcheck disable=SC2153 # DATABASE_URL is the caller's input, checked by name above
 readonly database_url="$DATABASE_URL"
+# This driver writes the database (it makes a project private and public again), so it reads only
+# this machine's own test database, as the other writing drivers do.
+loopback_database_url "$database_url" ||
+  fail setup "DATABASE_URL names this machine" "the URL must name one loopback host with no connection override; this driver writes this machine's own test database, never a deployment's"
+work_dir
+readonly base="http://127.0.0.1:$DISPATCH_E2E_PORT"
 readonly alice=alice@example.com bob=bob@example.com channel=C0MEMBER01
 project="MEMB$(printf '%05d' "$((RANDOM % 100000))" | tr 0-9 A-J)"
 readonly project
 made=""
 
-# cleanup makes the run's project public again. A restore that fails fails the run, naming why:
-# no stack truncates this database, so a project left private would make the next run's empty-list
-# check fail on state that run did not make.
+# cleanup makes the run's project public again, through the server `query` reaches (psql without
+# PGHOSTADDR, PGSERVICE or PGSERVICEFILE). A restore that fails, or that finds no such project,
+# fails the run, naming why: no stack truncates this database, so a project left private would
+# make the next run's empty-list check fail on state that run did not make.
 cleanup() {
-  local code=$?
-  if [[ -n "$made" ]] && ! env -u PGHOSTADDR psql "$database_url" -v ON_ERROR_STOP=1 -Atqc \
-    "update projects set visibility = 'public' where key = '$project'" >/dev/null 2>"$work/psql"; then
-    printf 'membership-answer.sh: could not make %s public again, so the next run on this database would find it private: %s\n' \
-      "$project" "$(<"$work/psql")" >&2
-    [[ "$code" -ne 0 ]] || code=1
+  local code=$? restored=""
+  if [[ -n "$made" ]]; then
+    restored="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -v ON_ERROR_STOP=1 -Atqc \
+      "update projects set visibility = 'public' where key = '$project' returning key" 2>"$work/psql")" || true
+    if [[ "$restored" != "$project" ]]; then
+      printf 'membership-answer.sh: could not make %s public again, so the next run on this database would find it private: %s\n' \
+        "$project" "${restored:-no row came back} $(<"$work/psql")" >&2
+      [[ "$code" -ne 0 ]] || code=1
+    fi
   fi
   rm -rf "$work"
   exit "$code"

@@ -16,8 +16,8 @@ const privateProjectsPath = "/api/v1/access/private-projects"
 
 // TestTheBrokerListsThePrivateProjectsChannels (c-a-slack-channels): the secrets broker's own
 // service-account token reads, for every private project and sorted by key, its key, its Slack
-// channels ([] for none) and when that list last changed (null until its first write), and
-// nothing of a public project, whatever channels that one names. A dsp_ token and a person's
+// channels ([] for none) and when that list last changed (null until a write changes the list),
+// and nothing of a public project, whatever channels that one names. A dsp_ token and a person's
 // browser are 403 ACCESS_ACCOUNT_REQUIRED, and a caller with no credential is 401 NO_IDENTITY.
 // Control: admit any token, and the dsp_ token's 200 fails the test naming it.
 func TestTheBrokerListsThePrivateProjectsChannels(t *testing.T) {

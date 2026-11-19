@@ -67,6 +67,21 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			"this deployment cannot make a project private yet: nothing was changed")
 		return
 	}
+	// A shared channel's refusal names the other private project only to a caller who sees it: the
+	// read rule over the request's own credential, not over by, the person actingPerson answers.
+	// Read as that person, a token listing no project would see the person's private projects,
+	// which the token does not. The caller is resolved here, before ownerWrite opens its
+	// transaction: resolving a credential reads the store, and the pool refuses a second
+	// connection inside that transaction (store.ErrNestedAcquire), as editAsk resolves its acting
+	// person before it begins. SetSlackChannels reads what it sees only once it finds a share.
+	var caller model.Actor
+	if input.SlackChannels != nil {
+		var err error
+		if caller, _, err = s.optionalActor(r); err != nil {
+			s.writeAuthenticationError(w, err)
+			return
+		}
+	}
 	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
@@ -85,15 +100,6 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			answer, appended = written, append(appended, event)
 		}
 		if input.SlackChannels != nil {
-			// A shared channel's refusal names the other private project only to a caller who sees
-			// it: the read rule over the request's own credential, not over by, the person
-			// actingPerson answers. Read as that person, a token listing no project would see the
-			// person's private projects, which the token does not. SetSlackChannels resolves it only
-			// once it finds a share.
-			caller, _, err := s.optionalActor(r)
-			if err != nil {
-				return model.ProjectAccess{}, nil, err
-			}
 			written, event, err := access.SetSlackChannels(ctx, tx, s.deps.Events, key, *input.SlackChannels, by, caller)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err

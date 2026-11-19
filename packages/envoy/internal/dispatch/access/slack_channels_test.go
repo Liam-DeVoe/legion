@@ -126,32 +126,36 @@ func changedAtOf(t *testing.T, q Querier, key string) *time.Time {
 }
 
 // TestTheChannelsTimeMovesOnlyWhenTheListChanges: slack_channels_changed_at is when a project's
-// Slack channels last changed, null until its first write. The first write sets it to the
-// transaction's now(); a write of the same list, in another order and over a stored list in
-// another order, leaves it; a write of a different list moves it to that transaction's now(). The
-// write's answer and event, ReadProject and the membership answer carry it. Control: set the time
-// on every write, and the second row fails naming the project.
+// Slack channels last changed, null until a write changes the list. A write that changes it sets
+// it to the write's own statement time (statement_timestamp()), which comes after every lock the
+// write waited for, never to the transaction's start: here each transaction sleeps before it
+// writes, as one queued behind another's locks waits. A write of the same list, in another order
+// and over a stored list in another order, leaves it. The write's answer and event, ReadProject
+// and the membership answer carry it. Controls: set the time on every write, and the second row
+// fails naming the project; stamp the transaction's now(), and the first row fails naming the
+// time before the write.
 func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
 	broker := events.NewBroker()
 	by := model.Actor{Kind: "user", ID: olga}
-	write := func(channels ...string) (time.Time, model.ProjectAccess, model.Event) {
+	// write writes PUB's list in a transaction that sleeps first, and answers the clock just
+	// before the write and just after it, with what the write answered.
+	write := func(channels ...string) (before, after time.Time, answer model.ProjectAccess, event model.Event) {
 		t.Helper()
-		var now time.Time
-		var answer model.ProjectAccess
-		var event model.Event
 		if err := inTx(t, database, func(tx pgx.Tx) error {
-			if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
+			if err := tx.QueryRow(ctx, `select clock_timestamp() from pg_sleep(0.05)`).Scan(&before); err != nil {
 				return err
 			}
 			var err error
-			answer, event, err = SetSlackChannels(ctx, tx, broker, "PUB", channels, by, by)
-			return err
+			if answer, event, err = SetSlackChannels(ctx, tx, broker, "PUB", channels, by, by); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&after)
 		}); err != nil {
 			t.Fatalf("write PUB's channels %v: %v", channels, err)
 		}
-		return now, answer, event
+		return before, after, answer, event
 	}
 	if got := changedAtOf(t, database.Pool, "PUB"); got != nil {
 		t.Fatalf("PUB's channels time before any write = %v, want null", got)
@@ -160,9 +164,10 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 		t.Fatalf("ReadProject of PUB before any write = %+v, %v; want its channels time null", read, err)
 	}
 
-	first, answer, event := write("GABCDEFGH1", "C012345678")
-	if got := changedAtOf(t, database.Pool, "PUB"); got == nil || !got.Equal(first) {
-		t.Fatalf("PUB's first write left its channels time at %v, want the transaction's now(), %v", got, first)
+	before, after, answer, event := write("GABCDEFGH1", "C012345678")
+	first := changedAtOf(t, database.Pool, "PUB")
+	if first == nil || first.Before(before) || first.After(after) {
+		t.Fatalf("PUB's first write left its channels time at %v, want the write's own statement time, from %v to %v", first, before, after)
 	}
 	payload, _ := event.Payload.(model.ProjectAccessEventPayload)
 	read, readErr := ReadProject(ctx, database.Pool, "PUB")
@@ -176,8 +181,8 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 		{"ReadProject", read.SlackChannelsChangedAt},
 		{"the membership answer", membership.SlackChannelsChangedAt},
 	} {
-		if readErr != nil || answerErr != nil || carried.at == nil || !carried.at.Equal(first) {
-			t.Errorf("%s carries PUB's channels time as %v (read %v, answer %v), want %v", carried.name, carried.at, readErr, answerErr, first)
+		if readErr != nil || answerErr != nil || carried.at == nil || !carried.at.Equal(*first) {
+			t.Errorf("%s carries PUB's channels time as %v (read %v, answer %v), want %v", carried.name, carried.at, readErr, answerErr, *first)
 		}
 	}
 
@@ -187,13 +192,13 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 		t.Fatalf("store PUB's list in another order: %v", err)
 	}
 	write("GABCDEFGH1", "C012345678", "GABCDEFGH1")
-	if got := changedAtOf(t, database.Pool, "PUB"); got == nil || !got.Equal(first) {
-		t.Fatalf("a write of PUB's own list in another order moved PUB's channels time from %v to %v, want it left as it was", first, got)
+	if got := changedAtOf(t, database.Pool, "PUB"); got == nil || !got.Equal(*first) {
+		t.Fatalf("a write of PUB's own list in another order moved PUB's channels time from %v to %v, want it left as it was", *first, got)
 	}
 
-	third, _, _ := write("C012345678")
-	if got := changedAtOf(t, database.Pool, "PUB"); got == nil || !got.Equal(third) || !third.After(first) {
-		t.Fatalf("a write of a different list left PUB's channels time at %v, want that transaction's now(), %v, after %v", got, third, first)
+	before, after, _, _ = write("C012345678")
+	if got := changedAtOf(t, database.Pool, "PUB"); got == nil || got.Before(before) || got.After(after) || !got.After(*first) {
+		t.Fatalf("a write of a different list left PUB's channels time at %v, want that write's own statement time, from %v to %v, after %v", got, before, after, *first)
 	}
 }
 

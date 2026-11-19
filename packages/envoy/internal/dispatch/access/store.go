@@ -200,7 +200,10 @@ var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 // private project's credentials for these channels alone (R14), so only the project's owner
 // writes them: the caller makes that check first, under the project's row lock
 // (LockForAccessWrite). A list different from the one stored, compared sorted, sets
-// slack_channels_changed_at to the transaction's now() in the same update; the same list leaves it.
+// slack_channels_changed_at in the same update to statement_timestamp(), that update's own start:
+// it comes after the project's row lock and the channel lock are held, so it never precedes a
+// lock wait, and two writes of one project are stamped in the order they wrote. The transaction's
+// now() would be its start, before those waits. The same list leaves the time.
 //
 // A Slack channel belongs to one private project. So every call takes the channel lock
 // (lockSlackChannels) before it reads anything, and a private project's write naming a channel
@@ -243,7 +246,7 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 			slack_channels_changed_at = case
 				when array(select stored from unnest(slack_channels) stored order by stored collate "C") = $2::text[]
 					then slack_channels_changed_at
-				else now()
+				else statement_timestamp()
 			end
 		where key = $1
 	`, key, named)

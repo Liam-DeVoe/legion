@@ -4,9 +4,10 @@
 -- INFRA-3862 R14: the secrets broker releases the Legion Slack bot token to a private project's
 -- credentials only for the channels that project names, and reads when that list last changed
 -- beside the list (GET /api/v1/access/private-projects, and the membership answer), where its
--- settle time starts. `access.SetSlackChannels` sets the column to its transaction's `now()` in
--- the update that writes a list different from the one stored; a write of the same list leaves it.
--- It is null until the first such write.
+-- settle time starts. `access.SetSlackChannels` sets the column to `statement_timestamp()`, the
+-- start of the update that writes a list different from the one stored, which comes after that
+-- write's lock waits; a write of the same list leaves it. It is null until a write changes the list,
+-- so a list written before this migration keeps a null time until its next change.
 --
 -- Adding a nullable column with no default writes the catalog alone, so it holds the table's ACCESS
 -- EXCLUSIVE lock for milliseconds and rewrites no row. The release before this one neither reads
