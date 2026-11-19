@@ -8,15 +8,16 @@ body: |-
   in Dispatch and stands in `admission.blocked` with its open children. No backstop, CI settlement
   or resume path starts a role of it. Its architect gets one `awaiting-children` notice, and a
   worker whose phase the move ended is told to push what it has and stop, in a `phase_ended`
-  message, which migration `20261119185013_outbox_kinds_with_the_basis_seeds` keeps in the
-  outbox's kind check. That worker's pending task for the phase is retired (the supervise op
-  `retire_task`). `request_backward_move` and `sign_off` on the parent are refused
-  `WAITING_ON_CHILDREN`. Once no child is open, the admission pass returns the parent to the start
-  it held on a new phase entry. A held test, review or acceptance returns as `implementing`, and
-  each task of the first implementing round after the wait, a retry's, a fresh session's and a
-  re-admission's included, asks for a forward merge and a full test round until the implementer
-  completes that round. Migration `20261114232555_awaiting_children` adds the phase, the held
-  start, `forward_merge_owed`, `children_waited_at` and `phases.entry_from`. `docs/kubernetes.md`
-  says how to roll the release back.
+  message, the kind #4464 stopped writing for a conflict, which migration
+  `20261119185013_outbox_kinds_with_the_basis_seeds` keeps in the outbox's kind check. That
+  worker's pending task for the phase is retired (the supervise op `retire_task`).
+  `request_backward_move` and `sign_off` on the parent are refused `WAITING_ON_CHILDREN`. Once no
+  child is open, the admission pass returns the parent to the start it held on a new phase entry.
+  A held test, review or acceptance returns as `implementing`, and each task of the first
+  implementing round after the wait, a retry's, a fresh session's and a re-admission's included,
+  asks for a forward merge and a full test round until the implementer completes that round.
+  Migration `20261114232555_awaiting_children` adds the phase, the held start,
+  `forward_merge_owed`, `children_waited_at` and `phases.entry_from`. `docs/kubernetes.md` says
+  how to roll the release back.
 custom:
     Issue: pr4017

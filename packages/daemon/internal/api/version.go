@@ -2497,9 +2497,8 @@ package api
 // one more refusal, `WAITING_ON_CHILDREN`, naming its open children and the start it holds: each
 // acts on a phase, and the parent stands in none (dispatch://INFRA-3320 R11). The refusal's shape
 // is the one every refusal has. The new notice kind `awaiting-children`, which tells the parent's
-// architect of the wait in place of the phase-finished or checks-red notice of the start it holds,
-// is no part of this number either: it reaches an architect's session as text, as every notice
-// kind does.
+// architect of the wait in place of the phase-finished notice of the start it holds, is no part
+// of this number either: it reaches an architect's session as text, as every notice kind does.
 // (This change took 126 against the base 50bfbb0dec73, which carried 111, when the open pull
 // requests held 112 to 125 as read on 2026-11-14: 126 was the lowest number above the base's
 // that none of them declared. It kept 126 at the forward merge of 2026-11-14 that brought main
@@ -2544,7 +2543,7 @@ package api
 // 162 by two, 163, 165 and 166 by one each, 167 by four and 168 by one), so it holds. Read the
 // base's own number and every open head again, by a REST raw read of each head's file, at the
 // next forward merge rather than from this line. At the forward merge of 2026-11-19 that brought
-// main in at 724196efd983, main carried 168 (cybermonklabs/legion#4488's plan ratings, above), and
+// main in at 724196efdd83, main carried 168 (cybermonklabs/legion#4488's plan ratings, above), and
 // a REST raw read of each of the 242 open heads' file between 2026-11-19T18:56:47Z and 19:02:16Z
 // found 169 (#4065), 170 (#2230, #4173, #4180 and #4193), 172 (#3659), 173 (#4493), 174 (#3993
 // and #4273), 175 (#3712, #4115, #4392, #4432, #4485 and #4495) and 176 (#3831 and #4030)

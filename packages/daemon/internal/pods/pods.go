@@ -12,13 +12,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Wake kinds, the vocabulary of a recorded resume's kind: the five ways a released pod comes
-// back. WakeDelivery is a delivery the daemon already had for a role of the
-// pod — a phase start, a task, a backward move, a notice, a merge forward's message, a production
-// check's look, a slot resume; WakeChecks is a CI settlement on the head of the issue's pull
-// request; WakeRoleMessage and WakeAgentMessage are what only the Envoy listener sees, a message
-// published to a role topic of the pod and one sent to the agent subject of a released session;
-// WakeBackstop is the stored backstop a release armed.
+// Wake kinds, the vocabulary of a recorded resume's kind: the five ways a released pod comes back.
+// WakeDelivery is a delivery the daemon already had for a role of the pod — a phase start, a task,
+// a backward move, a notice, a phase-ended message, a merge forward's message, a production check's
+// look, a slot resume; WakeChecks is a CI settlement on the head of the issue's pull request;
+// WakeRoleMessage and WakeAgentMessage are what only the Envoy listener sees, a message published
+// to a role topic of the pod and one sent to the agent subject of a released session; WakeBackstop
+// is the stored backstop a release armed.
 //
 // They are records rather than the rule's own, because the rule that names a wake (workflow) and
 // the store that files it under this word are different packages, and one vocabulary is what

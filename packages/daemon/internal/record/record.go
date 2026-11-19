@@ -739,11 +739,11 @@ type PhaseRow struct {
 	//
 	// The admission pass and the release of a hold read it (workflow's acceptedEntry, through
 	// StopForChildren and retryPhase): an entry raised by a move out of retro or merging — a role's
-	// move back after the daemon accepted the issue — is no start the rule on a
-	// parent's open children holds, since that rule holds only the starts each from a phase before
-	// retro (dispatch://INFRA-3320 R9), so the pass leaves a parent standing on such an entry where
-	// it stands, and a retry restarts the held phase on it. The role's next entry, raised by a
-	// move from a phase before retro, ends that.
+	// move back after the daemon accepted the issue — is no start the rule on a parent's open
+	// children holds, since that rule holds only the starts each from a phase before retro
+	// (dispatch://INFRA-3320 R9), so the pass leaves a parent standing on such an entry where it
+	// stands, and a retry restarts the held phase on it. The role's next entry, raised by a move
+	// from a phase before retro, ends that.
 	EntryFrom phase.Phase
 }
 
@@ -1031,9 +1031,9 @@ type PullRequest struct {
 	// ask that replaces the one the record holds - of a new head whose conflict was confirmed, or
 	// of the same head asked again on a phase entry - carries that ask's Earlier, and the ask
 	// itself, its head and the head that landed, once it landed.
-	// What clears it: any transition into implementing, the issue leaving the workflow, and a new
-	// generation (Store.ClearGeneration), since it is an ask of the run before. That ends the
-	// stretch of work, Earlier with it.
+	// What clears it: any transition into implementing, a move into awaiting_children, the issue
+	// leaving the workflow, and a new generation (Store.ClearGeneration), since it is an ask of the
+	// run before. That ends the stretch of work, Earlier with it.
 	//
 	// Who reads it: Engine.mergeForward, which asks once for each head, so a later confirmed
 	// conflict or a transition at the head it names sends nothing (an ask made in implementing

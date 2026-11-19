@@ -2053,7 +2053,7 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// Contract 164: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
+// Contract 177: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
 // wait, closed, on an ancestor's open approval request (`pending_on_basis`), each with the `basis`
 // that names the approval or the request, and every root the daemon records says whether its
 // tree runs (`treeRuns`). The state golden carries LEGION-207's step open on LEGION-200's
@@ -2150,11 +2150,11 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
   expect(LegionStateResponse.safeParse(notBoolean).success).toBeFalse();
 });
 
-// `legionGatedStepView`'s status as contracts 55 to 163 hold it: four words, in an enum. Every
+// `legionGatedStepView`'s status as contracts 55 to 176 hold it: four words, in an enum. Every
 // plugin parses the state with the schema of the contract it was built at, so this reader is live
-// in every pod still on an image before 164. It reads every step of the golden that stands on no
-// basis, and refuses the two words of 164 — and with them the whole state body, since
-// `gatedSteps` is an array it parses whole — which is why the state route serves a pod below 164
+// in every pod still on an image before 177. It reads every step of the golden that stands on no
+// basis, and refuses the two words of 177 — and with them the whole state body, since
+// `gatedSteps` is an array it parses whole — which is why the state route serves a pod below 177
 // no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis`, pinned on the
 // Go side): neither `waiting` nor `approved` is true of such a step, so it serves no entry of that
 // issue rather than a wrong one.
@@ -2182,7 +2182,7 @@ test("a reader before the basis words reads every gated step but those on a basi
   }
 });
 
-// The architect's registration on an ancestor's basis (contract 164): the three fields come
+// The architect's registration on an ancestor's basis (contract 177): the three fields come
 // together, the document is a UUID, the version positive and the reason a sentence; a request
 // that names none of them is the request it was.
 test("a gate registration names a basis by its document, its version and a reason", () => {

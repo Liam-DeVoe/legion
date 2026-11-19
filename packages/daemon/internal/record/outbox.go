@@ -1489,9 +1489,9 @@ func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 // awaiting_children, and Reason the open children that hold the parent. It stops nothing: the
 // recipient keeps its turn, its jobs, its process and its session.
 //
-// The kind is phase_ended, which the release before dispatch://INFRA-4374 wrote for a head that
-// conflicts with its base, and whose rows that release's migration 20261119003157 deleted; the
-// shape is that kind's, so a release that still decodes it reads a row of this one.
+// The kind is phase_ended, which the releases before dispatch://INFRA-4374 wrote for a head that
+// conflicts with its base, and whose queued rows INFRA-4374's migration 20261119003157 deleted;
+// the shape is that kind's, so a release that still decodes it reads a row of this one.
 type PhaseEnded struct {
 	Role   claim.Role  `json:"role"`
 	From   phase.Phase `json:"from"`
@@ -2365,7 +2365,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
 			return fmt.Errorf("a phase-ended message goes to the worker whose phase ended, never to an architect, which its awaiting-children notice tells; %q is neither", value.Role)
 		}
-		if value.From == "" || value.To != phase.AwaitingChildren || value.From == value.To {
+		if value.From == "" || value.From == phase.AwaitingChildren || value.To != phase.AwaitingChildren {
 			return fmt.Errorf("a phase-ended message names the phase that ended and awaiting_children, the phase the parent waits in; it names %q and %q", value.From, value.To)
 		}
 		if value.Reason == "" {
@@ -2516,8 +2516,8 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // `awaiting-children` tells a parent's architect that the parent entered awaiting_children in place
 // of a phase start, because a Dispatch child of it is open (workflow's awaitChildren,
 // dispatch://INFRA-3320 R10): the start it holds, each open child and what ends the wait. It
-// replaces the phase-finished or checks-red notice that start would have sent, and carries that
-// notice's summary and verdict.
+// replaces the phase-finished notice that start would have sent, and carries that notice's summary
+// and verdict.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",

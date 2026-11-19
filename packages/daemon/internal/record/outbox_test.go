@@ -495,10 +495,10 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a retro's stored rating without its reason", row: OutboxRow{ID: 63, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating":3}`)},
 			reason: "its reason or neither"},
-		{name: "a pending-basis seed with an unknown field", row: OutboxRow{ID: 64, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"ask":"ask-100","generation":2,"approver":"user:alice"}`)}, reason: "unknown field"},
-		{name: "a pending-basis seed of no request", row: OutboxRow{ID: 65, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"generation":2}`)}, reason: "a pending-basis seed names"},
-		{name: "a re-parent seed with an unknown field", row: OutboxRow{ID: 66, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","tree":"LEGION-300","ran":"it ran as a tree of its own","told":true}`)}, reason: "unknown field"},
-		{name: "a re-parent seed of no tree", row: OutboxRow{ID: 67, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","ran":"it ran as a tree of its own"}`)}, reason: "a re-parent seed names"},
+		{name: "a pending-basis seed with an unknown field", row: OutboxRow{ID: 60, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"ask":"ask-100","generation":2,"approver":"user:alice"}`)}, reason: "unknown field"},
+		{name: "a pending-basis seed of no request", row: OutboxRow{ID: 61, Kind: OutboxKindPendingBasisSeed, Payload: json.RawMessage(`{"step":"spec","artifactId":"artifact-208","basisArtifactId":"artifact-100","basisVersion":3,"generation":2}`)}, reason: "a pending-basis seed names"},
+		{name: "a re-parent seed with an unknown field", row: OutboxRow{ID: 62, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","tree":"LEGION-300","ran":"it ran as a tree of its own","told":true}`)}, reason: "unknown field"},
+		{name: "a re-parent seed of no tree", row: OutboxRow{ID: 63, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","ran":"it ran as a tree of its own"}`)}, reason: "a re-parent seed names"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DecodeOutboxPayload(tc.row)

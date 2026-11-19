@@ -943,7 +943,7 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 //
 // from is written with them too: the phase the move that raises this entry left, "" where no
 // move raises it (StartPromotedWorker, EnterArchitect), which is no move back. The admission pass
-// reads it to leave a parent whose entry a conflicting head raised out of retro or merging where
+// reads it to leave a parent whose entry a role's move back raised out of retro or merging where
 // it stands (record.PhaseRow.EntryFrom, StopForChildren).
 //
 // verbatim is whether the sweep's send of a root architect's entry again sends that task as

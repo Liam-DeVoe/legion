@@ -35,24 +35,23 @@ type roleForReader struct {
 // roleForReaders is every non-test reader of phase.RoleFor and of workflow.RoleFor in the daemon,
 // and the test that holds each one's behaviour. A reader is a call, or the function passed as a
 // value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Four of them
-// have a guard of their own for admitted, the phase RoleFor answers the architect for:
-// noticeFor writes the notice of the move out of admitted with no role (R2),
-// Engine.leftItsPhase records no worker's completion while the issue stands at admitted, the
-// completion route's entryFence answers a completion at admitted as one of a phase its role does
-// not work, and the stalled-tree notice's reason tells an issue at admitted as standing in a phase
-// no role works, the words it wrote before RoleFor named the architect there. Every other site
-// reaches its answer through a guard that starts, resumes or reports no architect as a phase
-// worker, or names the role an admitted root's entry numbers are of, or answers the issue's own
-// phase for the architect's completion there, as its reader took the issue's phase while RoleFor
-// named no role (phase.Of), or never reads admitted at all because a check before it refuses that
-// phase, which is what each named test holds it to. A parent's wait on its open children
-// (awaiting_children.go, dispatch://INFRA-3320) is of the last kind: each of its readers runs only
-// past record.OpenChildHolds, which refuses admitted, or on the start a hold kept, which is never
-// admitted's, and where one reads accepting's architect it starts none (ReturnFromChildren) or
-// holds accepting with no role told (StopForChildren), since the architect's notice tells it. The
-// release of a hold reads the held phase's role twice (retryPhase), for the
-// entry that phase stands on and for the restart, and a held phase is never admitted.
-// The owner walk reads no role: where it starts is its caller's to say
+// have a guard of their own for admitted, the phase RoleFor answers the architect for: noticeFor
+// writes the notice of the move out of admitted with no role (R2), Engine.leftItsPhase records no
+// worker's completion while the issue stands at admitted, the completion route's entryFence answers
+// a completion at admitted as one of a phase its role does not work, and the stalled-tree notice's
+// reason tells an issue at admitted as standing in a phase no role works, the words it wrote before
+// RoleFor named the architect there. Every other site reaches its answer through a guard that
+// starts, resumes or reports no architect as a phase worker, or names the role an admitted root's
+// entry numbers are of, or answers the issue's own phase for the architect's completion there, as
+// its reader took the issue's phase while RoleFor named no role (phase.Of), or never reads admitted
+// at all because a check before it refuses that phase, which is what each named test holds it to. A
+// parent's wait on its open children (awaiting_children.go, dispatch://INFRA-3320) is of the last
+// kind: each of its readers runs only past record.OpenChildHolds, which refuses admitted, or on the
+// start a hold kept, which is never admitted's, and where one reads accepting's architect it starts
+// none (ReturnFromChildren) or holds accepting with no role told (StopForChildren), since the
+// architect's notice tells it. The release of a hold reads the held phase's role twice
+// (retryPhase), for the entry that phase stands on and for the restart, and a held phase is never
+// admitted. The owner walk reads no role: where it starts is its caller's to say
 // (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking

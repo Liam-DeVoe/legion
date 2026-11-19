@@ -267,9 +267,9 @@ func (r *outbox) publish(ctx context.Context, topic, message string, payload any
 	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
 }
 
-// publishKept is publish with keep (notify.Publisher.PublishKept), hookPrompt's publish through
-// publishKeptToRole, held as publish is: a topic heldBack refuses is not published, kept or not,
-// and answers the gate's notify.ErrNoHolder.
+// publishKept is publish with keep (notify.Publisher.PublishKept), the publish phaseEnded and
+// hookPrompt share through publishKeptToRole, held as publish is: a topic heldBack refuses is not
+// published, kept or not, and answers the gate's notify.ErrNoHolder.
 func (r *outbox) publishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
 	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
 		return false, err
@@ -1949,12 +1949,13 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 
 // phaseEnded publishes the message of a phase-ended row (record.PhaseEnded) to the Envoy topic of
 // the worker whose phase the admission pass ended when it moved a parent into awaiting_children
-// (workflow's StopForChildren), the claim of that role on the row's issue, and to nothing else. It is no architect notice: it carries one sentence of the daemon's own rather than
-// a Notice, waits behind no other row of its issue (its own lane, record.LaneRoleMessage), and its
-// recipient is the role the workflow named rather than whichever architect owns the issue. The
-// message stops nothing it reaches: pi-envoy hands it to an Oh My Pi session at its next model turn
-// and ends a running wait, the Claude Code bridge puts it in that session's inbox, and the role's
-// turn, jobs and process run on.
+// (workflow's StopForChildren), the claim of that role on the row's issue, and to nothing else. It
+// is no architect notice: it carries one sentence of the daemon's own rather than a Notice, waits
+// behind no other row of its issue (its own lane, record.LaneRoleMessage), and its recipient is the
+// role the workflow named rather than whichever architect owns the issue. The message stops nothing
+// it reaches: pi-envoy hands it to an Oh My Pi session at its next model turn and ends a running
+// wait, the Claude Code bridge puts it in that session's inbox, and the role's turn, jobs and
+// process run on.
 //
 // The row publishes with keep (publishKeptToRole, notify.Publisher.PublishKept), so a topic with no
 // live holder is answered kept: the listener holds the message on the role's kept lane for one
@@ -2102,6 +2103,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
 	if err := r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+		"outbox hook prompt finished: the listener keeps it for the role's next holder",
+		"outbox hook prompt finished undelivered: no live session holds the role",
 		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
 		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
 	}
@@ -2115,7 +2118,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
 // waits behind no architect notice of its issue.
 //
-// It wakes nothing, where hookPrompt, mergeQueueRemoval and mergeForwardMessage call
+// It wakes nothing, where phaseEnded, hookPrompt, mergeQueueRemoval and mergeForwardMessage call
 // wakeForDelivery first. A role whose pod an idle release took is not brought back to be asked:
 // its topic has no holder, so its ask is lost as every ask that reached no session is (below), the
 // sweep asks the claim again once its agent is ready again, and the round ends at its bound
@@ -2209,10 +2212,10 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 }
 
 // publishToRole publishes message to topic, the Envoy topic of one role's claim
-// (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
-// one delivery. It is updateAsk's publish, with keep: false; hookPrompt publishes with keep
-// through publishKeptToRole, which also says how each executor that publishes to a role's topic
-// answers the publisher.
+// (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is one
+// delivery. It is updateAsk's publish, with keep: false; phaseEnded and hookPrompt publish with
+// keep through publishKeptToRole, which also says how each executor that publishes to a role's
+// topic answers the publisher.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
 // fields, and the answer is false with no error. Every other failure is returned as the
@@ -2232,17 +2235,16 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // to keep it for the role's next live holder, through the gate every publish of the outbox goes
 // through (publishKept). A retry of the row while its copy is still on the role's kept lane
 // stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and what a
-// repeat after the copy's hand-over does. It is hookPrompt's publish; hookPrompt decides what
-// comes before it, and wraps the error it returns. What each answer does to the row:
+// repeat after the copy's hand-over does. It is the publish phaseEnded and hookPrompt share; each
+// decides what comes before it, and each wraps the error it returns. What each answer does to the
+// row:
 //
 //   - a live holder took the message: the row ends, with nothing logged;
-//   - the listener kept the message on the role's kept lane for one hour: the row ends, logging
-//     "outbox hook prompt finished: the listener keeps it for the role's next holder" at Info with
-//     fields, the listener being the message's keeper from there;
+//   - the listener kept the message on the role's kept lane for one hour: the row ends with kept
+//     logged at Info with fields, the listener being the message's keeper from there;
 //   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder), or the
 //     role's claim records a session it does not hold and nothing was published (the gate's
-//     notify.ErrNoHolder): the row ends undelivered, logging at Info with fields
-//     "outbox hook prompt finished undelivered: no live session holds the role";
+//     notify.ErrNoHolder): the row ends undelivered with noHolder logged at Info with fields;
 //   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive), and every other
 //     failure: the error is returned as the publisher gave it, and the row keeps its retry.
 //
@@ -2274,16 +2276,16 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their own row, and a kept copy
 // beside it would be a second keeper of one message; roleMessage's message is stale by the time a
 // role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
-// answers. So whoever changes the rule for a topic with no holder must read all six executors, not
-// this function alone.
-func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
+// answers. So whoever changes the rule for a topic with no holder must read all seven executors,
+// not this function alone.
+func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message, kept, noHolder string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
-		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role", fields...)
+		r.log.Info(noHolder, fields...)
 		return nil
 	case err == nil && keeps:
-		r.log.Info("outbox hook prompt finished: the listener keeps it for the role's next holder", fields...)
+		r.log.Info(kept, fields...)
 	}
 	return err
 }

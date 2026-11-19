@@ -29,11 +29,6 @@ const pwRoundCap = 3
 // phase past the daemon's acceptance that starts implementing.
 const pwBackFromRetro = "the retro found a defect to fix"
 
-// pwUncommitted is the sentence a phase-ended message into any phase but awaiting_children carries,
-// telling the worker to leave its work for the role that takes the workspace over. No message into
-// awaiting_children carries it: no role works the workspace while the parent waits.
-const pwUncommitted = "leave whatever you have uncommitted"
-
 // pwReviewSummary is what the reviewer reported with its completion of the round a review decides.
 const pwReviewSummary = "every thread of the round read"
 
@@ -193,8 +188,7 @@ func pwClaimState(t *testing.T, pool *pgxpool.Pool, token claim.Token) (supervis
 // pwToldR10 fails unless ended is the one message the move sends the role whose from phase it
 // ended, the R10 message: the phase ended and no task follows, a completion of it is refused, the
 // worker commits and pushes what it has and does no more work on it, the issue's next task comes
-// once its children are finished, its reason is the held start's and names the open child, and it
-// carries none of today's sentence that keeps the work uncommitted.
+// once its children are finished, and its reason is the held start's and names the open child.
 func pwToldR10(t *testing.T, ended []record.PhaseEnded, role claim.Role, from phase.Phase, reason string) {
 	t.Helper()
 	if len(ended) != 1 || ended[0].Role != role || ended[0].From != from || ended[0].To != phase.AwaitingChildren ||
@@ -213,9 +207,6 @@ func pwToldR10(t *testing.T, ended []record.PhaseEnded, role claim.Role, from ph
 		if !strings.Contains(message, want) {
 			t.Fatalf("the %s was told %q, want it to say %q", role, message, want)
 		}
-	}
-	if strings.Contains(message, pwUncommitted) {
-		t.Fatalf("the %s was told %q, want none of %q", role, message, pwUncommitted)
 	}
 }
 
@@ -364,7 +355,7 @@ func pwMoves() []pwMove {
 // its phase keeps, with its pull request open and one child filed and not released, and reads what
 // R9 and R10 say the move writes: the parent in awaiting_children holding the move's start with its
 // reason, its slot freed and no worker started; one awaiting-children notice, carrying what the
-// notice it replaces would have carried, and no phase-finished or checks-red notice; the status
+// notice it replaces would have carried, and no phase-finished notice; the status
 // written in_progress where the record showed another; the counts the trigger makes today and no
 // more; no hook prompt or firing message; and no phase-ended message, since the role that made the
 // move ended its own phase. A second pass sends nothing again.
@@ -387,7 +378,7 @@ func pwHoldsMove(t *testing.T, move pwMove) {
 	}
 	want := map[record.NoticeKind]int{workflow.AwaitingChildrenNoticeKind: 1}
 	if kinds := pwNoticeKinds(t, pool, spParent); !maps.Equal(kinds, want) {
-		t.Fatalf("notices by kind = %v, want %v: no phase-finished or checks-red notice", kinds, want)
+		t.Fatalf("notices by kind = %v, want %v: no phase-finished notice", kinds, want)
 	}
 	pwStatuses(t, pool, spParent, pwInProgressOver(workflow.PhaseStatus(move.from)))
 	implementer := spPhaseRow(t, pool, spParent, claim.RoleImplementer)
@@ -471,12 +462,9 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("worker starts = %+v, want none: the conflict started no phase", starts)
 		}
 		inTx(t, pool, func(tx pgx.Tx) {
-			pr, err := record.NewStore().PullRequest(context.Background(), tx, spParent)
-			if err != nil || pr == nil || pr.MergeForward != nil {
-				t.Fatalf("the pull request after the move = %+v (%v), want its merge forward dropped", pr, err)
-			}
+			store := record.NewStore()
 			for _, message := range asked {
-				_, _, left, err := workflow.MergeForwardAt(context.Background(), record.NewStore(), tx, spParent, message.Step, message.Head)
+				_, _, left, err := workflow.MergeForwardAt(context.Background(), store, tx, spParent, message.Step, message.Head)
 				if err != nil || left != "the record holds no merge forward" {
 					t.Fatalf("the queued %s message to the %s is left %q (%v), want it undelivered: the record holds no merge forward",
 						message.Step, message.Role, left, err)

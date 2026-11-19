@@ -251,10 +251,8 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 					t.Fatalf("the notice's reason %q does not say %q", notice.Reason, want)
 				}
 			}
-			for _, replaced := range []record.NoticeKind{"phase-finished"} {
-				if got := noticesOfKind(t, pool, cwParent, replaced); len(got) != 0 {
-					t.Fatalf("%s notices = %+v, want none: the awaiting-children notice replaces it", replaced, got)
-				}
+			if got := noticesOfKind(t, pool, cwParent, "phase-finished"); len(got) != 0 {
+				t.Fatalf("phase-finished notices = %+v, want none: the awaiting-children notice replaces it", got)
 			}
 		})
 	}

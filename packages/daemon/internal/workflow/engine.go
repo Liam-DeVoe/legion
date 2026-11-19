@@ -1890,7 +1890,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // (withForwardMerge): the round it starts again is the one that owes the merge, and only the
 // implementer's completion of that round settles it (settleForwardMerge).
 // The release restarts the held phase on the entry it was raised on (restart raises none), so a
-// phase whose role stands on an entry a conflicting head raised out of retro or merging is
+// phase whose role stands on an entry a role's move back raised out of retro or merging is
 // restarted whatever its children are, as the admission pass leaves it (acceptedEntry,
 // StopForChildren): R9 holds only the starts each from a phase before retro.
 //

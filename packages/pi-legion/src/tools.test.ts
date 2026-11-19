@@ -72,6 +72,7 @@ const noBranchHead = async (): Promise<string> => {
 
 /** The claim's registration secret: random, as the daemon's is, since the pane holds it. */
 const CLAIM_SECRET = fixtureSecret("claim");
+const DISPATCH_TOKEN = fixtureSecret("dispatch");
 
 /** A claim's session on LEGION-208: a root architect's, a sub-architect's (its issue is not its
  * tree), or a phase worker's by role. */
@@ -952,11 +953,7 @@ function treeDispatch(openBlock = false) {
   return {
     paths: board.paths,
     dispatch: () =>
-      new DispatchClient(
-        "http://dispatch.test",
-        bearerCredential("dispatch-token"),
-        board.fetchImpl
-      ),
+      new DispatchClient("http://dispatch.test", bearerCredential(DISPATCH_TOKEN), board.fetchImpl),
   };
 }
 
@@ -2271,7 +2268,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 });
 
 // A spec step open on an ancestor's approval holds in `designGate.approvedVersion` the version its
-// root registered, which no person approved (contract 164): the summary names it as its entry in
+// root registered, which no person approved (contract 177): the summary names it as its entry in
 // `gatedSteps` does, by its status word and the ancestor's version, and so the step that waits on
 // the ancestor's request; a step on no basis keeps its approved line.
 test("read_state's summary names a step on an ancestor's basis by its gatedSteps entry, not as approved", async () => {

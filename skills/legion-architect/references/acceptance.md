@@ -248,7 +248,6 @@ with `request_backward_move` when the reviewer requests changes. No Legion check
 that merges with the approved one: a repository that wants a later push reviewed says so in its
 own rulesets.
 
-
 ## A review thread GitHub will not resolve
 
 GitHub lets only the pull request author's App resolve a thread, so the implementer resolves every
