@@ -88,6 +88,9 @@ import (
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
+// The mark that the project's controller was told of a claim's run of provider-error turns
+// (20261119114140, claims.provider_errors_told_run) is applied after all of these: it adds one
+// column at its default, 0, and touches no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -96,7 +99,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116144907, 20261116165926, 20261116234034, 20261117000528, 20261117004117,
-	20261117064152, 20261117112334, 20261117200337,
+	20261117064152, 20261117112334, 20261117200337, 20261119114140,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -112,7 +115,8 @@ var thisBranchsMigrations = []int{
 // each step (20261117004117) and its roll forward (20261117064152), dispatch://INFRA-1997's
 // 20261117112334 and dispatch://INFRA-4109's 20261117200337. That is why the loop below holds the
 // list rather than counting it, so that a version added above any of them is named here rather
-// than read as main's.
+// than read as main's. The controller's mark of a run of provider errors, 20261119114140, stands
+// above them all.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
