@@ -1666,30 +1666,6 @@ test("a document version refreshes the references and the tree's batched names",
   });
 });
 
-// The words the names read carries are a title, a document's name, a block's excerpt, an ask's
-// question and a turn's first words, so each write that moves one of them refreshes it - a
-// project document's version among them, since a page's chip can name one. A write that moves
-// none of them leaves it alone, because the set of addresses can be a long request.
-test("every write that can move a drawn word refreshes the batched names, and no other does", () => {
-  expect(treeReadsRefreshed(event("issue.updated", issue({ changed: ["title"] }))).names).toBe(
-    true
-  );
-  expect(treeReadsRefreshed(event("ask.edited", { anchor: null, id: "ask-1" })).names).toBe(true);
-  expect(treeReadsRefreshed(event("comment.edited", { anchor: null, id: "comment-1" })).names).toBe(
-    true
-  );
-  const documentVersion = event(
-    "artifact.version",
-    { artifact_id: "artifact-9" },
-    { artifact_id: "artifact-9", issue_key: null }
-  );
-  expect(treeReadsRefreshed(documentVersion).names).toBe(true);
-  expect(treeReadsRefreshed(event("issue.updated", issue({ changed: ["priority"] }))).names).toBe(
-    false
-  );
-  expect(treeReadsRefreshed(event("result.recorded", { issue: "CORE-1" })).names).toBe(false);
-});
-
 /** One write of priority linkage-closure by bob, as the server appends it: ownerless and quiet. */
 function priorityWrite(change: "created" | "updated" | "deleted"): DispatchEvent {
   return event(

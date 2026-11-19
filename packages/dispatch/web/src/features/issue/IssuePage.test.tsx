@@ -37,6 +37,7 @@ import type {
   Subscriber,
   UserIssueState,
 } from "../../api/types";
+import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { FilledMarginSlot, MarginSlotProvider, useMarginSlotFill } from "../margin/margin-slot";
@@ -371,6 +372,18 @@ function renderIssuePage(
   margin = false
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
+  // Each document connection is told once that it has synced: by the timer below if the page has
+  // opened it by then, else by a row that waits for the connection and then calls
+  // `syncOpenedDocuments` itself. The page opens a document's connection only once that document's
+  // reads have answered, which can be after the timer.
+  const told = new Set<ConnectionCallbacks>();
+  const syncOpenedDocuments = () => {
+    for (const callbacks of runtime.callbacks) {
+      if (told.has(callbacks)) continue;
+      told.add(callbacks);
+      callbacks.onSynced();
+    }
+  };
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   const tree = (drawsSlot: boolean) => (
     <MemoryRouter initialEntries={[path]}>
@@ -395,10 +408,11 @@ function renderIssuePage(
     </MemoryRouter>
   );
   const view = render(tree(marginDrawsPanel));
-  window.setTimeout(runtime.sync);
+  window.setTimeout(syncOpenedDocuments);
   return {
     ...view,
     runtime,
+    syncOpenedDocuments,
     /** Shows the shell's margin, or collapses it again: the shell answers whether the margin
      *  keeps a column for the page's panel, and the reader's own control moves that answer. */
     showMargin: (drawsSlot: boolean) => view.rerender(tree(drawsSlot)),
@@ -938,7 +952,9 @@ test("IssuePage lists project labels with issue labels selected and filters them
     const input = await screen.findByRole("combobox", { name: "Search or create label" });
     await waitFor(() => expect(listIssues).toHaveBeenCalledWith({ project: "CORE" }));
     expect(screen.getByRole("option", { name: "bug" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("option", { name: "frontend" })).toHaveAttribute(
+    // "frontend" is a label of the project's list, which the picker draws once that request has
+    // answered, not when it is made; "bug" is the issue's own and is drawn at once.
+    expect(await screen.findByRole("option", { name: "frontend" })).toHaveAttribute(
       "aria-selected",
       "false"
     );
