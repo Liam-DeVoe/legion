@@ -389,21 +389,35 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				"--database-url", database.Pool.Config().ConnString(), "--scale", seedScale, "--no-migrate"))
 			queuedAt(t, asks, "asks", "insert into asks")
 		},
-		// The issues' nodes, which the seed writes before their documents, each document's node,
-		// and each document's latest version, indexed as its first: the blocks it states afresh and
-		// the references they hold. Every node of the seed is in its project.
+		// The issues' nodes, which the seed writes before their documents, with a child's child_of
+		// its parent, each document's node with its part_of its issue and its references, and each
+		// document's latest version, indexed as its first: the version's node, and the blocks it
+		// states afresh with their values and the references they hold. Every node of the seed is
+		// in its project.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
 			{graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
 			{graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.TupleChildOf}:           {"issue_relation"},
 			{graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
 			{graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
 			{graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.TuplePartOf}:         {"document_part_of"},
+			{graphstore.KindArtifact, graphstore.TupleMentions}:       {"document_ref"},
+			{graphstore.KindVersion, graphstore.AttributeVisibility}:  {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeState}:       {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeProject}:     {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.TuplePartOf}:          {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeNumber}:      {graphstore.KindVersion},
+			{graphstore.KindVersion, graphstore.AttributeCreatedAt}:   {graphstore.KindVersion},
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}:      {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:           {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeProject}:         {"block"},
 			{refs.BlockNodeKind, refs.TupleInDocument}:                {"block"},
 			{refs.BlockNodeKind, graphstore.TuplePartOf}:              {"block"},
+			{refs.BlockNodeKind, refs.AttributeRank}:                  {"block_values"},
+			{refs.BlockNodeKind, refs.AttributePlacement}:             {"block_values"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:            {"block_text"},
 			{refs.BlockNodeKind, "mentions"}:                          {"block_ref"},
 		},
 	}, {
@@ -444,14 +458,16 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				t.Fatalf("the seed exited %d; it wrote:\n%s", code, process.Output.String())
 			}
 		},
-		// The comments, as the comment path states one, in their project, their one author's
-		// node, and the messages' nodes, which the seed writes after its comments.
+		// The comments, as the comment path states one, in their project, each anchored one's
+		// anchored_in its anchor's block, their one author's node, and the messages' nodes, which
+		// the seed writes after its comments.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
 			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
+			{graphstore.KindComment, graphstore.TupleAnchoredIn}:     {"anchor_block"},
 			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
 			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
 			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},

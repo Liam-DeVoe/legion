@@ -403,13 +403,14 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 // seedSizedRelations writes, beside the history seedSizedHistory writes, one row for each further
 // table a term counts: a mention of the comment that resolved to a session and its attempt, which
 // the listener took, two body blocks of the comment of which one is removed, a link out of the
-// live one, a child issue that waits on its parent, a failed result with two screenshots and its
-// retraction, a Keep, two components of one imported snapshot, one under and depending on the
-// other, with CORE-1 affecting the first, alice's dismissal of the message's thread, her snooze
-// of an ask the session ses_asker opened before the window, so that inside the window the snooze
-// is the one write of it a term counts, a copy in the spec of an ask block of a document written
-// before the window, and an answered ask asked before the window whose block, Dropped, the spec's
-// second version took out.
+// live one, the document's reference to CORE-1, which its added paragraph cites, a child issue
+// that waits on its parent, a failed result with two screenshots and its retraction, a Keep, two
+// components of one imported snapshot, one under and depending on the other, with CORE-1
+// affecting the first, alice's dismissal of the message's thread, her snooze of an ask the
+// session ses_asker opened before the window, so that inside the window the snooze is the one
+// write of it a term counts, a copy in the spec of an ask block of a document written before the
+// window, and an answered ask asked before the window whose block, Dropped, the spec's second
+// version took out.
 func seedSizedRelations(t *testing.T, database *store.Store, document, comment, message string) {
 	t.Helper()
 	ctx := context.Background()
@@ -442,6 +443,9 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 		{"write the body block's link", `
 			insert into comment_block_refs (comment_id, block_id, from_node, to_kind, to_id)
 			values ($1::uuid, 'b1', 'b1', 'issue', 'CORE-1')`, []any{comment}},
+		{"write the document's reference", `
+			insert into refs (from_kind, from_id, to_kind, to_id) values ('artifact', $1::text, 'issue', 'CORE-1')`,
+			[]any{document}},
 		{"write the child issue and its wait", `
 			with child as (
 				insert into issues (key, project_key, number, title, created_by, rank, parent_key)
@@ -1110,6 +1114,8 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	want := map[string]sizedTerm{
 		"comment": {tuples: 3, writes: 1}, "authored_by": {tuples: 1, writes: 1}, "anchored_to": {tuples: 1, writes: 1},
 		"owned_by": {tuples: 1, writes: 1}, "author_alias": {tuples: 1, writes: 1},
+		// The comment is anchored to the document.
+		"anchor_block": {tuples: 3, writes: 1},
 		// The mention's attempt to ses_sized, the comment.created the bus delivered to the role
 		// sizer, and the copy the fallback pass published to ses_copy.
 		"delivery": {tuples: 1, writes: 1}, "bus_delivery": {tuples: 1, writes: 1}, "fallback_delivery": {tuples: 1, writes: 1},
@@ -1124,11 +1130,16 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// Eight rows hold a text, each a text value; six are a block's first, each a rank and a
 		// placement; one deleted a block, whose text value stays as the block's node goes gone.
 		"block_ref": {tuples: 2, writes: 1}, "block_text": {tuples: 1, writes: 8}, "block_values": {tuples: 2, writes: 6},
+		// The document's reference to CORE-1 (seedSizedRelations). The document is CORE-1's spec,
+		// whose six first rows each take the one author their version lists.
+		"document_ref": {tuples: 2, writes: 1}, "block_author": {tuples: 1, writes: 6},
 		// Each of the window's four versions writes its node and six tuples
 		// (graphstore.VersionFacts): the window document's three, and the image's one, which
 		// states its three bytes on the image's node; both documents are an issue's, created
 		// inside the window.
 		"version": {tuples: 6, writes: 4}, "version_bytes": {tuples: 3, writes: 1}, "document_part_of": {tuples: 1, writes: 2},
+		// The scratch document removed in the window held one version; no table dates an erase.
+		"version_removed": {tuples: 1, writes: 1}, "erased_version": {tuples: 1, writes: sizingWindowDays / 7, assumed: true},
 		// The comment is alice's first, the delivery records ses_sized and the published copy
 		// ses_copy, and the message.created event is the first to address the role sizer, which
 		// takes a page with it.
@@ -1149,6 +1160,9 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 2},
 		// CORE-2 is a child of CORE-1 and waits on it. The archive was written before the window.
 		"issue": {tuples: 3, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 2},
+		// CORE-1 and CORE-2 are each taken to state a filed_from and a duplicate_of and to be born
+		// converted, each with its room and its decisions query; CORE-1's spec is a query node too.
+		"issue_origin": {tuples: 2, writes: 2}, "issue_room": {tuples: 20, writes: 2}, "query_node": {tuples: 3, writes: 3},
 		// The scratch document removed in the window.
 		"artifact_removed": {tuples: 1, writes: 1},
 		"criterion":        {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
@@ -1174,6 +1188,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"lens_kind":    {tuples: 8, writes: 22, assumed: true},
 		"constraint":   {tuples: 11, writes: 1 * sizingWindowDays, assumed: true},
 		"risk":         {tuples: 11, writes: 11 * sizingWindowDays, assumed: true},
+		"node_state":   {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]

@@ -154,9 +154,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 					"::::decision{#" + longBlock + "}\nThe long document takes the node store.\n::::\n",
 			}, "", http.StatusCreated)
 		},
-		// The new document's node, and the decision's node, placed in it, with its decided_by and
-		// the node of the session that wrote it; its in_document waits for the block-index tick.
-		Counts: merged(objectNodeCounted(graphstore.KindArtifact), sessionNodeCounted, map[graphcensus.StoredKind][]string{
+		// The new document's node and its part_of the issue, its first version's node, and the
+		// decision's node, placed in it, with its decided_by and the node of the session that wrote
+		// it; its in_document waits for the block-index tick.
+		Counts: merged(objectNodeCounted(graphstore.KindArtifact), documentPartOfCounted, versionCounted, sessionNodeCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
@@ -187,8 +188,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	}, {
 		// The settlement of a document whose ask block, opened by an earlier settlement, a person's
 		// own editor left with no question: the block fails the strict read, and the settlement
-		// states the reason on the ask's node (stateInvalidReasons). No server write takes such a
-		// block (the edits route refuses it, INVALID_ASK_BLOCK), so alice's browser writes it.
+		// states the reason on the ask's node (stateInvalidReasons), beside the version it writes of
+		// the emptied block, the new text values of the block and of the paragraph it holds, and the
+		// version's node. No server write takes such a block (the edits route refuses it,
+		// INVALID_ASK_BLOCK), so alice's browser writes it.
 		Name: "docs/ask_blocks.go#stateInvalidReasons", Database: r.database,
 		Sites: []string{"docs/ask_blocks.go#stateInvalidReasons"},
 		Ready: func(t *testing.T) {
@@ -207,7 +210,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from graph_tuples where from_kind = $1 and from_id = $2 and kind = 'invalid' and asserted)
 			`, graphstore.KindAsk, invalidAsk)
 		},
-		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindAsk, "invalid"}: {"ask_invalid"}},
+		Counts: merged(versionCounted, map[graphcensus.StoredKind][]string{
+			{graphstore.KindAsk, "invalid"}:                {"ask_invalid"},
+			{refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
+		}),
 	}, {
 		// The settlement of a document whose live text holds again, byte for byte, the version a
 		// person approved, while an approval request a session opened over the version that changed
@@ -259,10 +265,11 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from asks where id = $1::uuid and state = 'answered')
 			`, request)
 		},
-		// The carry's answer of the request, and the node of pat, the person who approved.
-		Counts: merged(answerCounted, map[graphcensus.StoredKind][]string{
-			{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
-			{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
+		// The carry's answer of the request, the node of pat, the person who approved, and the
+		// version the settlement writes: the text value of the paragraph it gives back and the
+		// version's node.
+		Counts: merged(answerCounted, personNodeCounted, versionCounted, map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
 		}),
 	}, {
 		// alice's edit that takes the block of an answered ask out of its document: the version's
@@ -286,19 +293,19 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				"ops": []map[string]any{{"op": "delete", "block": removedBlock}},
 			}, "alice", http.StatusOK)
 		},
-		// The removed block's node and its paragraph's stated gone, and alice's removed_by on the
-		// answered ask's node.
-		Counts: map[graphcensus.StoredKind][]string{
+		// The removed block's node and its paragraph's stated gone, alice's removed_by on the
+		// answered ask's node, and the edit's version's node.
+		Counts: merged(versionCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeState}: {"block_gone"},
 			{graphstore.KindAsk, graphstore.TupleRemovedBy}: {"ask_removal"},
-		},
+		}),
 	}, {
 		// An upload that writes a document's text over with the text it holds: the replacement
 		// changes nothing and writes no tree, so the version's index pass runs on no rendering and
 		// the removals it carries are queued on their own (queueRemovals) - none, since the write
-		// took no block out, and so it appends nothing. The removal it would append is the one
-		// the drive before appends through the planned path, the same person's node and the same
-		// removed_by.
+		// took no block out, and so it appends the version's node alone. The removal it would
+		// append is the one the drive before appends through the planned path, the same person's
+		// node and the same removed_by.
 		Name: "docs/removed_by.go#queueRemovals", Database: r.database,
 		Sites: []string{"docs/removed_by.go#queueRemovals", "api/artifacts.go#storeArtifact"},
 		Ready: func(t *testing.T) {
@@ -316,7 +323,7 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from artifact_versions where artifact_id = $1::uuid and number = 2)
 			`, unchanged)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: versionCounted,
 	}, {
 		// The decisions step's catch-up (a tick of docs.DecisionStep) of an unfollow a build before
 		// this one recorded: that build deleted the follower row of the follower route's follow and
@@ -420,10 +427,11 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				t.Fatalf("the decisions step did %+v, want one section a decision and its decisions document retired", done)
 			}
 		},
-		// The versions' blocks - the spec's new decision, and the decisions document's section
-		// stated gone - the decision's decided_by, the section's move, the Keep it carries with the
-		// keeper's node, and the retired document's node stated gone.
-		Counts: merged(newBlockCounted, map[graphcensus.StoredKind][]string{
+		// The versions' blocks - the spec's new decision with its values, and the decisions
+		// document's section stated gone - the two versions' nodes, the decision's decided_by, the
+		// section's move, the Keep it carries with the keeper's node, and the retired document's
+		// node stated gone.
+		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeState}:         {"block", "block_gone"},
 			{refs.BlockNodeKind, graphstore.TupleDecidedBy}:         {"decision"},
 			{refs.BlockNodeKind, graphstore.TupleMovedTo}:           {"block_move"},

@@ -266,7 +266,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}
 	return append([]graphcensus.StoreDrive{{
 		Name: "api/issue_create.go#createIssue", Database: r.database,
-		Sites: []string{"api/issue_create.go#createIssue", "refs/blocks.go#Queue"},
+		Sites: []string{"api/issue_create.go#createIssue", "api/artifacts.go#createIssueTree", "api/issue_create.go#createDecisionsQuery",
+			"docs/mutation.go#WriteVersionNode", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			created := decoded[struct {
 				Key     string `json:"key"`
@@ -276,10 +277,18 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}, "alice", http.StatusCreated))
 			r.issue, r.spec = created.Key, created.Primary
 		},
-		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindIssue), objectNodeCounted(graphstore.KindArtifact)),
+		// An issue born converted, as a fleet that serves the issue room creates every issue: the
+		// issue's node; its spec's node, its part_of and its query values, the spec's blocks with
+		// their values and their authors, alice, whom those first record, and the spec's first
+		// version; and the issue's room, its tree artifact and its decisions query with the query's
+		// values, and the two's first versions.
+		Counts: merged(newBlockCounted, blockValuesCounted, roomBlockCounted, objectNodeCounted(graphstore.KindIssue),
+			objectNodeCounted(graphstore.KindArtifact), documentPartOfCounted, versionCounted, personNodeCounted, issueRoomCounted,
+			queryNodeCounted),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
-		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "refs/blocks.go#Queue"},
+		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "docs/mutation.go#WriteVersionNode",
+			"refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			notes := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -288,7 +297,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}, "alice", http.StatusCreated)).Artifact
 			r.notes, r.notesSlug = notes.ID, notes.Slug
 		},
-		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindArtifact)),
+		// The notes' node and its part_of the issue, its blocks with their values, and its first
+		// version.
+		Counts: merged(newBlockCounted, blockValuesCounted, objectNodeCounted(graphstore.KindArtifact), documentPartOfCounted,
+			versionCounted),
 	}, {
 		Name: "api/artifacts.go#commitArtifactVersionEvent", Database: r.database,
 		Sites: []string{"api/artifacts.go#commitArtifactVersionEvent", "refs/blocks.go#Queue"},
@@ -297,7 +309,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "A paragraph the edit adds."}},
 			}, "alice", http.StatusOK)
 		},
-		Counts: newBlockCounted,
+		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted),
 	}, {
 		Name: "api/comment_create.go#createCommentFor, on an issue", Database: r.database,
 		Sites: comment("api/comment_create.go#createCommentFor"),
@@ -305,15 +317,12 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.comment = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
 				map[string]any{"body": "A remark on the issue."}, "alice", http.StatusCreated)).ID
 		},
-		// The comment, the first alice writes, and alice: her node is made by the write that first
-		// records her.
+		// The comment. alice's node stands from the issue's spec, whose blocks first record her.
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
 			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
-			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
-			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
 		},
 	}, {
 		// A comment anchored to the notes, whose mention resolves to the held session: the
@@ -338,6 +347,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
+			{graphstore.KindComment, graphstore.TupleAnchoredIn}:     {"anchor_block"},
 		},
 	}, {
 		Name: "api/comment_delivery.go#completeCommentDelivery", Database: r.database,
@@ -433,7 +443,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
 	}, {
 		// The removal of an untouched document of the issue, made just before by typing a title:
-		// its node stated gone, which the term artifact_removed counts, by removedDocumentNodes in
+		// its node stated gone, which the term artifact_removed counts, and the node of its one
+		// version stated gone, which the term version_removed counts, by removedDocumentNodes in
 		// the request's transaction and under its artifact.removed in the event's batch.
 		Name: "api/artifact_removal.go#removedDocumentNodes", Database: r.database,
 		Sites: []string{"api/artifact_removal.go#removedDocumentNodes", "api/server.go#appendCausingEvent"},
@@ -446,7 +457,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodDelete, "/api/v1/artifacts/"+r.removable, nil, "alice", http.StatusNoContent)
 		},
-		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"}},
+		Counts: map[graphcensus.StoredKind][]string{
+			{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"},
+			{graphstore.KindVersion, graphstore.AttributeState}:  {"version_removed"},
+		},
 	}, {
 		// The follower route's follow of that ask (asks.Follow), whose node it moves onto the
 		// event it appends after it.
@@ -562,7 +576,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				t.Fatalf("the tick indexed %d document(s) (%d live ahead), want the notes alone", tick.Documents, tick.LiveAhead)
 			}
 		},
-		Counts: newBlockCounted,
+		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted),
 	}, {
 		// The erase of the issue's comment, which deletes its tuples and appends none.
 		Name: "grapherase/erase.go#apply", Database: r.database,
@@ -582,14 +596,19 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}
 		},
 		Counts: map[graphcensus.StoredKind][]string{},
-	}}, askDrives(t, r)...)
+	}}, slices.Concat(askDrives(t, r), externalDrives(t, r))...)
 }
 
 // The terms that count what several drives here append: a block a version states afresh, with its
-// two base attributes, its in_document and its part_of, which the term block counts; a session's
-// node with its two base attributes, made by the first write that records the session, which the
-// term session counts; who asked an ask, which the term ask_opened counts beside the ask's other
-// facts its create states; and a session's follow of an ask, which the term ask_follower counts.
+// two base attributes, its in_document and its part_of, which the term block counts, the rank and
+// the placement its first row takes and its text value, which block_values and block_text count,
+// and the authored_by a block of an issue's room takes, which block_author counts; a version's
+// node, which the term version counts; a document's part_of its issue, which document_part_of
+// counts; a person's node and a session's, each with its two base attributes, made by the first
+// write that records the person or the session, which the terms person and session count; the
+// room an issue is born with and a query node's values, which issue_room and query_node count; who
+// asked an ask, which the term ask_opened counts beside the ask's other facts its create states;
+// and a session's follow of an ask, which the term ask_follower counts.
 var (
 	newBlockCounted = map[graphcensus.StoredKind][]string{
 		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
@@ -597,6 +616,35 @@ var (
 		{refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
 		{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
 		{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block"},
+	}
+	blockValuesCounted = map[graphcensus.StoredKind][]string{
+		{refs.BlockNodeKind, refs.AttributeRank}:       {"block_values"},
+		{refs.BlockNodeKind, refs.AttributePlacement}:  {"block_values"},
+		{refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
+	}
+	roomBlockCounted = map[graphcensus.StoredKind][]string{
+		{refs.BlockNodeKind, graphstore.TupleAuthoredBy}: {"block_author"},
+	}
+	versionCounted        = versionNodeCounted(graphstore.KindVersion)
+	documentPartOfCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindArtifact, graphstore.TuplePartOf}: {"document_part_of"},
+	}
+	personNodeCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
+		{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
+	}
+	// The tree artifact's node and the decisions query's, each with its base attributes and its
+	// part_of the issue, and the nodes of their first versions.
+	issueRoomCounted = merged(map[graphcensus.StoredKind][]string{
+		{graphstore.KindArtifact, graphstore.AttributeVisibility}: {"issue_room"},
+		{graphstore.KindArtifact, graphstore.AttributeState}:      {"issue_room"},
+		{graphstore.KindArtifact, graphstore.AttributeProject}:    {"issue_room"},
+		{graphstore.KindArtifact, graphstore.TuplePartOf}:         {"issue_room"},
+	}, versionNodeCounted("issue_room"))
+	queryNodeCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindArtifact, graphstore.AttributeQuery}:   {"query_node"},
+		{graphstore.KindArtifact, graphstore.AttributeTakes}:   {"query_node"},
+		{graphstore.KindArtifact, graphstore.AttributeSubtree}: {"query_node"},
 	}
 	sessionNodeCounted = map[graphcensus.StoredKind][]string{
 		{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
@@ -633,6 +681,18 @@ func objectNodeCounted(kind string) map[graphcensus.StoredKind][]string {
 		{kind, graphstore.AttributeState}:      {kind},
 		{kind, graphstore.AttributeProject}:    {kind},
 	}
+}
+
+// versionNodeCounted is what a version's node appends - its visibility, its state, its document's
+// project, its part_of its document, and its number and created_at values
+// (graphstore.VersionFacts) - each counted by term.
+func versionNodeCounted(term string) map[graphcensus.StoredKind][]string {
+	counted := map[graphcensus.StoredKind][]string{}
+	for _, kind := range []string{graphstore.AttributeVisibility, graphstore.AttributeState, graphstore.AttributeProject,
+		graphstore.TuplePartOf, graphstore.AttributeNumber, graphstore.AttributeCreatedAt} {
+		counted[graphcensus.StoredKind{From: graphstore.KindVersion, Kind: kind}] = []string{term}
+	}
+	return counted
 }
 
 // merged is every kind each of counts holds, its terms joined where two hold one kind.
