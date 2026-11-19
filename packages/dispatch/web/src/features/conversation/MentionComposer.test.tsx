@@ -32,8 +32,8 @@ import type { AgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { mentionOptions, stoppedRoleOptions } from "../refs/party-options";
+import { settleRefPickerSearch } from "../refs/ref-picker-fixture";
 import { recordedRoles, roleHolders } from "../refs/role-holders";
-import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
@@ -397,7 +397,7 @@ test("a key typed letter by letter reads only the summary of the key the typing 
     const field = screen.getByLabelText("Comment");
     await user.click(field);
     await user.keyboard("See CORE-123");
-    await jump(SEARCH_DEBOUNCE_MS);
+    await settleRefPickerSearch("fake");
     await tick(20);
     expect(summaryRead.mock.calls.map(([key]) => key)).toEqual(["CORE-123"]);
     expect(pillsDrawn(screen.getByRole("region", { name: "References" }))).toEqual([
@@ -420,7 +420,7 @@ test("an emptied draft takes its pills with it at once", async () => {
     const field = screen.getByLabelText("Comment");
     await user.click(field);
     await user.paste("See CORE-2");
-    await jump(SEARCH_DEBOUNCE_MS);
+    await settleRefPickerSearch("fake");
     await tick(20);
     expect(pillsDrawn(screen.getByRole("region", { name: "References" }))).toEqual([
       { href: "/issues/CORE-2", name: "CORE-2 Warm the cache" },
@@ -3647,7 +3647,7 @@ test("a spec summary read that failed is not asked again when the composer mount
 async function draftRested(user: UserEvent, draft: string): Promise<void> {
   await user.click(screen.getByLabelText("Comment"));
   await user.paste(draft);
-  await jump(SEARCH_DEBOUNCE_MS);
+  await settleRefPickerSearch("fake");
   await tick(20);
 }
 

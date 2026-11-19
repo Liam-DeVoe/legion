@@ -1,6 +1,6 @@
-import { afterEach, beforeAll, test as bunTest, expect, type Mock, spyOn } from "bun:test";
+import { afterEach, beforeAll, expect, type Mock, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -32,7 +32,8 @@ import {
   type RefPickerInsertion,
   type RefPickerKind,
 } from "./ref-picker";
-import { SEARCH_DEBOUNCE_MS, useRefPicker } from "./useRefPicker";
+import { refPickerTest as test } from "./ref-picker-fixture";
+import { useRefPicker } from "./useRefPicker";
 
 const now = Date.now();
 
@@ -181,28 +182,6 @@ afterEach(() => {
   pane?.restore();
   pane = undefined;
 });
-
-/**
- * A row of this file: `bun:test`'s own, but its body ends by letting the picker's search debounce
- * run out inside act. `useRefPicker` copies the query into the one it searches through
- * `useSettled`, a real timer of `SEARCH_DEBOUNCE_MS` that every key changing the query sets
- * again, a door opening or closing included, and most rows assert a state that does not wait for
- * that copy. A timer still set when a body ends fires in the turn Bun gives the event loop between
- * the body and its `afterEach`, outside act, and the preload's act rule fails the row on the
- * update React reports (`__tests__/setup.ts`). A wait in the `afterEach` above comes too late,
- * since that turn lies before it. A wait as long as the debounce, begun after the last key, ends
- * after the timer that key set.
- */
-const test = (name: string, body: () => Promise<void>): void =>
-  bunTest(name, async () => {
-    try {
-      await body();
-    } finally {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS));
-      });
-    }
-  });
 
 /**
  * A plain `<textarea>` host for the picker: it owns the text and the caret, hands the picker

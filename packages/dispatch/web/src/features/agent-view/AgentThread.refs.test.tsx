@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, test as bunTest, expect, type Mock, spyOn } from "bun:test";
+import { afterEach, beforeAll, expect, type Mock, spyOn } from "bun:test";
 import {
   AssistantRuntimeProvider,
   type ThreadMessageLike,
@@ -6,7 +6,7 @@ import {
 } from "@assistant-ui/react";
 import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
 // biome-ignore lint/style/noRestrictedImports: the keys of an IME composition, and Safari's key code 229, which user-event has no form for
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -19,7 +19,7 @@ import type { ArtifactWithTrees, GraphReferences, SearchResult } from "../../api
 import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { REF_PICKER_INSTRUCTION, REF_PICKER_PARTS_WORDS } from "../refs/ref-picker";
-import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
+import { settleRefPickerSearch, refPickerTest as test } from "../refs/ref-picker-fixture";
 import { AgentThread } from "./AgentThread";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -111,30 +111,6 @@ afterEach(() => {
   pane = undefined;
 });
 
-/**
- * A row of this file: `bun:test`'s own, but its body ends by letting the picker's search debounce
- * run out inside act. The live composer hands the query typed after an open door to
- * `useRefPicker` (`ReferenceTriggers.tsx`), which copies it into the one it searches through
- * `useSettled`, a real timer of `SEARCH_DEBOUNCE_MS` that every key changing the query sets
- * again, a door opening or closing included, and most rows assert a state that does not wait for
- * that copy. A timer still set when a body ends fires in the turn Bun gives the event loop between
- * the body and its `afterEach`, outside act, and the preload's act rule fails the row on the
- * update React reports (`__tests__/setup.ts`). A wait in the `afterEach` above comes too late,
- * since that turn lies before it. A wait as long as the debounce, begun after the last key, ends
- * after the timer that key set. `refs/useRefPicker.test.tsx`, whose rows drive the same picker
- * from a plain textarea, is where this flake was measured, and its rows end the same way.
- */
-const test = (name: string, body: () => Promise<void>): void =>
-  bunTest(name, async () => {
-    try {
-      await body();
-    } finally {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS));
-      });
-    }
-  });
-
 function Harness({
   commands,
   onSend,
@@ -217,11 +193,7 @@ async function type(user: UserEvent, input: HTMLTextAreaElement, value: string):
  *  enough for any read the key started to answer and its rows to draw, so a check made after it
  *  would see them, where a check made at once would find nothing whether the key acted or not. */
 async function afterTheKey(): Promise<void> {
-  await act(async () => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, SEARCH_DEBOUNCE_MS);
-    await promise;
-  });
+  await settleRefPickerSearch();
 }
 
 /** The picker's rows in the order they are drawn, each as `<heading>: <words>`: a row's

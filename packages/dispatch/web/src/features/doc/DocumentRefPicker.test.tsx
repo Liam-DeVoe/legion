@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn } from "bun:test";
 import type { EditorReferencePicker, ReferenceInsertion } from "@legion/proof-editor";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -12,6 +12,7 @@ import {
 } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { refPickerTest as test } from "../refs/ref-picker-fixture";
 import { DocumentRefPicker } from "./DocumentRefPicker";
 import type { EditorHandle } from "./editor";
 
