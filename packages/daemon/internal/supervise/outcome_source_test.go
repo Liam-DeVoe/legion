@@ -28,13 +28,24 @@ import (
 // from writing them out, nor the bridge from using its constant for anything but that refusal.
 // So this test reads the source and holds the five things the compiler cannot: every member of
 // the set (runtime.Outcome, declared in internal/runtime) has a row in the policy; no site
-// matches a refusal's words — not in this package, and not in internal/stream, which mints the
-// outcome where the frame is read, or internal/claudebridge, which writes the busy refusal; no
-// site holds the busy refusal's words but the refusal itself — none in this package, the stream
-// or the runtime, and none in the bridge but its constant and the refusal it writes; every charge
-// names a declared member; and no function but a charge function writes a budget counter except
-// to reset it to zero (budgetResets names each that may). Delete a check here when the compiler
-// comes to hold it.
+// matches a refusal's words — not in this package, nor in internal/runtime, which reads them from
+// a send's error (RefusalReason), internal/stream, which mints the outcome where the frame is
+// read, or internal/claudebridge, which writes the busy refusal; no site holds the busy refusal's
+// words but the refusal itself — none in this package, the stream or the runtime, and none in the
+// bridge but its constant and the refusal it writes; every charge names a declared member; and no
+// function but a charge function writes a budget counter except to reset it to zero
+// (budgetResets names each that may). Delete a check here when the compiler comes to hold it.
+//
+// The negative control of the check c-the-outcome-is-not-a-string, in dispatch://INFRA-3136's
+// verification.md, names each shape of a match this test claims to find, and
+// TestOutcomeSourceFindsEachPlantedShape plants each one in a copy of one of these four packages
+// and holds the analysis here to finding it. The test follows the text from the sources named in
+// the negative control, within one function and through range variables. It does not follow the
+// text into a field written in one method and read in another, out of a helper that returns it,
+// into a function literal's parameter, or through a method of a named string type. Following all
+// of them is an analysis of the whole program, which a test cannot do easily, so the test claims
+// what it follows, and the reviewer reads the rest of each change to these four packages for a
+// match of an agent's words.
 //
 // It type-checks each package's non-test source against the compiler's export data for its
 // dependencies (compiledDependencies, as TestProcessEndsListsEveryEndDeclared does), so it reads
@@ -96,40 +107,22 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 	})
 
 	t.Run("no site matches a refusal's words", func(t *testing.T) {
-		for _, path := range []string{supervisePath, streamPath, claudebridgePath} {
+		for _, path := range outcomePaths {
 			pkg := sources[path]
-			taint := pkg.refusalWords(t)
-			for _, file := range pkg.files {
-				for _, decl := range file.Decls {
-					for _, match := range taint.matches(decl) {
-						t.Errorf("%s, in %s, %s matches a refusal's words: the outcome is minted from the frame's code where the frame is read (stream.PromptRefusalOutcome), never from its words",
-							pkg.pos(match.at), pkg.declName(decl), match.what)
-					}
-				}
+			for _, match := range pkg.refusalMatches(t) {
+				t.Errorf("%s, in %s, %s matches a refusal's words: the outcome is minted from the frame's code where the frame is read (stream.PromptRefusalOutcome), never from its words",
+					pkg.pos(match.at), match.in, match.what)
 			}
 		}
 	})
 
 	t.Run("no site holds the Claude Code bridge's busy words but its busy refusal", func(t *testing.T) {
-		bridge := sources[claudebridgePath]
-		busy, _ := bridge.pkg.Scope().Lookup("busyWords").(*types.Const)
-		if busy == nil || busy.Val().Kind() != constant.String || constant.StringVal(busy.Val()) == "" {
-			t.Fatal("internal/claudebridge declares no string constant busyWords, whose words this test holds every other site from holding")
-		}
-		words, refusal := constant.StringVal(busy.Val()), bridge.busyRefusal(busy)
-		for _, path := range []string{supervisePath, streamPath, claudebridgePath, runtimePath} {
+		words := constant.StringVal(sources[claudebridgePath].bridgeBusyWords(t).Val())
+		for _, path := range outcomePaths {
 			pkg := sources[path]
-			var allowed map[ast.Expr]bool
-			if path == claudebridgePath {
-				allowed = refusal
-			}
-			for _, file := range pkg.files {
-				for _, decl := range file.Decls {
-					for _, held := range pkg.busyHolders(decl, words, allowed) {
-						t.Errorf("%s, in %s, holds the Claude Code bridge's busy words (claudebridge's busyWords) or a piece of them: only the bridge's busy refusal carries them, for a daemon rolled back to the release before this one, and this one reads a busy agent from the refusal's code (shimwire.CodeSessionBusy), never from its words",
-							pkg.pos(held), pkg.declName(decl))
-					}
-				}
+			for _, held := range pkg.busyHeld(t, words) {
+				t.Errorf("%s, in %s, holds the Claude Code bridge's busy words (claudebridge's busyWords) or a piece of them: only the bridge's busy refusal carries them, for a daemon rolled back to the release before this one, and this one reads a busy agent from the refusal's code (shimwire.CodeSessionBusy), never from its words",
+					pkg.pos(held.at), held.in)
 			}
 		}
 	})
@@ -231,6 +224,14 @@ const (
 	claudebridgePath = internalPath + "claudebridge"
 )
 
+// outcomePaths is the packages this test reads, in the order it reads them and reports what it
+// finds: this one, the runtime that declares the set, the stream that mints its members and the
+// Claude Code bridge.
+var outcomePaths = []string{supervisePath, runtimePath, streamPath, claudebridgePath}
+
+// outcomeDirs is the directory of each package this test reads, by import path.
+var outcomeDirs = map[string]string{supervisePath: ".", runtimePath: "../runtime", streamPath: "../stream", claudebridgePath: "../claudebridge"}
+
 // budgetCounters is the fields of Budgets, as the type checker holds them.
 func (s *goSource) budgetCounters(t *testing.T) map[types.Object]bool {
 	t.Helper()
@@ -314,22 +315,36 @@ type goSource struct {
 	given map[types.Object][]ast.Expr
 }
 
-// checkOutcomeSources type-checks the packages this test reads — this one, the runtime that
-// declares the set, the stream that mints its members and the Claude Code bridge — by import path.
+// checkOutcomeSources type-checks the packages this test reads (outcomePaths), by import path.
 func checkOutcomeSources(t *testing.T) map[string]*goSource {
 	t.Helper()
-	dirs := map[string]string{supervisePath: ".", runtimePath: "../runtime", streamPath: "../stream", claudebridgePath: "../claudebridge"}
 	fileset := gotoken.NewFileSet()
-	imports := importer.ForCompiler(fileset, "gc", compiledDependencies(t, "../stream", "../claudebridge"))
+	imports := outcomeImporter(t, fileset)
 	sources := map[string]*goSource{}
-	for path, dir := range dirs {
-		checked, err := testtypes.CheckPackage(fileset, imports, path, dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sources[path] = &goSource{fileset: fileset, files: checked.Files, pkg: checked.Types, info: checked.Info}
+	for _, path := range outcomePaths {
+		sources[path] = checkOutcomeSource(t, fileset, imports, path, outcomeDirs[path])
 	}
 	return sources
+}
+
+// outcomeImporter opens the compiler's types of what the packages this test reads import
+// (compiledDependencies): this package's dependencies hold the runtime's, and the stream's and
+// the bridge's are looked up after them.
+func outcomeImporter(t *testing.T, fileset *gotoken.FileSet) types.Importer {
+	t.Helper()
+	return importer.ForCompiler(fileset, "gc", compiledDependencies(t, "../stream", "../claudebridge"))
+}
+
+// checkOutcomeSource type-checks the source in dir as the package path (testtypes.CheckPackage):
+// one of the packages this test reads, from its own directory or from a copy with a shape
+// planted in it (plantShape), which the analysis then reads as it reads that package.
+func checkOutcomeSource(t *testing.T, fileset *gotoken.FileSet, imports types.Importer, path, dir string) *goSource {
+	t.Helper()
+	checked, err := testtypes.CheckPackage(fileset, imports, path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &goSource{fileset: fileset, files: checked.Files, pkg: checked.Types, info: checked.Info}
 }
 
 func (s *goSource) pos(node ast.Node) string { return s.fileset.Position(node.Pos()).String() }
@@ -498,28 +513,137 @@ func (s *goSource) assignments() map[types.Object][]ast.Expr {
 	return given
 }
 
+// fieldOf is one field of one variable, which the test follows a refusal's words into within the
+// function that declares the variable (fieldAssignments).
+type fieldOf struct{ variable, field types.Object }
+
+// fieldAssignments is every expression a function gives a field of one of its own variables: a
+// struct literal given to the variable by :=, = or a var declaration, or the literal's address,
+// gives each field it names, or each field in order where it names none; and an assignment to
+// x.F gives F of x. A variable of the package outside any function belongs to no one function,
+// and a value handed to another function's parameter is that function's, so the test follows
+// neither (TestOutcomeSourceHoldsThePolicyAtItsSites). A value no expression stands for alone is
+// recorded as assignments records it.
+func (s *goSource) fieldAssignments() map[fieldOf][]ast.Expr {
+	given := map[fieldOf][]ast.Expr{}
+	local := func(ident *ast.Ident) types.Object {
+		object := s.info.Defs[ident]
+		if object == nil {
+			object = s.info.Uses[ident]
+		}
+		variable, ok := object.(*types.Var)
+		if !ok || variable.Parent() == nil || variable.Parent() == s.pkg.Scope() {
+			return nil
+		}
+		return variable
+	}
+	add := func(variable, field types.Object, expr ast.Expr) {
+		given[fieldOf{variable, field}] = append(given[fieldOf{variable, field}], expr)
+	}
+	literal := func(variable types.Object, expr ast.Expr) {
+		expr = ast.Unparen(expr)
+		if address, ok := expr.(*ast.UnaryExpr); ok && address.Op == gotoken.AND {
+			expr = ast.Unparen(address.X)
+		}
+		lit, ok := expr.(*ast.CompositeLit)
+		if !ok || s.info.Types[lit].Type == nil {
+			return
+		}
+		fields, ok := s.info.Types[lit].Type.Underlying().(*types.Struct)
+		if !ok {
+			return
+		}
+		for i, elt := range lit.Elts {
+			if pair, keyed := elt.(*ast.KeyValueExpr); keyed {
+				if key, ok := pair.Key.(*ast.Ident); ok && s.info.Uses[key] != nil {
+					add(variable, s.info.Uses[key], pair.Value)
+				}
+			} else if i < fields.NumFields() {
+				add(variable, fields.Field(i), elt)
+			}
+		}
+	}
+	give := func(target, expr ast.Expr) {
+		switch target := ast.Unparen(target).(type) {
+		case *ast.Ident:
+			if variable := local(target); variable != nil {
+				literal(variable, expr)
+			}
+		case *ast.SelectorExpr:
+			x, ok := ast.Unparen(target.X).(*ast.Ident)
+			if selection := s.info.Selections[target]; ok && selection != nil && selection.Kind() == types.FieldVal {
+				if variable := local(x); variable != nil {
+					add(variable, selection.Obj(), expr)
+				}
+			}
+		}
+	}
+	pair := func(lhs, rhs []ast.Expr) {
+		for i, left := range lhs {
+			if len(lhs) == len(rhs) {
+				give(left, rhs[i])
+			} else if len(rhs) == 1 {
+				give(left, rhs[0])
+			}
+		}
+	}
+	for _, file := range s.files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				switch node := node.(type) {
+				case *ast.AssignStmt:
+					pair(node.Lhs, node.Rhs)
+				case *ast.ValueSpec:
+					lhs := make([]ast.Expr, len(node.Names))
+					for i, name := range node.Names {
+						lhs[i] = name
+					}
+					pair(lhs, node.Values)
+				}
+				return true
+			})
+		}
+	}
+	return given
+}
+
 // refusalTaint is every variable of the package a refusal's words reach, through assignments,
 // through the loops that range over them and through the parameters of the package's own
-// functions, since a helper can take the words as its parameter.
+// functions, since a helper can take the words as its parameter. It holds only a variable that
+// holds the words as its value (carriesText), and, of a variable whose words a field holds, that
+// field alone, within the function that declares the variable (fieldAssignments).
 type refusalTaint struct {
 	src *goSource
 	// fields is each field that holds a refusal's words, and methods the names of the methods and
 	// functions that return them.
 	fields  func(field *types.Var) bool
 	methods []string
-	tainted map[types.Object]bool
+	// answers is whether the error a call of a runtime.Conn method answers carries them, which its
+	// Error method returns, and answered each variable of type error that holds such an error
+	// (sendAnswer).
+	answers  bool
+	answered map[types.Object]bool
+	tainted  map[types.Object]bool
+	// taintedFields is each field of a variable the words reach.
+	taintedFields map[fieldOf]bool
 }
 
 // refusalWords is the taint of the words a refusal carries in the package. In this package they
 // are the Error of a late refusal and of a prompt result, the Err of a refused send, the send
-// error a delivery records, and whatever runtime.RefusalReason or a RefusalReason method returns.
-// In the stream and the bridge, which handle the frames themselves, they are every string field
-// named Error, Reason or Message — the words of Oh My Pi's response and of its prompt_result's
-// error, of a shim's own answer, and of the stream's events — and whatever a Reason or
-// RefusalReason method returns.
+// error a delivery records, what a claim's LastRefusal returns (the provider's words its turn
+// outcomes keep), the error a call of a runtime.Conn method answers (sendAnswer), and whatever
+// runtime.RefusalReason or a RefusalReason method returns. In the runtime, which reads the words
+// from a send's error, and in the stream and the bridge, which handle the frames themselves, they
+// are every string field named Error, Reason or Message — the words of Oh My Pi's response and of
+// its prompt_result's error, of a shim's own answer, and of the stream's events — and whatever a
+// Reason or RefusalReason method or runtime.RefusalReason returns.
 func (s *goSource) refusalWords(t *testing.T) *refusalTaint {
 	t.Helper()
-	taint := &refusalTaint{src: s, tainted: map[types.Object]bool{}}
+	taint := &refusalTaint{src: s, answered: map[types.Object]bool{}, tainted: map[types.Object]bool{}, taintedFields: map[fieldOf]bool{}}
 	if s.pkg.Path() == supervisePath {
 		fields := map[types.Object]bool{}
 		for _, field := range []struct{ typ, field string }{
@@ -536,7 +660,7 @@ func (s *goSource) refusalWords(t *testing.T) *refusalTaint {
 			fields[object] = true
 		}
 		taint.fields = func(field *types.Var) bool { return fields[field] }
-		taint.methods = []string{"RefusalReason"}
+		taint.methods, taint.answers = []string{"RefusalReason", "LastRefusal"}, true
 	} else {
 		taint.fields = func(field *types.Var) bool {
 			basic, ok := field.Type().Underlying().(*types.Basic)
@@ -548,24 +672,114 @@ func (s *goSource) refusalWords(t *testing.T) *refusalTaint {
 	return taint
 }
 
-// spread taints every variable that the package gives an expression the words reach
-// (assignments), until no more is.
+// spread taints every variable that holds a text (carriesText) and that the package gives an
+// expression the words reach (assignments), every field of a text that a function gives such an
+// expression within it (fieldAssignments), and marks each variable of type error it gives the
+// error a call of a runtime.Conn method answers (sendAnswer), until no more is.
 func (r *refusalTaint) spread() {
-	given := r.src.assignments()
+	given, fieldsGiven := r.src.assignments(), r.src.fieldAssignments()
 	for changed := true; changed; {
 		changed = false
 		for target, exprs := range given {
-			if r.tainted[target] {
-				continue
-			}
 			for _, expr := range exprs {
-				if r.reaches(expr) {
+				if !r.tainted[target] && carriesText(target.Type()) && r.reaches(expr) {
 					r.tainted[target], changed = true, true
-					break
+				}
+				if r.answers && !r.answered[target] && r.sendAnswer(target, expr) {
+					r.answered[target], changed = true, true
 				}
 			}
 		}
+		for target, exprs := range fieldsGiven {
+			if r.taintedFields[target] || !carriesText(target.field.Type()) {
+				continue
+			}
+			if slices.ContainsFunc(exprs, r.reaches) {
+				r.taintedFields[target], changed = true, true
+			}
+		}
 	}
+}
+
+// carriesText is whether a variable of typ holds a refusal's words as its value rather than in a
+// field: a string of any type, bytes or runes, a slice, an array or a map of texts, or an error,
+// whose Error method returns them. A struct built around the words holds every other field beside
+// them — the end a failure records (EndedWork) holds its cause, which can quote the provider, and
+// the kinds of work a report named — so the test follows the words into the field that holds them
+// and no other, within the function that writes it (fieldAssignments), or into a field
+// refusalWords names. An interface other than error, such as an Event, holds any of its kinds.
+func carriesText(typ types.Type) bool {
+	if types.Identical(typ, errorType) {
+		return true
+	}
+	switch under := typ.Underlying().(type) {
+	case *types.Basic:
+		return under.Info()&types.IsString != 0
+	case *types.Slice:
+		elem, ok := under.Elem().Underlying().(*types.Basic)
+		return ok && (elem.Kind() == types.Byte || elem.Kind() == types.Rune) || carriesText(under.Elem())
+	case *types.Array:
+		return carriesText(under.Elem())
+	case *types.Map:
+		return carriesText(under.Key()) || carriesText(under.Elem())
+	}
+	return false
+}
+
+// errorType is the predeclared error interface.
+var errorType = types.Universe.Lookup("error").Type()
+
+// sendAnswer is whether expr gives target the error a call of a runtime.Conn method answers — a
+// prompt send's, as the send goroutine holds it (Machine.startSend), an adoption's or a
+// compaction's — from the call itself or from another variable that holds it. A refusal carries
+// the agent's words in that error (runtime.RefusalReason), and its Error method returns them
+// (reaches). Only a target of type error holds it: of a call with several results, the others,
+// such as get_state's answer beside its error, carry no refusal; and a value built around the
+// error, such as the PromptRefused the send goroutine hands on, holds it in a field, which the
+// test follows where refusalWords names the field and nowhere else.
+func (r *refusalTaint) sendAnswer(target types.Object, expr ast.Expr) bool {
+	if !types.Identical(target.Type(), errorType) {
+		return false
+	}
+	switch expr := ast.Unparen(expr).(type) {
+	case *ast.Ident:
+		return r.answered[r.src.info.Uses[expr]]
+	case *ast.CallExpr:
+		fn := r.src.callee(expr)
+		return fn != nil && fn.Signature().Recv() != nil && isNamed(fn.Signature().Recv().Type(), runtimePath, "Conn")
+	}
+	return false
+}
+
+// busyHeld is every constant in the package's source that holds the Claude Code bridge's busy
+// words (busyHolders), in the order of its files, each with the declaration it stands in. The
+// bridge may hold them in its busy refusal (busyRefusal); no other package may hold them at all.
+func (s *goSource) busyHeld(t *testing.T, words string) []wordMatch {
+	t.Helper()
+	var allowed map[ast.Expr]bool
+	if s.pkg.Path() == claudebridgePath {
+		allowed = s.busyRefusal(s.bridgeBusyWords(t))
+	}
+	var found []wordMatch
+	for _, file := range s.files {
+		for _, decl := range file.Decls {
+			for _, held := range s.busyHolders(decl, words, allowed) {
+				found = append(found, wordMatch{at: held, in: s.declName(decl), what: "a constant holding the busy words"})
+			}
+		}
+	}
+	return found
+}
+
+// bridgeBusyWords is the constant the Claude Code bridge's source declares as its busy words
+// (claudebridge's busyWords).
+func (s *goSource) bridgeBusyWords(t *testing.T) *types.Const {
+	t.Helper()
+	busy, _ := s.pkg.Scope().Lookup("busyWords").(*types.Const)
+	if busy == nil || busy.Val().Kind() != constant.String || constant.StringVal(busy.Val()) == "" {
+		t.Fatal("internal/claudebridge declares no string constant busyWords, whose words this test holds every other site from holding")
+	}
+	return busy
 }
 
 // busyHolders is every constant expression in decl that holds the Claude Code bridge's busy words
@@ -664,7 +878,10 @@ func holdsBusyWords(value, words string) bool {
 	return false
 }
 
-// reaches is whether a refusal's words reach expr.
+// reaches is whether a refusal's words reach expr: a field that holds them (refusalWords), a
+// variable they reach, the field of a variable that holds them (fieldAssignments), a call of a
+// method or function that returns them, or a call of the Error method of an error a call of a
+// runtime.Conn method answered (sendAnswer).
 func (r *refusalTaint) reaches(expr ast.Expr) bool {
 	found := false
 	ast.Inspect(expr, func(node ast.Node) bool {
@@ -674,14 +891,23 @@ func (r *refusalTaint) reaches(expr ast.Expr) bool {
 				if field, ok := selection.Obj().(*types.Var); ok && r.fields(field) {
 					found = true
 				}
+				if x, ok := ast.Unparen(node.X).(*ast.Ident); ok && r.taintedFields[fieldOf{r.src.info.Uses[x], selection.Obj()}] {
+					found = true
+				}
 			}
 		case *ast.Ident:
 			if r.tainted[r.src.info.Uses[node]] {
 				found = true
 			}
 		case *ast.CallExpr:
-			if fn := r.src.callee(node); fn != nil && slices.Contains(r.methods, fn.Name()) {
+			fn := r.src.callee(node)
+			if fn != nil && slices.Contains(r.methods, fn.Name()) {
 				found = true
+			}
+			if selector, ok := ast.Unparen(node.Fun).(*ast.SelectorExpr); ok && fn != nil && fn.Name() == "Error" {
+				if answer, ok := ast.Unparen(selector.X).(*ast.Ident); ok && r.answered[r.src.info.Uses[answer]] {
+					found = true
+				}
 			}
 		}
 		return !found
@@ -689,10 +915,28 @@ func (r *refusalTaint) reaches(expr ast.Expr) bool {
 	return found
 }
 
-// wordMatch is one place a refusal's words are matched: at, and what the match is.
+// wordMatch is one place the source matches a refusal's words or holds the busy words: at, in the
+// declaration in, and what the match is.
 type wordMatch struct {
-	at   ast.Node
-	what string
+	at       ast.Node
+	in, what string
+}
+
+// refusalMatches is every match of a refusal's words in the package's source (matches), in the
+// order of its files, each with the declaration it stands in.
+func (s *goSource) refusalMatches(t *testing.T) []wordMatch {
+	t.Helper()
+	taint := s.refusalWords(t)
+	var found []wordMatch
+	for _, file := range s.files {
+		for _, decl := range file.Decls {
+			for _, match := range taint.matches(decl) {
+				match.in = s.declName(decl)
+				found = append(found, match)
+			}
+		}
+	}
+	return found
 }
 
 // textMatchers are the functions of packages strings and bytes that match one text against
@@ -708,20 +952,25 @@ var textMatchers = []string{
 	"SplitN", "SplitSeq",
 }
 
-// elementMatchers are the functions of packages slices and maps that compare one value with
-// another, by package: whether a list holds a text, where, and whether two lists or maps are
-// alike. They compare values of any type, so one compares a refusal's words only where it is
-// handed them as a text or among a list's or a map's texts (holdsText).
+// elementMatchers are the functions of packages slices, maps, cmp and sort that compare one value
+// with another, by package: whether a list holds a text, where, whether two lists or maps are
+// alike, and which of two values orders first. They compare values of any type, so one compares a
+// refusal's words only where it is handed them as a text or among a list's or a map's texts
+// (holdsText).
 var elementMatchers = map[string][]string{
 	"slices": {"BinarySearch", "BinarySearchFunc", "Compare", "CompareFunc", "Contains", "ContainsFunc", "Equal", "EqualFunc", "Index", "IndexFunc"},
 	"maps":   {"Equal", "EqualFunc"},
+	"cmp":    {"Compare", "Less"},
+	"sort":   {"SearchStrings"},
 }
 
 // textMatcher is whether fn matches one text against another: one of textMatchers in package
-// strings or package bytes, package regexp's Match functions, or a method of a regexp.Regexp that
-// matches a text, finds in it or splits it. errors.Is and errors.As are none: they compare an
-// error with another by identity or by type, which reads none of its words, as sendOutcome reads
-// the refusal a send returned.
+// strings or package bytes, package regexp's Match functions, a method of a regexp.Regexp that
+// matches a text, finds in it or splits it, the Match of package path or path/filepath, which
+// matches a text against a pattern, or fmt's Sscan, Sscanf or Sscanln, which read a text as the
+// values it spells. errors.Is and errors.As are none: they compare an error with another by
+// identity or by type, which reads none of its words, as sendOutcome reads the refusal a send
+// returned.
 func textMatcher(fn *types.Func) bool {
 	if fn == nil || fn.Pkg() == nil {
 		return false
@@ -732,6 +981,10 @@ func textMatcher(fn *types.Func) bool {
 		return !method && slices.Contains(textMatchers, fn.Name())
 	case "regexp":
 		return strings.HasPrefix(fn.Name(), "Match") || method && (strings.HasPrefix(fn.Name(), "Find") || fn.Name() == "Split")
+	case "path", "path/filepath":
+		return !method && fn.Name() == "Match"
+	case "fmt":
+		return !method && strings.HasPrefix(fn.Name(), "Sscan")
 	}
 	return false
 }
@@ -762,11 +1015,12 @@ func holdsText(typ types.Type) bool {
 // matches is every place in node that matches the words: a call of a text matcher (textMatcher)
 // with them among its arguments or as its receiver; a call of an element matcher
 // (elementMatcher) with them among its arguments as a text or among a list's or a map's texts;
-// a lookup in a map keyed by a text they reach, alone or comma-ok; and an == or !=, or a switch's
-// tag against a case, that compares a text they reach with anything but "" or nil. Asking
-// whether there are words at all reads none of them. A text is a plain string: a value of a
-// named type — an Outcome a call minted from a tainted error — is a member, which is compared by
-// design, and an error compared with == is compared by identity, which reads none of its words.
+// a lookup in a map keyed by a text they reach, alone or comma-ok; and an ==, a !=, an ordered
+// comparison (<, <=, > or >=), or a switch's tag against a case, that compares a text they reach
+// with anything but "" or nil. Asking whether there are words at all reads none of them. A text
+// is a plain string: a value of a named type — an Outcome a call minted from a tainted error — is
+// a member, which is compared by design, and an error compared with == is compared by identity,
+// which reads none of its words.
 func (r *refusalTaint) matches(node ast.Node) []wordMatch {
 	text := func(expr ast.Expr) bool {
 		basic, ok := r.src.info.Types[expr].Type.(*types.Basic)
@@ -808,8 +1062,11 @@ func (r *refusalTaint) matches(node ast.Node) []wordMatch {
 				}
 			}
 		case *ast.BinaryExpr:
-			if (node.Op == gotoken.EQL || node.Op == gotoken.NEQ) && compares(node.X, node.Y) {
-				found = append(found, wordMatch{at: node, what: "a comparison with " + node.Op.String()})
+			switch node.Op {
+			case gotoken.EQL, gotoken.NEQ, gotoken.LSS, gotoken.LEQ, gotoken.GTR, gotoken.GEQ:
+				if compares(node.X, node.Y) {
+					found = append(found, wordMatch{at: node, what: "a comparison with " + node.Op.String()})
+				}
 			}
 		case *ast.SwitchStmt:
 			if node.Tag == nil {
