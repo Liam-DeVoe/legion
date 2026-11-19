@@ -473,10 +473,10 @@ func (b *drainedBody) arriving() bool {
 // failure, the deadline's being the bound's. Every other failure - a chunked body whose framing
 // net/http cannot read, a connection that broke under a client still there - leaves that context
 // alone, and such a client is owed the answer its body never let the server give. As everywhere
-// a client gone is read (admission.WriteUnserved), only net/http's own cause, the plain
+// a client gone is read (accesslog.ClientLeft), only net/http's own cause, the plain
 // context.Canceled, is one: a context the server cancelled with a cause of its own is not.
 func (b *drainedBody) clientGone() bool {
-	return context.Cause(b.ctx) == context.Canceled && !errors.Is(b.failure, os.ErrDeadlineExceeded)
+	return accesslog.ClientLeft(b.ctx) && !errors.Is(b.failure, os.ErrDeadlineExceeded)
 }
 
 func (b *drainedBody) Read(p []byte) (int, error) {

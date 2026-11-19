@@ -644,16 +644,17 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// waiting on this load the load's error, so a read the joiner's own end cut short - its browser
 	// left, or the server ended its request - failed every other join with it. The reads run
 	// detached from that end, keeping ctx's values, under the bound a cold read's fold of the same
-	// history runs under (coldReadTimeout), and each acquire under the rooms pool's own bound.
+	// history runs under (coldReadTimeout), and each acquire under the rooms pool's own bound. A
+	// read that bound ends fails the load as one a bound of this server's ended (loadReadFailed).
 	reads := ctx
 	if !admitted || checked == nil {
 		var cancel context.CancelFunc
-		reads, cancel = context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
+		reads, cancel = context.WithTimeoutCause(context.WithoutCancel(ctx), coldReadTimeout, errLoadReadsBound)
 		defer cancel()
 	}
 	if !admitted {
 		if issue, err = s.readIssue(reads, rooms, room); err != nil {
-			return err
+			return loadReadFailed(reads, err)
 		}
 	}
 	// The load takes no advisory lock, which a durable writer can hold for as long as its
@@ -666,7 +667,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	} else {
 		settlement.mark = s.markEditSource(room)
 		if settlement.owed, settlement.lastActor, err = readOwedSettlement(reads, rooms, room); err != nil {
-			return err
+			return loadReadFailed(reads, err)
 		}
 	}
 	mark, owed, lastActor := settlement.mark, settlement.owed, settlement.lastActor
@@ -838,6 +839,22 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	})
 	resident = true
 	return nil
+}
+
+// errLoadReadsBound is the cause a room's load's reads end with when their bound, a cold read's
+// (coldReadTimeout), passes before the database answered them (onLoadDocument), and what that
+// load's failure wraps (loadReadFailed): a bound of this server's own, which says nothing of the
+// document, so a socket whose join met it is refused as one whose load found a pool busy is
+// (socketAnswerWriter.refuseFailedLoad).
+var errLoadReadsBound = errors.New("the room's load ran out its reads' bound")
+
+// loadReadFailed is err, the failure of a read a room's load made on reads, wrapping
+// errLoadReadsBound where reads' own bound ended it.
+func loadReadFailed(reads context.Context, err error) error {
+	if errors.Is(context.Cause(reads), errLoadReadsBound) {
+		return fmt.Errorf("%w: %w", errLoadReadsBound, err)
+	}
+	return err
 }
 
 // onPeerUpdate stores what a peer's update parked, once ygo has applied it. ygo hands the room's

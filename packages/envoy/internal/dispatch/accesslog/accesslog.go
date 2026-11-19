@@ -217,6 +217,16 @@ func ClientGone(ctx context.Context) {
 	rec.mu.Unlock()
 }
 
+// ClientLeft reports whether ctx, a request's context, ended because its client went away:
+// net/http ends a request's context with the plain context.Canceled, a cause of none, when its
+// client leaves. A context the server ended with a cause of its own - a heartbeat that found the
+// caller no longer resolves, a refusal of the units a request asked back - is no client gone: that
+// client is still there and is owed an answer. Every layer that answers a client gone with nothing
+// asks this, and records the line's 499 with ClientGone.
+func ClientLeft(ctx context.Context) bool {
+	return context.Cause(ctx) == context.Canceled
+}
+
 func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration, aborted bool) {
 	rec.mu.Lock()
 	kind, id, credential, clientGone := rec.kind, rec.id, rec.credential, rec.clientGone

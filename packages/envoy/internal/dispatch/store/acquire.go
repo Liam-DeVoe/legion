@@ -316,9 +316,24 @@ func outcomeUnknown(err error) bool {
 // DatabaseStalled, ConnectionLost and IsStatementOutcomeUnknown instead (admission.WriteUnserved,
 // api.writeHandlerError): a client may repeat a request, where a pass only runs again. A
 // connection that ended under a pass's call is not this, even where poolBusy names it
-// ErrStatementOutcomeUnknown (connectionLost): it stays a failure of the pass, as it always was.
+// ErrStatementOutcomeUnknown (connectionLost): it stays a failure of the pass, as it always was. A
+// caller of a read, which a lost connection leaves with nothing done, asks UnservedRead instead.
 func Unserved(ctx context.Context, err error) bool {
 	return IsPoolBusy(err) || stalled(ctx, err)
+}
+
+// UnservedRead reports whether err is a read the database did not serve: any call Unserved
+// reports, and a connection that ended under the read (connectionLost), before it was sent or
+// after it reached the database, where poolBusy names it ErrStatementOutcomeUnknown. A read commits
+// nothing, so a statement of it whose answer never came leaves no outcome unknown: it is only a
+// read not made, as one a busy pool refused is, and the next connection makes it.
+//
+// It is for a caller whose answer turns on what a read found, and which must not answer a read it
+// could not make as one that found nothing: the read of a sign-in's session, which a 401 would
+// answer as a person signed out (docs.Service.ServeHTTP) and a heartbeat's check as a socket to
+// close at once (api's transientCheckFailure).
+func UnservedRead(ctx context.Context, err error) bool {
+	return Unserved(ctx, err) || connectionLost(err)
 }
 
 // outcome is what the call poolBusy maps an error for can have left behind at the database if it

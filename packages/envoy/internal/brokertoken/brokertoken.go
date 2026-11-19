@@ -262,7 +262,7 @@ type Verifier struct {
 	flight    singleflight.Group
 	now       func() time.Time
 
-	// servesReadOnly is Options.ServesReadOnly: whether live lets a read-only answer through.
+	// servesReadOnly is Options.ServesReadOnly: whether Live lets a read-only answer through.
 	servesReadOnly bool
 }
 
@@ -349,60 +349,61 @@ func Presented(r *http.Request) (string, bool) {
 	return token, true
 }
 
-// Verify decides the caller of r. It asks the broker what the presented token is — answering an
-// affirmative answer from its cache while that answer is good — and then holds the caller to the
-// key that token is bound to, through the library's own RFC 9449 resource check.
+// Verify decides the caller of r: the broker's answer about the token r presents (Live), and r's
+// proof held to the key that answer binds the token to (Prove).
 //
 // Its error is one of the sentinels above, and the Caller it answers is only ever one the broker
 // called live and whose proof verified.
 func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) {
-	token, answer, shape, err := v.live(ctx, r)
+	live, err := v.Live(ctx, r)
 	if err != nil {
 		return Caller{}, err
 	}
-	signed := v.atOrigin(r)
-	if _, err := v.strategy.ValidateResourceAccess(ctx, signed, token, answer.Thumbprint, false); err != nil {
-		return Caller{}, v.refused(err, signed, answer.Thumbprint)
-	}
-	return callerOf(answer, shape), nil
+	return v.Prove(ctx, r, live)
 }
 
-// Live is Verify without the proof check: the broker's answer alone, cached or fresh.
+// LiveToken is a token the broker answered live, as Live found it for one request: who it names
+// (Caller), and what Prove holds that request's proof to, the token itself and the key the broker
+// bound it to. It carries the token, so it stays with the request it was found for and is never
+// logged, stored or answered.
+type LiveToken struct {
+	token  string
+	answer Introspection
+	// shape is shapeOf's verdict on answer, which Live reached and callerOf marks the Caller by,
+	// so an answer is read once for a request.
+	shape tokenShape
+}
+
+// Caller is who the token names (callerOf); the zero LiveToken names nobody.
+func (l LiveToken) Caller() Caller { return callerOf(l.answer, l.shape) }
+
+// Live is Verify without the proof check: the broker's answer about the token r presents, cached
+// or fresh (known), held to a token that is live, bound to a key, issued for acting as a session,
+// and of a shape this verifier serves (shapeOf). Verify reads the answer through here, so an open
+// connection's heartbeat is held to the same rule as the request that opened it, the read-only
+// switch included.
 //
 // It is for a connection that outlives the request that opened it and whose caller has to keep
 // resolving while it is open — a websocket Dispatch re-resolves on every heartbeat
 // (api.whileCallerResolves) — where the opening request's proof already authenticated the
 // caller. A proof is single use by its 'jti' and 'htu', so presenting that one again is a replay
 // and would close a sound connection; what is left to ask of an open connection is whether the
-// token is still live, which is this. Nothing admits a caller through it.
-func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
-	_, answer, shape, err := v.live(ctx, r)
-	if err != nil {
-		return Caller{}, err
-	}
-	return callerOf(answer, shape), nil
-}
-
-// live is the broker's half of both checks: the token r presents, an answer saying it is live,
-// bound to a key, issued for acting as a session, and of a shape this verifier serves, and that
-// shape (shapeOf). Verify and Live both read the answer through here, so an open connection's
-// heartbeat is held to the same rule as the request that opened it, the read-only switch
-// included. The shape is handed back because callerOf marks its Caller by it, and shapeOf then
-// reads an answer once for a request rather than once here and once there.
-func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspection, tokenShape, error) {
+// token is still live, which is this. Nothing admits a caller through it alone. It is also the
+// first half of a decision that does something else before it checks the proof (Prove).
+func (v *Verifier) Live(ctx context.Context, r *http.Request) (LiveToken, error) {
 	token, ok := Presented(r)
 	if !ok {
-		return "", Introspection{}, shapeNotASession, ErrNotPresented
+		return LiveToken{}, ErrNotPresented
 	}
 	answer, err := v.known(ctx, r, token)
 	if err != nil {
-		return "", Introspection{}, shapeNotASession, err
+		return LiveToken{}, err
 	}
 	if !answer.Active {
-		return "", Introspection{}, shapeNotASession, ErrNotActive
+		return LiveToken{}, ErrNotActive
 	}
 	if answer.Thumbprint == "" {
-		return "", Introspection{}, shapeNotASession, ErrKeyMismatch
+		return LiveToken{}, ErrKeyMismatch
 	}
 	// A token names a person or a service: an exchange decided one of the two for every token
 	// issued for acting as a session, and one that names neither is no session's credential
@@ -424,9 +425,30 @@ func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspec
 		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
 		(answer.Person == "" && len(answer.Projects) > 0) ||
 		oauthwire.ValidProjects(answer.Projects) != nil {
-		return "", Introspection{}, shapeNotASession, ErrNotASession
+		return LiveToken{}, ErrNotASession
 	}
-	return token, answer, shape, nil
+	return LiveToken{token: token, answer: answer, shape: shape}, nil
+}
+
+// Prove holds r's proof to live, the broker's answer about the token r presents (Live), through
+// the library's own RFC 9449 resource check, and answers the caller live names. It asks the broker
+// nothing, so a decision that asks Live, does something else and then checks the proof asks the
+// broker once however long it took, whether or not the answer's cache entry (AffirmativeCacheTTL)
+// ended meanwhile: Dispatch waits for a place of its request pool between the two, and checks the
+// proof and writes its row under that place (api's decidedBrokerToken). The answer it holds the
+// proof to is then as old as that wait has made it, past the cache's own window.
+//
+// live must be Live's answer for r: a request that presents no token, or another one, is
+// ErrNotPresented.
+func (v *Verifier) Prove(ctx context.Context, r *http.Request, live LiveToken) (Caller, error) {
+	if token, presented := Presented(r); !presented || token != live.token {
+		return Caller{}, ErrNotPresented
+	}
+	signed := v.atOrigin(r)
+	if _, err := v.strategy.ValidateResourceAccess(ctx, signed, live.token, live.answer.Thumbprint, false); err != nil {
+		return Caller{}, v.refused(err, signed, live.answer.Thumbprint)
+	}
+	return live.Caller(), nil
 }
 
 // tokenShape is what an answer's project scope and its OAuth scope together make of a token

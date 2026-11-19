@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	gws "github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
@@ -539,6 +540,63 @@ func TestASocketWaitingOnALoadAfterItsRoomRecordWasHandedOverIsRefused503(t *tes
 	}
 }
 
+// A socket whose room's load runs past its reads' own bound, a cold read's (coldReadTimeout),
+// before the database answers them is refused 503 with Retry-After and a WARN line naming the
+// bound's class, as a socket whose load found a pool busy is, where it kept ygo's 500 "room
+// unavailable": the bound is this server's own and says nothing of the document
+// (errLoadReadsBound). The socket's preload is taken away, so its load reads the document's
+// pending-settlement row itself, under that bound (onLoadDocument), and every rooms-pool
+// connection is taken as the load decodes the history, with the pool's acquire bound a minute,
+// so the reads' bound, shortened to a second, is what ends that read.
+func TestASocketWhoseRoomLoadRunsPastItsReadsBoundIsRefused503(t *testing.T) {
+	logs := captureWarnings(t)
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	service.store.Pool.SetAcquireBoundForTest(store.RoomsPool, time.Minute)
+	previous := coldReadTimeout
+	coldReadTimeout = time.Second
+	t.Cleanup(func() { coldReadTimeout = previous })
+	artifactID := createDocuments(t, database, 1)[0]
+	var offered atomic.Bool
+	service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {
+		if room == artifactID && !offered.Swap(true) {
+			service.preloads.Delete(room)
+		}
+	}
+	holds := make(chan heldRoomsPool, 1)
+	t.Cleanup(func() { releaseHeldRoomsPool(holds) })
+	var decoding atomic.Bool
+	service.bootstrapping = func(room string, _ []byte) {
+		if room == artifactID && !decoding.Swap(true) {
+			holds <- takeTheRoomsPool(t, service)
+		}
+	}
+
+	answer := <-answerSocketAsync(server.URL, artifactID)
+	if answer.err != nil {
+		t.Fatal(answer.err)
+	}
+	if !offered.Load() || !decoding.Load() {
+		t.Fatal("the socket's preload was never taken away or its room never decoded, so its load read nothing under its reads' bound")
+	}
+	t.Logf("the socket's handshake was answered %d %q", answer.status, answer.body)
+	if answer.status != http.StatusServiceUnavailable {
+		t.Fatalf("a socket whose room's load ran past its reads' bound was answered %d %q, want 503", answer.status, answer.body)
+	}
+	if answer.retryAfter != admission.RetryAfter {
+		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
+	}
+	line := logs.Lines("a document socket was refused")
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
+	}
+	for _, want := range []string{"its room could not load", "room=" + artifactID, "pool=" + store.RoomsPool, "error=deadline_passed"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the refused socket's line %q does not carry %q", line, want)
+		}
+	}
+}
+
 // A socket whose read of its document's issue fails is refused by its admission, 503 with
 // Retry-After and a WARN line naming the read and the pool, unless the document is not there,
 // which alone is 404 "document not found": a busy request pool told a browser that the document it
@@ -785,6 +843,62 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	}
 }
 
+// A socket whose request presents no sign-in the identity service could resolve - no cookie, or a
+// cookie whose signature does not verify - is refused 401 at once and takes no place of the
+// request pool's share outside admission (identity.Presents): nothing it could read would admit
+// it. Every place is held as it arrives, so a socket that asked for one would wait its second and
+// be refused 503 for want of a place, as such a socket was before its cookie was checked first.
+func TestASocketPresentingNoSignInIsRefused401BeforeItTakesAPlace(t *testing.T) {
+	database := storetest.Open(t)
+	outside := admission.New(admission.DefaultLimits()).Outside()
+	deps := testServiceDeps(database)
+	deps.Settle = time.Hour
+	deps.Outside = outside
+	deps.Identity = identity.CookieIdentity{SigningKey: testSigningKey, Sessions: store.NewPgSessionStore(database.Pool)}
+	service := New(deps)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	server := newTestServer(t, service)
+	artifactID := createDocuments(t, database, 1)[0]
+	for range admission.OutsideLimit {
+		if err := outside.Take(context.Background(), admission.HeartbeatCheck); err != nil {
+			t.Fatalf("take a place outside admission: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		for range admission.OutsideLimit {
+			outside.Release()
+		}
+	})
+	forged, _, _ := strings.Cut(auth.IssueSessionCookie("ada.lovelace@example.com", 1, auth.SingleSigningKey("another-deployments-key"), false), ";")
+
+	for _, row := range []struct {
+		name   string
+		header http.Header
+	}{
+		{"no cookie", nil},
+		{"a cookie another key signed", http.Header{"Cookie": []string{forged}}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			dialer := gws.Dialer{HandshakeTimeout: time.Minute}
+			connection, response, err := dialer.Dial(socketURL(server.URL, artifactID), row.header)
+			if connection != nil {
+				_ = connection.Close()
+			}
+			if response == nil || response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("a socket presenting %s with every place held was answered %v (%v), want 401", row.name, response, err)
+			}
+		})
+	}
+	if stats := outside.Stats(); stats.MaxQueued != 0 || stats.Refused[admission.SocketAdmission] != (admission.OutsideRefusals{}) {
+		t.Errorf("sockets presenting no sign-in waited for a place (the longest queue %d) and were refused %+v, want neither: they take none",
+			stats.MaxQueued, stats.Refused[admission.SocketAdmission])
+	}
+}
+
 // A socket whose read of its caller's session finds the request pool busy is refused by its
 // admission, 503 with Retry-After and a WARN line naming the read and the pool, where it was 401
 // "unauthorized": a busy pool told a signed-in browser that it was not signed in. A caller the read
@@ -834,6 +948,58 @@ func TestASocketWhoseSessionReadFindsTheRequestPoolBusyIsRefused503(t *testing.T
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
 	for _, want := range []string{"its caller's session could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, "error=pool_busy"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the refused socket's line %q does not carry %q", line, want)
+		}
+	}
+}
+
+// lostSessionIdentity resolves no caller: its read of the caller's session loses its connection
+// under it, and fails as the store names such a read - a statement the request pool ran outside a
+// transaction, whose session Postgres ended after it was sent (store.ErrStatementOutcomeUnknown).
+type lostSessionIdentity struct{}
+
+func (lostSessionIdentity) Login(*http.Request) (string, error) {
+	ended := &pgconn.PgError{Severity: "FATAL", SeverityUnlocalized: "FATAL", Code: "57P01", Message: "terminating connection due to administrator command"}
+	return "", fmt.Errorf("read session generation: %s pool: %w: the connection ended under it: %w", store.RequestsPool, store.ErrStatementOutcomeUnknown, ended)
+}
+
+// A socket whose read of its caller's session loses its connection under it is refused by its
+// admission, 503 with Retry-After and a WARN line naming the read, the pool and the lost
+// connection, where it was 401 "unauthorized": the read commits nothing, so a read that lost its
+// connection says nothing of whether the caller is signed in (store.UnservedRead), though the
+// store names a statement outside a transaction whose answer never came an outcome nobody knows.
+func TestASocketWhoseSessionReadLosesItsConnectionIsRefused503(t *testing.T) {
+	logs := captureWarnings(t)
+	database := storetest.Open(t)
+	deps := testServiceDeps(database)
+	deps.Settle = time.Hour
+	deps.Identity = lostSessionIdentity{}
+	service := New(deps)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	server := newTestServer(t, service)
+	artifactID := createDocuments(t, database, 1)[0]
+
+	answer := <-answerSocketAsync(server.URL, artifactID)
+	if answer.err != nil {
+		t.Fatal(answer.err)
+	}
+	t.Logf("the socket's handshake was answered %d %q", answer.status, answer.body)
+	if answer.status != http.StatusServiceUnavailable {
+		t.Fatalf("a socket whose session read lost its connection was answered %d %q, want 503", answer.status, answer.body)
+	}
+	if answer.retryAfter != admission.RetryAfter {
+		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
+	}
+	line := logs.Lines("a document socket was refused")
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
+	}
+	for _, want := range []string{"its caller's session could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, "error=connection_lost"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refused socket's line %q does not carry %q", line, want)
 		}

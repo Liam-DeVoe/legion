@@ -27,6 +27,25 @@ type Identity interface {
 	Login(r *http.Request) (email string, err error)
 }
 
+// Presents reports whether r presents a credential i could resolve at all, judged on r alone with
+// nothing read: a session cookie signed with one of a CookieIdentity's keys
+// (auth.SessionFromRequest), a HeaderIdentity's header, and nothing on a server nobody signs in to
+// (NoBrowserIdentity). Login refuses every other request ErrNoIdentity before it reads anything, so
+// work that holds what it resolves the caller under - a document socket's place of the request
+// pool's share outside admission (docs.Service.ServeHTTP) - asks this first, and a request that
+// can only be refused costs none of it. An Identity of another kind cannot say, and is answered
+// true: its Login decides.
+func Presents(i Identity, r *http.Request) bool {
+	p, ok := i.(presenter)
+	return !ok || p.presents(r)
+}
+
+// presenter is an Identity that can tell from a request alone whether it presents a credential
+// the Identity could resolve at all (Presents).
+type presenter interface {
+	presents(r *http.Request) bool
+}
+
 // CookieIdentity resolves a signed Dispatch session cookie, signed with any key of SigningKey.
 type CookieIdentity struct {
 	SigningKey auth.SigningKeys
@@ -68,6 +87,13 @@ func (i CookieIdentity) Login(r *http.Request) (string, error) {
 	return session.Login, nil
 }
 
+// presents is whether r carries a session cookie signed with one of i's keys, which Login reads
+// before anything else and refuses ErrNoIdentity without.
+func (i CookieIdentity) presents(r *http.Request) bool {
+	_, signed := auth.SessionFromRequest(r, i.SigningKey)
+	return signed && i.Sessions != nil
+}
+
 // HeaderIdentity resolves the person a test or local harness names in Header, by email. Every
 // person it resolves is recorded as having signed in.
 type HeaderIdentity struct {
@@ -87,6 +113,11 @@ func (i HeaderIdentity) Login(r *http.Request) (string, error) {
 	return email, nil
 }
 
+// presents is whether r carries i's header, which Login refuses ErrNoIdentity without.
+func (i HeaderIdentity) presents(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get(i.Header)) != ""
+}
+
 // NoBrowserIdentity is the identity of a cookie server with no sign-in configured: nobody can sign
 // in there, and a cookie minted while sign-in was on must not outlive that configuration, since
 // the key signing it is the deployment's and lives on. Every request that needs a person is
@@ -97,6 +128,9 @@ type NoBrowserIdentity struct{}
 func (NoBrowserIdentity) Login(*http.Request) (string, error) {
 	return "", ErrNoIdentity
 }
+
+// presents is false: no request presents a person on a server nobody signs in to.
+func (NoBrowserIdentity) presents(*http.Request) bool { return false }
 
 // signInUnavailableMessage is what WriteError answers, with the code SIGNIN_UNAVAILABLE, a request
 // that needs the sign-in issuer while the issuer cannot be reached.

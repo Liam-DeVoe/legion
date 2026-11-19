@@ -233,6 +233,43 @@ func TestAnEarlyAnswerToAnUploadReachesAClientThatSendsItsWholeBodyFirst(t *test
 	}
 }
 
+// A DPoP write refused a place of the request pool's share outside admission reaches, over a real
+// connection, a client that sends its whole body before it reads, as WebKit and Firefox send an
+// upload, as admission's 429 OVERLOADED: the broker token's decision is made inside the drain
+// (routeHandler), so its refusal waits for the body as every other early answer does
+// (drainBeforeAnswer). Made outside it, the refusal was written with 24 MiB of the body unread,
+// and net/http closed the connection under the client still sending it. Every place of the share
+// is held, so the decision waits its second for one and is refused.
+func TestADPoPWriteRefusedAPlaceReachesAClientThatSendsItsWholeBodyFirst(t *testing.T) {
+	limiter := admission.New(admission.DefaultLimits())
+	rig := newBrokerTokenRigOn(t, testServerOptions{admission: limiter})
+	served := httptest.NewServer(rig.handler)
+	t.Cleanup(served.Close)
+	caller := newBrokerCaller(t)
+	const token = "a-token-uploading-while-the-share-is-held"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	t.Cleanup(holdTheShareOutsideAdmission(t, limiter.Outside()))
+
+	body, bodyType, err := apitest.MultipartUpload(map[string]string{"name": "big.bin"}, "big.bin",
+		"application/octet-stream", bytes.Repeat([]byte("a"), 24<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const target = "/api/v1/issues/TEST-1/artifacts"
+	signed := caller.caller.Signed(t, http.MethodPost, testServerURL+target, token)
+	header := http.Header{}
+	header.Set("Content-Type", bodyType)
+	header.Set("Authorization", signed.Header.Get("Authorization"))
+	header.Set("DPoP", signed.Header.Get("DPoP"))
+	response, answer := sendWholeBodyThenRead(t, served.Listener.Addr().String(), target, header, body.Bytes())
+	if response.StatusCode != http.StatusTooManyRequests || refusalCode(answer) != admission.CodeOverloaded || response.Header.Get("Retry-After") != admission.RetryAfter {
+		t.Fatalf("status=%d Retry-After=%q body=%q, want admission's 429 %s with Retry-After %s", response.StatusCode, response.Header.Get("Retry-After"), answer, admission.CodeOverloaded, admission.RetryAfter)
+	}
+	if refused := limiter.Outside().Stats().Refused[admission.DPoPDecision]; refused != (admission.OutsideRefusals{WaitExceeded: 1}) {
+		t.Errorf("DPoP decisions refused %+v, want the one whose wait ran out", refused)
+	}
+}
+
 // endlessBody is a request body of n bytes that holds none of them in memory.
 func endlessBody(n int64) *countingBody {
 	return &countingBody{Reader: io.LimitReader(repeatedByte('a'), n)}

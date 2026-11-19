@@ -214,7 +214,7 @@ func unserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 	case DeadlinePassed(ctx):
 		slog.Debug("dispatch: read ran past its deadline", "error", err)
 		writeRetryable(w, http.StatusServiceUnavailable, CodeRequestTimeout, "the read ran past its deadline; retry after Retry-After")
-	case context.Cause(ctx) == context.Canceled:
+	case accesslog.ClientLeft(ctx):
 		slog.Debug("dispatch: request's client went away", "error", err)
 		accesslog.ClientGone(ctx)
 	case store.IsPoolBusy(err), store.IsPoolBusy(context.Cause(ctx)), store.DatabaseStalled(ctx, err), store.ConnectionLost(err):

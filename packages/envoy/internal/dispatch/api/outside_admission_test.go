@@ -17,6 +17,7 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
@@ -36,6 +37,13 @@ var (
 	checkHangs checkStep = func(r *http.Request) error {
 		<-r.Context().Done()
 		return fmt.Errorf("read the caller's session: %w", r.Context().Err())
+	}
+	// checkLosesItsConnection is a check whose read of the caller's session lost its connection
+	// under it, as the store names such a read: a statement the pool ran outside a transaction,
+	// whose session Postgres ended after it was sent (store.ErrStatementOutcomeUnknown).
+	checkLosesItsConnection checkStep = func(*http.Request) error {
+		ended := &pgconn.PgError{Severity: "FATAL", SeverityUnlocalized: "FATAL", Code: "57P01", Message: "terminating connection due to administrator command"}
+		return fmt.Errorf("read the caller's session: %s pool: %w: the connection ended under it: %w", store.RequestsPool, store.ErrStatementOutcomeUnknown, ended)
 	}
 	// checkResolves is a check that finds the caller still signed in.
 	checkResolves checkStep = func(*http.Request) error { return nil }
@@ -61,18 +69,18 @@ func (i *scriptedCheckIdentity) Login(r *http.Request) (string, error) {
 }
 
 // A socket's heartbeat outlives a check that fails for a transient reason - the pool busy, the
-// check's own bound passing, or the request pool's share outside admission having no place for it,
-// so that it is not made - and checks again at the next heartbeat, and the third such failure in a
-// row closes the socket as one whose caller no longer resolves, with that failure as its cause. A
-// skipped check counts toward those three as the other two do, so a socket whose checks find no
-// place three heartbeats running closes though no check was made, and a check that resolves the
-// caller, alone, starts the count again. A refusal closes the socket at once, whatever came before
-// it. The checks are the document socket's own (signInStillResolves), each answered as the script
-// says, on a connection whose handler waits for its context to end; no check is made after the one
-// that closes it.
+// connection lost under the check's read (store.UnservedRead), the check's own bound passing, or
+// the request pool's share outside admission having no place for it, so that it is not made - and
+// checks again at the next heartbeat, and the third such failure in a row closes the socket as one
+// whose caller no longer resolves, with that failure as its cause. A skipped check counts toward
+// those three as the others do, so a socket whose checks find no place three heartbeats running
+// closes though no check was made, and a check that resolves the caller, alone, starts the count
+// again. A refusal closes the socket at once, whatever came before it. The checks are the document
+// socket's own (signInStillResolves), each answered as the script says, on a connection whose
+// handler waits for its context to end; no check is made after the one that closes it.
 func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T) {
 	const heartbeat = 100 * time.Millisecond
-	busy, hangs, resolves, refuses := checkFindsPoolBusy, checkHangs, checkResolves, checkRefuses
+	busy, lost, hangs, resolves, refuses := checkFindsPoolBusy, checkLosesItsConnection, checkHangs, checkResolves, checkRefuses
 	for _, run := range []struct {
 		name  string
 		steps []checkStep
@@ -87,6 +95,8 @@ func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T)
 	}{
 		{"a busy pool at three heartbeats in a row", []checkStep{busy, busy, busy}, nil, 3, store.ErrPoolBusy, 3},
 		{"a check running out its bound at three heartbeats in a row", []checkStep{hangs, hangs, hangs}, nil, 3, errHeartbeatCheckBound, 3},
+		{"a connection lost under the read at three heartbeats in a row", []checkStep{lost, lost, lost}, nil, 3, store.ErrStatementOutcomeUnknown, 3},
+		{"a resolution after a lost connection and a busy pool", []checkStep{lost, busy, resolves, lost, busy, lost}, nil, 6, store.ErrStatementOutcomeUnknown, 5},
 		{"a resolution between transient failures", []checkStep{busy, hangs, resolves, busy, busy, busy}, nil, 6, store.ErrPoolBusy, 5},
 		{"a skipped check between two busy pools", []checkStep{busy, busy}, []int{2}, 2, store.ErrPoolBusy, 3},
 		{"every check skipped at three heartbeats in a row", nil, []int{1, 2, 3}, 0, errHeartbeatCheckSkipped, 3},
@@ -378,6 +388,48 @@ func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T)
 	}
 	if counted := limiter.Outside().Stats().Refused[admission.DPoPDecision]; counted.QueueFull+counted.WaitExceeded != uint64(refused) {
 		t.Errorf("%d presentations refused 429 once the broker answered, and the share counted %+v DPoP decisions refused", refused, counted)
+	}
+}
+
+// A DPoP presentation's decision asks the broker about its token once, and never under the place
+// it takes of the request pool's share outside admission: its proof is checked against the answer
+// the broker gave before the decision waited for that place (decidedBrokerToken,
+// brokertoken.Verifier.Prove). Every place is held as the presentation arrives, the verifier's
+// clock moves past the answer's cache entry (brokertoken.AffirmativeCacheTTL) while the decision
+// waits, and a place is given back: the presentation is served, and the broker was asked once,
+// where the proof's check asked it again, under the place, for the answer the cache no longer held.
+func TestADPoPDecisionAsksTheBrokerOnceHoweverLongItWaitsForAPlace(t *testing.T) {
+	limiter := admission.New(admission.DefaultLimits())
+	var ahead atomic.Int64
+	rig := newBrokerTokenRigOn(t, testServerOptions{admission: limiter}, func(options *brokertoken.Options) {
+		options.Now = func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }
+	})
+	caller := newBrokerCaller(t)
+	const token = "a-token-whose-answer-expires-while-its-decision-waits"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	release := holdTheShareOutsideAdmission(t, limiter.Outside())
+	t.Cleanup(release)
+
+	request := caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- rig.serve(request) }()
+	pollUntil(t, 10*time.Second, "the presentation's decision waiting for a place", func() bool {
+		return limiter.Outside().Stats().Queued == 1
+	})
+	ahead.Store(int64(brokertoken.AffirmativeCacheTTL + time.Second))
+	release()
+
+	var response *httptest.ResponseRecorder
+	select {
+	case response = <-answered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the presentation was never answered once a place came free")
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("the presentation a place came free for: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	if asked := rig.broker.Count(); asked != 1 {
+		t.Errorf("the broker was asked about the token %d times, want once: the proof is checked against the answer the decision had before it waited", asked)
 	}
 }
 

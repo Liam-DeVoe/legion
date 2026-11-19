@@ -901,11 +901,11 @@ const defaultReadDeadline = 20 * time.Second
 // replaced (read_only_token_test.go, which walks the whole table so) build the same chain.
 // limiter is what every row but a test hook and a stream is admitted by, and deadline what bounds
 // every read but a download (Deps.Admission, Deps.ReadDeadline, register). Its layers, outermost
-// first: the access log, the compression of its answer (compressAnswers), the broker token's
-// decision (decideBrokerToken), the transaction tracking, the drain a write's early answer waits
-// behind, admission, a read's deadline and pinned connection, the Vary every answer carries
-// (varyOnDisplayTrees), the read-only gate (refuseReadOnlyToken), the row's OAuth scopes, the
-// parameter refusal every route has, the id prefixes a path carries short, the changed-login
+// first: the access log, the compression of its answer (compressAnswers), the transaction
+// tracking, the drain a write's early answer waits behind, the broker token's decision
+// (decideBrokerToken), admission, a read's deadline and pinned connection, the Vary every answer
+// carries (varyOnDisplayTrees), the read-only gate (refuseReadOnlyToken), the row's OAuth scopes,
+// the parameter refusal every route has, the id prefixes a path carries short, the changed-login
 // check, the signed-in person a write needs, a write's project and session scope, an upload's
 // closed-issue refusal, and the keyed layer.
 //
@@ -922,7 +922,8 @@ const defaultReadDeadline = 20 * time.Second
 // (apiRoute.Streams), which its reader holds open for the run behind it. The broker token's
 // decision is outside admission too, and writes on the request pool, so it takes a place of that
 // pool's share admission leaves instead, waiting up to a second for one, and is refused
-// admission's own 429 where it is refused one (decideBrokerToken, admission.Outside).
+// admission's own 429 where it is refused one (decideBrokerToken, admission.Outside); it is inside
+// the drain, so that 429 waits for the body as admission's own does.
 func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadline time.Duration) http.HandlerFunc {
 	handler := route.Handler
 	if keyedMethod(route.Method) {
@@ -1004,9 +1005,12 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 			handler = admitted(limiter, route.Weight, route.Lane, handler)
 		}
 	}
+	// Outside admission, which it comes before, and inside the drain, so its refusal for room
+	// waits for a write's body as admission's own does (decideBrokerToken).
+	handler = s.decideBrokerToken(handler)
 	if !admission.Reads(route.Method) {
-		// Every layer below may answer before the body is read - admission's refusal included;
-		// the answer waits for the body.
+		// Every layer below may answer before the body is read - the broker token's refusal and
+		// admission's included; the answer waits for the body.
 		//
 		// A client that asked to be told to continue before it sends its body (Expect:
 		// 100-continue) and is answered early sends none of it, and its connection closes after
@@ -1028,7 +1032,7 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 	// on the wire. The two websockets register mounts beside the table carry no compressed
 	// answer: the upgrade is not a body, and the frames after it are the socket's
 	// (compressAnswers).
-	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	return accesslog.HandlerFunc(route.Pattern, compressAnswers(trackTransactions(handler)))
 }
 
 // admitted runs handler once limiter admits the request at weight, with the ticket on the
@@ -1229,11 +1233,13 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // line, which names the caller the socket was admitted as (accesslog.Detached).
 //
 // A check that fails for a transient reason keeps the socket and is asked again at the next
-// heartbeat: the pool it read had no connection free within its bound (store.IsPoolBusy), the
-// check's own bound passed (checkCaller), or the request pool's share outside admission refused it
-// a place, so it was never made (errHeartbeatCheckSkipped). None of them says anything of the
-// caller. Only heartbeatTransientCeiling of them in a row close the socket, as a refusal does,
-// with the last of them as the cause, and only a check that resolves the caller ends the run.
+// heartbeat: the database did not serve its read - the pool had no connection free within its
+// bound, the database stopped answering, or the connection ended under the read
+// (transientCheckFailure, store.UnservedRead) - the check's own bound passed (checkCaller), or the
+// request pool's share outside admission refused it a place, so it was never made
+// (errHeartbeatCheckSkipped). None of them says anything of the caller. Only
+// heartbeatTransientCeiling of them in a row close the socket, as a refusal does, with the last of
+// them as the cause, and only a check that resolves the caller ends the run.
 // Before, every failure closed the socket, so under load the pool's bounded acquire closed
 // connected editors' sockets and sent them back into the load: 1,000 editors made 33,499
 // handshakes in INFRA-592's stress step (tester round 38).
@@ -1281,7 +1287,7 @@ func (s *server) checkEveryHeartbeat(ctx context.Context, check *http.Request, s
 		case err == nil:
 			failedInARow = 0
 			continue
-		case transientCheckFailure(err):
+		case transientCheckFailure(ctx, err):
 			heartbeatTransientFailures.Add(1)
 			failedInARow++
 			if failedInARow < heartbeatTransientCeiling {
@@ -1325,14 +1331,16 @@ func (s *server) checkCaller(check *http.Request, stillResolves func(*http.Reque
 	return err
 }
 
-// transientCheckFailure reports whether err, a heartbeat check's failure, says nothing of the
-// caller: the pool it read had no connection free within its bound (store.IsPoolBusy), the check's
-// own bound passed (errHeartbeatCheckBound), or the check was never made, refused a place
+// transientCheckFailure reports whether err, a heartbeat check's failure on the connection whose
+// context is ctx, says nothing of the caller: the database did not serve the check's read - its
+// pool had no connection free within its bound, the database stopped answering it, or its
+// connection ended under it (store.UnservedRead) - the check's own bound passed
+// (errHeartbeatCheckBound), or the check was never made, refused a place
 // (errHeartbeatCheckSkipped). Every other failure is a refusal - a logout, a revoked or expired
 // token, a membership the sign-in issuer no longer confirms, or any other error - and closes the
 // socket at once.
-func transientCheckFailure(err error) bool {
-	return store.IsPoolBusy(err) || errors.Is(err, errHeartbeatCheckBound) || errors.Is(err, errHeartbeatCheckSkipped)
+func transientCheckFailure(ctx context.Context, err error) bool {
+	return store.UnservedRead(ctx, err) || errors.Is(err, errHeartbeatCheckBound) || errors.Is(err, errHeartbeatCheckSkipped)
 }
 
 // errCallerNoLongerResolves is the cause whileCallerResolves ends a connection's context with

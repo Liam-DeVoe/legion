@@ -21,6 +21,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -90,15 +91,15 @@ func dialSocketAsync(serverURL, id string) <-chan openedSocket {
 }
 
 // refuseSocket opens id's document socket and requires the service to refuse it with
-// ServiceUnavailable before any upgrade, as a cap refuses one.
+// ServiceUnavailable and Retry-After before any upgrade, as a cap refuses one.
 func refuseSocket(t *testing.T, serverURL, id, what string) {
 	t.Helper()
 	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if connection != nil {
 		leaveDocument(connection)
 	}
-	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("%s: response=%v err=%v, want the socket refused with 503", what, response, err)
+	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != admission.RetryAfter {
+		t.Fatalf("%s: response=%v err=%v, want the socket refused with 503 and Retry-After: %s", what, response, err, admission.RetryAfter)
 	}
 }
 
@@ -444,16 +445,23 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 // The caps DISPATCH_MAX_LIVE_ROOMS and DISPATCH_MAX_DOC_CONNECTIONS set hold for sockets that open
 // at once, as every browser of a room does after an eviction or a deploy, and not only for sockets
 // that open one after another: a burst of cold opens never leaves more rooms live, or more browsers
-// connected, than the cap, and every socket a cap turns away is answered 503, as the settings say,
-// never 401, which tells a browser it is not signed in. On a real Dispatch with the two settings at 2
-// and 1,000, ten sockets opened at once on ten documents were all admitted and left ten rooms live;
-// with 1,000 and 3, ten sockets on one document left three admitted and seven answered 401.
+// connected, than the cap, and every socket a cap turns away is answered 503 with Retry-After, as
+// the settings say and as every socket the server cannot serve now is, never 401, which tells a
+// browser it is not signed in. On a real Dispatch with the two settings at 2 and 1,000, ten
+// sockets opened at once on ten documents were all admitted and left ten rooms live; with 1,000
+// and 3, ten sockets on one document left three admitted and seven answered 401.
 func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T) {
 	const burst = 10
-	open := func(t *testing.T, serverURL string, ids []string) (admitted []*gws.Conn, refusals map[int]int) {
+	// refused is how the refusals by status and Retry-After are counted, and capRefusal the one
+	// a cap answers.
+	refused := func(status int, retryAfter string) string {
+		return fmt.Sprintf("%d with Retry-After %q", status, retryAfter)
+	}
+	capRefusal := refused(http.StatusServiceUnavailable, admission.RetryAfter)
+	open := func(t *testing.T, serverURL string, ids []string) (admitted []*gws.Conn, refusals map[string]int) {
 		t.Helper()
 		var mu sync.Mutex
-		refusals = map[int]int{}
+		refusals = map[string]int{}
 		start := make(chan struct{})
 		var dials sync.WaitGroup
 		for i := range burst {
@@ -468,11 +476,11 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 					admitted = append(admitted, connection)
 					return
 				}
-				status := 0
+				status, retryAfter := 0, ""
 				if response != nil {
-					status = response.StatusCode
+					status, retryAfter = response.StatusCode, response.Header.Get("Retry-After")
 				}
-				refusals[status]++
+				refusals[refused(status, retryAfter)]++
 			}()
 		}
 		close(start)
@@ -506,11 +514,11 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 		t.Cleanup(server.Close)
 		return service, server.URL
 	}
-	refusedOtherwise := func(refusals map[int]int) map[int]int {
-		other := map[int]int{}
-		for status, count := range refusals {
-			if status != http.StatusServiceUnavailable {
-				other[status] = count
+	refusedOtherwise := func(refusals map[string]int) map[string]int {
+		other := map[string]int{}
+		for refusal, count := range refusals {
+			if refusal != capRefusal {
+				other[refusal] = count
 			}
 		}
 		return other
@@ -522,10 +530,10 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 		ids := createDocuments(t, service.store, burst)
 		admitted, refusals := open(t, serverURL, ids)
 		if live := len(service.srv.Rooms()); live > roomCap || len(admitted) > roomCap {
-			t.Errorf("%d sockets opened at once on %d documents: %d admitted and %d rooms live, want at most the room cap of %d (refusals by status: %v)", burst, burst, len(admitted), live, roomCap, refusals)
+			t.Errorf("%d sockets opened at once on %d documents: %d admitted and %d rooms live, want at most the room cap of %d (refusals: %v)", burst, burst, len(admitted), live, roomCap, refusals)
 		}
 		if other := refusedOtherwise(refusals); len(other) > 0 {
-			t.Errorf("sockets the room cap turned away were answered %v, want 503 for each", other)
+			t.Errorf("sockets the room cap turned away were answered %v, want %s for each", other, capRefusal)
 		}
 	})
 	t.Run("connection cap", func(t *testing.T) {
@@ -537,7 +545,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			t.Errorf("%d sockets opened at once on one document: %d admitted, want at most the connection cap of %d", burst, len(admitted), connectionCap)
 		}
 		if other := refusedOtherwise(refusals); len(other) > 0 {
-			t.Errorf("of %d sockets opened at once on one document with a connection cap of %d, %d were admitted and the rest answered %v: a socket a cap turns away is answered 503, never another status", burst, connectionCap, len(admitted), refusals)
+			t.Errorf("of %d sockets opened at once on one document with a connection cap of %d, %d were admitted and the rest answered %v: a socket a cap turns away is answered %s, never another status", burst, connectionCap, len(admitted), refusals, capRefusal)
 		}
 	})
 }

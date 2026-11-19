@@ -45,15 +45,18 @@ import (
 // (store.DPoPProofs), so it takes a place of the pool's share outside admission for that
 // (admission.Outside), waiting for one behind the work that asked before it for at most a second.
 // A presentation refused a place - the queue for one full, or its second run out - is answered
-// with admission's own refusal for the same reason in the request's class
-// (admission.WriteRefused): the same 429 OVERLOADED, Retry-After and body, so its client cannot
-// tell the two apart and comes back as it would from admission. Nothing of it was decided, so its
-// proof is not spent and the same request may be sent again. One whose client goes away while it
-// waits is answered nothing, as a client gone from admission's queue is (accesslog.ClientGone).
-// Without the place, every such request waited on the pool's acquire queue before admission could
-// refuse it, with nothing bounding how many did. The refusal is written before the drain a write's
-// body is read by (drainBeforeAnswer), which is inside this: net/http reads what is left of a small
-// body before it writes the answer, and closes the connection after it where more is left.
+// with admission's own refusal for the same reason in the request's class (*admission.Refusal,
+// which writeHandlerError answers as it answers every refusal for room): the same 429 OVERLOADED,
+// Retry-After and body, so its client cannot tell the two apart and comes back as it would from
+// admission. Nothing of it was decided, so its proof is not spent and the same request may be sent
+// again. One whose client goes away while it waits is answered nothing, as a client gone from
+// admission's queue is (admission.WriteUnserved). Without the place, every such request waited on
+// the pool's acquire queue before admission could refuse it, with nothing bounding how many did.
+// The decision is made inside the drain a write's body is read by (drainBeforeAnswer,
+// routeHandler), so its refusal waits for the body as admission's own does: written before the
+// drain, the 429 of a write whose large body was still arriving reached its client as a reset
+// connection, since net/http reads what is left of a small body before it writes the answer and
+// closes the connection after it where more is left.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := brokertoken.Presented(r); !presented {
@@ -62,12 +65,7 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 		}
 		decided, err := s.decidedBrokerToken(r)
 		if err != nil {
-			var refusal *admission.OutsideRefusal
-			if errors.As(err, &refusal) {
-				admission.WriteRefused(w, &admission.Refusal{Class: admission.ClassOf(r.Method), Reason: refusal.Reason})
-				return
-			}
-			accesslog.ClientGone(r.Context())
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		handler(w, r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, decided)))
@@ -75,30 +73,37 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 // decidedBrokerToken is r's DPoP presentation decided (brokerTokenActor), or, with nothing
-// decided, the refusal of a place of the request pool's share outside admission
-// (*admission.OutsideRefusal) or the request's own end while it waited for one. The broker is
-// asked first, whether the token is live (brokertoken.Verifier.Live), holding no place: that round
-// trip reads nothing of the request pool and can take the introspection's whole five seconds, and
-// a place held for it would let a broker slow to answer fill the share with no database work at
-// all, keeping every document socket and every heartbeat check that reads the pool waiting for
-// one. A token the broker does not hold live is refused there, as brokerTokenActor refuses it
-// (brokerTokenRefusal). The place is taken then, for the decision's own reads of the pool, and
-// given back once it is made: brokerTokenActor's Verify finds the broker's answer remembered
-// (brokertoken.AffirmativeCacheTTL), so what it does under the place is check the proof against it
-// and write the proof's row. A deployment with no broker decides nothing that reads the pool
+// decided, the refusal of a place of the request pool's share outside admission, as admission's
+// own refusal for the same reason in r's class (*admission.Refusal), or the request's own end
+// while it waited for one. The broker is asked first, whether the token is live
+// (brokertoken.Verifier.Live), holding no place: that round trip reads nothing of the request pool
+// and can take the introspection's whole five seconds, and a place held for it would let a broker
+// slow to answer fill the share with no database work at all, keeping every document socket and
+// every heartbeat check that reads the pool waiting for one. A token the broker does not hold live
+// is refused there, as brokerTokenActor refuses it (brokerTokenRefusal). The place is taken then,
+// for the decision's own reads of the pool, and given back once it is made: what the decision does
+// under the place is check the proof against the answer Live gave (provenBrokerTokenActor,
+// brokertoken.Verifier.Prove) and write the proof's row, so the broker is asked once and never
+// under the place, even where the answer's cache entry (brokertoken.AffirmativeCacheTTL) ends while
+// the decision waits. A deployment with no broker decides nothing that reads the pool
 // (errNoBrokerConfigured), so it takes no place.
 func (s *server) decidedBrokerToken(r *http.Request) (resolvedCaller, error) {
 	if s.deps.BrokerTokens == nil {
 		return resolvedCaller{err: errNoBrokerConfigured()}, nil
 	}
-	if _, err := s.deps.BrokerTokens.Live(r.Context(), r); err != nil {
+	live, err := s.deps.BrokerTokens.Live(r.Context(), r)
+	if err != nil {
 		return resolvedCaller{err: s.brokerTokenRefusal(err)}, nil
 	}
 	if err := s.outside.Take(r.Context(), admission.DPoPDecision); err != nil {
+		var refusal *admission.OutsideRefusal
+		if errors.As(err, &refusal) {
+			return resolvedCaller{}, &admission.Refusal{Class: admission.ClassOf(r.Method), Reason: refusal.Reason}
+		}
 		return resolvedCaller{}, err
 	}
 	defer s.outside.Release()
-	actor, human, err := s.brokerTokenActor(r)
+	actor, human, err := s.provenBrokerTokenActor(r, live)
 	return resolvedCaller{actor: actor, human: human, err: err}, nil
 }
 
@@ -207,7 +212,20 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if s.deps.BrokerTokens == nil {
 		return model.Actor{}, false, errNoBrokerConfigured()
 	}
-	caller, err := s.deps.BrokerTokens.Verify(r.Context(), r)
+	live, err := s.deps.BrokerTokens.Live(r.Context(), r)
+	if err != nil {
+		return model.Actor{}, false, s.brokerTokenRefusal(err)
+	}
+	return s.provenBrokerTokenActor(r, live)
+}
+
+// provenBrokerTokenActor is brokerTokenActor once the broker has answered that the token r
+// presents is live (live, brokertoken.Verifier.Live): r's proof held to that answer
+// (brokertoken.Verifier.Prove) and the actor it proves, refused as brokerTokenActor lists. It asks
+// the broker nothing, so the decision, which asks Live before it waits for a place of the request
+// pool's share, hands Live's answer here once it holds one (decidedBrokerToken).
+func (s *server) provenBrokerTokenActor(r *http.Request, live brokertoken.LiveToken) (model.Actor, bool, error) {
+	caller, err := s.deps.BrokerTokens.Prove(r.Context(), r, live)
 	if err != nil {
 		return model.Actor{}, false, s.brokerTokenRefusal(err)
 	}
@@ -266,7 +284,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 }
 
 // brokerTokenRefusal is the answer to a broker-issued token the verifier did not let through, by
-// the sentinel its Verify or its Live answered (brokerTokenActor lists the answers): one mapping
+// the sentinel its Live or its Prove answered (brokerTokenActor lists the answers): one mapping
 // for the decision's two steps, the broker's answer it asks first holding no place
 // (decidedBrokerToken) and the proof's check that follows, so a caller is told the same whichever
 // of them refused it.
