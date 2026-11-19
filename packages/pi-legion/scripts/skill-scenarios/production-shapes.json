@@ -4,7 +4,7 @@
     {
       "name": "branches-main",
       "command": ["gh", "api", "repos/<owner>/<repo>/branches/main"],
-      "read_at": "2026-11-17T15:59:18Z",
+      "read_at": "2026-11-19T05:35:00Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -98,7 +98,7 @@
     {
       "name": "branches-main-protection",
       "command": ["gh", "api", "repos/<owner>/<repo>/branches/main/protection"],
-      "read_at": "2026-11-17T15:59:18Z",
+      "read_at": "2026-11-19T05:35:00Z",
       "exit": 1,
       "stderr": "gh: Resource not accessible by integration (HTTP 403)\n",
       "shape": {
@@ -111,7 +111,7 @@
     {
       "name": "rules-branches-main",
       "command": ["gh", "api", "repos/<owner>/<repo>/rules/branches/main"],
-      "read_at": "2026-11-17T15:59:18Z",
+      "read_at": "2026-11-19T05:35:00Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -190,7 +190,7 @@
     {
       "name": "ruleset-<id>",
       "command": ["gh", "api", "repos/<owner>/<repo>/rulesets/<id>"],
-      "read_at": "2026-11-17T15:59:18Z",
+      "read_at": "2026-11-19T05:35:00Z",
       "exit": 0,
       "stderr": "",
       "shape": {
@@ -269,7 +269,7 @@
     {
       "name": "rulesets",
       "command": ["gh", "api", "repos/<owner>/<repo>/rulesets"],
-      "read_at": "2026-11-17T15:59:18Z",
+      "read_at": "2026-11-19T05:35:00Z",
       "exit": 0,
       "stderr": "",
       "shape": {

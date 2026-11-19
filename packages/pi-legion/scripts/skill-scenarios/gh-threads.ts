@@ -724,7 +724,18 @@ export const DECIDES = ["APPROVED", "CHANGES_REQUESTED"];
  * number,baseRefName,reviewDecision,mergeStateStatus,mergeable`): against `main`, whose ruleset
  * requires one approval, each read `REVIEW_REQUIRED`, `CHANGES_REQUESTED` or `APPROVED`; against
  * a branch no ruleset protects, `""` (#4376, #4373, #4370), `APPROVED` (#4320) or
- * `CHANGES_REQUESTED` (#4355), never `REVIEW_REQUIRED`. */
+ * `CHANGES_REQUESTED` (#4355), never `REVIEW_REQUIRED`.
+ *
+ * The rule's `require_code_owner_review` asks no approval of its own in any world. GitHub's rule
+ * is that "any pull request that modifies content with a code owner must be approved by that code
+ * owner" (docs.github.com, Available rules for rulesets, "Require a pull request before merging",
+ * read 2026-11-19), and content has a code owner only where a CODEOWNERS file names one: the
+ * first of `.github/CODEOWNERS`, `CODEOWNERS` and `docs/CODEOWNERS` the pull request's base
+ * branch holds (About code owners, "CODEOWNERS file location"). No world's repository holds one
+ * (INFRA-764's ruling of 2026-11-19), so the parameter, production's `true` since
+ * 2026-11-18T18:19:22Z (ruleset 12331919, read 2026-11-19T05:35:00Z) and every world's base's
+ * (rig.sh's base_ruleset_routes), leaves the decision to the approvals the count asks for, as
+ * `false` would. */
 export function reviewDecisionOf(at: ThreadWorld, calls: readonly Recorded[]): string | null {
   const latest = new Map<string, string>();
   for (const review of submittedReviews(at, calls))
@@ -763,11 +774,12 @@ const MERGEABLE_BUT_FOR_RULES = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
  * `mergeStateOn`), held `BLOCKED` while a rule of its base (`baseRules`) that a merge must meet is
  * unmet:
  *   - `pull_request`: fewer approvals stand than it requires, or a change request stands
- *     (`reviewDecisionOf`); and, where it requires review threads resolved
- *     (`required_review_thread_resolution`), a thread holding a comment GitHub has published (no
- *     pending review's alone) is open. GitHub moves a head so protected from `BLOCKED` to `CLEAN`
- *     when the last such thread is resolved, and a world whose state never moved told every agent
- *     that resolving a thread changes nothing;
+ *     (`reviewDecisionOf`, whose code owner review asks no approval of its own where no
+ *     CODEOWNERS file names an owner, as in every world); and, where it requires review threads
+ *     resolved (`required_review_thread_resolution`), a thread holding a comment GitHub has
+ *     published (no pending review's alone) is open. GitHub moves a head so protected from
+ *     `BLOCKED` to `CLEAN` when the last such thread is resolved, and a world whose state never
+ *     moved told every agent that resolving a thread changes nothing;
  *   - `required_status_checks`: a check it names (`context`, by the App its `integration_id`
  *     names) has no run on the head that GitHub takes as passed (`passed`);
  *   - `code_scanning`: a tool it names has no check run of the tool's name on the head that

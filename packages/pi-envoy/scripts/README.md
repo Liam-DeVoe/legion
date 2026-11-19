@@ -1042,7 +1042,7 @@ and error texts, never production's values:
 
 | Pin | What it holds | Read from | Made by |
 | --- | --- | --- | --- |
-| `production-shapes.json` | the exit, stderr and answer shape of 176 reads, and the line shapes of the 23 whose answer is text: the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, the `read_record` record, the tester's 68 reads of each read the world served with no pin, the implementer's 9 reads that set does not hold, and 3 of the tester's 21 readings again, whole, of every text read, whose other 18 replace the earlier readings of their reads | cybermonklabs/legion `main` at 2026-11-17T15:59:18Z, its pull request #2827 at about 15:40Z, and a Legion issue pod's own record at 16:49Z that day; the open #2827, the merged #4326 and the repository at about 08:45Z (the tester) and 08:55Z (the implementer) on 2026-11-18, and every text read again at about 17:22Z (the tester) | `production-shapes.ts` |
+| `production-shapes.json` | the exit, stderr and answer shape of 176 reads, and the line shapes of the 23 whose answer is text: the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, the `read_record` record, the tester's 68 reads of each read the world served with no pin, the implementer's 9 reads that set does not hold, and 3 of the tester's 21 readings again, whole, of every text read, whose other 18 replace the earlier readings of their reads | cybermonklabs/legion `main` at 2026-11-19T05:35:00Z; its pull request #2827 at about 15:40Z on 2026-11-17, and a Legion issue pod's own record at 16:49Z that day; the open #2827, the merged #4326 and the repository at about 08:45Z (the tester) and 08:55Z (the implementer) on 2026-11-18, and every text read again at about 17:22Z (the tester) | `production-shapes.ts` |
 | `rest-required.json` | the required field tree of the success answer of each REST operation the world serves | github/rest-api-description at `DESCRIPTION_COMMIT` (`c9c95fe34ced`) | `rest-required.ts` |
 | `graphql-schema.json` | the field and return type of each GraphQL type the world serves, which the world's query check reads | GitHub's introspection at 2026-11-17T21:20:23Z | `graphql-schema.ts` |
 | each label's own `LegionStateResponse` | every state body the daemon stand-in can serve, parsed before the label starts | the label's own checkout | `services_up`'s `label_contract` |
@@ -1159,9 +1159,11 @@ its gh gives:
 
 - the five reads of a branch a ruleset alone protects (`rules/branches/main`, `rulesets`,
   `rulesets/<id>`, `branches/main` and `branches/main/protection`), read of cybermonklabs/legion
-  at 2026-11-17T15:59:18Z;
+  at 2026-11-19T05:35:00Z, after its ruleset came to require a code owner's review; they replace
+  the reads of 2026-11-17T15:59:18Z, whose shapes they share, so the pin moved by those five
+  reads' `read_at` alone;
 - the 90 distinct reads the 44 runs of INFRA-764's round 25 made, read against a pull request of
-  the same repository at about 15:40Z that day;
+  the same repository at about 15:40Z on 2026-11-17;
 - the issue record below, read at 16:49Z that day;
 - the tester's 68 reads of each read the world served with no pin (`prod-reads-19.json`, in
   version 2 of the `infra-764-production-reads-tgz-b64` upload), read at about 08:45Z on
@@ -1181,10 +1183,11 @@ its gh gives:
 
 `production-shapes.ts` derives it from those reads' own files, which stay out of the tree, and
 refuses to write a value of theirs into it. With the uploads
-`infra-764-production-ruleset-reads-tgz-b64`, version 3 of `infra-764-production-reads-tgz-b64`
-and `implementer-r26-evidence-tgz-b64` (which holds `implementer-reads.json` too) each unpacked
-in `<uploads>`, this, run in `packages/pi-legion/scripts/skill-scenarios` so that biome reads the
-repository's configuration,
+`implementer-production-ruleset-reads-2026-11-19-tgz-b64` (dispatch://INFRA-764, its tgz's sha256
+`78d9b6d248c3…`, which unpacks to `infra-764-production-ruleset-reads`), version 3 of
+`infra-764-production-reads-tgz-b64` and `implementer-r26-evidence-tgz-b64` (which holds
+`implementer-reads.json` too) each unpacked in `<uploads>`, this, run in
+`packages/pi-legion/scripts/skill-scenarios` so that biome reads the repository's configuration,
 
 ```sh
 bun production-shapes.ts <uploads>/infra-764-production-ruleset-reads \
@@ -1194,7 +1197,8 @@ bun production-shapes.ts <uploads>/infra-764-production-ruleset-reads \
   <uploads>/infra-764-production-reads/prod-text-reads.json production-shapes.json
 ```
 
-writes it and formats it with the repository's biome. A row holds a world's answer to a pinned
+writes it and formats it with the repository's biome; a second run writes the same bytes. A row
+holds a world's answer to a pinned
 read with `shapeDiff`, which reports the paths production has that the world lacks, the paths
 the world has that production does not, and the paths whose kinds differ, none of them below a
 path whose kind differs. An array the world holds empty is not compared below itself, nor is a
@@ -1265,7 +1269,8 @@ linked and verified.
 ### The base's ruleset: what each rule does in the world
 
 The world's ruleset holds the seven rules production's `main` holds (cybermonklabs/legion ruleset
-12331919, read 2026-11-17T15:59:18Z, `production-shapes.json`'s three ruleset reads), in
+12331919, read 2026-11-19T05:35:00Z, `production-shapes.json`'s three ruleset reads; the reading
+of 2026-11-17 differed in `require_code_owner_review` alone, false then, and its `updated_at`), in
 production's order, each with production's parameter keys in production's value kinds and at
 production's values, since a rule's parameters are the deployment's configuration and no value
 that names production; the exceptions are the checks and the code-scanning tool, which are the
@@ -1310,10 +1315,17 @@ it meets nothing of the world that does.
   across a push, as production's does and the merge gate's carry rule relies on (a value of true
   is not modelled); `required_review_thread_resolution` (true where a world's premise is a head
   its open threads hold `BLOCKED`, `resolution_protection_routes`; false elsewhere and in
-  production) holds the merge state `BLOCKED` while a thread holding a published comment is open.
+  production) holds the merge state `BLOCKED` while a thread holding a published comment is open;
+  `require_code_owner_review` (true, production's since 2026-11-18T18:19:22Z) asks that "any pull
+  request that modifies content with a code owner must be approved by that code owner"
+  (docs.github.com, Available rules for rulesets), and content has a code owner only where the
+  base's `.github/CODEOWNERS`, `CODEOWNERS` or `docs/CODEOWNERS` names one (About code owners): no
+  world's repository holds one (the architect's ruling of 2026-11-19), so it asks no approval of
+  its own and the decision is the count's, as `gh-standin.test.ts`'s code owner row holds; a world
+  given a CODEOWNERS file would need its owners read, which nothing of the world does.
   Shown only: `allowed_merge_methods` (`squash`; the world merges nothing, `gh pr merge` being a
-  write it refuses), `dismissal_restriction`, `require_code_owner_review` (the repository holds no
-  CODEOWNERS), `required_reviewers` (none) and `require_extra_approval_for_unattributed_changes`
+  write it refuses), `dismissal_restriction`, `required_reviewers` (none) and
+  `require_extra_approval_for_unattributed_changes`
   (true, as production's): GitHub's REST description asks that extra approval only of "a pull
   request Copilot opens without a human collaborator", and every world's pull request is the
   implement App's, so at production's value it changes no modelled effect. The daemon stand-in's

@@ -30,15 +30,18 @@
 //     [<later reads json>...] <out json>
 //
 // writes the pin from the sets of production reads INFRA-764 made, then formats it as the
-// repository's biome does: the reads of a branch a ruleset protects, the distinct reads of round
-// 25, the issue record, and each later set of reads (`LaterReads`): the tester's reads of every
+// repository's biome does: the reads of a branch a ruleset protects (2026-11-19T05:35:00Z, after
+// ruleset 12331919 came to require a code owner's review), the distinct reads of round 25, the
+// issue record, and each later set of reads (`LaterReads`): the tester's reads of every
 // read the world served with no pin (prod-reads-19.json, 2026-11-18), the implementer's of the
 // ones that set does not hold (implementer-reads.json, 2026-11-18), and the tester's readings
 // again, whole, of every text read (prod-text-reads.json, 2026-11-18), which replace round 25's
 // readings cut short. The pin beside this module is made, with the uploads
-// `infra-764-production-ruleset-reads-tgz-b64`, version 3 of `infra-764-production-reads-tgz-b64`
-// and `implementer-r26-evidence-tgz-b64` each unpacked in `<uploads>`, by this, run in this
-// module's directory so that biome reads the repository's configuration:
+// `implementer-production-ruleset-reads-2026-11-19-tgz-b64` (dispatch://INFRA-764, its tgz's
+// sha256 78d9b6d248c3…, which unpacks to `infra-764-production-ruleset-reads`), version 3 of
+// `infra-764-production-reads-tgz-b64` and `implementer-r26-evidence-tgz-b64` each unpacked in
+// `<uploads>`, by this, run in this module's directory so that biome reads the repository's
+// configuration; a second run writes the same bytes:
 //
 //   bun production-shapes.ts <uploads>/infra-764-production-ruleset-reads \
 //     <uploads>/infra-764-production-reads/infra-764-production-reads.json \

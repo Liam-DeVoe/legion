@@ -5292,7 +5292,8 @@ function pagesOf(out: string): unknown[] {
 }
 /** The rules each world's one ruleset holds (rig.sh's base_ruleset_routes): production's seven, in
  * production's order, at production's values (cybermonklabs/legion ruleset 12331919, read on
- * 2026-11-17: one approval, no approval dismissed on a push and none asked of the last push, an
+ * 2026-11-19T05:35:00Z: one approval, no approval dismissed on a push and none asked of the last
+ * push, a code owner's review required, as it has been since 2026-11-18T18:19:22Z, an
  * extra approval for Copilot's unattributed changes, squash the one merge method, its merge
  * queue's settings and its code-scanning thresholds), but for review threads resolved in the
  * resolution world alone (resolution_protection_routes), the checks GitHub Actions reports on the
@@ -5308,7 +5309,7 @@ function rulesOf(world: "tester_proof_world" | "review_world"): object[] {
         required_approving_review_count: 1,
         dismiss_stale_reviews_on_push: false,
         required_reviewers: [],
-        require_code_owner_review: false,
+        require_code_owner_review: true,
         dismissal_restriction: { enabled: false, allowed_actors: [] },
         require_last_push_approval: false,
         required_review_thread_resolution: world === "review_world",
@@ -6384,6 +6385,51 @@ test("each reader of the pull request says GitHub's decision and merge state at 
   expect(read(tester)).toEqual(said("REVIEW_REQUIRED", "BLOCKED"));
   expect(review(tester, "APPROVE")).toBe(0);
   expect(read(tester)).toEqual(said("APPROVED", "CLEAN"));
+}, 120_000);
+
+// GitHub's code owner review: "any pull request that modifies content with a code owner must be
+// approved by that code owner" (docs.github.com, Available rules for rulesets, read 2026-11-19),
+// and content has a code owner only where the base branch's `.github/CODEOWNERS`, `CODEOWNERS`
+// or `docs/CODEOWNERS` names one (About code owners). Production's `main` has required it since
+// 2026-11-18T18:19:22Z (ruleset 12331919, read 2026-11-19T05:35:00Z), so every world's base does
+// (rig.sh's base_ruleset_routes), and no world's repository holds a CODEOWNERS file (INFRA-764's
+// ruling of 2026-11-19): the rule asks no approval of its own, and one approval lifts the
+// approval rule of a round whose diff changes docs/cli.md (gh-threads.ts's `reviewDecisionOf`).
+// Catches: the parameter read as anything but GitHub's rule — as one more approval, or as an
+// owner's approval no world can give — which holds an approved world `REVIEW_REQUIRED` and
+// `BLOCKED` where production's approval lifts the rule; and a world whose base holds a CODEOWNERS
+// file, whose owners nothing of the world reads.
+test("the base requires a code owner's review, and with no CODEOWNERS file the approval alone lifts the rule", () => {
+  const round = worldDir("review_world");
+  const rules = JSON.parse(ghCall(round, "api", "repos/example/widgets/rules/branches/main").out);
+  expect(rules.find((rule: { type: string }) => rule.type === "pull_request")).toMatchObject({
+    parameters: { required_approving_review_count: 1, require_code_owner_review: true },
+  });
+  const remote = path.join(round, "remote.git");
+  const locations = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+  expect(git(remote, "ls-tree", "--name-only", "main", "--", ...locations)).toBe("");
+  expect(ghCall(round, "pr", "diff", "1001", "--name-only").out).toContain("docs/cli.md\n");
+  const state = () =>
+    JSON.parse(
+      ghCall(round, "pr", "view", "1001", "--json", "reviewDecision,mergeStateStatus").out
+    );
+  expect(state()).toEqual({ reviewDecision: "REVIEW_REQUIRED", mergeStateStatus: "BLOCKED" });
+  const approved = ghCall(
+    round,
+    ...["api", "--method", "POST", REVIEWS, "-f", `commit_id=${builtHead(round)}`],
+    ...["-f", "event=APPROVE", "-f", "body=Approved."]
+  );
+  expect(approved.code).toBe(0);
+  // The base requires review threads resolved too, and the bot's thread is open.
+  expect(state()).toEqual({ reviewDecision: "APPROVED", mergeStateStatus: "BLOCKED" });
+  const resolved = ghCall(
+    round,
+    ...["api", "graphql", "-f"],
+    "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
+    ...["-F", "id=PRRT_kwDOrig0001"]
+  );
+  expect(resolved.code).toBe(0);
+  expect(state()).toEqual({ reviewDecision: "APPROVED", mergeStateStatus: "CLEAN" });
 }, 120_000);
 
 // GitHub refuses every push that updates or deletes a base its ruleset protects, naming each rule

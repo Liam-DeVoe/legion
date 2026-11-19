@@ -3821,7 +3821,7 @@ concluded_checks() {
 # every world's base ($worker_base of $worker_repo), as a ruleset alone protects production's
 # `main`: active on the default branch, holding production's seven rules in production's order,
 # each with production's parameters in production's kinds and at production's values
-# (production-shapes.json's ruleset reads of 2026-11-17: a rule's parameters are the
+# (production-shapes.json's ruleset reads of 2026-11-19T05:35:00Z: a rule's parameters are the
 # deployment's configuration, not a value that names production), but for the checks and the
 # tool, which are the ones the world's head reports, and RESOLUTION. RESOLUTION, `true` or
 # `false` (the default, production's), is whether the base requires review threads resolved,
@@ -3834,7 +3834,10 @@ concluded_checks() {
 #   - `pull_request`: one approval required, which decides the review decision and holds the merge
 #     state `BLOCKED` until it stands; no approval dismissed on a push and none asked of the last
 #     push, so an approval stands across the implementer's push; threads resolved where RESOLUTION
-#     says so (gh-threads.ts's `reviewDecisionOf`, `mergeStateOf`). Its extra approval for
+#     says so (gh-threads.ts's `reviewDecisionOf`, `mergeStateOf`). Its code owner review, true as
+#     production's has been since 2026-11-18T18:19:22Z, asks the approval of a code owner of each
+#     changed file a CODEOWNERS file of the base names one for, and the world's repository holds
+#     none, so it asks no approval of its own (`reviewDecisionOf`). Its extra approval for
 #     unattributed changes is asked only of a pull request Copilot opened with no human
 #     collaborator (GitHub's REST description), which no world's is: the implement App's bot opens
 #     it, so nothing acts on it;
@@ -3862,7 +3865,7 @@ base_ruleset_routes() {
      conditions:{ref_name:{exclude:[], include:["~DEFAULT_BRANCH"]}},
      rules:[{type:"deletion"}, {type:"non_fast_forward"}, {type:"required_linear_history"},
        {type:"pull_request", parameters:{required_approving_review_count:1,
-         dismiss_stale_reviews_on_push:false, required_reviewers:[], require_code_owner_review:false,
+         dismiss_stale_reviews_on_push:false, required_reviewers:[], require_code_owner_review:true,
          dismissal_restriction:{enabled:false, allowed_actors:[]}, require_last_push_approval:false,
          required_review_thread_resolution:$resolution,
          require_extra_approval_for_unattributed_changes:true, allowed_merge_methods:["squash"]}},
