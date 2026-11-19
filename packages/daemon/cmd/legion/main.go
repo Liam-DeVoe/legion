@@ -1223,7 +1223,10 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 // questionsSummary is what an operator reads of the questions to stopped agents the daemon's answer
 // loop passed to the controller (api.State.QuestionsForController): how many in the window, then
 // one line each, newest first, naming when, the agent's issue, role and session, who asked, where
-// and why. With none the line says so.
+// and why. With none the line says so. The session and the asker are Go-quoted, as quotedOrNone
+// prints a field a worker supplies: an asking session is named with its title, which its agent
+// chooses, so a newline or any other control character in either is an escape rather than another
+// line of this listing.
 func questionsSummary(questions []api.QuestionForController) string {
 	days := int(api.QuestionsForControllerWindow / (24 * time.Hour))
 	if len(questions) == 0 {
@@ -1232,7 +1235,7 @@ func questionsSummary(questions []api.QuestionForController) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "questions for the controller: %d in the last %d days, newest first\n", len(questions), days)
 	for _, q := range questions {
-		fmt.Fprintf(&b, "  %s %s %s %s: from %s at %s, %s (question %s)\n",
+		fmt.Fprintf(&b, "  %s %s %s %q: from %q at %s, %s (question %s)\n",
 			q.PassedAt.UTC().Format(time.RFC3339), q.Issue, q.Role, q.Session, q.Asker, q.Ref, q.Reason, q.ID)
 	}
 	return b.String()

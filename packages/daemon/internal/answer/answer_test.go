@@ -907,6 +907,35 @@ func TestAPlaceholderReplyIsAskedForOnceAgain(t *testing.T) {
 	}
 }
 
+// An exchange stored with an earlier placeholder sentence, one placeholderSentences holds beside
+// the current one, is left out as one stored with the current sentence is: the x its refused
+// reply holds is no word the agent has in front of it, so a reply of x is asked for once again.
+// The earlier text is the test's own entry; askedAgain reads the set.
+func TestAnExchangeAskedAgainWithAnEarlierSentenceIsLeftOut(t *testing.T) {
+	const earlier = "your reply is a placeholder: answer from your conversation"
+	current := placeholderSentences
+	placeholderSentences = append(slices.Clone(current), earlier)
+	t.Cleanup(func() { placeholderSentences = current })
+	s := newStandIn(t,
+		anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20}, anthropicText(`{"kind":"answered","text":"x","needs":""}`)),
+		anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 25}, anthropicText(`{"kind":"answered","text":"PR 7 is green.","needs":""}`)),
+	)
+	req := anthropicRequest(t, s, &stubGH{}, 3)
+	req.Conversation.Messages = append(req.Conversation.Messages,
+		conversation.Message{Role: conversation.User, Content: []conversation.Block{{Type: conversation.Text, Text: "Is the plan written?"}}},
+		anthropicAnswer(`{"kind":"answered","text":"x","needs":""}`),
+		conversation.Message{Role: conversation.User, Content: []conversation.Block{{Type: conversation.Text, Text: earlier}}},
+		anthropicAnswer(`{"kind":"answered","text":"The plan is written.","needs":""}`),
+	)
+	reply, err := Answer(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(s.requests()); n != 2 || reply.Kind != Answered || reply.Text != "PR 7 is green." {
+		t.Fatalf("%d model calls, reply %s %q; want the x asked for once again and the second reply taken", n, reply.Kind, reply.Text)
+	}
+}
+
 // ghExchange changes the Anthropic conversation's answer to end on a gh call whose input is the
 // raw JSON input, then the call's result output and one more turn of the agent's.
 func ghExchange(input, output string) func(*conversation.Conversation) {

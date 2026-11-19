@@ -1517,6 +1517,7 @@ answers:
 - `bounds.concurrent` (4): Conversations the project answers at once; the questions to one conversation always run one after another.
 
 - `bounds.daily_usd` (50): USD the project spends on answers per UTC day.
+  The limit is checked before each answer starts, and the answers already running when the day reaches it can take the day past it, by at most `concurrent` answers' cost.
 
 Each count is a positive integer, each `_seconds` a positive whole number of seconds, and `daily_usd` a positive number;
 a key the block does not model is refused by name.

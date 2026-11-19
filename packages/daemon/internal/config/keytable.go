@@ -900,7 +900,7 @@ var nestedKeys = []memberGroup{
 		{Name: "concurrent", Default: "`4`", RequiredBy: "no",
 			Description: "How many conversations the project answers at once; the questions to one conversation always run one after another."},
 		{Name: "daily_usd", Default: "`50`", RequiredBy: "no",
-			Description: "How many USD the project spends on answers a UTC day, a positive number; an answer past it is not made (`over_limit`)."},
+			Description: "How many USD the project spends on answers a UTC day, a positive number; an answer past it is not made (`over_limit`). The limit is checked before each answer starts, and the answers already running when the day reaches it can take the day past it, by at most `concurrent` answers' cost."},
 	}},
 	{Path: kubernetesKey + ".sandbox", Members: []member{
 		{Name: "type", Default: "`gvisor`", RequiredBy: "no",

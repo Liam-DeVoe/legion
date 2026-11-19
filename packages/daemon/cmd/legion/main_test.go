@@ -2588,7 +2588,9 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 
 // An operator reading plain `legion state` is told the questions to stopped agents the daemon
 // passed to the controller in the last seven days, newest first, each with when, the agent's issue,
-// role and session, who asked, where and why; with none the line says so.
+// role and session, who asked, where and why; with none the line says so. The session and the
+// asker are quoted: an asking session's title is its agent's choice, and a newline in it is an
+// escape rather than a forged line of the listing, as a control character in a session is.
 func TestPlainStateListsTheQuestionsForTheController(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
@@ -2602,8 +2604,16 @@ func TestPlainStateListsTheQuestionsForTheController(t *testing.T) {
 				`{"id":"q-1","issue":"LEGION-8","role":"reviewer","session":"ses_reviewer","asker":"user:octocat",` +
 				`"ref":"dispatch://LEGION-8/message/m-1","reason":"not_answered","passedAt":"2026-10-20T09:30:00Z"}]`,
 			want: "questions for the controller: 2 in the last 7 days, newest first\n" +
-				"  2026-10-26T11:00:00Z LEGION-9 tester ses_tester: from session:ses_asker (LEGION-9 implementer) at envoy:evt-2, answer_seconds (question q-2)\n" +
-				"  2026-10-20T09:30:00Z LEGION-8 reviewer ses_reviewer: from user:octocat at dispatch://LEGION-8/message/m-1, not_answered (question q-1)\n",
+				"  2026-10-26T11:00:00Z LEGION-9 tester \"ses_tester\": from \"session:ses_asker (LEGION-9 implementer)\" at envoy:evt-2, answer_seconds (question q-2)\n" +
+				"  2026-10-20T09:30:00Z LEGION-8 reviewer \"ses_reviewer\": from \"user:octocat\" at dispatch://LEGION-8/message/m-1, not_answered (question q-1)\n",
+		},
+		{
+			name: "a control character in a title",
+			questions: `[{"id":"q-3","issue":"LEGION-9","role":"tester","session":"ses_tester\u001b[2J",` +
+				`"asker":"session:ses_asker (LEGION-9 implementer)\n  2026-10-26T11:00:00Z LEGION-9 tester ses_tester: from user:octocat",` +
+				`"ref":"envoy:evt-3","reason":"not_answered","passedAt":"2026-10-26T11:00:00Z"}]`,
+			want: "questions for the controller: 1 in the last 7 days, newest first\n" +
+				`  2026-10-26T11:00:00Z LEGION-9 tester "ses_tester\x1b[2J": from "session:ses_asker (LEGION-9 implementer)\n  2026-10-26T11:00:00Z LEGION-9 tester ses_tester: from user:octocat" at envoy:evt-3, not_answered (question q-3)` + "\n",
 		},
 		{name: "none", questions: `[]`, want: "questions for the controller: none in the last 7 days\n"},
 	} {

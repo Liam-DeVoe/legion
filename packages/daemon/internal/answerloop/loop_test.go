@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"reflect"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/conversation/omp"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -707,5 +709,34 @@ func TestAFaultedAnswerNamesItsWritesAndAppendsItsTurnsOnce(t *testing.T) {
 	note := strings.Index(content, "The Legion daemon ended this answer with no reply from you (model_calls), and posted this reply in your name")
 	if call < 0 || result < call || note < result || strings.Count(content, `"customType":"legion-answer"`) != 1 || strings.Count(content, "Merge PR 7?") != 1 {
 		t.Errorf("the conversation holds no merge, its result and then the note once, in that order (at %d, %d, %d):\n%s", call, result, note, content)
+	}
+}
+
+// A reply Dispatch refuses for good is passed on as post_refused and the question dropped, and
+// the question's row holds that reason before the pass marks it passed: `legion state` lists a
+// passed question with its row's pass_reason, so a read between the two, or a stop before the
+// question is dropped, would list it with none.
+func TestARefusedReplyIsPassedOnWithItsReasonWrittenFirst(t *testing.T) {
+	r := newRig(t)
+	r.conversation("ses_tester", testerToken, 0)
+	refusing := newStandIn(t, func(w http.ResponseWriter, _ request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"code":"BODY_TOO_LARGE","error":"the reply is over Dispatch's bound"}`))
+	})
+	r.cfg.Dispatch = dispatch.New(refusing.URL, "dispatch-token")
+	r.restart()
+	r.receive(messageHandoff("ses_tester", "m-1", 1, "Why plum?"))
+	r.drain()
+	q := r.only()
+	switch {
+	case len(refusing.posts()) != 1:
+		t.Fatalf("posts = %s; want the one refused reply", describe(refusing.posts()))
+	case q.State != store.QuestionDropped || q.PassReason != string(ReasonPostRefused):
+		t.Fatalf("question = %s, pass_reason %q; want dropped as post_refused", q.State, q.PassReason)
+	case len(r.rec.passed) != 1 || r.rec.passed[0].Reason != string(ReasonPostRefused):
+		t.Fatalf("passed on = %+v; want the question passed on once as post_refused", r.rec.passed)
+	case r.rec.rowReasons[0] != string(ReasonPostRefused):
+		t.Fatalf("the row's pass_reason at the pass = %q; want post_refused written before the pass", r.rec.rowReasons[0])
 	}
 }

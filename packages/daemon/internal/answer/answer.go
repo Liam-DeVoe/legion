@@ -421,8 +421,8 @@ func (f *inFront) read(value json.RawMessage, mayAskNothing bool) (form, error) 
 // backslash is read once more with each JSON escape as a space (jsonEscape), which can only add
 // words.
 //
-// The guard's own exchange is left out: a user message whose one block is the placeholder
-// sentence (errPlaceholder), and the reply before it that the sentence refused. An earlier
+// The guard's own exchange is left out: a user message whose one block is a placeholder
+// sentence (placeholderSentences), and the reply before it that the sentence refused. An earlier
 // answer appends both to the conversation (exchange), and the refused reply holds its
 // placeholder, so without the skip the same placeholder would pass on every later question.
 func (f *inFront) holds(word string) bool {
@@ -480,11 +480,11 @@ func notWord(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) 
 // `\u003eBramble` hold no word Bramble until the escape is read as a space.
 var jsonEscape = regexp.MustCompile(`\\(u[0-9a-fA-F]{4}|.)`)
 
-// askedAgain says whether message is the placeholder sentence (errPlaceholder) as the loop asks
-// again with it and an appender writes it: a user message of that one text.
+// askedAgain says whether message is a placeholder sentence (placeholderSentences) as the loop
+// asks again with it and an appender writes it: a user message of that one text.
 func askedAgain(message agentloop.Message) bool {
 	return message.Role == agentloop.User && len(message.Blocks) == 1 &&
-		message.Blocks[0].Kind == agentloop.TextBlock && message.Blocks[0].Text == errPlaceholder.Error()
+		message.Blocks[0].Kind == agentloop.TextBlock && slices.Contains(placeholderSentences, message.Blocks[0].Text)
 }
 
 // unmetered says whether nothing counted the run's model calls (Unmetered). Two things say so,

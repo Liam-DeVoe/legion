@@ -167,16 +167,26 @@ type passed struct {
 	ID, Reason, Asker, Ref string
 }
 
+// recorder is the loop's PassOn and Decisions. At each pass it reads the question's row and keeps
+// its pass_reason in rowReasons, by the pass's index in passed: the reason `legion state` lists
+// the question with once the pass marks it passed (questionsForController).
 type recorder struct {
-	mu        sync.Mutex
-	passed    []passed
-	decisions []Decision
+	mu         sync.Mutex
+	st         *store.Store
+	passed     []passed
+	rowReasons []string
+	decisions  []Decision
 }
 
-func (r *recorder) PassOn(_ context.Context, q store.AnswerQuestion, reason Reason, origin Origin) error {
+func (r *recorder) PassOn(ctx context.Context, q store.AnswerQuestion, reason Reason, origin Origin) error {
+	row, _, err := r.st.Question(ctx, q.ID)
+	if err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.passed = append(r.passed, passed{q.ID, string(reason), origin.Asker, origin.Ref})
+	r.rowReasons = append(r.rowReasons, row.PassReason)
 	return nil
 }
 
@@ -220,8 +230,18 @@ func newRig(t *testing.T) *rig {
 	st := testpg.CloneStore(t, "legion_answerloop")
 	r := &rig{
 		t: t, ctx: ctx, st: st, gate: &fakeGate{running: map[string]bool{}, started: map[string]bool{}},
-		tool: &fakeTool{found: map[int]ghtool.Found{}, err: map[int]error{}}, rec: &recorder{}, dir: t.TempDir(),
+		tool: &fakeTool{found: map[int]ghtool.Found{}, err: map[int]error{}}, rec: &recorder{st: st}, dir: t.TempDir(),
 	}
+	// Every path that passes a question on writes its reason into the row first (post).
+	t.Cleanup(func() {
+		r.rec.mu.Lock()
+		defer r.rec.mu.Unlock()
+		for i, p := range r.rec.passed {
+			if r.rec.rowReasons[i] != p.Reason {
+				t.Errorf("question %s was passed on as %s while its row's pass_reason was %q; want the reason written first", p.ID, p.Reason, r.rec.rowReasons[i])
+			}
+		}
+	})
 	r.answer = func(req answer.Request) (answer.Reply, error) {
 		return answered(req, "Plum, from "+req.Question.Text), nil
 	}

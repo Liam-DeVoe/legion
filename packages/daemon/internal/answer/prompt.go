@@ -172,8 +172,21 @@ func parseReply(value json.RawMessage, mayAskNothing bool) (form, error) {
 	return f, nil
 }
 
-// errPlaceholder is the sentence a reply whose text is a placeholder is asked for again with.
-var errPlaceholder = errors.New("your reply's text is a placeholder: answer the question from your conversation")
+// placeholderSentence is the sentence a reply whose text is a placeholder is asked for again with
+// (errPlaceholder). It is stored and matched on read: finish writes it into the agent's
+// conversation after the refused reply (conversation.Turn.AskedAgain), and a later answer leaves
+// that exchange out of what the agent has in front of it by matching it (askedAgain).
+const placeholderSentence = "your reply's text is a placeholder: answer the question from your conversation"
+
+// errPlaceholder is the refusal of a reply whose text is a placeholder, asked for again with
+// placeholderSentence.
+var errPlaceholder = errors.New(placeholderSentence)
+
+// placeholderSentences is every sentence a placeholder has been asked for again with, the
+// current placeholderSentence and each earlier text, since conversations keep each one
+// (askedAgain). A change to placeholderSentence appends the old text here rather than replacing
+// it, or every exchange stored with the old text would stop being left out.
+var placeholderSentences = []string{placeholderSentence}
 
 // placeholder says whether text, the text of a reply of any kind but none, is a placeholder
 // rather than an answer: trimmed, it is one or more letters and nothing else (no digit, no

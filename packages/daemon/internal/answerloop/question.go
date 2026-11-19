@@ -78,6 +78,9 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 			"question", q.ID, "session", q.Session, "state", q.State)
 		return l.appended(ctx, q, origin)
 	}
+	// The day's limit is checked before each answer starts, and nothing is reserved: the answers
+	// already running when the day reaches it finish and add their cost, so the day can pass the
+	// limit by at most bounds.concurrent answers' cost.
 	now := l.cfg.Now()
 	spent, err := l.cfg.Store.AnswerSpend(ctx, l.cfg.Project, now)
 	if err != nil {
@@ -332,6 +335,12 @@ func noAnswerNote(reason Reason, reply string) string {
 // question's marker first, an Envoy message carries the question's id as its idempotency key).
 // Then the question is passed on when it must be, and marked done. A post refused for good drops
 // the question and passes it on.
+//
+// The row holds the reason a question is passed on for before PassOn marks it passed: `legion
+// state` lists a passed question with its row's pass_reason (questionsForController), so a read
+// between the two, or a stop before the question is marked done, would list it with none. The
+// reply's reason is written with the reply (generate, decideFault); a refused post writes its own
+// here first.
 func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
 	body := q.ReplyText + "\n\n" + AnswerMarker + q.ID + " -->"
 	var err error
@@ -349,7 +358,12 @@ func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) 
 	}
 	if refusedForGood(err) {
 		l.cfg.Log.Error("answers: the reply was refused; the question is passed on", "question", q.ID, "session", q.Session, "error", err)
-		q.PassReason = string(ReasonPostRefused)
+		if q.PassReason != string(ReasonPostRefused) {
+			q.PassReason = string(ReasonPostRefused)
+			if err := l.move(ctx, &q, store.QuestionAppended, store.QuestionAppended); err != nil {
+				return err
+			}
+		}
 		if err := l.cfg.PassOn.PassOn(ctx, q, ReasonPostRefused, origin); err != nil {
 			return err
 		}
