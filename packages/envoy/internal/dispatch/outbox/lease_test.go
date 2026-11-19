@@ -200,10 +200,10 @@ const (
 	outboxLine      = "dispatch outbox: "
 )
 
-// witnessPeriod is how often the row's witness (databaseWitness) asks the database a question,
-// and witnessBound how long it waits for each answer: half the one second a renewal of the
-// publisher hold waits, so a database that leaves a renewal unanswered leaves the witness's
-// questions unanswered too.
+// witnessPeriod is how often the row's witness of the database (databaseWitness) asks it a
+// question and the row's heartbeat (processWatch) beats, and witnessBound how long the witness
+// waits for each answer: half the one second a renewal of the publisher hold waits, so a database
+// that leaves a renewal unanswered leaves the witness's questions unanswered too.
 const (
 	witnessPeriod = 50 * time.Millisecond
 	witnessBound  = 500 * time.Millisecond
@@ -214,37 +214,55 @@ const (
 // begins so is a renewal of the publisher hold.
 const renewalStatement = "update duty_holds set expires_at"
 
+// outboxApplication is the application_name of the connections of the row's outbox's own pool, so
+// that in pg_stat_activity the witness tells a backend of the outbox's from every other session's.
+const outboxApplication = "idle outbox under test"
+
 // witnessQuestion asks what an idle outbox's own statements need of the database: an answer; a
 // commit written to disk, since the transactional message pg_logical_emit_message writes gives the
 // transaction an id and a WAL record, so its commit waits for the flush and for any synchronous
 // standby, as a renewal's does (an id alone, as txid_current gives, writes no WAL, and the commit
 // of such a transaction waits for neither); the tables the claim, the fallback pass and the retry
-// timer read; and every lock that holds a renewal of the publisher hold back, of any strength and
-// whoever holds it, read from Postgres itself while the renewal waits: for each backend of the
-// database whose statement is a renewal ($1, renewalStatement), each backend pg_blocking_pids names
-// as blocking it, the lock pg_locks shows the renewal waiting for, the modes of the locks the
-// blocker holds on duty_holds, and the blocker's state and statement. The third column is null
-// when no renewal waits on a lock.
-const witnessQuestion = `select pg_logical_emit_message(true, 'idle-outbox-witness', ''),
+// timer read; and every lock that holds a renewal of the publisher hold back, of any strength,
+// read from Postgres itself while the renewal waits: for each backend of the database whose
+// statement is a renewal ($1, renewalStatement), each backend pg_blocking_pids names as blocking
+// it, the lock pg_locks shows the renewal waiting for, the modes of the locks the blocker holds on
+// duty_holds, and the blocker's state and statement. The third column is the locks a session other
+// than the outbox's holds, and the fourth the locks a connection of the outbox's own pool holds
+// (its application_name is $2, outboxApplication), which are the outbox's own failure, not the
+// database's (databaseWitness). Each is null when no renewal waits on such a lock.
+//
+// Postgres keeps no row lock's strength in pg_locks, so the log a forced row lock leaves does not
+// name it: a row locked for update, for no key update or for share reads as the blocker's
+// RowShareLock on duty_holds, and a row updated or deleted as its RowExclusiveLock, while the
+// renewal waits for the blocker's transactionid ShareLock. Only the blocker's statement can show
+// the strength, and that is the latest statement it ran, which is often another one (idle in
+// transaction: select 2).
+const witnessQuestion = `with held as (
+	select format('the renewal of pid %s waits for %s, behind pid %s, which holds %s on duty_holds (%s: %s)',
+			renewal.pid, waits.locks, blocking.pid, coalesce(holds.modes, 'no lock'), blocker.state, left(blocker.query, 160)) said,
+		blocker.application_name is not distinct from $2 own
+	from pg_stat_activity renewal
+	cross join lateral unnest(pg_blocking_pids(renewal.pid)) blocking(pid)
+	left join pg_stat_activity blocker on blocker.pid = blocking.pid
+	cross join lateral (select string_agg(locktype || ' ' || mode, ', ') locks
+		from pg_locks where pid = renewal.pid and not granted) waits
+	cross join lateral (select string_agg(distinct mode, ', ') modes
+		from pg_locks where pid = blocking.pid and granted and locktype = 'relation'
+			and database = renewal.datid and relation = 'duty_holds'::regclass) holds
+	where renewal.datid = (select oid from pg_database where datname = current_database())
+		and renewal.pid <> pg_backend_pid() and starts_with(renewal.query, $1))
+select pg_logical_emit_message(true, 'idle-outbox-witness', ''),
 	exists (select from events, issues, artifacts, comment_fallback_copies where false),
-	(select string_agg(format('the renewal of pid %s waits for %s, behind pid %s, which holds %s on duty_holds (%s: %s)',
-			renewal.pid, waits.locks, blocking.pid, coalesce(holds.modes, 'no lock'), blocker.state, left(blocker.query, 160)), '; ')
-		from pg_stat_activity renewal
-		cross join lateral unnest(pg_blocking_pids(renewal.pid)) blocking(pid)
-		left join pg_stat_activity blocker on blocker.pid = blocking.pid
-		cross join lateral (select string_agg(locktype || ' ' || mode, ', ') locks
-			from pg_locks where pid = renewal.pid and not granted) waits
-		cross join lateral (select string_agg(distinct mode, ', ') modes
-			from pg_locks where pid = blocking.pid and granted and locktype = 'relation'
-				and database = renewal.datid and relation = 'duty_holds'::regclass) holds
-		where renewal.datid = (select oid from pg_database where datname = current_database())
-			and renewal.pid <> pg_backend_pid() and starts_with(renewal.query, $1))`
+	(select string_agg(said, '; ') from held where not own),
+	(select string_agg(said, '; ') from held where own)`
 
 // failureWindow is a span in which the database failed every one of the witness's questions: it
 // answered none within witnessBound, or each answer showed a renewal of the publisher hold
-// waiting on a lock. It runs from the moment the witness sent the last question answered with no
-// failure before it to the moment the first such answer after it came. err is the first failure
-// in it.
+// waiting on a lock another session holds. It runs from the moment the witness sent the last
+// question answered with no failure before it to the moment the first such answer after it came.
+// err is the first failure in it. The witness keeps the spans of the outbox's own locks in the
+// same shape.
 type failureWindow struct {
 	from, to time.Time
 	err      string
@@ -265,17 +283,26 @@ func (w failureWindow) holds(at time.Time) bool {
 // databaseWitness is TestTheOutboxDoesNotScanWhileIdle's own connection to its database, outside
 // every pool of the outbox's: it asks the database witnessQuestion every witnessPeriod and records
 // each window in which no answer came within witnessBound, or each answer showed a renewal of the
-// publisher hold held back by a lock. A failure the row leaves out must fall in such a window
-// (heldScans), so the row leaves out what the database did, and never a failure the outbox made
-// itself: a connection it closed, a renewal or a statement it cut short. In the forced cases it
-// reaches the database through the same proxy as the outbox.
+// publisher hold held back by a lock a session other than the outbox's holds. A failure the row
+// leaves out must fall in such a window (heldScans), so the row leaves out what the database did,
+// and never a failure the outbox made itself: a connection it closed, a renewal or a statement it
+// cut short, a lock its own pool holds. It records the spans in which a lock of the outbox's own
+// held a renewal back apart, so that the row names that lock when it counts the scan after it. In
+// the forced cases it reaches the database through the same proxy as the outbox.
 type databaseWitness struct {
 	mu sync.Mutex
 	// windows is every window that has closed, and open the one still open, if one is.
 	windows []failureWindow
 	open    *failureWindow
-	// lastSent is when the last question answered with no failure was sent.
+	// ownLocks is every span that has closed in which the answers showed a renewal held back by a
+	// lock of the outbox's own, from the question that first showed it to the first answer that
+	// did not, and ownOpen the one still open, if one is.
+	ownLocks []failureWindow
+	ownOpen  *failureWindow
+	// lastSent is when the last question answered with no failure was sent, and asked when each
+	// question was sent.
 	lastSent time.Time
+	asked    []time.Time
 }
 
 // watchDatabase starts the witness on database's own database, until the test ends, and waits for
@@ -305,12 +332,12 @@ func (w *databaseWitness) watch(ctx context.Context, config *pgx.ConnConfig) {
 	}()
 	for ctx.Err() == nil {
 		sent := time.Now()
-		var failure string
-		conn, failure = ask(ctx, conn, config)
+		var got answer
+		conn, got = ask(ctx, conn, config)
 		if ctx.Err() != nil {
 			return
 		}
-		w.record(sent, time.Now(), failure)
+		w.record(sent, time.Now(), got)
 		select {
 		case <-ctx.Done():
 		case <-time.After(time.Until(sent.Add(witnessPeriod))):
@@ -318,30 +345,50 @@ func (w *databaseWitness) watch(ctx context.Context, config *pgx.ConnConfig) {
 	}
 }
 
+// answer is what one question of the witness's met: err when no answer came within witnessBound,
+// and otherwise the locks the answer showed holding a renewal of the publisher hold back, those a
+// session other than the outbox's holds (locks) and those the outbox's own pool holds (own), ""
+// for none.
+type answer struct{ err, locks, own string }
+
+// failure is the failure of the database the answer shows, "" for none.
+func (a answer) failure() string {
+	switch {
+	case a.err != "":
+		return a.err
+	case a.locks != "":
+		return "a renewal of the publisher hold waits on a lock: " + a.locks
+	}
+	return ""
+}
+
 // ask puts witnessQuestion to the database once, within witnessBound, on conn or on a connection
 // it dials when conn is nil. It returns the connection to ask on next, none after an error, which
-// closes conn since pgx closes a connection whose statement was cut short, and the failure the
-// question met: its error, or the locks the answer showed holding a renewal of the publisher hold
-// back; "" for none.
-func ask(ctx context.Context, conn *pgx.Conn, config *pgx.ConnConfig) (*pgx.Conn, string) {
+// closes conn since pgx closes a connection whose statement was cut short, and what the question
+// met.
+func ask(ctx context.Context, conn *pgx.Conn, config *pgx.ConnConfig) (*pgx.Conn, answer) {
 	bounded, cancel := context.WithTimeout(ctx, witnessBound)
 	defer cancel()
 	if conn == nil {
 		dialled, err := pgx.ConnectConfig(bounded, config)
 		if err != nil {
-			return nil, "dial: " + err.Error()
+			return nil, answer{err: "dial: " + err.Error()}
 		}
 		conn = dialled
 	}
-	var held *string
-	if err := conn.QueryRow(bounded, witnessQuestion, renewalStatement).Scan(nil, nil, &held); err != nil {
+	var held, own *string
+	if err := conn.QueryRow(bounded, witnessQuestion, renewalStatement, outboxApplication).Scan(nil, nil, &held, &own); err != nil {
 		closeWithin(conn, witnessBound)
-		return nil, err.Error()
+		return nil, answer{err: err.Error()}
 	}
+	var got answer
 	if held != nil {
-		return conn, "a renewal of the publisher hold waits on a lock: " + *held
+		got.locks = *held
 	}
-	return conn, ""
+	if own != nil {
+		got.own = *own
+	}
+	return conn, got
 }
 
 // closeWithin closes conn, giving up after bound, so a connection a frozen network holds cannot
@@ -352,12 +399,14 @@ func closeWithin(conn *pgx.Conn, bound time.Duration) {
 	_ = conn.Close(ctx)
 }
 
-// record writes down one question, sent at sent and ended at at, with the failure it met, "" for
-// none. A failure before the first answer with none opens no window: until then the witness has
-// not reached the database at all, and the outbox has not started (watchDatabase).
-func (w *databaseWitness) record(sent, at time.Time, failure string) {
+// record writes down one question, sent at sent and ended at at, with what it met. A failure
+// before the first answer with none opens no window: until then the witness has not reached the
+// database at all, and the outbox has not started (watchDatabase).
+func (w *databaseWitness) record(sent, at time.Time, got answer) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.asked = append(w.asked, sent)
+	failure := got.failure()
 	switch {
 	case failure != "" && w.open == nil && !w.lastSent.IsZero():
 		w.open = &failureWindow{from: w.lastSent, err: failure}
@@ -369,20 +418,178 @@ func (w *databaseWitness) record(sent, at time.Time, failure string) {
 		}
 		w.lastSent = sent
 	}
+	// Only an answer says whether a lock of the outbox's own holds a renewal back.
+	switch {
+	case got.err != "":
+	case got.own != "" && w.ownOpen == nil:
+		w.ownOpen = &failureWindow{from: sent, err: got.own}
+	case got.own == "" && w.ownOpen != nil:
+		w.ownOpen.to = at
+		w.ownLocks = append(w.ownLocks, *w.ownOpen)
+		w.ownOpen = nil
+	}
+}
+
+// witnessed is what the witness had recorded by one moment: the windows that had closed, every span
+// of a lock of the outbox's own (one still open runs to that moment), and when it sent each
+// question.
+type witnessed struct {
+	windows, ownLocks []failureWindow
+	asked             []time.Time
 }
 
 // answeredAfter waits until the database has answered a question the witness sent after since, so
-// that every window open at since has closed, and returns every window closed by then.
-func (w *databaseWitness) answeredAfter(t *testing.T, since time.Time, what string) []failureWindow {
+// that every window open at since has closed, and returns what the witness had recorded by then.
+func (w *databaseWitness) answeredAfter(t *testing.T, since time.Time, what string) witnessed {
 	t.Helper()
-	var windows []failureWindow
+	var seen witnessed
 	waitFor(t, outboxHangGuard, what, func() bool {
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		windows = slices.Clone(w.windows)
-		return w.lastSent.After(since)
+		if !w.lastSent.After(since) {
+			return false
+		}
+		seen = witnessed{windows: slices.Clone(w.windows), ownLocks: slices.Clone(w.ownLocks), asked: slices.Clone(w.asked)}
+		if w.ownOpen != nil {
+			open := *w.ownOpen
+			open.to = time.Now()
+			seen.ownLocks = append(seen.ownLocks, open)
+		}
+		return true
 	})
-	return windows
+	return seen
+}
+
+// processWatch is the row's witness of the test process itself, as databaseWitness is of the
+// database: a heartbeat that beats every witnessPeriod and records each gap longer than the
+// publisher hold's Renew as a stall, with the hold's loss deadline as the beat before it read it,
+// and the moment the outbox sent each renewal of the hold, from the outbox's own pool
+// (renewalTrace). A process that runs nothing - stopped, or given no CPU - for the 4 s to the
+// hold's loss deadline sends no renewal, so the hold lapses with no failure of the database's
+// behind it, and the outbox takes it back and scans, as it must (heldScans).
+type processWatch struct {
+	mu       sync.Mutex
+	stalls   []processStall
+	renewals []time.Time
+	lastBeat time.Time
+}
+
+// processStall is a gap of the heartbeat, from the beat before it to the beat that ended it, or the
+// part of one in which nothing the row watches ran (explains), with the publisher hold's loss
+// deadline as it stood just before the gap's first beat (zero when the outbox held no hold).
+type processStall struct {
+	from, to, deadline time.Time
+}
+
+func (s processStall) String() string {
+	return fmt.Sprintf("from %s to %s (%s)", s.from.UTC().Format("15:04:05.000"), s.to.UTC().Format("15:04:05.000"), s.to.Sub(s.from).Round(time.Millisecond))
+}
+
+// watch starts p's heartbeat on outbox until the test ends.
+func (p *processWatch) watch(t *testing.T, outbox *Outbox) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.beat(ctx, outbox)
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+}
+
+// beat is the heartbeat, until ctx ends. Each beat reads the hold's deadline before the clock, so
+// the deadline a gap carries was read before the process stopped.
+func (p *processWatch) beat(ctx context.Context, outbox *Outbox) {
+	deadline, last := holdDeadline(outbox), time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(witnessPeriod):
+		}
+		next, now := holdDeadline(outbox), time.Now()
+		p.mu.Lock()
+		if now.Sub(last) > publisherHoldOptions.Renew {
+			p.stalls = append(p.stalls, processStall{from: last, to: now, deadline: deadline})
+		}
+		p.lastBeat = now
+		p.mu.Unlock()
+		deadline, last = next, now
+	}
+}
+
+// holdDeadline is the loss deadline of the publisher hold outbox holds, zero when it holds none.
+func holdDeadline(outbox *Outbox) time.Time {
+	if hold := outbox.hold.Load(); hold != nil {
+		return hold.Deadline()
+	}
+	return time.Time{}
+}
+
+// beatAfter waits until the heartbeat has beaten after since, so that every stall that ended by then
+// is recorded, and returns the stalls and the renewals recorded by then.
+func (p *processWatch) beatAfter(t *testing.T, since time.Time, what string) (stalls []processStall, renewals []time.Time) {
+	t.Helper()
+	waitFor(t, outboxHangGuard, what, func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if !p.lastBeat.After(since) {
+			return false
+		}
+		stalls, renewals = slices.Clone(p.stalls), slices.Clone(p.renewals)
+		return true
+	})
+	return stalls, renewals
+}
+
+// renewalTrace is the tracer of the outbox's own pool: it records the moment each renewal of the
+// publisher hold leaves.
+type renewalTrace struct{ process *processWatch }
+
+func (r renewalTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.HasPrefix(data.SQL, renewalStatement) {
+		r.process.mu.Lock()
+		r.process.renewals = append(r.process.renewals, time.Now())
+		r.process.mu.Unlock()
+	}
+	return ctx
+}
+
+func (renewalTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// explains reports whether s explains the lapse of a hold whose loss deadline was deadline, the
+// outbox having sent each renewal of the hold at one of renewals and the witness each question at
+// one of asked, and returns the span of s in which the process ran nothing. It does when:
+//
+//   - the deadline stood as the process stopped: the beat before s read it, so no renewal moved it
+//     after that, and nothing gave the hold up early, which pulls the deadline back to that moment;
+//   - in the longest span of s in which the outbox sent no renewal and the witness no question -
+//     so that the heartbeat's, the witness's and the renewal's goroutines all ran nothing, and
+//     the heartbeat was not held back alone - the process stopped before the second renewal due
+//     after the last confirmed one, and the deadline passed before it ran again, or within
+//     witnessBound after, since the renewal it sends as it wakes can be answered too late. The
+//     last confirmed renewal was sent TTL - Margin before the deadline, and the next is due a
+//     Renew after it, so a process that ran past that one would have sent it; one Renew more
+//     allows for the tick and its renewal coming late under load.
+func (s processStall) explains(deadline time.Time, renewals, asked []time.Time) (processStall, bool) {
+	if !s.deadline.Equal(deadline) {
+		return processStall{}, false
+	}
+	points := []time.Time{s.from, s.to}
+	for _, at := range slices.Concat(renewals, asked) {
+		if s.from.Before(at) && at.Before(s.to) {
+			points = append(points, at)
+		}
+	}
+	slices.SortFunc(points, time.Time.Compare)
+	nothing := processStall{from: s.from, to: s.from, deadline: deadline}
+	for i := 1; i < len(points); i++ {
+		if points[i].Sub(points[i-1]) > nothing.to.Sub(nothing.from) {
+			nothing.from, nothing.to = points[i-1], points[i]
+		}
+	}
+	window := publisherHoldOptions.TTL - publisherHoldOptions.Margin
+	stoppedBy := deadline.Add(-window + 2*publisherHoldOptions.Renew)
+	return nothing, nothing.from.Before(stoppedBy) && deadline.Before(nothing.to.Add(witnessBound))
 }
 
 // armedWait is one wait serve armed its retry timer for, and the moment it was armed.
@@ -391,14 +598,17 @@ type armedWait struct {
 	at   time.Time
 }
 
-// cause is what the row knows started a scan: a reason heldScans leaves out, once the witness saw
-// the failure of the database it rests on, or a wake or a timer, which the row judges. failedAt is
-// each moment the outbox met that failure, every one of which a window of the witness's must hold,
-// and someFailedAt are moments at least one of which a window must hold.
+// cause is what the row knows started a scan: a reason heldScans leaves out, once the row saw what
+// gave it, or a wake or a timer, which the row judges. failedAt is each moment the outbox met a
+// failure of the database's, every one of which a window of the witness's must hold, and
+// someFailedAt are moments at least one of which a window must hold. lapsed is the loss deadline of
+// a hold the outbox took back after it ended, whose lapse a stall of the test process can explain
+// in place of the database (processStall.explains).
 type cause struct {
 	what                   string
 	reason                 bool
 	failedAt, someFailedAt []time.Time
+	lapsed                 time.Time
 }
 
 // heldScan is one scan of the holder's as TestTheOutboxDoesNotScanWhileIdle reads it: the claims
@@ -416,22 +626,58 @@ type heldScan struct {
 	cause    cause
 }
 
-// judgedScan is a heldScan judged against the witness's windows. fault is the reason the row leaves
-// the scan out for, with the windows that hold its failures, and empty for a scan the row judges;
-// woken is what started a judged one.
+// judgedScan is a heldScan judged against what the row saw. fault is the reason the row leaves the
+// scan out for, with what the row saw of that reason, and empty for a scan the row judges; woken is
+// what started a judged one.
 type judgedScan struct {
 	heldScan
 	fault, woken string
 }
 
-// judge leaves s out when its cause is a reason and the witness saw the failure behind it.
-func (s heldScan) judge(windows []failureWindow) judgedScan {
+// evidence is what the row had seen when it judges a part's scans: what its witness of the database
+// recorded, and the stalls of the test process and the renewals of the publisher hold its heartbeat
+// recorded (processWatch).
+type evidence struct {
+	witnessed
+	stalls   []processStall
+	renewals []time.Time
+}
+
+// judge leaves s out when its cause is a reason and the row saw what gave it: for a hold taken back
+// after it ended, a stall of the test process that explains its lapse (processStall.explains), and
+// otherwise the failure of the database behind it, in windows of the witness's.
+func (s heldScan) judge(saw evidence) judgedScan {
 	judged := judgedScan{heldScan: s, woken: s.cause.what}
-	if !s.cause.reason {
+	if !s.cause.lapsed.IsZero() {
+		for _, stall := range saw.stalls {
+			if nothing, ok := stall.explains(s.cause.lapsed, saw.renewals, saw.asked); ok {
+				judged.fault = fmt.Sprintf("%s; the test process ran nothing %s, with that deadline standing: the heartbeat did not beat, the witness sent no question and the outbox no renewal",
+					s.cause.what, nothing)
+				judged.woken = ""
+				return judged
+			}
+		}
+	}
+	// counted is the scan judged, started by woken, with any lock of the outbox's own that held a
+	// renewal back in the run-up to at named.
+	counted := func(woken string, at time.Time) judgedScan {
+		judged.woken = woken
+		for _, own := range saw.ownLocks {
+			if own.from.Before(at.Add(witnessBound)) && at.Add(-(publisherHoldOptions.TTL - publisherHoldOptions.Margin)).Before(own.to) {
+				judged.woken += "; the outbox's own pool held the lock its renewals waited on " + own.String()
+				break
+			}
+		}
 		return judged
 	}
+	if !s.cause.reason {
+		if s.cause.lapsed.IsZero() {
+			return judged
+		}
+		return counted(s.cause.what+", and the heartbeat saw no stall of the test process that explains it", s.cause.lapsed)
+	}
 	seen := func(at time.Time) (failureWindow, bool) {
-		for _, window := range windows {
+		for _, window := range saw.windows {
 			if window.holds(at) {
 				return window, true
 			}
@@ -439,8 +685,11 @@ func (s heldScan) judge(windows []failureWindow) judgedScan {
 		return failureWindow{}, false
 	}
 	unseen := func(at time.Time) judgedScan {
-		judged.woken = fmt.Sprintf("%s, though the witness saw no failure of the database at %s", s.cause.what, at.UTC().Format("15:04:05.000"))
-		return judged
+		woken := fmt.Sprintf("%s, though the witness saw no failure of the database at %s", s.cause.what, at.UTC().Format("15:04:05.000"))
+		if !s.cause.lapsed.IsZero() {
+			woken += ", nor the heartbeat a stall of the test process that explains the lapse"
+		}
+		return counted(woken, at)
 	}
 	var held []string
 	for _, at := range s.cause.failedAt {
@@ -495,21 +744,26 @@ type start struct {
 // scanned at once, 9 s into the row's 12 s idle window (run 44434907128, job envoy-go, 19
 // November). That scan is the take's catch-up, which no holder may skip: while it did not hold the
 // hold, another process could have held it and left events unpublished, and a standby reads none.
-// A LISTEN connection that is lost and dialled again catches up the same way, since a notification
-// sent while it had none is never reported, and a statement that failed is tried again a
-// retry.BaseDelay later. Each of those is a scan with a reason, and none is the scan on a period
-// this row is there to catch.
+// A test process that runs nothing for the 4 s to the hold's loss deadline lapses the hold the
+// same way, with no renewal sent at all. A LISTEN connection that is lost and dialled again
+// catches up the same way, since a notification sent while it had none is never reported, and a
+// statement that failed is tried again a retry.BaseDelay later. Each of those is a scan with a
+// reason, and none is the scan on a period this row is there to catch.
 //
-// So the row records each one when it happens, and leaves a scan out only when the row's own
-// witness (databaseWitness) saw the failure of the database behind it: an outbox that closes its
-// own connection, fails its own renewals or cuts its own statements short scans for no failure of
-// the database's, and the row counts those scans. A scan is left out when it is:
+// So the row records each one when it happens, and leaves a scan out only when the row saw what
+// gave it: its witness of the database (databaseWitness) the failure of the database behind it, or
+// its heartbeat (processWatch) the stall of the test process that lapsed the hold. An outbox that
+// closes its own connection, fails its own renewals, cuts its own statements short or holds a lock
+// its own renewals wait on scans for no failure of the database's, and the row counts those
+// scans. A scan is left out when it is:
 //
-//   - the first scan of a hold taken after the last one lapsed, when a window of the witness's holds
-//     the lapse's deadline and at least one renewal the database left unanswered while that
-//     deadline stood, whose warning names it. A hold the outbox gave up early has its deadline
-//     moved to the moment it was given up, which no warning names, and a hold that lapsed because
-//     no renewal was sent has no warning: both count against the outbox;
+//   - the first scan of a hold taken after the last one lapsed, when the heartbeat saw the test
+//     process run nothing over the lapse (processStall.explains), or when a window of the
+//     witness's holds the lapse's deadline and at least one renewal the database left unanswered
+//     while that deadline stood, whose warning names it. A hold the outbox gave up early has its
+//     deadline moved to the moment it was given up, which no warning names and no stall explains,
+//     and a hold that lapsed because the outbox sent no renewal while the process ran has neither
+//     a warning nor a stall: both count against the outbox;
 //   - a LISTEN connection's catch-up, when a window of the witness's holds the loss of the
 //     connection before it: the claims that started after its LISTEN succeeded (listenTrace), to
 //     the end of the scan the first of them is in. The listener sends the catch-up's wake only
@@ -524,6 +778,7 @@ type start struct {
 type heldScans struct {
 	outbox  *Outbox
 	witness *databaseWitness
+	process *processWatch
 	// restingAt is the claims the outbox had made when the holder last entered a wait with nothing
 	// left to do, and -1 until it enters one (atRest).
 	restingAt atomic.Int64
@@ -551,9 +806,11 @@ type heldScans struct {
 	lost    string
 	lostAt  time.Time
 	// renewFailures is every renewal of the publisher hold the database left unanswered, and
-	// windowsLogged how many of the witness's windows the row has logged.
+	// windowsLogged and stallsLogged how many of the witness's windows and of the heartbeat's
+	// stalls the row has logged.
 	renewFailures []renewFailure
 	windowsLogged int
+	stallsLogged  int
 }
 
 // install sets h's hooks on outbox, before Run starts it, and makes h's handler the default
@@ -637,13 +894,14 @@ func (h *heldScans) took(lost *duty.Hold) cause {
 			failed, last = append(failed, failure.at), failure.err
 		}
 	}
+	at := deadline.UTC().Format("15:04:05.000")
 	if len(failed) == 0 {
-		return cause{what: "the take of a hold that did not lapse after renewals the database left unanswered"}
+		return cause{what: fmt.Sprintf("the take of a hold that lapsed or was given up at %s with no renewal the database left unanswered", at), lapsed: deadline}
 	}
 	return cause{
 		what: fmt.Sprintf("the publisher hold taken back after it lapsed at %s, the database having left %d of its renewals unanswered before then (%s)",
-			deadline.UTC().Format("15:04:05.000"), len(failed), last),
-		reason: true, failedAt: []time.Time{deadline}, someFailedAt: failed,
+			at, len(failed), last),
+		reason: true, failedAt: []time.Time{deadline}, someFailedAt: failed, lapsed: deadline,
 	}
 }
 
@@ -756,23 +1014,30 @@ func (h *heldScans) mark() int {
 	return len(h.scans)
 }
 
-// judged is the scans that ended after mark, judged against the witness's windows. It first waits
-// for the database to answer a question the witness sent after the call, so every window open
-// while those scans ran has closed, and it logs each window the row has not logged yet, under part.
+// judged is the scans that ended after mark, judged against what the row saw. It first waits for
+// the database to answer a question the witness sent after the call, so every window open while
+// those scans ran has closed, and for the heartbeat to beat after the call, so every stall of the
+// test process in that time is recorded, and it logs each window and each stall the row has not
+// logged yet, under part.
 func (h *heldScans) judged(t *testing.T, part string, mark int) []judgedScan {
 	t.Helper()
-	windows := h.witness.answeredAfter(t, time.Now(), "the witness's answer after "+part)
+	asked := time.Now()
+	saw := evidence{witnessed: h.witness.answeredAfter(t, asked, "the witness's answer after "+part)}
+	saw.stalls, saw.renewals = h.process.beatAfter(t, asked, "the heartbeat's beat after "+part)
 	h.mu.Lock()
 	scans := slices.Clone(h.scans[mark:])
-	logged := h.windowsLogged
-	h.windowsLogged = len(windows)
+	windows, stalls := h.windowsLogged, h.stallsLogged
+	h.windowsLogged, h.stallsLogged = len(saw.windows), len(saw.stalls)
 	h.mu.Unlock()
-	for _, window := range windows[logged:] {
+	for _, window := range saw.windows[windows:] {
 		t.Logf("%s: the witness saw the database fail %s", part, window)
+	}
+	for _, stall := range saw.stalls[stalls:] {
+		t.Logf("%s: the heartbeat saw the test process stall %s", part, stall)
 	}
 	judged := make([]judgedScan, len(scans))
 	for i, scan := range scans {
-		judged[i] = scan.judge(windows)
+		judged[i] = scan.judge(saw)
 	}
 	return judged
 }
@@ -835,30 +1100,27 @@ func logFaults(t *testing.T, part string, scans []judgedScan) {
 }
 
 // An idle outbox scans nothing: no claim runs while no event is written and no retry falls due,
-// unless the database fails it and so gives it a reason to (heldScans says which reasons, why the
-// row leaves them out, and how its witness of the database must have seen each failure). An event
-// another process commits - which reaches this one only through the database, not its broker - is
-// claimed by the LISTEN on dispatch_events, and a back-off is claimed when it falls due, by the one
-// timer armed to it, with nothing else waking the outbox in between. Every step is read from what
-// the outbox and the database recorded - the scans and what started each, the waits armed, the
-// moment the database marked the event published - and never from how long a step took.
-//
-// One case the row cannot tell from a fault of the outbox's, and counts: a stall of the test
-// process itself that sends no renewal of the publisher hold for the 4 s to its loss deadline. The
-// hold lapses with no renewal warning, since none was sent; the witness's question in flight can
-// time out when the process resumes and so open a window over the stop, but no unanswered renewal
-// names the lapse's deadline, so the take that follows is counted. A log of the runner's clock
-// tells that case apart: it shows the process stopped for that long.
+// unless the database or a stall of the test process fails it and so gives it a reason to
+// (heldScans says which reasons, why the row leaves them out, and how the row must have seen each
+// one). An event another process commits - which reaches this one only through the database, not
+// its broker - is claimed by the LISTEN on dispatch_events, and a back-off is claimed when it falls
+// due, by the one timer armed to it, with nothing else waking the outbox in between. Every step is
+// read from what the outbox and the database recorded - the scans and what started each, the waits
+// armed, the moment the database marked the event published - and never from how long a step took.
 func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	database := storetest.Open(t)
 	other := storetest.SecondProcess(t, database)
 	seedIssue(t, database, "T-1", nil)
-	held := &heldScans{witness: watchDatabase(t, database)}
-	// The outbox's LISTEN connections are traced, so the row knows when each LISTEN succeeded
-	// (listenTrace).
-	outbox := New(Deps{Store: database, Publisher: &recordingPublisher{}, Broker: events.NewBroker(),
+	held := &heldScans{witness: watchDatabase(t, database), process: &processWatch{}}
+	// The outbox runs on a pool of its own, as it does in a dispatch process: named, so the witness
+	// tells a lock the outbox holds from one another session holds (witnessQuestion), and traced,
+	// so the heartbeat knows when each renewal of the publisher hold left (renewalTrace). Its
+	// LISTEN connections are traced too, so the row knows when each LISTEN succeeded (listenTrace).
+	pool := storetest.Traced(t, database.Pool, renewalTrace{process: held.process}, map[string]string{"application_name": outboxApplication})
+	outbox := New(Deps{Store: &store.Store{Pool: pool}, Publisher: &recordingPublisher{}, Broker: events.NewBroker(),
 		Listen: storetest.Traced(t, database.Pool, listenTrace{scans: held}, nil).Listener})
 	held.install(t, outbox)
+	held.process.watch(t, outbox)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { outbox.Run(ctx); close(done) }()
