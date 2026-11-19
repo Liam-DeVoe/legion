@@ -94,8 +94,8 @@ type DispatchMarkNode = {
 
 export const dispatchAskAttr = $markAttr('dispatchAsk', () => ({}));
 
-/** The asks the markdown parser has open, outermost first, per parser state. */
-const openAskSpans = new WeakMap<object, Attrs[]>();
+/** How many asks of each id and author the markdown parser has open, per parser state. */
+const openAskSpans = new WeakMap<object, Map<string, number>>();
 
 export const dispatchAskSchema = $markSchema('dispatchAsk', (ctx) => ({
   attrs: {
@@ -127,18 +127,25 @@ export const dispatchAskSchema = $markSchema('dispatchAsk', (ctx) => ({
       const n = node as DispatchMarkNode;
       const attrs = n.attrs || {};
       const askAttrs = { id: attrs.id ?? null, by: attrs.by ?? 'unknown' };
-      // Two readers' asks may cover the same text, so their spans nest, but closeMark drops every
-      // open mark of the type: close this span, then re-open the asks around it.
-      const outer = openAskSpans.get(state) ?? [];
-      openAskSpans.set(state, outer);
-      state.openMark(markType, askAttrs);
-      outer.push(askAttrs);
+      // Two readers' asks may cover the same text, so their spans nest. ParserState's closeMark
+      // drops every open mark of the type it is handed, so closing an ask by its type would close
+      // the asks around it too, each to be opened again: an ask nested D deep would open about
+      // D²/2 marks. The ask closes its own mark alone instead: closeMark calls `removeFromSet` on
+      // what it is handed (@milkdown/transformer's ParserState), and a mark's `removeFromSet`
+      // removes that mark and no other, so an ask opens one mark and closes one whatever its
+      // depth. An ask the same as one around it (its id and its author) adds no mark, since the
+      // set keeps one of two equal marks, and closes none.
+      const open = openAskSpans.get(state) ?? new Map<string, number>();
+      openAskSpans.set(state, open);
+      const key = JSON.stringify([askAttrs.id, askAttrs.by]);
+      const around = open.get(key) ?? 0;
+      if (around === 0) state.openMark(markType, askAttrs);
+      open.set(key, around + 1);
       try {
         state.next((n.children as never[]) || []);
       } finally {
-        outer.pop();
-        state.closeMark(markType);
-        for (const outerAttrs of outer) state.openMark(markType, outerAttrs);
+        open.set(key, around);
+        if (around === 0) state.closeMark(markType.create(askAttrs) as unknown as typeof markType);
       }
     },
   },
@@ -315,13 +322,29 @@ function parseDispatchSpanToken(value: string): DispatchSpanToken | null {
   };
 }
 
+/**
+ * Writes `kept` over `children`, each once, in place: the list stays the one its parent holds, so
+ * a count of what the parse touches through that list (tests/parse-work.ts) reads these writes
+ * and every later read of the list as the walk's own.
+ */
+function writeBack(children: MdastNode[], kept: readonly MdastNode[]): void {
+  for (let i = 0; i < kept.length; i++) children[i] = kept[i];
+  children.length = kept.length;
+}
+
+/**
+ * Moves each child that stands between an open `<span data-dispatch>` and its close into the span
+ * it stands in. Each child is read once and the children are written back once: a splice per
+ * moved child would shift every later child each time, about the square of the children for a
+ * paragraph of asks.
+ */
 function normalizeSplitDispatchSpans(parent: MdastParent): void {
   const { children } = parent;
+  const kept: MdastNode[] = [];
   const stack: (MdastNode & DispatchMarkNode)[] = [];
-  let i = 0;
 
-  while (i < children.length) {
-    const child = children[i];
+  for (const child of children) {
+    const current = stack[stack.length - 1];
     if (child.type === 'html' && typeof child.value === 'string') {
       const token = parseDispatchSpanToken(child.value);
       if (token?.type === 'open') {
@@ -331,53 +354,48 @@ function normalizeSplitDispatchSpans(parent: MdastParent): void {
           attrs: token.attrs,
           children: [],
         };
-
-        const current = stack[stack.length - 1];
         if (current) {
           current.children = current.children ?? [];
           current.children.push(node);
-          children.splice(i, 1);
         } else {
-          children.splice(i, 1, node);
-          i += 1;
+          kept.push(node);
         }
-
         stack.push(node);
         continue;
       }
 
-      if (token?.type === 'close') {
-        if (stack.length > 0) {
-          stack.pop();
-          children.splice(i, 1);
-          continue;
-        }
+      if (token?.type === 'close' && current) {
+        stack.pop();
+        continue;
       }
     }
 
-    if (stack.length > 0) {
-      const current = stack[stack.length - 1];
+    if (current) {
       current.children = current.children ?? [];
       current.children.push(child);
-      children.splice(i, 1);
       continue;
     }
-    i += 1;
+    kept.push(child);
   }
+  writeBack(children, kept);
 }
 
+/** Reads every `<span data-dispatch>` of `node`'s subtree into a `dispatchMark`. A block of HTML
+ *  that holds a whole span is put in place by the nodes it reads as, the children written back
+ *  once where one does, rather than a splice that shifts every later child. */
 function visit(node: MdastNode): void {
   if (!node.children) return;
   normalizeSplitDispatchSpans(node as MdastParent);
   const children = node.children;
+  let rebuilt: MdastNode[] | undefined;
 
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
     if (child.type === 'html' && typeof child.value === 'string' && isDispatchHtml(child.value)) {
       const parsed = parseDispatchHtml(child.value);
       if (parsed) {
-        children.splice(i, 1, ...parsed);
-        i += parsed.length - 1;
+        rebuilt ??= children.slice(0, i);
+        for (const read of parsed) rebuilt.push(read);
         continue;
       }
     }
@@ -385,7 +403,9 @@ function visit(node: MdastNode): void {
     if (child.children) {
       visit(child);
     }
+    rebuilt?.push(child);
   }
+  if (rebuilt) writeBack(children, rebuilt);
 }
 
 /** Raw remark transformer factory — use directly in a `unified()` pipeline (headless). */

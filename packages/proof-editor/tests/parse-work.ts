@@ -35,7 +35,16 @@
  * - `resolvedEvents` and `postprocessedEvents`: the events every tokenizer's resolvers hand on, and
  *   the events `postprocess` hands the compile.
  * - `milkdownRunnerCalls` of src/lib-headless.ts: each mdast node and mark Milkdown's parser state
- *   hands a spec's runner, counted where this package builds the specs, with no patch.
+ *   hands a spec's runner, counted where this package builds the specs, with no patch; and
+ *   `milkdownMarkOpens`, each mark a runner opens (an ask nested inside asks opens one, not one
+ *   for each ask around it: src/dispatch-marks.ts).
+ * - `htmlFlowResolveSteps` of src/html-flow.ts: each event the HTML (flow) resolver reads and
+ *   each its splice shifts, which the tokenizer's count does not see.
+ * - `blockIdWalkSteps` and `leafMarkWalkSteps` (src/editor/schema/block-ids.ts and leaf-marks.ts):
+ *   the nodes `withBlockIds` visits, and the nodes `withoutLeafMarks` visits and the earlier
+ *   children it copies, the two walks of the ProseMirror document every headless parse ends with.
+ *   ProseMirror compares node types by identity, so no Proxy stands in for that document, and
+ *   each walk counts itself.
  * - The stages no patch reaches, each counted from outside through a counting `Proxy` it is handed
  *   in place of what it takes (`counted`), one step for every read and every write it makes of an
  *   object it reaches through it: each mdast transform of the parse, this package's own and the
@@ -54,8 +63,7 @@
  * which `mdast-util-from-markdown` keeps private (`compiler` is not exported). That package is
  * pinned at 2.0.3 with a patch of its own (`patches/mdast-util-from-markdown@2.0.3.patch`), so its
  * handlers change only when that pin moves; the patch is made again then, and the handlers are
- * read again with it. `withBlockIds` and `withoutLeafMarks` walk the ProseMirror document, whose
- * node types ProseMirror compares by identity, so no Proxy stands in for it; nothing counts them.
+ * read again with it.
  *
  * The counts are the code's own record of the work, or the Proxy's of what each stage touched, so
  * a busy machine does not move them, and a parse put back to reading every event, node or code
@@ -82,7 +90,10 @@ import { content, workCount, workCounts } from "micromark-core-commonmark";
 import type { Processor } from "unified";
 import { nestingScanSteps } from "../src/block-nesting";
 import { directiveScanSteps } from "../src/directive-container";
-import { milkdownRunnerCalls } from "../src/lib-headless";
+import { blockIdWalkSteps } from "../src/editor/schema/block-ids";
+import { leafMarkWalkSteps } from "../src/editor/schema/leaf-marks";
+import { htmlFlowResolveSteps } from "../src/html-flow";
+import { milkdownMarkOpens, milkdownRunnerCalls } from "../src/lib-headless";
 
 /**
  * The most scan steps - lazy-line, label-end, nesting and directive together - a parse may take
@@ -156,6 +167,12 @@ export type WorkShape = {
   /** Whether the body opens a `:::` container, whose parse reads `directiveScanSteps`'s walks at
    *  least once, in a mode that refuses the body too: the refusal comes after them. */
   opensDirectives?: boolean;
+  /** How many blocks of HTML the body holds at `size`: the HTML (flow) resolver reads at least
+   *  one event of each. */
+  htmlBlocks?: (size: number) => number;
+  /** How many asks the body holds at `size`, each a mark its runner opens, in a parse that
+   *  returns a document. */
+  asks?: (size: number) => number;
   /**
    * The least size at which the body grows as it does at the full size, where a part that does not
    * grow (a nesting bound) is all of the body below it: the stages are not read at a size under it.
@@ -180,6 +197,10 @@ type KeptCounts = {
   readonly resolvedHandedOn: number;
   readonly postprocessedHandedOn: number;
   readonly runnerCalls: number;
+  readonly markOpens: number;
+  readonly htmlFlowResolve: number;
+  readonly blockIdWalk: number;
+  readonly leafMarkWalk: number;
 };
 
 /** What each kept count is, as a failure names it. */
@@ -199,6 +220,10 @@ const countNames: Record<keyof KeptCounts, string> = {
   resolvedHandedOn: "events the tokenizers' resolvers handed on",
   postprocessedHandedOn: "events postprocess handed the mdast compile",
   runnerCalls: "Milkdown runner calls",
+  markOpens: "marks Milkdown's runners opened",
+  htmlFlowResolve: "HTML (flow) resolver steps",
+  blockIdWalk: "nodes withBlockIds visited",
+  leafMarkWalk: "withoutLeafMarks steps",
 };
 
 /** The counts the code keeps, read now. */
@@ -220,6 +245,10 @@ function readKeptCounts(): KeptCounts {
     resolvedHandedOn: counted.resolvedEvents,
     postprocessedHandedOn: counted.postprocessedEvents,
     runnerCalls: milkdownRunnerCalls(),
+    markOpens: milkdownMarkOpens(),
+    htmlFlowResolve: htmlFlowResolveSteps(),
+    blockIdWalk: blockIdWalkSteps(),
+    leafMarkWalk: leafMarkWalkSteps(),
   };
 }
 
@@ -597,22 +626,34 @@ function expectFloors(what: string, shape: WorkShape, reading: WorkReading<unkno
       `${at} opens \`:::\` containers and took no ${countNames.directive}`
     ).toBeGreaterThan(0);
   }
+  const htmlBlocks = shape.htmlBlocks?.(size) ?? 0;
+  expect(
+    counts.htmlFlowResolve,
+    `${at} took ${counts.htmlFlowResolve} ${countNames.htmlFlowResolve} for its ${htmlBlocks} blocks of HTML`
+  ).toBeGreaterThanOrEqual(htmlBlocks);
   // A parse that returned a document went through every stage: its text was resolved, its
-  // tokenizers and `postprocess` handed events on, and Milkdown ran its runners on the tree; and,
-  // where the stages were handed their Proxies, subtokenize and the compile read the events and
-  // every transform read the tree.
+  // tokenizers and `postprocess` handed events on, Milkdown ran its runners on the tree, and the
+  // document was walked for its block ids and its leaves' marks; and, where the stages were handed
+  // their Proxies, subtokenize and the compile read the events and every transform read the tree.
   if (!reading.threw) {
     for (const key of [
       "textResolve",
       "resolvedHandedOn",
       "postprocessedHandedOn",
       "runnerCalls",
+      "blockIdWalk",
+      "leafMarkWalk",
     ] as const) {
       expect(
         counts[key],
         `${at} returned a document and took no ${countNames[key]}`
       ).toBeGreaterThan(0);
     }
+    const asks = shape.asks?.(size) ?? 0;
+    expect(
+      counts.markOpens,
+      `${at} returned a document and took ${counts.markOpens} ${countNames.markOpens} for its ${asks} asks`
+    ).toBeGreaterThanOrEqual(asks);
     if (reading.staged) {
       const transforms = [...counts.stages.keys()].filter((stage) =>
         stage.startsWith("the mdast transform ")

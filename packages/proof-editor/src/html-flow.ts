@@ -92,11 +92,25 @@ const nonLazyContinuationStart: Construct = {
   tokenize: tokenizeNonLazyContinuationStart
 }
 
+/**
+ * The steps `resolveToHtmlFlow` has taken in this process: one for each event its walk back to the
+ * block's `htmlFlow` enter reads, and one for each event its splice of the line prefix shifts, so
+ * a test holds the resolver to the length of the block it resolves (tests/parse-work.ts). The
+ * tokenizer's count sees only the codes handed to states, not a resolver's walk.
+ */
+let resolveSteps = 0;
+
+/** How many steps `resolveToHtmlFlow` has taken in this process so far. */
+export function htmlFlowResolveSteps(): number {
+  return resolveSteps
+}
+
 /** @type {Resolver} */
 function resolveToHtmlFlow(events: Event[]): Event[] {
   let index = events.length
 
   while (index--) {
+    resolveSteps++
     if (
       events[index][0] === 'enter' &&
       events[index][1].type === types.htmlFlow
@@ -110,7 +124,8 @@ function resolveToHtmlFlow(events: Event[]): Event[] {
     events[index][1].start = events[index - 2][1].start
     // Add the prefix start to the HTML line token.
     events[index + 1][1].start = events[index - 2][1].start
-    // Remove the line prefix.
+    // Remove the line prefix: the splice shifts every event after it.
+    resolveSteps += events.length - index
     events.splice(index - 2, 2)
   }
 

@@ -86,10 +86,35 @@ type HeavyShape = WorkShape & {
   expectDoc: (doc: ProseMirrorNode) => void;
   /** What the default mode refuses the body with at either size, for the shape it refuses. */
   refusedInDefaultMode?: RegExp;
+  /** What the read-only engine refuses the body with at either size, for the shape it refuses. */
+  refusedInReadOnlyMode?: RegExp;
 };
 
 /** The typed fence's opener, which its closers stop short by, so the body is twice the brackets. */
 const calloutLabel = ":::callout[";
+
+/** The opening tag of reader `id`'s ask, as an ask is written into a document's markdown. */
+function askOpen(id: number): string {
+  return `<span data-dispatch="ask" data-id="a${id}" data-by="reader">`;
+}
+
+/** How many marks of type `type` the inline nodes of `node` carry, together. */
+function marksOf(node: ProseMirrorNode, type: string): number {
+  let count = 0;
+  node.descendants((child) => {
+    count += child.marks.filter((mark) => mark.type.name === type).length;
+  });
+  return count;
+}
+
+/** How many nodes of type `type` `node` holds. */
+function nodesOf(node: ProseMirrorNode, type: string): number {
+  let count = 0;
+  node.descendants((child) => {
+    if (child.type.name === type) count++;
+  });
+  return count;
+}
 
 /** The shapes, each at the body cap, as a reader is sent them. */
 const shapes: HeavyShape[] = [
@@ -192,6 +217,80 @@ const shapes: HeavyShape[] = [
       expect(breaks).toBe(4_500);
     },
   },
+  {
+    // Each ask's opening tag, its text and its closing tag are three children of the paragraph
+    // (`remarkDispatchMarks`'s `normalizeSplitDispatchSpans`), so a walk that splices each child
+    // it moves into an ask out of the paragraph shifts the rest of it twice an ask.
+    name: "a paragraph of 500 asks side by side",
+    grow: (size) => Array.from({ length: size }, (_, id) => `${askOpen(id)}w</span>`).join(" "),
+    full: 500,
+    opensContainers: false,
+    asks: (size) => size,
+    expectDoc: (doc) => {
+      expect(doc.childCount).toBe(1);
+      expect(marksOf(doc, "dispatchAsk")).toBe(500);
+    },
+  },
+  {
+    // Every ask lies inside the one before it, so a runner that closed the asks around an ask and
+    // opened each of them again would open about the square of the depth.
+    name: "an ask nested 400 asks deep",
+    grow: (size) =>
+      `${Array.from({ length: size }, (_, id) => askOpen(id)).join("")}w${"</span>".repeat(size)}`,
+    full: 400,
+    opensContainers: false,
+    asks: (size) => size,
+    expectDoc: (doc) => {
+      expect(doc.textContent).toBe("w");
+      expect(marksOf(doc, "dispatchAsk")).toBe(400);
+    },
+  },
+  {
+    // Each block of HTML holds a whole ask and text after it, which `remarkDispatchMarks`'s
+    // `visit` reads as two inline nodes in the block's place, so a walk that splices them in
+    // shifts every block after it. Inline nodes cannot stand at the document's top, so both modes
+    // refuse the body once the transforms have run.
+    name: "450 blocks of HTML, each an ask then text",
+    grow: (size) =>
+      Array.from({ length: size }, (_, id) => `${askOpen(id)}\nw\n</span> t`).join("\n\n"),
+    full: 450,
+    opensContainers: false,
+    htmlBlocks: (size) => size,
+    expectDoc: () => {
+      throw new Error("both modes refuse this body; no row reads its document");
+    },
+    refusedInDefaultMode: /Cannot create node for doc/,
+    refusedInReadOnlyMode: /Cannot create node for doc/,
+  },
+  {
+    // Every image is the label of a link, a mark no inline leaf may carry, so `withoutLeafMarks`
+    // changes each: a walk that copied a node's earlier children again for each child it changed
+    // would copy about the square of the paragraph.
+    name: "a paragraph of 2,000 linked images",
+    grow: (size) => "[![i](u)](l) ".repeat(size),
+    full: 2_000,
+    opensContainers: false,
+    expectDoc: (doc) => {
+      expect(nodesOf(doc, "image")).toBe(2_000);
+      let marked = 0;
+      doc.descendants((node) => {
+        if (node.type.name === "image" && node.marks.length > 0) marked++;
+      });
+      expect(marked).toBe(0);
+    },
+  },
+  {
+    // The HTML (flow) resolver runs once a block, on the events the document has so far, so one
+    // that read them from the first would read about the square of the blocks.
+    name: "1,000 blocks of HTML, each with a paragraph after it",
+    grow: (size) => "<div>x</div>\n\ny\n\n".repeat(size),
+    full: 1_000,
+    opensContainers: false,
+    htmlBlocks: (size) => size,
+    expectDoc: (doc) => {
+      expect(nodesOf(doc, "html")).toBe(1_000);
+    },
+  },
 ];
 
 /**
@@ -231,16 +330,29 @@ function depthOf(node: ProseMirrorNode, type: string): number {
 
 for (const shape of shapes) {
   const refused = shape.refusedInDefaultMode;
+  const refusedReadOnly = shape.refusedInReadOnlyMode;
 
-  test(`the read-only engine parses ${shape.name} at a cost proportional to its length`, async () => {
-    const proof = await readOnlyProof();
-    const doc = parsedWithinWorkBounds(
-      `the read-only engine's parse of ${shape.name}`,
-      shape,
-      (body) => proof.parseMarkdown(body)
-    );
-    shape.expectDoc(doc);
-  });
+  if (refusedReadOnly === undefined) {
+    test(`the read-only engine parses ${shape.name} at a cost proportional to its length`, async () => {
+      const proof = await readOnlyProof();
+      const doc = parsedWithinWorkBounds(
+        `the read-only engine's parse of ${shape.name}`,
+        shape,
+        (body) => proof.parseMarkdown(body)
+      );
+      shape.expectDoc(doc);
+    });
+  } else {
+    test(`the read-only engine refuses ${shape.name} at a cost proportional to its length`, async () => {
+      const proof = await readOnlyProof();
+      refusalWithinWorkBounds(
+        `the read-only engine's refusal of ${shape.name}`,
+        shape,
+        (body) => proof.parseMarkdown(body),
+        refusedReadOnly
+      );
+    });
+  }
 
   if (refused === undefined) {
     test(`the default mode parses ${shape.name} at a cost proportional to its length`, async () => {

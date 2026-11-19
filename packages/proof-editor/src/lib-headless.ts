@@ -122,12 +122,42 @@ export function milkdownRunnerCalls(): number {
   return runnerCalls;
 }
 
+/**
+ * The marks Milkdown's parser state has opened, over every parse in this process: one for each
+ * `openMark` call a runner makes, counted on each parser state the first runner call hands it. A
+ * runner that closed a mark by its type and opened again every mark of that type around it would
+ * open about the square of a nesting's depth here (`dispatchAskSchema`'s runner, ./dispatch-marks).
+ */
+let markOpens = 0;
+
+/** How many marks Milkdown's parser state has opened in this process so far. */
+export function milkdownMarkOpens(): number {
+  return markOpens;
+}
+
+/** The parser states whose `openMark` counts into `markOpens`. */
+const markCountingStates = new WeakSet<object>();
+
+/** Makes `state`'s `openMark` count each call, the first time a runner is handed it: ParserState
+ *  holds `openMark` as a property of its own, so the wrapper replaces it on that one state. */
+function countMarkOpens(state: unknown): void {
+  if (typeof state !== 'object' || state === null || markCountingStates.has(state)) return;
+  markCountingStates.add(state);
+  const parserState = state as { openMark: (...args: unknown[]) => unknown };
+  const openMark = parserState.openMark;
+  parserState.openMark = (...args: unknown[]) => {
+    markOpens++;
+    return openMark(...args);
+  };
+}
+
 /** The parse side of a Milkdown node or mark spec, as this module reads it. */
 type MarkdownParsedSpec = {
   readonly parseMarkdown?: { readonly runner: (...args: never[]) => void };
 };
 
-/** `spec` as the schema holds it: a copy whose parse runner counts each call it gets. */
+/** `spec` as the schema holds it: a copy whose parse runner counts each call it gets, and the
+ *  marks it opens. */
 function withCountedRunner<Spec extends MarkdownParsedSpec>(spec: Spec): Spec {
   const parse = spec.parseMarkdown;
   if (parse === undefined) return spec;
@@ -138,6 +168,7 @@ function withCountedRunner<Spec extends MarkdownParsedSpec>(spec: Spec): Spec {
       ...parse,
       runner(this: unknown, ...args: Parameters<typeof runner>) {
         runnerCalls++;
+        countMarkOpens(args[0]);
         return runner.apply(this, args);
       },
     },
