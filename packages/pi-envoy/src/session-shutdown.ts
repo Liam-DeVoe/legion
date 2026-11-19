@@ -6,16 +6,23 @@
  */
 import { messageFor } from "@legion/envoy-client/errors";
 
-/** The whole of what the `session_shutdown` handler gives its deregistration and its drain. Oh
- *  My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`), and the
- *  second this leaves is for the synchronous work ahead of the race and for the host. The
- *  shared `SHUTDOWN_SETTLE_MS` is what that path spends waiting on a registration still on the
- *  wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration slower
- *  than a second would mean no DELETE was sent at all and the record outlived this process by
- *  the gone horizon, where a DELETE that races a slow registration only may lose. The quarter
- *  of a second it spends instead leaves 750 ms here (1.75 s of the host's 2 s) for the DELETE
- *  to reach the wire. */
-export const SHUTDOWN_DEADLINE_MS = 1_000;
+/** How long Oh My Pi gives a `session_shutdown` handler before it abandons it and seals the
+ *  session (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS` in the host's extension runner). */
+export const HOST_SHUTDOWN_HANDLER_MS = 2_000;
+
+/** What the handler leaves of the host's limit for the synchronous work ahead of its race and for
+ *  the host itself. */
+export const HOST_SHUTDOWN_MARGIN_MS = 1_000;
+
+/**
+ * The whole of what the `session_shutdown` handler gives its deregistration and its drain. The
+ * shared `SHUTDOWN_SETTLE_MS` (`@legion/envoy-client/envoy-settings`) is what that path spends
+ * waiting on a registration still on the wire, and the rest of this deadline is the DELETE's to
+ * reach the wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration
+ * slower than that would mean no DELETE was sent at all and the record outlived this process by
+ * the gone horizon, where a DELETE that races a slow registration only may lose.
+ */
+export const SHUTDOWN_DEADLINE_MS = HOST_SHUTDOWN_HANDLER_MS - HOST_SHUTDOWN_MARGIN_MS;
 
 /** A warn line of the host's logger: its message and what it names. */
 export type ShutdownWarn = (

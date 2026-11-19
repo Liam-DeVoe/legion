@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The `session_shutdown` handler's 1 s deadline is computed from Oh My Pi's 2 s limit on a
+  shutdown handler less the second it leaves the host (`src/session-shutdown.ts`), rather than
+  written as a number beside a sum in a comment. Its value is unchanged.

@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { deregisterAndDrain, SHUTDOWN_DEADLINE_MS, type ShutdownWarn } from "./session-shutdown";
+import { SHUTDOWN_SETTLE_MS } from "@legion/envoy-client/envoy-settings";
+import {
+  deregisterAndDrain,
+  HOST_SHUTDOWN_HANDLER_MS,
+  HOST_SHUTDOWN_MARGIN_MS,
+  SHUTDOWN_DEADLINE_MS,
+  type ShutdownWarn,
+} from "./session-shutdown";
 
 /** A warn sink that keeps each line, and the call that runs the race with it. */
 function shutdownRace(deregistration: Promise<void>, draining: Promise<void> = Promise.resolve()) {
@@ -19,6 +26,12 @@ function shutdownRace(deregistration: Promise<void>, draining: Promise<void> = P
   });
   return { warned, deadline, ran };
 }
+
+test("the shutdown deadline is the host's limit less its margin, and leaves the DELETE time past the settle", () => {
+  expect(SHUTDOWN_DEADLINE_MS).toBe(HOST_SHUTDOWN_HANDLER_MS - HOST_SHUTDOWN_MARGIN_MS);
+  expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(HOST_SHUTDOWN_HANDLER_MS);
+  expect(SHUTDOWN_DEADLINE_MS).toBeGreaterThan(SHUTDOWN_SETTLE_MS);
+});
 
 test("a DELETE still pending at the deadline is given up and logged at warn with the session id", async () => {
   // The listener never answers: only the deadline ends the race.

@@ -1211,15 +1211,22 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   }
 
   /**
-   * What a registration's answer says of consumer delivery, for the id it registered and the
-   * relay it asked for. An answer for an id this process has left, or for a relay since closed,
-   * changes nothing.
+   * What a registration's answer says of consumer delivery, for the id it registered, the relay
+   * it asked for and the epoch its request named. An answer for an id this process has left, or
+   * for a relay since closed, changes nothing.
    */
-  const takeDeliveryAnswer = (sessionID: string, asked: Relay, result: SubscribeResult): void => {
+  const takeDeliveryAnswer = (
+    sessionID: string,
+    asked: Relay,
+    epoch: string,
+    result: SubscribeResult,
+  ): void => {
     if (sessionID !== identity.id || relay !== asked) return
     asked.delivery.answered(result.delivery)
-    // The tests' record, unset in production: the epoch the listener restarts the relay on.
-    record?.({ registered: asked.delivery.epoch().id })
+    // The tests' record, unset in production: the epoch the answered registration named, which
+    // the listener restarts the relay on. A reconnect can begin another epoch while that
+    // registration is on the wire (`renewRelayEpoch`), so the relay's epoch now may be a later one.
+    record?.({ registered: epoch })
   }
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
@@ -1349,6 +1356,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     }
     const sessionID = identity.id
     const asking = relay?.sessionID === sessionID ? relay : undefined
+    /** The epoch this registration's request names, which its answer is for. */
+    let askedEpoch: string | undefined
     await registerWithRelay({
       relay: asking?.delivery,
       ownAgentSubject: directSubject,
@@ -1356,6 +1365,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       roles: heldRole === undefined ? [] : [heldRole],
       outage: inboundOutage,
       send: (topics, deliveryRequest) => {
+        askedEpoch = deliveryRequest.epoch
         const registering = options.client.subscribe({
           sessionID,
           directory: identity.directory,
@@ -1385,7 +1395,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // lists, leaves the session with no consumer at all, as every other failed registration
       // does: the session is told once and the heartbeat asks again.
       answered: (result) => {
-        if (asking !== undefined) takeDeliveryAnswer(sessionID, asking, result)
+        if (asking !== undefined && askedEpoch !== undefined) {
+          takeDeliveryAnswer(sessionID, asking, askedEpoch, result)
+        }
       },
     })
   }

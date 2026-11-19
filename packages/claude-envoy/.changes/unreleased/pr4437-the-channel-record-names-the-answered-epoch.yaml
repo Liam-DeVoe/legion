@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The channel server's test record (`ENVOY_CHANNEL_RECORD_FILE`, unset in production) names, for
+  each registration the listener answered, the epoch that registration's request carried. Before,
+  it named the relay's epoch when the answer landed, which a reconnect can move on while a
+  registration is on the wire.
