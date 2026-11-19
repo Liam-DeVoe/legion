@@ -130,7 +130,7 @@ func TestSettlementGivesALiveDocumentTheBaseEmailLinksItsOwnCannotBeWrittenAs(t 
 // name one tree. The room keeps the rule's tree until its settlement, which then gives it the
 // base's link.
 func TestAVersionBeforeTheSettlementStoresTheBaseEmailLinksItsTreeCannotBeWrittenAs(t *testing.T) {
-	const shape = "b-_www.@example.com./bob-smith@example.com\n"
+	shape := unwritableAddresses[0] + "\n"
 	writer := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	for _, row := range []struct {
 		name    string
@@ -220,7 +220,7 @@ func TestAVersionBeforeTheSettlementStoresTheBaseEmailLinksItsTreeCannotBeWritte
 // version is stored as the repair would leave its tree, so its markdown reads back as the tree its
 // token names; the room keeps the browser's edit, which the next settlement versions.
 func TestASettlementWhoseLiveFallbackWritesNothingVersionsItsReadWithTheBaseEmailLinks(t *testing.T) {
-	const shape = "b-_www.@example.com./bob-smith@example.com\n"
+	shape := unwritableAddresses[0] + "\n"
 	service, artifactID, _, _ := roomTypedByBrowser(t, shape)
 	read := liveTree(t, service, artifactID)
 	want, changed, err := pmdoc.FallBackEmailLinks(read)
@@ -322,8 +322,9 @@ func TestAnEditOfAnAddressTheRuleCannotWriteStoresTheBaseEmailLinks(t *testing.T
 				service.settle = time.Hour // the test runs each settlement itself
 				seedServiceText(t, service, artifactID, row.seed)
 				settleCurrentGeneration(t, service, artifactID)
-				if node, href := runHolding(liveTree(t, service, artifactID), laterAddress); node != nil && href != "" {
-					t.Fatalf("the seeded room links %s already: %s", laterAddress, linkSummary(liveTree(t, service, artifactID)))
+				seeded := liveTree(t, service, artifactID)
+				if _, href := runHolding(seeded, laterAddress); href != "" {
+					t.Fatalf("the seeded room links %s already: %s", laterAddress, linkSummary(seeded))
 				}
 				if err := row.edit(t, service, artifactID); err != nil {
 					t.Fatalf("the edit was refused: %v", err)

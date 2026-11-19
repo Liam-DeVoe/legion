@@ -1815,8 +1815,24 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 // and the outcome the route answers with, read back where the batch changed the document. tree is
 // the document the batch started from, the one this edit stamped the missing ask block ids on, and
 // the document returned is the one the route stores.
+//
+// What the batch leaves is stored with the base's email links where the renderer cannot write its
+// own so that they read back (fallBackWrittenEmailLinks): once, over the tree the last operation
+// left, against the tree the batch started from. So the tree the batch answers, the one its write
+// stores and its token names (editBatch.outcome), is the tree its rendering reads back as,
+// whichever operation wrote the address - an inline replace, a delete of the text beside it -
+// rather than one the settlement repairs after the edit has answered. It runs here rather than in
+// applyBatch, so a run that checks a batch and discards it (requirePreconditionCoverage,
+// prevalidateOperations, verifyTableAnchorSnapshots) reads nothing back. That fallback refuses
+// nothing: the insert and the replacement of blocks run theirs inside the check that refuses their
+// other misreads (pmdoc.FallBackMisreadWrite), and every other operation, which runs no read-back
+// check of the whole document, refuses no misread here either.
 func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdoc.Node, batch editBatch, ops int) (EditOutcome, pmdoc.ValidDocument, error) {
-	next := batch.tree
+	next, err := fallBackWrittenEmailLinks(batch.beforeTree, batch.tree)
+	if err != nil {
+		return EditOutcome{}, pmdoc.ValidDocument{}, err
+	}
+	batch.tree = next
 	pmdoc.EnsureBlockIDs(next)
 	if err := validateEditedAskBlocks(tree, next); err != nil {
 		return EditOutcome{}, pmdoc.ValidDocument{}, &ErrInvalidAskBlock{Reason: err}

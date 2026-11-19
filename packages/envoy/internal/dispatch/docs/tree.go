@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"weak"
@@ -408,11 +407,12 @@ func fallBackEmailLinksLive(doc *crdt.Doc, origin any) error {
 	return fallErr
 }
 
-// textHoldsAt reports whether a text node of tree holds an `@`.
+// textHoldsAt reports whether a text node of tree, a whole document, holds an `@`: whether a node
+// of tree holds one in its own text (ownTextHoldsAt).
 func textHoldsAt(tree *pmdoc.Node) bool {
 	holds := false
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		holds = node.Type == "text" && strings.IndexByte(node.Text, '@') >= 0
+		holds = ownTextHoldsAt(node)
 		return !holds
 	})
 	return holds

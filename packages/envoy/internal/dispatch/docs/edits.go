@@ -1080,16 +1080,6 @@ func (t *batchTree) finder() (*pmdoc.QuoteFinder, error) {
 // budget; each run of a batch - a conditional one runs to check its anchors and preconditions as
 // well as to apply - takes its own, so no run charges the batch's padding twice. What the batch
 // leaves is weighed against what one upload may hold where it is written (refuseGrowth).
-//
-// What the batch leaves is stored with the base's email links where the renderer cannot write its
-// own so that they read back (fallBackWrittenEmailLinks): once, over the tree the last operation
-// left, against start's. So the tree the batch answers, the one its write stores and its token
-// names (editBatch.outcome), is the tree its rendering reads back as, whichever operation wrote the
-// address - an inline replace, a delete of the text beside it - rather than one the settlement
-// repairs after the edit has answered. That fallback refuses nothing: the insert and the
-// replacement of blocks run theirs inside the check that refuses their other misreads
-// (pmdoc.FallBackMisreadWrite), and every other operation, which runs no read-back check of the
-// whole document, refuses no misread here either.
 func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidator, before string) (editBatch, error) {
 	tree := start
 	beforeTree := start.node
@@ -1156,12 +1146,8 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 		}
 		tree = newBatchTree(next)
 	}
-	stored, err := fallBackWrittenEmailLinks(beforeTree, tree.node)
-	if err != nil {
-		return editBatch{}, err
-	}
 	return editBatch{
-		tree:       stored,
+		tree:       tree.node,
 		beforeTree: beforeTree,
 		before:     before,
 		unchanged:  unchanged,
@@ -2427,7 +2413,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	}
 	// What the inline path wrote is judged by the block checks above alone. An address its text
 	// writes that the renderer cannot write as next reads it takes the base's email links once the
-	// batch has run, over the batch's whole tree (applyBatch, fallBackWrittenEmailLinks), so the
+	// batch has run, over the batch's whole tree (finishBatch, fallBackWrittenEmailLinks), so the
 	// tree answered here can still be the rule's.
 	if !blocks {
 		return next, nil
