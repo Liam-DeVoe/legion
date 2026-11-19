@@ -2383,26 +2383,28 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 168: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
+// 170: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
 // question to a stopped agent that the daemon's answer loop passed to the controller in the last
 // seven days (id, issue, role, session, asker, ref, reason, passedAt), newest first and at most
 // 100: the controller's `agent-question` notice is a live wake only, so a controller that starts
 // later reads what it missed here. A body this contract writes carries it on every state, never
-// null, and a caller from a pod whose claims record a contract under 168 is served the state
+// null, and a caller from a pod whose claims record a contract under 170 is served the state
 // without the key (stateNarrowings, questionsForControllerContract), since the strict reader
-// before 168 refuses it. The 168 reader takes it as optional for that body alone, as it takes
-// `wakesWaiting`; a daemon below 168 is not what serves it a body without the key, since the boot
+// before 170 refuses it. The 170 reader takes it as optional for that body alone, as it takes
+// `wakesWaiting`; a daemon below 170 is not what serves it a body without the key, since the boot
 // gate and `legion probe-image` refuse that mixed pair. (This branch
 // took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
 // stood at 57, then 59 while main stood at 58, then 60 while main stood at 59, then 61 while main
 // stood at 59 and #2539 and #2731 also declared 60, then 122 while main stood at 111, then 126
 // while main stood at 123, then 149 while main stood at 144 and kept it while main stood at 146,
 // then 157 while main stood at 151, then 162 while main stood at 152, then 168 while main stood
-// at 160. It takes 168 because open pull requests, drafts included, declared 161 (#4173, #4180,
-// #4193 and #4259), 162 (#3712, beside this one), 163 (#4049), 164 (#4017), 165 (#4392), 166
-// (#4432) and 167 (#3831, #4030, #4485, #4488 and #4493) at 2026-11-19T08:30Z, read with the
-// `declared_by_open_pull_requests` of main's .github/scripts/check-daemon-api-contract.sh, so 168
-// is the lowest number above main's that no open pull request declares. main held 160 at the
-// forward merge that last read this number, main's a573bac2; read main's own number and every
-// open pull request's again at the next merge rather than from this line.)
-const DaemonAPIVersion = 168
+// at 160, then 170 while main stood at 160. It takes 170 because open pull requests, drafts
+// included, declared 160 (#2544, #2813, #3178 and #3512), 161 (#4173, #4180, #4193 and #4259),
+// 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#3831, #4030 and
+// #4485), 168 (#3659, #4273 and #4488, beside this one) and 169 (#4065 and #4493) at
+// 2026-11-19T10:20Z, read with the `declared_by_open_pull_requests` of main's
+// .github/scripts/check-daemon-api-contract.sh, so 170 is the lowest number above main's that no
+// open pull request declares. main held 160 at the forward merge that last read this number,
+// main's 46795520; read main's own number and every open pull request's again at the next merge
+// rather than from this line.)
+const DaemonAPIVersion = 170

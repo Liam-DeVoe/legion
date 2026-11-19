@@ -554,6 +554,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
 		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
+		{"POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
 
 		// The catch-all answers every unrouted request, including a known path asked for with the
@@ -1180,9 +1181,9 @@ const assignmentsContract = 141
 const entryTimesContract = 146
 
 // questionsForControllerContract is the daemon contract that added `questionsForController` to
-// the state (version.go's 168): a plugin before it reads the state with a strict schema that knows
+// the state (version.go's 170): a plugin before it reads the state with a strict schema that knows
 // no such key and refuses the whole body for it, empty as surely as naming a question.
-const questionsForControllerContract = 168
+const questionsForControllerContract = 170
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
