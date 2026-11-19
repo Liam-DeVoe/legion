@@ -317,17 +317,20 @@ census_complete "$section" "after the backfill"
 # The server's block-index tick runs the object pass on every tick while a process of another
 # build serves and the first tick after one did, on the first tick that joins the build's cursor,
 # on a tick whose events name a row with no node (graphcensus.EventsOweObjectPass), and once 10
-# minutes have passed since its last pass finished (docs' objectPassInterval); the server this
-# script starts is the only build serving, so no tick here owes it for another build. The pass
+# minutes have passed since its last pass finished (docs' objectPassInterval). This driver does
+# not start the server it reads; it needs that server - the harness's own under with-harness.sh,
+# or the one DISPATCH_URL names - to be the only build serving the database, since with another
+# build serving every tick owes the pass, and the sections below hold no quiet interval. The pass
 # writes the node of every row that names none and cures every node no row stands behind (docs'
 # writeObjectNodesAnotherBuildWrote). The sections below take a row's node away or remove a row as
 # an earlier build would, and read the census before any backfill, so a pass among them would cure
 # what they read first. So, as an earlier build would, a direct message is sent here with its event
 # and no node, and the sections wait until the pass that event owes has written its node and
-# cleared the debt: the next pass is then 10 minutes away, and no event below names a row with no
-# node. A cursor row whose event_id has reached that event was moved by a tick of this server
-# after it - a cursor an earlier server left on a reused database stands behind it - and with the
-# debt clear there and the message's node written, that tick's pass has finished.
+# cleared the debt: with this build serving alone, the next pass is then 10 minutes away, and no
+# event below names a row with no node. A cursor row whose event_id has reached that event was
+# moved by a tick of this server after it - a cursor an earlier server left on a reused database
+# stands behind it - and with the debt clear there and the message's node written, that tick's
+# pass has finished.
 section=pass
 query "$section" "an earlier build sends a direct message with its event and no node" "
   with message as (

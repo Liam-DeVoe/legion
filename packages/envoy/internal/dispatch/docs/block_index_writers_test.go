@@ -686,12 +686,11 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // own, and a scan of SQL alone would never see it. asks.Follow picks graphstore.WriteArms or
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
-// the same use as one. The names are every exported function of graphstore that writes the store
-// or builds the statement that does, the list that test holds as storeWriteFunctions:
-// SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
-// store through it alone would otherwise be read as no writer at all, and FillScopes is the
-// backfill's fill of the project of a node stored with none.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|QueueWrite|QueueNodes|QueueCaused|Authored|Reached|SessionRecorded|QueueAuthored|QueueReached|QueueSessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
+// the same use as one. The names are graphstore.WriteFunctions, the one list of every function a
+// write of the store from outside that package goes through, which that test and api's scan of
+// the projected tables' writers read too, so a writer the store gains is scanned here with no
+// second list to keep.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(` + strings.Join(graphstore.WriteFunctions(), "|") + `)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

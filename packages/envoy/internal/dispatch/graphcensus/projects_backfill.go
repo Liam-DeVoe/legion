@@ -376,11 +376,12 @@ func writableRowLeft(ctx context.Context, database *store.Store, kind objectKind
 
 // writableRows answers, of a batch of kind's rows, the ones a pass can write (writable), and
 // leaves the others: each that names a party the store refuses (partiesRefused), counted in
-// skipped as writeObjectBatch counts it, and each that names a project other than the one the
-// store holds its node in, live or gone, answered in moved as the store's refusal of that write
-// (graphstore.ErrProjectMoved). It reads the projects the store holds the batch's nodes in, with
-// no lock and outside any transaction, so a row it leaves costs that read alone; the rows it
-// answers are written and read again under their locks (writeObjectBatch).
+// skipped, since one such row of an earlier build would otherwise fail every batch it falls in
+// and every run of the backfill with it, and the census names it; and each that names a project
+// other than the one the store holds its node in, live or gone, answered in moved as the store's
+// refusal of that write (graphstore.ErrProjectMoved). It reads the projects the store holds the
+// batch's nodes in, with no lock and outside any transaction, so a row it leaves costs that read
+// alone; the rows it answers are written and read again under their locks (writeObjectBatch).
 func writableRows(ctx context.Context, database *store.Store, kind objectKind, nodes []objectRow) (writable []objectRow, skipped int64, moved []error, err error) {
 	ids := make([]string, len(nodes))
 	for index, node := range nodes {
@@ -557,9 +558,9 @@ func derefText(value *string) string {
 // before this one dated at its transaction's start can predate a removal it waited behind - so a
 // read of the node as of a time reads the statements in the order the store appended them.
 //
-// A node between a party graphstore.PartiesValue refuses is skipped, counted in Skipped, and
-// left for the census to name: one such row of an earlier build would otherwise fail every batch
-// it falls in, and every run of the backfill with it.
+// It is handed only the rows writableRows answers, so no row between a party
+// graphstore.PartiesValue refuses reaches it: a row's parties are its own content, which the
+// read under the locks does not change.
 func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKind, nodes []objectRow) (KindBackfill, error) {
 	ids := make([]string, len(nodes))
 	for index, node := range nodes {
@@ -587,10 +588,6 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		for _, row := range nodes {
 			node := row.Node
 			if identity, stands := standing[node.ID]; !stands || identity != row.identity {
-				continue
-			}
-			if partiesRefused(node.Parties) {
-				written.Skipped++
 				continue
 			}
 			stored, found := held[node.ID]
@@ -749,7 +746,7 @@ var scopeKinds = []struct{ kind, read string }{
 // nodes it has to fill, and the fill writes them in the transaction that states the fact. A block
 // node whose document is gone has no row to read a project from, and is left as it is: no row of
 // the census holds it, and no read answers it. A scope between a party graphstore.PartiesValue
-// refuses is skipped and counted in Skipped, as the object batch skips one (writeObjectBatch).
+// refuses is skipped and counted in Skipped, as the object pass skips one (writableRows).
 func backfillScopes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
 	for _, kind := range scopeKinds {

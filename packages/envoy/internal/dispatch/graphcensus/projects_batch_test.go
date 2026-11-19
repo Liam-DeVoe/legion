@@ -151,9 +151,9 @@ func TestTheObjectBatchWaitsForARemovalOnTheIssueRowAndWritesNoNode(t *testing.T
 // it falls in nor any later run. The census names the skipped document missing, and since no
 // command writes its node, its line says so rather than sending the operator to the backfill.
 //
-// Its controls are the skip taken out of the object batch, which makes the backfill fail on the
-// join's refusal and write nothing more, and the refused party's cure taken out of the census,
-// whose line then names the backfill.
+// Its controls are the refused party's skip taken out of the object pass (writableRows answering
+// such a row writable), which makes the backfill fail on the join's refusal and write nothing
+// more, and the refused party's cure taken out of the census, whose line then names the backfill.
 func TestTheBackfillSkipsARowBetweenARefusedPartyAndWritesTheRest(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
