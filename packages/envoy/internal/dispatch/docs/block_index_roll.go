@@ -310,7 +310,10 @@ func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTic
 // objectPassBatches bounds the batches one tick's object pass writes across the four kinds, so a
 // first deploy's whole backlog never holds the block-index lease in one tick: a pass that stops
 // with rows left leaves its debt and makes the tick full, and the next one runs blockIndexStep
-// later. At the backfill's batch size of 200 it writes the nodes of up to 800 rows a tick.
+// later. At the backfill's batch size of 200 it writes the nodes of up to 800 rows a tick. Rows no
+// pass can write - a refused party, a node held in another project - spend none of it and take no
+// lock: each pass reads them again, two index reads for each 200 of them (graphcensus's
+// writeObjectKind).
 const objectPassBatches = 4
 
 // orphanedNodesSwept bounds the orphaned document nodes one tick states gone, each in a

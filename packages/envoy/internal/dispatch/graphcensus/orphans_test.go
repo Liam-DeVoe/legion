@@ -297,6 +297,65 @@ func TestRowsNoPassCanWriteNeitherSpendTheBudgetNorKeepMore(t *testing.T) {
 	}
 }
 
+// A backlog of rows no pass can write - more than one batch of them - opens no transaction of the
+// pass and takes no owner lock, so a pass over it ends within its bound even while a writer holds
+// the owners' locks: 200 conversation files whose session holds white space and ORPH-1/a-md, whose
+// node is gone in project ELSEWHERE, behind an issue and an ask that hold their nodes. With issue
+// ORPH-1's owner lock held by another transaction, a pass of one batch answers no row, no More and
+// the moved row, well before the test's deadline.
+//
+// Its control is every batch written through writeObjectBatch, as before unwritableBatch: the
+// first batch, which holds ORPH-1/a-md, queues behind the held owner lock and the pass runs out
+// the deadline.
+func TestABacklogOfRowsNoPassCanWriteTakesNoOwnerLock(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedOrphanIssueWithAsks(t, database, 1)
+	writeEveryOwedNode(t, database)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ELSEWHERE', 'Elsewhere', 'alice')`); err != nil {
+			return err
+		}
+		moved := graphstore.ArtifactNode(orphanIssue+"/a-md", "ELSEWHERE", "", alice, time.Now().UTC().Add(-time.Hour))
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		// A node not gone that names a project is marked, and its row read by no pass; gone,
+		// it leaves the row unmarked, and its project another than the row's.
+		moved.State, moved.MadeAt = graphstore.StateGone, time.Now().UTC().Add(-time.Minute)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ('ORPH-1', 'ORPH', 'a-md', 'A', 'doc', '{"kind":"user","id":"alice"}');
+			insert into artifacts (session_id, slug, name, kind, created_by)
+			select 'ses bad', 'n-' || g, 'Notes', 'file', '{"kind":"session","id":"ses bad"}'
+			from generate_series(1, 200) as g;
+		`)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the backlog no pass can write: %v", err)
+	}
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the owner lock's holder: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	if err := store.LockOwners(ctx, holder, store.IssueOwner(orphanIssue)); err != nil {
+		t.Fatalf("hold issue %s's owner lock: %v", orphanIssue, err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	started := time.Now()
+	pass, err := WriteOwedObjectNodes(bounded, database, 1)
+	if err != nil || pass.Rows != 0 || pass.More || pass.Moved == nil {
+		t.Fatalf("a pass of one batch over the backlog answered %+v (%v) after %s, want no row, no More and the moved row, with %s's owner lock held elsewhere",
+			pass, err, time.Since(started).Round(time.Millisecond), orphanIssue)
+	}
+}
+
 // A kind whose batch fails holds back no other kind: with the store refusing every ask's node, the
 // pass still writes the message's node, and answers the asks' failure.
 //

@@ -280,9 +280,13 @@ func WriteOwedObjectNodes(ctx context.Context, database *store.Store, batches in
 //
 // A row no pass can write - between a party the store refuses, or whose node the store holds in
 // another project - stays unmarked, so every run reads it again from the start of the key. So a
-// batch that writes nothing spends no budget, and the read past the budget skips such rows
-// (writableRowLeft): otherwise those rows would take the budget every run, hold back the rows after
-// them, and keep more, and with it the tick's debt, for ever.
+// batch that writes nothing spends no budget, the read past the budget skips such rows
+// (writableRowLeft), and a batch that holds only such rows opens no transaction and takes no owner
+// lock (unwritableBatch): otherwise those rows would take the budget every run, hold back the rows
+// after them, keep more, and with it the tick's debt, for ever, and take their owners' locks on
+// every run. What such rows still cost each run is the read of their batches and of the projects
+// the store holds their nodes in: two index reads, with no lock and no transaction, for each
+// backfillBatch of them.
 func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind, budget *int) (report KindBackfill, more bool, moved []error, err error) {
 	report = KindBackfill{Kind: kind.kind}
 	after := kind.start
@@ -306,6 +310,18 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 		}
 		after = nodes[len(nodes)-1].ID
 		before := report.Rows
+		skipped, unmoved, none, err := unwritableBatch(ctx, database, kind, nodes)
+		if err != nil {
+			return report, false, moved, err
+		}
+		if none {
+			report.Skipped += skipped
+			moved = append(moved, unmoved...)
+			if len(nodes) < backfillBatch {
+				return report, false, moved, nil
+			}
+			continue
+		}
 		written, err := writeObjectBatch(ctx, database, kind, nodes)
 		switch {
 		case errors.Is(err, graphstore.ErrProjectMoved):
@@ -336,29 +352,19 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 
 // writableRowLeft answers whether a row of kind after the id after is one a pass can write: a row
 // its marker does not mark whose parties the store takes and whose node, if the store holds one,
-// names no other project. It reads the kind's rows one batch at a time until it finds one or none
-// is left.
+// names no other project (unwritableBatch). It reads the kind's rows one batch at a time until it
+// finds one or none is left.
 func writableRowLeft(ctx context.Context, database *store.Store, kind objectKind, after string) (bool, error) {
 	for {
 		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
 		if err != nil || len(nodes) == 0 {
 			return false, err
 		}
-		ids := make([]string, len(nodes))
-		for index, node := range nodes {
-			ids[index] = node.ID
-		}
-		held, err := heldProjects(ctx, database.Pool, kind.kind, ids)
+		_, _, none, err := unwritableBatch(ctx, database, kind, nodes)
 		if err != nil {
 			return false, err
 		}
-		for _, node := range nodes {
-			if partiesRefused(node.Parties) {
-				continue
-			}
-			if project, found := held[node.ID]; found && node.Project != "" && project != node.Project {
-				continue
-			}
+		if !none {
 			return true, nil
 		}
 		if len(nodes) < backfillBatch {
@@ -366,6 +372,36 @@ func writableRowLeft(ctx context.Context, database *store.Store, kind objectKind
 		}
 		after = nodes[len(nodes)-1].ID
 	}
+}
+
+// unwritableBatch answers, for a batch of kind's rows, whether none of them is one a pass can
+// write (none): each names a party the store refuses (partiesRefused), which it counts in skipped
+// as writeObjectBatch counts it, or a project other than the one the store holds its node in,
+// which it answers in moved as the store's refusal of that write (graphstore.ErrProjectMoved). It
+// reads the projects the store holds the batch's nodes in, with no lock and outside any
+// transaction; where a row of the batch is writable, it answers none false and the batch is
+// written and read again under its locks (writeObjectBatch).
+func unwritableBatch(ctx context.Context, database *store.Store, kind objectKind, nodes []objectRow) (skipped int64, moved []error, none bool, err error) {
+	ids := make([]string, len(nodes))
+	for index, node := range nodes {
+		ids[index] = node.ID
+	}
+	held, err := heldProjects(ctx, database.Pool, kind.kind, ids)
+	if err != nil {
+		return 0, nil, false, err
+	}
+	for _, node := range nodes {
+		switch project, found := held[node.ID]; {
+		case partiesRefused(node.Parties):
+			skipped++
+		case found && node.Project != "" && project != node.Project:
+			moved = append(moved, fmt.Errorf("write graph node %s/%s in project %s, which the store holds in %s: %w",
+				kind.kind, node.ID, node.Project, project, graphstore.ErrProjectMoved))
+		default:
+			return 0, nil, false, nil
+		}
+	}
+	return skipped, moved, true, nil
 }
 
 // heldProjects answers, by id, the project the store holds each node of kind at ids in, for the
