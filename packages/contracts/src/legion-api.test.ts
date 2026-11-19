@@ -125,8 +125,8 @@ const schemas: Record<string, z.ZodType> = {
   // parse of this fixture, which is what the gate above reports.
   "failure-causes.json": z.strictObject({ causes: z.array(z.enum(LEGION_FAILURE_CAUSES)) }),
   // Nor this one: the code of a completion refused for its phase entry and the words that
-  // refusal tells the worker to act on (`staleEntryCode` and `staleEntryInstruction` in
-  // `internal/api/handoff.go`), written by `internal/api`'s TestStaleEntryInstructionGolden so
+  // refusal tells the worker to act on (`StaleEntryCode` and `StaleEntryInstruction` in
+  // `internal/intake/facts.go`), written by `internal/api`'s TestStaleEntryInstructionGolden so
   // that `packages/pi-shared/src/legion-phase-ops.test.ts` can hold the `legion` tool's
   // description for that code to the daemon's own text, word for word.
   "stale-entry.json": z.strictObject({

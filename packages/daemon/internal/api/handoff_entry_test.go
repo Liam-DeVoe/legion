@@ -110,8 +110,8 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	// implementer's fix pushed, so this turn's verdict on the head before it is no answer for it.
 	// The worker does that task's work and writes a handoff of its own, and the refusal never
 	// sends this completion's record again.
-	if !strings.HasSuffix(message, ". "+staleEntryInstruction) {
-		t.Fatalf("the refusal is %q, want it to end with the instruction the legion tool's description carries, %q", message, staleEntryInstruction)
+	if !strings.HasSuffix(message, ". "+intake.StaleEntryInstruction) {
+		t.Fatalf("the refusal is %q, want it to end with the instruction the legion tool's description carries, %q", message, intake.StaleEntryInstruction)
 	}
 	if !strings.Contains(message, "a handoff of its own") {
 		t.Fatalf("the refusal is %q, want it to tell the worker to complete the new task with a handoff of its own", message)
@@ -190,8 +190,8 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)
 		}
 	}
-	if !strings.HasSuffix(message, ". "+staleEntryInstruction) {
-		t.Fatalf("the refusal = %q, want it to end with the instruction the legion tool's description carries, %q", message, staleEntryInstruction)
+	if !strings.HasSuffix(message, ". "+intake.StaleEntryInstruction) {
+		t.Fatalf("the refusal = %q, want it to end with the instruction the legion tool's description carries, %q", message, intake.StaleEntryInstruction)
 	}
 	if recorded := facts.recorded(); len(recorded) != 0 {
 		t.Fatalf("the refused completion reached the workflow as %+v, want no fact", recorded)
@@ -199,32 +199,32 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 }
 
 // What a worker refused HANDOFF_STALE_ENTRY is told to do is one text in two languages: the
-// daemon ends every staleEntry refusal with staleEntryInstruction, and the legion tool's
-// description (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`) carries
-// it after the code. This golden is where the two meet, as version.json is for the contract
-// number: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to the file,
-// so a word changed on the Go side fails here until the fixture is written again
+// daemon ends every intake.StaleEntry refusal with intake.StaleEntryInstruction, and the legion
+// tool's description (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`)
+// carries it after the code. This golden is where the two meet, as version.json is for the
+// contract number: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to the
+// file, so a word changed on the Go side fails here until the fixture is written again
 // (`go test ./internal/api/ -update`), and then fails there until the plugin's text says it too.
 //
 // The code is written out here beside it, so a rename of the constant's value — which would
 // otherwise rewrite the fixture with nobody reading the diff — fails here by its own name.
 func TestStaleEntryInstructionGolden(t *testing.T) {
-	if staleEntryCode != "HANDOFF_STALE_ENTRY" {
-		t.Fatalf("staleEntryCode = %q, want the wire code HANDOFF_STALE_ENTRY", staleEntryCode)
+	if intake.StaleEntryCode != "HANDOFF_STALE_ENTRY" {
+		t.Fatalf("intake.StaleEntryCode = %q, want the wire code HANDOFF_STALE_ENTRY", intake.StaleEntryCode)
 	}
-	// What decided the refusal stands in the middle of it (behindEntryClause), so the instruction
-	// is still the text the refusal ends with, whichever clause it carries.
-	decided := behindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false)
+	// What decided the refusal stands in the middle of it (intake.BehindEntryClause), so the
+	// instruction is still the text the refusal ends with, whichever clause it carries.
+	decided := intake.BehindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false)
 	for clause, pending := range map[string]*supervise.Delivery{
 		"the entry 2 the phase is on, and " + decided + "; nothing was recorded":                nil,
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},
 	} {
-		refusal := staleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending, decided)
-		if !strings.HasSuffix(refusal, clause+". "+staleEntryInstruction) {
-			t.Fatalf("staleEntry with pending %+v = %q, want %q and then exactly %q", pending, refusal, clause, staleEntryInstruction)
+		refusal := intake.StaleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending, decided)
+		if refusal.Code != intake.StaleEntryCode || !strings.HasSuffix(refusal.Message, clause+". "+intake.StaleEntryInstruction) {
+			t.Fatalf("intake.StaleEntry with pending %+v = %+v, want code %s, %q and then exactly %q", pending, refusal, intake.StaleEntryCode, clause, intake.StaleEntryInstruction)
 		}
 	}
-	golden(t, "stale-entry.json", map[string]string{"code": staleEntryCode, "instruction": staleEntryInstruction})
+	golden(t, "stale-entry.json", map[string]string{"code": intake.StaleEntryCode, "instruction": intake.StaleEntryInstruction})
 }
 
 // The comparison is made only when both sides name an entry, which is what carries a daemon
@@ -652,7 +652,7 @@ func TestArchitectUnchangedByItsCompletionAtAdmitted(t *testing.T) {
 	}{
 		{name: "behind its entry at admitted", at: phase.Admitted, served: 1, code: "HANDOFF_NOT_CURRENT_PHASE"},
 		{name: "level with its entry at admitted", at: phase.Admitted, served: 2, code: "ACCEPTANCE_IS_SIGN_OFF"},
-		{name: "the control, behind its entry at accepting", at: phase.Accepting, served: 1, code: staleEntryCode},
+		{name: "the control, behind its entry at accepting", at: phase.Accepting, served: 1, code: intake.StaleEntryCode},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _, _ := newEntryHarness(t)

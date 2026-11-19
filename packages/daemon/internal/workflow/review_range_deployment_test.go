@@ -144,7 +144,10 @@ func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 // step's commit (R11): a completion the route read before the reset of the tree's generation and
 // the engine applies after it writes no commit of the generation before into the new one. With the
 // promotion (StartPromotedWorker raises the critic's row to the next entry, whose task names no
-// commit), a completion of the entry before the reset, or of no entry, leaves the step's commit
+// commit), a completion of the entry before the reset is refused HANDOFF_STALE_ENTRY under the
+// fact's lock, since step ends with no handoff record and so nothing but its entry says which
+// entry's work it is (intake.BehindEntryClause): it moves nothing, and the step's commit stays empty. A
+// completion of no entry is judged by nothing of an entry: it moves the step and leaves its commit
 // empty, and the critic's next task names none; the control, a completion of the promoted entry,
 // writes X, which that task names. Without the promotion (the root waits in the line), the row
 // stands on the entry before the reset with no task, and a completion of that entry writes none.
@@ -153,12 +156,13 @@ func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
 		name     string
 		promoted bool
 		entry    int64
+		refused  bool
 		want     string
 	}{
-		{"the entry before the reset, after the promotion", true, resetEntry, ""},
-		{"no entry, after the promotion", true, 0, ""},
-		{"the control: the promoted entry", true, resetEntry + 1, stepCommitX},
-		{"the entry before the reset, with no promotion", false, resetEntry, ""},
+		{"the entry before the reset, after the promotion", true, resetEntry, true, ""},
+		{"no entry, after the promotion", true, 0, false, ""},
+		{"the control: the promoted entry", true, resetEntry + 1, false, stepCommitX},
+		{"the entry before the reset, with no promotion", false, resetEntry, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, child := resetCritic(t)
@@ -172,6 +176,19 @@ func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
 				}
 			}
 
+			if tc.refused {
+				result := applyFacts(t, pool, engine)("critic-fail", intake.HandoffComplete{Generation: child.Generation, Issue: child.Key, Role: "critic",
+					Claim: "critic-claim", Summary: "reported", Commit: stepCommitX, Verdict: "fail", Entry: tc.entry})
+				got := issueOf(t, pool, engine, child.Key)
+				if refusalCode(result) != "HANDOFF_STALE_ENTRY" || got.Phase != phase.Step || got.StepRole != "critic" {
+					t.Fatalf("the critic's fail of entry %d with entry %d standing: refusal %+v, %s stands in %s at the %q step; want HANDOFF_STALE_ENTRY and the critic's step",
+						tc.entry, resetEntry+1, result.Refusal, child.Key, got.Phase, got.StepRole)
+				}
+				if head := stepReviewedHead(t, pool, child.Key, 2); head != "" {
+					t.Fatalf("the critic's step holds the commit %q after the refused completion of entry %d, want none", head, tc.entry)
+				}
+				return
+			}
 			reportsAtEntry(t, pool, engine, "critic-fail", child.Key, child.Generation, "critic", "fail", stepCommitX, tc.entry)
 
 			if head := stepReviewedHead(t, pool, child.Key, 2); head != tc.want {

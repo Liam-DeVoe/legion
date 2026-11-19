@@ -36,7 +36,7 @@ import (
 // `legion` tool reads out of the record's body and, for the implementer, holds to be its pushed
 // @- on legion/<issue>@origin; the commit the implementer stands on for retro; and the commit the
 // merger's own completion stands on. The entry fence reads it against the head the record holds
-// (behindEntryClause). The workflow refuses a record the role already named for its previous
+// (intake.BehindEntryClause). The workflow refuses a record the role already named for its previous
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
 // HANDOFF_NO_PULL_REQUEST). A check report carries no commit and no record (nothing was pushed or
@@ -689,8 +689,8 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // its claim serving the entry it was behind on, and an issue can leave the phase again before a
 // turn that outlived an earlier entry reports. A completion from such a claim — the taken one sent
 // again after a dropped connection, as pi-shared's retryWhileDaemonRestarts sends it, or one
-// naming a newer record — meets this fence in another role's phase, where staleEntry's words
-// would tell the worker that the task of the entry the phase is on is owed to it and comes by
+// naming a newer record — meets this fence in another role's phase, where intake.StaleEntry's
+// words would tell the worker that the task of the entry the phase is on is owed to it and comes by
 // itself. That task is queued for the phase the issue has left, and is dropped rather than sent
 // (supervise's phaseHolds), so a worker that obeyed would wait for a task nobody sends. Such a
 // completion is answered HANDOFF_NOT_CURRENT_PHASE instead, the code every worker's prompt names
@@ -707,7 +707,10 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // should never produce it: the transition raises the row's entry in the transaction that composes
 // that entry's task, so no delivery can carry an entry the row does not already name.
 //
-// An entry behind the row's is refused (staleEntry) unless behindEntryClause takes it.
+// An entry behind the row's is refused (intake.StaleEntry) unless intake.BehindEntryClause takes
+// it. This read is the route's own, taken before the fact's lock, so the refusal here is an early
+// one: the workflow judges the same rule again on the row the fact's transaction reads (its
+// handoff), which refuses a completion of an entry raised in between.
 func entryFence(grant credential.Grant, position completionPosition, entry int64, commit string, pending *supervise.Delivery) *intake.Refusal {
 	if entry == 0 || position.entry == 0 || entry == position.entry {
 		return nil
@@ -717,134 +720,24 @@ func entryFence(grant credential.Grant, position completionPosition, entry int64
 		return intake.NotCurrentPhase(grant.Role, p, grant.Issue)
 	}
 	if entry > position.entry {
-		return &intake.Refusal{Status: http.StatusConflict, Code: staleEntryCode,
+		return &intake.Refusal{Status: http.StatusConflict, Code: intake.StaleEntryCode,
 			Message: unraisedEntry(grant.Issue, grant.Role, p, position.entry, entry)}
 	}
 	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
 	_, _, recordBacked := phase.Handoff(p)
-	if clause := behindEntryClause(recordBacked, commit, position.pullRequest, position.entryMovedBack); clause != "" {
-		return &intake.Refusal{Status: http.StatusConflict, Code: staleEntryCode,
-			Message: staleEntry(grant.Issue, grant.Role, p, position.entry, entry, pending, clause)}
+	if clause := intake.BehindEntryClause(recordBacked, commit, position.pullRequest, position.entryMovedBack); clause != "" {
+		return intake.StaleEntry(grant.Issue, grant.Role, p, position.entry, entry, pending, clause)
 	}
 	return nil
 }
 
-// staleEntryCode is the code of a completion refused for its phase entry: one of an entry behind
-// the one the role's phases row names (staleEntry), and one of an entry above it (unraisedEntry).
-const staleEntryCode = "HANDOFF_STALE_ENTRY"
-
-// staleEntryInstruction is what staleEntry tells the worker to do, after the clause that names the
-// entries. It is one text with the sentence the `legion` tool's description gives for
-// staleEntryCode (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`), so a
-// worker reads the same words in the refusal and in its tool: TestStaleEntryInstructionGolden
-// writes both values to `packages/contracts/fixtures/daemon-api/stale-entry.json`, and
-// pi-shared's own test holds the description to that file.
-const staleEntryInstruction = "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's record, commit or verdict"
-
-// behindEntryClause decides a completion of a phase entry the issue has moved past, one the entry
-// fence found behind the role's phases row (entryFence), and says what decided it: it answers ""
-// where the fence takes the completion, and otherwise the clause staleEntry carries of what
-// decided the refusal, the one place that wording lives.
-//
-// recordBacked says the phase ends with a Dispatch handoff record this role writes
-// (phase.Handoff), which is what makes the completion readable as this phase's own answer: the
-// record names the phase it is of, and the refusals below the fence hold the completion to it —
-// the record is this issue's, of the phase's word, at the version reported (handoffRecord's
-// HANDOFF_RECORD_MISMATCH), and is not the one the role named for its previous phase (the
-// workflow's HANDOFF_NOT_NEW). Retro and merging end with no record at all, so a completion of
-// theirs carries nothing that says which entry's work it is, whatever its commit reads, and the
-// fence refuses it. Its clause says that and names no head, because no head such a completion
-// reported on could have taken it — a clause naming the two heads would answer a worker refused
-// at the very head the record holds with the one reading under which a completion is taken. The
-// move that raised the entry is left unsaid there too: the missing record refuses that completion
-// whatever the move was.
-//
-// head is the head of pr, the pull request the daemon's record holds for the issue, "" when it
-// holds none. It is the record's own head and never GitHub's: the fence answers from what the
-// daemon holds, so a GitHub that is slow, rate-limited or unreachable decides no completion.
-//
-// The completion is taken when the commit it names is head, a verdict on the head the record
-// holds. What a worker reports is a fact about a head, not about an entry: when the phase was
-// entered again at that same head, the work the current entry's task asks for is the work this
-// completion did, and refusing it would have the worker do the same work again at the same head
-// for the same answer. A completion naming no commit says nothing about a head, and one at any
-// other commit is a verdict on a head the record has left — the head the entry before this one was
-// for among them.
-//
-// Unless the move that entered the phase again moved it back (movedBack). The architect's move
-// back and the reviewer's request for changes send the work back at the head that is already
-// there, so the two heads read alike and the heads alone would take this completion — over an
-// entry that exists to have the work done again, which the verdict of the entry before it is
-// exactly what must not stand in for. The record says which it was, written onto the entry by the
-// transition that raised it, so the fence reads the move rather than guessing at it from the
-// heads (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
-//
-// Otherwise the clause is the commit the completion gave, or that it gave none, against the head
-// the record holds for the issue, or that it holds no pull request at all; and, where movedBack,
-// that the entry the phase stands on was raised by a move back, which is what refuses this
-// completion whatever those two heads read.
-func behindEntryClause(recordBacked bool, commit string, pr *record.PullRequest, movedBack bool) string {
-	if !recordBacked {
-		return "this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is"
-	}
-	head := ""
-	if pr != nil {
-		head = pr.HeadSHA
-	}
-	if !movedBack && commit != "" && commit == head {
-		return ""
-	}
-	gave := "this completion names no commit"
-	if commit != "" {
-		gave = "this completion is at commit " + commit
-	}
-	holds := "the record holds no pull request for the issue"
-	if head != "" {
-		holds = "the pull request the record holds is at head " + head
-	}
-	clause := gave + " while " + holds
-	if movedBack {
-		clause += ", and the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it"
-	}
-	return clause
-}
-
-// staleEntry is the refusal of a completion of a phase entry the issue's phase has moved past:
-// the role was given this phase's work again — the issue left the phase and came back, or the
-// phase ended under the worker and another role's round sent it here — and the turn reporting
-// this completion is on the earlier entry, current - serving entries behind. It names the queued
-// task of the entry the phase hands the role now when the claim already holds it, as
-// staleCompletion does for a run. Either way that entry's task is owed to this claim and comes by
-// itself: the claim is behind the entry its phases row names, which is what the admission pass
-// sends the row's own work for (record.PhaseRow.EntryTask, workflow's SendOwedEntry), so the
-// worker waits for that task rather than asking anyone for it. The entry fence writes this
-// refusal only for a role that works the phase the issue stands in (entryFence).
-//
-// Where staleCompletion sends the same completion again — a run's completion is the right work,
-// arrived early — this one does not, and that is the whole difference between the two: an entry
-// is new only because the phase was entered again, so the task it hands the role is work of its
-// own. A head that starts conflicting with its base takes the issue back to implementing, and
-// the testing entry the implementer's merge forward then raises is for a new head, so a verdict
-// reported for the head before it would stand as that new head's. The worker does the new
-// task's work and writes a handoff of its own for it, which staleEntryInstruction says.
-//
-// clause says what refused this completion (behindEntryClause).
-func staleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, clause string) string {
-	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, which is %d behind the entry %d the phase is on, and %s; nothing was recorded",
-		issue, role, p, serving, current-serving, current, clause)
-	if pending != nil && pending.Entry == current {
-		stale = fmt.Sprintf("%s, and your turn began before the daemon's task for entry %d (%s) reached this session", stale, current, pending.ID)
-	}
-	return stale + ". " + staleEntryInstruction
-}
-
 // unraisedEntry is the refusal of a completion of a phase entry above the one the role's phases
-// row names, the other side of staleEntry: the record should never produce it, since the
+// row names, the other side of intake.StaleEntry: the record should never produce it, since the
 // transition raises the row's entry in the transaction that composes that entry's task, so no
 // task the daemon hands out carries an entry the row does not already name. It is said rather
 // than taken, because a daemon that recorded it would be recording a completion of work no
-// transition ever wrote. It names neither a queued task nor an owed one, as staleEntry does:
-// there is no later entry for the worker to wait for, and what the worker does is tell the
+// transition ever wrote. It names neither a queued task nor an owed one, as intake.StaleEntry
+// does: there is no later entry for the worker to wait for, and what the worker does is tell the
 // architect.
 func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, serving int64) string {
 	return fmt.Sprintf("this completion is of entry %d of phase %s of %s, and the %s's phases row is on entry %d: the daemon raises that entry in the transaction that composes the entry's task, so no task it hands out carries an entry above it. Nothing was recorded; end this turn without completing and tell the architect",
