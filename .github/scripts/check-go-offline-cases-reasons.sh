@@ -116,6 +116,46 @@ reached_reason file-reason-reached-outside nightly
 check "reached only from a workflow outside the required set: exits 0" "$(is "$status" 0)"
 check "and its reason covers the command" "$(contains "$out" 'is in a file whose reason covers it (1)')"
 
+echo "case: a go-offline-file reason in a script a required step sources is refused"
+root=$(fixture file-reason-sourced)
+put "$root" tools/lib.sh <<'EOF'
+# go-offline-file: a person sources this by hand.
+go list -deps ./... >/dev/null
+EOF
+# ci.yaml names tools/setup.sh alone, which sources the library.
+printf '#!/usr/bin/env bash\n. "$(dirname "$0")/lib.sh"\n' | put "$root" tools/setup.sh
+printf '      - name: Source the library\n        run: bash tools/setup.sh\n' >>"$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "refuses the reason" \
+  "$(contains "$out" 'tools/lib.sh:1: a go-offline-file reason, which this file may not carry: a step of a required workflow reaches it')"
+
+echo "case: a script a required step reaches only by a guess from a variable, or that a TypeScript test names, is not held"
+root=$(fixture file-reason-guessed)
+put "$root" tools/inner.sh <<'EOF'
+#!/usr/bin/env bash
+# go-offline-file: a person runs this by hand; no CI job runs it.
+go list -deps ./... >/dev/null
+EOF
+printf '      - name: Run one of the tools\n        run: bash "tools/$TOOL.sh"\n' >>"$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "a script guessed from a variable's name: exits 0" "$(is "$status" 0)"
+check "a script guessed from a variable's name: its reason covers the command" \
+  "$(contains "$out" 'is in a file whose reason covers it (1)')"
+root=$(fixture file-reason-ts-named)
+put "$root" packages/web/scripts/inner.sh <<'EOF'
+#!/usr/bin/env bash
+# go-offline-file: a person runs this by hand; no CI job runs it.
+go list -deps ./... >/dev/null
+EOF
+printf 'test("reads the script", () => { void Bun.file(`${import.meta.dir}/../scripts/inner.sh`).text(); });\n' |
+  put "$root" packages/web/e2e/names.test.ts
+printf '      - name: Test the web package\n        run: bun test e2e/\n        working-directory: packages/web\n' \
+  >>"$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "a script a TypeScript test names in a string: exits 0" "$(is "$status" 0)"
+check "a script a TypeScript test names in a string: its reason covers the command" \
+  "$(contains "$out" 'is in a file whose reason covers it (1)')"
+
 echo "case: a go-offline-file reason in a program a required job runs, or in TypeScript a required test run loads, is refused"
 root=$(fixture file-reason-program)
 put "$root" tools/list_deps.py <<'EOF'

@@ -115,8 +115,7 @@ def shell_sites(text, line=0, base=(), depth=0):
                     settings.append((name, ShWord(rest, word.start, word.line, word.defaults)))
         for name, value in settings:
             assigned[name] = value
-            inner = [c for kind, _, nested in value.parts if kind == "cmd" for c in nested or ()]
-            if go_word(value) or looks_up_go(inner):
+            if go_word(value):
                 go_names.add(name)
             held = value.value()
             if held.startswith("(") and held.endswith(")"):  # NAME=(go build ./...), run as "${NAME[@]}"
