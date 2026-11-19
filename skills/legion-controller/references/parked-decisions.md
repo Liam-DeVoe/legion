@@ -154,8 +154,11 @@ that is not the root's primary one.
      Where `gatedSteps` carries more than one entry, read each one the same way: the tree runs
      again only once every entry is `approved` or `open_on_basis` (open on a person's approval of
      an ancestor's document), and an entry still `waiting`, `unregistered` or
-     `changes_requested` is work the architect holds. An entry `pending_on_basis` waits on the
-     ancestor's approval request that its `basis` names.
+     `changes_requested` is work the architect holds. An entry `open_on_basis` stands on the
+     person's approval that its `basis` names: its `approvedVersion`, and for the `spec` step
+     `designGate.approvedVersion` too, is the root's version its architect registered, which no
+     person approved. An entry `pending_on_basis` waits on the ancestor's approval request that its
+     `basis` names.
      - It is your own hold (step 2): set the root to `todo` (`set_status`). Admission queues it,
        the tree runs again at a new generation and its architect starts with the decision. That
        `todo` releases no hold. Post one comment on the issue where the decision was made
