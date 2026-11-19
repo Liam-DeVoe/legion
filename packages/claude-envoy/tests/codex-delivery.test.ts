@@ -337,6 +337,30 @@ describe("createCodexDelivery", () => {
     await delivery.stop()
   })
 
+  test("a turn that ends while a line lands refuses its write when codex queue fails, and no error goes unhandled", async () => {
+    const directory = inbox()
+    const { delivery } = harness(directory, true)
+    delivery.turnStarted()
+    // The turn's sweep refuses the write while the write has not returned, and the return is held
+    // past one turn of the event loop, as a slow filesystem answer holds it: the refusal comes
+    // before the write waits on its own outcome, and must still be handled, or Bun fails the run.
+    const ran = duringPut(true, async () => {
+      await delivery.turnEnded()
+      await settled()
+    })
+    const outcomes: string[] = []
+    const frames = twoFrames(delivery, outcomes)
+    await ran
+    await settled()
+    expect(outcomes[0]).toBe("first refused: Error: codex queue exited 1")
+    await frames
+    expect(outcomes).toEqual([
+      "first refused: Error: codex queue exited 1",
+      "next refused: Error: codex queue exited 1",
+    ])
+    await delivery.stop()
+  })
+
   for (const landed of [true, false]) {
     test(`a stop ${landed ? "while a line lands" : "before a line lands"} withdraws it and refuses its write, so the next one is not held`, async () => {
       const directory = inbox()
