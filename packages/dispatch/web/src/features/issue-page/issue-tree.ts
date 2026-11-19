@@ -106,16 +106,20 @@ export interface NodeChip {
   readonly answered: boolean;
   /** When the author of the comment or message this chip names, or of the post a block it names
    *  is of, deleted it, as the batched reference read answers it (`ReferenceTarget.deleted_at`);
-   *  absent for every other target. A view draws such a chip's name, the deleted line, in the
-   *  deleted line's italic, as a link to the post does (`RefLink`). */
+   *  absent for every other target. The deleted line is the name of a comment's or a message's
+   *  chip only: a chip naming a block of a deleted post is `gone`, with name `""`, though it
+   *  carries the marks. A view that draws a comment's or a message's chip carrying this must draw
+   *  its name, the deleted line, in the deleted line's italic, as a link to the post does
+   *  (`RefLink`); no view draws a chip yet (`slots/view-row.tsx`). */
   readonly deletedAt?: string;
-  /** Who deleted it (`ReferenceTarget.deleted_by`); absent where `deletedAt` is, and where the
-   *  read names nobody. */
+  /** Who deleted it (`ReferenceTarget.deleted_by`); absent where `deletedAt` is absent, and where
+   *  the read names nobody. */
   readonly deletedBy?: Actor;
   /** When the author of the comment or message this chip names, or of the post a block it names
-   *  is of, last replaced its body (`ReferenceTarget.edited_at`), which the chip's name says
-   *  after its words; absent for a post nobody edited, for a deleted one and for every other
-   *  target. */
+   *  is of, last replaced its body (`ReferenceTarget.edited_at`); absent for a post nobody
+   *  edited, for a deleted one and for every other target. The chip's `name` is the words alone:
+   *  a view that draws the name of a chip carrying this must cut the words to its own length
+   *  first and then add ` · edited` (`editedName`), so no cut takes the mark. */
   readonly editedAt?: string;
   /** Whether nothing answers to this reference now. */
   readonly gone: boolean;
@@ -128,14 +132,14 @@ export interface NodeChip {
    *  kind (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read, and `""`
    *  for another issue's block; a whole document's word on the page, `Spec` and not `spec.md`;
    *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`), and a
-   *  deleted comment's or message's deleted line, `Deleted by <actor id>`, or `Deleted` where the
-   *  read names nobody, as a link to it reads (`useReferenceLabel`), never its emptied body;
-   *  an issue's title as its own row's line reads it (`titleWords`); and anything else's name as
-   *  that read answers it. The name of a comment, a message or a block of either that its author
-   *  edited (`editedAt`) is its words then ` · edited`, as a link to it reads, unless it holds no
-   *  words. `""` for a block and for anything else until the read answers, and for a target that
-   *  is gone. The page publishes this same name for every link beside the tree to draw
-   *  (`targetNaming`). */
+   *  deleted comment's or message's deleted line (`deletedLineText`), never its emptied body:
+   *  `Deleted by <actor>`, the actor named as `AgentName` names one before the agent registry
+   *  answers (`actorLabelText`), or `Deleted` where the read names nobody; an issue's title as
+   *  its own row's line reads it (`titleWords`); and anything else's name as that read answers
+   *  it. The name is the words alone, an edited post's too: its mark is `editedAt`'s. `""` for a
+   *  block and for anything else until the read answers, and for a target that is gone. The page
+   *  publishes this same name for every link beside the tree to draw, and the edited references
+   *  beside the names (`targetNaming`). */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -224,10 +228,10 @@ export interface TreeNode {
   /** Who deleted this comment or message (`deleted_by`); absent on every other node, and on a
    *  delete whose read names nobody. */
   readonly deletedBy?: Actor;
-  /** When its author last replaced this comment's or message's body (`edited_at`), which a row
-   *  says as ` · edited` (`EditedMark`, INFRA-1523, R2); absent on a post nobody edited, on a
-   *  deleted one, whose deleted line already says what became of the text, and on every other
-   *  node. */
+  /** When its author last replaced this comment's or message's body (`edited_at`), which a view
+   *  that draws the node's row must say as ` · edited` (`EditedMark`, INFRA-1523, R2); absent on
+   *  a post nobody edited, on a deleted one, whose deleted line already says what became of the
+   *  text, and on every other node. */
   readonly editedAt?: string;
   /** What the model holds about the node that a row has no line for, drawn in its body. */
   readonly facts: readonly NodeFact[];
@@ -601,32 +605,41 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * Both are read from one context in one walk over the targets, so they cannot disagree either.
  *
  * - **`names`**: the name of each target that something answers to now, by its address: the
- *   name a chip naming it draws (`NodeChip.name`). A target whose name is `""` is left out: a
- *   target that is gone, which its chip names by `""` (`treeContext`), and another issue's block
- *   the read sent no reading for, where a link that finds no name reads its own
- *   (`useKnownReferenceName`), and an ambiguous short reference, which its chip names by `""`
- *   too and the page publishes in `ambiguous` instead.
+ *   name a chip naming it draws (`NodeChip.name`), the words alone. A target whose name is `""`
+ *   is left out: a target that is gone, which its chip names by `""` (`treeContext`), and
+ *   another issue's block the read sent no reading for, where a link that finds no name reads
+ *   its own (`useKnownReferenceName`), and an ambiguous short reference, which its chip names by
+ *   `""` too and the page publishes in `ambiguous` instead.
  * - **`ambiguous`**: the references the read answered ambiguous: each writes short an id two or
  *   more targets carry, so it names none of them, and a chip naming it says so
  *   (`NodeChip.ambiguous`). The page publishes them beside its names, so a link tells an
  *   ambiguous reference from a gone one, which has no name either: it draws the first as its
  *   author wrote it and links nothing, where it reads the second's own.
+ * - **`edited`**: the references among `names` whose post its author edited, a comment, a
+ *   message or a block of either (`NodeChip.editedAt`). A link that draws a published name cuts
+ *   it to its own length and then marks it ` · edited` (`editedName`), so no cut takes the mark:
+ *   a mark published inside the name would be cut off a long one (`rowReferenceWords`).
  *
- * No reference is in both: an ambiguous chip's name is `""`.
+ * No reference is in both `names` and `ambiguous`: an ambiguous chip's name is `""`. Every
+ * reference in `edited` is in `names`: a name of no words takes no mark.
  */
 export function targetNaming(reads: IssueTreeReads): {
   readonly ambiguous: ReadonlySet<string>;
+  readonly edited: ReadonlySet<string>;
   readonly names: ReadonlyMap<string, string>;
 } {
   const context = namingContext(reads);
   const ambiguous = new Set<string>();
+  const edited = new Set<string>();
   const names = new Map<string, string>();
   for (const target of reads.targets ?? []) {
     const chip = context.chipOf(target.ref);
     if (chip.ambiguous === true) ambiguous.add(target.ref);
-    if (chip.name !== "") names.set(target.ref, chip.name);
+    if (chip.name === "") continue;
+    names.set(target.ref, chip.name);
+    if (chip.editedAt !== undefined) edited.add(target.ref);
   }
-  return { ambiguous, names };
+  return { ambiguous, edited, names };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

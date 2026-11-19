@@ -750,8 +750,9 @@ test("a mention its session answered with an error is pointed at a new comment, 
 
 // A delete ends each send of its post still pending, with its own words, and Dispatch refuses
 // every new delivery of a deleted post (409 POST_DELETED). So the attempt a comment's delete
-// ended reads the delete's words alone, with no Retry, while a standing comment's failed mention
-// keeps its Retry; and a deleted targeted message's card offers neither Retry nor a mode change.
+// ended reads the delete's words alone, never that it failed, with no Retry, while a standing
+// comment's failed mention still reads as failed and keeps its Retry; and a deleted targeted
+// message's card says the delete ended it and offers neither Retry nor a mode change.
 test("an attempt a post's delete ended offers no Retry or mode change, and a standing post's still does", async () => {
   const deletion = { deleted_at: "2026-09-20T00:05:00Z", deleted_by: alice };
   const stub = stubLists({
@@ -797,13 +798,16 @@ test("an attempt a post's delete ended offers no Retry or mode change, and a sta
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
   try {
-    await screen.findByText(wholeText(`session:worker… · failed · ${DELETED_POST_DELIVERY_ERROR}`));
+    await screen.findByText(wholeText(`session:worker… · ${DELETED_POST_DELIVERY_ERROR}`));
+    expect(
+      screen.queryByText(wholeText(`session:worker… · failed · ${DELETED_POST_DELIVERY_ERROR}`))
+    ).toBeNull();
     screen.getByText(
       wholeText(
         `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
       )
     );
-    const card = (await screen.findByText(`Failed: ${DELETED_POST_DELIVERY_ERROR}`)).closest(
+    const card = (await screen.findByText("Ended by the post's delete")).closest(
       "[data-turn]"
     ) as HTMLElement;
     expect(within(card).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();

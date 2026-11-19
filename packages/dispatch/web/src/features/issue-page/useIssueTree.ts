@@ -111,6 +111,10 @@ const NO_TARGET_NAMES: ReadonlyMap<string, string> = new Map();
  *  and the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
 
+/** The references the page publishes as edited until the batched name read answers: none, and
+ *  the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
+const NO_EDITED_TARGETS: ReadonlySet<string> = new Set();
+
 /** What the one more names read holds where nothing is left for it to name: no names, and the
  *  same empty answer on every render, so the answer it gave before stands over nothing. */
 const NO_MORE_TARGETS: { readonly targets: readonly ReferenceTarget[] } = { targets: [] };
@@ -352,26 +356,27 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const namesFailed = targets.isError || more.isError;
   // The same answer every link of this page would otherwise read one pointer at a time, which a
   // link in a document, in a decision's card or in a comment's preview shows, and a row's
-  // in-place chip too (`reference-names.tsx`, R20). Every one of those draws the name it is
-  // given as it is, so the name published for a target is the name a chip of the tree draws
-  // for it, by the one rule both read (`targetNaming`): a block's drawn first line, a whole
-  // document's word on the page, a question's or a comment's words with no markup. Beside the
-  // names go the references the read answered ambiguous, read with them by that same rule: a
-  // short reference two targets carry has no name, as a gone one has none, and a link draws it
-  // as written and links nothing where it reads a gone one's own, which the names alone would
-  // not tell it. A chip's name is read from the issue, the documents' blocks and the names alone
-  // (`treeContext`), so the map and the set are built from those and nothing else: an answer of
-  // any other read - an ask, a comment, the coverage, the reader's login - publishes nothing
-  // new, which would draw every link beside the tree again. Until the names answer there is
-  // nothing to publish.
-  const { ambiguous, names } = useMemo(
+  // in-place chip too (`reference-names.tsx`, R20). The name published for a target is the name
+  // a chip of the tree draws for it, by the one rule both read (`targetNaming`): a block's drawn
+  // first line, a whole document's word on the page, a question's or a comment's words with no
+  // markup, each the words alone. Beside the names go the references the read answered
+  // ambiguous, read with them by that same rule: a short reference two targets carry has no
+  // name, as a gone one has none, and a link draws it as written and links nothing where it
+  // reads a gone one's own, which the names alone would not tell it. And beside them go the
+  // references whose post its author edited, which a link marks ` · edited` after it cuts the
+  // name to its own length, so no cut takes the mark. A chip's name is read from the issue, the
+  // documents' blocks and the names alone (`treeContext`), so the map and the sets are built
+  // from those and nothing else: an answer of any other read - an ask, a comment, the coverage,
+  // the reader's login - publishes nothing new, which would draw every link beside the tree
+  // again. Until the names answer there is nothing to publish.
+  const { ambiguous, edited, names } = useMemo(
     () =>
       named === undefined
-        ? { ambiguous: NO_AMBIGUOUS_TARGETS, names: NO_TARGET_NAMES }
+        ? { ambiguous: NO_AMBIGUOUS_TARGETS, edited: NO_EDITED_TARGETS, names: NO_TARGET_NAMES }
         : targetNaming({ documents: documents.blocks, issue, targets: named }),
     [documents.blocks, issue, named]
   );
-  usePublishReferenceNames(names, ambiguous);
+  usePublishReferenceNames(names, ambiguous, edited);
   const root = useMemo(
     () =>
       named === undefined || named === first

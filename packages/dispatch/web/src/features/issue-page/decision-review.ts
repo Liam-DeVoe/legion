@@ -1,5 +1,6 @@
 import type { Artifact, Comment, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
+import { postDeletion } from "../refs/post-marks";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { DocumentBlocks } from "./issue-tree";
@@ -185,7 +186,7 @@ export function decisionChanges(
   const changes = new Map<string, ChangeComment>();
   for (const comment of comments ?? []) {
     const ref = placed.get(comment.id);
-    if (ref === undefined || comment.deleted_at !== null) continue;
+    if (ref === undefined || postDeletion(comment) !== null) continue;
     const held = changes.get(ref);
     if (held === undefined || compareTimestamps(comment.created_at, held.created_at) > 0) {
       changes.set(ref, comment);

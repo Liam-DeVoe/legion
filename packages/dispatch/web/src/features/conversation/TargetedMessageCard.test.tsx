@@ -208,23 +208,33 @@ test("an attempt the session answered with an error points at a mode change inst
 
 // A delete ends each send of its post still pending, with its own words, and Dispatch refuses
 // every new delivery of a deleted post (409 POST_DELETED). So the attempt the delete ended
-// offers no Retry and no mode change, and its line says only that the delete ended it; a failed
-// attempt of a message nobody deleted keeps its Retry.
+// offers no Retry and no mode change, and its line says only that the delete ended it, never
+// that it failed: a delete ends a send, the send did not fail. An earlier attempt that failed
+// still reads as failed, and a failed attempt of a message nobody deleted keeps its words and
+// its Retry.
 test("an attempt the message's delete ended offers no Retry or mode change and says the delete ended it", () => {
-  const ended = attempt({ error: DELETED_POST_DELIVERY_ERROR });
+  const failed = attempt({ error: "no live session s1" });
+  const ended = attempt({ attempt: 2, error: DELETED_POST_DELIVERY_ERROR });
   const view = render(
-    card({ attempts: [ended], deleted: { at: new Date().toISOString(), by: null } })
+    card({ attempts: [failed, ended], deleted: { at: new Date().toISOString(), by: null } })
   );
   try {
-    expect(screen.getByText(`Failed: ${DELETED_POST_DELIVERY_ERROR}`)).toBeTruthy();
+    expect(screen.getByText("Ended by the post's delete")).toBeTruthy();
+    expect(screen.queryByText(`Failed: ${DELETED_POST_DELIVERY_ERROR}`)).toBeNull();
+    expect(screen.getByText("Attempt 1:", { exact: false }).textContent).toBe(
+      "Attempt 1: Failed: no live session s1"
+    );
     expect(screen.queryByText(/Retry won't deliver it twice/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /instead/ })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
-  const standing = render(card({ attempts: [attempt({ error: "no live session s1" })] }));
+  const standing = render(card({ attempts: [failed] }));
   try {
+    expect(
+      screen.getByText(`Failed: no live session s1. ${safeRetryGuidance("card", failed.error)}`)
+    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Use BTW instead" })).toBeTruthy();
   } finally {

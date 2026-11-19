@@ -29,7 +29,7 @@ import type {
 import { useAgentText } from "./AgentName";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
-import { deletedLineText, type PostDeletion, postDeletion } from "./post-marks";
+import { deletedLineText, editedName, type PostDeletion, postDeletion } from "./post-marks";
 import {
   buildDispatchReference,
   buildReferencePath,
@@ -706,7 +706,8 @@ export interface ReferenceLabel {
  * - a block of a deleted post keeps the words its author wrote: the block is gone with the
  *   post's text, and the hover card says the post is deleted;
  * - a comment, a message or a block of either that its author edited reads as its title then
- *   ` · edited`, as the post's byline writes it (`EditedMark`);
+ *   ` · edited`, as the post's byline writes it (`EditedMark`): the title is cut first
+ *   (`TITLE_HEADLINE_MAX`), then marked (`editedName`), so no cut takes the mark;
  * - anything else reads as its title, and an empty title is no title: the written words stand,
  *   so a link never renders with no text.
  */
@@ -724,7 +725,7 @@ export function useReferenceLabel(
   const title = target.title === "" ? undefined : target.title;
   return {
     deleted: false,
-    text: title !== undefined && target.edited !== null ? `${title} · edited` : title,
+    text: title === undefined ? undefined : editedName(title, target.edited !== null),
   };
 }
 

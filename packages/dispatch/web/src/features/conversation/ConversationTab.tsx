@@ -1,3 +1,4 @@
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -589,6 +590,10 @@ function CommentDeliveryList({
         const canRetry = capabilities === undefined || capabilities.includes(delivery.delivery);
         const guidance = offered ? failureGuidance(outcome, "mention") : undefined;
         const recipient = targetPart(delivery.target);
+        // A send the post's delete ended did not fail: the delete ended it. Its line says so in
+        // the delete's own words where the state stands, as the Pinned and Activity tabs say it,
+        // and says nothing after them.
+        const ended = delivery.state === "failed" && delivery.error === DELETED_POST_DELIVERY_ERROR;
         return (
           <li
             className="flex flex-wrap items-center gap-x-2"
@@ -600,10 +605,12 @@ function CommentDeliveryList({
                 <AgentParts parts={queuedParts(recipient)} />
               ) : delivery.duplicate === true ? (
                 duplicateText
+              ) : ended ? (
+                DELETED_POST_DELIVERY_ERROR
               ) : (
                 delivery.state
               )}
-              {delivery.error === null
+              {delivery.error === null || ended
                 ? ""
                 : ` · ${guidance === undefined ? delivery.error : withGuidance(delivery.error, guidance)}`}
               {delivery.error === null && guidance !== undefined ? ` · ${guidance}` : ""}

@@ -2000,12 +2000,13 @@ test("a deleted comment keeps its place and holds the deleted line, and no word 
     tree: undefined,
     words: line,
   });
-  expect(`${deleted.text} ${deleted.line} ${deleted.words}`).not.toContain("deploy");
   expect(nodeOf(root, "c0")?.text).toBe("Comment c0.");
 });
 
 // R3 of dispatch://INFRA-1523: a message its author deleted is the same: its place, the deleted
-// line, no reading. A delete whose read names nobody says so with no name.
+// line, no reading. A session's delete names the session as `AgentName` does before the agent
+// registry answers, by its short id, never by its raw id; a delete whose read names nobody says
+// so with no name.
 test("a deleted message keeps its place and holds the deleted line, and no word of its body", () => {
   const sent = thread("m1", "2026-11-04T10:00:00Z");
   const unnamed = thread("m2", "2026-11-04T11:00:00Z");
@@ -2031,7 +2032,7 @@ test("a deleted message keeps its place and holds the deleted line, and no word 
   });
 
   expect(root.children.map((child) => child.id)).toEqual(["m0", "m1", "m2"]);
-  const line = "Deleted by planner · 2026-11-05T12:00:00Z";
+  const line = "Deleted by session:planner… · 2026-11-05T12:00:00Z";
   const deleted = turnMarks(nodeOf(root, "m1"));
   expect(deleted).toEqual({
     deletedAt: "2026-11-05T12:00:00Z",
@@ -2042,7 +2043,6 @@ test("a deleted message keeps its place and holds the deleted line, and no word 
     tree: undefined,
     words: line,
   });
-  expect(`${deleted.text} ${deleted.line} ${deleted.words}`).not.toContain("deploy");
   const nobody = nodeOf(root, "m2");
   expect(nobody?.text).toBe("Deleted · 2026-11-05T13:00:00Z");
   expect(nobody !== undefined && "deletedBy" in nobody).toBe(false);
@@ -2151,10 +2151,11 @@ test("a chip naming a deleted comment or message draws the deleted line and carr
 });
 
 // R2 of dispatch://INFRA-1523: a chip naming a comment or a message its author edited, or a
-// block of one, draws its words then ` · edited`, as a link to it does (`useReferenceLabel`),
-// and carries when it was edited; the page publishes that same name. A post nobody edited
-// carries no mark.
-test("a chip naming an edited comment, message or block of one draws its words then · edited", () => {
+// block of one, is named by its words alone and carries when it was edited; the page publishes
+// those words as its name and the reference among the edited ones, so a link cuts the words to
+// its own length and marks what the cut left ` · edited`, as a link to it does
+// (`useReferenceLabel`). A post nobody edited carries no mark.
+test("a chip naming an edited comment, message or block of one carries its words and when it was edited", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
   const block = `dispatch://${KEY}/comment/comment-9#b-p1`;
@@ -2188,19 +2189,27 @@ test("a chip naming an edited comment, message or block of one draws its words t
       chips?.map(({ editedAt, name, ref }) => ({ editedAt, name, ref })),
       kind
     ).toEqual([
-      { editedAt: "2026-11-05T11:00:00Z", name: "Hold it. · edited", ref },
-      { editedAt: "2026-11-05T11:00:00Z", name: "Hold the deploy. · edited", ref: block },
+      { editedAt: "2026-11-05T11:00:00Z", name: "Hold it.", ref },
+      { editedAt: "2026-11-05T11:00:00Z", name: "Hold the deploy.", ref: block },
       { editedAt: undefined, name: "Ship it.", ref: unedited },
     ]);
     expect(
       chips?.some((chip) => chip.ref === unedited && "editedAt" in chip),
       kind
     ).toBe(false);
-    expect([...targetNaming(reads).names], kind).toEqual([
-      [ref, "Hold it. · edited"],
-      [block, "Hold the deploy. · edited"],
+    const naming = targetNaming(reads);
+    expect([...naming.names], kind).toEqual([
+      [ref, "Hold it."],
+      [block, "Hold the deploy."],
       [unedited, "Ship it."],
     ]);
+    expect([...naming.edited], kind).toEqual([ref, block]);
+    // A row's link draws the published words, then the mark (`rowReferenceWords`).
+    const [link] = rowReferences(`see ${ref}`, [], naming.ambiguous);
+    if (link === undefined) throw new Error("the text holds one reference");
+    expect(rowReferenceWords(link, naming.names, naming.edited).words, kind).toBe(
+      "Hold it. · edited"
+    );
   }
 });
 

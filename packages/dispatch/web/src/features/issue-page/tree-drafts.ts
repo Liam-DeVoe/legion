@@ -15,7 +15,8 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
-import { type PostDeletion, postDeletion } from "../refs/post-marks";
+import { type AgentText, actorLabelText } from "../refs/AgentName";
+import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { referenceSpans } from "../refs/reference-spans";
 import {
   buildDispatchReference,
@@ -296,16 +297,19 @@ export function coverageStatements(
  * - **Anything else** by the read's `name` for it. An ask's, a comment's and a message's name is
  *   the question or the body as stored, which is markdown whose marks are no word of it (R21),
  *   so it is read to plain words (`plainWords`). A comment or a message the read marks deleted
- *   (`ReferenceTarget.deleted_at`) is named by the deleted line's words (`deletedLineWords`),
- *   never by the emptied body, which is no words at all, as a link to it reads
- *   (`reference-target.ts`'s `useReferenceLabel`). A component's name is a title too, which is
- *   no markdown, and is left as the read gives it, its addresses as written: the short form is
- *   the rule of a line that draws an issue's or a child issue's title, and no node of the tree is
- *   a component, so no row's line reads its name.
+ *   (`ReferenceTarget.deleted_at`) is named by the deleted line's words (`deletedLineText`),
+ *   never by the emptied body, which is no words at all, as a link to it is
+ *   (`reference-target.ts`'s `useReferenceLabel`); the model reads no agent registry, so the
+ *   line names the actor as `AgentName` does before the registry answers (`actorLabelText`),
+ *   where a link names a listed session by its registry title. A component's name is a title
+ *   too, which is no markdown, and is left as the read gives it, its addresses as written: the
+ *   short form is the rule of a line that draws an issue's or a child issue's title, and no node
+ *   of the tree is a component, so no row's line reads its name.
  *
  * A chip carries the marks the read answers for a post (`NodeChip.deletedAt`, `deletedBy`,
- * `editedAt`), and the name of an edited one, a comment, a message or a block of either, is its
- * words then ` · edited`, as `useReferenceLabel` writes a link to it.
+ * `editedAt`), and its name is the words alone: a place that draws the name of an edited one, a
+ * comment, a message or a block of either, cuts the words to its own length and marks what the
+ * cut left (`editedName`), so no cut takes the mark.
  */
 export function treeContext(
   reads: IssueTreeReads,
@@ -342,7 +346,11 @@ export function treeContext(
       child.title,
     ]),
   ]);
-  const nameOf = (reference: string, target: ReferenceTarget | undefined): string => {
+  const nameOf = (
+    reference: string,
+    target: ReferenceTarget | undefined,
+    deleted: PostDeletion | null
+  ): string => {
     const route = parseNodeReference(reference);
     const block = route !== undefined && "block" in route ? route.block : undefined;
     if (block !== undefined || target?.kind === "block") {
@@ -360,10 +368,7 @@ export function treeContext(
       return documentWord(reads.issue, route.key === key ? documents.get(route.slug) : undefined);
     }
     if (target?.kind === "ask" || target?.kind === "comment" || target?.kind === "message") {
-      // A deleted post's name is the deleted line, never the words of its emptied body, as a
-      // link to it reads (`reference-target.ts`'s `useReferenceLabel`).
-      const deleted = target.kind === "ask" ? null : postDeletion(target);
-      return deleted === null ? plainWords(target.name, target) : deletedLineWords(deleted);
+      return deleted === null ? plainWords(target.name, target) : deletedLineText(deleted, ACTOR);
     }
     if (target?.kind === "issue") return titleWords(titles.get(reference) ?? target.name);
     return blockWords(target?.name ?? "");
@@ -380,11 +385,9 @@ export function treeContext(
       const target = names.get(reference);
       const gone = target?.gone ?? false;
       const deleted = postDeletion(target);
-      // An edited post, or a block of one, is named by its words then ` · edited`, as a link to
-      // it reads (`useReferenceLabel`); a deleted one's deleted line already says what became of
-      // its text, and a name with no words takes no mark.
+      // A deleted post's deleted line already says what became of its text, so it carries no
+      // edit mark.
       const edited = deleted === null ? target?.edited_at : undefined;
-      const named = gone ? "" : nameOf(reference, target);
       const chip: NodeChip = {
         ...(target?.ambiguous === true ? { ambiguous: true } : {}),
         answered: target !== undefined,
@@ -392,7 +395,7 @@ export function treeContext(
         ...(deleted === null || deleted.by === null ? {} : { deletedBy: deleted.by }),
         ...(edited === undefined ? {} : { editedAt: edited }),
         gone,
-        name: edited === undefined || named === "" ? named : `${named} · edited`,
+        name: gone ? "" : nameOf(reference, target, deleted),
         ref: reference,
       };
       chips.set(reference, chip);
@@ -915,28 +918,23 @@ interface Turn {
   readonly replyTo: string | null;
 }
 
-/**
- * The deleted line's words as one line of text, for the name a chip naming a deleted comment or
- * message draws and the page publishes for it: `Deleted by <who>`, or `Deleted` for a delete
- * whose read names nobody, the words `deletedLineText` (`refs/post-marks.ts`) gives a link to
- * the post (`useReferenceLabel`), with no time, as that line has none. The model is pure and reads
- * no agent registry, so `<who>` is the actor's own id, never a name the registry gives it; a view
- * that draws the line itself names the actor from `deletedBy`. It is made from the delete alone,
- * so it holds no part of the body even where a read still carries one.
- */
-function deletedLineWords(deleted: PostDeletion): string {
-  return deleted.by === null ? "Deleted" : `Deleted by ${deleted.by.id}`;
-}
+/** How the model names the actor of a delete: as `AgentName` names one before the agent
+ *  registry answers (`actorLabelText`), since the model is pure and reads no registry. */
+const ACTOR: Pick<AgentText, "label"> = { label: actorLabelText };
 
 /**
  * The line a deleted comment's or message's node holds in place of its body: the words
  * `DeletedBody` (`refs/PostBody.tsx`) prints where the body was, `Deleted by <who> · <when>`, or
- * `Deleted · <when>` for a delete whose read names nobody (`deletedLineWords`). The model is
- * pure and reads no clock, so `<when>` is the time the read stores (`deleted_at`) as it stores
- * it, never an age; a view that draws the line itself draws the time from `deletedAt`.
+ * `Deleted · <when>` for a delete whose read names nobody (`deletedLineText`). The model is pure
+ * and reads no agent registry and no clock, so `<who>` is the actor as `AgentName` names one
+ * before the registry answers (`actorLabelText`: a person's login, a session's stamped title
+ * else its short id), and `<when>` is the time the read stores (`deleted_at`) as it stores it,
+ * never an age; a view that draws the line itself names the actor from `deletedBy` and draws
+ * the time from `deletedAt`. It is made from the delete alone, so it holds no part of the body
+ * even where a read still carries one.
  */
 function deletedPostLine(deleted: PostDeletion): string {
-  return `${deletedLineWords(deleted)} · ${deleted.at}`;
+  return `${deletedLineText(deleted, ACTOR)} · ${deleted.at}`;
 }
 
 /**

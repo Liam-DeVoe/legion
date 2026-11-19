@@ -1,3 +1,4 @@
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import type { ReactNode } from "react";
 
 import type { Actor, Agent, DeliveryAttemptState, MessageDeliveryMode } from "../../api/types";
@@ -76,11 +77,21 @@ export function takenAsUserTurn(deliveries: readonly TargetedMessageAttempt[]): 
   return deliveries.at(-1)?.acceptedAs === "user_turn";
 }
 
+/** What a failed attempt's line says: that the post's delete ended it, where it carries the
+ *  delete's words - a delete ends a send, the send did not fail, as the Pinned tab's
+ *  (`event-description.ts`) and the Activity tab's (`activity-model.ts`) lines say it - and why
+ *  it failed otherwise. */
+function failedText(attempt: Pick<TargetedMessageAttempt, "error">): string {
+  return attempt.error === DELETED_POST_DELIVERY_ERROR
+    ? "Ended by the post's delete"
+    : `Failed: ${attempt.error ?? "delivery failed"}`;
+}
+
 /** The headline one targeted message gets: who answered it, that it reached the session's own
- *  conversation, why it failed, that it is queued for a session that is not running, that it is
- *  still going out, that it is a BTW waiting on an answer, or that it was delivered, naming the
- *  mode as the composer does (`MODE_LABELS`). It is `AgentPart`s, so the agents it names keep
- *  their identity until `AgentParts` draws them.
+ *  conversation, that the post's delete ended it or why it failed, that it is queued for a
+ *  session that is not running, that it is still going out, that it is a BTW waiting on an
+ *  answer, or that it was delivered, naming the mode as the composer does (`MODE_LABELS`). It is
+ *  `AgentPart`s, so the agents it names keep their identity until `AgentParts` draws them.
  *  `asking` is that BTW branch, whose line ends in a separator because it carries a timestamp:
  *  the two belong to one decision, so the caller reads it here rather than restating the
  *  condition.
@@ -103,7 +114,7 @@ function deliveryHeadline(
     };
   }
   if (delivery?.state === "failed") {
-    const cause = `Failed: ${delivery.error ?? "delivery failed"}`;
+    const cause = failedText(delivery);
     // Each sentence names a control in the retry row, so it is said only while that row is shown.
     const guidance = retryRow ? failureGuidance(delivery, "card") : undefined;
     return {
@@ -130,7 +141,7 @@ function deliveryHeadline(
  *  never carries the safe-retry promise. */
 function attemptSummary(attempt: TargetedMessageAttempt, targetName: AgentPart): AgentPart[] {
   const reached = attempt.targetName ?? targetName;
-  if (attempt.state === "failed") return [`Failed: ${attempt.error ?? "delivery failed"}`];
+  if (attempt.state === "failed") return [failedText(attempt)];
   if (attempt.state === "queued") return queuedParts(reached);
   if (attempt.duplicate === true) return [duplicateText];
   const verb = attempt.state === "pending" ? "Sending" : "Sent";
@@ -138,10 +149,10 @@ function attemptSummary(attempt: TargetedMessageAttempt, targetName: AgentPart):
 }
 
 /** What became of a targeted message: answered, taken into the session's conversation as the
- *  person's own turn, failed, queued for a session that is not running, asking (BTW), or sent -
- *  then the earlier attempts, oldest first. Shared by the card and by a delivered reply in its
- *  thread. `retryRow` is whether the surface shows `DeliveryRetry` beneath it, whose buttons the
- *  failure's guidance names. */
+ *  person's own turn, ended by the post's delete, failed, queued for a session that is not
+ *  running, asking (BTW), or sent - then the earlier attempts, oldest first. Shared by the card
+ *  and by a delivered reply in its thread. `retryRow` is whether the surface shows
+ *  `DeliveryRetry` beneath it, whose buttons the failure's guidance names. */
 export function DeliveryStatus({
   answeredBy,
   deliveries,

@@ -22,6 +22,7 @@ import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import {
   ReferenceNamesProvider,
   useKnownAmbiguousReferences,
+  useKnownEditedReferences,
   useKnownReferenceName,
   useKnownReferenceNames,
   usePublishReferenceNames,
@@ -522,27 +523,75 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
   }
 });
 
-/** What one surface publishes: the names it read and the references it read as ambiguous. */
+// R2 of dispatch://INFRA-1523: the page publishes an edited post a comment cites by its words
+// alone, and the post among the references whose post its author edited, so a link cuts the
+// words to its own length and marks what the cut left ` · edited`.
+test("the page publishes an edited post a comment cites by its words, among the edited references", async () => {
+  const cited = `dispatch://${KEY}/comment/c0ffee00`;
+  const stubs = stubTreeReads(
+    async (refs) => ({
+      targets: namedTargets(refs).targets.map(
+        (target): ReferenceTarget =>
+          target.ref === cited
+            ? { ...target, edited_at: "2026-11-05T02:00:00Z", kind: "comment", name: "Hold it." }
+            : target
+      ),
+    }),
+    { comments: [{ ...comment, body: `Read ${cited} first.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return {
+          edited: useKnownEditedReferences(),
+          name: useKnownReferenceName(cited),
+          task: useKnownReferenceName(TASK_REF),
+        };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect([...view.result.current.edited]).toEqual([cited]));
+    expect(view.result.current.name).toBe("Hold it.");
+    // A target nobody edited is published by its name and left out of the set.
+    expect(view.result.current.task).toBe(NODE_TYPE_NAMES.plan_task);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+/** What one surface publishes: the names it read, the references it read as ambiguous, and the
+ *  references among the names it read edited, none where absent. */
 interface Published {
   readonly ambiguous: ReadonlySet<string>;
+  readonly edited?: ReadonlySet<string>;
   readonly names: ReadonlyMap<string, string>;
 }
 
 /** What a link under the provider read on its latest render. */
 interface Seen {
   ambiguous?: ReadonlySet<string>;
+  edited?: ReadonlySet<string>;
   names?: ReadonlyMap<string, string>;
 }
 
 /** A surface that publishes `published` for as long as it is mounted. */
 function Publisher({ published }: { readonly published: Published }): ReactNode {
-  usePublishReferenceNames(published.names, published.ambiguous);
+  usePublishReferenceNames(published.names, published.ambiguous, published.edited);
   return null;
 }
 
 /** A link under the provider, which writes what it reads into `seen` on every render. */
 function Reader({ seen }: { readonly seen: Seen }): ReactNode {
   seen.ambiguous = useKnownAmbiguousReferences();
+  seen.edited = useKnownEditedReferences();
   seen.names = useKnownReferenceNames();
   return null;
 }
@@ -606,6 +655,49 @@ test("one publisher leaving keeps the names and ambiguous references another pub
   view.rerender(surfaces({ page: false, sheet: false }));
   expect(seen.names).toEqual(new Map());
   expect(seen.ambiguous).toEqual(new Set());
+  view.unmount();
+});
+
+// A name and its edit mark come from one read. Where two surfaces name one post, the mark of the
+// one whose name stands - the last to publish - stands with it: the page read a comment edited,
+// and the sheet, publishing after it, read the comment deleted, whose deleted line takes no
+// mark, so a link reads that line unmarked and not as `Deleted by alice · edited`. Once the sheet
+// closes, the page's name and its mark stand again.
+test("the edited mark a link reads is the one of the publisher whose name stands", () => {
+  const deleted = `dispatch://${KEY}/comment/c0ffee00`;
+  const edited = `dispatch://${KEY}/comment/c0ffee01`;
+  const page: Published = {
+    ambiguous: new Set(),
+    edited: new Set([deleted, edited]),
+    names: new Map([
+      [deleted, "Hold the deploy."],
+      [edited, "Ship it."],
+    ]),
+  };
+  const sheet: Published = {
+    ambiguous: new Set(),
+    names: new Map([[deleted, "Deleted by alice"]]),
+  };
+  const seen: Seen = {};
+  const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
+    <ReferenceNamesProvider>
+      {mounted.page && <Publisher published={page} />}
+      {mounted.sheet && <Publisher published={sheet} />}
+      <Reader seen={seen} />
+    </ReferenceNamesProvider>
+  );
+
+  const view = render(surfaces({ page: true, sheet: true }));
+  expect(seen.names?.get(deleted)).toBe("Deleted by alice");
+  expect(seen.edited).toEqual(new Set([edited]));
+
+  // The sheet closes: the page's own set stands, as it published it.
+  view.rerender(surfaces({ page: true, sheet: false }));
+  expect(seen.names?.get(deleted)).toBe("Hold the deploy.");
+  expect(seen.edited).toBe(page.edited);
+
+  view.rerender(surfaces({ page: false, sheet: false }));
+  expect(seen.edited).toEqual(new Set());
   view.unmount();
 });
 

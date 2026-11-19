@@ -1658,9 +1658,10 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * address the issue page names a read by is written `dispatch://` and its owner
  * (`treeReferences`): a node's own, a chip's, each one its words cite, a bare key asked as its
  * issue's own address, and an item id or a block id written short still under its owner, so the
- * key alone ties each address to what owns it. An event of these kinds on neither an issue nor a
+ * key alone ties each address to what owns it. A comment or ask event on neither an issue nor a
  * project document never reaches this rule: `documentTargets` refuses it first, and the feed then
- * refreshes every read the app holds.
+ * refreshes every read the app holds. A message correction always carries its issue, since the
+ * server refuses to correct any other message (`message_corrections.go`).
  *
  * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
  * once the document has been quiet after those edits, each of which wrote a version that sent
