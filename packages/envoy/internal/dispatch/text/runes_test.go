@@ -102,6 +102,42 @@ func isSlice(got, value string, want int) bool {
 	return len(got) == want && (want == 0 || unsafe.StringData(got) == unsafe.StringData(value))
 }
 
+// answerScan cuts each of pairs once in each of its runs, keeps each answer in sink, and counts the
+// answers that are not the value's own first want bytes, which is, by the reference, each pair's
+// answer, keeping the first of them. The two copy helpers below run it on their own schedules and
+// report through it, so a bad answer is read and named in one place.
+type answerScan struct {
+	pairs                                      []pair
+	runs, copies, first, firstRun, firstLength int
+	firstAt                                    string
+}
+
+func (s *answerScan) run() {
+	s.runs++
+	for i, p := range s.pairs {
+		got := HeadRunes(p.value, p.limit)
+		if !isSlice(got, p.value, p.want) {
+			if s.copies == 0 {
+				s.first, s.firstRun, s.firstLength, s.firstAt = i, s.runs, len(got), "another address"
+				if len(got) > 0 && unsafe.StringData(got) == unsafe.StringData(p.value) {
+					s.firstAt = "the value's address"
+				}
+			}
+			s.copies++
+		}
+		sink = got
+	}
+}
+
+// check fails t when any answer of any run was not the value's own first bytes, naming the first.
+func (s *answerScan) check(t *testing.T) {
+	t.Helper()
+	if s.copies > 0 {
+		p := s.pairs[s.first]
+		t.Fatalf("%d of the %d answers are not the value's own first bytes; the first, in run %d of %d: HeadRunes(%.70q, %d) answered %d bytes at %s, want the value's own first %d bytes (the value is %d bytes)", s.copies, s.runs*len(s.pairs), s.firstRun, s.runs, p.value, p.limit, s.firstLength, s.firstAt, p.want, len(p.value))
+	}
+}
+
 // copiesNothing fails t when HeadRunes answers any of pairs with anything but the value's own first
 // want bytes, which is, by the reference, each pair's answer. testing.AllocsPerRun cuts all the
 // pairs 22 times, the first run uncounted, and each answer of each run is checked: so a copy fails
@@ -115,28 +151,9 @@ func isSlice(got, value string, want int) bool {
 // to name the pair that allocated.
 func copiesNothing(t *testing.T, pairs []pair) {
 	t.Helper()
-	runs, copies, first, firstRun, firstLength, firstAt := 0, 0, 0, 0, 0, ""
-	all := func() {
-		runs++
-		for i, p := range pairs {
-			got := HeadRunes(p.value, p.limit)
-			if !isSlice(got, p.value, p.want) {
-				if copies == 0 {
-					first, firstRun, firstLength, firstAt = i, runs, len(got), "another address"
-					if len(got) > 0 && unsafe.StringData(got) == unsafe.StringData(p.value) {
-						firstAt = "the value's address"
-					}
-				}
-				copies++
-			}
-			sink = got
-		}
-	}
-	allocations := testing.AllocsPerRun(21, all)
-	if copies > 0 {
-		p := pairs[first]
-		t.Fatalf("%d of the %d answers of %d runs of the pairs are not the value's own first bytes; the first, in run %d: HeadRunes(%.70q, %d) answered %d bytes at %s, want the value's own first %d bytes (the value is %d bytes)", copies, runs*len(pairs), runs, firstRun, p.value, p.limit, firstLength, firstAt, p.want, len(p.value))
-	}
+	scan := answerScan{pairs: pairs}
+	allocations := testing.AllocsPerRun(21, scan.run)
+	scan.check(t)
 	if allocations == 0 {
 		return
 	}
@@ -155,23 +172,9 @@ func copiesNothing(t *testing.T, pairs []pair) {
 // that HeadRunes makes and does not return.
 func answersSlices(t *testing.T, pairs []pair) {
 	t.Helper()
-	copies, first, firstLength, firstAt := 0, 0, 0, ""
-	for i, p := range pairs {
-		got := HeadRunes(p.value, p.limit)
-		if !isSlice(got, p.value, p.want) {
-			if copies == 0 {
-				first, firstLength, firstAt = i, len(got), "another address"
-				if len(got) > 0 && unsafe.StringData(got) == unsafe.StringData(p.value) {
-					firstAt = "the value's address"
-				}
-			}
-			copies++
-		}
-	}
-	if copies > 0 {
-		p := pairs[first]
-		t.Fatalf("%d of the %d answers are not the value's own first bytes; the first: HeadRunes(%.70q, %d) answered %d bytes at %s, want the value's own first %d bytes (the value is %d bytes)", copies, len(pairs), p.value, p.limit, firstLength, firstAt, p.want, len(p.value))
-	}
+	scan := answerScan{pairs: pairs}
+	scan.run()
+	scan.check(t)
 }
 
 // keptCuts cuts values that are UTF-8, each kept+rest, to the code points of kept, and counts the
