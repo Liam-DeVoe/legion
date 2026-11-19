@@ -4261,6 +4261,7 @@ jobs:
               - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/**/*_test.go'
               - '!packages/envoy/internal/broker/**/*_test.go'
