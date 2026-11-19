@@ -6,7 +6,6 @@
 // against the servers written beside it.
 import type { EnvoyEnvironment, NatsSeed } from "../../../packages/envoy-client/src/envoy-settings";
 import { LoggableError } from "../../../packages/envoy-client/src/errors";
-import { isNoSessionNamed } from "../../../packages/envoy-client/src/nats-credential";
 import {
   sessionConfigFile,
   sessionEnvoySettings,
@@ -22,9 +21,9 @@ import {
  * Throws too where the operator's settings name a session's broker token (`NATS_AUTH=broker`): a
  * hub's auth service grants that token one session's own channels, and these scripts read the
  * hub's other subjects and its streams, so they connect with a seed or with none. These scripts
- * name no session, so the settings turn inbound off for it (`isNoSessionNamed`), and the refusal
- * names the seed to set. Each refusal is composed of the settings' own words, never a value they
- * hold, so a failure line prints it (`LoggableError`).
+ * name no session, so the settings turn inbound off for it (`EnvoyInbound.noSessionNamed`), and
+ * the refusal names the seed to set. Each refusal is composed of the settings' own words, never a
+ * value they hold, so a failure line prints it (`LoggableError`).
  */
 export function operatorNatsSeed(
   servers: string,
@@ -42,7 +41,7 @@ export function operatorNatsSeed(
     throw new LoggableError(`${refused}: ${settings.error ?? settings.notice}`);
   const { inbound } = settings;
   if ("off" in inbound) {
-    if (isNoSessionNamed(inbound.off)) throw broker;
+    if (inbound.noSessionNamed === true) throw broker;
     throw new LoggableError(`${refused}: ${inbound.off}`);
   }
   const credential = inbound.natsCredential;

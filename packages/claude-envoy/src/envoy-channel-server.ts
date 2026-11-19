@@ -643,29 +643,30 @@ export interface SessionAdmission {
   /** Records that the connection is admitted as `session` now. */
   readonly admit: (session: string) => void
   /** Settles once the connection is admitted as `session`: at once where it is now, else when a
-   *  later `admit` names it. A wait for an id another one was admitted after is dropped
-   *  unsettled: that id is gone. */
+   *  later `admit` names it. Only the latest id asked about is waited for: a wait for an id asked
+   *  about before it is dropped unsettled, since the live view takes only its latest id's subject.
+   *  The wait is kept through an `admit` of another id, which an earlier `/clear`'s move can land
+   *  as after the live view has heard of a later one. */
   readonly admitted: (session: string) => Promise<void>
 }
 
 /** A {@link SessionAdmission} admitted as `first`. */
 export function sessionAdmission(first: string): SessionAdmission {
   let current = first
-  const waiting = new Map<string, PromiseWithResolvers<void>>()
+  let pending: { readonly session: string; readonly wait: PromiseWithResolvers<void> } | undefined
   return {
     admit: (session) => {
       current = session
-      waiting.get(session)?.resolve()
-      waiting.clear()
+      if (pending?.session !== session) return
+      pending.wait.resolve()
+      pending = undefined
     },
     admitted: (session) => {
       if (session === current) return Promise.resolve()
-      let wait = waiting.get(session)
-      if (wait === undefined) {
-        wait = Promise.withResolvers<void>()
-        waiting.set(session, wait)
+      if (pending?.session !== session) {
+        pending = { session, wait: Promise.withResolvers<void>() }
       }
-      return wait.promise
+      return pending.wait.promise
     },
   }
 }

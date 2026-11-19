@@ -63,12 +63,42 @@ test.each([
     (proof: string) => `{"Authorization":["DPoP ${proof}"]}`,
     '{"Authorization":["DPoP [redacted]"]}',
   ],
+  // A body that quotes the echo inside a JSON string, or as HTML, writes its quotes escaped; and
+  // a list may hold the header twice (the deep review of dfa2ea1f59, H1).
+  [
+    "a JSON-escaped member's list",
+    (proof: string) => `{\\"Dpop\\":[\\"${proof}\\"]}`,
+    '{\\"Dpop\\":[\\"[redacted]\\"]}',
+  ],
+  [
+    "an HTML-escaped member's list",
+    (proof: string) => `&quot;Dpop&quot;:[&quot;${proof}&quot;]`,
+    "&quot;Dpop&quot;:[&quot;[redacted]&quot;]",
+  ],
+  [
+    "the second value of a list",
+    (proof: string) => `{"Dpop":["${proof}","${proof}"]}`,
+    '{"Dpop":["[redacted]","[redacted]"]}',
+  ],
 ] as const)("an excerpt redacts an echoed DPoP proof as %s", (_as, echo, shown) => {
   const proof = `eyJ0eXAiOiJkcG9wK2p3dCJ9.${fixtureSecret("claims")}.${fixtureSecret("sig")}`;
   const quoted = excerpt(`echo ${echo(proof)} Authorization: DPoP ${fixtureSecret("token")}`, []);
   expect(quoted).toBe(`echo ${shown} Authorization: DPoP [redacted]`);
   expect(quoted).not.toContain(proof.slice(0, 12));
 });
+
+// The JWS pattern runs on the host's event loop over up to `EXCERPT_SCAN_LIMIT` characters of
+// text a gateway chose, so it starts a match only at the start of a run of base64url characters.
+// Started anywhere, it scans a run to its end from each `eyJ` inside it: measured on this
+// repository's dev box, 0.53 s for one 64 KiB page of `eyJ-`, against 0.3 ms with the lookbehind.
+// Twenty pages put the defect at about 10 s idle, past the row's 5 s limit, while the row itself
+// takes milliseconds even on a loaded box: the limit is a bound on work, not a hang guard.
+test("the JWS pattern does bounded work on twenty pages that start a JWS at every fourth character", () => {
+  for (let page = 0; page < 20; page += 1) {
+    const hostile = `${page}${"eyJ-".repeat(EXCERPT_SCAN_LIMIT / 4)}`;
+    expect(excerpt(hostile, [])).toStartWith(`${page}`);
+  }
+}, 5_000);
 
 // The same bound as every pattern of `excerpt`: a proof cut by the first `EXCERPT_SCAN_LIMIT`
 // characters is redacted whole, its piece inside the bound included, and nothing past it is read.

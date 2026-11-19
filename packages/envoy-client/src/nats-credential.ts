@@ -128,29 +128,16 @@ export function noAuthService(source: string): string {
   return `${source} is broker, but the NATS server sent no nonce to sign: it runs no auth service, so ${remedy} for this hub`;
 }
 
-/** What {@link noSessionNamed} says after the setting it names. */
-const NO_SESSION_NAMED =
-  " is broker, but this process names no session for its NATS connection's token";
-
-/** Why a session's NATS connection takes no broker token where its process names no session: a
- *  trade under no session is answered the machine's token, under `AGENT_SECRETS_SESSION`, or the
- *  signed-in person's, under their sign-in's own name, neither of which is the session the
- *  connection delivers to. */
-export function noSessionNamed(source: string): string {
-  return `${source}${NO_SESSION_NAMED}`;
-}
-
-/** Whether `off`, the reason an `inbound` is off, is {@link noSessionNamed}'s: the settings name
- *  a broker token for a process that names no session, such as an operator's script. */
-export function isNoSessionNamed(off: string): boolean {
-  return off.endsWith(NO_SESSION_NAMED);
-}
-
-/** A wait for a NATS connection's token where its process names no session ({@link
- *  noSessionNamed}): nothing is traded. */
-class NoSessionNamedError extends LoggableError {
+/**
+ * A broker token for a NATS connection whose process names no session: nothing is traded, since
+ * a trade under no session is answered the machine's token, under `AGENT_SECRETS_SESSION`, or the
+ * signed-in person's, under their sign-in's own name, neither of which is the session the
+ * connection delivers to. `envoySettings` turns inbound off for it (`EnvoyInbound.noSessionNamed`),
+ * and a wait for the token rejects with it.
+ */
+export class NoSessionNamedError extends LoggableError {
   constructor(source: string) {
-    super(noSessionNamed(source));
+    super(`${source} is broker, but this process names no session for its NATS connection's token`);
     this.name = "NoSessionNamedError";
   }
 }
@@ -557,12 +544,16 @@ export function keepNatsCredential(
         refusals = 0;
       }
       refusals += 1;
-      refusal.warn(
-        `the NATS server refused the connection's live broker token (${status.data}): the auth service is away, or the token was revoked; the connection keeps redialling, and at the second refusal the token is dropped and another traded`
-      );
       const session = credential.tokenSession();
-      if (refusals !== REFUSALS_BEFORE_DROP || session === undefined || droppedFor.has(session))
-        continue;
+      const dropped = session !== undefined && droppedFor.has(session);
+      refusal.warn(
+        `the NATS server refused the connection's live broker token (${status.data}): the auth service is away, or the token was revoked; the connection keeps redialling, and ${
+          dropped
+            ? "this session's token was dropped and another traded once already, so none is dropped again until the connection is back"
+            : "at the second refusal the token is dropped and another traded"
+        }`
+      );
+      if (refusals !== REFUSALS_BEFORE_DROP || session === undefined || dropped) continue;
       droppedFor.add(session);
       credential.drop();
       renewNow();

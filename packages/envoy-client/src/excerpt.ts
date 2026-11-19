@@ -78,12 +78,15 @@ function redactTokens(text: string, tokens: readonly string[]): string {
  * then, after scripts, styles and tags are dropped, the value of an `Authorization` or a `DPoP`
  * header or JSON member, in any case, a value written in a list as Go's header JSON writes one
  * (`"Dpop":["<proof>"]`) included (an `Authorization` value's scheme kept: the `DPoP` header is
- * the proof the credential signed for that one request, which is none of `tokens`), and the value
- * after `Bearer` or `DPoP`. All of it runs before the cut to one line, so a cut never leaves
- * a credential's first characters behind. The text is the answerer's, and the excerpt is built on
- * the host's event loop, so only the first `EXCERPT_SCAN_LIMIT` characters are read and every
- * pattern runs in linear time: a tag holds no `<`, and a script or style block left open runs to
- * the end.
+ * the proof the credential signed for that one request, which is none of `tokens`), the value
+ * after `Bearer` or `DPoP`, and every value shaped as a JWS (`eyJ…` `.` `…` `.` `…`, a proof or a
+ * JWT) wherever it stands, so an echo the gateway quoted inside a JSON string (`\"`), as HTML
+ * (`&quot;`) or as the second value of a list is redacted too. All of it runs before the cut to
+ * one line, so a cut never leaves a credential's first characters behind. The text is the
+ * answerer's, and the excerpt is built on the host's event loop, so only the first
+ * `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time: a tag holds no
+ * `<`, a script or style block left open runs to the end, and a JWS is matched only from the start
+ * of a run of base64url characters.
  */
 export function excerpt(text: string, tokens: Tokens): string {
   const trimmed = (typeof tokens === "string" ? [tokens] : tokens).map((token) => token.trim());
@@ -97,6 +100,7 @@ export function excerpt(text: string, tokens: Tokens): string {
         `$1${REDACTED}`
       )
       .replace(/(\b(?:bearer|dpop)\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
+      .replace(/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g, REDACTED)
   );
 }
 

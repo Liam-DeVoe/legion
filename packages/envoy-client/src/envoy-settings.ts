@@ -23,7 +23,7 @@ import {
   brokerNatsCredential,
   NATS_AUTH_VAR,
   type NatsCredential,
-  noSessionNamed,
+  NoSessionNamedError,
 } from "./nats-credential";
 import { readSecretFile } from "./secret-file";
 
@@ -177,8 +177,10 @@ const NO_NATS_CONNECTION = "this session opens no NATS connection";
 
 /** How a session takes inbound messages: over `natsUrls` (never empty) with `natsCredential`, the
  * nkey user a seed names, the session's broker token, or none for a server that asks for no
- * credential; or not at all, `off` saying why. `natsServersSetting` names the setting the servers
- * came from (`ENVOY_NATS_URL`, or `envoy.natsUrls in <file>`), which a log names them by
+ * credential; or not at all, `off` saying why, and `noSessionNamed` set where the reason is a
+ * broker token for a process that names no session (`NoSessionNamedError`), which a caller with a
+ * remedy of its own branches on. `natsServersSetting` names the setting the servers came from
+ * (`ENVOY_NATS_URL`, or `envoy.natsUrls in <file>`), which a log names them by
  * (`natsServersForLog`), never by their text. */
 export type EnvoyInbound =
   | {
@@ -186,7 +188,7 @@ export type EnvoyInbound =
       readonly natsServersSetting: string;
       readonly natsCredential: NatsCredential;
     }
-  | { readonly off: string };
+  | { readonly off: string; readonly noSessionNamed?: true };
 
 /** An Envoy a session uses: every value resolved, credentials included. */
 export interface EnabledEnvoySettings {
@@ -326,8 +328,8 @@ function natsCredential(
   if (!route.traded) throw new Error(`${auth.source} is broker, but ${route.gap}`);
   if (named === undefined) requireFileServers(section, namedNatsUrls, filePath, "NATS_AUTH=broker");
   // No name at all refuses here; a name read from a function is read at each trade, which refuses
-  // a trade the moment it reads none (`noSessionNamed`).
-  if (session === undefined) throw new Error(noSessionNamed(auth.source));
+  // a trade the moment it reads none (`NoSessionNamedError`).
+  if (session === undefined) throw new NoSessionNamedError(auth.source);
   return { kind: "broker", broker: brokerNatsCredential(env, session, auth.source) };
 }
 
@@ -448,7 +450,10 @@ export function envoySettings(
         natsCredential: natsCredential(env, section, namedNatsUrls, config.path, options.session),
       };
     } catch (error) {
-      inbound = { off: messageFor(error) };
+      inbound =
+        error instanceof NoSessionNamedError
+          ? { off: messageFor(error), noSessionNamed: true }
+          : { off: messageFor(error) };
     }
   }
   const heartbeatMs = resolvedInterval(env.ENVOY_HEARTBEAT_MS, DEFAULT_HEARTBEAT_MS);

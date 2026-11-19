@@ -2547,6 +2547,7 @@ GATES = [
         (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-go.json", "packages/broker-client/src/__tests__/dpop.test.ts reads the Go signer's committed connection proof and verifies it with jose"),
         (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-ts.json", "packages/broker-client/src/__tests__/dpop.test.ts reads this signer's committed connection proof and holds it to the signer's claim names"),
         (f"{ENVOY}/internal/broker/oauth/testdata/refusal-descriptions.json", "packages/broker-client/src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts as its OAuth library writes them, which internal/broker/oauth's refusal-corpus test writes"),
+        (f"{ENVOY}/internal/broker/oauth/testdata/refusal-codes.json", "packages/broker-client/src/__tests__/refusal-corpus.test.ts reads the OAuth codes the broker's library writes, which internal/broker/oauth's refusal-corpus test writes, and holds LIBRARY_OAUTH_ERROR_CODES to them"),
         (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts reads the Go package's own corpus by relative path (CORPUS_PATH) - that file itself, never a copy, so the two clients are held to one wire; refusal-corpus.test.ts reads it for the broker's own refusal codes"),
     ) + bun_job("broker-client")),
 

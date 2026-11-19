@@ -25,13 +25,26 @@ test("the dial's id is admitted at once, and a /clear's once its move lands", as
   expect(await settled(admission.admitted("ses_first"))).toBe(false)
 })
 
-test("a wait for an id another was admitted after is dropped, never settled", async () => {
+// The live view hears of each `/clear` from the mod at once, and the server adopts each one in
+// turn, after the move before it has landed: so the server can admit B after the live view has
+// asked about C (the deep review of dfa2ea1f59, M1).
+test("a wait for the latest id outlives the admission of an earlier one, and lands with its own", async () => {
   const admission = sessionAdmission("ses_first")
-  const skipped = admission.admitted("ses_skipped")
-  admission.admit("ses_latest")
-  expect(await settled(skipped)).toBe(false)
-  // Admitting it later settles a fresh wait, not the dropped one.
-  admission.admit("ses_skipped")
-  expect(await settled(skipped)).toBe(false)
-  expect(await settled(admission.admitted("ses_skipped"))).toBe(true)
+  const latest = admission.admitted("ses_c")
+  admission.admit("ses_b")
+  expect(await settled(latest)).toBe(false)
+  admission.admit("ses_c")
+  expect(await settled(latest)).toBe(true)
+})
+
+test("a wait for an id asked about before a later one is dropped, never settled", async () => {
+  const admission = sessionAdmission("ses_first")
+  const earlier = admission.admitted("ses_b")
+  const latest = admission.admitted("ses_c")
+  admission.admit("ses_b")
+  expect(await settled(earlier)).toBe(false)
+  expect(await settled(latest)).toBe(false)
+  admission.admit("ses_c")
+  expect(await settled(earlier)).toBe(false)
+  expect(await settled(latest)).toBe(true)
 })

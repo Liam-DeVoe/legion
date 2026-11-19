@@ -738,7 +738,8 @@ that URL's fixed phrase otherwise (`requestForText`, `@legion/contracts/log-text
 bearer, which is a header), the status and reason phrase, a one-line plain-text excerpt of the
 body, and what asking again can do. The excerpt
 drops scripts, styles and tags, reads at most the body's first 64 KiB in linear time, and, like the
-reason phrase, has the value after `Authorization:`, `Bearer` or `DPoP` redacted, and every run of 8
+reason phrase, has the value after `Authorization:`, `Bearer` or `DPoP` redacted, every value shaped
+as a JWS (`eyJ…`, a proof or a JWT) wherever it stands, escaped or in a list, and every run of 8
 or more of the characters of each token the client presented lately (its credential's now, and
 those it sent before a renewal: `SentTokens`, `excerpt.ts`; a shorter token only whole), so a copy
 cut short, split by markup or overlapping another leaves no such piece. A body none of whose read

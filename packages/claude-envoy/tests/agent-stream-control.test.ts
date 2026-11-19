@@ -16,6 +16,7 @@ import {
 } from "@legion/contracts"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type AgentStreamRunner, startAgentStream } from "../src/agent-stream-runner"
+import { sessionAdmission } from "../src/envoy-channel-server"
 import type { ModLink } from "../src/mod-link"
 import { FakeNats } from "./channel-session-harness"
 
@@ -296,14 +297,11 @@ test("a clear moves the control subject, and the new id replays nothing from bef
 })
 
 // Under a broker token the connection is admitted as one session at a time, and the server refuses
-// and closes a subscribe to a subject the session it is admitted as may not take.
+// and closes a subscribe to a subject the session it is admitted as may not take. These run the
+// channel server's own `sessionAdmission`, which `admit`s each id when its move lands.
 test("a clear takes the new id's control subject only once the connection is admitted as it", async () => {
-  const waiting = new Map<string, PromiseWithResolvers<void>>()
-  const live = running((session) => {
-    const admission = Promise.withResolvers<void>()
-    waiting.set(session, admission)
-    return admission.promise
-  })
+  const admission = sessionAdmission(SESSION)
+  const live = running(admission.admitted)
   expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(SESSION)])
 
   live.mod.moveSession(CLEARED)
@@ -312,7 +310,7 @@ test("a clear takes the new id's control subject only once the connection is adm
   expect(live.nats.unsubscribed).toContain(agentStreamControlSubject(SESSION))
   expect([...live.nats.subscriptions.keys()]).toEqual([])
 
-  waiting.get(CLEARED)?.resolve()
+  admission.admit(CLEARED)
   await settle()
   expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(CLEARED)])
   await live.control(CLEARED, watchRequest)
@@ -322,21 +320,20 @@ test("a clear takes the new id's control subject only once the connection is adm
 })
 
 test("a second clear before the first id is admitted takes only the latest id's subject", async () => {
-  const waiting = new Map<string, PromiseWithResolvers<void>>()
-  const live = running((session) => {
-    const admission = Promise.withResolvers<void>()
-    waiting.set(session, admission)
-    return admission.promise
-  })
+  // The live view hears of both `/clear`s at once; the server adopts the second only after the
+  // first one's move has landed, so the first id is admitted after the live view asked about the
+  // second (the deep review of dfa2ea1f59, M1).
+  const admission = sessionAdmission(SESSION)
+  const live = running(admission.admitted)
   live.mod.moveSession(CLEARED)
   await settle()
   live.mod.moveSession("ses_cleared_again")
   await settle()
   // The first id's admission comes too late: the session is the second id's now.
-  waiting.get(CLEARED)?.resolve()
+  admission.admit(CLEARED)
   await settle()
   expect([...live.nats.subscriptions.keys()]).toEqual([])
-  waiting.get("ses_cleared_again")?.resolve()
+  admission.admit("ses_cleared_again")
   await settle()
   expect([...live.nats.subscriptions.keys()]).toEqual([
     agentStreamControlSubject("ses_cleared_again"),
