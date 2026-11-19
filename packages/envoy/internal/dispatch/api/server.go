@@ -272,6 +272,10 @@ type DepsInput struct {
 	// Clock is the clock the API's timers and the listener client's window run on; see
 	// Deps.Clock. Nil is clock.Real().
 	Clock clock.Clock
+	// CollaboratorHTTPClient is the HTTP client the Envoy listener client and the GitHub App client
+	// send through (envoy.WithHTTPClient, githubapp.WithHTTPClient). Production leaves it nil and
+	// each builds its own; a test sets one whose transport sees every request's context.
+	CollaboratorHTTPClient *http.Client
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -304,6 +308,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		if input.Clock != nil {
 			options = append(options, envoy.WithClock(input.Clock))
 		}
+		if input.CollaboratorHTTPClient != nil {
+			options = append(options, envoy.WithHTTPClient(input.CollaboratorHTTPClient))
+		}
 		envoyClient = envoy.New(envoyURL, options...)
 	}
 	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):
@@ -311,6 +318,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 	var githubOptions []githubapp.Option
 	if input.Store != nil {
 		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.Store.Pool)))
+	}
+	if input.CollaboratorHTTPClient != nil {
+		githubOptions = append(githubOptions, githubapp.WithHTTPClient(input.CollaboratorHTTPClient))
 	}
 	github, err := githubapp.New(input.App, input.GitHubAPIBase, githubOptions...)
 	if err != nil {

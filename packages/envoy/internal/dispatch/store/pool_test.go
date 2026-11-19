@@ -91,6 +91,56 @@ func TestPoolRefusesASecondConnectionInsideATransaction(t *testing.T) {
 	}
 }
 
+// A transaction is past its first write batch (SentWriteBatch) from the batch WriteBatch.Send
+// sends until the transaction ends: its reads and an empty batch leave it in its read phase, and
+// the next transaction on the same context starts there again.
+func TestSentWriteBatchMarksATransactionFromItsFirstBatchToItsEnd(t *testing.T) {
+	database := openEmptyTestStore(t)
+	if err := database.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	ctx := WithTransactionTracking(context.Background())
+	if SentWriteBatch(ctx) {
+		t.Fatal("a context that holds no connection is marked past a write batch")
+	}
+	for round := range 2 {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("round %d: begin: %v", round, err)
+		}
+		var one int
+		if err := tx.QueryRow(ctx, "select 1").Scan(&one); err != nil {
+			t.Fatalf("round %d: read: %v", round, err)
+		}
+		var empty WriteBatch
+		if err := empty.Send(ctx, tx); err != nil {
+			t.Fatalf("round %d: send an empty batch: %v", round, err)
+		}
+		if SentWriteBatch(ctx) {
+			t.Fatalf("round %d: a transaction that read and sent an empty batch is marked past a write batch", round)
+		}
+		if err := RunWrite(ctx, tx, func(b *WriteBatch) error {
+			b.Queue("a write", "select 1")
+			return nil
+		}); err != nil {
+			t.Fatalf("round %d: send a batch: %v", round, err)
+		}
+		if !SentWriteBatch(ctx) {
+			t.Fatalf("round %d: a transaction that sent a batch is not marked past it", round)
+		}
+		end := tx.Commit
+		if round == 1 {
+			end = tx.Rollback
+		}
+		if err := end(ctx); err != nil {
+			t.Fatalf("round %d: end the transaction: %v", round, err)
+		}
+		if SentWriteBatch(ctx) {
+			t.Fatalf("round %d: a context whose transaction ended is still marked past a write batch", round)
+		}
+	}
+}
+
 // An open cursor is a held connection too: pgx hands it back when the rows close, so work
 // inside the loop competes with the caller's own cursor for the pool.
 func TestPoolRefusesASecondConnectionInsideAnOpenCursor(t *testing.T) {

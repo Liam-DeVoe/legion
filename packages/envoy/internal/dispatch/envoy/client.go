@@ -274,6 +274,13 @@ func WithToken(token string) Option {
 	return func(c *Client) { c.apiToken = token }
 }
 
+// WithHTTPClient sets the HTTP client every listener call is sent through. Without it the client
+// builds one of its own, which is what a deployment does; a test passes one whose transport sees
+// each request's context.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(c *Client) { c.httpClient = httpClient }
+}
+
 // New returns a client for an Envoy listener's HTTP control API.
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{

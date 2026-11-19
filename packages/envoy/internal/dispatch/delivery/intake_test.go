@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -29,8 +30,10 @@ import (
 )
 
 // TestMain drops the databases the package's tests clone (storetest.Main) and removes the NATS
-// server they share (testnats.Main).
+// server they share (testnats.Main). The xid window rows judge their windows' gaps only in the
+// timing lane (storetest.JudgeXidGaps).
 func TestMain(m *testing.M) {
+	storetest.JudgeXidGaps(os.Getenv(benchtime.TimingEnv) != "")
 	os.Exit(storetest.Main(func() int { return testnats.Main(m.Run) }))
 }
 

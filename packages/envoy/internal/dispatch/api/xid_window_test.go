@@ -36,10 +36,12 @@ import (
 //
 // This file, the route window table's (route_xid_window_test.go and the files of its rows),
 // issue_ask_repair_xid_window_test.go and delivery's xid_window_test.go build without the race
-// detector (`//go:build !race`). Under it the rig judges no gap (storetest.XidJudgesGaps) and the
-// shape is the same rule in either build, so a race run of these tests proved nothing the plain
-// run does not, at about four times the plain run's cost: envoy-go's step "Test what the race
-// build cannot run at all or at full size" runs them, judging shape and gaps both.
+// detector (`//go:build !race`). Under it the rig judges no gap (storetest.XidJudgesGaps), and the
+// shape and the collaborator check (storetest/collabtest) are the same rules in either build, so a
+// race run of these tests proved nothing the plain run does not, at about four times the plain
+// run's cost: envoy-go's step "Test what the race build cannot run at all or at full size" runs
+// them, judging shape and collaborator calls, and the timing lane (benchtime.TimingEnv, which
+// TestMain reads) judges gaps as well.
 //
 // Seeding the fixture is most of what a window test costs: twenty anchored writes on a 40 KB
 // spec, each of which renders the spec, about fifteen seconds of a race-built run on a two-core
@@ -485,7 +487,7 @@ func TestXidWindowDocumentRebuild(t *testing.T) {
 			return broken
 		},
 	}, "")
-	if err := f.deps.Docs.(*docs.Service).Evict(context.Background(), f.specID); err != nil {
+	if err := f.deps.Docs.Evict(context.Background(), f.specID); err != nil {
 		t.Fatalf("evict the spec: %v", err)
 	}
 	broken.failNextLoad(f.specID)

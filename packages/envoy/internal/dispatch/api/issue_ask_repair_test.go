@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -68,17 +69,30 @@ func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTrac
 	if tracer != nil {
 		database = &store.Store{Pool: storetest.Traced(t, database.Pool, tracer, nil)}
 	}
-	documents := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle, RoomIdleTimeout: repairRoomsNeverIdleOut})
+	// An xid window rig (issue_ask_repair_xid_window_test.go) checks every collaborator call the
+	// document service and the repair make (collabtest): none may run inside a transaction's xid
+	// window, after its first write batch (store.SentWriteBatch). The rows read the service
+	// itself, unwrapped, through documents.
+	var people identity.Identity = headerIdentity(database)
+	_, windowRig := tracer.(*storetest.XidTracer)
+	if windowRig {
+		people = checkedIdentity(t, people)
+	}
+	documents := docs.New(docs.Deps{Store: database, Identity: people, Settle: settle, RoomIdleTimeout: repairRoomsNeverIdleOut})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	// A close or reopen reaches the document rooms from its commit (migration 20261101181500's
 	// trigger), whoever wrote it, an older release's SQL below included.
 	runDocumentRoomSync(t, database, documents)
 	seedPeople(t, database, "alice", "bob")
+	var handed docs.API = documents
+	if windowRig {
+		handed = checkedDocs(t, handed)
+	}
 	deps, err := NewDeps(DepsInput{
 		Store:       database,
-		Identity:    headerIdentity(database),
+		Identity:    people,
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
-		Docs:        documents,
+		Docs:        handed,
 		ServerURL:   "https://dispatch.example",
 	})
 	if err != nil {

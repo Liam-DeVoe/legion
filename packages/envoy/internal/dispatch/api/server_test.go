@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -39,12 +40,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/collabtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestMain drops the databases the package's tests clone (storetest.Main). contract_test.go's
-// broker store is the broker's storetest's, whose database each test's own cleanup drops.
+// broker store is the broker's storetest's, whose database each test's own cleanup drops. The xid
+// window rows judge their windows' gaps only in the timing lane (storetest.JudgeXidGaps).
 func TestMain(m *testing.M) {
+	storetest.JudgeXidGaps(os.Getenv(benchtime.TimingEnv) != "")
 	os.Exit(storetest.Main(m.Run))
 }
 
@@ -267,6 +271,22 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	case agentPublisher == nil:
 		agentPublisher = NewAgentPublishRecorder()
 	}
+	var documents docs.API = documentService
+	agentStream, embedder, answerer, fileStore, verifier := options.agentStream, options.embedder, options.answerer, options.files, options.oidc
+	var collaboratorHTTP *http.Client
+	// An xid window rig checks every call the server makes to a collaborator (collabtest): none
+	// may run inside a transaction's xid window, after its first write batch (store.SentWriteBatch).
+	if _, windowRig := options.tracer.(*storetest.XidTracer); windowRig {
+		documents = checkedDocs(t, documents)
+		people = checkedIdentity(t, people)
+		agentPublisher = checkedAgentPublisher(t, agentPublisher)
+		embedder = checkedEmbedder(t, embedder)
+		answerer = checkedAnswerer(t, answerer)
+		fileStore = checkedFiles(t, fileStore)
+		agentStream = checkedAgentStream(t, agentStream)
+		verifier = checkedTokenVerifier(t, verifier)
+		collaboratorHTTP = collabtest.HTTPClient(t)
+	}
 	deps, err := NewDeps(DepsInput{
 		Store:                  database,
 		Identity:               people,
@@ -275,7 +295,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		NewIssueLabel:          options.newIssueLabel,
 		NewIssueSession:        options.newIssueSession,
 		ServerURL:              testServerURL,
-		Docs:                   documentService,
+		Docs:                   documents,
 		Events:                 broker,
 		App:                    options.app,
 		GitHubAPIBase:          options.githubAPIBase,
@@ -287,18 +307,19 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// the own-hold rule and for the account a wait that gave up prints, so the horizon warns
 		// within a fraction of a second of a hold rather than at the production five and thirty
 		// seconds.
-		HorizonStallAfter: horizontest.StallWarning,
-		HorizonWarnEvery:  horizontest.StallWarning,
-		OIDC:              options.oidc,
-		BrokerTokens:      brokerTokens,
-		AgentStream:       options.agentStream,
-		AgentPublisher:    agentPublisher,
-		Embedder:          options.embedder,
-		Answerer:          options.answerer,
-		Files:             options.files,
-		DashboardEntry:    options.dashboardEntry,
-		BuildCommit:       options.buildCommit,
-		Clock:             options.clock,
+		HorizonStallAfter:      horizontest.StallWarning,
+		HorizonWarnEvery:       horizontest.StallWarning,
+		OIDC:                   verifier,
+		BrokerTokens:           brokerTokens,
+		AgentStream:            agentStream,
+		AgentPublisher:         agentPublisher,
+		Embedder:               embedder,
+		Answerer:               answerer,
+		Files:                  fileStore,
+		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
+		Clock:                  options.clock,
+		CollaboratorHTTPClient: collaboratorHTTP,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
