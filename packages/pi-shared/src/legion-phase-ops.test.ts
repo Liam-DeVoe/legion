@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { LEGION_PHASE_BACKWARD_TARGETS } from "@legion/contracts/legion-api";
+import {
+  LEGION_PHASE_BACKWARD_TARGETS,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+} from "@legion/contracts/legion-api";
 import { z } from "zod";
 import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
@@ -457,13 +461,15 @@ test("the tool takes exactly the ratings the daemon takes, and sends a refused o
 });
 
 // The description is where every host's agent reads what the completion that ends the retro
-// carries: the two fields, the scale, and the daemon's refusals of a rating.
-test("the description tells the agent that does the retro to rate the plan in its completion, and names the daemon's refusals of a rating", () => {
+// carries: the two fields, the scale, the skill that states the rule, and the daemon's refusals of
+// a rating.
+test("the description names the retro's rating fields, its scale, its skill and the daemon's refusals of a rating", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
   for (const words of [
-    "The agent that does the retro rates the plan the issue ran",
-    "`plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work)",
+    "`plan_rating`",
+    `(${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST})`,
     "`plan_reason`",
+    "skill://legion-retro",
     "PLAN_RATING_UNEXPECTED",
     "PLAN_RATING_INPUT",
     "PLAN_RATING_REQUIRED",

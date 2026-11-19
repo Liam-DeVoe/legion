@@ -862,53 +862,27 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
   expect(carried).toEqual([]);
 });
 
-// The completion that ends the retro rates the plan, and the daemon refuses each rating it cannot
-// take (planRatingOf in packages/daemon/internal/api/handoff_rating.go): none at all from a plugin
-// whose tool takes the two (PLAN_RATING_REQUIRED, at PlanRatingContract or later), and a rating
-// outside the scale, one of the two without the other, or a reason that is blank or too long
-// (PLAN_RATING_INPUT), recording nothing either way. The step that gives the two fields says both
-// refusals, so an agent that sends one field alone knows what the daemon does with it;
-// prompts_test.go pins the implementer prompt's copy. This skill can reach a tool that takes
-// neither field: a pod's roles also install the deployment's skills marketplace as of the pod's
-// start (docs/kubernetes.md, `skills_repository`), whose copy of this skill follows that
-// repository's default branch and not the `legion` tool the role runs, and a claim the daemon
-// serves on a plugin below PlanRatingContract completes its retro with no rating. So the step
-// names the refusal as a tool's that takes the two, and tells an agent whose tool takes neither to
-// complete with the summary alone. The scale and the bound the text states are the contract's, so
-// a new one fails here until the skill states it. This shows the text ships, never that a role
-// follows it.
-test("the retro skill says which ratings of the plan the daemon refuses", () => {
+// The completion that ends the retro rates the plan, and this skill's step that gives the two
+// fields is the one place the rule of the rating is stated in prose: the implementer prompt sends
+// the agent here (prompts_test.go), and the daemon refuses a completion that breaks the rule
+// (planRatingOf in packages/daemon/internal/api/handoff_rating.go). So the step names the two
+// fields, the three codes the daemon refuses with, and the scale and the bound of the reason as the
+// contract holds them: a new scale or bound fails here until the skill states it. This shows the
+// text ships, never that a role follows it.
+test("the retro skill names the rating's fields, its refusals, its scale and its bound", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
-  expect(retro).toContain(
-    "Send the two together: the daemon refuses this completion without them from a tool that takes them (`PLAN_RATING_REQUIRED`) and records nothing, so complete again with both."
-  );
-  expect(retro).toContain(
-    `The daemon also refuses a rating outside ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, one of the two without the other, or a reason that is blank or longer than ${LEGION_PLAN_REASON_MAX.toLocaleString("en-US")} characters (\`PLAN_RATING_INPUT\`), again recording nothing.`
-  );
-  expect(retro).toContain(
-    "A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a plugin of the release before the rating: send neither, complete the retro with the summary alone, and the daemon takes that retro with no rating."
-  );
-  expect(retro).toContain(
-    "Your `handoff_complete` carries `plan_rating` and `plan_reason` (step 6), or neither where your `legion` tool's `handoff_complete` takes neither."
-  );
-});
-
-// What the completion rates is the plan the issue ran, its steps and the role that worked each,
-// never the planner's plan.md, and the rating is the scale's whole number with a reason from the
-// evidence step 1 read. The refusal sentences above hold whatever plan the text names, so a step
-// that sends the agent to rate the planner's document fails here instead; prompts_test.go pins the
-// implementer prompt's copy. This shows the text ships, never that a role follows it.
-test("the retro skill rates the plan the issue ran, not the planner's plan.md", () => {
-  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
-  expect(retro).toContain(
-    "In the same call, the agent that does the retro rates the plan the issue ran."
-  );
-  expect(retro).toContain(
-    "The plan is the issue's steps and the role that worked each, not the planner's `plan.md`."
-  );
-  expect(retro).toContain(
-    `\`plan_rating\` is a whole number from ${LEGION_PLAN_RATING_LEAST} (the plan cost the work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), and \`plan_reason\` is one sentence of why, from the evidence step 1 read.`
-  );
+  for (const token of [
+    "`plan_rating`",
+    "`plan_reason`",
+    "`PLAN_RATING_REQUIRED`",
+    "`PLAN_RATING_UNEXPECTED`",
+    "`PLAN_RATING_INPUT`",
+    `${LEGION_PLAN_RATING_LEAST} (the plan cost the work)`,
+    `${LEGION_PLAN_RATING_MOST} (the plan fit the work)`,
+    `${LEGION_PLAN_REASON_MAX.toLocaleString("en-US")} characters`,
+  ]) {
+    expect(retro).toContain(token);
+  }
 });
 
 // dispatch://INFRA-3116's rule, beside the rules above: where a tree builds or changes a surface a

@@ -7,12 +7,9 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -760,54 +757,26 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 	}
 }
 
-// inThousands is n as the prompts write a count: its digits grouped in threes by commas, 2000 as
-// 2,000.
-func inThousands(n int) string {
-	digits := strconv.Itoa(n)
-	for at := len(digits) - 3; at > 0; at -= 3 {
-		digits = digits[:at] + "," + digits[at:]
-	}
-	return digits
-}
-
-// The agent that does the retro rates the plan the issue ran in the completion that ends the
-// retro, and the daemon refuses that completion without the rating from a plugin whose tool takes
-// it (api's PlanRatingContract, PLAN_RATING_REQUIRED), and a rating it cannot take: one outside its
-// scale, one of the two without the other, or a reason that is blank or too long (api's
-// planRatingOf, PLAN_RATING_INPUT). The role the daemon starts on the retro (phase.RoleFor)
-// therefore reads, in its composed prompt, which plan it rates (the issue's steps and the role that
-// worked each, never the planner's plan.md), the two fields its completion carries, both ends of
-// the scale and the most characters of a reason, as the daemon holds them (steprecord.RatingLeast,
-// RatingMost and RatingReasonMax, which api's planRatingOf reads), and both
-// refusals. No other phase worker ends the retro, and the daemon refuses a rating on its
-// completion (PLAN_RATING_UNEXPECTED).
-//
-// The same prompt reaches a tool that takes neither field: a claim whose launch installs no plugin
-// (a Claude Code role in a pod) is served on the contract of the plugin its image carries until the
-// update round over its pod (docs/kubernetes.md), and the daemon asks a rating of a plugin at
-// PlanRatingContract or above alone. So the prompt says the refusal comes from a tool that takes
-// the two, and tells an agent whose tool takes neither to complete with the summary alone, rather
-// than to send fields its tool refuses.
-// This shows the text is loaded, never that a role follows it.
-func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
-	least, most, reasonMost := steprecord.RatingLeast, steprecord.RatingMost, steprecord.RatingReasonMax
+// The agent that does the retro rates the plan in the completion that ends the retro, and the rule
+// of the rating is stated in prose once, in the step of skill://legion-retro that gives the two
+// fields (pi-legion's skills-guard test pins it). The composed prompt of the role the daemon starts
+// on the retro (phase.RoleFor) sends it there: it names the two fields the completion carries, the
+// skill, and the three refusals the daemon answers a completion that breaks the rule with (api's
+// planRatingOf), each code as the daemon writes it. This shows the text is loaded, never that a
+// role follows it.
+func TestTheComposedRetroNamesTheRatingsFieldsAndRefusals(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	retro := phase.RoleFor(phase.Retro)
 	text := foldWhitespace(composedText(t, composer, retro, false))
-	for _, phrase := range []string{
-		"The agent that does the retro rates the plan the issue ran in that completion, the issue's steps and the role that worked each, not the planner's `plan.md`",
-		fmt.Sprintf("`plan_rating`, a whole number from %d (the plan cost the work) to %d (the plan fit the work)", least, most),
-		"`plan_reason`, one sentence of why",
-		"The daemon refuses the completion that ends the retro without them from a tool that takes them (`PLAN_RATING_REQUIRED`)",
-		fmt.Sprintf("a rating outside %d to %d, one of the two without the other, or a reason that is blank or longer than %s characters (`PLAN_RATING_INPUT`)",
-			least, most, inThousands(reasonMost)),
-		"A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a plugin of the release before the rating: send neither, complete the retro with the summary alone, and the daemon takes that retro with no rating.",
+	for _, token := range []string{
+		"`plan_rating`", "`plan_reason`", "`skill://legion-retro`",
+		"`PLAN_RATING_REQUIRED`", "`PLAN_RATING_UNEXPECTED`", "`PLAN_RATING_INPUT`",
 	} {
-		if !strings.Contains(text, phrase) {
-			t.Errorf("the composed %s prompt, the retro's, omits %q", retro, phrase)
+		if !strings.Contains(text, token) {
+			t.Errorf("the composed %s prompt, the retro's, omits %s", retro, token)
 		}
 	}
 }

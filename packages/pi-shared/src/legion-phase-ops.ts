@@ -348,11 +348,9 @@ export function legionToolDescription(host: {
     "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
     "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
     "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
-    "The agent that does the retro rates the plan the issue ran, its steps and the role that worked each (not the planner's `plan.md`), in the " +
-    `completion that ends the retro: \`plan_rating\`, a whole number from ${LEGION_PLAN_RATING_LEAST} (the plan cost the work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), and ` +
-    "`plan_reason`, one sentence of why, the two together. Any other completion that carries them is refused (PLAN_RATING_UNEXPECTED), and so is " +
-    `a rating outside ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST} or a reason that is blank or longer than ${PLAN_REASON_MOST} characters (PLAN_RATING_INPUT), and the completion that ends the ` +
-    "retro without them (PLAN_RATING_REQUIRED). " +
+    `The completion that ends the retro carries \`plan_rating\` (${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}) and \`plan_reason\`, as ` +
+    "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
+    "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
     "write this phase's handoff), " +
