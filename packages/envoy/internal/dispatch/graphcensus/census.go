@@ -1337,10 +1337,56 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 	return report, nil
 }
 
-// storeOnlyRead counts, in one read of graph_tuples, every relation of the three kinds no table
-// projects that the store states now - the newest tuple of each (near end, far end), kept while
-// it asserts - and those of them whose far end does not resolve: a copied_from (a copy's block to
-// the ask it was copied from, graphstore.TupleCopiedFrom) resolves to a live ask node; a moved_to
+// currentOutOfNodes is two items of a `with recursive` list: name, every relation of the tuple
+// kinds kinds out of a node of a kind of nearKinds that the store states now - the newest tuple of
+// each, kept while it asserts (graphstore.CurrentTupleRead) - as (from_kind, from_id, kind,
+// to_kind, to_id), and name_near, the nodes it reads them out of. No index of the store's set
+// (20261109013400_graph_store.up.sql) leads with a tuple's kind, so a read of every tuple of a
+// kind starts from the nodes the kind leaves: name_near walks every node of nearKinds that states
+// a relation, once each, one probe of graph_tuples_current per node on its leading (from_kind,
+// from_id) for the next from_id past the last one, and name reads each such node's tuples of
+// kinds through one probe of the same index on (from_kind, from_id, kind). The walk reads the
+// nodes off the log rather than off graph_nodes: a writer states these kinds without stating the
+// node they leave (docs' writeFacts states a moved_to out of a heading's address and a removed_by
+// out of an ask's node and writes neither node), so a tuple whose near end has no node is read
+// all the same. Both probes state graph_tuples_current's predicate, which every kind of kinds
+// meets, since each is a relation and none is delivered_to.
+func currentOutOfNodes(name string, nearKinds, kinds []string) string {
+	relations := `t.to_kind <> '` + graphstore.KindValue + `' and t.kind <> '` + graphstore.TupleDeliveredTo + `'`
+	return name + `_near (from_kind, from_id) as (
+		select first.from_kind, first.from_id
+		from (values ('` + strings.Join(nearKinds, `'), ('`) + `')) near_kind (from_kind)
+		cross join lateral (
+			select t.from_kind, t.from_id from graph_tuples t
+			where t.from_kind = near_kind.from_kind and ` + relations + `
+			order by t.from_id limit 1
+		) first
+		union all
+		select next.from_kind, next.from_id
+		from ` + name + `_near near
+		cross join lateral (
+			select t.from_kind, t.from_id from graph_tuples t
+			where t.from_kind = near.from_kind and t.from_id > near.from_id and ` + relations + `
+			order by t.from_id limit 1
+		) next
+	),
+	` + name + ` as (
+		select held.from_kind, held.from_id, held.kind, held.to_kind, held.to_id
+		from ` + name + `_near near
+		cross join lateral (
+			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`,
+		`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = near.from_kind and t.from_id = near.from_id
+			  and t.kind in ('`+strings.Join(kinds, `', '`)+`') and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+		) held
+		where held.asserted
+	)`
+}
+
+// storeOnlyRead counts, in one statement, every relation of the three kinds no table projects
+// that the store states now - the newest tuple of each (near end, far end), kept while it asserts
+// - and those of them whose far end does not resolve: a copied_from (a copy's block to the ask it
+// was copied from, graphstore.TupleCopiedFrom) resolves to a live ask node; a moved_to
 // (graphstore.TupleMovedTo) to a block that stands, which is one a document_blocks row holds,
 // reached at once or through more moved_to tuples, a cycle reaching none, or to an ask whose row
 // stands, which ends a chain (the heading of a section that cites an answered ask a person
@@ -1356,18 +1402,15 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 // a block its latest version holds - one past the deferral bound, or one a build before wrote
 // during the roll - and the block-index reconciliation writes it.
 //
-// The read walks graph_tuples_store_only (migration 20261116220307), the partial index of these
-// three kinds, in its own column order, so it reads their tuples and no other, and a store that
-// holds none of them reads three zero counts. It states the index's to_kind predicate, which
-// leaves out no tuple of any of them, since none of their far ends is a value.
+// The read takes the three kinds' tuples out of every block and ask node the log holds
+// (currentOutOfNodes), the near ends their writers state them out of - a copied_from and a
+// moved_to out of a block, a removed_by out of an ask's node - through graph_tuples_current, one
+// probe per node, and a store that holds none of them reads three zero counts. It states that
+// index's to_kind predicate, which leaves out no tuple of any of them, since none of their far
+// ends is a value.
 var storeOnlyRead = `
-	with recursive stated as (
-		select held.from_kind, held.from_id, held.kind, held.to_kind, held.to_id from (
-			` + graphstore.CurrentTupleRead(`t.kind, t.from_kind, t.from_id, t.to_kind, t.to_id`,
-	`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
-	`t.kind in ('`+graphstore.TupleCopiedFrom+`', '`+graphstore.TupleMovedTo+`', '`+graphstore.TupleRemovedBy+`') and t.to_kind <> '`+graphstore.KindValue+`'`) + `
-		) held where held.asserted
-	),
+	with recursive ` + currentOutOfNodes("stated", []string{refs.BlockNodeKind, graphstore.KindAsk},
+	[]string{graphstore.TupleCopiedFrom, graphstore.TupleMovedTo, graphstore.TupleRemovedBy}) + `,
 	followed (start, kind, address, hops, path) as (
 		select far.to_id, far.to_kind, far.to_id, 0, array[far.to_id]
 		from (select distinct s.to_kind, s.to_id from stated s where s.kind = '` + graphstore.TupleMovedTo + `') far

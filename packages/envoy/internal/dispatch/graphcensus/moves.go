@@ -216,15 +216,16 @@ func (r DanglingReport) Count(set string) int64 {
 // danglingRead counts the citations of the two sets in one statement. $1 is the old spec
 // addresses of the returns (ReadRestoreWork).
 //
-// A target is a block address: the moved_to sources the store states now, read through
-// graph_tuples_store_only; each block address a decisions document held at a version the block
-// index recorded (document_block_texts, keyed by the document), whether the document stands or
-// was retired since (decisionsDocumentsEver), since the restore and the conversion retire it in
-// the transaction that moves its blocks out; and the addresses the returns name. One that
-// resolves, through moved_to_reach, to a block a document_blocks row holds is no dangling target,
-// and neither is one whose moves end at an ask whose row stands - the heading of a section that
-// cites an answered ask a person removed, which answers that ask - nor one in a document that
-// still owes its block index, whose rows are not current.
+// A target is a block address: the moved_to sources the store states now, read out of every block
+// node the log holds through graph_tuples_current, one probe per node (currentOutOfNodes); each
+// block address a decisions document held at a version the block index recorded
+// (document_block_texts, keyed by the document), whether the document stands or was retired since
+// (decisionsDocumentsEver), since the restore and the conversion retire it in the transaction that
+// moves its blocks out; and the addresses the returns name. One that resolves, through
+// moved_to_reach, to a block a document_blocks row holds is no dangling target, and neither is one
+// whose moves end at an ask whose row stands - the heading of a section that cites an answered ask
+// a person removed, which answers that ask - nor one in a document that still owes its block
+// index, whose rows are not current.
 // The counter reads no other target: a `#b-` citation in prose is free text nothing validates,
 // and a block of a document past the deferral bound resolves to no block until the index catches
 // up, so a count of every unresolved citation of the instance is non-zero on a healthy one. A
@@ -237,12 +238,9 @@ func (r DanglingReport) Count(set string) int64 {
 // one of its blocks, or from two blocks, is one citation, so each set counts the nodes that cite
 // each target.
 var danglingRead = `
-	with targets (address, counted) as (
-		select moved.from_id, '` + DanglingMoved + `' from (
-			` + graphstore.CurrentTupleRead(`t.from_id, t.to_kind, t.to_id`,
-	`t.from_id, t.asserted`,
-	`t.kind = '`+graphstore.TupleMovedTo+`' and t.from_kind = '`+refs.BlockNodeKind+`' and t.to_kind <> '`+graphstore.KindValue+`'`) + `
-		) moved where moved.asserted
+	with recursive ` + currentOutOfNodes("moved", []string{refs.BlockNodeKind}, []string{graphstore.TupleMovedTo}) + `,
+	targets (address, counted) as (
+		select moved.from_id, '` + DanglingMoved + `' from moved
 		union
 		select distinct decisions.ref_key || '#' || held.block_id, '` + DanglingMoved + `'
 		from ` + decisionsDocumentsEver + ` decisions join document_block_texts held on held.artifact_id = decisions.id
