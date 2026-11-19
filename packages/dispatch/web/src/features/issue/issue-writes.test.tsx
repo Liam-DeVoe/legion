@@ -1075,11 +1075,13 @@ test("IssuePage sends no second title after an Escape while a title's write is o
   }
 });
 
-// A title queued behind the write out is the reader's last ended choice, which typing does not
-// move: typed back to the title of that write, the reader withdraws it. Left queued, it went once
-// that write landed, and its landing put it into the editor under the reader, who had typed the
-// saved title back.
-test("IssuePage sends only the saved title when a title queued behind it is typed back to it with the editor open", async () => {
+// A title queued behind the write out is the reader's last ended choice, and typing ends no edit,
+// so it neither chooses nor withdraws one (decision 324): with the saved title typed back in the
+// editor, the queued title still goes as that write lands, and the editor keeps the reader's text
+// through both landings. The end of the edit then sends that text, once. Withdrawn by the text
+// typed back, the queued title never went; sent, the landing put it into the editor under the
+// reader.
+test("IssuePage sends the queued title as the write ahead lands while the saved title typed back stays in the editor, and the end of the edit sends it", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const firstSave = Promise.withResolvers<Issue>();
@@ -1115,8 +1117,16 @@ test("IssuePage sends only the saved title when a title queued behind it is type
 
     expect({ editor: title.value, writes: patchIssue.mock.calls }).toEqual({
       editor: "a",
-      writes: [["CORE-1", { title: "a" }, keyedAttempt]],
+      writes: [
+        ["CORE-1", { title: "a" }, keyedAttempt],
+        ["CORE-1", { title: "ab" }, keyedAttempt],
+      ],
     });
+
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(patchIssue.mock.calls.slice(2)).toEqual([["CORE-1", { title: "a" }, keyedAttempt]]);
   } finally {
     unmount();
     restore();
@@ -1300,12 +1310,13 @@ test("IssuePage sends only the route after a refused save with the issue's title
   }
 });
 
-// A draft queued behind a write of another field stays the reader's last ended choice until they
-// undo it. Here a route waits behind a status write that fails: the failure settles no route, so
-// the route stays queued, the reader's choice. The reader then clears the route back to the
-// issue's own, which withdraws it, and saves a parent, which goes alone. Left queued, the route
-// went ahead of the parent, though the reader had cleared it.
-test("IssuePage sends no route that waited behind a failed status write and was then cleared back to the issue's route", async () => {
+// A draft queued behind a write of another field stays the reader's last ended choice while they
+// type. Here a route waits behind a status write that fails: the failure settles no route, so the
+// route stays queued, the reader's choice. The reader then clears the route in its editor, which
+// ends no edit and withdraws nothing (decision 324), and saves a parent: the queued route goes
+// first, one write of the issue's fields at a time, then the parent. Through both the route's
+// editor keeps the reader's cleared text.
+test("IssuePage sends a route that waited behind a failed status write ahead of a parent saved while the route's editor was cleared, and keeps the cleared text", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const statusSave = Promise.withResolvers<Issue>();
@@ -1354,6 +1365,7 @@ test("IssuePage sends no route that waited behind a failed status write and was 
       route: "",
       writes: [
         ["CORE-1", { status: "backlog" }, keyedAttempt],
+        ["CORE-1", { route: "role:b" }, keyedAttempt],
         ["CORE-1", { parent: "CORE-9" }, keyedAttempt],
       ],
     });

@@ -187,22 +187,23 @@ interface TitleWrite {
 class Reader {
   readonly session = new Session();
   /**
-   * Set by an end whose draft is not empty and differs from what it is compared with; a send or
-   * an escape clears it.
-   */
-  private intent = false;
-  /**
-   * The reader's last ended choice (decision 324): the trimmed draft of the end that set
-   * `intent`. An end that chose nothing, an escape, typing back to the title out or the issue's
-   * title, and its send withdraw it.
+   * The reader's last ended choice (decision 324): the trimmed draft of the last end that chose a
+   * title. An end that chose nothing, an escape, and its send withdraw it; typing ends no edit,
+   * so it leaves it as it is.
    */
   private chosen: string | null = null;
   /**
    * The reader's own choice the field may show: the text of the last type event, or what an
    * escape put back while a write was out; none after an escape with nothing out, nor once a
-   * write carrying it has landed, since the issue then holds it.
+   * write that carried it, sent after it was typed, has landed, since the issue then holds it.
    */
   lastTyped: string | null = null;
+  /**
+   * Whether `lastTyped` went in a write after the reader typed it. Typed again after its write
+   * went (the title out typed back), it is the reader's open text, and that write's landing
+   * leaves it the reader's.
+   */
+  private typedSent = false;
   /** The drafts an escape put away, until the reader types one of them again. */
   private readonly discarded = new Set<string>();
   private lastTitleWrite: TitleWrite | null = null;
@@ -259,29 +260,30 @@ class Reader {
         // issue is about to hold that title; otherwise with the issue's own.
         const against = session.out?.title ?? session.issue.title;
         const draft = session.drafts.title.trim();
-        const chose = draft !== "" && draft !== against.trim();
-        this.chosen = chose ? draft : null;
-        if (chose) this.intent = true;
+        this.chosen = draft !== "" && draft !== against.trim() ? draft : null;
         return session.end();
       }
       case "escape": {
         const before = session.drafts.title.trim();
-        this.intent = false;
         this.chosen = null;
         // An escape while a title write is out puts back the title that write carries: the reader
         // chose it when they ended the edit that sent it, so it is their choice again, and a
         // refusal of that write leaves it in the field as the choice not yet sent.
         this.lastTyped = session.out?.title ?? null;
+        this.typedSent = this.lastTyped !== null;
         const sent = session.escape();
         if (session.drafts.title.trim() !== before) this.discarded.add(before);
         return sent;
       }
       case "land": {
         this.titleWriteOut = null;
-        // A choice the landing write carried was sent, and the issue holds it now: a field left
-        // on it once another reader changes the title shows a stale title, not the reader's own.
+        // A choice the landing write carried, sent after the reader typed it, is the issue's now:
+        // a field left on it once another reader changes the title shows a stale title, not the
+        // reader's own.
         const landed = session.out?.title;
-        if (landed !== undefined && landed === this.lastTyped?.trim()) this.lastTyped = null;
+        if (this.typedSent && landed !== undefined && landed === this.lastTyped?.trim()) {
+          this.lastTyped = null;
+        }
         return session.land();
       }
       case "refuse":
@@ -298,13 +300,10 @@ class Reader {
   }
 
   private type(value: string): IssueUpdateInput[] {
-    const { session } = this;
-    const text = value.trim();
-    // Typed back to the title out or the issue's, the draft undoes the end that chose a title.
-    if (text === session.out?.title || text === session.issue.title) this.chosen = null;
     this.lastTyped = value;
-    this.discarded.delete(text);
-    return session.type(value);
+    this.typedSent = false;
+    this.discarded.delete(value.trim());
+    return this.session.type(value);
   }
 
   private judge(input: IssueUpdateInput): Finding[] {
@@ -318,13 +317,10 @@ class Reader {
     // I1 holds a title sent to the reader's last ended choice (decision 324), not to the field's
     // text or to what the reader typed last: a queued title goes as the write ahead of it lands,
     // while the reader may be typing something else in an editor opened again.
-    const choice = this.chosen === null ? "none" : JSON.stringify(this.chosen);
-    const unchosen = [
-      ...(this.intent ? [] : ["with no end choosing it"]),
-      ...(title === this.chosen ? [] : [`while the reader's last ended choice was ${choice}`]),
-    ];
-    if (unchosen.length > 0) {
-      findings.push({ invariant: "I1", read: `sent ${quoted} ${unchosen.join(" and ")}` });
+    if (title !== this.chosen) {
+      const choice = this.chosen === null ? "none" : JSON.stringify(this.chosen);
+      const read = `sent ${quoted} while the reader's last ended choice was ${choice}`;
+      findings.push({ invariant: "I1", read });
     }
     if (this.discarded.has(title)) {
       findings.push({ invariant: "I2", read: `sent ${quoted}, which an escape had put away` });
@@ -333,8 +329,8 @@ class Reader {
     if (previous !== null && previous.title === title && !previous.refused) {
       findings.push({ invariant: "I3", read: `sent ${quoted} twice in a row` });
     }
-    this.intent = false;
     this.chosen = null;
+    if (title === this.lastTyped?.trim()) this.typedSent = true;
     const write = { title, refused: false };
     this.lastTitleWrite = write;
     this.titleWriteOut = write;
@@ -492,7 +488,7 @@ test("an escape while a saved title is out, then an end with nothing typed, send
   expect(session.titlesSent()).toEqual(["a"]);
 });
 
-test("a draft typed back to the title out after a queued end keeps that title and sends no other", () => {
+test("a draft typed back to the title out behind a queued save lets that save go as the write lands, and the end of the edit sends the draft", () => {
   const session = new Session();
   session.type("a");
   session.end();
@@ -502,8 +498,11 @@ test("a draft typed back to the title out after a queued end keeps that title an
   session.land();
   expect({ title: session.drafts.title, sent: session.titlesSent() }).toEqual({
     title: "a",
-    sent: ["a"],
+    sent: ["a", "ab"],
   });
+  session.land();
+  session.end();
+  expect(session.titlesSent()).toEqual(["a", "ab", "a"]);
 });
 
 test("the issue's title typed back, queued and refused gives way to another reader's title and a route save sends only the route", () => {
@@ -565,6 +564,26 @@ test("a title typed on behind a queued save is not sent as the write ahead lands
   });
 });
 
+// Typing ends no edit, so the issue's own title typed back behind a queued save, with the edit
+// still open, neither chooses it nor withdraws the save (decision 324): the save goes as the write
+// ahead of it lands, and the issue's title goes once the reader ends the edit on it.
+test("the issue's title typed back behind a queued save, with no end, lets the save go as the write ahead lands, and the end of the edit sends it", () => {
+  const session = new Session();
+  session.type("a");
+  session.end();
+  session.type("ab");
+  session.end();
+  session.type(startIssue.title);
+  session.land();
+  expect({ title: session.drafts.title, sent: session.titlesSent() }).toEqual({
+    title: startIssue.title,
+    sent: ["a", "ab"],
+  });
+  session.land();
+  session.end();
+  expect(session.titlesSent()).toEqual(["a", "ab", startIssue.title]);
+});
+
 // A title saved while a status write is out waits behind it, one write of the issue's fields at a
 // time. Another reader sets the issue to that very title meanwhile, so it has nothing left to
 // send: sent as the status write lands, it would be a second write of a title the issue holds.
@@ -580,4 +599,26 @@ test("a title queued behind another field's write is not sent once another reade
     session.drafts.onIssueSettled(null);
   });
   expect(session.received).toEqual([{ status: "done" }]);
+});
+
+// A title saved behind a status write waits there while the reader types on, and another reader
+// sets the issue to the reader's text and then to a title of their own. The draft stays the
+// reader's text: moved on to the other reader's title, it showed a title the reader never typed,
+// and the end of the edit would have sent it over the issue's.
+test("a draft with a title queued behind another field's write keeps the reader's text as another reader's titles arrive", () => {
+  const session = new Session();
+  session.step(() => session.drafts.requestStatusSubmit("done"));
+  session.type("t1");
+  session.end();
+  session.type("t2");
+  session.otherReader("t2");
+  session.otherReader("o1");
+  const shown = session.drafts.title;
+  session.land();
+  session.land();
+  expect({ shown, title: session.drafts.title, sent: session.titlesSent() }).toEqual({
+    shown: "t2",
+    title: "t2",
+    sent: ["t1"],
+  });
 });
