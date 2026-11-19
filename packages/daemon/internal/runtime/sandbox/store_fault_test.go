@@ -191,7 +191,7 @@ func TestAKubernetesClaudeResumeWhoseRowsTheStoreCannotReadIsWaitedOutAMinuteAnd
 // transcript (claudeResume).
 const (
 	storeFaultSession     = "ses-tester"
-	storeFaultSessionFile = "/legion/scratch/state/tester/.omp/profiles/legion/agent/sessions/--legion-workspaces-legion-208--/2026-11-19T12-00-00-000Z_ses-tester.jsonl"
+	storeFaultSessionFile = "/legion/scratch/state/tester/.omp/profiles/legion/agent/sessions/--legion-workspaces-store-fault--/2026-11-19T12-00-00-000Z_ses-tester.jsonl"
 	storeFaultTranscript  = "{}\n"
 )
 
@@ -266,7 +266,7 @@ func newClaudeStoreFaultRig(t *testing.T, omp string) *storeFaultRig {
 	configDir := t.TempDir()
 	session := claudelaunch.NewSessionID()
 	return storeFaultRigOf(t, omp, 0, &claudeResume{configDir: configDir,
-		transcript: filepath.Join(configDir, "projects", "-legion-workspaces-legion-208", session+".jsonl")})
+		transcript: filepath.Join(configDir, "projects", "-legion-workspaces-store-fault", session+".jsonl")})
 }
 
 // storeFaultRigOf is newStoreFaultRig, the relay starting claude in Oh My Pi's place when it is not

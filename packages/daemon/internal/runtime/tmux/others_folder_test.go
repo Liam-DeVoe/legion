@@ -50,7 +50,7 @@ func TestARecordedSessionInAFolderAnotherUserDeniesReadsMissingNotAStoreFault(t 
 			return filepath.Join(sessions, "--gone--", name)
 		},
 		"the recorded path is under another user's folder": func(string) string {
-			return filepath.Join("/root", ".omp", "profiles", "legion", "agent", "sessions", "--legion-workspaces-acme-widgets-legion-43--", name)
+			return filepath.Join("/root", ".omp", "profiles", "legion", "agent", "sessions", "--legion-workspaces-acme-widgets--", name)
 		},
 	} {
 		t.Run(label, func(t *testing.T) {
