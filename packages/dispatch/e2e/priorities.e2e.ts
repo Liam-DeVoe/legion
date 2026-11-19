@@ -475,6 +475,39 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     expect(headers).toEqual(expect.arrayContaining(["Active", "Triage, Todo", "Backlog, icebox"]));
     for (const header of headers) expect(header.length, header).toBeLessThanOrEqual(16);
 
+    // At 1440 by 900 every header's words show whole, Closed's among them: none is cut at its
+    // column's edge. A count is no value a reader filters by, so a count's header is its words
+    // and its sort arrow alone, and its numbers start where its words do.
+    const cutHeaders = await prioritiesTable
+      .locator('thead th button[title^="Sort"]')
+      .evaluateAll((buttons) =>
+        buttons
+          .filter((button) => button.scrollWidth > button.clientWidth)
+          .map((button) => button.textContent ?? "")
+      );
+    expect(cutHeaders).toEqual([]);
+    for (const header of ["Active", "Triage, Todo", "Backlog, icebox", "Closed, 7 days"]) {
+      const column = prioritiesTable.getByRole("columnheader", { name: new RegExp(`^${header}`) });
+      await expect(column.getByRole("button", { name: /^Filter/ })).toHaveCount(0);
+      const words = await column.locator('button[title^="Sort"]').boundingBox();
+      const count = await (await cellUnder(prioritiesTable, firstRow, header))
+        .locator("span")
+        .boundingBox();
+      expect(Math.abs((words?.x ?? Number.NaN) - (count?.x ?? Number.NaN)), header).toBeLessThan(1);
+    }
+
+    // Three rows are fewer than the window holds, so the box ends with its last row, its bottom
+    // border under it, rather than standing empty down to the window's foot.
+    await expect
+      .poll(() =>
+        page.getByTestId("priorities-table-scroll").evaluate((box) => {
+          const last = [...box.querySelectorAll("tr[data-issue-row]")].at(-1);
+          if (last === undefined) return Number.NaN;
+          return box.getBoundingClientRect().bottom - last.getBoundingClientRect().bottom;
+        })
+      )
+      .toBeLessThanOrEqual(2);
+
     // Opened, the row holds the whole description, every paragraph of the seed's.
     await priorities.getByRole("button", { name: `Open #1 ${seed.titles[0]}` }).click();
     const description = page.getByRole("textbox", { exact: true, name: "Description of #1" });
@@ -577,9 +610,12 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     const moved = await childCell("Moved there");
     await expect(moved.locator("time")).toHaveCount(1);
     await expect(moved).toContainText("alice");
-    // Advances: the priority it is parked under, #3, by its title, a link to that priority.
+    // Advances: the priority it is parked under, as the chip of its place in the order, #3, a
+    // link to that priority whose name and tooltip carry its title.
     const advances = (await childCell("Advances")).getByRole("link");
-    await expect(advances).toHaveText(seed.titles[2]);
+    await expect(advances).toHaveText("#3");
+    await expect(advances).toHaveAccessibleName(`#3 ${seed.titles[2]}`);
+    await expect(advances).toHaveAttribute("title", seed.titles[2]);
     await expect(advances).toHaveAttribute("href", `/priorities/${seed.ids[2]}`);
 
     // On a phone the page's document is no wider than the window on any tab: each fault's
@@ -1084,10 +1120,11 @@ test("another person's rename and delete of a priority redraw an open page with 
     ]);
     await chooseTab(reader, "parked");
     await expect(childRow).toBeVisible();
-    // The Advances column opens shown on the parked tab: the priority each row is parked under.
-    await expect((await cellUnder(parkedTable, childRow, "Advances")).getByRole("link")).toHaveText(
-      renamed
-    );
+    // The Advances column opens shown on the parked tab: the priority each row is parked under,
+    // whose chip carries the title in its name.
+    await expect(
+      (await cellUnder(parkedTable, childRow, "Advances")).getByRole("link")
+    ).toHaveAccessibleName(`#3 ${renamed}`);
 
     // Then bob retires #3, over the API, since neither page offers a delete. The archive
     // advanced only #3, so it is no fault at all now: it leaves the parked list in front of

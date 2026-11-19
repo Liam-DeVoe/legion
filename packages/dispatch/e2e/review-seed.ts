@@ -65,7 +65,9 @@ function firstMachine(): string {
  *  the agent bearer, because the margin of `/priorities/:id` draws who wrote the priority and a
  *  bearer would name a session there instead. Its description holds a link, so the accessibility
  *  pass reads a link inside the rendered description a writer may open into its editor: a
- *  control wrapping that text would put the link inside it (axe's `nested-interactive`). */
+ *  control wrapping that text would put the link inside it (axe's `nested-interactive`). Its
+ *  title is 90 characters, as long as production's run (up to 94), so the shots read whether a
+ *  page shows a whole title. */
 function createReviewPriority() {
   return createPriority({
     description:
@@ -73,7 +75,8 @@ function createReviewPriority() {
       "The work under it is the seeding, the sign-in and the pages both review layers read, " +
       "from [the priorities page](/priorities).",
     owner: "alice",
-    title: "Local testing is one command",
+    title:
+      "Local testing is one command for every reader of this deployment, on any developer machine",
   });
 }
 

@@ -425,9 +425,10 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     open: true,
   });
 
-  // The parked list names the project, each priority advanced by its title, linking to it, and
-  // when the work was moved there and by whom. A row answered with no move draws an
-  // empty Moved there cell: absent is absent, and that cell does not say a record is missing.
+  // The parked list names the project, each priority advanced by its place in the order with its
+  // title, linking to it, and when the work was moved there and by whom. A row answered with no
+  // move draws an empty Moved there cell: absent is absent, and that cell does not say a record
+  // is missing.
   const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
   expect(moved("Project").textContent).toBe("CORE");
   expect(within(moved("Updated")).getByRole("time").getAttribute("datetime")).toBe(
@@ -435,7 +436,7 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   );
   expect(
     within(moved("Advances"))
-      .getByRole("link", { name: "Linkage closure eval" })
+      .getByRole("link", { name: "#2 Linkage closure eval" })
       .getAttribute("href")
   ).toBe("/priorities/linkage-closure");
   expect(within(moved("Moved there")).getByRole("time").getAttribute("datetime")).toBe(
@@ -443,11 +444,22 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   );
   expect(moved("Moved there").textContent).toContain("bob");
   const unrecorded = await cellsOf(parked, "OPS-4 Work OPS-4");
+  // Each priority is a chip that reads its place alone, its title in its name and its tooltip.
+  const chips = within(unrecorded("Advances")).getAllByRole("link");
   expect(
-    within(unrecorded("Advances"))
-      .getAllByRole("link")
-      .map((link) => link.textContent)
-  ).toEqual(["Legion works reliably first", "OSS Verify"]);
+    chips.map((link) => ({
+      name: link.getAttribute("aria-label"),
+      text: link.textContent,
+      title: link.getAttribute("title"),
+    }))
+  ).toEqual([
+    {
+      name: "#1 Legion works reliably first",
+      text: "#1",
+      title: "Legion works reliably first",
+    },
+    { name: "#3 OSS Verify", text: "#3", title: "OSS Verify" },
+  ]);
   expect(unrecorded("Moved there").textContent).toBe("");
   expect(within(unrecorded("Moved there")).queryByRole("time")).toBeNull();
 
@@ -591,8 +603,41 @@ test("a title is a link to the priority's own page, where it is renamed, and no 
   );
   expect(within(row).queryByRole("textbox")).toBeNull();
   expect(screen.getByRole("columnheader", { name: /^#/ })).toBeDefined();
-  // A long owner is cut to two lines in the row, and its whole text is the cell's tooltip.
-  expect(within(row).getByTitle("BET controller").className).toContain("line-clamp-2");
+  // A long owner is cut to one line in the row, and its whole text is the cell's tooltip.
+  expect(within(row).getByTitle("BET controller").className).toContain("truncate");
+});
+
+// Production's titles run to 94 characters, and a reader reads each one whole: the title wraps
+// in its column as a link to the priority's page, and nothing clamps or cuts it. The first line
+// of the description under it is what takes one line, cut, with the whole line its tooltip.
+test("a 94-character title shows whole on its row, with no clamp and no cut", async () => {
+  const long =
+    "Every Legion phase worker reaches a merged pull request without a person's hands in between it";
+  expect(long.length).toBe(94);
+  const summary = "A phase worker that finishes its phase hands the next one a head it can act on.";
+  page(
+    body({
+      priorities: [
+        priority("phase-workers", { description: `${summary}\n\nThe rest.`, title: long }),
+      ],
+    })
+  );
+  const row = await screen.findByRole("row", { name: `#1 ${long}` });
+  const link = within(row).getByRole("link", { name: long });
+  expect(link.textContent).toBe(long);
+  // The link, what it holds, and what holds it inside the cell.
+  const cell = link.closest("td");
+  const around: Element[] = [];
+  for (let at = link.parentElement; at !== null && at !== cell; at = at.parentElement)
+    around.push(at);
+  for (const element of [link, ...link.querySelectorAll("*"), ...around]) {
+    const classes = element.getAttribute("class") ?? "";
+    expect({ classes, cut: /line-clamp|truncate|text-ellipsis/.test(classes) }).toEqual({
+      classes,
+      cut: false,
+    });
+  }
+  expect(within(row).getByTitle(summary).className).toContain("truncate");
 });
 
 test("the reader's description kept beside a row outlives the row leaving the table, and is written when they use it", async () => {

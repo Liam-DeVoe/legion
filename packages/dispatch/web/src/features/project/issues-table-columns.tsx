@@ -19,7 +19,7 @@ import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
-import { priorityPath } from "../priorities/priority-routes";
+import { PriorityChip } from "../priorities/PriorityChip";
 import { AgentName } from "../refs/AgentName";
 import { ReferenceLink } from "../refs/ReferenceLink";
 import { referenceTriggerProps } from "../refs/RefPreview";
@@ -302,6 +302,10 @@ export function listingColumns(listing: IssueListing, titled: boolean): ListingC
 const MOVE_REASON_ISSUE = "INFRA-2934";
 const MOVE_REASON_WORK = `dispatch://${MOVE_REASON_ISSUE}`;
 
+/** What the Advances column knows of one priority by its id: its place in the one order and its
+ *  title, each absent for a priority the priorities read does not hold (`PriorityChip`). */
+type PriorityOf = (id: string) => { place: number | undefined; title: string | undefined };
+
 /**
  * The four listing columns. They name what R6 asks each fault row to name, and none of them
  * sorts, filters or groups - deliberately: the table's view in the address reads only the
@@ -314,7 +318,7 @@ const LISTING_COLUMNS: readonly {
   readonly id: ListingColumnId;
   readonly size: number;
   readonly min: number;
-  readonly rendering: (titleOf: (id: string) => string) => Partial<ColumnDef<Item>>;
+  readonly rendering: (priorityOf: PriorityOf) => Partial<ColumnDef<Item>>;
 }[] = [
   {
     id: "project",
@@ -330,17 +334,17 @@ const LISTING_COLUMNS: readonly {
   },
   {
     id: "advances",
-    size: 220,
-    min: 140,
-    rendering: (titleOf) => ({
+    // Sized for its chips, `#3` each, two to a line: the title beside it takes the rest.
+    size: 84,
+    min: 84,
+    rendering: (priorityOf) => ({
       header: "Advances",
-      accessorFn: (item) => (item.issue.advances ?? []).map(({ id }) => titleOf(id)).join(", "),
+      accessorFn: (item) =>
+        (item.issue.advances ?? []).map(({ id }) => priorityOf(id).title ?? id).join(", "),
       cell: ({ row }) => (
-        <span className="flex flex-wrap gap-x-2">
-          {(row.original.issue.advances ?? []).map(({ id }) => (
-            <Link className={`${linkText} ${linkHoverText}`} key={id} to={priorityPath(id)}>
-              {titleOf(id)}
-            </Link>
+        <span className="flex flex-wrap gap-1">
+          {(row.original.issue.advances ?? []).map(({ id, inherited }) => (
+            <PriorityChip id={id} inherited={inherited} key={id} {...priorityOf(id)} />
           ))}
         </span>
       ),
@@ -476,13 +480,19 @@ export function useIssueTableColumns(
   /** The table's layout (`issueTableLayout`): which listing columns it has, and the narrowest
    *  each column may be drawn at, its `widths` included. */
   layout: LayoutColumns,
-  /** Each priority's title by its id, which the Advances column names a priority by; one this
-   *  map does not hold, a priority deleted since it was read, is named by its id. */
+  /** Each priority's title by its id, in the order the priorities read answers them, which is
+   *  the one order: the Advances column names each priority by its place in this map (`#3`)
+   *  with its title. One this map does not hold, a priority deleted since it was read, is named
+   *  by its id. */
   priorityTitles?: ReadonlyMap<string, string>
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
     const rendering = renderings(userState);
-    const titleOf = (id: string) => priorityTitles?.get(id) ?? id;
+    const places = new Map([...(priorityTitles?.keys() ?? [])].map((id, at) => [id, at + 1]));
+    const priorityOf: PriorityOf = (id) => ({
+      place: places.get(id),
+      title: priorityTitles?.get(id),
+    });
     const registered = COLUMNS.map((column): ColumnDef<Item> => {
       const picks = column.filter?.kind === "picks" ? column.filter : undefined;
       return {
@@ -509,7 +519,7 @@ export function useIssueTableColumns(
     });
     const listing = LISTING_COLUMNS.filter(({ id }) => layout.ids.includes(id)).map(
       (column): ColumnDef<Item> => ({
-        ...column.rendering(titleOf),
+        ...column.rendering(priorityOf),
         id: column.id,
         size: column.size,
         minSize: layout.minimums?.[column.id] ?? column.min,

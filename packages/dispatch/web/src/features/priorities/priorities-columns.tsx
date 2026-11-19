@@ -127,17 +127,14 @@ function TitleCell({ item }: { item: PriorityItem }) {
       </button>
       <div className="min-w-0 flex-1 space-y-1">
         {/* The title is read here and renamed on the priority's own page, which it opens: a
-            click, or `o` and Enter on the focused row, which open the row's `data-issue-link`. */}
+            click, or `o` and Enter on the focused row, which open the row's `data-issue-link`.
+            It wraps whole, however long, in the type of the Issues table's titles. */}
         <Link
-          className={`flex w-full min-w-0 font-medium ${linkText} ${linkHoverText}`}
+          className={`flex w-full min-w-0 ${linkText} ${linkHoverText}`}
           data-issue-link
           to={priorityPath(item.priority.id)}
         >
-          <span
-            className={`line-clamp-2 min-w-0 flex-1 break-words hover:underline ${textPrimaryOnCanvas}`}
-          >
-            {title}
-          </span>
+          <span className={`min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}>{title}</span>
         </Link>
         {/* An open row draws its whole description, and so does a closed one that keeps the
             reader's text beside it: the notice of a write another person's change refused is on
@@ -152,18 +149,25 @@ function TitleCell({ item }: { item: PriorityItem }) {
             onSave={(next) => actions.onDescribe(item, next)}
           />
         ) : item.summary === "" ? null : (
-          <p className={`truncate text-sm ${textSecondaryOnCanvas}`}>{item.summary}</p>
+          // A closed row shows the description's first line, muted, on one line, cut where
+          // the column ends; the whole line is its tooltip, and the open row shows it all.
+          <p className={`truncate text-xs ${textMutedOnCanvas}`} title={item.summary}>
+            {item.summary}
+          </p>
         )}
       </div>
     </div>
   );
 }
 
-/** The owner in at most two lines, the whole of it in the tooltip: an owner is free text, and a
- *  long one would make its row as tall as the list. */
+/** The owner on one line, the whole of it in the tooltip: an owner is free text, and a long one
+ *  would make its row as tall as the list. */
 function OwnerCell({ owner }: { owner: string }) {
   return (
-    <span className="line-clamp-2 break-words" title={owner === "" ? undefined : owner}>
+    <span
+      className={`block truncate ${textSecondaryOnCanvas}`}
+      title={owner === "" ? undefined : owner}
+    >
       {owner}
     </span>
   );
@@ -211,9 +215,12 @@ export const PRIORITY_COLUMN_DEFS: ColumnDef<PriorityItem>[] = columnDefs<Priori
       accessorFn: (item) => item.newest ?? "",
       cell: ({ row }) =>
         row.original.newest === null ? (
-          <span className={textMutedOnCanvas}>{NEVER_MOVED}</span>
+          <span className={`text-xs ${textMutedOnCanvas}`}>{NEVER_MOVED}</span>
         ) : (
-          <Timestamp at={row.original.newest} className={textSecondaryOnCanvas} />
+          <Timestamp
+            at={row.original.newest}
+            className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}
+          />
         ),
     },
   },

@@ -2074,16 +2074,31 @@ test("a project's table offers none of the listing columns", async () => {
 });
 
 // The work under one priority is every project's, so its table offers the Project column; given
-// the priorities' titles it offers Advances, which names each by its title; and its listing asks
-// for no move, so it never offers Moved there, nor Reason, which says why a move was made. Both
-// open hidden, for the reader to show.
+// the priorities' titles it offers Advances, which names each by its place in the order and its
+// title; and its listing asks for no move, so it never offers Moved there, nor Reason, which says
+// why a move was made. Both open hidden, for the reader to show.
 test("a priority's work table offers Project and, given the titles, Advances, and never Moved there or Reason", async () => {
   const user = userEvent.setup();
-  table([issue("CORE-1", { advances: [{ id: "ship-it", inherited: false }] })], "", undefined, {
-    listing: { advances: "ship-it" },
-    priorityTitles: new Map([["ship-it", "Ship it everywhere"]]),
-    stateKey: "w",
-  });
+  table(
+    [
+      issue("CORE-1", {
+        advances: [
+          { id: "ship-it", inherited: false },
+          { id: "keep-it", inherited: true },
+        ],
+      }),
+    ],
+    "",
+    undefined,
+    {
+      listing: { advances: "ship-it" },
+      priorityTitles: new Map([
+        ["ship-it", "Ship it everywhere"],
+        ["keep-it", "Keep it running"],
+      ]),
+      stateKey: "w",
+    }
+  );
   const list = await screen.findByRole("table", { name: "Priority issues table" });
   await within(list).findByRole("row", { name: "CORE-1 Work CORE-1" });
   const headers = () =>
@@ -2106,11 +2121,30 @@ test("a priority's work table offers Project and, given the titles, Advances, an
   const row = within(list).getByRole("row", { name: "CORE-1 Work CORE-1" });
   const cells = within(row).getAllByRole("cell");
   expect(cells[headers().indexOf("Project")]?.textContent).toBe("CORE");
+  // Each priority is a chip reading its place in the order alone, a link to its page, its title
+  // in its name and its tooltip; one the issue inherits from an issue above says so in both.
+  const chips = within(cells[headers().indexOf("Advances")] as HTMLElement).getAllByRole("link");
   expect(
-    within(cells[headers().indexOf("Advances")] as HTMLElement)
-      .getByRole("link", { name: "Ship it everywhere" })
-      .getAttribute("href")
-  ).toBe("/priorities/ship-it");
+    chips.map((link) => ({
+      href: link.getAttribute("href"),
+      name: link.getAttribute("aria-label"),
+      text: link.textContent,
+      title: link.getAttribute("title"),
+    }))
+  ).toEqual([
+    {
+      href: "/priorities/ship-it",
+      name: "#1 Ship it everywhere",
+      text: "#1",
+      title: "Ship it everywhere",
+    },
+    {
+      href: "/priorities/keep-it",
+      name: "#2 Keep it running, inherited",
+      text: "#2",
+      title: "Keep it running, inherited from an issue above",
+    },
+  ]);
 });
 
 // Without the titles a priority's work table has no Advances column: it could name each

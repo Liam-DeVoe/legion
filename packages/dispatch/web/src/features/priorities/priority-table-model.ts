@@ -7,8 +7,9 @@ import type { LayoutColumns } from "../project/issues-table-layout";
  * a cell lives here, as `COLUMNS` in `features/project/issues-table-model.ts` holds it for the
  * issues table, so a column cannot filter by one value and group by another.
  *
- * A column filters either by typed text (`text`) or by picked values (`values`); every column
- * of these tables does one or the other, since the page carries a filter on every column.
+ * A column filters either by typed text (`text`) or by picked values (`values`), or not at all
+ * where it declares neither: a count is no value a reader picks rows by, and a header with no
+ * filter control needs only its words' width (`hasFilter`).
  */
 export interface TableColumn<Row> {
   readonly id: string;
@@ -40,6 +41,10 @@ export interface TableColumn<Row> {
 export const columnsById = <Row>(
   columns: readonly TableColumn<Row>[]
 ): ReadonlyMap<string, TableColumn<Row>> => new Map(columns.map((column) => [column.id, column]));
+
+/** Whether a column has a filter: a typed one or a picked one. */
+export const hasFilter = <Row>(column: TableColumn<Row>): boolean =>
+  column.text !== undefined || column.values !== undefined;
 
 /** Whether `row` passes every filter but `except`, which is the column whose own panel is
  *  counting what it would leave. */
@@ -142,8 +147,8 @@ export function tableLayout<Row>(
 
 /**
  * The TanStack definitions of these columns: what each one is, from its declaration, and how it
- * draws, from `rendering`. Every column sorts and filters, because the page carries a filter on
- * every column; a column that declares `group` can also be grouped by.
+ * draws, from `rendering`. Every column sorts; a column that declares a filter (`hasFilter`)
+ * filters, and one that declares `group` can also be grouped by.
  */
 export function columnDefs<Row>(
   columns: readonly TableColumn<Row>[],
@@ -158,7 +163,7 @@ export function columnDefs<Row>(
     minSize: column.min,
     enableResizing: true,
     enableSorting: column.sortable !== false,
-    enableColumnFilter: true,
+    enableColumnFilter: hasFilter(column),
     enableGrouping: column.group !== undefined,
     ...(column.group === undefined ? {} : { getGroupingValue: column.group }),
     filterFn: (row, id, value: unknown) =>

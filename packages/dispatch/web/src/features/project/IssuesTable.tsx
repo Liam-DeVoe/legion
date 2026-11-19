@@ -79,8 +79,10 @@ export function IssuesTable({
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
-  /** Each priority's title by its id. Given, the table has the Advances column, which names each
-   *  priority a row advances by its title; unset, it has none (`listingColumns`). */
+  /** Each priority's title by its id, in the one order the priorities read answers them in.
+   *  Given, the table has the Advances column, which names each priority a row advances by its
+   *  place in that order and its title (`#3`, `PriorityChip`); unset, it has none
+   *  (`listingColumns`). */
   priorityTitles?: ReadonlyMap<string, string>;
   /** The prefix this table's own view takes in the address: `<stateKey>.sort` and the rest.
    *  Unset keeps the bare `sort`, `q`, `group`, `page` and `size` the project page publishes. */
