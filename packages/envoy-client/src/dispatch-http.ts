@@ -45,6 +45,7 @@ import type {
   HandoffSummary,
   HeldEditInput,
   HeldRead,
+  HeldState,
   HeldStateInput,
   InboxRow,
   Issue,
@@ -127,6 +128,11 @@ export interface ArtifactFileVersion {
   readonly mime: string;
   readonly bytes: Uint8Array;
 }
+
+/** A write's answer that Dispatch's reviewer may hold (INFRA-3231's R5): its own shape, built
+ *  from what the hold stored under the id it reserved, with `held` where the reviewer holds it.
+ *  No person sees a held text until it posts. */
+export type Holdable<T> = T & { readonly held?: HeldState };
 
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
@@ -1131,8 +1137,12 @@ export class DispatchClient {
    * Creates an issue. `created` is whether this call made one (Dispatch's 201); false (its 200)
    * means Dispatch already holds the issue `external` names and answered with that issue.
    */
-  async issue(input: CreateIssueInput): Promise<Advised<Issue> & { created: boolean }> {
-    const answer = await this.#jsonAnswer<Advised<Issue>>("POST", ["api", "v1", "issues"], input);
+  async issue(input: CreateIssueInput): Promise<Holdable<Advised<Issue>> & { created: boolean }> {
+    const answer = await this.#jsonAnswer<Holdable<Advised<Issue>>>(
+      "POST",
+      ["api", "v1", "issues"],
+      input
+    );
     return { ...answer.payload, created: answer.status === 201 };
   }
 
@@ -1390,7 +1400,7 @@ export class DispatchClient {
     return { issue, events };
   }
 
-  async ask(issue: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
+  async ask(issue: string, input: CreateAskInput): Promise<Holdable<Advised<AskWithTrees>>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1716,7 +1726,10 @@ export class DispatchClient {
     return this.#json("PATCH", ["api", "v1", "asks", id], input);
   }
 
-  async comment(issue: string, input: CreateCommentInput): Promise<Advised<CommentWriteResponse>> {
+  async comment(
+    issue: string,
+    input: CreateCommentInput
+  ): Promise<Holdable<Advised<CommentWriteResponse>>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"],
@@ -1743,7 +1756,7 @@ export class DispatchClient {
     );
   }
 
-  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
+  async artifactAsk(id: string, input: CreateAskInput): Promise<Holdable<Advised<AskWithTrees>>> {
     return this.#json("POST", ["api", "v1", "artifacts", id, "asks"], input);
   }
 
@@ -1753,7 +1766,7 @@ export class DispatchClient {
       readonly body?: string;
       readonly replace_with: string;
     }
-  ): Promise<Advised<Comment>> {
+  ): Promise<Holdable<Advised<Comment>>> {
     const { replace_with, ...comment } = input;
     return this.#json(
       "POST",
@@ -1772,7 +1785,7 @@ export class DispatchClient {
   async artifactComment(
     id: string,
     input: CreateCommentInput
-  ): Promise<Advised<CommentWriteResponse>> {
+  ): Promise<Holdable<Advised<CommentWriteResponse>>> {
     return this.#json("POST", ["api", "v1", "artifacts", id, "comments"], input);
   }
 
@@ -1782,7 +1795,7 @@ export class DispatchClient {
       readonly body?: string;
       readonly replace_with: string;
     }
-  ): Promise<Advised<Comment>> {
+  ): Promise<Holdable<Advised<Comment>>> {
     const { replace_with, ...comment } = input;
     return this.#json("POST", ["api", "v1", "artifacts", id, "comments"], {
       ...comment,
@@ -1790,7 +1803,7 @@ export class DispatchClient {
     });
   }
 
-  async message(issue: string, input: CreateMessageInput): Promise<Advised<Message>> {
+  async message(issue: string, input: CreateMessageInput): Promise<Holdable<Advised<Message>>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "messages"],
@@ -1820,7 +1833,7 @@ export class DispatchClient {
     id: string,
     input: MessageReplyInput,
     options: { readonly followUp?: boolean } = {}
-  ): Promise<MessageReplyResult> {
+  ): Promise<Holdable<MessageReplyResult>> {
     return this.#json(
       "POST",
       ["api", "v1", "messages", id, "reply"],

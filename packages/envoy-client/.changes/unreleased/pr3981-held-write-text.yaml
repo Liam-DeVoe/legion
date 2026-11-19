@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  A write that Dispatch's reviewer holds no longer reads as posted. The first line of
+  `dispatch ask`, `dispatch comment`, `dispatch suggest`, `dispatch message`, `dispatch issue`,
+  and of `dispatch issue-update` for its closing reason, says that the text is held for review,
+  with its kind, its id and its state, and names `dispatch held <id>`. Where Dispatch gives them,
+  it also says until when the writer has to act and which held text it posts after. The cadence
+  line of a held write opens with `Held for review (<state>).` in place of `Posted.`.

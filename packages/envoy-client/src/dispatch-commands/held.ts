@@ -1,4 +1,4 @@
-import type { HeldEditInput, HeldRead } from "@legion/contracts";
+import type { HeldEditInput, HeldRead, HeldState } from "@legion/contracts";
 import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
 
 /**
@@ -20,15 +20,43 @@ function wordingLines(wording: HeldRead["wording"]): string[] {
   return lines;
 }
 
+/** Until when the writer of a held text has to act on it. */
+function actBy(deadline: string): string {
+  return `You have until ${deadline} to edit it or post it.`;
+}
+
+/** The held text a held text posts after. */
+function postsAfter(waitsOn: string): string {
+  return `It posts after held text ${waitsOn}.`;
+}
+
+/** What opens each line that reports a write the reviewer holds, where a write that posted at
+ *  once says `Posted`: the first line of the write's result, and its cadence line. */
+export function heldOpening(held: HeldState): string {
+  return `Held for review (${held.state})`;
+}
+
+/**
+ * The first line of a write the reviewer holds, which the server answers with the id it reserved
+ * and `held`: no person sees the text until it posts, so the line never says it posted, was sent,
+ * was asked or was created. It names the text's kind, its id and its state; `names`, what the
+ * command's own line names beside the id, with its own leading separator; until when the writer
+ * has to act, and the held text it posts after, where the server says; and `dispatch held <id>`.
+ */
+export function heldWriteLine(held: HeldState, kind: string, id: string, names = ""): string {
+  return [
+    `${heldOpening(held)}: ${kind} ${id}${names}. No person sees it until it posts.`,
+    ...(held.deadline === null ? [] : [actBy(held.deadline)]),
+    ...(held.waits_on === undefined || held.waits_on === "" ? [] : [postsAfter(held.waits_on)]),
+    `\`dispatch held ${id}\` reads it and what the reviewer found; a finding also reaches you as a message of its own.`,
+  ].join(" ");
+}
+
 /** What a held text's read prints: its state, its wording, the findings and the rewrite. */
 function heldText(held: HeldRead): string {
   const lines = [`Held ${held.kind} ${held.id}: ${held.state}.`];
-  if (held.deadline !== null && held.state === "awaiting_writer") {
-    lines.push(`You have until ${held.deadline} to edit it or post it.`);
-  }
-  if (held.waits_on !== undefined && held.waits_on !== "") {
-    lines.push(`It posts after held text ${held.waits_on}.`);
-  }
+  if (held.deadline !== null && held.state === "awaiting_writer") lines.push(actBy(held.deadline));
+  if (held.waits_on !== undefined && held.waits_on !== "") lines.push(postsAfter(held.waits_on));
   if (held.outcome !== undefined && held.outcome !== "") lines.push(`Outcome: ${held.outcome}.`);
   lines.push("", "The text:", ...wordingLines(held.wording));
   const findings = held.findings ?? [];

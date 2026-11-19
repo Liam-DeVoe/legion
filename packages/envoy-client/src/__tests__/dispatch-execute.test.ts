@@ -1391,6 +1391,54 @@ describe("executeDispatchTool", () => {
     expect(byRef.details).toMatchObject({ issue: "LEGION-3", message: "message-9" });
   });
 
+  // A reply the reviewer holds (INFRA-3231's R5) answers with the id it reserved and `held`:
+  // nobody reads it until it posts, so the line says it is held, not that the session replied.
+  test("a direct-message reply the reviewer holds says it is held, not that it replied", async () => {
+    const parent = "6f1d2c3b-4a5e-4f60-8b7c-9d0e1f2a3b4c";
+    const held = { state: "reviewing", deadline: null };
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if (new URL(String(url)).pathname !== `/api/v1/messages/${parent}/reply`) {
+        throw new Error("unexpected request");
+      }
+      return response(
+        {
+          id: "reply-1",
+          issue_key: null,
+          body: JSON.parse(init?.body as string).body,
+          in_reply_to: parent,
+          held,
+        },
+        201
+      );
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_message",
+      args: { body: "On it.", in_reply_to: parent },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "ses_reader",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toBe(
+      `Held for review (reviewing): message reply-1, your reply to message ${parent}. ` +
+        "No person sees it until it posts. `dispatch held reply-1` reads it and what the " +
+        "reviewer found; a finding also reaches you as a message of its own. " +
+        `dispatch read --message ${parent} reads the conversation back.`
+    );
+    expect(result.text).not.toContain("Replied");
+    expect(result.details).toEqual({
+      message: "reply-1",
+      in_reply_to: parent,
+      posted: false,
+      held,
+    });
+  });
+
   /** One `dispatch send-to-agent` call under `env`, against a Dispatch whose first delivery
    *  attempt settles as `attempt`, with the requests the call sent. */
   async function sendToAgent(env: Record<string, string>, attempt: Record<string, unknown>) {
@@ -3947,6 +3995,52 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // A held issue (INFRA-3231's R5) is not created yet: its answer names the assignee its create
+  // named, and Dispatch picks one when the issue posts, so the line names the one it named and
+  // says nothing of one it did not.
+  test.each([
+    ["ada@example.com", "; assigned to ada@example.com"],
+    [null, ""],
+  ] as const)("dispatch_issue the reviewer holds says it is held, not created (assignee %p)", async (assignee, said) => {
+    const held = { state: "reviewing", deadline: null };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      if (new URL(String(url)).pathname === "/api/v1/projects/LEGION/architecture-sources") {
+        return noSources();
+      }
+      return response(
+        {
+          key: "LEGION-13",
+          title: "New global search work",
+          project: "LEGION",
+          assignee,
+          components: issueComponents("inherit", []),
+          held,
+        },
+        201
+      );
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_issue",
+      args: { project: "LEGION", title: "New global search work" },
+      cwd: "/workspace",
+      host: "omp",
+      config: { ...config, publicUrl: "https://dispatch.example.org" },
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toBe(
+      `Held for review (reviewing): issue LEGION-13: New global search work → https://dispatch.example.org/issues/LEGION-13${said}. ` +
+        "No person sees it until it posts. `dispatch held LEGION-13` reads it and what the " +
+        "reviewer found; a finding also reaches you as a message of its own.\n" +
+        "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project LEGION --query 'global search work'"
+    );
+    expect(result.text).not.toContain("Created");
+    expect(result.details).toEqual({ issue: "LEGION-13", held });
+  });
+
   test.each([
     ["one source", "one"],
     ["several sources", "several"],
@@ -5325,6 +5419,42 @@ describe("executeDispatchTool", () => {
     expect(result.text).toStartWith(
       "ACME-175: reason posted as message message-7 (dispatch://ACME-175/message/message-7); status retro -> done"
     );
+    expect(result.details).toMatchObject({
+      issue: "ACME-175",
+      status: "done",
+      message: "message-7",
+    });
+  });
+
+  // A closing reason the reviewer holds (INFRA-3231's R5) is not on the issue until it posts,
+  // though the close goes through: the first line says the reason is held, the next the update.
+  test("dispatch_issue_update says a closing reason the reviewer holds is held, not posted", async () => {
+    const server = closingServer({
+      message: () =>
+        response(
+          { id: "message-7", issue_key: "ACME-175", held: { state: "reviewing", deadline: null } },
+          201
+        ),
+      patch: () =>
+        response({
+          key: "ACME-175",
+          title: "x",
+          status: "done",
+          labels: [],
+          route: null,
+          external_links: [],
+        }),
+    });
+
+    const result = await closeCall(server.fetchImpl);
+
+    expect(result.text).toStartWith(
+      "Held for review (reviewing): message message-7 (dispatch://ACME-175/message/message-7), " +
+        "the closing reason of ACME-175. No person sees it until it posts. `dispatch held " +
+        "message-7` reads it and what the reviewer found; a finding also reaches you as a " +
+        "message of its own.\nACME-175: status retro -> done"
+    );
+    expect(result.text).not.toContain("posted");
     expect(result.details).toMatchObject({
       issue: "ACME-175",
       status: "done",
@@ -12152,6 +12282,54 @@ describe("executeDispatchTool", () => {
       suggestion: { replace_with: "final" },
     });
     expect(JSON.parse(requests[1]?.init.body as string)).not.toHaveProperty("body");
+  });
+
+  // A suggestion the reviewer holds (INFRA-3231's R5) answers with the id it reserved and
+  // `held`, and its line says it is held; one Dispatch posts at once prints the line it always did.
+  test.each([
+    ["posts at once", undefined, "Posted suggestion comment-42"],
+    [
+      "the reviewer holds",
+      { state: "reviewing", deadline: null },
+      "Held for review (reviewing): suggestion comment-42. No person sees it until it posts. " +
+        "`dispatch held comment-42` reads it and what the reviewer found; a finding also " +
+        "reaches you as a message of its own.",
+    ],
+  ] as const)("a suggestion Dispatch %s says so", async (_case, held, text) => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [{ id: "artifact-42", slug: "spec", name: "spec.md", primary: true }],
+        });
+      }
+      if (path === "/api/v1/issues/DSP-42/comments") {
+        return response(
+          { id: "comment-42", issue_key: "DSP-42", ...(held === undefined ? {} : { held }) },
+          201
+        );
+      }
+      throw new Error(`unexpected request: ${path}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_suggest",
+      args: { issue: "DSP-42", artifact: "spec", quote: "draft", replace_with: "final" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toBe(text);
+    if (held !== undefined) {
+      expect(result.text).not.toContain("Posted");
+      expect(result.details).toMatchObject({ comment: "comment-42", held });
+    }
   });
 
   test("reads the targeted ask, its reply thread, from a Dispatch ask reference", async () => {
