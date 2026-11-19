@@ -112,29 +112,31 @@ async function writeProfile(rig: Rig): Promise<void> {
       `    ${BROKEN_MODEL}:`,
       `      - ${A}`,
     ],
-    [
-      {
-        provider: "standin-anthropic",
-        models: ["standin-claude"],
-        apiKey: key,
-        efforts: ["low", "medium", "high", "xhigh"],
-      },
-      {
-        provider: "standin-openai",
-        models: ["standin-gpt"],
-        api: "openai-completions",
-        apiKey: key,
-        efforts: ["minimal", "low", "medium", "high"],
-      },
-      {
-        provider: "rig-broken",
-        models: ["broken-model"],
-        api: "openai-completions",
-        baseUrl: `http://127.0.0.1:${rig.brokenPort}/v1`,
-        apiKey: "rig-broken-not-a-secret",
-      },
-      { provider: "standin-unkeyed", models: ["unkeyed-model"], apiKey: null },
-    ]
+    {
+      providers: [
+        {
+          provider: "standin-anthropic",
+          models: ["standin-claude"],
+          apiKey: key,
+          efforts: ["low", "medium", "high", "xhigh"],
+        },
+        {
+          provider: "standin-openai",
+          models: ["standin-gpt"],
+          api: "openai-completions",
+          apiKey: key,
+          efforts: ["minimal", "low", "medium", "high"],
+        },
+        {
+          provider: "rig-broken",
+          models: ["broken-model"],
+          api: "openai-completions",
+          baseUrl: `http://127.0.0.1:${rig.brokenPort}/v1`,
+          apiKey: "rig-broken-not-a-secret",
+        },
+        { provider: "standin-unkeyed", models: ["unkeyed-model"], apiKey: null },
+      ],
+    }
   );
 }
 
