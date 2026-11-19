@@ -10,6 +10,10 @@
       "reference": "plan"
     },
     {
+      "page": "steps",
+      "reference": "steps"
+    },
+    {
       "page": "conversation",
       "reference": "log"
     },
@@ -75,6 +79,10 @@
     {
       "href": "/issues/CORE-1/plan",
       "ref": "dispatch://CORE-1/plan"
+    },
+    {
+      "href": "/issues/CORE-1/steps",
+      "ref": "dispatch://CORE-1/steps"
     },
     {
       "href": "/issues/CORE-1/conversation",

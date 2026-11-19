@@ -8,6 +8,10 @@
     "ref": "dispatch://CORE-1/plan"
   },
   {
+    "href": "/issues/CORE-1/steps",
+    "ref": "dispatch://CORE-1/steps"
+  },
+  {
     "href": "/issues/CORE-1/conversation",
     "ref": "dispatch://CORE-1/log"
   },

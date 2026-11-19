@@ -1,5 +1,5 @@
 {
-  "commands": 36,
+  "commands": 37,
   "refusals": 29,
   "runs": [
     {
@@ -1813,6 +1813,30 @@
       "text": [
         "spec.md version 1:",
         "Dispatch read the form of 2 statements, 0 claims, 1 purpose and 0 definitions against 0 terms: no text breaks it."
+      ]
+    },
+    {
+      "tool": "dispatch_steps",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/steps",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "DSP-1: 2 steps in 1 tasks",
+        "default 2 step implementer implementation attempt 1 legion-dsp-dsp-1-implementer anthropic/claude-opus-5 2026-01-02T03:04:05Z 2026-01-02T03:04:05Z passed",
+        "default 3 step tester testing attempt 1 legion-dsp-dsp-1-tester - 2026-01-02T03:04:05Z running running"
       ]
     },
     {

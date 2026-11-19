@@ -13,11 +13,12 @@ test("the committed pages file is the route table's render", async () => {
 
 // What the render holds today, so a change of the route table's reading is a change of this test
 // as well as of the file.
-test("the render names the seven tabs of the issue, both segments of a document and its pages", () => {
+test("the render names the eight tabs of the issue, both segments of a document and its pages", () => {
   const file = JSON.parse(renderDashboardPages());
   expect(file.tabs).toEqual([
     { page: "verification", reference: "verification" },
     { page: "plan", reference: "plan" },
+    { page: "steps", reference: "steps" },
     { page: "conversation", reference: "log" },
     { page: "children", reference: "children" },
     { page: "artifacts", reference: "artifacts" },

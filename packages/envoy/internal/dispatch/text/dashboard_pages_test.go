@@ -20,6 +20,7 @@ func TestATabsPageAndReferenceNameItsIssueAndEachDocumentSegmentNamesTheDocument
 	}{
 		{server + "/issues/CORE-1/verification", issue},
 		{server + "/issues/CORE-1/plan", issue},
+		{server + "/issues/CORE-1/steps", issue},
 		{server + "/issues/CORE-1/activity", issue},
 		{server + "/issues/CORE-1/children", issue},
 		{server + "/issues/CORE-1/artifacts", issue},
@@ -28,6 +29,7 @@ func TestATabsPageAndReferenceNameItsIssueAndEachDocumentSegmentNamesTheDocument
 		{server + "/issues/CORE-1/verification?v=2#b-x", issue},
 		{"dispatch://CORE-1/verification", issue},
 		{"dispatch://CORE-1/plan", issue},
+		{"dispatch://CORE-1/steps", issue},
 		{"dispatch://CORE-1/activity", issue},
 		{"dispatch://CORE-1/children", issue},
 		{"dispatch://CORE-1/artifacts", issue},

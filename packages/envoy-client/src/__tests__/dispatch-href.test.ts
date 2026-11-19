@@ -36,6 +36,7 @@ test("the issue's activity and conversation pages keep their own references", ()
 test.each([
   ["/issues/CORE-1/verification", "dispatch://CORE-1/verification"],
   ["/issues/CORE-1/plan", "dispatch://CORE-1/plan"],
+  ["/issues/CORE-1/steps", "dispatch://CORE-1/steps"],
   ["/issues/CORE-1/artifacts", "dispatch://CORE-1/artifacts"],
   ["/issues/CORE-1/collaborators", "dispatch://CORE-1/collaborators"],
   ["/issues/CORE-1/log", "dispatch://CORE-1/log"],
