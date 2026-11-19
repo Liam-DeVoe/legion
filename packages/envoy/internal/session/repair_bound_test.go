@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -13,7 +15,7 @@ import (
 // open the bucket, so the store's background retry runs (armRepair) and attempts every
 // retryFirst. ctx bounds the store's first attempt (OpenKnownSessions), and extra adds to the
 // store's options.
-func openUnopenedStore(t *testing.T, ctx context.Context, extra ...KnownSessionsOption) (*KnownSessions, *testnats.Proxy) {
+func openUnopenedStore(t *testing.T, ctx context.Context, extra ...KnownSessionsOption) (*KnownSessions, *testnats.Proxy, *nats.Conn) {
 	t.Helper()
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
@@ -38,7 +40,7 @@ func openUnopenedStore(t *testing.T, ctx context.Context, extra ...KnownSessions
 	if !repairRunning(known) {
 		t.Fatal("the store's background retry is not running; the row needs it")
 	}
-	return known, proxy
+	return known, proxy, conn
 }
 
 // The background retry's attempt lets repairMu go once its window ends, though its request for
@@ -58,12 +60,13 @@ func openUnopenedStore(t *testing.T, ctx context.Context, extra ...KnownSessions
 //
 // The controls are the attempt run on the store's context rather than its window, and the lookup
 // unbounded by the attempt's context: either way attempt 1 holds the lock after its window ends,
-// and attempt 2 never begins.
+// and the row fails at the test's deadline, or, where that deadline is past nats.go's close of the
+// frozen connection, when attempt 2 comes only after that close.
 func TestTheRetrysAttemptLetsItsLockGoAtItsWindow(t *testing.T) {
 	windows := make(chan context.CancelFunc)
 	ended, endOpen := context.WithCancel(t.Context())
 	endOpen()
-	_, proxy := openUnopenedStore(t, ended,
+	_, proxy, conn := openUnopenedStore(t, ended,
 		withKnownSessionOpenWait(time.Hour),
 		withKnownSessionAttemptContext(func(ctx context.Context) (context.Context, context.CancelFunc) {
 			attempt, end := context.WithCancel(ctx)
@@ -74,10 +77,16 @@ func TestTheRetrysAttemptLetsItsLockGoAtItsWindow(t *testing.T) {
 			return attempt, end
 		}))
 	proxy.Freeze()
+	// next is attempt n asking for its window. An attempt the connection's close ended (nats.go
+	// closes a connection whose pings go unanswered, about 6 min into the freeze) says nothing of
+	// the window, so attempt n must come while the connection is still open.
 	next := func(n int) context.CancelFunc {
 		t.Helper()
 		select {
 		case end := <-windows:
+			if conn.IsClosed() {
+				t.Fatalf("attempt %d asked for its window after the connection closed: the close, not the window, ended attempt %d", n, n-1)
+			}
 			return end
 		case <-time.After(testnats.Remaining(t)):
 			if n == 1 {
@@ -103,7 +112,7 @@ func TestTheRetrysAttemptLetsItsLockGoAtItsWindow(t *testing.T) {
 //
 // The control is armRepair taking repairMu: it waits for the lock, and the row fails.
 func TestAnArmWhileTheRetrysAttemptHoldsItsLockReturnsAtOnce(t *testing.T) {
-	known, _ := openUnopenedStore(t, t.Context())
+	known, _, _ := openUnopenedStore(t, t.Context())
 	known.repairMu.Lock()
 	unlocked := false
 	t.Cleanup(func() {
