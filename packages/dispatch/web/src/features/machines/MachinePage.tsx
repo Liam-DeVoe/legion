@@ -17,10 +17,11 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { agentsAddress } from "../agents/agent-search";
 import { tallyBySession } from "../agents/ask-tally";
 import { useAgents } from "../conversation/useAgents";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
-import { buildAgentsMachinePath, parseMachinePath } from "../refs/routes";
+import { parseMachinePath } from "../refs/routes";
 import { relativeTimeLabel } from "../refs/Timestamp";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -133,7 +134,7 @@ function MachineView({ host }: { host: string }): ReactNode {
         </h1>
         <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
           <span>{sessionCountSentence(model.summary)}</span>
-          <Link className={`${linkText} ${linkHoverText}`} to={buildAgentsMachinePath(host)}>
+          <Link className={`${linkText} ${linkHoverText}`} to={agentsAddress({ machines: [host] })}>
             Agents on this machine
           </Link>
         </p>
