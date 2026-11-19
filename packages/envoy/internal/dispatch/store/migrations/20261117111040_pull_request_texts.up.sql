@@ -89,7 +89,7 @@ begin
   if pg_catalog.lower('ABCDEFGHIJKLMNOPQRSTUVWXYZ') <> 'abcdefghijklmnopqrstuvwxyz'
      or pg_catalog.upper('abcdefghijklmnopqrstuvwxyz') <> 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' then
     return pg_catalog.format('dispatch: database %s has collation %s (provider %s, ctype %s, locale %s), which folds an ASCII letter in another way than "C" does',
-      pg_catalog.current_database(), db.datcollate, db.datlocprovider, db.datctype, coalesce(db.datlocale, ''));
+      pg_catalog.current_database(), db.datcollate, db.datlocprovider, db.datctype, coalesce(pg_catalog.to_jsonb(db)->>'datlocale', pg_catalog.to_jsonb(db)->>'daticulocale', ''));
   end if;
   return null;
 end
