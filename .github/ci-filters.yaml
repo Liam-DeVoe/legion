@@ -1509,6 +1509,7 @@ envoy_infra_go:
   - 'packages/envoy/internal/fixtureenv/*'
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/logtest/*'
+  - 'packages/envoy/internal/oidc/oidctest/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/*'
   - 'packages/envoy/internal/testpg/testdb/*'
