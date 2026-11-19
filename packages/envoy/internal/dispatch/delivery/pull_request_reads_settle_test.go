@@ -44,17 +44,27 @@ func (settleWaitTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQuery
 // TestReview4SettleDeletesTheOwedReadItsOwnUpsertMade: `owed_after_intake=false`,
 // `older_head_is_basis=true`). Now the delete takes only the revision the read took before it read
 // GitHub, and here there was none, so the trigger's row stays whatever the wait. The control waits
-// 0 s.
+// 0 s. In the last case a read was owed before the delivery (an earlier delivery failed), so the
+// intake takes that owe's revision before it reads GitHub and its delete runs after its write: the
+// delete must take that revision alone and leave the owe the write made, which has a later one. A
+// delete that takes the pull request's owe at any revision deletes it.
 func TestTheReadAnOlderAnswerOwesOutlivesASlowSettle(t *testing.T) {
-	for _, wait := range []time.Duration{0, 3 * time.Second} {
-		t.Run(fmt.Sprintf("settle_waits_%s", wait), func(t *testing.T) {
+	for _, c := range []struct {
+		wait       time.Duration
+		owedBefore bool
+	}{{wait: 0}, {wait: 3 * time.Second}, {wait: 0, owedBefore: true}} {
+		name := fmt.Sprintf("settle_waits_%s", c.wait)
+		if c.owedBefore {
+			name = "a_read_owed_before_the_delivery"
+		}
+		t.Run(name, func(t *testing.T) {
 			fastPageRetries(t)
 			pool, ctx := deliveryTestPool(t)
 			issue := seedHeadIssue(t, ctx, pool, 88401)
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, storetest.Traced(t, pool, settleWaitTracer{wait: wait}, nil), nil, client, nil, nil)
+			intake := newIntake(nil, storetest.Traced(t, pool, settleWaitTracer{wait: c.wait}, nil), nil, client, nil, nil)
 			const number = 88401
 			older, newer := fakeSHA("a", number), fakeSHA("b", number)
 			branch, body := "legion/"+issue, "Dispatch: "+issue
@@ -64,6 +74,11 @@ func TestTheReadAnOlderAnswerOwesOutlivesASlowSettle(t *testing.T) {
 				HeadSHA: newer, HeadRef: branch, BaseRef: "main", State: "closed", EventAt: &t2, CheckedAt: &now},
 				releaseBeforeAttribution{issue: &issue, source: string(sourceBranch), complete: true})
 			github.set("acme/widgets", number, "open", older, branch, body, t1)
+			if c.owedBefore {
+				if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if _, err := intake.handlePullRequestEnvelope(ctx, nil,
 				prEnvelope("acme/widgets", number, "synchronize", older, branch, body, t1)); err != nil {
 				t.Fatal(err)
@@ -77,8 +92,8 @@ func TestTheReadAnOlderAnswerOwesOutlivesASlowSettle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("settle_wait=%s owed_after_intake=%d final_head=%s state=%s older_head_is_basis=%v",
-				wait, owedAfterIntake, got.HeadSHA[:6], got.State, olderBasis)
+			t.Logf("settle_wait=%s owed_before=%v owed_after_intake=%d final_head=%s state=%s older_head_is_basis=%v",
+				c.wait, c.owedBefore, owedAfterIntake, got.HeadSHA[:6], got.State, olderBasis)
 			if owedAfterIntake != 1 {
 				t.Errorf("after the intake wrote the older answer over the newer row, %d reads are owed, want the one its own write owed", owedAfterIntake)
 			}

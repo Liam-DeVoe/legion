@@ -128,6 +128,57 @@ func TestTwoReplicasWhoseClocksDifferOrderTheirReadsAsTheReadsBegan(t *testing.T
 	}
 }
 
+// An older answer of GitHub that lands after a newer one does not replace the newer head (an
+// older event does not replace a newer head). Two reads of this build take their places; the
+// later read is answered first and its answer lands first: updated an hour later, reopened, open
+// at head B. The earlier read's answer lands next: updated an hour before, closed at head A. Over
+// a row that a read of this build wrote, the trigger owes no read for that write, so the head
+// write's own guard on the event's time is what keeps B. The row must keep B or owe a read, and
+// after the reconcile's next pass, whose GitHub answers B, it must hold B, open. A head write that
+// takes every answer whatever its time leaves the row closed at A, with no read owed, after the
+// pass.
+func TestAnOlderAnswerThatLandsAfterANewerOneDoesNotReplaceItsHead(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	const repo, number = "acme/widgets", 7704
+	headA, headB := fakeSHA("a", number), fakeSHA("b", number)
+	older := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	newer := older.Add(time.Hour)
+	fake := newFakeGitHub(t)
+	github := serveGitHubPulls(t, fake, repo)
+	github.set(repo, number, "open", headB, "feature/x", "", newer)
+	early, err := startRead(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	late, err := startRead(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(head, state string, updated time.Time, read readStart) {
+		t.Helper()
+		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: repo, Number: number,
+			HeadSHA: head, HeadRef: "feature/x", BaseRef: "main", State: state, Title: "A change",
+			URL: "https://github.com/acme/widgets/pull/7704", EventAt: &updated,
+			GitHubReadAt: &read.at, GitHubReadOrder: &read.order}); err != nil {
+			t.Fatalf("write %s at %.1s: %v", state, head, err)
+		}
+	}
+	write(headB, "open", newer, late)
+	write(headA, "closed", older, early)
+	afterWrites := readHead(t, ctx, pool, repo, number)
+	owed := owedCount(t, ctx, pool, repo, number)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	afterPass := readHead(t, ctx, pool, repo, number)
+	t.Logf("after_writes=%s@%.1s owed=%d after_pass=%s@%.1s", afterWrites.State, afterWrites.HeadSHA, owed, afterPass.State, afterPass.HeadSHA)
+	if afterWrites.HeadSHA != headB && owed == 0 {
+		t.Errorf("the older answer replaced the newer head: the row is %s at %.1s with no read owed, want open at B or a read owed", afterWrites.State, afterWrites.HeadSHA)
+	}
+	if afterPass.HeadSHA != headB || afterPass.State != "open" {
+		t.Errorf("after one reconcile pass the row is %s at %.1s, want GitHub's head, open at B", afterPass.State, afterPass.HeadSHA)
+	}
+}
+
 // Every landing order of two and three answers of one second, read by reads that took their
 // places in the order of their index, whatever the order the answers land in: the row holds the
 // answer of the read that took the last place, and a read is owed exactly where the answers
