@@ -188,7 +188,7 @@ func (r *outbox) tellMerger(ctx context.Context, row record.OutboxRow, issue rec
 	} else if waits {
 		return wait.Errorf("the %s of %s waits for its merger's released pod to come back", what, row.Issue)
 	}
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
+	published := r.publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
 		r.log.Info("outbox "+what+" delivered to the merger", attributes...)
