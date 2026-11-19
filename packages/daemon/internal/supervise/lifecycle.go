@@ -126,7 +126,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // lifecycle for the tree's next start to bind and launch, since every later try would meet the
 // same refusal. Any other failure is not the tree's — a store that did not answer — and ends
 // nothing: the relaunch waits (relaunchLater), as a stop that fails does, and the error it
-// returns says so (errLaunchWaits).
+// returns says so (launchWaits).
 func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Context) error, err error) error {
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
@@ -195,9 +195,9 @@ func (m *Machine) watchAgain() {
 // (launchOnceTakenBack). Nothing else would relaunch such a claim before a restart, which takes it
 // up from what the store last holds.
 //
-// It answers cause, the failure that left the launch waiting, marked as a launch that waits
-// (errLaunchWaits), which is what its caller returns: a reader that must tell a launch still to
-// come from one that met a refusal reads the mark by errors.Is (launchMade), not the timer.
+// It answers cause, the failure that left the launch waiting, as a launchWaits, which is what its
+// caller returns: a reader that must tell a launch still to come from one that met a refusal reads
+// that type by errors.As (launchMade), not the timer.
 func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Context) error, cause error) error {
 	m.claim.State = StateLaunching
 	m.relaunch = relaunch
@@ -205,18 +205,13 @@ func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Contex
 	return launchWaits{err: cause}
 }
 
-// errLaunchWaits marks the error of a launch relaunchLater left to be tried again: the process is
-// let go, and the machine makes the launch itself when its timer fires.
-var errLaunchWaits = errors.New("the launch is tried again later")
-
-// launchWaits is the failure that left a launch waiting (relaunchLater), marked by errLaunchWaits.
-// It reads as that failure, word for word, and unwraps to it, so every reader of the failure
-// itself is unchanged.
+// launchWaits is the failure that left a launch waiting (relaunchLater): the process is let go,
+// and the machine makes the launch itself when its timer fires. It reads as that failure, word for
+// word, and unwraps to it, so every reader of the failure itself is unchanged.
 type launchWaits struct{ err error }
 
-func (w launchWaits) Error() string        { return w.err.Error() }
-func (w launchWaits) Unwrap() error        { return w.err }
-func (w launchWaits) Is(target error) bool { return target == errLaunchWaits }
+func (w launchWaits) Error() string { return w.err.Error() }
+func (w launchWaits) Unwrap() error { return w.err }
 
 // relaunchAgain is the relaunch relaunchLater left waiting (TimerRelaunch). A suspension held
 // meanwhile ends here, with no process left to stop, rather than in a relaunch; otherwise the
