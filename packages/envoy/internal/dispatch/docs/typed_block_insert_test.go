@@ -304,3 +304,89 @@ func TestAnInsertAListItemCannotHoldIsRefused(t *testing.T) {
 		t.Fatalf("refusal = %q, want it to say %q", err.Error(), says)
 	}
 }
+
+// An insert anchored on a list item's text lands inside that item, after its text, as a paragraph
+// does (TestAnInsertLandsInsideTheListItemOrQuoteHoldingItsAnchor). A block other than a
+// paragraph lands there too and nothing else is written: the item holds its text and then that
+// block, with no empty paragraph between them. An empty paragraph renders as a line of
+// indentation alone, which a read of the stored markdown drops, so the stored text and the tree
+// it came from would disagree (INFRA-341, testing round 17, at 1808df5f).
+func TestABlockInsertedAfterAListItemsTextWritesNoEmptyParagraph(t *testing.T) {
+	for _, test := range []struct {
+		name, markdown, firstLine, blockType string
+	}{
+		{name: "a heading", markdown: "## Heading", firstLine: "## Heading", blockType: "heading"},
+		{name: "a code block", markdown: "```\ncode here\n```", firstLine: "```", blockType: "code_block"},
+		{name: "a quote", markdown: "> Quoted aside.", firstLine: "> Quoted aside.", blockType: "blockquote"},
+		{name: "a table", markdown: "| a | b |\n|---|---|\n| 1 | 2 |", firstLine: "| a", blockType: "table"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := parseInput(listAndQuoteFixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			op := model.EditOp{Op: "insert", After: "block:" + blockIDOfText(t, tree, "one"), Markdown: test.markdown}
+			out, err := applyAlone(tree, op)
+			if err != nil {
+				t.Fatalf("insert of %s after the item's text: %v", test.name, err)
+			}
+			item := firstNodeOfType(out, "list_item")
+			if item == nil {
+				t.Fatal("the document holds no list item after the insert")
+			}
+			var kinds []string
+			empty := false
+			for _, child := range item.Children {
+				kinds = append(kinds, child.Type)
+				empty = empty || (child.Type == "paragraph" && strings.TrimSpace(textOf(child)) == "")
+			}
+			if empty {
+				t.Errorf("the item holds an empty paragraph: its children are %v", kinds)
+			}
+			if len(kinds) != 2 || kinds[0] != "paragraph" || kinds[1] != test.blockType {
+				t.Errorf("the item's children are %v, want [paragraph %s]", kinds, test.blockType)
+			}
+			markdown, err := renderTree(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, line := range strings.Split(markdown, "\n") {
+				if line != "" && strings.TrimSpace(line) == "" {
+					t.Errorf("the stored markdown holds a line of indentation alone: %q", markdown)
+					break
+				}
+			}
+			if !strings.Contains(markdown, "\n  "+test.firstLine) {
+				t.Errorf("the stored markdown %q does not hold %q inside the item", markdown, test.firstLine)
+			}
+			reread, err := parseInput(markdown)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again, err := renderTree(reread); err != nil || again != markdown {
+				t.Errorf("a read of the stored markdown renders %q, %v; want the same %q", again, err, markdown)
+			}
+		})
+	}
+}
+
+func firstNodeOfType(node *pmdoc.Node, kind string) *pmdoc.Node {
+	if node.Type == kind {
+		return node
+	}
+	for _, child := range node.Children {
+		if found := firstNodeOfType(child, kind); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func textOf(node *pmdoc.Node) string {
+	var b strings.Builder
+	b.WriteString(node.Text)
+	for _, child := range node.Children {
+		b.WriteString(textOf(child))
+	}
+	return b.String()
+}
