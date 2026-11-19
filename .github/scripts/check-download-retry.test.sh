@@ -12650,6 +12650,57 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
+# T9 to T12. Four ways a step sets nocaseglob that the gate does not read, so the T8 word
+# `R38-FE[T]CH.SH` names .github/scripts/r38-fetch.sh, which retries at 180 s (1050 s), and the
+# step passes under a 17-minute key, 1020 s (dispatch://INFRA-1545, the tester's round-41 drive at
+# 1a3d8b825fc9). T9: `-O nocaseglob` after env written by its path, where `env bash -O` is
+# refused. T10: the setting in a here-string that `.` sources from /dev/stdin, where `bash <<<` is
+# refused. T11: BASHOPTS written to $GITHUB_ENV in a heredoc, which the runner hands to the next
+# step's bash, where `echo BASHOPTS=… >> "$GITHUB_ENV"` is refused. T12: BASH_ENV naming a file
+# the step writes, which bash sources before the step's text, where `bash <file written>` is
+# refused. A runner emulation (bash --noprofile --norc -eo pipefail, with the step's env and the
+# GITHUB_ENV lines carried) runs the script in each. Each case asks only that the gate exits 1
+# with no traceback, so a refusal by name or a charged figure both pass it.
+r41_steps=(
+  "T9 an interpreter started by env written by its path|      - name: Run it under bash -O nocaseglob through /usr/bin/env
+        timeout-minutes: 17
+        run: /usr/bin/env bash -O nocaseglob -c 'flock /tmp/l .github/scripts/R38-FE[T]CH.SH'"
+  "T10 a setting in a here-string a shell sources|      - name: Source the setting from a here-string, then run it
+        timeout-minutes: 17
+        run: |
+          . /dev/stdin <<<'shopt -s nocaseglob'
+          flock /tmp/l .github/scripts/R38-FE[T]CH.SH"
+  "T11 BASHOPTS written to GITHUB_ENV in a heredoc|      - name: Write the setting for the next step
+        timeout-minutes: 1
+        run: |
+          cat >> \"\$GITHUB_ENV\" <<'EOF'
+          BASHOPTS=nocaseglob
+          EOF
+      - name: Run it under the setting the last step wrote
+        timeout-minutes: 17
+        run: flock /tmp/l .github/scripts/R38-FE[T]CH.SH"
+  "T12 BASH_ENV naming a file the step writes|      - name: Write the setting into a startup file
+        timeout-minutes: 1
+        run: printf 'shopt -s nocaseglob\\n' > \"\$RUNNER_TEMP/settings\"
+      - name: Run it under that startup file
+        timeout-minutes: 17
+        env:
+          BASH_ENV: \${{ runner.temp }}/settings
+        run: flock /tmp/l .github/scripts/R38-FE[T]CH.SH"
+)
+for r41_case in "${r41_steps[@]}"; do
+  r41_name=${r41_case%%|*}
+  r41_id=${r41_name%% *}
+  echo "case: r41 $r41_id a fetching script named under nocaseglob, set by ${r41_name#* }, is not passed under its retries"
+  root=$(fixture "r41-$r41_id")
+  cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
+  printf '%s\n' "name: Case" "on: [push]" "jobs:" "  build:" "    runs-on: ubuntu-24.04" "    steps:" \
+    "${r41_case#*|}" > "$root/.github/workflows/case.yaml"
+  run_check "$root"
+  check "exits 1" "$(is "$status" 1)"
+  check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+done
+
 # W10 and W11. W1, W2, W6 and W9 above share one cure: the gate reads the `.sh` scripts directly
 # in .github/scripts/ and no other file there, so every other file under that directory, at any
 # depth, is refused by name at its line 1, whatever its name, its first line or its text, but a
