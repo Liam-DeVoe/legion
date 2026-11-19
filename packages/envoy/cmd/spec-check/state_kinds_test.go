@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -60,8 +61,10 @@ var readsNoCommit = []checkKind{
 // file, for a check of production each result of it that read a transaction of the graph reading
 // the deploy d1 instead, as a result of production reads a deploy, and for a check of the graph each
 // result of it that read a deploy reading the transaction tx1 instead. The test fails when the
-// scenario does not hold the check's block as As reads it, so that no row passes on a change that
-// changed nothing.
+// scenario does not hold the check's block as As reads it, and when the copy, read back as the
+// command reads it (specgraph.ReadScenario), does not hold the check id as a check of procedure and
+// subject in the current approved spec and in the files of each commit, so that no row passes on a
+// conversion that changed nothing or wrote another kind.
 func scenarioAs(t *testing.T, name, id string, procedure specgraph.Procedure, subject specgraph.Subject) string {
 	t.Helper()
 	fsys, err := specgraphtest.As(os.DirFS(fixture(t, "scenarios", name)), id, string(procedure), string(subject))
@@ -71,6 +74,21 @@ func scenarioAs(t *testing.T, name, id string, procedure specgraph.Procedure, su
 	dir := filepath.Join(t.TempDir(), name)
 	if err := os.CopyFS(dir, fsys); err != nil {
 		t.Fatal(err)
+	}
+	s, err := specgraph.ReadScenario(os.DirFS(dir))
+	if err != nil {
+		t.Fatalf("%s with %s written with procedure %q and subject %q: %v", name, id, procedure, subject, err)
+	}
+	current, _ := s.Approved.Current()
+	trees := map[string]specgraph.Tree{"the approved spec": current}
+	for commit, tree := range s.Files {
+		trees["the files at "+commit] = tree
+	}
+	for _, where := range slices.Sorted(maps.Keys(trees)) {
+		if c, held := trees[where].CheckByID(id); !held || c.Procedure != procedure || c.Subject != subject {
+			t.Fatalf("%s with %s written with procedure %q and subject %q: %s reads it as procedure %q and subject %q (held %t)",
+				name, id, procedure, subject, where, c.Procedure, c.Subject, held)
+		}
 	}
 	return dir
 }

@@ -1,9 +1,10 @@
 package specgraph
 
-// The bases that the sweeps of sweep_test.go and blocksweep_test.go read (sweepBases), and the
-// helpers that build and check them.
+// The bases that the sweeps of sweep_test.go and blocksweep_test.go read (sweepBases), the helpers
+// that build and check them, and the test of specgraphtest.As, through which some of them are built.
 
 import (
+	"fmt"
 	"io/fs"
 	"maps"
 	"path/filepath"
@@ -42,9 +43,12 @@ import (
 // and a rule by which such a refusal took out that run would read the check's earlier pass true.
 // And two of production-and-graph with its program check of production written as another kind: as
 // a program check of the graph, whose runs read the transaction tx1 and count at the commit of their
-// test, and as an agent of production, whose block names no test. Each of these ten bases reads its
-// check of the graph, or the check that it writes, in the state that the check's kind gives its
-// results (readsAt), not only as that kind.
+// test, and as an agent of production, whose block names no test. Each of the sixteen reads, at the
+// subjects of its shape, the state that the shape gives its check (readsAt), so that a builder that
+// changed nothing, or another thing, gives no base: the six above the states that their shapes are
+// for, and the ten of production-and-graph their check of the graph, or the check that they write,
+// in the state that the check's kind gives its results; the eight that write a check also read it
+// as its kind (readsAs).
 func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	t.Helper()
 	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
@@ -129,26 +133,45 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	})
 	bases["wait-cycle with the outcomes of its two first runs swapped"] = swapped
 	bases["wait-cycle with a second, passing check of a-message-survives-a-restart"] = withSecondCheck(t, bases["wait-cycle"])
+	// The six bases above read, at the subjects of their shapes, the states that the shapes are for
+	// (readsAt): the check of the code of silent-leg unknown (ci_fault) at m2, at the run of no
+	// matrix, which names no leg; that of carry unknown (disagree) at c2 and at m2, where its failure
+	// and its later pass count; and at m1 of wait-cycle, the own check of envoy-delivers-messages
+	// false and the check of a-message-survives-a-restart true, or that check false and the one
+	// added beside it true.
+	const code = "a-restart-loses-no-message"
+	disagree := CheckState{State: checkUnknown, Reason: reasonDisagree, Disagree: true}
+	passedAtB1 := CheckState{State: checkTrue, Reason: reasonPassed, From: "b1"}
+	failedAtB1 := CheckState{State: checkFalse, Reason: reasonFailed, From: "b1"}
+	for _, r := range []struct {
+		base, check string
+		want        CheckState
+		commits     []string
+	}{
+		{"silent-leg with its matrix dropped at m2", code, CheckState{State: checkUnknown, Reason: reasonCIFault}, []string{"m2"}},
+		{"carry with c2's failure between c1's pass and c1's failing example", code, disagree, []string{"c2", "m2"}},
+		{"carry with a failure of c0, c1's parent, and a later pass of c2", code, disagree, []string{"c2", "m2"}},
+		{"carry with c2's failure at 10:30 and a later pass of m2", code, disagree, []string{"c2", "m2"}},
+		{"wait-cycle with the outcomes of its two first runs swapped", "a-sent-message-reaches-a-listener", failedAtB1, []string{"m1"}},
+		{"wait-cycle with the outcomes of its two first runs swapped", "a-restart-keeps-the-message", passedAtB1, []string{"m1"}},
+		{"wait-cycle with a second, passing check of a-message-survives-a-restart", "a-restart-keeps-the-message", failedAtB1, []string{"m1"}},
+		{"wait-cycle with a second, passing check of a-message-survives-a-restart", "a-restart-keeps-the-order", passedAtB1, []string{"m1"}},
+	} {
+		readsAt(t, r.base, bases[r.base], r.check, r.want, r.commits...)
+	}
 	const graph, program = "the-graph-holds-a-delivery-of-each-message", "a-production-restart-loses-no-message"
 	// written is production-and-graph with its check id written as a check of procedure and subject
 	// by the one conversion that the command's tests read it through too (specgraphtest.As): its text
 	// in the approved spec and in the files at m2, for a check of production each run of it that read
 	// the transaction tx1 reading the deploy d1 of the subject instead, as a check of production reads
 	// a deploy, and for a check of the graph each run of it that read the deploy d1 reading the
-	// transaction tx1 instead. The files at m2 and the approved spec read the check as that kind.
+	// transaction tx1 instead. The approved spec and the files read the check as that kind (readsAs).
 	written := func(id string, procedure Procedure, subject Subject) fstest.MapFS {
 		fsys, err := specgraphtest.As(bases["production-and-graph"], id, string(procedure), string(subject))
 		if err != nil {
 			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: %v", id, procedure, subject, err)
 		}
-		is := func(c Check) bool { return c.ID == id && c.Procedure == procedure && c.Subject == subject }
-		s, err := ReadScenario(fsys)
-		if err != nil {
-			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: %v", id, procedure, subject, err)
-		}
-		if current, _ := s.Approved.Current(); !slices.ContainsFunc(s.Files["m2"].Checks, is) || !slices.ContainsFunc(current.Checks, is) {
-			t.Fatalf("production-and-graph with %s written with procedure %q and subject %q: the files at m2 or the approved spec do not read it so", id, procedure, subject)
-		}
+		readsAs(t, fmt.Sprintf("production-and-graph with %s written with procedure %q and subject %q", id, procedure, subject), fsys, id, procedure, subject)
 		return fsys
 	}
 	// Each base of production-and-graph reads its check of the graph, or its program check of
@@ -157,7 +180,6 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	// gives the check its kind and results that read another subject, or no result that counts,
 	// gives no base: a check of the graph unknown, since its pass and its failure at the transaction
 	// tx1 disagree (R7), and one of production false, since its newest run decides, at the deploy d1.
-	disagree := CheckState{State: checkUnknown, Reason: reasonDisagree, Disagree: true}
 	failed := CheckState{State: checkFalse, Reason: reasonFailed, From: "d1"}
 	type converted struct {
 		fsys fstest.MapFS
@@ -182,7 +204,7 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 		refused["uncited.json"] = &fstest.MapFile{Data: []byte(`{"c1": {"` + graph + `": "test-not-in-code"}}`)}
 		for how, fsys := range map[string]fstest.MapFS{"with test_commit c1 on the failing run of ": withTestCommit, "with CI's refusal at c1 of ": refused} {
 			name := "production-and-graph " + how + what
-			readsAt(t, name, fsys, graph, base.want)
+			readsAt(t, name, fsys, graph, base.want, "m2")
 			bases[name] = fsys
 		}
 	}
@@ -191,7 +213,7 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 		"as an agent of production":       {written(program, ProcedureAgent, SubjectProduction), failed},
 	} {
 		name := "production-and-graph with its program check of production " + what
-		readsAt(t, name, base.fsys, program, base.want)
+		readsAt(t, name, base.fsys, program, base.want, "m2")
 		bases[name] = base.fsys
 	}
 	return bases
@@ -245,21 +267,110 @@ func withSecondCheck(t *testing.T, base fstest.MapFS) fstest.MapFS {
 }
 
 // readsAt fails the test unless the check id of the base name reads want, with id as its ID, at
-// each subject of the base: its state, its reason, its detail and the subject that it counts from.
-func readsAt(t *testing.T, name string, base fs.FS, id string, want CheckState) {
+// each subject of the base whose commit is one of commits: its state, its reason, its detail and
+// the subject that it counts from. It fails too when commits names no commit, or a commit that no
+// subject of the base has, so that it never passes on reading no subject.
+func readsAt(t *testing.T, name string, base fs.FS, id string, want CheckState, commits ...string) {
 	t.Helper()
 	s, err := ReadScenario(base)
 	if err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
+	if len(commits) == 0 {
+		t.Fatalf("%s: readsAt names no commit of a subject", name)
+	}
+	for _, commit := range commits {
+		if !slices.ContainsFunc(s.Subjects, func(subject ScenarioSubject) bool { return subject.Commit == commit }) {
+			t.Fatalf("%s: no subject of it is at the commit %s", name, commit)
+		}
+	}
 	want.ID = id
-	for i := range s.Subjects {
+	for i, subject := range s.Subjects {
+		if !slices.Contains(commits, subject.Commit) {
+			continue
+		}
 		state, err := Derive(s.Input(i))
 		if err != nil {
 			t.Fatalf("%s: subject %d: %v", name, i+1, err)
 		}
 		if j := slices.IndexFunc(state.Checks, func(c CheckState) bool { return c.ID == id }); j < 0 || state.Checks[j] != want {
 			t.Fatalf("%s: at subject %d the check %s reads %+v, want %+v", name, i+1, id, state.Checks[max(j, 0):max(j+1, 0)], want)
+		}
+	}
+}
+
+// readsAs is the scenario fsys, named name, as ReadScenario reads it, and fails the test unless the
+// reader reads it and reads its check id as a check of procedure and subject, with the test of a
+// program exactly when procedure is program: in the current approved spec and in the files of each
+// commit.
+func readsAs(t *testing.T, name string, fsys fs.FS, id string, procedure Procedure, subject Subject) Scenario {
+	t.Helper()
+	s, err := ReadScenario(fsys)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	current, _ := s.Approved.Current()
+	trees := map[string]Tree{"the approved spec": current}
+	for commit, tree := range s.Files {
+		trees["the files at "+commit] = tree
+	}
+	for _, where := range slices.Sorted(maps.Keys(trees)) {
+		if c, held := trees[where].CheckByID(id); !held || c.Procedure != procedure || c.Subject != subject || (c.Test != nil) != (procedure == ProcedureProgram) {
+			t.Fatalf("%s: %s reads %s as a check of procedure %q and subject %q with the test %+v (held %t); want procedure %q and subject %q, with a test only for a program",
+				name, where, id, c.Procedure, c.Subject, c.Test, held, procedure, subject)
+		}
+	}
+	return s
+}
+
+// specgraphtest.As, the one conversion through which the sweeps' bases and the command's tests
+// write a check of a scenario as another kind, writes each kind that it is asked for: each
+// procedure of each subject (R6), from the check that the tests convert to it, refusal's program
+// check of the code for a kind of the code, production-and-graph's program check of production for
+// a program check of production or of the graph, and its query of the graph for a query or an agent
+// of production or of the graph. Each converted scenario reads with the check as that kind, in the
+// approved spec and in the files of each commit (readsAs), and each run of the check reads the
+// subject of the kind: a commit and no deploy or transaction for the code, as refusal's runs of it
+// do, the deploy d1 and no transaction for production, and the transaction tx1 and no deploy for
+// the graph. So a fault of As for any one kind fails the row of that kind.
+func TestAsWritesACheckOfEachKind(t *testing.T) {
+	t.Parallel()
+	for _, subject := range []Subject{SubjectCode, SubjectProduction, SubjectGraph} {
+		for _, procedure := range []Procedure{ProcedureProgram, ProcedureQuery, ProcedureAgent} {
+			scenario, id := "production-and-graph", "the-graph-holds-a-delivery-of-each-message"
+			switch {
+			case subject == SubjectCode:
+				scenario, id = "refusal", "a-restart-loses-no-message"
+			case procedure == ProcedureProgram:
+				id = "a-production-restart-loses-no-message"
+			}
+			t.Run(fmt.Sprintf("a check of procedure %s and subject %s", procedure, subject), func(t *testing.T) {
+				t.Parallel()
+				name := fmt.Sprintf("%s with %s written with procedure %q and subject %q", scenario, id, procedure, subject)
+				fsys, err := specgraphtest.As(scenarioFS(t, filepath.Join("testdata", "scenarios", scenario)), id, string(procedure), string(subject))
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				s := readsAs(t, name, fsys, id, procedure, subject)
+				runs := 0
+				for i, r := range s.Results {
+					if r.Check != id || r.Kind != ResultRun {
+						continue
+					}
+					runs++
+					read := map[Subject]bool{
+						SubjectCode:       r.Commit != "" && r.Deploy == "" && r.GraphTx == "",
+						SubjectProduction: r.Deploy == "d1" && r.GraphTx == "",
+						SubjectGraph:      r.GraphTx == "tx1" && r.Deploy == "",
+					}
+					if !read[subject] {
+						t.Errorf("%s: result %d, a run, reads the commit %q, the deploy %q and the transaction %q, not the subject of a check of %s", name, i+1, r.Commit, r.Deploy, r.GraphTx, subject)
+					}
+				}
+				if runs == 0 {
+					t.Fatalf("%s: no run of %s", name, id)
+				}
+			})
 		}
 	}
 }
