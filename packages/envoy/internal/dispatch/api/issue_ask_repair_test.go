@@ -414,7 +414,9 @@ func TestRepairSkipsAClosedIssueWithNoClosingEvent(t *testing.T) {
 
 // An open issue still holding the asks its close withdrew - reopened by a release older than the
 // restoration - gets them back, credited to the actor of the event that reopened it, not to a
-// later editor.
+// later editor. The settlement the close left armed runs before the reopen (SettleIssueDocuments):
+// a reopen's close of the room does not end an armed settlement (docs' settlement.take), which
+// would load the room again after the reopen closed it.
 func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *testing.T) {
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Reopened by an older release", closeDecision)
@@ -429,6 +431,9 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 	}
 	for _, ask := range asks {
 		requireWithdrawn(t, f.handler, issue.Key, ask, model.Actor{Kind: "user", ID: "alice", Proven: true})
+	}
+	if err := f.documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the closed issue's documents: %v", err)
 	}
 	reopener := repairActor("session-reopener")
 	reopenWithoutRestoring(t, f, issue.Key, "in_progress", reopener)
