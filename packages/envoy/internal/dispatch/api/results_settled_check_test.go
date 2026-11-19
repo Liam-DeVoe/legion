@@ -281,14 +281,15 @@ func TestACICheckABrowserGivesACheckHoldingNoResultTakesEffectWhenTheEditSettles
 	})
 }
 
-// TestACICheckASettlementGivesBetweenAWritesResolveAndItsLocksRefusesARolesResult: k1 is an
+// TestACICheckAVersionGivesBetweenAWritesResolveAndItsLocksRefusesARolesResult: k1 is an
 // ordinary check holding no result when a tester's pass of it resolves, so the judgement the write
-// makes before its transaction opens lets the pass through. A settlement then gives k1 ci_check
-// before the write takes its locks. The write judges the pass again by the check its locks find
+// makes before its transaction opens lets the pass through. A version of the document then gives
+// k1 ci_check before the write takes its locks, held by the block index as a settlement's version
+// is (writeVerification). The write judges the pass again by the check its locks find
 // (recordResultUnderOwnerLocks), which CI proves now, and refuses it 409 CHECK_PROVED_BY_CI with
-// nothing stored. The control: the same edit settled before the tester's pass resolves is refused
-// the same way, by the judgement made before the transaction opens.
-func TestACICheckASettlementGivesBetweenAWritesResolveAndItsLocksRefusesARolesResult(t *testing.T) {
+// nothing stored. The control: the same version written before the tester's pass resolves is
+// refused the same way, by the judgement made before the transaction opens.
+func TestACICheckAVersionGivesBetweenAWritesResolveAndItsLocksRefusesARolesResult(t *testing.T) {
 	ordinary := ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`"`)
 	edited := strings.Replace(ciJobVerification, ordinary,
 		ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`), 1)
@@ -299,28 +300,28 @@ func TestACICheckASettlementGivesBetweenAWritesResolveAndItsLocksRefusesARolesRe
 	ordinaryK1 := func(t *testing.T, rig *ciJobRig) {
 		t.Helper()
 		if k1 := checkOf(t, readResults(t, rig.handler, rig.issue), "k1"); k1.CICheck != "" || len(k1.Results) != 0 {
-			t.Fatalf("k1 reads %+v before the edit, want an ordinary check holding no result", k1)
+			t.Fatalf("k1 reads %+v before the version, want an ordinary check holding no result", k1)
 		}
 	}
 
-	t.Run("the edit settles between the write's resolve and its locks", func(t *testing.T) {
-		rig, documents := newUnsettledCIJobRig(t)
+	t.Run("the version lands between the write's resolve and its locks", func(t *testing.T) {
+		rig := newCIJobRig(t)
 		ordinaryK1(t, rig)
 		held := holdWriteBeforeItsLocks(t, rig, rig.sessionToken(), tester)
-		settleVerification(t, rig, documents, edited, "the edit giving k1 ci_check")
+		writeVerification(t, rig, edited)
 		if k1 := checkOf(t, readResults(t, rig.handler, rig.issue), "k1"); k1.CICheck != ciJobName {
-			t.Fatalf("fixture: k1 reads ci_check %q once the edit settled, want %q", k1.CICheck, ciJobName)
+			t.Fatalf("fixture: k1 reads ci_check %q once the version landed, want %q", k1.CICheck, ciJobName)
 		}
 		held.release()
-		rig.refusedWith(t, "a tester's pass of k1 that resolved before the edit settled", <-held.answered,
+		rig.refusedWith(t, "a tester's pass of k1 that resolved before the version landed", <-held.answered,
 			http.StatusConflict, "CHECK_PROVED_BY_CI")
 	})
 
-	t.Run("the control: the edit settles before the write resolves", func(t *testing.T) {
-		rig, documents := newUnsettledCIJobRig(t)
+	t.Run("the control: the version lands before the write resolves", func(t *testing.T) {
+		rig := newCIJobRig(t)
 		ordinaryK1(t, rig)
-		settleVerification(t, rig, documents, edited, "the edit giving k1 ci_check")
-		rig.refusedWith(t, "a tester's pass of k1 once the edit settled", rig.post(t, rig.issue, rig.sessionToken(), tester),
+		writeVerification(t, rig, edited)
+		rig.refusedWith(t, "a tester's pass of k1 once the version landed", rig.post(t, rig.issue, rig.sessionToken(), tester),
 			http.StatusConflict, "CHECK_PROVED_BY_CI")
 	})
 }

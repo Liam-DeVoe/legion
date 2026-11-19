@@ -7,8 +7,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
 // The results write takes the owner locks of the recording issue and of the check's issue
@@ -16,7 +14,7 @@ import (
 // result by the check as the block index holds it (results_settled_check.go): it resolves the
 // check before its transaction opens, and reads the block's version, digest and text again under
 // the locks, in one statement (settledCheckUnderLocks), so it reads no document while it holds
-// them. This file holds the write to the check a settlement leaves when that settlement lands
+// them. This file holds the write to the check a document version leaves when that version lands
 // between the resolve and the locks.
 
 // heldWriteCommit is the commit a held write records at. No pull request of the rig's issue has
@@ -69,27 +67,27 @@ func holdWriteBeforeItsLocks(t *testing.T, rig *ciJobRig, token string, body any
 var ciJobVerificationReworded = ciCheckBlock("c1", `negative_control="`+ciJobNegativeControl+`" ci_check="`+ciJobName+`"`) +
 	"\n" + ":::check{#k1 negative_control=\"" + ciJobNegativeControl + "\"}\nThe server starts at the head.\n:::\n"
 
-// settleVerification writes markdown as a browser's edit of the rig's Verification document and
-// settles it, so the block index holds the version that edit makes.
-func settleVerification(t *testing.T, rig *ciJobRig, documents *docs.Service, markdown, what string) {
+// writeVerification uploads markdown as a new version of the rig's Verification document. The
+// upload indexes the version's blocks in its own transaction (refs.BlockIndexing.Queue), so the
+// block index holds the version once the upload has answered, as it holds a settlement's: a
+// browser's edit settled by the test would hold it only once the room's pending settlement was
+// marked, which is not when the edit shows in the live text.
+func writeVerification(t *testing.T, rig *ciJobRig, markdown string) {
 	t.Helper()
-	writeBrowserDocument(t, documents, rig.verification, markdown)
-	if err := documents.SettleIssueDocuments(context.Background(), rig.issue); err != nil {
-		t.Fatalf("settle %s: %v", what, err)
-	}
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "verification.md", markdown)
 }
 
-// A settlement that rewords the check between the write's resolve and its locks is the check the
-// write judges the result by and records: the version that settlement wrote and the digest it
-// left, not the ones the resolve read. The write reads them under its locks in one statement with
-// the text they name, and reads no document while it holds those locks.
-func TestAResultsWriteRecordsTheCheckASettlementLeftBetweenItsResolveAndItsLocks(t *testing.T) {
-	rig, documents := newUnsettledCIJobRig(t)
+// A version that rewords the check between the write's resolve and its locks is the check the
+// write judges the result by and records: the version it wrote and the digest it left, not the
+// ones the resolve read. The write reads them under its locks in one statement with the text
+// they name, and reads no document while it holds those locks.
+func TestAResultsWriteRecordsTheCheckAVersionLeftBetweenItsResolveAndItsLocks(t *testing.T) {
+	rig := newCIJobRig(t)
 	resolved := checkOf(t, readResults(t, rig.handler, rig.issue), "k1")
 	held := holdWriteBeforeItsLocks(t, rig, rig.sessionToken(),
 		resultBody("k1", "pass", heldWriteCommit, map[string]any{"role": "tester"}))
 
-	settleVerification(t, rig, documents, ciJobVerificationReworded, "the rewording of k1")
+	writeVerification(t, rig, ciJobVerificationReworded)
 	reworded := checkOf(t, readResults(t, rig.handler, rig.issue), "k1")
 	if reworded.Version == resolved.Version || reworded.SHA256 == resolved.SHA256 {
 		t.Fatalf("fixture: the rewording left k1 at version %d digest %s, want both moved from %d and %s",
@@ -103,25 +101,25 @@ func TestAResultsWriteRecordsTheCheckASettlementLeftBetweenItsResolveAndItsLocks
 	}
 	result := decodeBody[recordedResult](t, response).Result
 	if result.CheckVersion != reworded.Version || result.CheckSHA256 != reworded.SHA256 {
-		t.Errorf("the result records k1 at version %d digest %s, want version %d digest %s: the check as the settlement before the locks left it, not as the resolve read it (version %d digest %s)",
+		t.Errorf("the result records k1 at version %d digest %s, want version %d digest %s: the check as the version before the locks left it, not as the resolve read it (version %d digest %s)",
 			result.CheckVersion, result.CheckSHA256, reworded.Version, reworded.SHA256, resolved.Version, resolved.SHA256)
 	}
 }
 
-// A check whose words one settlement replaced and a later settlement restored, both between the
+// A check whose words one version replaced and a later version restored, both between the
 // write's resolve and its locks, is a check those locks find moved, though the digest they find
 // is the one the resolve read: changed_version has moved to the restoring version. The write
 // compares both, so it records the check at the version the locks found, with that version's
 // digest. Comparing the digest alone would keep the reading the resolve made, and record the
 // check at a version the block index no longer holds for it.
-func TestAResultsWriteRecordsTheVersionALaterSettlementRestoredTheDigestIn(t *testing.T) {
-	rig, documents := newUnsettledCIJobRig(t)
+func TestAResultsWriteRecordsTheVersionALaterVersionRestoredTheDigestIn(t *testing.T) {
+	rig := newCIJobRig(t)
 	resolved := checkOf(t, readResults(t, rig.handler, rig.issue), "k1")
 	held := holdWriteBeforeItsLocks(t, rig, rig.sessionToken(),
 		resultBody("k1", "pass", heldWriteCommit, map[string]any{"role": "tester"}))
 
-	settleVerification(t, rig, documents, ciJobVerificationReworded, "the rewording of k1")
-	settleVerification(t, rig, documents, ciJobVerification, "the restoring of k1")
+	writeVerification(t, rig, ciJobVerificationReworded)
+	writeVerification(t, rig, ciJobVerification)
 	restored := checkOf(t, readResults(t, rig.handler, rig.issue), "k1")
 	if restored.SHA256 != resolved.SHA256 || restored.Version == resolved.Version {
 		t.Fatalf("fixture: the restore left k1 at version %d digest %s, want the digest %s back at a version other than %d",
