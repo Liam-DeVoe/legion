@@ -5792,10 +5792,12 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     },
     {
       // Opened with `c` over the issue page, whose project it starts on, and read once its title
-      // has the focus the dialog gives it on opening.
+      // has the focus the dialog gives it on opening. The focus is taken off the list read before
+      // this one first: a list's trigger takes a page's single keys as the select it replaced did,
+      // so `c` pressed on it opens nothing (`isEditableTarget`).
       name: "the Create issue dialog's Project",
       reach: async () => {
-        await page.locator("body").focus();
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
         await page.keyboard.press("c");
         await expect(createIssueDialog.getByRole("textbox", { name: "Title" })).toBeFocused();
       },

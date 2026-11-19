@@ -1908,6 +1908,52 @@ test("a column filter press that sends the List off to read its issues leaves th
   expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveFocus();
 });
 
+// A row's own Start next is held (`aria-disabled`, `heldPress`) from its press until the list
+// read again moves its issue up the queue and takes the Start next away: it keeps the focus while
+// its write is out, and its going is the reader's doing, so the focus goes to a control of that
+// row, never to the table's box. With the hold ended at the write's answer, before that read, the
+// List's rescue read the Start next's going as a live update's and sent the focus to the box.
+test("a row's Start next stays held until the list read again takes it away, and its row keeps the focus", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-2") as never);
+  restores.push(() => send.mockRestore());
+  const { listing } = table(
+    [
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "C" }),
+    ],
+    "",
+    { rescued: true }
+  );
+  const row = await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const startNext = within(row).getByRole("button", { name: "Start next" });
+  // The read after the write, held until the test answers it with CORE-2 at the queue's head.
+  const reread = Promise.withResolvers<IssueSummary[]>();
+  const reads = listing.mock.calls.length;
+  listing.mockImplementation(() => reread.promise);
+  act(() => startNext.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+  await afterRescue();
+  expect(startNext).toHaveAttribute("aria-disabled", "true");
+  expect(startNext).toHaveFocus();
+
+  await act(async () =>
+    reread.resolve([
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "A" }),
+    ])
+  );
+  const moved = () => screen.getByRole("row", { name: "CORE-2 Work CORE-2" });
+  await waitFor(() =>
+    expect(within(moved()).queryByRole("button", { name: "Start next" })).toBeNull()
+  );
+  await afterRescue();
+  expect(moved().contains(document.activeElement)).toBe(true);
+  expect(screen.getByTestId("issues-table-scroll")).not.toHaveFocus();
+});
+
 // A notice's button that takes the notice away hands the focus on, never to the page's body
 // (ruling ff1a60f5): to the control now at its place among the List's notices, else the one
 // before it, else the toolbar's search box.

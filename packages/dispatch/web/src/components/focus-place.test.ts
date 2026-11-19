@@ -1133,7 +1133,7 @@ test("a row removed after its pressed control's hold ended hands the focus to no
 });
 
 // (ax) The hold ends at the write deadline (`RESCUE_WAIT_MS`), as the rescue's own wait does: a
-// control that stays held past it - a pager's Next on its last page, a standing refusal - keeps
+// control its press's write holds that stays held past it - a write that never answers - keeps
 // its press live no longer, so a live update taking its row away after that is no doing of the
 // reader's: the focus goes into no other row and nothing scrolls (ag).
 test("a row removed after its pressed control stayed held past the write deadline hands the focus to no row", async () => {
@@ -1171,6 +1171,62 @@ test("a row removed after its pressed control stayed held past the write deadlin
     jest.useRealTimers();
     scrolls.mockRestore();
   }
+});
+
+// (ay) A press on a control already held when it is pressed - the pager's Next on its last page, a
+// select or a trigger held while an earlier write is out - is refused and leads to no write, so
+// that hold is no doing of the press: the press is live a frame and a task after it and its
+// release, as a press on a control held by nothing is (aq), and no longer. A live update taking
+// the row away after that is no doing of the reader's: the focus goes into no other row and
+// nothing scrolls (ag).
+test("a row removed after a press on its control held before the press hands the focus to no row", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const dismiss = buttonIn(second.row, "Dismiss");
+      dismiss.setAttribute("aria-disabled", "true");
+      dismiss.focus();
+      placeAt(dismiss, 200);
+      box.dispatchEvent(new Event("scroll"));
+      pointerPress(dismiss);
+      // Two frames and their tasks on, the control still held as it was before the press.
+      await frame();
+      await settled();
+      expect(dismiss).toHaveFocus();
+      second.row.remove();
+      await settled();
+      expect(box).toHaveFocus();
+      expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+      expect(rows[2]?.mark).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});
+
+// (az) A second press on a control its first press holds - a double click, a repeated Enter - is
+// refused by the control and leaves the first press the cause: the row taken away in the commit
+// that ends the hold keeps the hand-off of (ar), to the control now at the row's place.
+test("a second press on a control its first press holds keeps the first press the cause of the row's going", async () => {
+  await withRescue(async () => {
+    const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+    const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+    const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+    const dismiss = buttonIn(second.row, "Dismiss");
+    dismiss.focus();
+    placeAt(dismiss, 200);
+    box.dispatchEvent(new Event("scroll"));
+    pointerPress(dismiss);
+    await holdFor(dismiss);
+    pointerPress(dismiss);
+    await holdFor(dismiss);
+    expect(dismiss).toHaveFocus();
+    second.row.remove();
+    await waitFor(() => expect(third.mark).toHaveFocus());
+  });
 });
 
 /** A row's list - an Inbox row's `Hand this question to` - opened from its trigger in the row

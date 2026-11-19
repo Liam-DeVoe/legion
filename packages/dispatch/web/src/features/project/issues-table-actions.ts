@@ -165,10 +165,15 @@ export function useIssueTableActions({
       else
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
-      setBusy(false);
-      void client.invalidateQueries({ queryKey: ["issues"] });
+      // The action's controls stay held (`busy`) through the read of the list that draws what it
+      // changed - a row's Start next gone once its issue starts next - so that going is still the
+      // press's doing (`causedByReader`). The read settles either way, and a failed one lets them
+      // go.
+      const listed = client.invalidateQueries({ queryKey: ["issues"] });
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
+      await listed;
+      setBusy(false);
     }
   };
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;

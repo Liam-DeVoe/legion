@@ -3,6 +3,7 @@ import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { DataTableCells, DataTableGroupRow } from "../../components/DataTable";
+import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { useNestedPanels } from "../../components/useNestedPanels";
@@ -25,7 +26,9 @@ import { issueStatuses, statusLabel } from "./board-model";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
 /** One issue's row: its cells, and the Start next the reader reaches by hovering it, which is
- *  held while a table action is out (`busy`) as a `StepButton` is, and for the same reason. */
+ *  held while a table action is out (`busy`, `heldPress`) as a `StepButton` is, and for the same
+ *  reason: from its own press until the list read again moves its issue up the queue and takes
+ *  it away, so it keeps the focus while its write is out and its going is the press's doing. */
 export function IssueRow({
   busy,
   index,
@@ -62,11 +65,8 @@ export function IssueRow({
         trailing={
           queue !== undefined && queue > 1 ? (
             <button
-              aria-disabled={busy || undefined}
               className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-              onClick={() => {
-                if (!busy) onStartNext(issue.key);
-              }}
+              {...heldPress(busy, () => onStartNext(issue.key))}
               type="button"
             >
               Start next
