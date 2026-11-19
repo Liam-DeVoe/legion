@@ -2264,10 +2264,9 @@ package api
 // run on this schema until the block docs/kubernetes.md gives under this contract puts it back.
 // `20261118172458_bundle_size_refusals.up.sql` creates `workspace_bundle_refusals`, the last save
 // of an issue's release that found the work over the bound a release carries, so the idle rule
-// marks no release of that issue again until a claim of the pod is written after the refused
-// release was marked or the head of the issue's pull request moves, a pull request opened for an
-// issue that had none included. An older daemon neither reads nor writes the table, and marks
-// such a release again on each idle pass, as before this release.
+// holds that issue's pod, marking no release of it again, until the rule
+// workflow.IdleHoldBundleTooLarge states ends the hold. An older daemon neither reads nor writes
+// the table, and marks such a release again on each idle pass, as before this release.
 //
 // This release's image pins Oh My Pi v18.18.6-sami.20261118-035823 (`.omp-pin`), the first fork
 // release whose `prompt` refusal and `prompt_result` carry `code: "session_busy"` when the agent

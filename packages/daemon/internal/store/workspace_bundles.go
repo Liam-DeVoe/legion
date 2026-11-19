@@ -284,13 +284,13 @@ func workspaceBundleUnrestored(ctx context.Context, tx pgx.Tx, issue string) (bo
 // RecordBundleRefusal records that the save of issue's release found the workspace's unpushed
 // work over the bound a release carries (workflow.IdleHoldBundleTooLarge). It keeps the moment
 // that release was marked and the head of the issue's pull request now, which the idle rule
-// reads to mark no release of the issue again until a claim of the pod is written after that
-// moment or the head moves (workspaceBundleRefusal, workflow.IdleRelease). The moment is the
-// mark's and not the refusal's, so a turn that ran while the bundle was built counts as a turn
-// after it. The caller writes this before it cancels the release, so a cancel that fails and
-// runs again finds the refusal already recorded, and a daemon restart reads it. A save that
-// failed for a reason of its own records nothing here: no push or turn cures it, so its release
-// is marked again on the next tick.
+// reads (workspaceBundleRefusal, workflow.IdleRelease) to hold the pod until the rule
+// workflow.IdleHoldBundleTooLarge states ends the hold. The moment is the mark's and not the
+// refusal's, so a turn that ran while the bundle was built counts as a turn after it. The caller
+// writes this before it cancels the release, so a cancel that fails and runs again finds the
+// refusal already recorded, and a daemon restart reads it. A save that failed for a reason of its
+// own records nothing here: no push or turn cures it, so its release is marked again on the next
+// tick.
 //
 // tell is the rows that tell the issue's worker about the refusal, encoded by the caller, as
 // every row the store queues for the outbox is (IdleReleaseRow). They are queued in the same
@@ -342,7 +342,7 @@ func (s *Store) RecordBundleRefusal(ctx context.Context, project, issue string, 
 // workspaceBundleRefusal is issue's last bundle refusal (RecordBundleRefusal), nil when there is
 // none, and the head of the issue's pull request now, read beside it for the idle rule's view
 // (readIdleView, pods.IdleView.BundleRefusal). The head is "" with no pull request, as the
-// refusal records it, so an issue that has none compares equal until one is opened.
+// refusal records it, so the two compare as workflow.IdleHoldBundleTooLarge states.
 func workspaceBundleRefusal(ctx context.Context, tx pgx.Tx, issue string) (*pods.BundleRefusal, string, error) {
 	var refusal pods.BundleRefusal
 	var head string

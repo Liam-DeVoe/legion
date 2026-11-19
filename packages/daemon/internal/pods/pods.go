@@ -134,12 +134,10 @@ type IdleRoot struct {
 }
 
 // BundleRefusal is the save of an issue's release that found the workspace's unpushed work over
-// the bound a release carries (outbox's bundleIssueWorkspace, workflow.IdleHoldBundleTooLarge):
-// the moment the release was marked, and the head of the issue's pull request when the save was
-// refused, "" with no pull request. The idle rule reads it against the claims and the head now
-// (workflow.IdleRelease): the next save finds the same work until a claim of the pod is written
-// after the moment the release was marked or the head of the issue's pull request moves, which a
-// push does and so does a pull request opened for an issue that had none, its head no longer "".
+// the bound a release carries (outbox's bundleIssueWorkspace): the moment the release was marked,
+// and the head of the issue's pull request when the save was refused, "" with no pull request.
+// The idle rule reads it against the claims and the head now (workflow.IdleRelease), and holds
+// the pod until the rule workflow.IdleHoldBundleTooLarge states ends the hold.
 type BundleRefusal struct {
 	At   time.Time
 	Head string

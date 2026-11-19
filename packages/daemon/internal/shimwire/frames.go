@@ -626,9 +626,8 @@ type BundleWorkspace struct {
 // than sent, with SizeBytes naming what it would have been, and no other refusal sets it: a
 // refusal whose SizeBytes is over the MaxBytes asked is the size refusal, which the daemon reads
 // from this number, never from Error's words (stream.Conn.BundleWorkspace), and holds the pod on
-// until a claim of the pod is written after the refused release was marked, or the head of the
-// issue's pull request moves, a pull request opened included. Every shim that answers this frame
-// has set it so, since the frame's first release. Error is a sentence for a person.
+// until the rule workflow.IdleHoldBundleTooLarge states ends the hold. Every shim that answers
+// this frame has set it so, since the frame's first release. Error is a sentence for a person.
 type BundleWorkspaceResult struct {
 	ID        string            `json:"id"`
 	OK        bool              `json:"ok"`

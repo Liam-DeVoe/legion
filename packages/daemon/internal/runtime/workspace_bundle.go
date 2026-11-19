@@ -67,9 +67,8 @@ func (b WorkspaceBundle) Size() int { return len(b.Bundle) }
 // a byte of it leaves the pod, and the worker stream reads that refusal from the frame's own
 // size field rather than from its words (stream.Conn.BundleWorkspace); the daemon makes the same
 // refusal of a bundle a runtime answered whole. Either way the release reads it with errors.As
-// and holds the pod until a claim of the pod is written after the refused release was marked, or
-// the head of the issue's pull request moves, a pull request opened included, since the next save
-// finds the same work until one of them (internal/daemon's refuseTooLarge).
+// and holds the pod until the rule workflow.IdleHoldBundleTooLarge states ends the hold, since the
+// next save finds the same work until then (internal/daemon's refuseTooLarge).
 type WorkspaceBundleTooLargeError struct{ Size, Max int }
 
 func (e WorkspaceBundleTooLargeError) Error() string {

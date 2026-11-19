@@ -2921,19 +2921,15 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // refuseTooLarge ends a release whose save found the workspace's unpushed work over the bound a
 // release carries, refused names the size and the bound: it records the refusal
 // (store.RecordBundleRefusal) and then cancels the release (cancelRelease). The record is what
-// the idle rule reads to mark no release of the issue again until a claim of the pod is written
-// after the refused release was marked, which a role's turn, any other change of its state and
-// its activity report each do, or the head of the issue's pull request moves, which a push does
-// and so does a pull request opened for an issue that had none, since the refusal records that
-// head as "" (workflow.IdleRelease): until then the next save finds the same work, and each
-// release marked on the clock alone cost a bundle over the worker stream and a hold record, once
-// a minute. It is written before the cancel, so a cancel that fails, which the lane runs again,
-// finds it already there.
+// the idle rule holds the pod on, marking no release of the issue again on the clock, until the
+// rule workflow.IdleHoldBundleTooLarge states ends the hold. It is written before the cancel, so
+// a cancel that fails, which the lane runs again, finds it already there.
 //
 // It also tells the issue's worker, because only a push of that worker's brings the work under
-// the bound: the message names the size and the bound and what ends the hold, and the store
-// queues it only for the first refusal at the head of the issue's pull request
-// (RecordBundleRefusal), so the worker is told once and not on every refused save.
+// the bound: the message names the size and the bound and, in the words a worker reads, what that
+// rule says ends the hold, and the store queues it only for the first refusal at the head of the
+// issue's pull request (RecordBundleRefusal), so the worker is told once and not on every refused
+// save.
 //
 // A save that failed for a reason of its own records nothing here and tells nobody: no push or
 // turn cures a database error or a runtime that answers nothing, and a hold waiting for one would

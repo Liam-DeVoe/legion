@@ -860,12 +860,10 @@ func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
 // later save finds the same work over the same bound: each idle tick that marked the release
 // again asked the pod's shim for a bundle over the worker stream and wrote one more hold, about
 // one a minute (BET-487's pod had 18 such releases between 13:42:50Z and 13:59:49Z on
-// 2026-11-13). So the rule marks it again only after an event that can change the outcome: a
-// write of a claim of the pod after the refused release was marked (a role's turn, any other
-// change of the claim's state, or its activity report), or a move of the head of the issue's pull
-// request (a push, or a pull request opened for an issue that had none). The worker is told once
-// for each head a release was refused at, with the size and the bound, since only a push of its
-// own brings the work under the bound.
+// 2026-11-13). So the rule marks it again only after one of the events that can change the
+// outcome, which workflow.IdleHoldBundleTooLarge states; this test drives a push and then a turn.
+// The worker is told once for each head a release was refused at, with the size and the bound,
+// since only a push of its own brings the work under the bound.
 //
 // The refusal reaches the release two ways, and both are held. The shim refuses the bundle
 // itself and answers its size over the worker stream, which is the path of every refusal

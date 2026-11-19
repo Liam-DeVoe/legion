@@ -119,9 +119,8 @@ type Conn interface {
 	// of issue shares, for a release that is about to take the pod, its disk and that workspace
 	// away. A bundle larger than MaxWorkspaceBundleBytes is refused rather than sent, as a
 	// WorkspaceBundleTooLargeError naming the size it would have been and the bound, so the
-	// release can stop, record why and wait for a write of a claim of the pod after the refused
-	// release was marked, or for the head of the issue's pull request to move, a pull request
-	// opened included (internal/daemon's refuseTooLarge).
+	// release can stop, record why and hold the pod until the rule
+	// workflow.IdleHoldBundleTooLarge states ends the hold (internal/daemon's refuseTooLarge).
 	BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (WorkspaceBundle, error)
 	// AgentSecretsEnrollment hands the agent's shim the secrets broker's enrollment id for its
 	// process, which the shim keeps beside the key it generated.
