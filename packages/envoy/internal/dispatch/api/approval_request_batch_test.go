@@ -176,9 +176,10 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     grammar's re-index queue, deleted with them (refs.Replacement.Queue), the ask.opened event
 //     with its payload and the issue's last_seq, the reference stamps, the ask's authored_by and
 //     the base attributes the node write stated - its visibility, its state and its project -
-//     appended under that event (graphstore.QueueCaused), the author's follow, its followed_by
-//     stated under that ask.opened in one statement (asks.QueueFollowAuthor), and the approval as
-//     the request leaves it;
+//     appended under that event (graphstore.QueueCaused), the author's follow, its follower row
+//     marked for the ask's node in one statement, and its followed_by stated under that
+//     ask.opened in the statement after it (asks.PlanFollowNewAsk, which reads nothing for an ask
+//     this request creates), and the approval as the request leaves it;
 //  21. commit;
 //  22. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);

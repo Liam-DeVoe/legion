@@ -252,10 +252,14 @@ func ownerDocuments(owner artifactOwner) (string, string) {
 // block_id_key(block_id) (migration 0127), so the ids' keys are matched beside the ids.
 // Each ask is followed by the issue key, project, slug and kind of the document it is part of, and
 // whether that is the issue's spec: the far end of the current part_of of the ask's node
-// (graphstore.TuplePartOf, the record of where the ask is), read through graph_tuples_current and
-// the document's ref_key, or, for a row that names no node yet, which the boot step's backfill
-// marks, the document its block_artifact_id names. A node holding no part_of names no document,
-// and its columns are empty.
+// (graphstore.TuplePartOf, the record of where the ask is), read through graph_tuples_as_of_out,
+// which keys every tuple out of a node by kind, and the document's ref_key, or, for a row that
+// names no node yet, which the boot step's backfill marks, the document its block_artifact_id
+// names. A node holding no part_of names no document, and its columns are empty. The far end's
+// kind is held to a document outside the tuples' read, behind an offset 0 that keeps the planner
+// from pushing it in: bound inside it, it fits graph_tuples_as_of_in too, keyed on the far end's
+// kind and the tuple's kind alone, which reads every part_of into every document, and over an
+// analyzed fixture's few tuples the planner takes it.
 func copiedAskSourcesQuery(owner artifactOwner) (string, string) {
 	documents, ownerKey := ownerDocuments(owner)
 	return `
@@ -268,10 +272,9 @@ func copiedAskSourcesQuery(owner artifactOwner) (string, string) {
 		left join artifacts place on place.id = case when a.node_kind is null then d.id else (
 			select part_of.id from artifacts part_of
 			where part_of.ref_key = (
-				select part.to_id from (` + graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted, t.seq`,
-		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = a.id::text and t.kind = '`+graphstore.TuplePartOf+`'
-				 and t.to_kind = '`+graphstore.KindArtifact+`'`) + `) part
-				where part.asserted order by part.seq desc limit 1)) end
+				select part.to_id from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted, t.seq`,
+		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = a.id::text and t.kind = '`+graphstore.TuplePartOf+`'`) + ` offset 0) part
+				where part.asserted and part.to_kind = '` + graphstore.KindArtifact + `' order by part.seq desc limit 1)) end
 		where ` + documents + ` and d.id <> ` + refs.DocumentRoomSQL("$2") + `
 		order by a.created_at, a.id
 	`, ownerKey
@@ -427,8 +430,20 @@ func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, 
 	return copies, nil
 }
 
-// documentOwner reads the owner of the document artifactID without locking it.
+// documentOwner reads the owner of the document artifactID without locking it: the owner this
+// transaction recorded for an artifacts row it is creating (Ledger.RegisterPendingArtifact), whose
+// insert is queued and which no read of the transaction finds before its write phase, else the
+// stored row's. A new document's own checks run before that insert - an upload's refusal of a
+// reading in a copy of an answered ask reads the owner whose documents the copy's source is
+// looked for among (shownAskAnswers) - as addressOfDocument answers for its address.
 func documentOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactOwner, error) {
+	if address, pending := pendingArtifact(ctx, artifactID); pending {
+		owner := artifactOwner{Project: address.Project}
+		if address.IssueKey != "" {
+			owner.IssueKey = &address.IssueKey
+		}
+		return owner, nil
+	}
 	var owner artifactOwner
 	if err := tx.QueryRow(ctx, `
 		select issue_key, coalesce(project_key, '') from artifacts where id = $1

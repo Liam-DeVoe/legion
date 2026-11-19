@@ -146,11 +146,12 @@ func patchIssueSteps(issue *string) []storeStep {
 
 // issueCloseWithdrawing is the close of an issue that holds an open ask (recordWithdrawnAsksTx),
 // through the issue's PATCH. It takes the issue's owner lock (lockPatchOwnersAndParent), reads
-// the issue's open asks under it (readOpenIssueAsks), writes the issue's row, and queues each
-// ask's withdrawal (docs.WriteAskResolution, through asks.PlanSettle), which states no node for a
-// resolution and writes the ask's row, then ask.resolved and the withdrawal's facts under it,
-// before the issue.closed. The ask.resolved's append writes the issue's row a second time
-// (projectKeyShare). Each run closes an issue of its own.
+// the issue's open asks under it (readOpenIssueAsks) and plans each one's withdrawal
+// (planWithdrawal, docs.PlanAskResolution, through asks.PlanSettle), writes the issue's row, and
+// queues each withdrawal, which states no node for a resolution and writes the ask's row, then
+// ask.resolved and the withdrawal's facts under it, before the issue.closed. The ask.resolved's
+// append writes the issue's row a second time (projectKeyShare). Each run closes an issue of its
+// own.
 func (r *storeWriterRig) issueCloseWithdrawing() storeWriter {
 	var issue string
 	return storeWriter{

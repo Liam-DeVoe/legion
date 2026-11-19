@@ -89,16 +89,18 @@ func seedCatchUpAsk(t *testing.T, database *store.Store, project string) (string
 }
 
 // asThePreviousBuild runs write as a write of the release before on issue's ask: under the
-// issue's row, with the event write answers appended through the broker, and nothing stated on
-// the store, which that release's writers do not know. It answers the event's id.
+// issue's owner lock, with the event write answers appended through the broker, which takes the
+// issue's row in that append, and nothing stated on the store, which that release's writers do not
+// know. It answers the event's id.
 func asThePreviousBuild(t *testing.T, database *store.Store, issue string, write func(ctx context.Context, tx pgx.Tx) (model.Event, error)) int64 {
 	t.Helper()
 	return commitAsThePreviousBuild(t, beginAsThePreviousBuild(t, database, issue), issue, write)
 }
 
-// beginAsThePreviousBuild opens a write of the release before on issue and takes the issue's row,
-// as that release's writers of an ask take it first; commitAsThePreviousBuild writes in it and
-// commits.
+// beginAsThePreviousBuild opens a write of the release before on issue and takes the issue's
+// owner lock, as that release's writers of an ask take it first (store.LockOwner: the release
+// before serialises an owner's writers on that lock and takes the issue's row only in its event's
+// append); commitAsThePreviousBuild writes in it and commits.
 func beginAsThePreviousBuild(t *testing.T, database *store.Store, issue string) pgx.Tx {
 	t.Helper()
 	ctx := context.Background()
@@ -107,8 +109,8 @@ func beginAsThePreviousBuild(t *testing.T, database *store.Store, issue string) 
 		t.Fatalf("begin the previous build's write: %v", err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-	if _, err := tx.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue); err != nil {
-		t.Fatalf("take issue %s's row: %v", issue, err)
+	if err := store.LockOwner(ctx, tx, store.IssueOwner(issue)); err != nil {
+		t.Fatalf("take issue %s's owner lock: %v", issue, err)
 	}
 	return tx
 }
@@ -262,16 +264,16 @@ func startCatchUp(step *DecisionStep) <-chan error {
 }
 
 // The catch-up takes the store's lock order (api/inbox_read.go's markInboxReadThreads) over the ask
-// it states an event on: the ask's owner row, its issue, before the ask's row, as every writer of
-// an answer takes them, and then the nodes and tuples asks.Settle writes. A catch-up that locked the
-// ask's row first could hold it while it waited for a node a settlement of the issue held, and that
-// settlement, holding the issue, waits for the ask's row.
+// it states an event on: the ask's owner lock, its issue's, before the ask's row, as every writer
+// of an answer takes them, and then the nodes and tuples asks.Settle writes. A catch-up that locked
+// the ask's row first could hold it while it waited for a node a settlement of the issue held, and
+// that settlement, holding the issue, waits for the ask's row.
 //
-// The previous build answers an ask this build marked, and the issue's row and the ask's row are
-// each held in a transaction of its own while one pass of the real catch-up runs on a connection of
-// its own (lockstep.Follow): the pass must queue behind the issue before the ask, and never behind
-// the project's row, since it appends no event. The ask's node then holds the answer under that
-// build's ask.answered, so the run followed is the one that committed.
+// The previous build answers an ask this build marked, and the issue's owner lock and the ask's row
+// are each held in a transaction of its own while one pass of the real catch-up runs on a
+// connection of its own (lockstep.Follow): the pass must queue behind the issue before the ask, and
+// never behind the project's row, since it appends no event. The ask's node then holds the answer
+// under that build's ask.answered, so the run followed is the one that committed.
 func TestTheCatchUpTakesTheAsksOwnerRowBeforeItsRow(t *testing.T) {
 	database := storetest.Open(t)
 	ask, issue := seedCatchUpAsk(t, database, "CATCH")
@@ -280,11 +282,11 @@ func TestTheCatchUpTakesTheAsksOwnerRowBeforeItsRow(t *testing.T) {
 	step := NewDecisionStep(runner, catchUpCommit, nil)
 	pid := backendOf(t, runner)
 
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue " + issue + "'s row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
-		Statement: "select closed_at is null from issues where key = $1 for no key update",
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue " + issue + "'s owner lock", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
+		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"asks", "graph_nodes", "graph_tuples"},
-	}, `select 1 from issues where key = $1 for update`, issue)
+	}, store.IssueOwner(issue))
 	row := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "the ask's row", Step: lockstep.StepHeld, Taken: true,
 		Statement: "select node_kind is not null, coalesce(issue_key, ''), coalesce(artifact_id::text, '') from asks",

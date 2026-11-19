@@ -1430,7 +1430,10 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		}); err != nil {
 			return err
 		}
-		if err := stampVersionEvent(ctx, tx, room, document, versions[document].Number, versions[document].At, graphstore.LatestEvent); err != nil {
+		if err := write(ctx, tx, func(b *store.WriteBatch) error {
+			stampVersionEvent(b, room, document, versions[document].Number, versions[document].At, graphstore.LatestEvent)
+			return nil
+		}); err != nil {
 			return err
 		}
 		if err := causeRoomFacts(ctx, tx, room, facts, events, []string{document}); err != nil {
@@ -1438,7 +1441,10 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		}
 	}
 	for _, document := range order[len(writes):] {
-		if err := stampVersionEvent(ctx, tx, room, document, versions[document].Number, versions[document].At, events[document]); err != nil {
+		if err := write(ctx, tx, func(b *store.WriteBatch) error {
+			stampVersionEvent(b, room, document, versions[document].Number, versions[document].At, events[document])
+			return nil
+		}); err != nil {
 			return err
 		}
 	}

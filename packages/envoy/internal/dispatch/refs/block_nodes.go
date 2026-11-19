@@ -2396,8 +2396,9 @@ type blockParentDifference struct {
 // one the render gives, read the way the store reads a current relation - the newest tuple per
 // far end, kept while it asserts (graphstore.CurrentTupleRead) - but in one statement for every
 // block of the document rather than one per block, which on a document of thousands of blocks
-// would be thousands of round trips. The lateral reads through graph_tuples_current, whose column
-// order is the one the distinct on walks.
+// would be thousands of round trips. The lateral is keyed on the block's address and part_of: it
+// reads through graph_tuples_current under a custom plan, where the bound kind proves that
+// index's predicate, and through graph_tuples_as_of_out under a generic plan, which sees no kind.
 //
 // The probe names the blocks that are nodes of the store, in document order (ids), and beside
 // each the block it sits in (parents), nil for a block at the document's top level, whose parent
@@ -2501,9 +2502,11 @@ var heldLinkKinds = `(t.kind in (` + BlockRefKindsSQL + `) or t.kind in (` + quo
 // retracted nothing, so no row is left to say what the store still holds. The pass's input stays
 // the version's render: this read is what the store would otherwise go on asserting against it,
 // as heldBlockParentDifferences is for the parents. The members come through
-// graph_tuples_inbound in one probe and each member's links through graph_tuples_current in one
-// probe a block, in one statement. The kinds and the value kind are written into the text so the
-// planner can prove each index's partial predicate whatever plan it caches.
+// graph_tuples_as_of_in in one probe and each member's links through graph_tuples_as_of_out in
+// one probe a block, in one statement: the links are every kind but two, which proves nothing of
+// graph_tuples_current's predicate, and that index leaves delivered_to out. The kinds and the
+// value kind are written into the text so the planner can prove each index's partial predicate
+// whatever plan it caches.
 func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
 	rows, err := q.Query(ctx, `
 		select member.id, held.kind, held.to_kind, held.to_id

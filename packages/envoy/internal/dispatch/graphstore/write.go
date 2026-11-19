@@ -30,6 +30,30 @@ import (
 // callback refuses the write as Send reads its result: the statements after it have run by then,
 // and roll back with the transaction the refusal ends.
 
+// writeFunctions are the functions a write of graph_nodes and graph_tuples from outside this
+// package goes through: Write, WriteUncaused and Caused in a caller's transaction, and QueueWrite,
+// QueueNodes and QueueCaused, the same writes queued on a write phase's batch; WriteArms and
+// WriteArmsUncaused spliced into a caller's statement; Authored, Reached and SessionRecorded,
+// which run those arms for the writers that record an author, a reached session and a session an
+// ask names, and QueueAuthored, QueueReached and QueueSessionRecorded, which queue them;
+// EraseNode, the erase's delete of a node and its tuples; RedactValues, the erase's rewrite of
+// the quote of an erased block in the text values of the blocks holding it; FillScopes, the
+// backfill's fill of the project of a node stored with none; Retarget, the move of one pointer
+// tuple of a node from one far end to another; and QueueFrameTuple, Write's append of one frame
+// value of a run queued on a caller's batch. Each is a function of the package, never a method,
+// so a call of one is named by the package wherever it is made.
+var writeFunctions = [...]string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
+	"QueueWrite", "QueueNodes", "QueueCaused",
+	"Authored", "Reached", "SessionRecorded", "QueueAuthored", "QueueReached", "QueueSessionRecorded",
+	"EraseNode", "RedactValues", "FillScopes", "Retarget", "QueueFrameTuple"}
+
+// WriteFunctions is the name of every function of this package a write of the store from outside
+// it goes through (writeFunctions), a fresh slice for each caller. It is the one list the source
+// scans that hold the store's writers read: this package's register of their call sites
+// (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
+// (TestNoProjectionRowIsWrittenWithoutTheStore).
+func WriteFunctions() []string { return slices.Clone(writeFunctions[:]) }
+
 // LatestEvent is the cause of a write whose event its write phase appends right before the
 // write's own statements: no Go code reads that event's id before the batch is sent, so the
 // statements name it as the events id sequence left it (store.LatestEventID), and nothing between
@@ -717,12 +741,24 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 	`, append(args, mark)...)
 	projects, parties := args[9], args[10]
 	if slices.ContainsFunc(nodes, func(node Node) bool { return node.Project != "" }) {
+		// Each incoming node probes its own row through graph_nodes' primary key, behind an offset
+		// 0 the planner cannot flatten, and binds nothing of graph_nodes_project's predicate
+		// (project_key is not null), so that partial index, keyed on the project and the kind, is
+		// no probe of one node; a node holding no project fails the comparison all the same.
+		// Joined plainly, the nodes this batch's insert has just written are rows the table's
+		// statistics do not count yet, and over a table analyzed near empty the planner walks
+		// graph_nodes and rescans the whole array for each row it holds: a 150,000-block version's
+		// settlement waited 56 minutes on it under the race detector, and over ten minutes without
+		// it. Probed through graph_nodes_project instead, each node reads every node of its kind.
 		b.Queue("write graph nodes", `
 			select incoming.kind, incoming.id, incoming.project_key, held.project_key
 			from unnest($1::text[], $2::text[], $3::text[]) as incoming(kind, id, project_key)
-			join graph_nodes held on held.kind = incoming.kind and held.id = incoming.id
-			where incoming.project_key is not null and held.project_key is not null
-			  and held.project_key <> incoming.project_key
+			cross join lateral (
+				select g.project_key from graph_nodes g
+				where g.kind = incoming.kind and g.id = incoming.id
+				offset 0
+			) held
+			where incoming.project_key is not null and held.project_key <> incoming.project_key
 			order by incoming.kind, incoming.id
 			limit 1
 		`, args[0], args[1], projects).QueryRow(func(row pgx.Row) error {
@@ -749,7 +785,10 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 	// A node already there whose base attribute the caller states itself - a document made where
 	// an orphaned node stands states that node gone and then live in tuples of its own - moves
 	// nothing of its own row's base attributes, but is marked all the same (with no attribute), so
-	// the append moves it onto the cause the caller's statements carry.
+	// the append moves it onto the cause the caller's statements carry. A node the insert above
+	// just made carries the insert's mark (markMade) already, which names every base attribute it
+	// carries, so it takes no second mark: an empty one over it would leave its visibility, its
+	// project and its parties stated by nothing.
 	own := statedAttributes(stated)
 	states := make([]bool, len(nodes))
 	for index, node := range nodes {
@@ -792,7 +831,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated []Tuple) e
 			       or graph_nodes.attributes is distinct from incoming.attributes
 			       or `+fillsProject+`
 			       or `+movesParties+`
-			       or incoming.states)
+			       or (incoming.states and not `+markedBy("graph_nodes", "$8")+`))
 		)
 		`+missingSupertagsSQL("$13")+`
 	`, args[0], args[1], args[2], args[3], args[4], args[5], restates, mark, projects, parties, states, keeps, supertagsOf(nodes)).Query(refuseMissingSupertags)

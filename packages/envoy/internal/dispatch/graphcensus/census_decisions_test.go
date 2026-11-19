@@ -266,13 +266,15 @@ func requireKeyedTupleReads(t *testing.T, keys *explaintest.IndexKeys, what stri
 
 // The census reads the store's log, its largest table, once per run for who wrote or answered a
 // decision, a reading or an ask (readStoredAuthors), and never whole. That one read's plan reads
-// graph_tuples through keyed index scans alone, its history probes stating graph_tuples_inbound's
+// graph_tuples through keyed index scans alone, its history probes stating graph_tuples_as_of_in's
 // predicate (to_kind <> 'value') beside their joins so that index is one they can take. The person
 // and the session row sides read what it read bound as arrays (censusAuthors), so neither reads
 // the history again: the person side's one read of graph_tuples is the proved owners' alias_of,
 // through graph_tuples_current, and the session side reads it not at all. The store-only kinds
-// read their tuples through graph_tuples_store_only, the partial index of those two kinds
-// (migration 20261116220307), and through no other.
+// and the dangling-citation counter's moved_to sources read their tuples out of the nodes the log
+// holds (currentOutOfNodes) through graph_tuples_current alone, an index of the store's set, in
+// three keyed scans: the walk's first node of each kind, the walk's next node past each one, and
+// the probe of each node's tuples of those kinds.
 func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	keys := explaintest.NewIndexKeys(database.Pool)
@@ -292,22 +294,18 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 		t.Errorf("the session row side reads graph_tuples through %d scan(s), want none: the stored authors are bound", keyed)
 	}
 
-	plan := planWithoutSeqScans(t, database, storeOnlyRead)
-	if explaintest.SeqScansRelation(t, plan, "graph_tuples") {
-		t.Errorf("the store-only read reads graph_tuples whole: %s", plan)
-	}
-	read := 0
-	for _, scan := range explaintest.IndexScans(t, plan) {
-		if !strings.HasPrefix(scan.Index, "graph_tuples") {
-			continue
+	for _, read := range []struct {
+		name      string
+		statement string
+		arguments []any
+	}{
+		{"the store-only read", storeOnlyRead, nil},
+		{"the dangling-citation counter", danglingRead, []any{[]string{}}},
+	} {
+		if keyed := requireKeyedTupleReads(t, keys, read.name,
+			planWithoutSeqScans(t, database, read.statement, read.arguments...), "graph_tuples_current"); keyed != 3 {
+			t.Errorf("%s reads graph_tuples through %d keyed scan(s), want 3: the walk's first node of each kind, its next node and the probe of each node's tuples",
+				read.name, keyed)
 		}
-		if scan.Index != "graph_tuples_store_only" {
-			t.Errorf("the store-only read reads graph_tuples through %s, want graph_tuples_store_only alone: %s", scan, plan)
-			continue
-		}
-		read++
-	}
-	if read == 0 {
-		t.Fatalf("the store-only read never reads graph_tuples_store_only: %s", plan)
 	}
 }

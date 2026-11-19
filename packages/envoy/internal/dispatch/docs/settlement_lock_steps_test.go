@@ -94,7 +94,7 @@ func (r *docsWriterRig) settledAskTies() docsWriter {
 			},
 			docsEventAppendStep(),
 			docsCausedTuplesStep("the follows' tuple append", "", holdDocsTableWrites("graph_tuples")),
-			docsCausedTuplesStep("the ties' tuples", "", gatedDocsWrites(r, "insert", "graph_tuples", func() string {
+			docsCausedPlainTuplesStep("the ties' tuples", "", gatedDocsWrites(r, "insert", "graph_tuples", func() string {
 				return "new.from_kind = 'ask' and new.kind = " + docsLiteral(refs.TupleShaped)
 			})),
 		},
@@ -147,13 +147,12 @@ func (r *docsWriterRig) tiesCaused(ctx context.Context, document, block string) 
 // ask.resolved and the retraction's facts under it (causeSettledAnswers). The ask's row, the
 // block's node and row, the version's event and its tuples are the first writes of their tables,
 // so each is held as its table; the ask.resolved and the retraction's facts come after a write of
-// theirs and are held by their gates. Its two events each write the issue's row
-// (docsWriter.projectKeyShare).
+// theirs and are held by their gates.
 func (r *docsWriterRig) settledRetraction() docsWriter {
 	// ask is the ask the run under way retracts, which its ready opens and its gate names.
 	var ask string
 	return docsWriter{
-		name: "causeSettledAnswers", projectKeyShare: true,
+		name: "causeSettledAnswers",
 		steps: []docsStep{
 			r.ownerStep(), settlementFenceStep(),
 			docsAskRowWriteStep("the retracted ask's row", holdDocsTableWrites("asks")),
@@ -240,20 +239,19 @@ func (r *docsWriterRig) settledCopy(t *testing.T, ctx context.Context) docsWrite
 // document, and states the reason on the ask's node under the version's event
 // (stateInvalidReasons). The block index's node and row, the version's event and its tuples are
 // the first writes of their tables, so each is held as its table; the block.invalid and the
-// reason come after a write of theirs and are held by their gates. Its two events each write the
-// issue's row (docsWriter.projectKeyShare).
+// reason come after a write of theirs and are held by their gates.
 func (r *docsWriterRig) settledInvalidAsk() docsWriter {
 	// ask is the ask whose block the run under way empties, which its gate names.
 	var ask string
 	return docsWriter{
-		name: "stateInvalidReasons", projectKeyShare: true,
+		name: "stateInvalidReasons",
 		steps: []docsStep{
 			r.ownerStep(), settlementFenceStep(), docsBlockNodesStep(),
 			docsBlockRowsAt("delete from document_blocks"),
 			docsVersionEventStep(holdDocsTableWrites("events")),
 			docsCausedTuplesStep("the block index's tuple append", docsVersionEvent, holdDocsTableWrites("graph_tuples")),
 			docsGatedEventStep(r, "the invalid block's event", "block.invalid"),
-			docsCausedTuplesStep("the ask's invalid value", docsVersionEvent, gatedDocsWrites(r, "insert", "graph_tuples", func() string {
+			docsCausedPlainTuplesStep("the ask's invalid value", docsVersionEvent, gatedDocsWrites(r, "insert", "graph_tuples", func() string {
 				return "new.from_kind = 'ask' and new.from_id = " + docsLiteral(ask) + " and new.kind = 'invalid'"
 			})),
 		},
@@ -343,13 +341,12 @@ func (r *docsWriterRig) settledDecision() docsWriter {
 // artifact.approved and the version's artifact.version follow. The approver is new to each run, so
 // the approver's node is held as a row another transaction inserted and has not committed; the
 // request's answered row, the ask.answered, the answer's facts and the two events after them come
-// after a write of their tables and are held by their gates. Each of its events writes the issue's
-// row (docsWriter.projectKeyShare).
+// after a write of their tables and are held by their gates.
 func (r *docsWriterRig) settledCarry() docsWriter {
 	// request is the approval request the run under way answers, which its gates name.
 	var request string
 	return docsWriter{
-		name: "answerApprovalAsk", projectKeyShare: true,
+		name: "answerApprovalAsk",
 		steps: []docsStep{
 			r.ownerStep(), settlementFenceStep(), docsBlockNodesStep(),
 			docsBlockRowsAt("insert into document_blocks ("),
@@ -504,6 +501,14 @@ func docsCausedTuplesStep(name, cause string, hold func(t *testing.T, ctx contex
 		hold: hold, at: docsTupleStatement,
 		takes: []docsTableLock{{"graph_tuples", docsRowExclusiveMode}},
 	}
+}
+
+// docsCausedPlainTuplesStep is docsCausedTuplesStep for an append that carries no node of its
+// write, which graphstore queues as a plain insert (docsPlainTupleStatement).
+func docsCausedPlainTuplesStep(name, cause string, hold func(t *testing.T, ctx context.Context, holder pgx.Tx, run docsRun)) docsStep {
+	step := docsCausedTuplesStep(name, cause, hold)
+	step.at = docsPlainTupleStatement
+	return step
 }
 
 // docsBlockRowsAt is the block index's document_blocks rows, written first by the statement at:

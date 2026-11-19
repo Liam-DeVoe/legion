@@ -303,7 +303,7 @@ var entryFactKinds = []string{
 // `decision`); one that owes that index (document_block_versions.version null) lists them as
 // well in the nodes the typed-node pass placed in it in the write's own transaction
 // (refs.IndexDecisionNodes): the current part_of tuples into the document's own node, through
-// graph_tuples_inbound, and the nodes its block_refs rows name (a decision's decided_by, shaped
+// graph_tuples_as_of_in, and the nodes its block_refs rows name (a decision's decided_by, shaped
 // and from_ask), keyed by its room. Each candidate is then read by its own key, the present nodes
 // of the `decision` supertag kept: a node at any state but gone, so a proposed, settled or
 // overtaken decision, ask or reading is drawn wherever its node is (R5 and R12 of the node-states
