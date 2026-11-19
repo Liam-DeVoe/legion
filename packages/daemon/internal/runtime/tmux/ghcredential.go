@@ -144,7 +144,7 @@ func (r *Runtime) writeWatchedBundle(entry trackedProcess, root string, bundle g
 	if !ok || watched.locator.Claim != entry.locator.Claim {
 		return nil, false, nil
 	}
-	changed, err := ghconfig.WriteBundle(root, bundle)
+	changed, err := r.writeBundle(root, bundle)
 	return changed, true, err
 }
 

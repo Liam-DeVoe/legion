@@ -67,6 +67,7 @@ func TestARefreshOfALetGoPaneLeavesTheRelaunchsBundle(t *testing.T) {
 				claimRepository:      acmeWidgets,
 				log:                  slog.New(slog.NewTextHandler(io.Discard, nil)),
 				tracked:              map[string]*trackedProcess{},
+				writeBundle:          ghconfig.WriteBundle,
 			}
 			// The claim's first pane, launched as the implementer, with the implementer's bundle.
 			first, err := staticCredential(ctx, claim.RoleImplementer, repo)

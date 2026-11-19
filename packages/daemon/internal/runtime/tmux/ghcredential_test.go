@@ -383,6 +383,7 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 		controllerCredential: staticControllerCredential,
 		log:                  slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		tracked:              map[string]*trackedProcess{},
+		writeBundle:          ghconfig.WriteBundle,
 	}
 	token := func(issue string, role claim.Role) claim.Token {
 		t.Helper()
@@ -562,8 +563,9 @@ func TestAnAdoptedPanesRepositoryIsTheDaemonsRecordNotItsGhDirectory(t *testing.
 			_, agent, _ := token.Cut()
 			return claim.Role(agent), nil
 		},
-		log:     slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		tracked: map[string]*trackedProcess{},
+		log:         slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		tracked:     map[string]*trackedProcess{},
+		writeBundle: ghconfig.WriteBundle,
 	}
 	for i, token := range []claim.Token{tester, planner, controller} {
 		r.track(runtime.Locator{
@@ -636,8 +638,9 @@ func TestAControllerPaneIsRefreshedForTheOwnerItsLaunchRecorded(t *testing.T) {
 				"sjawhar": ghconfig.Render("read-sjawhar", app, staticCredentialExpiry),
 			}}, nil
 		},
-		log:     slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		tracked: map[string]*trackedProcess{},
+		log:         slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		tracked:     map[string]*trackedProcess{},
+		writeBundle: ghconfig.WriteBundle,
 	}
 	controller := claim.ControllerToken("omp")
 	r.track(runtime.Locator{
@@ -755,6 +758,7 @@ func TestATmuxPaneOfAReroledClaimFollowsItsRole(t *testing.T) {
 		claimRole:            func(context.Context, claim.Token) (claim.Role, error) { return claim.RoleTester, nil },
 		log:                  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		tracked:              map[string]*trackedProcess{},
+		writeBundle:          ghconfig.WriteBundle,
 	}
 	r.track(runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: keyed, Incarnation: "4242:1",
 		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}, "LEGION-48", ghrepo.MustParse("acme/widgets"), "acme", claim.RoleTester)

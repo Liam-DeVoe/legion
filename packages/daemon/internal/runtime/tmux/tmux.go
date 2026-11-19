@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -230,6 +231,10 @@ type Runtime struct {
 	run func(ctx context.Context, argv []string) (result, error)
 	// readProc reads a /proc file; a field for the same reason.
 	readProc func(path string) ([]byte, error)
+	// writeBundle writes a claim's gh bundle for the credential refresh (writeWatchedBundle); New
+	// sets it to ghconfig.WriteBundle. A field so an in-package test can hold the refresh inside its
+	// write, under the launch lock, while a relaunch of the same claim runs.
+	writeBundle func(root string, bundle ghconfig.Bundle) ([]string, error)
 
 	// launchMu serializes everything that decides which window a pane lands in and every change
 	// to the private server's set of panes the runtime must not race: session creation, a launch's
@@ -385,6 +390,7 @@ func New(opts Options) (*Runtime, error) {
 		roleConfigFiles:      opts.RoleConfigFiles,
 		takeOver:             takeOver,
 		readProc:             os.ReadFile,
+		writeBundle:          ghconfig.WriteBundle,
 		tracked:              map[string]*trackedProcess{},
 		displaced:            map[claim.Token]runtime.Locator{},
 	}
