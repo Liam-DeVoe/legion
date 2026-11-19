@@ -147,6 +147,12 @@ function controlledBy(control: HTMLElement): HTMLElement | null {
   return id === null ? null : document.getElementById(id);
 }
 
+/** The compact card's note disclosures inside `card`, by the handle the Inbox's Enter finds the
+ *  control by (`data-ask-note-disclosure`). */
+function noteDisclosures(card: HTMLElement): Element[] {
+  return Array.from(card.querySelectorAll("[data-ask-note-disclosure]"));
+}
+
 /** The reply bodies a thread shows, in the order it shows them. */
 function shownReplyBodies(container: HTMLElement): (string | null | undefined)[] {
   return Array.from(
@@ -1310,7 +1316,10 @@ test("a Done / Can't question is an ordinary question: Other stays, Can't needs 
   }
 });
 
-test("the compact card opens and focuses the reason field when Request changes is picked, again when the disclosure reopens", async () => {
+// The row this replaced closed the disclosure over a typed Request changes reason and expected the
+// field to go: that was the dead end of dispatch://INFRA-969 on an approval, where the reason is
+// what Request changes cannot be sent without.
+test("the compact approval card shows the reason box while Request changes is chosen, focuses it, and offers nothing that hides it", async () => {
   const user = userEvent.setup();
   const input = ask({
     kind: "approval",
@@ -1327,28 +1336,32 @@ test("the compact card opens and focuses the reason field when Request changes i
     expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute(
       "aria-disabled"
     );
+    // Nothing asks for the box yet, so the card still offers to open it.
+    expect(noteDisclosures(card)).toHaveLength(1);
 
-    await user.click(within(card).getByRole("radio", { name: "Request changes" }));
+    const requestChanges = within(card).getByRole("radio", { name: "Request changes" });
+    await user.click(requestChanges);
+    expect((requestChanges as HTMLInputElement).checked).toBe(true);
     const reason = within(card).getByLabelText("Reason (required)");
     expect(reason).toHaveFocus();
+    // The reason is what Request changes is sent with, so no control on the card can fold it.
+    expect(noteDisclosures(card)).toHaveLength(0);
     const answer = within(card).getByRole("button", { name: "Answer" });
     expect(answer.getAttribute("aria-disabled")).toBe("true");
     expect(within(card).getByText("Add a reason to send Request changes")).toBeTruthy();
     await user.click(reason);
     await user.paste("Needs another pass.");
     expect(answer).not.toHaveAttribute("aria-disabled");
+    expect(noteDisclosures(card)).toHaveLength(0);
 
-    // Closing the disclosure unmounts the field; Request changes is still the picked radio, so
-    // reopening the disclosure is what brings the field back, and it must take focus again.
-    await user.click(
-      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
+    // Approve needs no reason, but the words are what Answer would send beside it, so the box
+    // stays over them, with one Answer under it.
+    await user.click(within(card).getByRole("radio", { name: "Approve" }));
+    expect((within(card).getByLabelText("Reason") as HTMLTextAreaElement).value).toBe(
+      "Needs another pass."
     );
-    expect(within(card).queryByLabelText("Reason (required)")).not.toBeInTheDocument();
-    await user.click(
-      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
-    );
-    const reopened = within(card).getByLabelText("Reason (required)");
-    expect(reopened).toHaveFocus();
+    expect(noteDisclosures(card)).toHaveLength(0);
+    expect(within(card).getAllByRole("button", { name: "Answer" })).toHaveLength(1);
   } finally {
     view.unmount();
   }
@@ -2712,6 +2725,289 @@ test("AskCard compact variant keeps an open note visible when a real option is p
   }
 });
 
+// dispatch://INFRA-969. On a compact card the box for a person's own words is a value of the
+// answer's state: it is shown while Other is ticked, while the chosen option needs a reason, while
+// the answer text holds words, and while the person opened it, and in the first three states the
+// card draws no control that hides it. Each row finds the card, the option it ticked and the box
+// before it reads that no disclosure is drawn, so no absence is read off a card that never drew.
+
+// The spec's own measure, on an ask that takes several answers: ticking a real option once Other
+// is ticked hid the box with Other still ticked, and Answer then refused the ask for want of the
+// words that box was for.
+test("a compact card on an ask that takes several answers keeps the box while Other is ticked, whatever else is ticked or unticked", async () => {
+  const user = userEvent.setup();
+  const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    const other = (await within(card).findByRole("checkbox", {
+      name: "Other",
+    })) as HTMLInputElement;
+    await user.click(other);
+    expect(other.checked).toBe(true);
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+
+    const docs = within(card).getByRole("checkbox", { name: "Docs" }) as HTMLInputElement;
+    await user.click(docs);
+    expect(docs.checked).toBe(true);
+    expect(other.checked).toBe(true);
+    const box = within(card).getByLabelText("Your answer") as HTMLTextAreaElement;
+    expect(noteDisclosures(card)).toHaveLength(0);
+    // The card draws one Answer, the box's own: the lone one is for a box that is folded.
+    expect(within(card).getAllByRole("button", { name: "Answer" })).toHaveLength(1);
+
+    await user.click(box);
+    await user.paste("And the release notes.");
+    await user.click(docs);
+    expect(docs.checked).toBe(false);
+    expect(box.value).toBe("And the release notes.");
+    await user.click(docs);
+    expect(docs.checked).toBe(true);
+    expect(other.checked).toBe(true);
+    expect((within(card).getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe(
+      "And the release notes."
+    );
+    expect(noteDisclosures(card)).toHaveLength(0);
+
+    // Unticking Other drops its words on an ask that takes several answers (`toggleOther`), and
+    // with nothing left asking for the box it folds behind its disclosure again.
+    await user.click(other);
+    expect(other.checked).toBe(false);
+    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    const disclosure = within(card).getByRole("button", {
+      name: "Add a note or answer in your own words",
+    });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The same measure on an ask that takes one answer: a real option unticks Other there, and the
+// box Other held open goes with it, as it always did.
+test("on a compact card for an ask that takes one answer, a real option unticks Other and folds the empty box", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    const other = (await within(card).findByRole("radio", { name: "Other" })) as HTMLInputElement;
+    await user.click(other);
+    expect(other.checked).toBe(true);
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+    expect(noteDisclosures(card)).toHaveLength(0);
+
+    const ship = within(card).getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    await user.click(ship);
+    expect(ship.checked).toBe(true);
+    expect(other.checked).toBe(false);
+    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    expect(
+      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(within(card).getAllByRole("button", { name: "Answer" })).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A box the person opened is theirs: no option they choose folds it, on either kind of ask.
+test("a compact box the person opened stays open through their choice of an option", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    const disclosure = await within(card).findByRole("button", {
+      name: "Add a note or answer in your own words",
+    });
+    await user.click(disclosure);
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+
+    const ship = within(card).getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    await user.click(ship);
+    expect(ship.checked).toBe(true);
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expect(within(card).getAllByRole("button", { name: "Answer" })).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Words in the box are words Answer would send, so while it holds any the card offers no control
+// that would fold them away; the box keeps the focus as the control above it goes.
+test("while a compact card's answer text holds words, it draws no control that hides the box", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(
+      await within(card).findByRole("button", { name: "Add a note or answer in your own words" })
+    );
+    const box = within(card).getByLabelText("Your answer") as HTMLTextAreaElement;
+    expect(box).toHaveFocus();
+    await user.paste("Ship it after the freeze.");
+    expect(box.value).toBe("Ship it after the freeze.");
+    expect(box).toHaveFocus();
+    expect(noteDisclosures(card)).toHaveLength(0);
+
+    // An empty box is one the person may fold again: the control is back, and says it is open.
+    await user.clear(box);
+    expect(within(card).getByLabelText("Your answer")).toBe(box);
+    expect(
+      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
+    ).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A box its words alone hold open - Other unticked by a real option, with words still in it - is
+// the box the person is writing in. Emptying it is their own act, so it stays where they are
+// rather than folding away under the caret: what the card does today, which INFRA-969's R2 keeps
+// in every state outside its three. The row reads the same at main and at this head, a guard
+// against a computed rule closing the box; that no control hides the box while the words are
+// there is the row above's.
+test("a compact box held open by its words alone stays open when the person empties it", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Other" }));
+    const box = within(card).getByLabelText("Your answer") as HTMLTextAreaElement;
+    await user.click(box);
+    await user.paste("Only after the freeze.");
+    const ship = within(card).getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    await user.click(ship);
+    expect(ship.checked).toBe(true);
+    expect(within(card).getByLabelText("Your answer")).toBe(box);
+
+    await user.clear(box);
+    expect(within(card).getByLabelText("Your answer")).toBe(box);
+    expect(box).toHaveFocus();
+    expect(
+      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
+    ).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The words are the ask's draft, not one card's (`answer-drafts.ts`): a page that hosts the ask
+// twice shows them in both, and a card drawn where the draft already holds words shows its box.
+test("a compact card shows the box over words the ask's draft already holds, beside the card they were typed in and after it", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const both = renderCard(
+    <>
+      <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+      <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+    </>
+  );
+
+  try {
+    const [first, second] = both.view.getAllByTestId("ask-ask-1");
+    if (first === undefined || second === undefined) throw new Error("two cards were not drawn");
+    expect(within(second).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    await user.click(
+      await within(first).findByRole("button", { name: "Add a note or answer in your own words" })
+    );
+    await user.paste("Ship it after the freeze.");
+    expect((within(second).getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe(
+      "Ship it after the freeze."
+    );
+    expect(noteDisclosures(second)).toHaveLength(0);
+  } finally {
+    both.view.unmount();
+  }
+
+  const later = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+  try {
+    const card = later.view.getByTestId("ask-ask-1");
+    expect((within(card).getByLabelText("Your answer") as HTMLTextAreaElement).value).toBe(
+      "Ship it after the freeze."
+    );
+    expect(noteDisclosures(card)).toHaveLength(0);
+  } finally {
+    later.view.unmount();
+  }
+});
+
+// Where nothing asks for the box - an empty card, with options or with none - the card keeps the
+// disclosure it has always had, and it is the one control that opens and folds the box.
+for (const options of [[{ label: "Ship" }, { label: "Hold" }], []]) {
+  test(`an empty compact card ${options.length === 0 ? "with no options" : "with options"} opens and folds its box by its disclosure alone`, async () => {
+    const user = userEvent.setup();
+    const input = ask({ options });
+    const { view } = renderCard(
+      <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+    );
+
+    try {
+      const card = view.getByTestId("ask-ask-1");
+      const disclosure = await within(card).findByRole("button", {
+        name: "Add a note or answer in your own words",
+      });
+      expect(disclosure).toHaveAttribute("aria-expanded", "false");
+      expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+
+      await user.click(disclosure);
+      const box = within(card).getByLabelText("Your answer");
+      expect(disclosure).toHaveAttribute("aria-expanded", "true");
+      // The one state where the button and the box are drawn together: the button names the
+      // element the box is in.
+      expect(controlledBy(disclosure)?.contains(box)).toBe(true);
+
+      await user.click(disclosure);
+      expect(disclosure).toHaveAttribute("aria-expanded", "false");
+      expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+test("a full card shows the box while it draws the answer form, whatever is ticked, with no disclosure", async () => {
+  const user = userEvent.setup();
+  const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
+  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
+    await user.click(within(card).getByRole("checkbox", { name: "Other" }));
+    await user.click(within(card).getByRole("checkbox", { name: "Docs" }));
+    await user.click(within(card).getByRole("checkbox", { name: "Other" }));
+    expect((within(card).getByRole("checkbox", { name: "Docs" }) as HTMLInputElement).checked).toBe(
+      true
+    );
+    expect(within(card).getByLabelText("Your answer")).toBeTruthy();
+    expect(noteDisclosures(card)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("AskCard compact variant hands focus to the row when Answer disables under it", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
@@ -2748,9 +3044,10 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
 });
 
 // The lone Answer a compact card draws over a closed note is held by the picture that note is
-// still taking: the upload is the card's own, above the disclosure, so the pick that closes the
-// note - picking an option with nothing typed - cannot leave that send ungated. The answer once
-// the upload lands carries the picture.
+// still taking: the upload is the card's own, above the disclosure, so folding the note while the
+// picture is out cannot leave that send ungated. The picture's link, once it lands, is words
+// Answer would send, so the box is back over them (dispatch://INFRA-969) and its Answer carries
+// the picture.
 test("the compact card's lone Answer waits for a picture its closed note is still taking", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
@@ -2782,9 +3079,14 @@ test("the compact card's lone Answer waits for a picture its closed note is stil
     fireEvent.paste(note, { clipboardData: { files: [png("shot.png")] } });
     await within(card).findByText("Uploading file…");
 
-    // Picking an option with nothing typed closes the note, taking the box the picture was
-    // pasted into off the screen; the lone Answer is all that is left to send by.
+    // The box the person opened stays open through their pick (dispatch://INFRA-969); folding it
+    // while the picture is out takes the box it was pasted into off the screen, and the lone
+    // Answer is all that is left to send by.
     await user.click(within(card).getByRole("radio", { name: "Ship" }));
+    expect(within(card).getByLabelText("Your answer")).toBe(note);
+    await user.click(
+      within(card).getByRole("button", { name: "Add a note or answer in your own words" })
+    );
     expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
     const answer = within(card).getByRole("button", { name: "Answer" });
     expect(answer.hasAttribute("disabled")).toBe(true);
@@ -2795,8 +3097,12 @@ test("the compact card's lone Answer waits for a picture its closed note is stil
     expect(submitted).toEqual([]);
 
     land();
-    await waitFor(() => expect(answer.hasAttribute("disabled")).toBe(false));
-    await user.click(answer);
+    const shown = (await within(card).findByLabelText("Your answer")) as HTMLTextAreaElement;
+    expect(shown.value).toBe("![shot.png](dispatch://CORE-1/artifact/shot-png@v1)");
+    expect(noteDisclosures(card)).toHaveLength(0);
+    const send = within(card).getByRole("button", { name: "Answer" });
+    await waitFor(() => expect(send.hasAttribute("disabled")).toBe(false));
+    await user.click(send);
     await waitFor(() =>
       expect(submitted).toEqual([
         {

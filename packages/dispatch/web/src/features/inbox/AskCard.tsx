@@ -436,7 +436,6 @@ export function AskCard({
     otherSelected,
     questionChoice,
     reasonRequired,
-    requiresReason,
     selectRealOption,
     selected,
     sendAnswer,
@@ -463,14 +462,6 @@ export function AskCard({
   const [ownWordsOpen, setOwnWordsOpen] = useState(false);
   const [handlesOpen, setHandlesOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
-  // A change seeds the current answer's note; a compact card shows it rather than folding text
-  // the save would send behind its disclosure. Set while rendering the first changing render,
-  // React's pattern for state derived from a prop change, so the field is never hidden a frame.
-  const [seededFor, setSeededFor] = useState(false);
-  if (changing !== seededFor) {
-    setSeededFor(changing);
-    if (changing && variant === "compact" && answerText.trim() !== "") setOwnWordsOpen(true);
-  }
   // One page can host the same ask twice (a decision block and the margin sheet), so the
   // panel each control names, and the line the lone Answer over a closed disclosure is
   // described by, are this instance's.
@@ -478,6 +469,36 @@ export function AskCard({
   const loneAnswerReasonId = useId();
   const isCompact = variant === "compact";
   const inBlock = frame === "block";
+  // Whether the box for the person's own words is shown is a value of the answer's state, read
+  // at each render; no handler sets it (dispatch://INFRA-969). The full card always shows it. A
+  // compact card shows it while the answer needs it - Other is ticked, the chosen option needs a
+  // reason (Request changes, on an approval), or the answer text holds words Answer would send -
+  // and while the person has opened it. So "Other ticked, no box" is a state nothing can reach:
+  // on an ask that takes several answers it left the ask unanswerable, since Answer refuses Other
+  // without its words. The answer text is the ask's shared draft (`answer-drafts.ts`), or the
+  // recorded answer a change is editing, so a second card of the ask and a change both show the
+  // box their words are in.
+  const ownWordsNeeded = otherSelected || reasonRequired || trimmedAnswer !== "";
+  const ownWordsShown = !isCompact || ownWordsNeeded || ownWordsOpen;
+  // The disclosure is drawn only where a press of it both opens and folds the box, which is
+  // where the answer needs nothing in it: no control hides a box the answer needs, and where the
+  // control is drawn the person's own press is all that decides the box (`aria-expanded`).
+  const noteFolds = isCompact && !ownWordsNeeded;
+  // A box held open by its words alone - Other unticked under them by a real option, an approval
+  // moved off Request changes, a change's recorded note - is the box the person is writing in.
+  // When those words go, by a deletion of theirs or by the Ask back that sends them, the box stays
+  // open as if they had opened it, rather than folding away from under their caret or the button
+  // they pressed. Recorded while rendering, React's pattern for state derived from a change, so
+  // no frame draws the box gone.
+  const heldByWords =
+    isCompact && completed === null && !otherSelected && !reasonRequired && trimmedAnswer !== "";
+  const [wordsHeldBox, setWordsHeldBox] = useState(false);
+  if (heldByWords !== wordsHeldBox) {
+    setWordsHeldBox(heldByWords);
+    if (wordsHeldBox && completed === null && !otherSelected && !reasonRequired) {
+      setOwnWordsOpen(true);
+    }
+  }
   /** The project document this ask belongs to: the one it was asked on, else the one the host
    *  is showing it under. It names the ask's own reference, the replies' references, and where
    *  a file dropped into the box goes. `document` is the Inbox row's: the ask read carries no
@@ -505,9 +526,9 @@ export function AskCard({
     setQuestionChoice(false);
   };
   // The uploads behind this card's answer, held here rather than in the box they are started
-  // in (`AskAnswerArea`): the compact variant unmounts that box when its note disclosure
-  // closes - which is what picking an option with nothing typed does - and an upload that went
-  // with it left the lone Answer drawn over the closed note sending an answer without the
+  // in (`AskAnswerArea`): the compact variant unmounts that box when nothing holds it open -
+  // the person folds it, or a real option unticks Other over an empty box - and an upload that
+  // went with it left the lone Answer drawn over the folded note sending an answer without the
   // picture (dispatch://INFRA-341, R2). Every send this card draws reads the one `uploading`
   // below, wherever the button stands.
   const upload = useDraftUpload((text) =>
@@ -515,22 +536,19 @@ export function AskCard({
   );
   const uploading = upload.pending > 0;
   const answerFieldRef = useRef<MentionFieldHandle>(null);
-  // Picking Request changes moves the person straight to the field the server insists
-  // on. Keyed on the field actually being mounted, not just on the option: the compact variant
-  // unmounts the field when its disclosure closes, and reopening it must refocus.
-  const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
+  // Picking Request changes moves the person straight to the field the server insists on, which
+  // the choice itself shows on either variant (`ownWordsShown`).
   useEffect(() => {
-    if (reasonFieldShown) {
+    if (reasonRequired) {
       answerFieldRef.current?.textarea()?.focus();
     }
-  }, [reasonFieldShown]);
+  }, [reasonRequired]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
   // own click, and the Inbox's Enter, which presses this same control (`Inbox.tsx`). The field
   // is drawn by the render the press schedules, so the focus can only be this effect's - the
   // opener runs before React has committed the box and would focus nothing. Only an open by the
-  // disclosure itself focuses, which is why the intent is recorded as the control is pressed: an
-  // option that opens the disclosure for its own words, and a change that seeds the note, leave
-  // the reader where they are.
+  // disclosure itself focuses, which is why the intent is recorded as the control is pressed: a
+  // box that Other, an option or the words in it show leaves the reader where they are.
   const focusNoteOnOpen = useRef(false);
   useEffect(() => {
     if (!focusNoteOnOpen.current) return;
@@ -581,10 +599,11 @@ export function AskCard({
     clarification.isSuccess ? clarification.submittedAt : 0
   );
   // The landing is recorded while rendering, React's pattern for state derived from a change (as
-  // `seededFor` is): an effect would let one render between the landing and the record reach the
-  // screen, and a press then would be taken. `readAfter` is when the thread read on the page at
-  // the landing was made; the card waits for a newer one while the thread is being read. Outside
-  // `NoTooltips` nothing waits, so nothing is recorded and the card renders as it does there.
+  // `wordsHeldBox` is): an effect would let one render between the landing and the record reach
+  // the screen, and a press then would be taken. `readAfter` is when the thread read on the page
+  // at the landing was made; the card waits for a newer one while the thread is being read.
+  // Outside `NoTooltips` nothing waits, so nothing is recorded and the card renders as it does
+  // there.
   const [landing, setLanding] = useState<{ readAfter: number | null; write: number }>({
     readAfter: null,
     write: landedWrite,
@@ -1037,10 +1056,7 @@ export function AskCard({
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
-                  if (refusing) return;
-                  selectRealOption(option.label);
-                  if (isCompact)
-                    setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
+                  if (!refusing) selectRealOption(option.label);
                 }}
                 option={option}
               />
@@ -1052,9 +1068,7 @@ export function AskCard({
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
-                  if (refusing) return;
-                  toggleOther();
-                  if (isCompact && !otherSelected) setOwnWordsOpen(true);
+                  if (!refusing) toggleOther();
                 }}
                 option={{ label: "Other" }}
               />
@@ -1063,11 +1077,12 @@ export function AskCard({
         )}
         {isCompact ? (
           <>
-            {selected.length === 0 || ownWordsOpen ? null : (
-              // Over a closed disclosure there is no box and so no area: the lone Answer still
-              // says why it refuses, and what holds it, on lines of this card's own. The upload
-              // outlives the box it was started in, so the picture still being taken says so
-              // here rather than disappearing with the note it was pasted into.
+            {selected.length === 0 || ownWordsShown ? null : (
+              // Over a folded box there is no area: the lone Answer still says why it refuses,
+              // and what holds it, on lines of this card's own. It follows the box's own value,
+              // so the card never draws two Answers. The upload outlives the box it was started
+              // in, so the picture still being taken says so here rather than disappearing with
+              // the note it was pasted into.
               <div className="space-y-2">
                 <DraftUploadStatus upload={upload} />
                 {answerRefusalShown === null ? null : (
@@ -1081,26 +1096,34 @@ export function AskCard({
                 {submitButton(loneAnswerReasonId)}
               </div>
             )}
+            {/* The control comes and goes above the box, never around it: the box keeps its place
+                in the tree, so the field the person is typing in stays mounted, and keeps the
+                focus, as the words they type take the control away. */}
             <div>
-              <button
-                aria-controls={`${answerFieldId}-disclosure`}
-                aria-expanded={ownWordsOpen}
-                className={`min-h-11 text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
-                // The Inbox's Enter opens this disclosure to reach the answer box behind it,
-                // and finds the control by this handle, as it finds the box by
-                // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
-                data-ask-note-disclosure=""
-                onClick={() => {
-                  // Opening it is a move into the field behind it; closing it moves nowhere.
-                  focusNoteOnOpen.current = !ownWordsOpen;
-                  setOwnWordsOpen(!ownWordsOpen);
-                }}
-                type="button"
-              >
-                Add a note or answer in your own words
-              </button>
-              {ownWordsOpen ? (
-                <div className="space-y-3 pt-3" id={`${answerFieldId}-disclosure`}>
+              {noteFolds ? (
+                <button
+                  aria-controls={`${answerFieldId}-disclosure`}
+                  aria-expanded={ownWordsOpen}
+                  className={`min-h-11 text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
+                  // The Inbox's Enter opens this disclosure to reach the answer box behind it,
+                  // and finds the control by this handle, as it finds the box by
+                  // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
+                  data-ask-note-disclosure=""
+                  onClick={() => {
+                    // Opening it is a move into the field behind it; closing it moves nowhere.
+                    focusNoteOnOpen.current = !ownWordsOpen;
+                    setOwnWordsOpen(!ownWordsOpen);
+                  }}
+                  type="button"
+                >
+                  Add a note or answer in your own words
+                </button>
+              ) : null}
+              {ownWordsShown ? (
+                <div
+                  className={noteFolds ? "space-y-3 pt-3" : "space-y-3"}
+                  id={`${answerFieldId}-disclosure`}
+                >
                   {answerArea}
                 </div>
               ) : null}

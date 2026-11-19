@@ -437,7 +437,6 @@ export function useAskAnswerForm({
     otherSelected,
     questionChoice,
     reasonRequired,
-    requiresReason,
     selectRealOption,
     selected,
     sendAnswer,

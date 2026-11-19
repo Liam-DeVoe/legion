@@ -310,6 +310,9 @@ test("a compact card's change shows the seeded note, so nothing is sent unseen",
     expect(note.value).toBe("First note");
     expect(view.getByRole("button", { name: "Save answer" })).toBeTruthy();
     expect(view.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    // The recorded answer's own words are in the box, so the card offers nothing that folds them
+    // away (dispatch://INFRA-969).
+    expect(view.container.querySelectorAll("[data-ask-note-disclosure]")).toHaveLength(0);
   } finally {
     view.unmount();
   }
