@@ -769,6 +769,15 @@ type ClaimView struct {
 	// operator to read. It travels on the published view for the reason WakeWaiting does, and its
 	// reader takes it through Machine.UnseenTaskValue, which copies no claim.
 	UnseenTask *UnseenTask
+	// HeldTask is the number of the claim's pending task while a take of it stands refused
+	// issue-in-turn (takeable, Machine.heldTask), 0 otherwise: another claim of the issue is in a
+	// turn, and the task is taken once that turn ends. The daemon names it, with the claim's
+	// role, to each claim whose turn holds it (internal/daemon's HeldBehind), which reads it on
+	// its task route so its worker can come to a safe point (dispatch://INFRA-4130). It names the
+	// number only while the pending task still has it and no take of it is accepted, so a task
+	// retired or replaced since names nothing. It travels on the published view for the reason
+	// WakeWaiting does, and no store column holds it.
+	HeldTask uint64
 }
 
 // treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
@@ -1084,10 +1093,13 @@ type Deps struct {
 	// record finishes or drops it, and read for what a registration is told. nil writes and reads
 	// nothing, which a daemon with no bucket and every test that reads no value runs on.
 	TaskValues TaskValues
-	// LockIssue takes the lock of one issue and answers what lets it go: a take that adopts the
-	// working copy the issue's roles share holds it from its in-turn check to its answer
-	// (Machine.Take), so two roles of one issue cannot both pass the check and both adopt. The
-	// daemon keeps one lock per issue for all its machines. nil locks nothing.
+	// LockIssue takes the lock of one issue and answers what lets it go: every take of a claim
+	// with an issue holds it from its in-turn check to its answer (Machine.Take), so two roles of
+	// one issue cannot both pass the check and both adopt. A take that adopts nothing holds it
+	// too: without it, such a take could be accepted while another role's adoption runs with that
+	// machine's lock let go, and its turn start under that adoption, because the adoption's
+	// outcome (adopted) asks only the adopting claim's own holds (claimHold). The daemon keeps one
+	// lock per issue for all its machines. nil locks nothing.
 	LockIssue func(issue string) (unlock func())
 }
 
@@ -1295,6 +1307,12 @@ type Machine struct {
 	// (takeBoundOver), which is what lists it as unseen (ClaimView.UnseenTask); a seen report of
 	// it, its take, or its end clears it (armWaits).
 	unseenListed bool
+	// heldTask is the number the pending task had when takeable last answered issue-in-turn, and
+	// 0 where its last answer was anything else: another hold, a drop, a take it lets go ahead.
+	// ClaimView.HeldTask publishes it only while the pending task still has that number and no
+	// take of it is accepted. It is memory only: a daemon restart forgets it, and the first
+	// takeable after it, the sweep's offerPending at the latest, records it again.
+	heldTask uint64
 	// unsaved is a pending delivery the store's row does not hold as memory holds it — a write of
 	// it the store did not take (saved), or a row another write left under another id
 	// (retirePending): settle writes it again, with the claim, before the next decision.
@@ -2253,16 +2271,20 @@ func (m *Machine) current() Claim {
 }
 
 // publish makes the claim as the machine holds it now the one View reports, with the wake the
-// pacing holds over it, if any, and its value when nobody reported seeing it for a whole first
-// bound (unseenListed): a fresh value each time, since the view is read without mu. The caller
-// holds mu.
+// pacing holds over it, if any, its value when nobody reported seeing it for a whole first bound
+// (unseenListed), and its pending task's number while a take of it stands refused issue-in-turn
+// (heldTask): a fresh value each time, since the view is read without mu. The caller holds mu.
 func (m *Machine) publish() {
 	view := &ClaimView{Claim: m.current(), Stopping: m.stopping}
 	if m.wake != nil {
 		view.WakeWaiting = &WakeWaiting{Kind: m.wake.kind, At: m.wake.at}
 	}
-	if p := m.claim.Pending; m.unseenListed && p != nil {
+	p := m.claim.Pending
+	if m.unseenListed && p != nil {
 		view.UnseenTask = &UnseenTask{Task: p.Number, WrittenAt: m.valueWrittenAt}
+	}
+	if m.heldTask != 0 && p != nil && p.Number == m.heldTask && !p.taken() {
+		view.HeldTask = m.heldTask
 	}
 	m.view.Store(view)
 }

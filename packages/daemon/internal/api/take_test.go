@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -315,7 +317,7 @@ func TestTakeRouteAnswersRefusedNotOwedAndDroppedOverARealMachine(t *testing.T) 
 		t.Fatal("the bucket still holds the dropped task's value")
 	}
 	read, current := h.postTask(claim.TaskRequest{AgentCaller: c.agent(), Generation: c.generation})
-	if read.Code != http.StatusOK || current != (claim.TaskResponse{}) {
+	if read.Code != http.StatusOK || !reflect.DeepEqual(current, claim.TaskResponse{}) {
 		t.Fatalf("the read after the drop = %d %+v (body %s), want no value and nothing finished", read.Code, current, read.Body)
 	}
 }
@@ -395,7 +397,7 @@ func TestTakeRouteTaskReadAnswersTheValueAndTheFinishedNumber(t *testing.T) {
 	byAgent := claim.TaskRequest{AgentCaller: c.agent(), Generation: c.generation}
 	byBoot := claim.TaskRequest{BootCaller: c.byBoot(), Generation: c.generation}
 
-	if got := read(byAgent); got != (claim.TaskResponse{}) {
+	if got := read(byAgent); !reflect.DeepEqual(got, claim.TaskResponse{}) {
 		t.Fatalf("the read before any task = %+v, want no value and nothing finished", got)
 	}
 	value := h.deliverTask(supervise.RequestDeliver{Claim: c.token, Task: "the task"})
@@ -412,8 +414,65 @@ func TestTakeRouteTaskReadAnswersTheValueAndTheFinishedNumber(t *testing.T) {
 		Outcome: claim.TurnClean, Task: value.Number}); outcome.Code != http.StatusOK {
 		t.Fatalf("the turn outcome naming task %d = %d; body %s", value.Number, outcome.Code, outcome.Body)
 	}
-	if got := read(byBoot); got != (claim.TaskResponse{Finished: value.Number}) {
+	if got := read(byBoot); !reflect.DeepEqual(got, claim.TaskResponse{Finished: value.Number}) {
 		t.Fatalf("the read after the task finished = %+v, want no value and task %d finished", got, value.Number)
+	}
+}
+
+// The claim in a turn reads, on its own task route, the takes of its issue's other claims held
+// behind that turn (Supervisor.HeldBehind): each held claim's role and its task's number, so its
+// worker can tell its model that the take waits for this turn's end (dispatch://INFRA-4130 R2).
+// The key is written only for a caller whose claim records TaskHoldsContract, the contract that
+// brought it, or a later one: a plugin before it reads the answer with a schema that knows no
+// `holds`. With nothing held the key is absent.
+func TestTheTaskRouteNamesTheTakesHeldBehindTheCallersTurn(t *testing.T) {
+	h := newHarness(t)
+	c := h.readyClaim("LEGION-209", claim.RoleImplementer)
+	if got := h.stored(c.token).PluginContract; got < TaskHoldsContract {
+		t.Fatalf("the claim records plugin contract %d, below TaskHoldsContract %d: this case proves nothing", got, TaskHoldsContract)
+	}
+	var held []claim.HeldTake
+	h.supervisor.holdTakes(func(issue string, holder claim.Token) []claim.HeldTake {
+		if issue != "LEGION-209" || holder != c.token {
+			return nil
+		}
+		return held
+	})
+	// read is the claim's task read under req, as the keys of its answer.
+	read := func(req claim.TaskRequest) map[string]json.RawMessage {
+		t.Helper()
+		recorder := h.request(http.MethodPost, "/legion/v1/claims/task", req, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("the read = %d; body %s", recorder.Code, recorder.Body)
+		}
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal(recorder.Body.Bytes(), &keys); err != nil {
+			t.Fatalf("decode the read %s: %v", recorder.Body, err)
+		}
+		return keys
+	}
+	byAgent := claim.TaskRequest{AgentCaller: c.agent(), Generation: c.generation}
+	byBoot := claim.TaskRequest{BootCaller: c.byBoot(), Generation: c.generation}
+
+	held = []claim.HeldTake{{Role: claim.RoleTester, Task: 7}}
+	for _, req := range []claim.TaskRequest{byAgent, byBoot} {
+		if got := string(read(req)["holds"]); got != `[{"role":"tester","task":7}]` {
+			t.Fatalf("the read of a caller at or above %d with the tester's take held behind its turn answers holds %s, want the tester's task 7", TaskHoldsContract, got)
+		}
+	}
+
+	held = nil
+	if keys := read(byAgent); keys["holds"] != nil {
+		t.Fatalf("the read with nothing held answers holds %s, want no key", keys["holds"])
+	}
+
+	h.makeStale(t, c.token, c.session, c.secret, TaskHoldsContract-1)
+	if got := h.stored(c.token).PluginContract; got != TaskHoldsContract-1 {
+		t.Fatalf("the claim records plugin contract %d, want %d: this case proves nothing", got, TaskHoldsContract-1)
+	}
+	held = []claim.HeldTake{{Role: claim.RoleTester, Task: 7}}
+	if keys := read(byAgent); keys["holds"] != nil || keys["task"] == nil {
+		t.Fatalf("the read of a caller at %d answers %v, want its task read with no holds key", TaskHoldsContract-1, keys)
 	}
 }
 

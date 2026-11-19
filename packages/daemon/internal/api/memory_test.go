@@ -115,8 +115,8 @@ var (
 // band, as the rows of the table below say, waitingOnIssueContract's row finding nothing to take
 // here since the fixture stands no member of its kind: a pod below 46 is served none of the keys a
 // row of stateNarrowings strips, a pod in a band is served the keys of every row at or below that
-// band's contract and none of a later row's, and a pod at this daemon's declared contract
-// (DaemonAPIVersion, supervise.TaskTakeContract's), a pod whose claims record no contract and a
+// band's contract and none of a later row's, and a pod at the newest contract the route narrows by
+// (supervise.TaskTakeContract) or a later one, a pod whose claims record no contract and a
 // caller in no pod — the operator's `legion state`, whose memory line reads the draws, whose
 // experiment lines read the assignments, whose queue line reads the wakes, whose tool-call line
 // reads the step records and whose merge-wait line reads the waits — are served all of them.
@@ -207,8 +207,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// not.
 		times bool
 		// unseen is whether the caller is served `unseenTaskValues`, the claims whose task value
-		// nobody reported seeing (supervise.TaskTakeContract, this daemon's own), so the only pod
-		// served the list is one at that contract.
+		// nobody reported seeing (supervise.TaskTakeContract, the newest contract the route
+		// narrows by), so a pod is served the list only at that contract or a later one.
 		unseen bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
@@ -281,11 +281,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		// The band from entryTimesContract to below supervise.TaskTakeContract, the last band
-		// under the declared contract: the two times and the arms are served too, and
-		// `unseenTaskValues` is the one key held back.
+		// under the newest contract the route narrows by: the two times and the arms are served
+		// too, and `unseenTaskValues` is the one key held back.
 		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
 		{name: "a pod just below TaskTakeContract", remote: statePodAddr + ":41000", claims: podClaims(supervise.TaskTakeContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a pod at TaskTakeContract, this contract and the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(supervise.TaskTakeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, unseen: true},
+		{name: "a pod at TaskTakeContract, the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(supervise.TaskTakeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, unseen: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, unseen: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, unseen: true},
 	} {

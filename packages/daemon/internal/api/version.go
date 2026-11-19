@@ -2514,4 +2514,24 @@ package api
 // number and every open pull request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 174
+//
+// 179: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
+// held behind the caller's turn. The answer of `claims/task` takes an optional `holds`
+// (`claim.TaskResponse.Holds`, contracts' `LegionTaskResponse`), `[{role, task}]`: each a take
+// of another claim of the caller's issue that was refused `issue-in-turn` while the caller is
+// in a turn (its agent working, or an accepted take whose turn has not started), named by that
+// claim's role and its task's number, so the worker of that turn can come to a safe point before
+// the turn ends and the held take is accepted. The key is absent where none is held, and it is
+// written only for a caller whose claim records this contract or a later one; the registration's
+// answer never carries it, since a registering process is in no turn. The record of a held take
+// is the daemon's memory alone (supervise's ClaimView.HeldTask), so it adds no store migration,
+// and no shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
+// `supervise.TaskTakeContract` stays 174.
+// (This entry takes 179, the lowest number above the base's 174 that no open pull request
+// declares: a reading of every open pull request's version.go at 20:50Z on 2026-11-19 found 174
+// (#3993 and #4273), 175 (#3712, #4392, #4432, #4485 and #4495), 176 (#4030 and #4173), 177
+// (#4017) and 178 (#3831 and #4175). Read the base's own number and every open pull request
+// again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 179

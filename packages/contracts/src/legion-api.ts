@@ -1374,8 +1374,14 @@ export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 174). */
-export const LegionTaskResponse = z.object(taskReadingFields);
+ * finished, 0 for none (contract 174). `holds` (contract 179, `claim.HeldTake`) is the takes of
+ * the issue's other claims held behind the caller's turn, each the held claim's `role` and its
+ * task's number; absent where none is held, and written only for a caller whose claim records
+ * contract 179 or a later one. */
+export const LegionTaskResponse = z.object({
+  ...taskReadingFields,
+  holds: z.array(z.object({ role: nonEmptyString, task: z.number().int().positive() })).optional(),
+});
 
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 

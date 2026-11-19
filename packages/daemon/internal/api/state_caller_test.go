@@ -472,8 +472,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The three leave together (withoutEntryTimes), so one column answers for all of them.
 		times bool
 		// unseen is whether the caller is served `unseenTaskValues`, the claims whose task value
-		// nobody reported seeing, the list supervise.TaskTakeContract added, which is this
-		// daemon's own, so the only pod served the key is one at it.
+		// nobody reported seeing, the list supervise.TaskTakeContract added, the newest contract
+		// the route narrows by, so a pod is served the key only at it or a later one.
 		unseen bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -516,12 +516,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		// The band from entryTimesContract to below supervise.TaskTakeContract, the last band
-		// under the declared contract: the entry times and the arms are served too, and
-		// `unseenTaskValues` is the one key held back.
+		// under the newest contract the route narrows by: the entry times and the arms are served
+		// too, and `unseenTaskValues` is the one key held back.
 		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		// The newest contract the route narrows by, which is this daemon's own. What the caller
-		// is served is decided by its own recorded claim contract (podContract), which is why
-		// this row names supervise.TaskTakeContract rather than the declaration.
+		// The newest contract the route narrows by. What the caller is served is decided by its
+		// own recorded claim contract (podContract), which is why this row names
+		// supervise.TaskTakeContract rather than the declaration.
 		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(supervise.TaskTakeContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, unseen: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, unseen: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, unseen: true},
