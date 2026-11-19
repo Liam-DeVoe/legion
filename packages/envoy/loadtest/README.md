@@ -3908,10 +3908,10 @@ leaves half:
   names it and keeps the file, and the kill needs no file on this pod to do any of it.
 - `step` traps `INT` and `TERM` beside `EXIT`, so a stop ends the step through `step_interrupt`,
   which runs the cleanup, says what the stop ended — naming each part it could not show gone,
-  and a part whose own stop the signal cut short — and ends with the status a shell killed by
-  that signal has (130 and 143). The load is waited on in the background, so the trap runs the
-  moment the signal arrives rather than when that `ssh` returns, which for a step's load is an
-  hour away.
+  and a part whose own start or stop the signal cut short — and ends with the status a shell
+  killed by that signal has (130 and 143). The load is waited on in the background, so the trap
+  runs the moment the signal arrives rather than when that `ssh` returns, which for a step's load
+  is an hour away.
 
 ## What this harness does not do
 

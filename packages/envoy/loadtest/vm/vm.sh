@@ -755,7 +755,8 @@ on_vm_for() {
 # which still names a live process. Any other end of the remote command -- the machine not
 # reached, the ssh timed out, the script cut short -- says nothing of the process, so it returns 1
 # too, naming WHAT, FILE and the ssh's exit and what it said. Each WHAT it returns 1 for is added
-# to NOT_GONE, and STOPPING names WHAT while the kill runs; step_interrupt reads both.
+# to NOT_GONE, and STOPPING names WHAT while the kill runs; step_interrupt reads both. The command
+# that adds WHAT to NOT_GONE also clears STOPPING, so no interrupt finds WHAT in both.
 #
 # It needs nothing of this pod but the ssh. What the ssh says goes into the kill's own output,
 # beside the line `pid=N` with which the script on the load machine names a pid still there at its
@@ -799,8 +800,7 @@ remote_kill() {
     said=${out//$'\n'/ }
     note "ending $what ($file on the $LOAD_VM VM) failed: its ssh exited $rc and said '${said:-nothing}', so nothing shows it gone"
   fi
-  NOT_GONE="${NOT_GONE:+$NOT_GONE; }$what"
-  STOPPING=""
+  NOT_GONE="${NOT_GONE:+$NOT_GONE; }$what" STOPPING=""
   return 1
 }
 
@@ -2120,7 +2120,9 @@ sampler_targets() {
 }
 
 # sampler_start: loadgen vm-sample over every machine of the deployment, appending to the run's
-# cgroup.jsonl, its pid in SAMPLER_PID.
+# cgroup.jsonl, its pid in SAMPLER_PID. STARTING names it from just before the & that starts it to
+# the command that records its pid, which also clears the mark, so a signal that lands between the
+# two has the step name the sampler as not shown gone (step_interrupt).
 #
 # The binary is started here rather than through loadgen_local, because loadgen_local is a shell
 # function and a function backgrounded with & runs in a subshell of its own: $! is that
@@ -2137,9 +2139,10 @@ sampler_start() {
   sampler_targets
   ssh_cmd
   bin=$(loadgen_bin)
+  STARTING="the sampler"
   LOADTEST_ROOT=$RUN_DIR "$bin" vm-sample -out "$CGROUP_JSONL" -ssh "${SSH[*]}" "${SAMPLER_TARGETS[@]}" \
     >>"$RUN_DIR/logs/vm-sample.log" 2>&1 &
-  SAMPLER_PID=$!
+  SAMPLER_PID=$! STARTING=""
   note "the sampler reads $((${#SAMPLER_TARGETS[@]} / 2)) machines of this deployment into $CGROUP_JSONL (pid $SAMPLER_PID)"
 }
 
@@ -2307,7 +2310,8 @@ pg_collect_start() {
 
 # pg_watch_start NAME DIR: loadgen pg-statements for the length of the step, its pid in
 # PG_WATCH_PID. It resets pg_stat_statements at its start, reads pg_locks while the load runs and
-# writes DIR/pg-statements.json when it is stopped.
+# writes DIR/pg-statements.json when it is stopped. STARTING names it from just before its & to the
+# command that records its pid, as sampler_start's does.
 #
 # The binary is started here rather than through loadgen_local for the reason sampler_start gives:
 # a shell function backgrounded with & runs in a subshell of its own, $! is that subshell's pid and
@@ -2317,9 +2321,10 @@ pg_collect_start() {
 pg_watch_start() {
   local name=$1 dir=$2 bin
   bin=$(loadgen_bin)
+  STARTING="Postgres's collector"
   LOADTEST_ROOT=$RUN_DIR "$bin" pg-statements -step "$dir" -pg-file "$PG_STEP_FILE" \
     >>"$RUN_DIR/logs/pg-statements.log" 2>&1 &
-  PG_WATCH_PID=$!
+  PG_WATCH_PID=$! STARTING=""
   note "step $name: Postgres's statements and lock waits are read into $dir/pg-statements.json (pid $PG_WATCH_PID)"
 }
 
@@ -2358,16 +2363,18 @@ load_pid_file() { printf '%s/loadgen-run.pid\n' "$(remote_run)"; }
 # load_start DIR SECONDS ARGS...: ARGS run on the load machine as the step's load, its output in
 # DIR/loadgen.out and its bound SECONDS, in the background. LOAD_SSH_PID is the local timeout's own
 # pid, which forwards what it is sent to the ssh below it; the pid file on that machine names the
-# loadgen itself, because the sh that writes it then execs the loadgen and keeps its pid.
+# loadgen itself, because the sh that writes it then execs the loadgen and keeps its pid. STARTING
+# names the load from just before its & to the command that sets both flags, as sampler_start's
+# does.
 load_start() {
   local dir=$1 seconds=$2 remote_cmd
   shift 2
   ssh_cmd
   # shellcheck disable=SC2016 # expanded by the load machine's sh
   remote_cmd=$(remote_argv sh -c 'pid_file=$1; shift; echo $$ >"$pid_file"; exec "$@"' sh "$(load_pid_file)" "$@")
+  STARTING="the step's load"
   timeout "$seconds" "${SSH[@]}" "$(vm_ssh "$LOAD_VM")" "$remote_cmd" >"$dir/loadgen.out" 2>&1 &
-  LOAD_SSH_PID=$!
-  LOAD_REMOTE=1
+  LOAD_SSH_PID=$! LOAD_REMOTE=1 STARTING=""
 }
 
 # load_wait: the load's own exit status, when it ends by itself. This wait is where a signal
@@ -2429,10 +2436,13 @@ step_cleanup() {
 # ends the script with the status a shell killed by that signal has, so a caller reads the stop as
 # a stop. It says what the stop ended once the cleanup has ended it: a part that a cleanup of this
 # step did not show gone is named as such, never as ended. That is each part a kill ran out on
-# (NOT_GONE, which remote_kill fills), and the part whose stop the signal cut short (STOPPING). A
-# signal runs its trap between two commands, so it can land inside a stop that has cleared its
-# part's flag -- the step's own cleanup at its end, or its EXIT trap's -- and the cleanup below
-# then finds nothing to stop there; the stop named in STOPPING is what nothing has shown gone.
+# (NOT_GONE, which remote_kill fills), the part whose stop the signal cut short (STOPPING), and the
+# part whose start it cut short (STARTING). A signal runs its trap between two commands, so it can
+# land inside a stop that has cleared its part's flag -- the step's own cleanup at its end, or its
+# EXIT trap's -- and the cleanup below then finds nothing to stop there; the stop named in STOPPING
+# is what nothing has shown gone. It can land just as well between the & that starts a part and the
+# command that records its pid, and the cleanup then finds no pid to stop; the part named in
+# STARTING may run, and nothing shows it gone.
 step_interrupt() {
   local signal=$1 code=143
   trap - EXIT INT TERM
@@ -2441,6 +2451,11 @@ step_interrupt() {
     note "the stop of $STOPPING was cut short by SIG$signal, so nothing shows it gone"
     NOT_GONE="${NOT_GONE:+$NOT_GONE; }$STOPPING"
     STOPPING=""
+  fi
+  if [ -n "${STARTING:-}" ]; then
+    note "the start of $STARTING was cut short by SIG$signal, so nothing shows it gone"
+    NOT_GONE="${NOT_GONE:+$NOT_GONE; }$STARTING"
+    STARTING=""
   fi
   step_cleanup
   if [ -z "${NOT_GONE:-}" ]; then
