@@ -47,6 +47,7 @@ import { connect, StringCodec } from "nats";
 // By path: the root package does not depend on @legion/contracts, so bun resolves no value from
 // it here. The type import above is erased before the driver runs.
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
+import { psqlStatement } from "./lib/psql-statement";
 
 const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
 const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
@@ -503,19 +504,10 @@ function commandHeadLines(printed: string): string[] {
 
 /** Runs one statement against the run's own database and answers what psql printed, rows bare
  *  and columns separated by `|` (`-tA`). The driver reads and writes one table this way,
- *  pull_request_heads, for the one fixture and the one answer no route of Dispatch carries. */
-async function sql(statement: string): Promise<string> {
-  const child = Bun.spawn(
-    ["psql", databaseUrl, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-tA", "-c", statement],
-    { stderr: "pipe", stdout: "pipe" }
-  );
-  const [code, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  if (code !== 0) throw new Error(`psql exited ${code}: ${stderr.trim()}`);
-  return stdout.trim();
+ *  pull_request_heads, for the one fixture and the one answer no route of Dispatch carries. The
+ *  URI's password goes to psql in PGPASSWORD alone, never in its arguments (`psqlStatement`). */
+function sql(statement: string): Promise<string> {
+  return psqlStatement(databaseUrl, statement);
 }
 
 /** One stored pull request row, as pull_request_heads holds it: the issue it credits, the
