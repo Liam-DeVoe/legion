@@ -47,11 +47,12 @@ func migrationEventIDOffences(path, sql string) []string {
 // table's column default defined here that drew from events_id_seq would hand out an event id
 // before its writer holds RowExclusiveLock on events. The safe horizon dates a writer by that lock
 // (events/horizon.go, "Safe horizon"), so it would pass such an id while the transaction holding
-// it is still open. No migration may name the sequence; one that must (to alter it) needs its own
-// reading of why the horizon still holds, and an exemption here that says so. A migration can
-// also hand events' id default to another table without naming the sequence (like events
-// including defaults, inherits, partition of), which no reading of the text sees:
-// TestOnlyTheEventsIDDefaultDrawsFromItsSequence reads the migrated catalog for that.
+// it is still open. No migration may name the sequence, or draw with nextval or setval from a
+// sequence that is not one string literal, which can be events_id_seq without spelling it; one that
+// must name it (to alter it) needs its own reading of why the horizon still holds, and an exemption
+// here that says so. A migration can also hand events' id default to another table without naming
+// the sequence (like events including defaults, inherits, partition of), which no reading of the
+// text sees: TestOnlyTheEventsIDDefaultDrawsFromItsSequence reads the migrated catalog for that.
 func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 	t.Run("the pattern reads each shape that draws from the sequence", func(t *testing.T) {
 		for _, row := range []struct {
@@ -88,7 +89,17 @@ func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 			{"a name with a letter past ASCII that ends in currval", "select \u00e9currval('events_id_seq');", 1},
 			{"a name carrying $ that ends in pg_catalog", "select a$pg_catalog.currval('events_id_seq');", 1},
 			{"a currval(text) that draws", "create function currval(text) returns bigint language sql as $$ select nextval($1::regclass) $$;\n" +
-				"select currval('events_id_seq');", 1},
+				"select currval('events_id_seq');", 2},
+			{"a name built from parts", "select nextval('events_' || 'id_seq');", 1},
+			{"a name built from parts, cast", "select nextval(('events_' || 'id_seq')::regclass);", 1},
+			{"an escape string", `select nextval(E'events\x5fid\x5fseq');`, 1},
+			{"a Unicode escape string", `select nextval(U&'events\005fid\005fseq');`, 1},
+			{"a name from format()", "select nextval(format('%s_id_seq', 'events'));", 1},
+			{"a table name built from parts", "select nextval(pg_get_serial_sequence('event' || 's', 'id'));", 1},
+			{"a setval of a name built from parts", "select setval('events_' || 'id_seq', 1);", 1},
+			{"a literal cast through text", "select nextval('other_seq'::text);", 1},
+			{"another sequence, by literal", "select nextval('other_seq'), nextval('other_seq'::regclass), setval('other_seq', 1, false);", 0},
+			{"another table's serial default", "alter table issues alter column n set default nextval('issues_n_seq'::regclass);", 0},
 		} {
 			if got := migrationEventIDOffences("m.sql", row.sql); len(got) != row.found {
 				t.Errorf("%s: %d matches %q, want %d", row.shape, len(got), got, row.found)

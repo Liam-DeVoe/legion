@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,9 +25,11 @@ import (
 // The xmax hole, scripted with the counterexample the package documentation names. T2 took
 // transaction id 100, T took 101 and drew event 7, then T2 drew event 8 and committed. The first
 // observation sees 8 while T is open holding 7 and its write lock, so the oldest event writer it
-// reads is T, 101: a rule trusting one snapshot's in-progress list would publish 8 here, since
-// 101 is not below the snapshot's xmax and so not listed. Only a later observation whose oldest
-// event writer has passed the first observer's own transaction id proves it.
+// reads is T, 101. Its snapshot's xmax is 101, one past the newest completed id, and it lists
+// nothing in progress, since 100 has completed and 101 is not below xmax: a rule trusting one
+// snapshot's in-progress list would publish 8 here. That snapshot does not prove itself, because
+// its xmax is not the observer's own id, 102. Only a later observation whose oldest event writer
+// has passed the first observer's own transaction id proves it.
 //
 // Gap tells the reader what each step waits for: the first observation alone is unproven, so
 // the reader observes again at once; the second finds T still running below the first observer's
@@ -37,7 +38,7 @@ import (
 func TestHorizonProvesAnObservationOnlyFromALaterOne(t *testing.T) {
 	ctx := context.Background()
 	db := &scriptedHorizonDB{script: []scriptedObservation{
-		{newest: 8, writer: 101, xid: 102},
+		{newest: 8, writer: 101, xmax: 101, xipEmpty: true, xid: 102},
 		{newest: 8, writer: 101, xid: 103}, // T is still open
 		{newest: 9, writer: 104, xid: 104}, // T has ended, and no event writer is open
 		{newest: 9, writer: 105, xid: 105},
@@ -490,108 +491,51 @@ func TestHorizonProvesItsOwnObservationOnAQuietInstance(t *testing.T) {
 	}
 }
 
-// A session holding a transaction id takes the shortcut away: the observer's snapshot lists that
-// id in progress, so it does not prove its own A however quiet the log is. Here the session is an
-// event writer, holding the write lock an insert into events takes before it draws its id, so an
-// event that committed before that session even began waits for it too: the horizon cannot tell
-// which id the session's insert will draw. H moves once the session ends and a later observation
-// runs. (A session that holds only an id holds no event id and does not hold H back:
-// TestHorizonWaitsOnATransactionOnlyOnceItHasInsertedAnEvent.)
-func TestHorizonDoesNotProveItsOwnObservationWhileAnotherSessionHoldsAnID(t *testing.T) {
-	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	horizon := NewHorizon(database.Pool)
+// An event writer open beside a committed event holds H below that event, whichever of the two
+// began first, and H moves once the writer ends and a later observation runs. The writer holds the
+// write lock an insert into events takes before it draws its id, and the horizon cannot tell which
+// id that insert will draw, so an event committed before the writer even began waits for it too.
+// No observation proves itself meanwhile: its snapshot lists the writer's transaction id in
+// progress, or, when the event's writer took a higher id and committed, its xmax is below the
+// observer's own id (the hole, which TestHorizonDoesNotPassAWriterAboveTheSnapshotXmax builds with
+// the open writer holding the higher id). (A session that holds only an id holds no event id and
+// does not hold H back: TestHorizonWaitsOnATransactionOnlyOnceItHasInsertedAnEvent.)
+func TestHorizonWaitsForAnEventWriterAcrossBothCommitOrderings(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		writerFirst bool
+	}{
+		{"the event committed before the writer began", false},
+		{"the event committed after the writer began", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			horizon := NewHorizon(database.Pool)
 
-	id := commitHorizonEvent(ctx, t, database)
-	holder, holderXid := openEventWriter(ctx, t, database)
-	takeEventWriteLock(ctx, t, holder)
-	observation, _, err := horizon.take(ctx, 0)
-	if err != nil {
-		t.Fatalf("take one observation: %v", err)
-	}
-	if observation.selfProven {
-		t.Fatalf("an observation proved itself while the session holding transaction id %d is open", holderXid)
-	}
-	if observation.newest < id {
-		t.Fatalf("the observation saw id %d, not the committed %d", observation.newest, id)
-	}
-	requireHorizonBelow(ctx, t, horizon, id)
+			var writer pgx.Tx
+			openWriter := func() {
+				writer, _ = openEventWriter(ctx, t, database)
+				takeEventWriteLock(ctx, t, writer)
+			}
+			if c.writerFirst {
+				openWriter()
+			}
+			id := commitHorizonEvent(ctx, t, database)
+			if !c.writerFirst {
+				openWriter()
+			}
+			requireHorizonBelow(ctx, t, horizon, id)
 
-	if err := holder.Commit(ctx); err != nil {
-		t.Fatalf("end the session holding a transaction id: %v", err)
+			if err := writer.Commit(ctx); err != nil {
+				t.Fatalf("end the open event writer: %v", err)
+			}
+			if safe, err := horizon.Await(ctx); err != nil || safe < id {
+				t.Fatalf("Await after the open event writer ended = %d, %v; want at least %d", safe, err, id)
+			}
+		})
 	}
-	if safe, err := horizon.Await(ctx); err != nil || safe < id {
-		t.Fatalf("Await after the holder ended = %d, %v; want at least %d", safe, err, id)
-	}
-}
-
-// The xmax hole the package documentation names, built on a real Postgres: one session takes a
-// transaction id and the write lock an insert into events takes, and stays open; a second takes a
-// higher one, inserts an event and commits. An observation taken now sees that event, and its own
-// transaction id is above both, so neither half of the shortcut can hold: the open session's id
-// is in the snapshot's in-progress list when it is below the snapshot's xmax, and the snapshot's
-// xmax is below the observer's id when it is not (the hole, which
-// TestHorizonDoesNotPassAWriterAboveTheSnapshotXmax builds with the open session holding the
-// higher id). Either way the observation does not prove itself, and H stays below the event until
-// the open session, an event writer, ends.
-func TestHorizonDoesNotProveAnObservationTakenBesideAnOpenLowerID(t *testing.T) {
-	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	horizon := NewHorizon(database.Pool)
-
-	holder, holderXid := openEventWriter(ctx, t, database)
-	takeEventWriteLock(ctx, t, holder)
-	writer, writerXid := openEventWriter(ctx, t, database)
-	id := insertHorizonEvent(ctx, t, writer)
-	if err := writer.Commit(ctx); err != nil {
-		t.Fatalf("commit the event's writer: %v", err)
-	}
-	if writerXid <= holderXid {
-		t.Fatalf("the event's writer took transaction id %d, not above the open session's %d", writerXid, holderXid)
-	}
-
-	observation, _, err := horizon.take(ctx, 0)
-	if err != nil {
-		t.Fatalf("take one observation: %v", err)
-	}
-	xmax, xipEmpty := snapshotShape(ctx, t, database)
-	t.Logf("snapshot xmax %d (in-progress list empty: %v) beside the open session's transaction id %d and the writer's %d",
-		xmax, xipEmpty, holderXid, writerXid)
-	if observation.newest < id {
-		t.Fatalf("the observation saw id %d, not the committed %d", observation.newest, id)
-	}
-	if observation.selfProven {
-		t.Fatalf("an observation proved itself while the session holding transaction id %d is open", holderXid)
-	}
-	requireHorizonBelow(ctx, t, horizon, id)
-
-	if err := holder.Commit(ctx); err != nil {
-		t.Fatalf("end the session holding a transaction id: %v", err)
-	}
-	if safe, err := horizon.Await(ctx); err != nil || safe < id {
-		t.Fatalf("Await after the holder ended = %d, %v; want at least %d", safe, err, id)
-	}
-}
-
-// snapshotShape reads one snapshot's xmax and whether its in-progress list is empty, the two
-// answers an observation's self-proof rests on, for a test's log line.
-func snapshotShape(ctx context.Context, t *testing.T, database *store.Store) (uint64, bool) {
-	t.Helper()
-	var xmaxText string
-	var xipEmpty bool
-	if err := database.Pool.QueryRow(ctx, `
-		select pg_snapshot_xmax(s.snapshot)::text, not exists (select 1 from pg_snapshot_xip(s.snapshot))
-		from (select pg_current_snapshot() as snapshot) s
-	`).Scan(&xmaxText, &xipEmpty); err != nil {
-		t.Fatalf("read one snapshot: %v", err)
-	}
-	xmax, err := strconv.ParseUint(xmaxText, 10, 64)
-	if err != nil {
-		t.Fatalf("parse snapshot xmax %q: %v", xmaxText, err)
-	}
-	return xmax, xipEmpty
 }
 
 // The xmax hole on a real Postgres. T2 takes its transaction id first; T takes a higher one
@@ -603,8 +547,11 @@ func snapshotShape(ctx context.Context, t *testing.T, database *store.Store) (ui
 //
 // The hole is a snapshot's, and snapshots are instance-wide: a transaction elsewhere on the
 // instance (another test's, or this process's background database drops) that completes with a
-// higher id in between moves xmax past T and closes it. So the scenario is built again, up to a
-// bound, until a snapshot shows the hole, and the test logs whether it did.
+// higher id in between moves xmax past T and closes it. So the scenario is built again, pausing
+// between attempts, until a snapshot shows the hole, for up to thirty seconds, as
+// TestHorizonProvesItsOwnObservationOnAQuietInstance waits for a quiet instance; the test logs the
+// attempt it took, and fails if no snapshot showed the hole, since it would then have proved
+// nothing about it.
 func TestHorizonDoesNotPassAWriterAboveTheSnapshotXmax(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -614,7 +561,7 @@ func TestHorizonDoesNotPassAWriterAboveTheSnapshotXmax(t *testing.T) {
 		t.Fatalf("await the empty log: %v", err)
 	}
 
-	const attempts = 10
+	deadline := time.Now().Add(30 * time.Second)
 	for attempt := 1; ; attempt++ {
 		t2, _ := openEventWriter(ctx, t, database)
 		writer, writerXid := openEventWriter(ctx, t, database)
@@ -638,14 +585,20 @@ func TestHorizonDoesNotPassAWriterAboveTheSnapshotXmax(t *testing.T) {
 		// A snapshot lists in-progress ids only below its xmax, so an id at or above it is not
 		// listed: T is open, yet missing from the snapshot's in-progress list.
 		hole := writerXid >= xmax && visible >= higherID
-		if !hole && attempt < attempts {
+		if !hole {
 			if err := writer.Commit(ctx); err != nil {
 				t.Fatalf("commit T: %v", err)
 			}
+			if time.Now().After(deadline) {
+				t.Fatalf("after %d attempts over 30 s no snapshot showed the xmax hole (the last: xmax %d sees id %d; T held xid %d): "+
+					"a transaction elsewhere on the instance completed with a higher id each time, so this test proved nothing about the hole",
+					attempt, xmax, visible, writerXid)
+			}
+			time.Sleep(20 * time.Millisecond)
 			continue
 		}
-		t.Logf("xmax hole reproduced: %v on attempt %d (snapshot xmax %d sees id %d; T holds xid %d and id %d)",
-			hole, attempt, xmax, visible, writerXid, lowerID)
+		t.Logf("xmax hole reproduced on attempt %d (snapshot xmax %d sees id %d; T holds xid %d and id %d)",
+			attempt, xmax, visible, writerXid, lowerID)
 
 		// The hole is why an empty in-progress list alone proves nothing: the observer's own
 		// transaction id is above the snapshot's xmax here, so its observation cannot prove
@@ -856,7 +809,7 @@ func TestHorizonStallWarningNamesAnOpenTransaction(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	holdTransactionIDInThePostgresDatabase(ctx, t)
+	storetest.HoldTransactionIDInThePostgresDatabase(t)
 	commitHorizonEvent(ctx, t, database)
 	holder, _ := openEventWriter(ctx, t, database)
 	if _, err := holder.Exec(ctx, `set local application_name = 'horizon-stall-holder'`); err != nil {
@@ -987,16 +940,18 @@ type scriptedHorizonDB struct {
 	observed func()
 }
 
-// scriptedObservation is one observation's answer. Its snapshot's xmax is its own transaction id,
-// as it is when nothing took an id between the snapshot and the observer, and selfProves is
-// whether the snapshot lists nothing in progress, which is what makes an observation prove
-// itself. Without it the script alone decides which observation proves which.
+// scriptedObservation is one observation's answer. xmax is its snapshot's xmax, the observer's own
+// transaction id xid when left 0, as it is when nothing took an id between the snapshot and the
+// observer, and xipEmpty is whether the snapshot lists nothing in progress: an observation proves
+// itself only when both hold, its xmax being its own id and its list empty. Without them the
+// script alone decides which observation proves which.
 type scriptedObservation struct {
-	newest     int64
-	writer     uint64
-	xid        uint64
-	selfProves bool
-	err        error
+	newest   int64
+	writer   uint64
+	xmax     uint64
+	xipEmpty bool
+	xid      uint64
+	err      error
 }
 
 func (db *scriptedHorizonDB) SendBatch(context.Context, *pgx.Batch) pgx.BatchResults {
@@ -1036,8 +991,12 @@ func (r scriptedResults) QueryRow() pgx.Row {
 		*dest[0].(*int64) = r.observation.newest
 		*dest[1].(**time.Time) = nil
 		*dest[2].(*string) = strconv.FormatUint(r.observation.writer, 10)
-		*dest[3].(*string) = strconv.FormatUint(r.observation.xid, 10)
-		*dest[4].(*bool) = r.observation.selfProves
+		xmax := r.observation.xmax
+		if xmax == 0 {
+			xmax = r.observation.xid
+		}
+		*dest[3].(*string) = strconv.FormatUint(xmax, 10)
+		*dest[4].(*bool) = r.observation.xipEmpty
 		*dest[5].(*string) = strconv.FormatUint(r.observation.xid, 10)
 		return nil
 	})
@@ -1137,7 +1096,7 @@ func TestWriterFloorIgnoresATransactionInAnotherDatabase(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	horizon := NewHorizon(database.Pool)
-	holdTransactionIDInThePostgresDatabase(ctx, t)
+	storetest.HoldTransactionIDInThePostgresDatabase(t)
 
 	newest := commitHorizonEvent(ctx, t, database)
 	mark, err := horizon.Mark(ctx)
@@ -1146,31 +1105,6 @@ func TestWriterFloorIgnoresATransactionInAnotherDatabase(t *testing.T) {
 	}
 	if floor, ok, err := horizon.WriterFloor(ctx, mark); err != nil || !ok || floor != newest {
 		t.Fatalf("WriterFloor with a transaction open in another database = %d, %t, %v; want the mark's %d", floor, ok, err, newest)
-	}
-}
-
-// holdTransactionIDInThePostgresDatabase opens a transaction in the instance's postgres database
-// and takes a transaction id, as another service's job, or another package's create or drop
-// database, holds one on the same instance. It rolls back when the test ends.
-func holdTransactionIDInThePostgresDatabase(ctx context.Context, t *testing.T) {
-	t.Helper()
-	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
-	if err != nil {
-		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
-	}
-	config.Database = "postgres"
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		t.Fatalf("connect to the cluster's postgres database: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	elsewhere, err := conn.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the other database's transaction: %v", err)
-	}
-	t.Cleanup(func() { _ = elsewhere.Rollback(context.Background()) })
-	if _, err := elsewhere.Exec(ctx, `select pg_current_xact_id()`); err != nil {
-		t.Fatalf("take the other database's transaction id: %v", err)
 	}
 }
 
@@ -1210,7 +1144,7 @@ func TestHorizonDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 		t.Fatalf("the two databases' events tables have oids %d and %d, so only the relation, not the database, would tell their writes apart, and this test proves less than it says", here, there)
 	}
 
-	holdTransactionIDInThePostgresDatabase(ctx, t)
+	storetest.HoldTransactionIDInThePostgresDatabase(t)
 	otherWriter, _ := openEventWriter(ctx, t, other)
 	insertHorizonEvent(ctx, t, otherWriter)
 
@@ -1268,7 +1202,7 @@ func TestAWriteLockWithNoTransactionIDHoldsTheHorizonBack(t *testing.T) {
 	if _, err := horizon.Await(ctx); err != nil {
 		t.Fatalf("await the empty log: %v", err)
 	}
-	holdTransactionIDInThePostgresDatabase(ctx, t)
+	storetest.HoldTransactionIDInThePostgresDatabase(t)
 
 	before, err := horizon.Mark(ctx)
 	if err != nil {
@@ -1303,7 +1237,7 @@ func TestALockOfAnotherModeHoldsNoEventID(t *testing.T) {
 	if _, err := horizon.Await(ctx); err != nil {
 		t.Fatalf("await the empty log: %v", err)
 	}
-	holdTransactionIDInThePostgresDatabase(ctx, t)
+	storetest.HoldTransactionIDInThePostgresDatabase(t)
 
 	lockEventsWithNoTransactionID(ctx, t, database, "share update exclusive")
 	id := commitHorizonEvent(ctx, t, database)
@@ -1331,7 +1265,7 @@ func TestAnInsertUnderAStrongerLockIsStillAnEventWriter(t *testing.T) {
 	if _, err := horizon.Await(ctx); err != nil {
 		t.Fatalf("await the empty log: %v", err)
 	}
-	holdTransactionIDInThePostgresDatabase(ctx, t)
+	storetest.HoldTransactionIDInThePostgresDatabase(t)
 
 	committed := commitHorizonEvent(ctx, t, database)
 	writer, _ := openEventWriter(ctx, t, database)
@@ -1437,7 +1371,7 @@ func TestAnObservationComparesAPendingIDExactlyPastInt64(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	horizon := NewHorizon(database.Pool)
-	holdTransactionIDInThePostgresDatabase(ctx, t)
+	storetest.HoldTransactionIDInThePostgresDatabase(t)
 
 	if observation, writer, err := horizon.take(ctx, 0); err != nil || writer >= observation.xid {
 		t.Fatalf("an observation with nothing pending = bound %d, own id %d, %v; want the xmin, below its own id, or this test proves nothing", writer, observation.xid, err)

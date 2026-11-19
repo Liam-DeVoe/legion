@@ -37,11 +37,13 @@
 // names events_id_seq but to read with pg_catalog.currval the id its own insert's default just
 // drew (store.LatestEventID), which draws none, or in the offline seed tool's setval; a bare or
 // otherwise qualified currval could resolve to a function of another schema that draws, so it is
-// refused. No insert lists an explicit id, no source but that tool copies or merges rows into
-// events, no statement makes a table from events, no migration the server runs names the
-// sequence, in a function, view, trigger or default, and the schema they build gives no other
-// table events' id default and events no child or partition, whose rows would be rows of events
-// written under another table's lock.
+// refused, and so is a nextval or setval of a sequence that is not one string literal, which can
+// be events_id_seq without spelling it. No insert lists an explicit id, no source but that tool
+// copies or merges rows into events, no statement makes a table from events, no migration the
+// server runs names the sequence, in a function, view, trigger or default, or draws from a
+// sequence it does not spell, and the schema they build gives no other table events' id default,
+// events no child or partition, whose rows would be rows of events written under another table's
+// lock, and no function a sequence function's name but Postgres's own.
 // TestOnlyAnEventInsertsDefaultDrawsAnEventID and TestOnlyTheBrokerInsertsEvents
 // (internal/dispatch/api) hold the Go half, TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault
 // (internal/dispatch/store) the migrations' text, and

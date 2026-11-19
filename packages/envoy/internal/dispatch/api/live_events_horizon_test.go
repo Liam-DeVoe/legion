@@ -423,9 +423,6 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLog(t *testing.T) {
 // append, and pages resubscribe within a second of the new process coming up. Such a writer holds
 // no event id, since nextval hands it one above every id drawn before it inserts, so the boot mark
 // still counts and bounds the read, and the start answers without waiting for the writer to end.
-// Measured before the horizon stopped waiting on such a writer, on 5,000,000 ids with writers
-// holding their ids for 3 s, a read from 0 made the first subscription wait 6.0 s after a restart,
-// against 3.1 s when the boot mark held.
 func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBootIsOpen(t *testing.T) {
 	const logSize = 200_000
 	var release func()

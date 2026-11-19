@@ -11,9 +11,10 @@ var eventWritersCTE = eventWritersFrom("pg_locks", "pg_snapshot_xmax(pg_current_
 // eventWritersFrom is eventWritersCTE over the lock rows of locks, a from-item with pg_locks's
 // columns, and the xmax xmax, an expression of type xid8; a test passes rows and an xmax of its
 // own, which no server it can run against has. locks is one read of the lock rows, kept to the
-// rows the read needs, each transactionid widened from the 32 bits the lock table gives to xid,
-// the 64-bit id pg_current_xact_id answers, against xmax, from which no running id is more than
-// 2^31. writers has a row for each RowExclusiveLock on events in this database that a transaction
+// rows the read needs (every transactionid lock, and the relation locks on this database's events),
+// each transactionid widened from the 32 bits the lock table gives to xid, the 64-bit id
+// pg_current_xact_id answers, against xmax, from which no running id is more than 2^31. writers
+// has a row for each RowExclusiveLock on events in this database that a transaction
 // other than the reader's holds: its pid, the backend's or null for a prepared transaction, and
 // its xid, the least of the widened ids it holds an ExclusiveLock on under its virtualtransaction,
 // or null when the lock table lists none. Each id is widened before the least is taken: a
@@ -35,7 +36,9 @@ func eventWritersFrom(locks, xmax string) string {
 				end) as xid
 		from (
 			select *, transactionid::text::numeric as x32 from ` + locks + `
-			where locktype = 'transactionid' or (locktype = 'relation' and relation = 'events'::regclass)
+			where locktype = 'transactionid' or (locktype = 'relation'
+				and database = (select oid from pg_database where datname = current_database())
+				and relation = 'events'::regclass)
 		) l, next
 	), writers as materialized (
 		select t.pid, (
@@ -45,10 +48,14 @@ func eventWritersFrom(locks, xmax string) string {
 		) as xid
 		from locks t
 		where t.locktype = 'relation' and t.granted and t.pid is distinct from pg_backend_pid()
-			and t.database = (select oid from pg_database where datname = current_database())
 			and t.relation = 'events'::regclass and t.mode = 'RowExclusiveLock'
 	)`
 }
+
+// oldestWriter is the oldest transaction id among eventWritersFrom's writers, an aggregate over
+// them: 0 when one of them has no id the read can date, which proves nothing, and null when there
+// are none. The observation and oldestEventWriterSelect both read the writers through it.
+const oldestWriter = `case when bool_or(xid is null) then 0 else min(xid) end`
 
 // horizonObserveSQL is an observation (the package documentation's "Safe horizon"): A and the
 // created_at of its event, as the statement's snapshot S sees them; F; the xmax of S and whether
@@ -64,7 +71,7 @@ var horizonObserveSQL = `
 	with` + eventWritersCTE + `
 	select m.id, e.created_at,
 		(select case when s.xmin > $1::text::numeric then s.xmin else greatest(s.xmin, (
-			select case when bool_or(xid is null) then 0 else least(min(xid), pg_current_xact_id()::text::numeric) end from writers
+			select least(` + oldestWriter + `, pg_current_xact_id()::text::numeric) from writers
 		)) end from (select pg_snapshot_xmin(pg_current_snapshot())::text::numeric as xmin) s)::text,
 		pg_snapshot_xmax(pg_current_snapshot())::text,
 		not exists (select 1 from pg_snapshot_xip(pg_current_snapshot())),
@@ -105,5 +112,5 @@ var oldestEventWriterSQL = "with" + eventWritersCTE + oldestEventWriterSelect
 
 // oldestEventWriterSelect is oldestEventWriterSQL's answer over the writers eventWritersFrom reads.
 const oldestEventWriterSelect = `
-	select (case when bool_or(xid is null) then 0 else min(xid) end)::text from writers
+	select (` + oldestWriter + `)::text from writers
 `

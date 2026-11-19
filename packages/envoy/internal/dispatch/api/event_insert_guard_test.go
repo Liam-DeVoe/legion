@@ -23,12 +23,15 @@ const brokerEventInsert = "internal/dispatch/events/broker.go"
 // that an insert moving out of this scan's reach reds rather than passing unseen.
 const brokerEventInserts = 1
 
+// eventsTable names events in each spelling Postgres resolves to it: bare, schema-qualified, and
+// either part quoted. The statements the scan reads are lowercased with their whitespace collapsed
+// (sqlStatements), so one optional space stands for any.
+const eventsTable = `(?:"?public"? ?\. ?)?"?events\b`
+
 // eventInsertStatement is a statement that writes rows into events: an insert, a merge, or a copy
-// from a client or a file, with the table in each spelling Postgres resolves to it (bare,
-// schema-qualified, and either part quoted). A copy to a client reads, and is not one. The
-// statements the scan reads are lowercased with their whitespace collapsed (sqlStatements), so one
-// optional space stands for any.
-var eventInsertStatement = regexp.MustCompile(`\b(?:insert into|merge into) (?:"?public"? ?\. ?)?"?events\b|\bcopy (?:"?public"? ?\. ?)?"?events\b"?(?: ?\([^)]*\))? from\b`)
+// from a client or a file, with the table in each of its spellings (eventsTable). A copy to a
+// client reads, and is not one.
+var eventInsertStatement = regexp.MustCompile(`\b(?:insert into|merge into) ` + eventsTable + `|\bcopy ` + eventsTable + `"?(?: ?\([^)]*\))? from\b`)
 
 // TestOnlyTheBrokerInsertsEvents enforces what every reader of the event log by id rests on: every
 // row of it is written by events.Broker.Append, which keeps two invariants no other insert would.
@@ -112,9 +115,9 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 	}
 }
 
-// eventInsertColumns is an insert into events, in eventInsertStatement's spellings, and its
+// eventInsertColumns is an insert into events, in each of its spellings (eventsTable), and its
 // column list when it has one.
-var eventInsertColumns = regexp.MustCompile(`\binsert into (?:"?public"? ?\. ?)?"?events\b"? ?(\(([^)]*)\))?`)
+var eventInsertColumns = regexp.MustCompile(`\binsert into ` + eventsTable + `"? ?(\(([^)]*)\))?`)
 
 // eventIDSequence names the sequence the events id default draws from, in each spelling
 // eventidtest.SequencePattern reads. The migrations' guard compiles the same pattern.
@@ -143,7 +146,8 @@ var eventIDPatterns = map[string]bool{
 // events' id default. An attach partition names its parent, so another table's attach is no
 // offence. The migrations' schema is held to the same by
 // store.TestOnlyTheEventsIDDefaultDrawsFromItsSequence, which reads the catalog.
-var eventDerivedTable = regexp.MustCompile(`\binherits ?\([^)]*\bevents\b|\binherit (?:"?public"? ?\. ?)?"?events\b|\bpartition of (?:"?public"? ?\. ?)?"?events\b|\balter table (?:if exists )?(?:"?public"? ?\. ?)?"?events\b"? attach partition\b|[(,] ?like (?:"?public"? ?\. ?)?"?events\b`)
+var eventDerivedTable = regexp.MustCompile(`\binherits ?\([^)]*\bevents\b|\binherit ` + eventsTable + `|\bpartition of ` + eventsTable +
+	`|\balter table (?:if exists )?` + eventsTable + `"? attach partition\b|[(,] ?like ` + eventsTable)
 
 // seedSequenceReset is the one source file allowed to name events_id_seq: dispatch-seed's setval
 // after it fills an empty database offline, with no Dispatch serving it (cmd/dispatch-seed).
@@ -217,13 +221,14 @@ func eventCopies(file *ast.File, constants map[string]string) int {
 // holding that lock. A writer that drew its id first (a select of nextval('events_id_seq'), then
 // an insert naming the id) would hold an id the lock table cannot yet show, and the horizon would
 // pass it while it is open. So no statement may name events_id_seq but dispatch-seed's offline
-// setval and a currval of the id the statement's own insert drew (eventIDCurrval), every insert
-// into events lists its columns, without id: a list that leaves id out
-// leaves it to the default, and an insert with no list fills id by position. No source but
-// dispatch-seed's copies rows into events, which writes them through no insert at all. And no
-// statement makes a table from events (inherits, partition of, like): a child's or a partition's
-// rows are rows of events written under a lock on another table, and a table made like events can
-// take its id default.
+// setval and a currval of the id the statement's own insert drew (eventIDCurrval), none may draw
+// with nextval or setval from a sequence that is not one string literal, which can be events_id_seq
+// without spelling it, and every insert into events lists its columns, without id: a list that
+// leaves id out leaves it to the default, and an insert with no list fills id by position. No
+// source but dispatch-seed's copies rows into events, which writes them through no insert at all.
+// And no statement makes a table from events (inherits, partition of, like): a child's or a
+// partition's rows are rows of events written under a lock on another table, and a table made like
+// events can take its id default.
 //
 // Its reach is TestOnlyTheBrokerInsertsEvents's: the module's non-test Go sources as the scan
 // assembles their statements. The migrations' SQL, which the server also runs, is
@@ -302,6 +307,20 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 			{"a.go", "select a$pg_catalog.currval('events_id_seq')", []string{"names the events id sequence"}},
 			{"a.go", "select util.pg_catalog.currval('events_id_seq')", []string{"names the events id sequence"}},
 			{"a.go", `select "pg_catalog".currval('events_id_seq')`, []string{"names the events id sequence"}},
+			{"a.go", "select nextval('events_' || 'id_seq')", []string{"names the events id sequence"}},
+			{"a.go", "select nextval(('events_' || 'id_seq')::regclass)", []string{"names the events id sequence"}},
+			{"a.go", `select nextval(e'events\x5fid\x5fseq')`, []string{"names the events id sequence"}},
+			{"a.go", `select nextval(u&'events\005fid\005fseq')`, []string{"names the events id sequence"}},
+			{"a.go", "select nextval(format('%s_id_seq', 'events'))", []string{"names the events id sequence"}},
+			{"a.go", "select nextval(pg_get_serial_sequence('event' || 's', 'id'))", []string{"names the events id sequence"}},
+			{"a.go", "select setval('events_' || 'id_seq', 1)", []string{"names the events id sequence"}},
+			{"a.go", "select nextval('events_id' || '_seq'::text)", []string{"names the events id sequence"}},
+			{"a.go", "select nextval($1)", []string{"names the events id sequence"}},
+			{"a.go", "select nextval('other_seq'::text)", []string{"names the events id sequence"}},
+			{"a.go", "select nextval('other_seq')", nil},
+			{"a.go", "select nextval('other_seq'::regclass)", nil},
+			{"a.go", "select nextval ( 'other_seq' :: regclass )", nil},
+			{"a.go", "select setval('other_seq', 1), setval('other_seq', 1, false)", nil},
 			{"a.go", sequencePattern, nil},
 			{"a.go", currvalPattern, nil},
 			{"a.go", currvalPattern + " select nextval('events_id_seq')", []string{"names the events id sequence"}},
