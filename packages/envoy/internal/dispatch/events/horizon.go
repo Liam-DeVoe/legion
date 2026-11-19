@@ -221,6 +221,11 @@ type Horizon struct {
 	// instead of sleeping for a share of them to arrive, and hold a caller in it to have it run
 	// again late.
 	afterObservationParked func()
+	// afterObservationBoundary runs after Safe or Await atomically captures the observation count
+	// at its call boundary and reserves next when an observation is in flight, and before it
+	// begins to wait. Nothing in production sets it; the package's test holds a caller there to
+	// prove that the reservation cannot be lost when it runs again after next has ended.
+	afterObservationBoundary func()
 
 	mu sync.Mutex
 	// generation counts Resets. An observation records only into the generation it started in,
@@ -385,10 +390,8 @@ func (h *Horizon) Persisted(ctx context.Context) (int64, error) {
 // before the call, so each such id is at or below H, or stands above it and keeps a gap open
 // until H reaches it.
 func (h *Horizon) Safe(ctx context.Context) (int64, error) {
-	h.mu.Lock()
-	after := h.started
-	h.mu.Unlock()
-	if err := h.observe(ctx, after); err != nil {
+	after, successor := h.observationBoundary()
+	if err := h.observe(ctx, after, successor); err != nil {
 		return 0, err
 	}
 	h.mu.Lock()
@@ -416,14 +419,13 @@ func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 // first failure since the last success, and is then returned; if ctx ends first, the last one is
 // reported with ctx's error. A failure the caller's own ctx caused counts for neither.
 func (h *Horizon) Await(ctx context.Context) (int64, error) {
-	h.mu.Lock()
-	after := h.started
-	h.mu.Unlock()
+	after, successor := h.observationBoundary()
 	wait := horizonBackoffMin
 	var failed error
 	var failingSince time.Time
 	for {
-		err := h.observe(ctx, after)
+		err := h.observe(ctx, after, successor)
+		successor = nil
 		again := false
 		if err == nil {
 			failed = nil
@@ -648,31 +650,65 @@ func (h *Horizon) Reset() {
 	h.persistedSafe = 0
 }
 
-// observe returns once an observation numbered above after has ended, recorded or failed. It
-// joins the one in flight when that one started after the call, and runs one itself when none
-// is in flight. One in flight numbered at or below after started before the caller needed it, so
-// the caller waits it out and then shares next, the observation after it, with every caller that
-// refused the same one. The first start after it ends starts next, whether one of those callers
-// makes it or a caller that finds none in flight does, and each of those callers, however late it
-// runs again, waits for next or takes its answer if it has ended, rather than start one more.
-// Every observation it returns on is thus numbered above after.
-func (h *Horizon) observe(ctx context.Context, after uint64) error {
+// observationBoundary takes the Safe or Await call boundary and reserves next while the same
+// lock says an observation is in flight. A caller that finds one in flight must use an observation
+// after it, even if it is suspended before observe begins and another caller starts and finishes
+// that next observation in the meantime: successor remembers the exact one to take. h.mu makes
+// the count and the reservation one operation, so no caller can be between them.
+func (h *Horizon) observationBoundary() (after uint64, successor *horizonFlight) {
+	h.mu.Lock()
+	after = h.started
+	if h.inFlight != nil {
+		if h.next == nil {
+			h.next = &horizonFlight{done: make(chan struct{})}
+		}
+		successor = h.next
+	}
+	hook := h.afterObservationBoundary
+	h.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return after, successor
+}
+
+// observe returns once an observation numbered above after has ended, recorded or failed. A
+// successor from observationBoundary is the exact observation after one already in flight at the
+// caller's boundary; this caller returns from it even if it completed before observe began. With
+// no successor, it joins the one in flight when that one started after the boundary, or starts one
+// itself when none is. An observation numbered at or below after started before the caller needed
+// it, so the caller reserves next, waits it out and then shares next with every caller that
+// refused the same one. Every observation it returns on is thus numbered above after.
+func (h *Horizon) observe(ctx context.Context, after uint64, successor *horizonFlight) error {
+	parked := false
 	for {
 		h.mu.Lock()
 		flight, ahead := h.inFlight, (*horizonFlight)(nil)
-		run := flight == nil
+		run := false
 		switch {
-		case run:
-			flight = h.startLocked()
+		case successor != nil:
+			switch {
+			case successor.number != 0:
+				flight = successor
+			case flight != nil:
+				flight, ahead = successor, flight
+			default:
+				// successor is h.next: no observation is in flight, so this caller starts the
+				// reservation. startLocked takes it before any later starter can make another.
+				flight, run = h.startLocked(), true
+			}
+		case flight == nil:
+			flight, run = h.startLocked(), true
 		case flight.number <= after:
 			if h.next == nil {
 				h.next = &horizonFlight{done: make(chan struct{})}
 			}
-			flight, ahead = h.next, flight
+			successor, flight, ahead = h.next, h.next, flight
 		}
 		h.mu.Unlock()
-		if !run && h.afterObservationParked != nil {
+		if !run && !parked && h.afterObservationParked != nil {
 			h.afterObservationParked()
+			parked = true
 		}
 		if ahead != nil {
 			select {
@@ -680,13 +716,7 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-			// Every start takes next, so next is still unstarted only while nothing has started
-			// since ahead ended, and then none is in flight: this caller starts it.
-			h.mu.Lock()
-			if run = h.next == flight; run {
-				h.startLocked()
-			}
-			h.mu.Unlock()
+			continue
 		}
 		if run {
 			h.run(ctx, flight)
@@ -698,6 +728,7 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 			}
 		}
 		if flight.abandoned && ctx.Err() == nil {
+			successor = nil
 			continue
 		}
 		return flight.err

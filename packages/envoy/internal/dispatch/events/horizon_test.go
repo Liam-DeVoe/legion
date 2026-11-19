@@ -815,6 +815,77 @@ func TestHorizonACallerThatRunsAgainLateSharesTheObservationAfterTheOneItRefused
 	}
 }
 
+// The call boundary and its reservation of the observation after one in flight are one locked
+// operation. A caller suspended after that operation cannot forget its reservation: after another
+// caller has run it, the suspended caller takes that observation's answer instead of seeing no
+// observation in flight and starting one more. Scripted: the first call holds observation 1; the
+// second reserves observation 2 and stops at the test hook immediately after that reservation;
+// the third also takes that reservation and runs observation 2; then the second resumes. Three
+// calls run two observations. If the second stops between its boundary and the reservation, it
+// runs observation 3 when it resumes, the race this test refuses.
+func TestHorizonCallerSuspendedAfterTheBoundarySharesItsReservedObservation(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	counting := &countingHorizonDB{HorizonDB: database.Pool, entered: make(chan struct{}), release: make(chan struct{})}
+	horizon := NewHorizon(counting)
+	boundary := make(chan struct{}, 1)
+	resume := make(chan struct{})
+	// A failure below must not leave the held observation or the held caller blocked for ever.
+	release, unpause := sync.OnceFunc(func() { close(counting.release) }), sync.OnceFunc(func() { close(resume) })
+	defer release()
+	defer unpause()
+	var boundaries atomic.Int32
+	horizon.afterObservationBoundary = func() {
+		if boundaries.Add(1) == 2 {
+			boundary <- struct{}{}
+			<-resume
+		}
+	}
+	call := func() <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			_, err := horizon.Safe(ctx)
+			done <- err
+		}()
+		return done
+	}
+	await := func(what string, ch <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			t.Fatalf("%s: %v", what, ctx.Err())
+		}
+	}
+	answer := func(which string, done <-chan error) {
+		t.Helper()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("the %s Safe call: %v", which, err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("the %s Safe call has no answer: %v", which, ctx.Err())
+		}
+	}
+
+	first := call()
+	await("the first call's observation never reached the database", counting.entered)
+	second := call()
+	await("the second call never reserved the observation after the one in flight", boundary)
+	third := call()
+	release()
+	answer("first", first)
+	answer("third", third)
+	unpause()
+	answer("second", second)
+	if observations := counting.batches.Load(); observations != 2 {
+		t.Fatalf("three Safe calls, one suspended after reserving the observation after the one in flight, ran %d observations, want 2",
+			observations)
+	}
+}
+
 // Safe must not settle for an observation already in flight when it is called: that one's
 // snapshot can predate an event committed just before the call, and with its A at or below H it
 // leaves no gap (Gap), so a reader would arm no re-read and the event would wait for the next
