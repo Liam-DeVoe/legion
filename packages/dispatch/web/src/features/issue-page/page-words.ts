@@ -1030,6 +1030,10 @@ export const CONTROL_LABELS = freeze({
   save_blocked_by: "Save what it waits on",
   save_parent: "Save parent",
   save_route: "Save route",
+  /** The names a focused row's wide code block and wide table carry while each keeps its tab
+   *  stop, so a reader on the keyboard can reach it and scroll it sideways (decision 317). */
+  scrolls_code: "Code, scrolls sideways",
+  scrolls_table: "Table, scrolls sideways",
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",

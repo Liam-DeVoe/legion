@@ -376,3 +376,76 @@ test("RowText with tabStops leaves its wide code block and table in the tab orde
     close();
   }
 });
+
+/** A box `useOutOfTabOrder` keeps out of the tab order, with `keepScrollers` as given: a code
+ *  block and a table's wrapper, each scrolling sideways. */
+function KeptScrollers({ keepScrollers }: { keepScrollers: boolean }): ReactNode {
+  const box = useRef<HTMLDivElement>(null);
+  useOutOfTabOrder(box, true, { keepScrollers });
+  return (
+    <div ref={box}>
+      <pre data-code="" style={{ overflowX: "auto" }}>
+        bun run e2e --project=chromium
+      </pre>
+      <div data-table="" style={{ overflowX: "auto" }}>
+        <table>
+          <tbody>
+            <tr>
+              <td>value1</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** What `keptState` reads of one scroller of the box. */
+interface ScrollerState {
+  readonly label: string | null;
+  readonly role: string | null;
+  readonly tabIndex: string | null;
+}
+
+/** The tab index, name and role of the box's code block and table wrapper, as drawn. */
+function keptState(container: HTMLElement): ScrollerState[] {
+  return ["[data-code]", "[data-table]"].map((selector) => {
+    const scroller = container.querySelector(selector);
+    return {
+      label: scroller?.getAttribute("aria-label") ?? null,
+      role: scroller?.getAttribute("role") ?? null,
+      tabIndex: scroller?.getAttribute("tabindex") ?? null,
+    };
+  });
+}
+
+// Decision 317: hiding every scroller from the keyboard leaves a reader on the keyboard no way to
+// scroll a wide code block or table sideways, so the focused row's scrollers keep their tab stop,
+// each named by what it scrolls. A `pre` and a wrapper may carry a name only with a role.
+test("useOutOfTabOrder with keepScrollers keeps a code block and a table's wrapper in the tab order, each named by what it scrolls", () => {
+  const view = draw(<KeptScrollers keepScrollers />);
+  try {
+    expect(keptState(view.container)).toEqual([
+      { label: CONTROL_LABELS.scrolls_code, role: "region", tabIndex: "0" },
+      { label: CONTROL_LABELS.scrolls_table, role: "region", tabIndex: "0" },
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A row that loses the focus stops passing `keepScrollers`, and its scrollers leave the tab order
+// again, with no name or role left of the ones they carried while it held the focus.
+test("useOutOfTabOrder takes a kept code block and table's wrapper out of the tab order, unnamed, once keepScrollers turns off", () => {
+  const view = draw(<KeptScrollers keepScrollers />);
+  try {
+    expect(keptState(view.container).map((state) => state.tabIndex)).toEqual(["0", "0"]);
+    view.redraw(<KeptScrollers keepScrollers={false} />);
+    expect(keptState(view.container)).toEqual([
+      { label: null, role: null, tabIndex: "-1" },
+      { label: null, role: null, tabIndex: "-1" },
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
