@@ -4201,6 +4201,10 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/stacktest/*'
+              # docs/room_appends_test.go's proxy listens through testnats.Listen, on the test
+              # binary's own loopback address, and testnats imports testport.
+              - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
@@ -4232,6 +4236,8 @@ jobs:
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
+              - '!packages/envoy/internal/testnats/**/*_test.go'
+              - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               # END generated

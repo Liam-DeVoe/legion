@@ -102,7 +102,7 @@ func WrapKeyValue(conn *nats.Conn, kv nats.KeyValue) (KeyValue, error) {
 
 // startSendsAgain and oneSend are wrapKeyValue's sendAgain, named at the call so the two readings
 // of an unanswered handle open are told apart where they are chosen: a program's start sends the
-// open again (sentAgain), and every other caller sends it once.
+// open again (readAgain), and every other caller sends it once.
 const (
 	startSendsAgain = true
 	oneSend         = false

@@ -2,8 +2,6 @@ package bus
 
 import (
 	"cmp"
-	"context"
-	"encoding/json"
 
 	"github.com/nats-io/nats.go"
 )
@@ -28,37 +26,35 @@ func jsAPI(kind string, names ...string) string {
 // consumer. It is the one path for those: the client's own JetStream context is one (install,
 // ensureConnWithContext), and EnsureKeyValue, SetKeyValueMaxAge, OpenKeyValue, the stream's ensure
 // and the stream's subject read take one over the context their caller hands them. A context
-// already wrapped is returned as it is. Every other method is js's own: ConsumerNames, since its
-// list reports no error a refusal could answer; Publish and the asynchronous publishes, which the
-// bus makes for every message it stores and whose refusal they read off the same record
-// themselves, after the publish (sendStored) or as the refusal arrives (window.acknowledged); and
-// GetLastMsg, a read of one key that GetFromLeader reads the record for after the read
-// (refusedAfter). On a connection no client owns, every method sends as js does, but a purge
-// handed a context is still sent on conn under it (PurgeStream).
+// already wrapped is returned as it is. Every other method is js's own: ConsumerNames, whose list
+// reports no error a refusal could answer, so the one caller that must know of its refusal, the
+// role-lane migrate, reads that list through refusedVia itself (consumerNames); Publish and the
+// asynchronous publishes, which the bus makes for every message it stores and whose refusal they
+// read off the same record themselves, after the publish (sendStored) or as the refusal arrives
+// (window.acknowledged); and GetLastMsg, a read of one key that GetFromLeader reads the record for
+// after the read (refusedAfter). On a connection no client owns, every method sends as js does.
 func readsRefusals(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamContext {
 	if _, ok := js.(refusalReads); ok {
 		return js
 	}
-	return refusalReads{JetStreamContext: js, owner: clientOwning(conn), conn: conn}
+	return refusalReads{JetStreamContext: js, owner: clientOwning(conn)}
 }
 
 // readsOwnRefusals is readsRefusals with c named as the client whose record is read, for c's own
-// JetStream context on conn and its stream ensure: the constructor ensures the stream on the
-// connection it is installing before c owns it (install), when clientOwning cannot find c yet.
-func (c *Client) readsOwnRefusals(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamContext {
+// JetStream context and its stream ensure: the constructor ensures the stream on the connection it
+// is installing before c owns it (install), when clientOwning cannot find c yet.
+func (c *Client) readsOwnRefusals(js nats.JetStreamContext) nats.JetStreamContext {
 	if wrapped, ok := js.(refusalReads); ok {
 		js = wrapped.JetStreamContext
 	}
-	return refusalReads{JetStreamContext: js, owner: c, conn: conn}
+	return refusalReads{JetStreamContext: js, owner: c}
 }
 
 // refusalReads is a JetStream context whose requests read the record of owner, the client that
-// owns its connection, found once when it is built; nil when no client owns it. conn is the
-// connection js sends on, which a purge handed a context is sent on (PurgeStream).
+// owns its connection, found once when it is built; nil when no client owns it.
 type refusalReads struct {
 	nats.JetStreamContext
 	owner *Client
-	conn  *nats.Conn
 }
 
 // refusedVia is refusedBy through r's owner.
@@ -84,64 +80,15 @@ func (r refusalReads) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (
 	})
 }
 
-// PurgeStream sends the purge itself, on r's connection, when it is handed a context
-// (nats.Context), and waits for its answer until that context ends: nats.go's own PurgeStream reads
+// PurgeStream is one request, the stream's purge (nats.go@v1.53.1 jsm.go:1477-1524). nats.go reads
 // only the purge request among its options and waits its JetStream context's own wait, ten
-// seconds, whatever context it is handed (nats.go@v1.53.1 jsm.go:1477-1524), so a purge a start
-// waits for up to its read limit (purgeRoleLane) ran on to that fixed wait. A purge handed no
-// context is js's own.
+// seconds, whatever context it is handed, so a caller that must not wait that long bounds its wait
+// itself: a start's purge of a role lane is waited for up to its read limit (purgeRoleLane).
 func (r refusalReads) PurgeStream(stream string, opts ...nats.JSOpt) error {
 	_, err := refusedVia(r, []string{jsAPI("STREAM.PURGE", stream)}, func() (struct{}, error) {
-		ctx, request := purgeOptions(opts)
-		if ctx == nil {
-			return struct{}{}, r.JetStreamContext.PurgeStream(stream, opts...)
-		}
-		return struct{}{}, purgeUnder(ctx, r.conn, stream, request)
+		return struct{}{}, r.JetStreamContext.PurgeStream(stream, opts...)
 	})
 	return err
-}
-
-// purgeOptions is the context and the purge request among a purge's options, each nil when none
-// is there.
-func purgeOptions(opts []nats.JSOpt) (ctx context.Context, request *nats.StreamPurgeRequest) {
-	for _, opt := range opts {
-		switch opt := opt.(type) {
-		case nats.ContextOpt:
-			ctx = opt.Context
-		case *nats.StreamPurgeRequest:
-			request = opt
-		}
-	}
-	return ctx, request
-}
-
-// purgeUnder sends the purge of stream that request describes (all of the stream when it is nil)
-// on conn, and waits for its answer until ctx ends: the request and the answer nats.go's
-// PurgeStream sends and reads (nats.go@v1.53.1 jsm.go:1492-1524), on the API subject under the
-// default prefix every connection of this package uses (jsAPI). An answer that carries the
-// server's error is that error, a *nats.APIError.
-func purgeUnder(ctx context.Context, conn *nats.Conn, stream string, request *nats.StreamPurgeRequest) error {
-	var body []byte
-	if request != nil {
-		var err error
-		if body, err = json.Marshal(request); err != nil {
-			return err
-		}
-	}
-	answer, err := conn.RequestWithContext(ctx, jsAPI("STREAM.PURGE", stream), body)
-	if err != nil {
-		return err
-	}
-	var purged struct {
-		Error *nats.APIError `json:"error"`
-	}
-	if err := json.Unmarshal(answer.Data, &purged); err != nil {
-		return err
-	}
-	if purged.Error != nil {
-		return purged.Error
-	}
-	return nil
 }
 
 func (r refusalReads) ConsumerInfo(stream, consumer string, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {

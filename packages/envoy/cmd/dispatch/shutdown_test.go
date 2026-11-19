@@ -1128,7 +1128,7 @@ func startDatabaseRelay(t *testing.T, databaseURL string) *databaseRelay {
 	if err != nil {
 		t.Fatalf("parse the database URL: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testnats.Listen()
 	if err != nil {
 		t.Fatalf("listen for the database relay: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
@@ -142,7 +143,7 @@ func startForwarder(t *testing.T, dsn string) *stallingForwarder {
 		t.Fatalf("parse the test database's URL: %v", err)
 	}
 	network, address := pgconn.NetworkAddress(config.Host, config.Port)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testnats.Listen()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

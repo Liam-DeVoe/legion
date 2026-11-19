@@ -48,7 +48,7 @@ func accountInfoSubject() string { return "$JS.API.INFO" }
 // unansweredRelay is a TCP relay between a client and a real NATS server that counts the requests
 // the client sends on one subject and drops the first drops of them: the request never reaches the
 // server, as a member of a metadata group younger than lostQuorumInterval, or one that has not
-// yet seen its leader go, leaves one unanswered (sentAgain), so no answer is ever published and
+// yet seen its leader go, leaves one unanswered (readAgain), so no answer is ever published and
 // the caller's wait runs out with the deadline it held. Everything else both sides send is
 // relayed untouched, so the connection is a real one on a real server and every other request is
 // answered as it always is.
@@ -472,7 +472,7 @@ func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
 // context deadline exceeded" with no bucket made. That request is nats.go's own, sent inside
 // js.CreateKeyValue before the STREAM.CREATE (nats.go@v1.53.1 kv.go:432-434), and a member that is
 // not the metadata leader leaves it unanswered behind the same gate it leaves the create behind
-// (sentAgain). The first account info never reaches the server, so the bucket is the second
+// (readAgain). The first account info never reaches the server, so the bucket is the second
 // send's, and the handle on it is usable.
 func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	const bucket = "envoy_unanswered_info"
@@ -795,6 +795,11 @@ const (
 // The relay holds the first raise heldRequest; the start's own context, a hang guard of 36 s,
 // ends no send here. A start whose raise is never answered ends at its context instead
 // (TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting).
+//
+// The row times the send again, from the held raise's send to the raise's second send, and not
+// the whole start: after the raise the start waits for the raised stream's first election
+// (awaitReplicasCurrent), which takes seconds on a slow or loaded cluster, and which no bound of
+// this row may decide.
 func TestARaiseHeldPastTheJetStreamWaitIsSentAgainAfterItsReadLimit(t *testing.T) {
 	const bucket = "envoy_held_raise"
 	cluster := testnats.StartCluster(t, 3)
@@ -805,21 +810,57 @@ func TestARaiseHeldPastTheJetStreamWaitIsSentAgainAfterItsReadLimit(t *testing.T
 	}
 
 	relay.holdNext(1, heldRequest)
+	timed := &updateWaitJetStream{JetStreamContext: js, stream: "KV_" + bucket}
 	started := time.Now()
-	_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
+	_, err := EnsureKeyValue(t.Context(), conn, timed, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
 	took := time.Since(started)
 	if err != nil {
 		t.Fatalf("a start whose first raise was held %s = %v after %s, want it to go on", heldRequest, err, took.Round(time.Millisecond))
 	}
-	if took >= heldRequestBound {
-		t.Fatalf("the start answered %s after it began, want within %s: a raise whose answer has not come is read back after its read limit, %s, and not waited for up to the JetStream wait, %s",
-			took.Round(time.Millisecond), heldRequestBound, firstReadLimit, RequestTimeout)
+	sent, resent := timed.sent.Load(), timed.resent.Load()
+	if sent == 0 || resent == 0 {
+		t.Fatalf("raises sent through the start's JetStream context = %d, want the held one and the one sent again", timed.sends.Load())
+	}
+	if again := time.Duration(resent - sent); again >= heldRequestBound {
+		t.Fatalf("the raise was sent again %s after the held one went out, want within %s: a raise whose answer has not come is read back after its read limit, %s, and not waited for up to the JetStream wait, %s",
+			again.Round(time.Millisecond), heldRequestBound, firstReadLimit, RequestTimeout)
 	}
 	if info, err := js.StreamInfo("KV_" + bucket); err != nil || info.Config.Replicas != 3 {
 		t.Fatalf("the raised stream = %+v (%v), want 3 copies", info, err)
 	}
 	if sends := relay.sent(); sends < 2 {
 		t.Fatalf("raises sent = %d, want the held one and the one sent again", sends)
+	}
+}
+
+// A start whose create of ENVOY_NOTIFICATIONS reaches the server only after the JetStream wait, as
+// a create that waits in the server's JetStream API queue does, sends the create again after its
+// read limit and goes on: the create sent again is the first to reach the server, which makes the
+// stream and answers it, and the held one lands later as an equal create, carrying the same id
+// (ensureStreamWithConfig). Sent under the caller's whole wait, the start waited the held create's
+// JetStream wait, ten seconds, before it sent it again. The bucket's create step has a row of its
+// own (TestACreateStepThatLosesItsReadOfAnotherStartsBucketGoesOnWithinItsReadLimit).
+func TestANotificationStreamCreateHeldPastTheJetStreamWaitIsSentAgainAfterItsReadLimit(t *testing.T) {
+	relay := startUnansweredRelayOn(t, testnats.URL(t), jsAPI("STREAM.CREATE", Stream))
+	conn, js := relayedJetStream(t, relay)
+
+	relay.holdNext(1, heldRequest)
+	started := time.Now()
+	cfg := *streamCfg
+	_, err := ensureStreamWithConfig(t.Context(), readsRefusals(conn, js), &cfg, capsAnUnsetStream, atStart)
+	took := time.Since(started)
+	if err != nil {
+		t.Fatalf("a start whose first create of %s was held %s = %v after %s, want it to go on", Stream, heldRequest, err, took.Round(time.Millisecond))
+	}
+	if took >= heldRequestBound {
+		t.Fatalf("the start answered %s after it began, want within %s: a create whose answer has not come is sent again after its read limit, %s, and not waited for up to the JetStream wait, %s",
+			took.Round(time.Millisecond), heldRequestBound, firstReadLimit, RequestTimeout)
+	}
+	if _, err := js.StreamInfo(Stream); err != nil {
+		t.Fatalf("read the stream the start created: %v", err)
+	}
+	if sends := relay.sent(); sends < 2 {
+		t.Fatalf("creates of %s sent = %d, want the held one and the one sent again", Stream, sends)
 	}
 }
 
@@ -877,8 +918,8 @@ func TestAMoveOfAConsumerOffTheRoleLanesHeldPastTheJetStreamWaitIsSentAgain(t *t
 	}
 }
 
-// A start's purge of a role lane is sent under its read limit and its own context, so it waits no
-// JetStream wait: nats.go's PurgeStream ignores the context it is handed and waits the context's
+// A start's purge of a role lane is waited for up to its read limit, so the start waits no
+// JetStream wait: nats.go's PurgeStream ignores any context it is handed and waits the context's
 // own ten seconds (nats.go@v1.53.1 jsm.go:1477-1524), and a start once sent the purge once that way
 // and failed "nats: timeout" when its answer had not come by then. With the first purge held past
 // that wait, the start reads the lane after its read limit, finds its message still there, purges
@@ -905,8 +946,14 @@ func TestARoleLanePurgeHeldPastTheJetStreamWaitEndsAtAnAnswerOrTheContext(t *tes
 		if left, err := laneMessages(js, roleLaneSubjects[0]); err != nil || left != 0 {
 			t.Fatalf("messages left on %s = %d (%v), want none", roleLaneSubjects[0], left, err)
 		}
-		if sends := relay.sent(); sends < 2 {
-			t.Fatalf("purges sent = %d, want the held one and more", sends)
+		// Five purges: the held one and the one sent again after the read found the lane's message
+		// still there, the other lane's, and one of each lane after the stream's update
+		// (ensureStreamWithConfig purges the lanes again once the update has landed). The purges
+		// after the update empty the lane whatever the first two did, so only this count tells a
+		// start that read the lane back and purged it again from one that took the held purge as
+		// landed, which sends four.
+		if sends := relay.sent(); sends < 5 {
+			t.Fatalf("purges sent = %d, want 5: the held one, the one sent again, the other lane's and one of each lane after the update", sends)
 		}
 	})
 	t.Run("every purge held", func(t *testing.T) {

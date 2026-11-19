@@ -1282,7 +1282,7 @@ func slowPostgres(t *testing.T, upstream string, dialDelay time.Duration) string
 // and hands each connection to proxyPostgresConnection on their terms.
 func proxyPostgres(t *testing.T, upstream string, blackholed *atomic.Bool, dialDelay time.Duration) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testnats.Listen()
 	if err != nil {
 		t.Fatalf("listen for the Postgres proxy: %v", err)
 	}

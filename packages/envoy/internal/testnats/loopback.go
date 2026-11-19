@@ -43,8 +43,9 @@ func ownLoopback() string {
 	return "127.0.0.1"
 }
 
-// Listen opens a TCP listener on a port the system picks at Loopback: the listener of every relay
-// and proxy that fronts a NATS server of a test, so no client of another test binary reaches it.
+// Listen opens a TCP listener on a port the system picks at Loopback: the listener of every test
+// relay, proxy or fake server another test binary's client could otherwise reach, in front of a
+// NATS server or a database or in place of one, so no client of another test binary reaches it.
 func Listen() (net.Listener, error) {
 	return net.Listen("tcp", net.JoinHostPort(Loopback, "0"))
 }

@@ -61,10 +61,10 @@ func namedRequest(request string, err error) error {
 // (context.DeadlineExceeded, context.Canceled or the guard's errHangGuard).
 //
 // A lookup or a create the server leaves unanswered is sent again rather than waited out for
-// longer (readAgain, sentAgain): nats.go sends each request once, and a member answers neither
+// longer (readAgain): nats.go sends each request once, and a member answers neither
 // while its metadata group is younger than lostQuorumInterval or while it has not yet seen its
 // metadata leader go, and a member that is not an existing bucket's stream leader leaves its
-// lookup unanswered while that stream's leader is gone (sentAgain lists the paths). The create of
+// lookup unanswered while that stream's leader is gone (readAgain lists the paths). The create of
 // a bucket of more than one copy is answered only once its stream's group has elected its first
 // leader, so on a cluster whose election is slow a send of it can run out unanswered until then.
 // A member that knows it has no leader answers an error instead, which unanswered() does not match
@@ -104,7 +104,7 @@ func namedRequest(request string, err error) error {
 // `KV_envoy_interests create: ENVOY_NATS_REPLICAS=3: ...`.
 //
 // The handle open this function ends with is sent again too when the server leaves it unanswered
-// (wrapKeyValue, sentAgain), on both of its paths: a bucket this start created and one it found
+// (wrapKeyValue, readAgain), on both of its paths: a bucket this start created and one it found
 // already there, which is the ordinary start, a restart of a deployment whose buckets exist.
 // EnsureKeyValue is how a program opens a bucket it needs before it can serve: the listener's
 // start, where losing that answer ends the program for the buckets it must hold before it
@@ -192,7 +192,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			// leader is waited for below whatever this start's count is.
 			//
 			// Each of those lookups is sent again when the server leaves it unanswered
-			// (sentAgain). A bucket the member has not applied and a request that drew no answer
+			// (readAgain). A bucket the member has not applied and a request that drew no answer
 			// are two different answers, and each is waited out in its own way: the first is read
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
@@ -415,7 +415,7 @@ func copiesBehind(info *nats.StreamInfo, replicas int) string {
 //
 // The session registry's start makes this call right after it opens the bucket, and a failed call
 // fails that start, so it waits on the cluster as EnsureKeyValue does: the read is sent again
-// while the server leaves it unanswered (sentAgain), and the read and the update end when ctx
+// while the server leaves it unanswered (readAgain), and the read and the update end when ctx
 // ends or the start's hang guard passes (startHangGuard), the update in flight then abandoned
 // (updateStream). The session reaper also makes this call on each pass, under a context of one
 // RequestTimeout, since a pass has no start behind it and its next tick asks again.
