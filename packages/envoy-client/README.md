@@ -1059,6 +1059,17 @@ a PATCH that fails after the post names the posted message. The result is one li
 `priority cleared` on a clear and `reason posted as message <id> (<ref>)` ahead of a close — and a
 server refusal keeps its `code` (`INVALID_STATUS`, `ISSUE_CLOSED`, `EXTERNAL_LINK_TAKEN`) at the
 head of the thrown message.
+`dispatch artifact` without `--force`, for an upload that carries a file or non-blank text, reads
+what the owner holds and refuses a name it holds, naming the document, its newest version and who
+wrote it, and its upload asks Dispatch for a create alone (`create_only`, a JSON member or a
+multipart field), so a document another writer makes after that read is refused the same way and
+gets no version. `--force` sends no `create_only` and writes the held document's next version.
+The command needs Dispatch `legion-envoy-v30.21.0` or later. A release from that one on that
+predates `create_only` ignores it and writes that version, as every upload did. A release before
+it ignores the multipart field too, but refuses the JSON member, as it refuses every member its
+JSON upload does not declare, with `400 INVALID_JSON` and writes nothing; the command's refusal
+then names that likely cause (`OLDER_DISPATCH_REFUSES_CREATE_ONLY`, `held-names.ts`), as the
+daemon's log line of the same refusal does.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
 name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown

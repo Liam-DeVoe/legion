@@ -45,8 +45,12 @@ import {
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
-import { dispatchAnswered } from "./failures";
-import { artifactNameExistsProblem, artifactUnderName } from "./held-names";
+import { dispatchAnswered, refusalWithCode } from "./failures";
+import {
+  artifactNameExistsProblem,
+  artifactUnderName,
+  OLDER_DISPATCH_REFUSES_CREATE_ONLY,
+} from "./held-names";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -924,6 +928,11 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
           ? `${ownerText} already holds ${name}: Dispatch refused the upload with 409 ARTIFACT_NAME_TAKEN (${error.message}). ${ARTIFACT_NAME_EXISTS_RULE}`
           : artifactNameExistsProblem(held, ownerText),
       ]);
+    }
+    // The upload's JSON is the command's own, so Dispatch's 400 INVALID_JSON to a create alone
+    // is a release that refuses the member: the refusal names that likely cause.
+    if (createOnly && dispatchAnswered(error, 400) && error.code === "INVALID_JSON") {
+      throw refusalWithCode(error, OLDER_DISPATCH_REFUSES_CREATE_ONLY);
     }
     throw error;
   }
