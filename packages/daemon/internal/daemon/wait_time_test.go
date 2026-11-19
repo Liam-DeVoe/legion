@@ -168,13 +168,13 @@ func (r *waitDeliveryRig) releaseMarked() bool {
 }
 
 // wantTimeCame asserts wait ended because its time came, ended by its wait_due row's fact and
-// logged once, and that the time was logged once naming the claim, the issue, the role and the
-// wait, with wake when given.
+// logged once, and that the time was logged once naming the claim, the issue, the rig's role and
+// the wait, with wake when given.
 func (r *waitDeliveryRig) wantTimeCame(wait record.ClaimWait, more ...string) {
 	r.t.Helper()
 	r.wantEnded(wait, workflow.WaitEndTimeCame, "outbox/wait-due:"+wait.ID)
 	fragments := append([]string{`msg="wait: its time came"`, "claim=" + string(r.token), "issue=" + r.issue.Key,
-		"role=tester", "wait=" + wait.ID}, more...)
+		"role=" + string(r.role), "wait=" + wait.ID}, more...)
 	if lines := r.lines(fragments...); len(lines) != 1 {
 		r.t.Fatalf("the time of wait %s was logged %d times with %q, want once; the log is:\n%s", wait.ID, len(lines), more, r.logs)
 	}
@@ -185,7 +185,7 @@ func (r *waitDeliveryRig) wantTimeCame(wait record.ClaimWait, more ...string) {
 func wantWaitTask(t *testing.T, sent fake.Prompt, wait record.ClaimWait) {
 	t.Helper()
 	for _, words := range []string{"The time of your wait " + wait.ID + " came.", wait.WaitingOn,
-		"Continue your phase", "declare a new wait"} {
+		"Go on with your phase as it stands.", "declare a new wait"} {
 		if !strings.Contains(sent.Message, words) {
 			t.Fatalf("the tester was sent %q, want the task of wait %s's time, holding %q", sent.Message, wait.ID, words)
 		}

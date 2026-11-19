@@ -758,10 +758,13 @@ func (e *Engine) wakeOrStart(ctx context.Context, tx pgx.Tx, issue record.Issue,
 
 // waitTimeTask is the task a worker is given when the time of its wait comes: the wait's id and
 // what it waited on, that its time came, and what to do now. A woken worker reads it behind the
-// wake's own preamble (WakeTask, pods.WakeWaitTime).
+// wake's own preamble (WakeTask, pods.WakeWaitTime). It says to go on with the phase as it stands
+// and not from where the worker stopped, for the reason the backstop's wake says so: a held
+// merger reads it behind the closed design gate's note (MergerGateNote), and its phase as it
+// stands then is to merge nothing.
 func waitTimeTask(wait record.ClaimWait) string {
 	return fmt.Sprintf("The time of your wait %s came.\nYou waited on this: %s\n"+
-		"Continue your phase from the point where you stopped. If you must wait more, declare a new wait "+
+		"Go on with your phase as it stands. If you must wait more, declare a new wait "+
 		"with the legion tool's declare_wait operation.",
 		wait.ID, strings.TrimSpace(wait.WaitingOn))
 }
