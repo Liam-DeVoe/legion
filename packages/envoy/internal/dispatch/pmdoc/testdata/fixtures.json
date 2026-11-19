@@ -55631,7 +55631,38 @@
                   }
                 }
               ],
-              "text": "'b@c.test/a~b"
+              "text": "'"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "strong",
+                  "attrs": {
+                    "marker": "*"
+                  }
+                },
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:b@c.test",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "b@c.test"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "strong",
+                  "attrs": {
+                    "marker": "*"
+                  }
+                }
+              ],
+              "text": "/a~b"
             },
             {
               "type": "html",
@@ -55681,7 +55712,38 @@
                   }
                 }
               ],
-              "text": "!b@c.test/q?a=1&b=2"
+              "text": "!"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "strong",
+                  "attrs": {
+                    "marker": "*"
+                  }
+                },
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:b@c.test",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "b@c.test"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "strong",
+                  "attrs": {
+                    "marker": "*"
+                  }
+                }
+              ],
+              "text": "/q?a=1&b=2"
             },
             {
               "type": "html",
@@ -55830,8 +55892,8 @@
         }
       ]
     },
-    "yjs_update_v1_b64": "AUgBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgYAAQEGc3Ryb25nDnsibWFya2VyIjoiKiJ9hAECASiGAQMGc3Ryb25nBG51bGyGAQQGc3Ryb25nDnsibWFya2VyIjoiKiJ9hgEFBGxpbmskeyJocmVmIjoiaHR0cDovL3d3dy5hIiwidGl0bGUiOm51bGx9hAEGBXd3dy5hhgELBnN0cm9uZwRudWxshgEMBGxpbmsEbnVsbIYBDQZzdHJvbmcOeyJtYXJrZXIiOiIqIn2EAQ4NJ2JAYy50ZXN0L2F+YoYBGwZzdHJvbmcEbnVsbIcBAQMEaHRtbCgAAR0FdmFsdWUBdwM8Yj6HAR0GBAABHwIqKigAAQAHYmxvY2tJZAF3CGItMDAwMDAxhwEAAwlwYXJhZ3JhcGgHAAEjBgYAASQGc3Ryb25nDnsibWFya2VyIjoiKiJ9hgElBGxpbmskeyJocmVmIjoiaHR0cDovL3d3dy5hIiwidGl0bGUiOm51bGx9hAEmBXd3dy5hhgErBnN0cm9uZwRudWxshgEsBGxpbmsEbnVsbIYBLQZzdHJvbmcOeyJtYXJrZXIiOiIqIn2EAS4TIWJAYy50ZXN0L3E/YT0xJmI9MoYBQQZzdHJvbmcEbnVsbIcBJAMEaHRtbCgAAUMFdmFsdWUBdwM8Yj6HAUMGBgABRQZzdHJvbmcOeyJtYXJrZXIiOiIqIn2EAUYJIGFuZCBtb3JlhgFPBnN0cm9uZwRudWxsKAABIwdibG9ja0lkAXcIYi0wMDAwMDKHASMDCXBhcmFncmFwaAcAAVIGBAABUwIqKoYBVQRsaW5rM3siaHJlZiI6Imh0dHA6Ly93d3cuYXBpLmdpdGh1Yi5jb20vYSIsInRpdGxlIjpudWxsfYQBVhR3d3cuYXBpLmdpdGh1Yi5jb20vYYYBagRsaW5rBG51bGyGAWsKaW5saW5lQ29kZQJ7fYQBbAdiPGI+KioqhgFzCmlubGluZUNvZGUEbnVsbCgAAVIHYmxvY2tJZAF3CGItMDAwMDAzhwFSAwlwYXJhZ3JhcGgHAAF2BgYAAXcGc3Ryb25nDnsibWFya2VyIjoiKiJ9hAF4ASiGAXkGc3Ryb25nBG51bGyGAXoGc3Ryb25nDnsibWFya2VyIjoiKiJ9hgF7BGxpbmsteyJocmVmIjoiSFRUUFM6Ly9sb2NhbGhvc3QvYWBiIiwidGl0bGUiOm51bGx9hAF8FUhUVFBTOi8vbG9jYWxob3N0L2FgYoYBkQEGc3Ryb25nBG51bGyGAZIBBGxpbmsEbnVsbIcBdwMEaHRtbCgAAZQBBXZhbHVlAXcDPGI+hwGUAQYEAAGWAQIqYCgAAXYHYmxvY2tJZAF3CGItMDAwMDA0hwF2AwlwYXJhZ3JhcGgHAAGaAQYGAAGbAQhlbXBoYXNpcw57Im1hcmtlciI6IioifYYBnAEGc3Ryb25nDnsibWFya2VyIjoiKiJ9hgGdAQRsaW5rO3siaHJlZiI6Imh0dHA6Ly93d3cuYXBpLmdpdGh1Yi5jb20vcT9hPTEmYj0yIiwidGl0bGUiOm51bGx9hAGeARx3d3cuYXBpLmdpdGh1Yi5jb20vcT9hPTEmYj0yhgG6AQhlbXBoYXNpcwRudWxshgG7AQZzdHJvbmcEbnVsbIYBvAEEbGluawRudWxshwGbAQMEaHRtbCgAAb4BBXZhbHVlAXcDPGI+KAABmgEHYmxvY2tJZAF3CGItMDAwMDA1AA==",
-    "rendered_by_milkdown": "**([www.a](http://www.a)'b\\@c.test/a\\~b**<b>\\*\\*\n\n**[www.a](http://www.a)!b\\@c.test/q?a=1\\&b=2**<b> **and more**\n\n\\*\\*[www.api.github.com/a](http://www.api.github.com/a)`b<b>***`\n\n**(<HTTPS://localhost/a`b>**<b>\\*\\`\n\n***[www.api.github.com/q?a=1\\&b=2](http://www.api.github.com/q?a=1\\&b=2)***<b>\n",
+    "yjs_update_v1_b64": "AVgBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgYAAQEGc3Ryb25nDnsibWFya2VyIjoiKiJ9hAECASiGAQMGc3Ryb25nBG51bGyGAQQGc3Ryb25nDnsibWFya2VyIjoiKiJ9hgEFBGxpbmskeyJocmVmIjoiaHR0cDovL3d3dy5hIiwidGl0bGUiOm51bGx9hAEGBXd3dy5hhgELBnN0cm9uZwRudWxshgEMBGxpbmsEbnVsbIYBDQZzdHJvbmcOeyJtYXJrZXIiOiIqIn2EAQ4BJ4YBDwZzdHJvbmcEbnVsbIYBEAZzdHJvbmcOeyJtYXJrZXIiOiIqIn2GAREEbGluayd7ImhyZWYiOiJtYWlsdG86YkBjLnRlc3QiLCJ0aXRsZSI6bnVsbH2EARIIYkBjLnRlc3SGARoGc3Ryb25nBG51bGyGARsEbGluawRudWxshgEcBnN0cm9uZw57Im1hcmtlciI6IioifYQBHQQvYX5ihgEhBnN0cm9uZwRudWxshwEBAwRodG1sKAABIwV2YWx1ZQF3AzxiPocBIwYEAAElAioqKAABAAdibG9ja0lkAXcIYi0wMDAwMDGHAQADCXBhcmFncmFwaAcAASkGBgABKgZzdHJvbmcOeyJtYXJrZXIiOiIqIn2GASsEbGluayR7ImhyZWYiOiJodHRwOi8vd3d3LmEiLCJ0aXRsZSI6bnVsbH2EASwFd3d3LmGGATEGc3Ryb25nBG51bGyGATIEbGluawRudWxshgEzBnN0cm9uZw57Im1hcmtlciI6IioifYQBNAEhhgE1BnN0cm9uZwRudWxshgE2BnN0cm9uZw57Im1hcmtlciI6IioifYYBNwRsaW5rJ3siaHJlZiI6Im1haWx0bzpiQGMudGVzdCIsInRpdGxlIjpudWxsfYQBOAhiQGMudGVzdIYBQAZzdHJvbmcEbnVsbIYBQQRsaW5rBG51bGyGAUIGc3Ryb25nDnsibWFya2VyIjoiKiJ9hAFDCi9xP2E9MSZiPTKGAU0Gc3Ryb25nBG51bGyHASoDBGh0bWwoAAFPBXZhbHVlAXcDPGI+hwFPBgYAAVEGc3Ryb25nDnsibWFya2VyIjoiKiJ9hAFSCSBhbmQgbW9yZYYBWwZzdHJvbmcEbnVsbCgAASkHYmxvY2tJZAF3CGItMDAwMDAyhwEpAwlwYXJhZ3JhcGgHAAFeBgQAAV8CKiqGAWEEbGluazN7ImhyZWYiOiJodHRwOi8vd3d3LmFwaS5naXRodWIuY29tL2EiLCJ0aXRsZSI6bnVsbH2EAWIUd3d3LmFwaS5naXRodWIuY29tL2GGAXYEbGluawRudWxshgF3CmlubGluZUNvZGUCe32EAXgHYjxiPioqKoYBfwppbmxpbmVDb2RlBG51bGwoAAFeB2Jsb2NrSWQBdwhiLTAwMDAwM4cBXgMJcGFyYWdyYXBoBwABggEGBgABgwEGc3Ryb25nDnsibWFya2VyIjoiKiJ9hAGEAQEohgGFAQZzdHJvbmcEbnVsbIYBhgEGc3Ryb25nDnsibWFya2VyIjoiKiJ9hgGHAQRsaW5rLXsiaHJlZiI6IkhUVFBTOi8vbG9jYWxob3N0L2FgYiIsInRpdGxlIjpudWxsfYQBiAEVSFRUUFM6Ly9sb2NhbGhvc3QvYWBihgGdAQZzdHJvbmcEbnVsbIYBngEEbGluawRudWxshwGDAQMEaHRtbCgAAaABBXZhbHVlAXcDPGI+hwGgAQYEAAGiAQIqYCgAAYIBB2Jsb2NrSWQBdwhiLTAwMDAwNIcBggEDCXBhcmFncmFwaAcAAaYBBgYAAacBCGVtcGhhc2lzDnsibWFya2VyIjoiKiJ9hgGoAQZzdHJvbmcOeyJtYXJrZXIiOiIqIn2GAakBBGxpbms7eyJocmVmIjoiaHR0cDovL3d3dy5hcGkuZ2l0aHViLmNvbS9xP2E9MSZiPTIiLCJ0aXRsZSI6bnVsbH2EAaoBHHd3dy5hcGkuZ2l0aHViLmNvbS9xP2E9MSZiPTKGAcYBCGVtcGhhc2lzBG51bGyGAccBBnN0cm9uZwRudWxshgHIAQRsaW5rBG51bGyHAacBAwRodG1sKAABygEFdmFsdWUBdwM8Yj4oAAGmAQdibG9ja0lkAXcIYi0wMDAwMDUA",
+    "rendered_by_milkdown": "**([www.a](http://www.a)'<b@c.test>/a\\~b**<b>\\*\\*\n\n**[www.a](http://www.a)!<b@c.test>/q?a=1\\&b=2**<b> **and more**\n\n\\*\\*[www.api.github.com/a](http://www.api.github.com/a)`b<b>***`\n\n**(<HTTPS://localhost/a`b>**<b>\\*\\`\n\n***[www.api.github.com/q?a=1\\&b=2](http://www.api.github.com/q?a=1\\&b=2)***<b>\n",
     "reading": {
       "tables": [],
       "paragraphs": [

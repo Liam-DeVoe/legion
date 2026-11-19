@@ -21,11 +21,11 @@ import (
 // and references; a tokenizer's autolink shows its source as written.
 const decodedLabelAttr = "pmdocDecodedLabel"
 
-// bareAutolinkAttr is the attribute marking an autolink a reader made from bare text, the
-// tokenizer's or the transform's (bareAutolink), with its source offsets, a text.Segment: its
-// emails are the links wholeEmailLinks holds to the rule, and the rule reads through each as
-// through text. goldmark's `<…>` autolink, which the writer wrote, carries none.
-const bareAutolinkAttr = "pmdocBareAutolink"
+// bareEmailAttr is the attribute marking an email autolink a reader made from a bare address, the
+// tokenizer's or the transform's (bareAutolink), with its source offsets, a text.Segment: the
+// links wholeEmailLinks holds to the rule. goldmark's `<…>` autolink, which the writer wrote,
+// carries none.
+const bareEmailAttr = "pmdocBareEmail"
 
 // autolinkText is the text an autolink shows and the href it links to: an email's mailto: URL
 // (emailHref), and a URL's text, `http://` before a www URL's.
@@ -504,37 +504,40 @@ func (piece textPiece) sourceAt(offset int) (*ast.Text, int, bool) {
 }
 
 // wholeEmailLinks holds each email link a reader made from a bare address in parent's text
-// containers (bareAutolinkAttr, textContainers) to Dispatch's rule, once both readers have linked
+// containers (bareEmailAttr, textContainers) to Dispatch's rule, once both readers have linked
 // them (linkifyGuard), where either can start the link inside the address the writer wrote
 // (INFRA-4224). The engine applies the same rule in both of its pipelines (remarkWholeEmailLinks,
 // packages/proof-editor/src/whole-email-links.ts), so the two still agree. The rule reads the run
 // of characters that RFC 5322 allows in a local part (rfcAtext) in the decoded text just before
 // the link: the run ends at the link's own local part, so with it, it ends at the `@`. The walk
 // back stops at the first character outside that set (whitespace, a line break, a letter outside
-// ASCII, any other character). An autolink a reader made from bare text is no markup, so the walk
-// goes on through its label as through text. Any other node ends the walk: the run continues into
-// it only when its text ends in a character of the set (endsInRunCharacter), and then the writer
-// split the address with markup, as in `*agent*-hosts@example.com`, the run is not one run, and
-// the link stays as the reader made it; after code ending in `:`, after `<br>`, after a line break
-// or at the start of the block the run starts there. Otherwise, when every character of the run
-// before the link's own text is one GFM links in a local part (gfmAtext), the link takes the run;
-// when one is not, as the `/` of a resource path, the `%` of `a.b+c_d%e-f@example.com`, the `&`
-// of `agent&amp;hosts@example.com` or the `'` of `www\.a'b@c.test`, the link goes, and its text
-// joins the text around it, while a reader's autolink the run reaches into stays, as that www link
-// does. A run of GFM's characters that reaches into such an autolink leaves both links as they
-// are, since one link never takes another's text. With no run before the link nothing changes:
-// `xé-agent@example.com` keeps `-agent@example.com`, since `é` ends the walk. A link the writer
-// wrote, `[…](mailto:…)`, `[…][label]` or `<…>`, is never changed. The text just before a link is
-// the engine's one text node there: the text and string nodes before it, back to another node or
-// to a text a hard break ends (linkRuns), decoded, so a character reference or an escape in the
-// run counts as its character. A container's links are read in order, so the text a link that
-// went has joined is the text before the next one.
+// ASCII, any other character), and at any node that is no text. There the run continues into the
+// node only when the node's text ends in a character of the set (endsInRunCharacter): then markup
+// the writer wrote, or a link a reader made from bare text, which ends the run as the writer's
+// markup does, splits the address, as in `*agent*-hosts@example.com`, `www\.a'b@c.test` or
+// `a@b.co+c@d.co`; the run is not one run, and the link stays as the reader made it. After code
+// ending in `:`, after `<br>`, after a line break or at the start of the block the run starts
+// there. Otherwise, when every character of the run before the link's own text is one GFM links
+// in a local part (gfmAtext), the link takes the run; when one is not, as the `/` of a resource
+// path, the `%` of `a.b+c_d%e-f@example.com` or the `&` of `agent&amp;hosts@example.com`, the
+// link goes, and its text joins the text around it. Except: where that run holds such a character
+// and a web address that GFM links in the joined text (one starting www., http:// or https://)
+// reaches into the address, the email link the reader made stays, as the base stores it, and no
+// web-address link is made (webAddressReachesInto): `q/&#45;www.a.bhosts@example.com` keeps its
+// link to `www.a.bhosts@example.com`, since both readers link the web address in
+// `q/-www.a.bhosts@example.com`, however its dots are spelled. With no run before the link nothing
+// changes: `xé-agent@example.com` keeps `-agent@example.com`, since `é` ends the walk. A link the
+// writer wrote, `[…](mailto:…)`, `[…][label]` or `<…>`, is never changed. The text just before a
+// link is the engine's one text node there: the text and string nodes before it, back to another
+// node or to a text a hard break ends (linkRuns), decoded, so a character reference or an escape
+// in the run counts as its character. A container's links are read in order, so the text a link
+// that went has joined is the text before the next one.
 func wholeEmailLinks(parent ast.Node, source []byte) {
 	for container := range textContainers(parent) {
 		for child := container.FirstChild(); child != nil; {
 			next := child.NextSibling()
-			if link, ok := child.(*ast.AutoLink); ok && link.AutoLinkType == ast.AutoLinkEmail {
-				if span, bare := link.AttributeString(bareAutolinkAttr); bare {
+			if link, ok := child.(*ast.AutoLink); ok {
+				if span, bare := link.AttributeString(bareEmailAttr); bare {
 					wholeEmailLink(link, span.(text.Segment), source)
 				}
 			}
@@ -553,15 +556,12 @@ func wholeEmailLinks(parent ast.Node, source []byte) {
 // the run after one that is none.
 func wholeEmailLink(link *ast.AutoLink, span text.Segment, source []byte) {
 	// The text pieces the run lies in, from the link back, and where it starts in the last of
-	// them; the run's length, whether GFM links each of its characters in a local part, and
-	// whether it reaches into an autolink a reader made.
+	// them; the run's length, and whether GFM links each of its characters in a local part.
 	var held [4]textPiece
-	pieces, from, length, linked, crossed := held[:0], 0, 0, true, false
+	pieces, from, length, linked := held[:0], 0, 0, true
 walk:
 	for node := link.PreviousSibling(); node != nil; node = node.PreviousSibling() {
-		var value string
-		// crossing is whether node is an autolink a reader made from bare text.
-		crossing := false
+		var piece textPiece
 		switch node := node.(type) {
 		case *ast.Text:
 			if node.SoftLineBreak() || node.HardLineBreak() {
@@ -569,49 +569,37 @@ walk:
 				// engine's break node or the line ending its text holds ends it.
 				break walk
 			}
-			piece := textPiece{node: node}
+			piece = textPiece{node: node}
 			piece.value, piece.offsets = decodeMarkdown(rawValue(node, source), true)
-			pieces = append(pieces, piece)
-			value = piece.value
 		case *ast.String:
-			value = decodeMarkdownText(rawValue(node, source))
-			pieces = append(pieces, textPiece{node: node, value: value})
+			piece = textPiece{node: node, value: decodeMarkdownText(rawValue(node, source))}
 		default:
-			// The walk reads an autolink a reader made from bare text as text (bareAutolinkAttr).
-			autolink, ok := node.(*ast.AutoLink)
-			if ok {
-				_, crossing = autolink.AttributeString(bareAutolinkAttr)
+			if endsInRunCharacter(node, source) {
+				// Markup, or a link a reader made, splits the address: the link stays as the
+				// reader made it.
+				return
 			}
-			if !crossing {
-				if endsInRunCharacter(node, source) {
-					// Markup splits the address: the link stays as the reader made it.
-					return
-				}
-				break walk
-			}
-			value, _ = autolinkText(autolink, source)
+			break walk
 		}
-		end := len(value)
-		for end > 0 && rfcAtext(value[end-1]) {
-			end--
-			linked = linked && gfmAtext(value[end])
+		pieces = append(pieces, piece)
+		from = len(piece.value)
+		for from > 0 && rfcAtext(piece.value[from-1]) {
+			from--
+			linked = linked && gfmAtext(piece.value[from])
 		}
-		length += len(value) - end
-		if crossing {
-			crossed = crossed || end < len(value)
-		} else {
-			from = end
-		}
-		if end > 0 {
+		length += len(piece.value) - from
+		if from > 0 {
 			break
 		}
 	}
-	if length == 0 || linked && crossed {
+	if length == 0 {
 		return
 	}
 	parent := link.Parent()
 	if !linked {
-		parent.ReplaceChild(parent, link, ast.NewTextSegment(span))
+		if !webAddressReachesInto(link, source) {
+			parent.ReplaceChild(parent, link, ast.NewTextSegment(span))
+		}
 		return
 	}
 	first := pieces[len(pieces)-1]
@@ -637,6 +625,54 @@ walk:
 	moved.SetAttributeString(decodedLabelAttr, whole.String())
 	moved.SetPos(start)
 	parent.ReplaceChild(parent, link, moved)
+}
+
+// webAddressReachesInto reports whether the text link would join if it went holds a web address
+// the transform links (findURLs) that reaches into link's text, so that the link stays
+// (wholeEmailLinks): a fresh read of that text would link the web address, which no spelling of
+// it stops, since both readers search the decoded text. The joined text is the engine's one text
+// node there on link's line: the decoded text and string nodes before link, back to another node
+// or to a text that ends the line before, link's own text, and those after it, up to another node
+// or through the text that ends its line. A web address does not run over a line's end, and
+// after one it starts as at the text's start.
+func webAddressReachesInto(link *ast.AutoLink, source []byte) bool {
+	first := ast.Node(link)
+	for node := link.PreviousSibling(); node != nil; node = node.PreviousSibling() {
+		text, isText := node.(*ast.Text)
+		if _, isString := node.(*ast.String); !isText && !isString || isText && (text.SoftLineBreak() || text.HardLineBreak()) {
+			break
+		}
+		first = node
+	}
+	var joined strings.Builder
+	start, end := 0, 0
+join:
+	for node := first; node != nil; node = node.NextSibling() {
+		switch node := node.(type) {
+		case *ast.Text:
+			value, _ := decodeMarkdown(rawValue(node, source), true)
+			joined.WriteString(value)
+			if node.SoftLineBreak() || node.HardLineBreak() {
+				break join
+			}
+		case *ast.String:
+			joined.WriteString(decodeMarkdownText(rawValue(node, source)))
+		default:
+			if node != ast.Node(link) {
+				break join
+			}
+			label, _ := autolinkText(link, source)
+			start = joined.Len()
+			joined.WriteString(label)
+			end = joined.Len()
+		}
+	}
+	for _, url := range findURLs(joined.String()) {
+		if url.start < end && url.end > start {
+			return true
+		}
+	}
+	return false
 }
 
 // rfcAtext reports whether c is a character RFC 5322 allows in an email's local part: its atext,

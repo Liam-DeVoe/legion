@@ -2,7 +2,7 @@ Grant act-as on agent-hosts@example-project.iam.gserviceaccount.com.
 
 projects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com
 
-serviceAccounts/123456789012-compute@developer.gserviceaccount.com
+serviceAccounts/000000000000-compute@developer.gserviceaccount.com
 
 a/b.c@example.com, a/b+c@example.com and a/b_c@example.com
 

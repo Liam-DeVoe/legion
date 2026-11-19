@@ -4,15 +4,16 @@
  *
  * An email link that a reader made from a bare address is read with the run of characters RFC
  * 5322 allows in a local part (its `atext` and `.`) in the decoded text just before it, which a
- * character outside that set ends, and which goes on through the text of a link a reader made
- * from bare text. At any other node the run ends; when that node's text ends in a character of
- * the set, markup splits the address, and the link stays as remark-gfm made it. When every
- * character of the run is one GFM links in a local part (`[-.+_A-Za-z0-9]`), the link takes the
- * run, unless the run reaches into a reader's link, when both stand; when one is not, the link
- * goes, and its text joins the text around it. With no run the link stands, and a link the
- * writer wrote is never changed. Go's reader applies the same rule
- * (`packages/envoy/internal/dispatch/pmdoc/linkify.go`), and these are the rows its tests hold it
- * to.
+ * character outside that set ends. At any node that is no text the run ends too; when that node's
+ * text ends in a character of the set, markup or a link a reader made splits the address, and the
+ * link stays as remark-gfm made it. When every character of the run is one GFM links in a local
+ * part (`[-.+_A-Za-z0-9]`), the link takes the run; when one is not, the link goes, and its text
+ * joins the text around it, unless a web address GFM links in the joined text would then reach
+ * into the address, when the link stays. With no run the link stands, and a link the writer wrote
+ * is never changed. Go's reader applies the same rule (`wholeEmailLinks` in
+ * `packages/envoy/internal/dispatch/pmdoc/autolink_transform.go`), and these are the rows its
+ * tests hold it to; the last are the shapes a write was refused for before (Go's
+ * `TestLinkifyStoresEveryRefusedShape`), which both read from one file.
  *
  * Each row is read in a paragraph, at a line's start after a hard break, in a list item, in a
  * typed block and in a list item there, in a quote and in a table cell. Each is read through the
@@ -25,6 +26,8 @@
  */
 
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
 import remarkGfm from "remark-gfm";
 import remarkInlineLinks from "remark-inline-links";
@@ -113,8 +116,8 @@ const CHANGED_ROWS: readonly Row[] = [
   },
   {
     // Before: a link to `compute@developer.gserviceaccount.com`.
-    markdown: "serviceAccounts/123456789012-compute@developer.gserviceaccount.com",
-    runs: [plain("serviceAccounts/123456789012-compute@developer.gserviceaccount.com")],
+    markdown: "serviceAccounts/000000000000-compute@developer.gserviceaccount.com",
+    runs: [plain("serviceAccounts/000000000000-compute@developer.gserviceaccount.com")],
   },
   {
     // Before, for each of the three: a link to `c@example.com`.
@@ -198,13 +201,6 @@ const CHANGED_ROWS: readonly Row[] = [
       '<span data-proof="comment" data-id="c1" data-by="user:x">a</span>gent&#45;hosts@example.com',
     runs: [plain("a"), address("gent-hosts@example.com")],
   },
-  {
-    // Before: a link to `www.a`, `'` and a link to `b@c.test`. The www link remark-gfm made is
-    // no markup, so the run reaches through its text and holds the `'`: the email link goes, and
-    // the www link stays.
-    markdown: "www\\.a'b@c.test",
-    runs: [{ text: "www.a", link: "http://www.a" }, plain("'b@c.test")],
-  },
 ];
 
 /** The rows the rule leaves alone: each read this way before it too. */
@@ -234,10 +230,56 @@ const CONTROL_ROWS: readonly Row[] = [
     runs: [plain("xé"), address("-agent@example.com")],
   },
   {
-    // The run is GFM's characters and reaches into the email link remark-gfm made before it:
-    // one link never takes another's text, so both stand.
+    // The run is GFM's characters and reaches into the email link remark-gfm made before it: a
+    // link a reader made ends the run as markup does, so both stand.
     markdown: "a@b.co+c@d.co",
     runs: [address("a@b.co"), address("+c@d.co")],
+  },
+  {
+    // So it does whatever the run holds: the `'` before `b@c.test`, the `~`, `%`, `*` and `?` of
+    // these, each after a www link or an email link remark-gfm made.
+    markdown: "www\\.a'b@c.test",
+    runs: [{ text: "www.a", link: "http://www.a" }, plain("'"), address("b@c.test")],
+  },
+  {
+    markdown: "q/www.a.b~hosts@example.com",
+    runs: [
+      plain("q/"),
+      { text: "www.a.b~", link: "http://www.a.b~" },
+      address("hosts@example.com"),
+    ],
+  },
+  {
+    markdown: "x@y.co&#45;%hosts@example.com",
+    runs: [address("x@y.co"), plain("-%"), address("hosts@example.com")],
+  },
+  {
+    markdown: "x@y.co&#45;*hosts@example.com",
+    runs: [address("x@y.co"), plain("-*"), address("hosts@example.com")],
+  },
+  {
+    markdown: "%www.?hosts@example.com",
+    runs: [
+      plain("%"),
+      { text: "www", link: "http://www" },
+      plain(".?"),
+      address("hosts@example.com"),
+    ],
+  },
+  {
+    // The run holds a character GFM does not link, and once the link went, a web address GFM
+    // links would reach into the address (`q/-www.a.bhosts@example.com`, `'_www.a.b…`,
+    // `http://-a.b@c.co`): the link remark-gfm made stands.
+    markdown: "'_www.a.bhosts@example.com",
+    runs: [plain("'"), address("_www.a.bhosts@example.com")],
+  },
+  {
+    markdown: "q/&#45;www.a.bhosts@example.com",
+    runs: [plain("q/-"), address("www.a.bhosts@example.com")],
+  },
+  {
+    markdown: "http://&#45;a.b@c.co",
+    runs: [plain("http://-"), address("a.b@c.co")],
   },
   {
     // Inline markup splits the address: the text before the run's text ends in a character of
@@ -394,6 +436,60 @@ for (const context of CONTEXTS) {
       await expectRow(row, context);
     });
   }
+}
+
+/**
+ * A shape a write was refused for before the rule's last change, with the runs Go reads: the 66
+ * the round-5 review of INFRA-4224 listed (its `infra-4224-r5-refused-shapes.jsonl`) and 5 more of
+ * cause B. Go's `TestLinkifyStoresEveryRefusedShape` holds Go to the same file. Each is read
+ * whole, in the block it is written in, in all three pipelines.
+ */
+interface RefusedShape {
+  readonly markdown: string;
+  readonly runs: readonly Run[];
+}
+
+const REFUSED_SHAPES = readFileSync(
+  join(import.meta.dir, "../../envoy/internal/dispatch/pmdoc/testdata/refused-email-shapes.jsonl"),
+  "utf8"
+)
+  .trim()
+  .split("\n")
+  .map((line): RefusedShape => JSON.parse(line));
+
+/**
+ * What the paste reads of a shape where it reads a tree of its own for a reason that is no part of
+ * this rule: it keeps a line's ending as a hard break, and drops a `<br>`. Its links are the
+ * engine's still.
+ */
+const REFUSED_SHAPES_PASTED: Readonly<Record<string, readonly Run[]>> = {
+  "- *}\n&www.q.r~~x@y.cohosts@example.com\n": [
+    plain("*}"),
+    HARD_BREAK,
+    plain("&"),
+    { text: "www.q.r~~", link: "http://www.q.r~~" },
+    address("x@y.cohosts"),
+    plain("@example.com"),
+  ],
+  ':::callout{#c1 kind="note" title="T"}\n\\-<br>www.\\}?hosts@example.com}\n:::\n': [
+    plain("-"),
+    { text: "www", link: "http://www" },
+    plain(".}?"),
+    address("hosts@example.com"),
+    plain("}"),
+  ],
+};
+
+for (const shape of REFUSED_SHAPES) {
+  test(`refused before, stored now: ${JSON.stringify(shape.markdown)}`, async () => {
+    const [headless, readOnly, paste] = await readings(shape.markdown);
+    for (const [pipeline, doc] of [headless, readOnly]) {
+      expect(runsOf(doc), pipeline).toEqual([...shape.runs]);
+    }
+    const pasted = REFUSED_SHAPES_PASTED[shape.markdown] ?? shape.runs;
+    expect(runsOf(paste[1]), paste[0]).toEqual([...pasted]);
+    expect(tree(readOnly[1]), readOnly[0]).toEqual(tree(headless[1]));
+  });
 }
 
 /**

@@ -58,8 +58,10 @@ func linkifyParsers() []util.PrioritizedValue {
 // transform after a `-`, `.`, `+` or `_` once a `/` has refused the address's first character
 // (findEmails: `projects/p/serviceAccounts/agent-hosts@example.com` links `hosts@example.com`).
 // There the reading is Dispatch's own rather than remark-gfm's: once both readers have linked a
-// block (CloseBlock), each email link a reader made from a bare address is held to the address as
-// written, by the rule wholeEmailLinks states in full.
+// block (CloseBlock), each email link a reader made from a bare address takes the whole address
+// or goes, so the address reads as written, except where markup, a link a reader made or a web
+// address the transform links splits the address, where the link stays as the reader made it: the
+// rule wholeEmailLinks states in full.
 //
 // Asking the guard at a character no other parser is asked at ends the text goldmark is building
 // there: a line asked at a `.` and nowhere else becomes two texts. The guard records the last such
@@ -236,13 +238,15 @@ func readLiteralAddress(parent ast.Node, block text.Reader, pc parser.Context, s
 }
 
 // bareAutolink is the autolink of a bare address of kind at source offsets [start, end), whose
-// href takes an `http://` before a www URL. It is marked as one a reader made from bare text
-// (bareAutolinkAttr), which goldmark's `<…>` autolink is not.
+// href takes an `http://` before a www URL. An email's is marked as one a reader made from a bare
+// address (bareEmailAttr), which goldmark's `<…>` autolink is not.
 func bareAutolink(kind ast.AutoLinkType, www bool, start, end int) *ast.AutoLink {
 	segment := text.NewSegment(start, end)
 	link := ast.NewAutoLink(kind, ast.NewTextSegment(segment))
-	link.SetAttributeString(bareAutolinkAttr, segment)
-	if www {
+	switch {
+	case kind == ast.AutoLinkEmail:
+		link.SetAttributeString(bareEmailAttr, segment)
+	case www:
 		link.Protocol = []byte("http")
 	}
 	return link

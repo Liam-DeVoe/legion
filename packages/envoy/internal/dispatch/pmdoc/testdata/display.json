@@ -609,7 +609,7 @@
   },
   {
     "name": "email-links-whole-or-not-at-all",
-    "markdown": "Grant act-as on agent-hosts@example-project.iam.gserviceaccount.com.\n\nprojects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com\n\nserviceAccounts/123456789012-compute@developer.gserviceaccount.com\n\na/b.c@example.com, a/b+c@example.com and a/b_c@example.com\n\nserviceAccounts/agenthosts@example.com\n\nx agent\u0026#45;hosts@example.com\n\nprojects/p/serviceAccounts/agent-hosts\\@example.com\n\nxé-agent@example.com\n\nxé\u0026#45;hosts@example.com\n\nx $agent\u0026#45;hosts@example.com\n\na.b+c_d%e-f@example.com and agent\u0026amp;hosts@example.com\n\nx 'agent\u0026#45;hosts@example.com', x =agent\u0026#45;hosts@example.com, x #agent\u0026#45;hosts@example.com, x ?agent\u0026#45;hosts@example.com and x ^agent\u0026#45;hosts@example.com\n\nagent\u0026#45;hosts@example.com\n\nx\u003cbr\u003eprojects/p/serviceAccounts/agent-hosts@example.com\n\n`SA:`agent\u0026#45;hosts@example.com and \u003cspan data-proof=\"comment\" data-id=\"c1\" data-by=\"user:x\"\u003ea\u003c/span\u003egent\u0026#45;hosts@example.com\n\n*agent*-hosts@example.com, `agent`-hosts@example.com and *agent*\u0026#45;hosts@example.com\n\nwww\\.a'b@c.test and a@b.co+c@d.co\n\n- agent-hosts@example.com\n- x agent-hosts@example.com\n\n:::callout{kind=\"note\"}\n- agent-hosts@example.com\n- x agent-hosts@example.com\n:::\n\n\u003e projects/p/serviceAccounts/agent-hosts@example.com\n\n| Account |\n| --- |\n| projects/p/serviceAccounts/agent-hosts@example.com |\n| x agent\u0026#45;hosts@example.com |\n\nagent-[hosts@example-project.iam.gserviceaccount.com](mailto:hosts@example-project.iam.gserviceaccount.com), agent-\u003chosts@example.com\u003e, a/\u003chosts@example.com\u003e, [agent-hosts@example.com](mailto:agent-hosts@example.com) and \u003cagent-hosts@example.com\u003e\n",
+    "markdown": "Grant act-as on agent-hosts@example-project.iam.gserviceaccount.com.\n\nprojects/example-project/serviceAccounts/agent-hosts@example-project.iam.gserviceaccount.com\n\nserviceAccounts/000000000000-compute@developer.gserviceaccount.com\n\na/b.c@example.com, a/b+c@example.com and a/b_c@example.com\n\nserviceAccounts/agenthosts@example.com\n\nx agent\u0026#45;hosts@example.com\n\nprojects/p/serviceAccounts/agent-hosts\\@example.com\n\nxé-agent@example.com\n\nxé\u0026#45;hosts@example.com\n\nx $agent\u0026#45;hosts@example.com\n\na.b+c_d%e-f@example.com and agent\u0026amp;hosts@example.com\n\nx 'agent\u0026#45;hosts@example.com', x =agent\u0026#45;hosts@example.com, x #agent\u0026#45;hosts@example.com, x ?agent\u0026#45;hosts@example.com and x ^agent\u0026#45;hosts@example.com\n\nagent\u0026#45;hosts@example.com\n\nx\u003cbr\u003eprojects/p/serviceAccounts/agent-hosts@example.com\n\n`SA:`agent\u0026#45;hosts@example.com and \u003cspan data-proof=\"comment\" data-id=\"c1\" data-by=\"user:x\"\u003ea\u003c/span\u003egent\u0026#45;hosts@example.com\n\n*agent*-hosts@example.com, `agent`-hosts@example.com and *agent*\u0026#45;hosts@example.com\n\nwww\\.a'b@c.test and a@b.co+c@d.co\n\n- agent-hosts@example.com\n- x agent-hosts@example.com\n\n:::callout{kind=\"note\"}\n- agent-hosts@example.com\n- x agent-hosts@example.com\n:::\n\n\u003e projects/p/serviceAccounts/agent-hosts@example.com\n\n| Account |\n| --- |\n| projects/p/serviceAccounts/agent-hosts@example.com |\n| x agent\u0026#45;hosts@example.com |\n\nagent-[hosts@example-project.iam.gserviceaccount.com](mailto:hosts@example-project.iam.gserviceaccount.com), agent-\u003chosts@example.com\u003e, a/\u003chosts@example.com\u003e, [agent-hosts@example.com](mailto:agent-hosts@example.com) and \u003cagent-hosts@example.com\u003e\n",
     "latest": {
       "type": "doc",
       "content": [
@@ -652,7 +652,7 @@
           "content": [
             {
               "type": "text",
-              "text": "serviceAccounts/123456789012-compute@developer.gserviceaccount.com"
+              "text": "serviceAccounts/000000000000-compute@developer.gserviceaccount.com"
             }
           ]
         },
@@ -967,7 +967,23 @@
             },
             {
               "type": "text",
-              "text": "'b@c.test and "
+              "text": "'"
+            },
+            {
+              "type": "text",
+              "text": "b@c.test",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:b@c.test"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " and "
             },
             {
               "type": "text",
@@ -1348,7 +1364,7 @@
           "content": [
             {
               "type": "text",
-              "text": "serviceAccounts/123456789012-compute@developer.gserviceaccount.com"
+              "text": "serviceAccounts/000000000000-compute@developer.gserviceaccount.com"
             }
           ]
         },
@@ -1663,7 +1679,23 @@
             },
             {
               "type": "text",
-              "text": "'b@c.test and "
+              "text": "'"
+            },
+            {
+              "type": "text",
+              "text": "b@c.test",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:b@c.test"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " and "
             },
             {
               "type": "text",
