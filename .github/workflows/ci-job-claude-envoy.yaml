@@ -66,6 +66,24 @@ jobs:
       - name: Put the checked build into CI's checkout for the pack
         timeout-minutes: 46
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
+      # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
+      # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
+      # zsh is missing; the runner image has no zsh.
+      # Both apt phases retry through .github/scripts/ci-retry.sh, in e2e.yaml's spelling; their
+      # bounds, and why the index read carries `-o APT::Update::Error-Mode=any`: ci-budgets.md's
+      # Retries note.
+      - name: Install zsh
+        # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
+        # being cut part way by the job: the index read's 5 x 95 + 150 = 625 s and the package
+        # download's 5 x 125 + 150 = 775 s, 1400 s -> 24 min.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
+          retry_fetch "zsh" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d zsh
+          sudo apt-get install -y --no-install-recommends zsh
       - name: Test Claude Envoy plugin
         run: bun run test
         working-directory: packages/claude-envoy

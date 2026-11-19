@@ -12737,8 +12737,10 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 # W14 is the verb reader's wrappers (P11, P12): the words after a wrapper the gate drops were read
 # as the command, so `nice -n 10 curl` ran a command named `-n`, and `busybox wget` a command
 # named busybox, and neither fetch was read. The options the gate reads, `env -i`, `env -u
-# <name>`, `nice -n <n>` and `sudo -E`, pass through to the command, so a bare fetch behind one is
-# refused at the floor, a `retry_fetch` behind `env -i` is the helper behind a wrapper, which
+# <name>`, `nice -n <n>`, `sudo -E` and `sudo -u <user>`, pass through to the command, so a bare
+# fetch behind one is refused at the floor, a `psql` behind `sudo -u postgres`, which
+# dispatch-unit-repeat.yaml writes since this branch's merge of main's #4267, fetches nothing and
+# passes, a `retry_fetch` behind `env -i` is the helper behind a wrapper, which
 # fetches nothing, and `env -i` inside the helper is a retried fetch that passes. Any other option
 # of a wrapper, `env -S` and `nice --adjustment=5` here, and `busybox`, are refused by name in a
 # step, in a `bash -c` text and in a Dockerfile RUN, and worker.Dockerfile's `env -u CGO_ENABLED
@@ -12778,13 +12780,18 @@ jobs:
           retry_fetch "the asset" 30 -- env -i PATH=/x curl -fsSL --max-time 30 -o b https://example.com/b
       - name: Print busybox's own help, which runs no applet
         run: busybox --help | head -n 1 && busybox --list
+      - name: Run a bare curl under sudo -u
+        run: sudo -u postgres curl -fsSL https://example.com/x -o x
+      - name: Run psql as postgres under sudo -u
+        run: sudo -u postgres psql -c 'select 1'
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 for floor in "8	curl	Run a bare curl under nice -n	fetches without the floor" \
   "10	curl	Run a bare curl under env -u	fetches without the floor" \
-  "12	apt-get update	Run a bare apt-get update under sudo -E	fetches with no retry"; do
+  "12	apt-get update	Run a bare apt-get update under sudo -E	fetches with no retry" \
+  "31	curl	Run a bare curl under sudo -u	fetches without the floor"; do
   IFS=$'\t' read -r line verb step says <<<"$floor"
   check "reads '$step' through to its $verb, and refuses it at the floor" \
     "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::.$verb. in step .$step. $says")"
@@ -12812,7 +12819,9 @@ check "passes a step that prints busybox's own help and list" \
   "$(is "$(contains "$out" "Print busybox's own help")" false)"
 check "passes the RUN that prints busybox's own help" \
   "$(is "$(contains "$out" "worker.Dockerfile,line=5")" false)"
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 9)"
+check "passes psql behind sudo -u postgres, which fetches nothing" \
+  "$(is "$(contains "$out" "Run psql as postgres under sudo -u")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 10)"
 
 # W15. Four routes the Spec draft's review drove past the gate at a856bb35, each exit 0 under a
 # one-minute key (dispatch://INFRA-1545, round 38). A literal path names a file of the tree from

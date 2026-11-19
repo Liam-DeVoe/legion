@@ -387,8 +387,9 @@
 #     and a `retry_fetch` call outside its signature or behind a wrapper, wherever written
 #     (odd_command);
 #   - an option of a wrapper this check drops (PASSTHROUGH) other than those it reads, `env -i`,
-#     `env -u <name>`, `nice -n <n>`, `sudo -E` and `command -v` (WRAPPER_OPTIONS), `env -S`
-#     among them, and `busybox` as a command word with any program after it, wherever written
+#     `env -u <name>`, `nice -n <n>`, `sudo -E`, `sudo -u <user>` and `command -v`
+#     (WRAPPER_OPTIONS), `env -S` among them, and `busybox` as a command word with any program
+#     after it, wherever written
 #     (`busybox --help`, `--list` and `--list-full` run no program and pass),
 #     whatever the command holds, in a step, a script, the text of a shell's `-c` and a
 #     Dockerfile RUN: this check reads no fetch and no run of a script after either, and until
@@ -1359,19 +1360,23 @@ PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", 
 # The options of a PASSTHROUGH wrapper this check reads, each with the number of words after it
 # that it takes, or RUNS_NOTHING where the wrapper then runs no command: `command -v curl` prints
 # where curl is found. These are the forms the tree writes behind a wrapper, `command -v` in its
-# actions, scripts and Dockerfiles and `env -u <name>` in worker.Dockerfile's two `go env` reads,
-# and the three a wrapper is most often written with, `env -i`, `nice -n <n>` and `sudo -E`. Any
-# other option after a wrapper, `env -S`, which splits a string this check does not read, `nice
-# --adjustment=5` or `sudo -u <user>` among them, is refused by name wherever it is written
-# (odd_command): until round 38 the word after a wrapper was read as the command, so `nice -n 10
-# curl …` was a run of a program named `-n`, and its fetch, or the script it ran, was read as
-# nothing (dispatch://INFRA-1545, round 38).
+# actions, scripts and Dockerfiles, `env -u <name>` in worker.Dockerfile's two `go env` reads and
+# `sudo -u <user>` in dispatch-unit-repeat.yaml's psql as the server's postgres account, and the
+# three a wrapper is most often written with, `env -i`, `nice -n <n>` and `sudo -E`. Any other
+# option after a wrapper, `env -S`, which splits a string this check does not read, `nice
+# --adjustment=5` or `sudo --user=<user>`, a long form no entry reads, among them, is refused by
+# name wherever it is written (odd_command): until round 38 the word after a wrapper was read as
+# the command, so `nice -n 10 curl …` was a run of a program named `-n`, and its fetch, or the
+# script it ran, was read as nothing (dispatch://INFRA-1545, round 38).
 RUNS_NOTHING = -1
 WRAPPER_OPTIONS = {
     "command": {"-v": RUNS_NOTHING, "-V": RUNS_NOTHING},
     "env": {"-i": 0, "-u": 1},
     "nice": {"-n": 1},
-    "sudo": {"-E": 0},
+    # `-u <user>` since this branch's merge of main's #4267, whose
+    # .github/workflows/dispatch-unit-repeat.yaml:208 (the `Start PostgreSQL for the harness rows
+    # that need a database` step) runs `sudo -u postgres psql …`, which the gate refused by name.
+    "sudo": {"-E": 0, "-u": 1},
 }
 # Transparent, but the command they run is inside the script string behind `-c`, which rule 8
 # reads in one form, `bash -c '<text>'` (sites_of_command). The one list of shells this check
@@ -2360,7 +2365,8 @@ TIMEOUT_CLUSTER = (
 # charged to no budget. The tree writes neither.
 WRAPPER_OPTION = (
     "runs `{wrapper}` with `{option}`, an option of it this check does not read: it reads "
-    "`env -i`, `env -u <name>`, `nice -n <n>`, `sudo -E` and `command -v` alone, and after any "
+    "`env -i`, `env -u <name>`, `nice -n <n>`, `sudo -E`, `sudo -u <user>` and `command -v` "
+    "alone, and after any "
     "other option reads no command, so a fetch or a script run there is held to no floor and "
     "charged to no budget. Write the wrapper with none of its options but those, and set a "
     "variable the command needs as an assignment before it, `NAME=value curl …`, rather than "
