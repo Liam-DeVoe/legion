@@ -5,11 +5,13 @@
 // change of what Dispatch observes as a state event on notifications.legion.<token>.state. The
 // intake (intake.go) takes those events from the held durable bus.DispatchLegionStateDurable and
 // writes every value that moved in legion_observations, with one legion_reads row for each message
-// it applies. It reads the daemon's `GET /legion/v1/state` whole (ReadWhole, through this file's
-// Client) only where the events cannot carry the state: a project with no starting point, a boot
-// or a gap that does not follow, and a read owed since one failed. No timer reads a daemon. So
-// the Legion board (api/legion_board.go) and the four metrics (legion/metrics) read Dispatch's
-// own tables rather than a daemon.
+// it applies. It reads the daemon's `GET /legion/v1/state` whole (Intake.readWhole, through this
+// file's Client) only for the reasons the ReadReason constants name (intake.go): a project with no
+// starting point, a boot that does not follow, a boot whose schema version moved, a gap the stream
+// no longer holds, a read owed since one failed, a message of another store and a message the
+// database refuses for good, and a project's reads start at least ReadRetryAfter apart. No timer
+// reads a daemon. So the Legion board (api/legion_board.go) and the four metrics (legion/metrics)
+// read Dispatch's own tables rather than a daemon.
 //
 // Two bounds hold a read (the plan's D14, the spec's contract 6): RequestTimeout on the call and
 // ResponseLimit on the body, about nine times the 877,746 bytes the INFRA daemon's state measured.
@@ -30,7 +32,7 @@ import (
 	"time"
 )
 
-// StatePath is the daemon route a whole read (ReadWhole) reads a project's state from. It
+// StatePath is the daemon route a whole read (Intake.readWhole) reads a project's state from. It
 // authenticates nobody, and Dispatch sends it no credential.
 const StatePath = "/legion/v1/state"
 
@@ -110,7 +112,8 @@ func callFailure(err error) error {
 }
 
 // State reads the daemon's own state: the state it answered and the bytes it sent, which a whole
-// read records whether the read succeeded or not (ReadWhole). Every failure wraps ErrUnavailable.
+// read records whether the read succeeded or not (Intake.readWhole). Every failure wraps
+// ErrUnavailable.
 //
 // The decode is loose — encoding/json ignores a field State does not name — so a daemon that
 // grows the route's shape is still read (state.go). The call carries no credential: the route

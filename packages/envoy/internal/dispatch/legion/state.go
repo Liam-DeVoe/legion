@@ -38,7 +38,7 @@ type State struct {
 	// bytes the daemon sent: the board carries them and Dispatch models none of them, so a key
 	// added to legion.yaml is recorded the day a daemon sends it.
 	Settings map[string]json.RawMessage `json:"settings,omitempty"`
-	// Daemon is the daemon block, which no observation records: a whole read (ReadWhole) checks
+	// Daemon is the daemon block, which no observation records: a whole read (fetchWhole) checks
 	// the state is the setting's project's and takes the starting point it reflects from it.
 	Daemon *Daemon `json:"daemon,omitempty"`
 }

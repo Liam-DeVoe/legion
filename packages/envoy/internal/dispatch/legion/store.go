@@ -32,10 +32,10 @@ var ErrNoSettings = errors.New("this project has no Legion daemon configured")
 
 // StateChannel is the Postgres notification channel each record of a daemon's state announces
 // itself on, with the project as its payload, in the shape of delivery.SettingsChannel: a batch of
-// state events the intake applied, and a whole read (ReadWhole). Nothing in Dispatch's own event
-// log announces a remote daemon's state, so the intake's own write is what an open Legion board
-// hears (api/delivery_live_hub.go). A whole read announces itself whether or not it changed an
-// observation, since the board's header carries the read itself — when it was made, and why it
+// state events the intake applied, and a whole read (Intake.readWhole). Nothing in Dispatch's own
+// event log announces a remote daemon's state, so the intake's own write is what an open Legion
+// board hears (api/delivery_live_hub.go). A whole read announces itself whether or not it changed
+// an observation, since the board's header carries the read itself — when it was made, and why it
 // failed.
 const StateChannel = "dispatch_legion_state"
 
@@ -183,32 +183,10 @@ func settingWritten(ctx context.Context, tx pgx.Tx, project string) error {
 	return nil
 }
 
-// RecordRead records a good whole read of project's daemon, at `at` with its bytes, in one
-// transaction through the step the intake's whole read takes in its own (recordRead, as
-// recordWhole takes it): every observation that moved, the legion_reads row of kind `read`, with
-// no reason, and the read's announcement on StateChannel. It answers how many observations it
-// wrote. It writes no cursor, which is recordWhole's: tests record a read's observations with it,
-// on the path a whole read's record runs.
-func RecordRead(ctx context.Context, pool *store.Pool, project string, at time.Time, bytes int, observations []Observation) (int64, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("open the transaction of the Legion state read of %s: %w", project, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	written, err := recordRead(ctx, tx, project, "", &wholeRead{at: at, bytes: bytes, observations: observations, observed: true})
-	if err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit the Legion state read of %s: %w", project, err)
-	}
-	return written, nil
-}
-
-// recordRead is the step every whole read's record takes inside its transaction (recordWhole,
-// RecordRead): the read's observations where it observed them (recordObservations), its
-// legion_reads row of kind `read` at the read's time, naming reason ("" for none) and its failure,
-// and its announcement on StateChannel (NotifyRead). It answers how many observations it wrote.
+// recordRead is the step every whole read's record takes inside its transaction (recordWhole):
+// the read's observations where it observed them (recordObservations), its legion_reads row of
+// kind `read` at the read's time, naming reason and its failure, and its announcement on
+// StateChannel (NotifyRead). It answers how many observations it wrote.
 //
 // The board's header reads the newest legion_reads row as the last read, and its columns read the
 // newest observations, so the two commit together or not at all: a read whose observations
@@ -219,15 +197,12 @@ func recordRead(ctx context.Context, tx pgx.Tx, project, reason string, read *wh
 			return 0, err
 		}
 	}
-	var failure, why *string
+	var failure *string
 	if read.failure != nil {
 		text := read.failure.Error()
 		failure = &text
 	}
-	if reason != "" {
-		why = &reason
-	}
-	if _, err := tx.Exec(ctx, insertRead, project, read.at, read.failure == nil, failure, read.bytes, readKindRead, why); err != nil {
+	if _, err := tx.Exec(ctx, insertRead, project, read.at, read.failure == nil, failure, read.bytes, readKindRead, reason); err != nil {
 		return 0, fmt.Errorf("store the Legion state read of %s: %w", project, err)
 	}
 	if err := NotifyRead(ctx, tx, project); err != nil {

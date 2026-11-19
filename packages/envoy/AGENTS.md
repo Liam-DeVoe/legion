@@ -345,7 +345,7 @@ Each item below names a task and where its code is, then notes on it.
 
   A project's Legion daemon is the one whose state Dispatch records (`store.go`, `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon`, with no route listing every project's).
   `intake.go` takes every daemon's state events from the held durable `legion-state-events` (`bus.DispatchLegionStateDurable`, through `delivery.NewHeldDurable`), so one process at a time applies them, and records what moved (`state.go`, migration `20261103170923_legion_state`), with each project's cursor in `legion_event_cursors` (migration `20261118212431_legion_events`) and the newest row of each field kept in `legion_current` by a trigger in the same transaction (migration `20261117022936_legion_current`), which the intake's writes, the board and the metrics read rather than the whole history.
-  It reads a daemon's `GET /legion/v1/state` whole (`ReadWhole`) only where the events cannot carry the state, and no timer reads one;
+  It reads a daemon's `GET /legion/v1/state` whole (`Intake.readWhole`) only for the reasons its `ReadReason*` constants name, at most once a minute per project (`ReadRetryAfter`), and no timer reads one;
   `api/legion_board.go` serves `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view from those records, and `metrics/` computes from them the four Legion delivery metrics, which no route serves: that package is here for the evals of dispatch://INFRA-2916 to call, and only tests call it today; no dashboard page draws either
 
 - **`issue.deployed`: a merged pull request reached production**: `internal/dispatch/delivery/deployed.go`

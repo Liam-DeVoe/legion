@@ -219,14 +219,20 @@ func (r *intakeRig) publishOf(project, run string, at time.Time, events ...map[s
 // daemon split, with more of it to come.
 func (r *intakeRig) publishIn(project, run, stateID string, at time.Time, more bool, events ...map[string]any) {
 	r.t.Helper()
-	first, last := events[0]["seq"].(int), events[len(events)-1]["seq"].(int)
 	message := map[string]any{
-		"project": project, "run": run, "stateId": stateID, "firstSeq": first, "seq": last,
+		"project": project, "run": run, "stateId": stateID, "firstSeq": events[0]["seq"], "seq": events[len(events)-1]["seq"],
 		"at": at.Format("2006-01-02T15:04:05.000000Z"), "events": events,
 	}
 	if more {
 		message["more"] = true
 	}
+	r.publishMessage(project, message)
+}
+
+// publishMessage publishes message, a state message's payload as given, on project's state lane
+// through the listener's publish route, each with an id and a dedupe key of its own.
+func (r *intakeRig) publishMessage(project string, message map[string]any) {
+	r.t.Helper()
 	payload, err := json.Marshal(message)
 	if err != nil {
 		r.t.Fatalf("encode the state message: %v", err)
@@ -238,7 +244,7 @@ func (r *intakeRig) publishIn(project, run, stateID string, at time.Time, more b
 		Topic:          contracts.LegionStateSubject(strings.ToLower(project)),
 		DedupeKey:      "legion-outbox:" + id,
 		IssuedAt:       time.Now().UnixMilli(),
-		PayloadSummary: fmt.Sprintf("%s state %d-%d", project, first, last),
+		PayloadSummary: fmt.Sprintf("%s state %v-%v", project, message["firstSeq"], message["seq"]),
 		Payload:        string(payload),
 		TraceID:        id,
 	}); err != nil {
@@ -388,16 +394,24 @@ func requireWholeRead(t *testing.T, row readRecord, reason string, ok bool) {
 
 // cursorRow is project's legion_event_cursors row.
 type cursorRow struct {
-	lastSeq  *int64
-	readOwed bool
-	run      *string
+	lastSeq     *int64
+	readOwed    bool
+	run         *string
+	stateID     *string
+	readReasons []string
+}
+
+func (r cursorRow) String() string {
+	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v run=%s stateId=%s}",
+		orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.run), orNone(r.stateID))
 }
 
 func cursorOf(t *testing.T, database *store.Store, project string) cursorRow {
 	t.Helper()
 	var row cursorRow
 	if err := database.Pool.QueryRow(context.Background(),
-		`select last_seq, read_owed, run from legion_event_cursors where project = $1`, project).Scan(&row.lastSeq, &row.readOwed, &row.run); err != nil {
+		`select last_seq, read_owed, run, state_id, read_reasons from legion_event_cursors where project = $1`, project).Scan(
+		&row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons); err != nil {
 		t.Fatalf("read the cursor of %s: %v", project, err)
 	}
 	return row
@@ -406,7 +420,7 @@ func cursorOf(t *testing.T, database *store.Store, project string) cursorRow {
 func requireLastSeq(t *testing.T, database *store.Store, project string, want int64) {
 	t.Helper()
 	if got := cursorOf(t, database, project).lastSeq; got == nil || *got != want {
-		t.Fatalf("the cursor of %s is at %v, want %d", project, got, want)
+		t.Fatalf("the cursor of %s is at %s, want %d", project, orNone(got), want)
 	}
 }
 
@@ -1017,9 +1031,10 @@ func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testin
 
 // TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner: a starting read the daemon answers
 // with a state that is no starting point, or with another project's, records a failed read naming
-// why and owes the read; a state of the project's own still records its observations. The
-// messages that arrive meanwhile are applied and the cursor follows them; neither the next message
-// nor a settings change reads again inside ReadRetryAfter, and the first message after it does.
+// why and owes the read; a state of the project's own still records its observations. The cursor
+// then holds no store, so the messages that arrive meanwhile are finished unapplied and the cursor
+// stays where the failed read left it; neither the next message nor a settings change reads again
+// inside ReadRetryAfter, and the first message after it does.
 func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 	issue := planning("INFRA")
 	for _, tc := range []struct {
@@ -1088,8 +1103,10 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 				t.Fatalf("the failed read's line is %v, want ok false and its error", line)
 			}
 
-			// Inside ReadRetryAfter, the next message and a settings change read nothing, and
-			// the message is applied with the cursor following it.
+			// Inside ReadRetryAfter, the next message and a settings change read nothing. No good
+			// read has said which store the daemon counts in, so neither message is applied: each
+			// is finished, and the drop is logged once.
+			before := currentValues(t, rig.database, "INFRA")
 			rig.clock.advance(ReadRetryAfter / 2)
 			rig.publish("INFRA", change(5, "INFRA-1", moved("phase", "implementing")))
 			rig.settled()
@@ -1099,11 +1116,14 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 			if served := daemon.served(); served != 1 {
 				t.Fatalf("the daemon served %d reads inside a minute of the failed one, want none more", served)
 			}
-			if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"implementing"` {
-				t.Fatalf("the phase is %s while the read is owed, want the message's implementing", phase)
+			if after := currentValues(t, rig.database, "INFRA"); !maps.Equal(after, before) {
+				t.Fatalf("legion_current while the cursor holds no store = %v, want the failed read's %v: no message is applied", after, before)
 			}
-			if current := cursorOf(t, rig.database, "INFRA"); !current.readOwed || current.lastSeq == nil || *current.lastSeq != 6 {
-				t.Fatalf("the cursor is %+v, want it at 6 with the read still owed", current)
+			if current := cursorOf(t, rig.database, "INFRA"); !current.readOwed || current.lastSeq != nil || current.stateID != nil {
+				t.Fatalf("the cursor is %+v, want no sequence, no store and the read still owed", current)
+			}
+			if drops := rig.awaitLogRecords(noStoreLine, 1); len(drops) != 1 || drops[0]["project"] != "INFRA" || drops[0]["seq"] != float64(5) {
+				t.Fatalf("the drops logged = %v, want one naming INFRA and the first message's sequence", drops)
 			}
 
 			// Past ReadRetryAfter, the next message reads the daemon again, and this time the
@@ -1476,24 +1496,24 @@ func orNone[T any](value *T) string {
 // are the rows a whole read of the same states writes. The daemon's own golden of its state lane
 // (readStateEventsGolden) is applied twice over. Project LEGION, the golden's own, takes each
 // step's message through the intake from a real NATS stream, published as the daemon's listener
-// stored it; project READS records each step's state document as a whole read records it
-// (RecordRead). After each step the two hold the same legion_current, `null` rows included, and
-// the same history: a row of LEGION only where READS has one, with the same value, at the same
-// moment, which is the message's `at`.
+// stored it; project READS's daemon serves each step's state document, the daemon block naming
+// READS, and the intake's own whole read (Intake.readWhole) records it. After each step the two
+// hold the same legion_current, `null` rows included, and the same history: a row of LEGION only
+// where READS has one, with the same value, at the same moment, which is the message's `at`.
 //
 // Both start from the golden's first state: the intake's starting read of LEGION's daemon is served
-// it, and READS records it. The intake's clock stands at the commit time of the step it applies
-// (its message's `at`), the moment READS records the step's state at, so the starting read is
-// stamped at the boot's commit. A batch's row is stamped 1 µs after its field's newest row, and a
-// whole read's rows 1 µs after the project's newest row, where that is later than their own time
-// (recordEvents, recordObservations), but each step of the golden commits a minute after the one
-// before, so that rule moves no row of either project here: every row a step writes is at its
-// message's `at`, and the test fails on one that is not.
+// it, and READS's first read reads it. The intake's clock stands at the commit time of the step it
+// applies (its message's `at`), the moment READS's read of the step's state is made at, so the
+// starting read is stamped at the boot's commit. A batch's row is stamped 1 µs after its field's
+// newest row, and a whole read's rows 1 µs after the project's newest row, where that is later
+// than their own time (recordEvents, recordObservations), but each step of the golden commits a
+// minute after the one before, so that rule moves no row of either project here: every row a step
+// writes is at its message's `at`, and the test fails on one that is not.
 //
 // The boot's message is at the starting read's stateSeq, under the run the first state serves as
 // daemon.stateRun, which the starting read takes as the cursor's run (recordWhole): the intake
 // knows the boot as one the read already holds, and reads nothing more (stateMessage.unfollowed).
-// The daemon is read once, at the start, and each step's rows are its message's.
+// LEGION's daemon is read once, at the start, and each step's rows are its message's.
 func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
 	const events, reads = "LEGION", "READS"
 	steps := readStateEventsGolden(t)
@@ -1505,10 +1525,11 @@ func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
 	rig.startOn(func() time.Time { return *clock.Load() })
 	rig.awaitStartingRead(events)
 	// READS has a setting too, written once the take-over has read the settings, and nothing
-	// queues another starting point (no take-over, no settings wake), so its daemon is never read
-	// and its rows are RecordRead's alone.
+	// queues a starting point of it (no take-over, no settings wake) nor delivers it a message, so
+	// its daemon is read only where the test reads it, on the test's goroutine.
 	readsDaemon := newFakeDaemon(t, `{}`)
 	seedLegionProject(t, rig.database, reads, readsDaemon.URL)
+	readsSetting := Settings{Project: reads, StateURL: readsDaemon.URL}
 
 	wholeReads := func() []string {
 		var reasons []string
@@ -1534,12 +1555,13 @@ func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
 			t.Fatalf("%s: publish its message: %v", name, err)
 		}
 		rig.settled()
-		var state State
-		if err := json.Unmarshal(step.state, &state); err != nil {
-			t.Fatalf("%s: decode its state: %v", name, err)
+		readsDaemon.serves(stateOfProject(t, step.state, reads))
+		var pending *wholeRead
+		if _, err := rig.intake.readWhole(t.Context(), readsSetting, []string{ReadReasonStart}, &pending); err != nil {
+			t.Fatalf("%s: read its state whole for %s: %v", name, reads, err)
 		}
-		if _, err := RecordRead(t.Context(), rig.database.Pool, reads, step.at, len(step.state), state.Observations()); err != nil {
-			t.Fatalf("%s: record its state as a whole read: %v", name, err)
+		if last := readRecords(t, rig.database, reads); len(last) == 0 || !last[len(last)-1].ok || !last[len(last)-1].readAt.Equal(step.at) {
+			t.Fatalf("%s: the whole reads of %s are %v, want a good one at the step's %s", name, reads, last, step.at.Format(time.RFC3339Nano))
 		}
 
 		if differing := currentDifference(currentValues(t, rig.database, events), currentValues(t, rig.database, reads)); len(differing) > 0 {
@@ -1596,16 +1618,33 @@ func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
 	if !slices.Contains(slices.Collect(maps.Values(currentValues(t, rig.database, events))), "null") {
 		t.Error("legion_current holds no null row, so no null row was compared")
 	}
-	if served := readsDaemon.served(); served != 0 {
-		t.Errorf("the daemon of %s served %d reads, want none: its rows must be RecordRead's alone", reads, served)
+	if served := readsDaemon.served(); served != len(steps) {
+		t.Errorf("the daemon of %s served %d reads, want one per step, %d: its rows must be its whole reads' alone", reads, served, len(steps))
 	}
-	var cursors int
-	if err := rig.database.Pool.QueryRow(t.Context(), `select count(*) from legion_event_cursors where project = $1`, reads).Scan(&cursors); err != nil {
-		t.Fatalf("count the cursors of %s: %v", reads, err)
+}
+
+// stateOfProject is state, a state document of the golden's daemon, with its daemon block naming
+// project, so a whole read made for project takes it as its own; every other member is as the
+// daemon served it.
+func stateOfProject(t *testing.T, state json.RawMessage, project string) string {
+	t.Helper()
+	var document, daemon map[string]json.RawMessage
+	if err := json.Unmarshal(state, &document); err != nil {
+		t.Fatalf("decode the state: %v", err)
 	}
-	if cursors != 0 {
-		t.Errorf("%s has a cursor, want none: the intake never touched it", reads)
+	if err := json.Unmarshal(document["daemon"], &daemon); err != nil {
+		t.Fatalf("decode the state's daemon block: %v", err)
 	}
+	daemon["project"], _ = json.Marshal(project)
+	var err error
+	if document["daemon"], err = json.Marshal(daemon); err != nil {
+		t.Fatalf("encode the state's daemon block: %v", err)
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatalf("encode the state: %v", err)
+	}
+	return string(encoded)
 }
 
 // heldPartCount counts project's held parts of split transactions (legion_event_parts).
@@ -1639,11 +1678,12 @@ func (r *intakeRig) wholeReadReasons(project string) []string {
 // TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead: R1 applies only a message whose stateId
 // is the starting point's daemon.stateId. A message of another store (a daemon the setting no
 // longer names, or a sender that is no daemon) writes no observation and moves no cursor, though it
-// is at the cursor's next sequence. Past ReadRetryAfter after the last whole read, it makes one
-// whole read (ReadReasonStore), logged with its reason, which finds the store the daemon counts in
-// now. The daemon still serves the starting point's store, so the message is dropped, and the drop
-// is logged once, with both ids and the message's sequences. A second message of that store inside
-// ReadRetryAfter of the read makes no read, and the daemon's own next message is applied.
+// is at the cursor's next sequence. A good starting read holds back no read after it, so it makes
+// one whole read (ReadReasonStore) at once, logged with its reason, which finds the store the
+// daemon counts in now. The daemon still serves the starting point's store, so the message is
+// dropped, and the drop is logged once, with both ids and the message's sequences. A second
+// message of that store inside ReadRetryAfter of the read makes no read: the read is owed for that
+// reason, and the daemon's own next message is applied meanwhile.
 func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -1652,7 +1692,6 @@ func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 	rig.awaitStartingRead("INFRA")
 	rows := observations(t, rig.database, "INFRA")
 
-	rig.clock.advance(ReadRetryAfter + time.Second)
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	rig.publishIn("INFRA", rig.run, otherStateID, at, false, change(11, "INFRA-1", moved("phase", "merging")))
 	rig.publishIn("INFRA", rig.run, otherStateID, at, false, change(12, "INFRA-1", moved("phase", "merging")))
@@ -1661,8 +1700,9 @@ func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 	if after := observations(t, rig.database, "INFRA"); !slices.Equal(after, rows) {
 		t.Errorf("observations = %v, want the starting read's %v alone: a message of another store writes nothing", after, rows)
 	}
-	if current := cursorOf(t, rig.database, "INFRA"); current.readOwed || current.lastSeq == nil || *current.lastSeq != 10 {
-		t.Errorf("the cursor is %+v, want it at the starting read's 10 with no read owed", current)
+	if current := cursorOf(t, rig.database, "INFRA"); !current.readOwed || !slices.Equal(current.readReasons, []string{ReadReasonStore}) ||
+		current.lastSeq == nil || *current.lastSeq != 10 {
+		t.Errorf("the cursor is %+v, want it at the starting read's 10 with a read owed for the second message's store", current)
 	}
 	reads := readRecords(t, rig.database, "INFRA")
 	if len(reads) != 2 {
@@ -1991,4 +2031,324 @@ func TestAMessageTheDatabaseRefusesForGoodIsFinishedAndReadsItsProjectWhole(t *t
 		t.Errorf("LINUX-1's phase is %s, want its message's implementing", phase)
 	}
 	requireLastSeq(t, rig.database, "LINUX", 21)
+}
+
+// TestAStateMessageWhoseEventsDoNotRunFromFirstSeqToSeqDoesNotDecode: the contract's rule for a
+// state message (legionStateMessage's refine) is that its events run from firstSeq to seq, one
+// sequence each, in that order. A message that breaks it does not decode, whichever way it breaks
+// it, and one that keeps it decodes with its events in order.
+func TestAStateMessageWhoseEventsDoNotRunFromFirstSeqToSeqDoesNotDecode(t *testing.T) {
+	phase := func(seq int) map[string]any { return change(seq, "INFRA-1", moved("phase", "testing")) }
+	for _, tc := range []struct {
+		name          string
+		firstSeq, seq int64
+		events        []map[string]any
+		decodes       bool
+	}{
+		{name: "one event at each sequence", firstSeq: 11, seq: 13, events: []map[string]any{phase(11), phase(12), phase(13)}, decodes: true},
+		{name: "a seq past its last event", firstSeq: 11, seq: 1 << 62, events: []map[string]any{phase(11)}},
+		{name: "an event missing between the two", firstSeq: 11, seq: 13, events: []map[string]any{phase(11), phase(13)}},
+		{name: "events out of order", firstSeq: 11, seq: 12, events: []map[string]any{phase(12), phase(11)}},
+		{name: "one sequence twice", firstSeq: 11, seq: 12, events: []map[string]any{phase(11), phase(11)}},
+		{name: "an event before firstSeq", firstSeq: 11, seq: 11, events: []map[string]any{phase(10)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]any{
+				"project": "INFRA", "run": rigRun, "stateId": rigStateID, "firstSeq": tc.firstSeq, "seq": tc.seq,
+				"at": "2026-11-19T12:00:00.000000Z", "events": tc.events,
+			})
+			if err != nil {
+				t.Fatalf("encode the message: %v", err)
+			}
+			message, err := decodeStateMessage(&contracts.Envelope{Payload: string(payload)}, nil)
+			if !tc.decodes {
+				if err == nil || !strings.Contains(err.Error(), "one sequence each") {
+					t.Fatalf("the message decoded to %+v (error %v), want it refused for its events", message, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decode the message: %v", err)
+			}
+			var sequences []int64
+			for _, event := range message.Events {
+				sequences = append(sequences, event.Seq)
+			}
+			if !slices.Equal(sequences, []int64{11, 12, 13}) {
+				t.Errorf("the events decoded at %v, want 11, 12 and 13", sequences)
+			}
+		})
+	}
+}
+
+// TestAMessageWhoseSequenceItsEventsDoNotReachMovesNoCursor: a message with one event at the
+// cursor's next sequence, the daemon's own store and run, and a seq of 2^62 breaks the contract's
+// rule for its events, so it does not decode: it is acknowledged and logged, writes nothing and
+// leaves the cursor where it was. Taken, it would move the cursor to 2^62, past every event the
+// daemon will ever publish, with no whole read to follow. The daemon's real next message then
+// follows the cursor and is applied, with no read.
+func TestAMessageWhoseSequenceItsEventsDoNotReachMovesNoCursor(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	rows := observations(t, rig.database, "INFRA")
+
+	rig.publishMessage("INFRA", map[string]any{
+		"project": "INFRA", "run": rig.run, "stateId": rigStateID, "firstSeq": 11, "seq": int64(1) << 62,
+		"at":     time.Now().UTC().Format("2006-01-02T15:04:05.000000Z"),
+		"events": []map[string]any{change(11, "INFRA-1", moved("phase", "merging"))},
+	})
+	rig.settled()
+	if after := observations(t, rig.database, "INFRA"); !slices.Equal(after, rows) {
+		t.Errorf("observations = %v, want the starting read's %v alone: the message writes nothing", after, rows)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 10)
+	refusal := rig.awaitLogRecords("legion intake: decode a state message; acknowledging it", 1)
+	if len(refusal) != 1 || refusal[0]["level"] != "ERROR" || !strings.Contains(fmt.Sprint(refusal[0]["error"]), "one sequence each") {
+		t.Errorf("the refusal's lines = %v, want one ERROR naming the events' rule", refusal)
+	}
+
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`}) {
+		t.Errorf("the phase's history is %v, want the read's planning, then the daemon's next message's implementing", got)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 11)
+	if served := daemon.served(); served != 1 {
+		t.Errorf("the daemon served %d reads, want the starting one alone", served)
+	}
+}
+
+// TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedBefore: R3 applies no
+// message of the daemon a setting named before, once the setting names another. Here the first
+// read of the newly named daemon fails, since it does not answer yet, so the cursor follows the new
+// daemon with no store, while the daemon named before still publishes under the same project, in
+// its own store and run, at its next sequences. None of its messages is applied, none gives the
+// cursor its store, and the drop is logged once. A minute on, its next message makes the owed read,
+// which takes the named daemon's state and store, and that message is dropped too, as one of
+// another store; the named daemon's own next event is applied.
+func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedBefore(t *testing.T) {
+	const namedRun, namedStore = "2c7e9a14-5b3d-4f86-a1e0-8d6c4b2f9e37", "6e1f3a8c-2d4b-4c97-b5a0-9f7e1d3c8b26"
+	rig := newIntakeRig(t)
+	previous := newFakeDaemon(t, daemonState("INFRA", 2000000, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", previous.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	named := newFakeDaemon(t, "")
+	named.refuses(http.StatusServiceUnavailable)
+	if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+		t.Fatalf("point INFRA at the named daemon: %v", err)
+	}
+	rig.wake <- struct{}{}
+	rig.awaitWholeReads(2)
+	reads := readRecords(t, rig.database, "INFRA")
+	requireWholeRead(t, reads[len(reads)-1], ReadReasonStart, false)
+	before := currentValues(t, rig.database, "INFRA")
+
+	// The daemon named before publishes on, under the rig's run and store, which are its own.
+	rig.publish("INFRA", change(2000001, "INFRA-1", moved("phase", "merging")))
+	rig.publish("INFRA", change(2000002, "INFRA-1", moved("phase", "merging")), change(2000003, "INFRA-1", claimMoved("planner", "idle")))
+	rig.settled()
+	if after := currentValues(t, rig.database, "INFRA"); !maps.Equal(after, before) {
+		t.Errorf("legion_current = %v, want %v: no message of the daemon the setting named before is applied", after, before)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.lastSeq != nil || c.stateID != nil {
+		t.Errorf("the cursor is %+v, want no sequence, no store and the read owed", c)
+	}
+	if drops := rig.awaitLogRecords(noStoreLine, 1); len(drops) != 1 || drops[0]["project"] != "INFRA" || drops[0]["stateId"] != rigStateID {
+		t.Errorf("the drops logged = %v, want one naming INFRA and the message's store", drops)
+	}
+	if served := named.served(); served != 1 {
+		t.Errorf("the named daemon served %d reads inside a minute of its failed one, want that one alone", served)
+	}
+
+	// A minute on, the named daemon answers, in a store and under a run of its own.
+	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
+	named.serves(strings.Replace(strings.Replace(daemonState("INFRA", 5, implementing), rigStateID, namedStore, 1), rigRun, namedRun, 1))
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	rig.publish("INFRA", change(2000004, "INFRA-1", moved("phase", "merging")))
+	rig.settled()
+	reads = readRecords(t, rig.database, "INFRA")
+	requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, true)
+	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 5 || c.stateID == nil || *c.stateID != namedStore {
+		t.Errorf("the cursor after the good read is %+v, want the named daemon's sequence 5 and store %s, nothing owed", c, namedStore)
+	}
+
+	rig.publishIn("INFRA", namedRun, namedStore, time.Now().UTC().Truncate(time.Microsecond), false, change(6, "INFRA-1", moved("phase", "testing")))
+	rig.settled()
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`, `"testing"`}) {
+		t.Errorf("the phase's history is %v, want the first daemon's read's planning, the named daemon's read's implementing and its event's testing, and no merging", got)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 6)
+	if served := named.served(); served != 2 {
+		t.Errorf("the named daemon served %d reads, want the failed one and the good one", served)
+	}
+}
+
+// TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole: R3 applies a transaction the
+// daemon split over several messages whole, once every part has arrived. A whole read that fails
+// holds none of the parts' events, so it keeps the parts: here a gap's read fails, the first part
+// of a transaction that follows the cursor is held while the read is owed, and the retry a minute
+// on fails as well. The transaction's last part then applies all of it, every row at its commit
+// time, and no part is held after it.
+func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	// A gap whose read the daemon refuses: the read is owed, and the gap is not applied.
+	daemon.refuses(http.StatusServiceUnavailable)
+	rig.publish("INFRA", change(15, "INFRA-1", moved("phase", "merging")))
+	rig.settled()
+	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.lastSeq == nil || *c.lastSeq != 10 {
+		t.Fatalf("the cursor after the refused gap read is %+v, want it at 10 with the read owed", c)
+	}
+
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	rig.publishIn("INFRA", rig.run, rigStateID, at, true,
+		change(11, "INFRA-1", moved("phase", "implementing")), change(12, "INFRA-1", claimMoved("implementer", "launching")))
+	rig.settled()
+	if held := heldPartCount(t, rig.database, "INFRA"); held != 1 {
+		t.Fatalf("%d parts held, want the transaction's first", held)
+	}
+
+	// A minute on, a settings change makes the owed read, and the daemon refuses it again.
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	rig.intake.SettingsChanged(t.Context())
+	rig.awaitWholeReads(3)
+	reads := readRecords(t, rig.database, "INFRA")
+	requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, false)
+	if held := heldPartCount(t, rig.database, "INFRA"); held != 1 {
+		t.Fatalf("%d parts held after the failed retry, want the first part still: a failed read holds none of its events", held)
+	}
+
+	rig.publishIn("INFRA", rig.run, rigStateID, at, false, change(13, "INFRA-1", moved("slot", nil)))
+	rig.settled()
+	var written []string
+	for _, row := range observedRows(t, rig.database, "INFRA") {
+		if row.at.Equal(at) {
+			written = append(written, row.issue+"/"+row.field+"="+row.value)
+		}
+	}
+	slices.Sort(written)
+	if want := []string{`INFRA-1/claim.implementer="launching"`, `INFRA-1/phase="implementing"`, `INFRA-1/slot=null`}; !slices.Equal(written, want) {
+		t.Errorf("the transaction wrote %v at its commit time, want %v: every part of it", written, want)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 13)
+	if held := heldPartCount(t, rig.database, "INFRA"); held != 0 {
+		t.Errorf("%d parts held after the last part, want none", held)
+	}
+	for _, value := range history(t, rig.database, "INFRA", "INFRA-1", FieldPhase) {
+		if value == `"merging"` {
+			t.Errorf("the phase's history %v holds the gap's merging", history(t, rig.database, "INFRA", "INFRA-1", FieldPhase))
+		}
+	}
+}
+
+// TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute: a project's whole reads start at least
+// ReadRetryAfter apart, whatever calls for them, and its messages are not held behind reads. 300
+// messages of INFRA that each start past the cursor's next sequence (gaps, in the daemon's own store
+// and run, as forged messages or a bug's would), and a boot among them that does not follow, make
+// one whole read in the first minute: the first message's, which a good starting read does not
+// hold back. INFRA's daemon answers it late and holds it, and LINUX's messages are delivered and
+// applied while it is in flight. Each later message of the burst is finished as soon as the cursor
+// records the read owed, with its reason joined, so none waits on more than that one read and none
+// is applied: 300 reads at the daemon's 200 ms would take a minute, past what rig.settled waits.
+// LINUX's message behind the burst is applied too. A minute on, INFRA's daemon's own next event
+// makes the owed read, logged with both reasons and the first as its reason, and is applied after
+// it: one read more.
+func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
+	const burst = 300
+	rig := newIntakeRig(t)
+	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	linux := newFakeDaemon(t, daemonState("LINUX", 20, planning("LINUX")))
+	seedLegionProject(t, rig.database, "INFRA", infra.URL)
+	seedLegionProject(t, rig.database, "LINUX", linux.URL)
+	rig.start()
+	rig.awaitWholeReads(2)
+
+	infra.slows(200 * time.Millisecond)
+	release := infra.holds(t)
+	linuxAt := map[int]string{40: "implementing", 120: "testing", 200: "reviewing"}
+	linuxSeq := 20
+	for i := range burst {
+		if i == burst/2 {
+			rig.publish("INFRA", booted(1000, stateSchema, 3))
+		}
+		rig.publish("INFRA", change(12+i, "INFRA-1", moved("phase", "merging")))
+		if phase, due := linuxAt[i]; due {
+			linuxSeq++
+			rig.publish("LINUX", change(linuxSeq, "LINUX-1", moved("phase", phase)))
+		}
+	}
+	rig.publish("LINUX", change(linuxSeq+1, "LINUX-1", moved("phase", "accepting")))
+
+	// INFRA's one read is in flight, held by its daemon: LINUX's messages in the window are applied
+	// meanwhile, and INFRA's daemon is asked for no other read.
+	rig.waitFor(20*time.Second, func() bool { return infra.served() >= 2 }, func() string {
+		return fmt.Sprintf("INFRA's daemon was asked for %d reads, want the burst's after the starting one", infra.served())
+	})
+	var linuxLast int64
+	rig.waitFor(20*time.Second, func() bool {
+		err := rig.database.Pool.QueryRow(t.Context(), `select coalesce(last_seq, 0) from legion_event_cursors where project = 'LINUX'`).Scan(&linuxLast)
+		return err == nil && linuxLast >= int64(linuxSeq)
+	}, func() string {
+		return fmt.Sprintf("LINUX's cursor is at %d while INFRA's read is held, want its messages through %d applied", linuxLast, linuxSeq)
+	})
+	if served := infra.served(); served != 2 {
+		t.Fatalf("INFRA's daemon was asked for %d reads while the burst's is held, want the starting read and that one", served)
+	}
+	release()
+	rig.settled()
+
+	if served := infra.served(); served != 2 {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read and one for the whole burst", served)
+	}
+	if reasons := rig.wholeReadReasons("INFRA"); !slices.Equal(reasons, []string{ReadReasonStart, ReadReasonGap}) {
+		t.Errorf("INFRA's whole reads %v, want the starting read and the burst's one", reasons)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || !slices.Equal(c.readReasons, []string{ReadReasonGap, ReadReasonBoot}) ||
+		c.lastSeq == nil || *c.lastSeq != 10 {
+		t.Errorf("INFRA's cursor is %+v, want it at 10 with a read owed for the gaps and then the boot", c)
+	}
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`}) {
+		t.Errorf("INFRA-1's phase history is %v, want the read's planning alone: no message of the burst follows the cursor", got)
+	}
+	if drops := rig.logRecords(unfollowedLine); len(drops) != 1 || drops[0]["project"] != "INFRA" || drops[0]["reason"] != ReadReasonGap {
+		t.Errorf("the drops logged = %v, want one naming INFRA and the gap", drops)
+	}
+	if got := history(t, rig.database, "LINUX", "LINUX-1", FieldPhase); !slices.Equal(got,
+		[]string{`"planning"`, `"implementing"`, `"testing"`, `"reviewing"`, `"accepting"`}) {
+		t.Errorf("LINUX-1's phase history is %v, want the read's and each of its messages'", got)
+	}
+	if served := linux.served(); served != 1 {
+		t.Errorf("LINUX's daemon served %d reads, want the starting one alone", served)
+	}
+
+	rig.clock.advance(ReadRetryAfter)
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
+	rig.settled()
+	if served := infra.served(); served != 3 {
+		t.Errorf("INFRA's daemon served %d reads, want one more once the minute had passed", served)
+	}
+	var last map[string]any
+	for _, line := range rig.logRecords(wholeReadLine) {
+		if line["project"] == "INFRA" {
+			last = line
+		}
+	}
+	if last["reason"] != ReadReasonGap || last["reasons"] != ReadReasonGap+","+ReadReasonBoot || last["ok"] != true {
+		t.Errorf("the owed read's line = %v, want reason gap and reasons gap,boot", last)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || len(c.readReasons) != 0 || c.lastSeq == nil || *c.lastSeq != 11 {
+		t.Errorf("INFRA's cursor is %+v, want it at 11 with nothing owed", c)
+	}
+	if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"implementing"` {
+		t.Errorf("INFRA-1's phase is %s, want the daemon's own next event's implementing", phase)
+	}
 }

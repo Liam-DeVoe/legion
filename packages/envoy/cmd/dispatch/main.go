@@ -1031,9 +1031,11 @@ func main() {
 		// dispatch://INFRA-3931: each project whose legion_settings row names a Legion daemon has
 		// its observations written from the state events that daemon publishes, which the Legion
 		// state intake takes from its held durable, with or without the GitHub App; it reads a
-		// daemon's `GET /legion/v1/state` whole only where the events cannot carry the state (a
-		// project with no starting point, a boot or a gap that does not follow, a read owed), and
-		// no timer reads one. A connect that fails stops the delivery intakes before the exit,
+		// daemon's `GET /legion/v1/state` whole only for the reasons legion's ReadReason constants
+		// name (a project with no starting point, a boot that does not follow or whose schema
+		// version moved, a gap, a read owed since one failed, a message of another store, a message
+		// the database refuses for good), a project's reads at least legion.ReadRetryAfter apart,
+		// and no timer reads one. A connect that fails stops the delivery intakes before the exit,
 		// since they may hold their durables already.
 		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, legionIntakeLeases, legionSettingsWake)
 		if err != nil {

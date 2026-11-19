@@ -305,8 +305,9 @@ func (p *legionBoardPopulation) readRecorded(ctx context.Context, pool *store.Po
 // legion_reads row's, the newest Dispatch wrote, by recorded_at and then id: a batch's read_at is
 // the daemon's commit time and a whole read's is Dispatch's clock, so read_at does not order the
 // two kinds. Its ok and its error are that row's too, except while the project's cursor owes a
-// whole read (legion_event_cursors.read_owed): they are then the newest whole read's, which
-// failed, so a batch applied after a failed read does not show a good read.
+// whole read (legion_event_cursors.read_owed): they are then the newest whole read's, so a batch
+// applied after a failed read does not show a good read. A read owed after a good one, for a
+// message that called for a read inside a minute of it, shows that good read's ok.
 func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, tx pgx.Tx) error {
 	var read legionBoardDaemonRead
 	err := tx.QueryRow(ctx, `

@@ -46,12 +46,18 @@
 -- - last_seq is the newest state sequence the project's observations reflect: the stateSeq a
 --   successful whole read served, or the seq of the newest transaction applied. Null while the row
 --   holds none, which is only while a read is owed.
--- - read_owed is set by a whole read that failed and cleared by one that succeeded.
--- - read_tried_at is when the last whole read was made, which keeps an owed read's retries, and the
---   reads a message of another store makes, a minute apart.
+-- - read_owed is a whole read owed: set by a whole read that failed, and by a message that calls
+--   for a read inside a minute of the last one, and cleared by a read that succeeded.
+-- - read_reasons is every reason the owed read is owed for (legion's ReadReason constants), in the
+--   order they called for it, and empty while none is owed; the check holds the two together. The
+--   read is recorded under the first and logged with them all.
+-- - read_tried_at is when the whole read the next one waits a minute after was tried, whatever
+--   the next one's reason: each read but a good starting read sets it, and a good starting read
+--   clears it, since no message called for it.
 -- - state_id is the id of the daemon's store (the state route's daemon.stateId, which every state
---   message carries as stateId): a successful whole read sets it, and the intake applies no
---   message of another id. Null while the row holds none, which is only while a read is owed.
+--   message carries as stateId): a successful whole read sets it, and nothing else does. The
+--   intake applies no message of another id, and none at all while it is null, which is only while
+--   a read is owed.
 -- - schema_version is the store's schema version as the row last saw it: the daemon.schemaVersion
 --   of a successful whole read, or the schemaVersion of the newest boot event applied. A boot of
 --   another version is read whole. Null for none.
@@ -60,8 +66,9 @@
 -- (each but the last carries `more: true`) until its last message arrives: the intake then applies
 -- every event of the transaction in one batch and deletes the parts, so no observation holds a
 -- value of a transaction it has not read whole. A part is held only where it follows the cursor or
--- the part before it, under the same run and store. A whole read deletes the project's parts, and
--- so does the cursor's delete (the foreign key), which every write of the setting makes:
+-- the part before it, under the same run and store. A successful whole read deletes the project's
+-- parts, and so does the cursor's delete (the foreign key), which every write of the setting
+-- makes; a whole read that failed keeps them:
 --
 -- - project and first_seq are the part's identity: the project, and the first sequence the part
 --   carries. last_seq is its last.
@@ -109,9 +116,11 @@ create table legion_event_cursors (
   run text,
   last_seq bigint,
   read_owed boolean not null default false,
+  read_reasons text[] not null default '{}',
   read_tried_at timestamptz,
   state_id text,
-  schema_version bigint
+  schema_version bigint,
+  check (read_owed = (cardinality(read_reasons) > 0))
 );
 
 create table legion_event_parts (

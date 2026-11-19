@@ -338,12 +338,13 @@ const newAdmissionShapeState = `{
 
 // TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape: the board is built from what the loose
 // decode records of a daemon that has rolled onto dispatch://INFRA-980, so a child holding a slot
-// is a card of its own on its root's tree and no slot holder is taken for a root.
+// is a card of its own on its root's tree and no slot holder is taken for a root. That daemon
+// serves no daemon.stateSeq, so the whole read is a failed one, and it records the state's
+// observations all the same, since the state is the project's own.
 func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
-	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
-	now := time.Now().UTC()
+	daemon := newFakeLegionDaemon(t, handler, "INFRA")
 	// The root first: its children name it as their parent, which the issues table holds them to.
 	for _, issue := range []struct {
 		number      int
@@ -357,14 +358,7 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	} {
 		seedLegionIssue(t, database, "INFRA", issue.number, issue.title, issue.rank, nil, issue.parent)
 	}
-	var state legion.State
-	if err := json.Unmarshal([]byte(newAdmissionShapeState), &state); err != nil {
-		t.Fatalf("decode the new state shape: %v", err)
-	}
-	if _, err := legion.RecordRead(t.Context(), database.Pool, "INFRA", now.Add(-time.Hour),
-		len(newAdmissionShapeState), state.Observations()); err != nil {
-		t.Fatalf("record the new state shape: %v", err)
-	}
+	daemon.read(t, database, newAdmissionShapeState)
 
 	board := legionBoardOf(t, handler, "INFRA")
 	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-3", "INFRA-4"}) {
@@ -428,8 +422,8 @@ func TestTheLegionBoardOfADaemonThatNeverAnsweredIsEmptyWithItsFailure(t *testin
 }
 
 // fakeLegionDaemon is a Legion daemon stand-in serving the state document the test last handed it,
-// so a test reads it whole as the Legion state intake does (legion.ReadWhole) and reads the board
-// the read leaves.
+// so a test reads it whole through the Legion state intake's own whole read (legion.ReadWhole runs
+// the intake's readWhole once, on the wall clock) and reads the board the read leaves.
 type fakeLegionDaemon struct {
 	*httptest.Server
 	project string

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,13 +26,17 @@ import (
 func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
 
 // fakeDaemon is a Legion daemon stand-in whose state document and status the test moves between
-// reads, counting the reads it served.
+// reads, counting the reads it served. delay is how long each answer waits, as a daemon reading a
+// state of several MB does (slows), and held a gate each answer waits on until the test releases it
+// (holds).
 type fakeDaemon struct {
 	*httptest.Server
 	mu     sync.Mutex
 	body   string
 	status int
 	reads  int
+	delay  time.Duration
+	held   chan struct{}
 }
 
 func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
@@ -43,9 +48,21 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 			return
 		}
 		daemon.mu.Lock()
-		body, status := daemon.body, daemon.status
+		body, status, delay, held := daemon.body, daemon.status, daemon.delay, daemon.held
 		daemon.reads++
 		daemon.mu.Unlock()
+		if held != nil {
+			select {
+			case <-held:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
@@ -70,6 +87,27 @@ func (d *fakeDaemon) served() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.reads
+}
+
+// slows has each answer from here on wait delay before it is sent.
+func (d *fakeDaemon) slows(delay time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.delay = delay
+}
+
+// holds has each answer from here on wait until release is called, which the test's end calls
+// too, before the daemon's server closes.
+func (d *fakeDaemon) holds(t *testing.T) (release func()) {
+	t.Helper()
+	gate := make(chan struct{})
+	d.mu.Lock()
+	d.held = gate
+	d.mu.Unlock()
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	return release
 }
 
 // stateOf is a one-issue state document of INFRA's daemon at state sequence 1 of the rig's store
@@ -360,12 +398,14 @@ func TestPruneReadsDropsTheReadsPastTheirRetention(t *testing.T) {
 	database, setting := configured(t, daemon.URL)
 	// A project whose daemon nothing reads any more: its setting was removed, and the reads it
 	// left stay (DeleteSettings). It is here to prove the prune keeps a project's newest read
-	// however old it is, since that row is the freshness the board's header shows.
+	// however old it is, since that row is the freshness the board's header shows. An aged read is
+	// its legion_reads row alone, which is all the prune reads.
 	seedProject(t, database, "LINUX")
 	aged := func(project string, age time.Duration) {
 		t.Helper()
-		at := time.Now().UTC().Add(-age)
-		if _, err := RecordRead(t.Context(), database.Pool, project, at, 2048, nil); err != nil {
+		if _, err := database.Pool.Exec(t.Context(), `
+			insert into legion_reads (project, read_at, ok, bytes, kind, reason) values ($1, $2, true, 2048, $3, $4)
+		`, project, time.Now().UTC().Add(-age), readKindRead, ReadReasonStart); err != nil {
 			t.Fatalf("record a read of %s: %v", project, err)
 		}
 	}
@@ -413,29 +453,32 @@ func TestEachWholeReadIsAnnouncedToTheOpenBoards(t *testing.T) {
 	announced("a read that failed")
 }
 
-// TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded: RecordRead stores a read's
-// observations and its legion_reads row together or not at all. When Postgres refuses an
-// observation, no row may say the read succeeded, since the board's header would then show a good
-// read over data Dispatch never stored, and the last good read must stand.
+// TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded: a whole read stores its
+// observations and its legion_reads row together or not at all (recordRead). When Postgres refuses
+// an observation, here a wait whose text carries a lone surrogate escape (`\ud800`, SQLSTATE
+// 22P02), the read is recorded as a failed read naming the refusal and none of its observations
+// (finishWhole): no row says it succeeded, since the board's header would then show a good read
+// over data Dispatch never stored, the last good read's observations stand, and the read is owed.
 func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testing.T) {
-	database := storetest.Open(t)
-	seedLegionProject(t, database, "INFRA", "http://127.0.0.1:1")
-	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
-	refused := []Observation{{IssueKey: "INFRA-1", Field: "phase", Value: []byte(`not json`)}}
-	if _, err := RecordRead(t.Context(), database.Pool, "INFRA", at, 42, refused); err == nil {
-		t.Fatal("RecordRead stored an observation that is not JSON, want Postgres to refuse it")
+	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
+	database, setting := configured(t, daemon.URL)
+	readDaemon(t, database, setting)
+	good := observations(t, database, "INFRA")
+
+	daemon.serves(fmt.Sprintf(`{"daemon":{"project":"INFRA","stateSeq":2,"stateId":%q},
+		"settings":{"dispatch_url":"http://dispatch.internal.example"},
+		"issues":{"INFRA-1":{"key":"INFRA-1","phase":"awaiting_person","waitingOn":{"kind":"ask","detail":"\ud800"}}}}`, rigStateID))
+	readDaemon(t, database, setting)
+
+	reads := readRecords(t, database, "INFRA")
+	if len(reads) != 2 || !reads[0].ok || reads[1].ok || reads[1].error == nil || !strings.HasPrefix(*reads[1].error, "record: ") {
+		t.Errorf("legion_reads = %v, want the good read and then the refused one as a failed read naming the refusal", reads)
 	}
-	var reads, observations int
-	if err := database.Pool.QueryRow(t.Context(),
-		`select count(*) from legion_reads where project = 'INFRA'`).Scan(&reads); err != nil {
-		t.Fatal(err)
+	if after := observations(t, database, "INFRA"); !slices.Equal(after, good) {
+		t.Errorf("observations after the refused read = %v, want the good read's %v alone", after, good)
 	}
-	if err := database.Pool.QueryRow(t.Context(),
-		`select count(*) from legion_observations where project = 'INFRA'`).Scan(&observations); err != nil {
-		t.Fatal(err)
-	}
-	if reads != 0 || observations != 0 {
-		t.Errorf("after a refused read: %d legion_reads rows and %d observations, want none of either", reads, observations)
+	if current := cursorOf(t, database, "INFRA"); !current.readOwed || current.lastSeq == nil || *current.lastSeq != 1 {
+		t.Errorf("the cursor after the refused read is %+v, want the good read's sequence 1 and the read owed", current)
 	}
 }
 
@@ -514,20 +557,15 @@ func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing
 // rows, and the reverse, which puts it before them. A reader that let a later row of the issue
 // overwrite the tree an earlier one named fails the second, whatever order Postgres would return.
 func TestReportedNamesAnIssuesTreeWhateverOrderItsRowsComeBackIn(t *testing.T) {
-	database := storetest.Open(t)
-	seedLegionProject(t, database, "INFRA", "http://127.0.0.1:1")
-	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
-	tree := Observation{IssueKey: "INFRA-1", Field: FieldTree, Value: []byte(`"INFRA-1"`)}
-	if _, err := RecordRead(t.Context(), database.Pool, "INFRA", at, 42, []Observation{tree}); err != nil {
-		t.Fatalf("record the read that names the tree: %v", err)
+	state := func(issue string) string {
+		return fmt.Sprintf(`{"daemon":{"project":"INFRA","stateSeq":1,"stateId":%q},
+			"settings":{"dispatch_url":"http://dispatch.internal.example"},"issues":{"INFRA-1":%s}}`, rigStateID, issue)
 	}
-	if _, err := RecordRead(t.Context(), database.Pool, "INFRA", at.Add(time.Minute), 42, []Observation{
-		{IssueKey: "INFRA-1", Field: FieldPhase, Value: []byte(`"planning"`)},
-		tree,
-		{IssueKey: "INFRA-1", Field: FieldSlot, Value: []byte(`0`)},
-	}); err != nil {
-		t.Fatalf("record the read that adds the phase and the slot: %v", err)
-	}
+	daemon := newFakeDaemon(t, state(`{"key":"INFRA-1","tree":"INFRA-1"}`))
+	database, setting := configured(t, daemon.URL)
+	readDaemon(t, database, setting)
+	daemon.serves(state(`{"key":"INFRA-1","phase":"planning","tree":"INFRA-1","slot":{"index":0}}`))
+	readDaemon(t, database, setting)
 
 	for _, order := range []string{"field", "field desc"} {
 		current, err := ReadCurrent(t.Context(), inOrder{db: database.Pool, order: order}, "INFRA")

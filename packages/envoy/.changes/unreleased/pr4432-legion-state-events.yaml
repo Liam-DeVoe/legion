@@ -6,18 +6,27 @@ body: |-
   state every minute. It reads a daemon's `GET /legion/v1/state` whole only for a project with no
   starting point, a boot that does not follow or whose schema version moved, a gap the stream no
   longer holds, a message of another store than the starting point's, a message the database
-  refuses for good, and a read owed since one failed, at most once a minute. A good whole read
-  takes the daemon's `daemon.stateRun` as the run of its starting point, so a boot message of that
-  run that arrives after the read, at or below the read's sequence, makes no second read. It logs
-  each whole read with its reason and the daemon run that served it. It applies no message of
-  another store. It applies a transaction that the daemon split over several messages only when
-  the last message arrives. It finishes a message that the database refuses for good (SQLSTATE
-  class 22 or 23) and does not try it again. It takes no starting point while a Dispatch process
-  of an earlier build is in the fleet. When Dispatch has NATS, a `PUT` of a project's Legion
-  setting, of the same URL too, makes one whole read.
+  refuses for good, and a read owed since one failed. The whole reads of one project start at
+  least a minute apart, whatever their reason. A message that calls for a read sooner makes none:
+  Dispatch records the read as owed, acknowledges the message, and makes the read at the
+  project's next message, settings change or take-over after the minute. So a burst of such
+  messages makes one read a minute and does not stop the messages of other projects. A good whole
+  read takes the daemon's `daemon.stateRun` as the run of its starting point, so a boot message of
+  that run that arrives after the read, at or below the read's sequence, makes no second read. It
+  logs each whole read with the daemon run that served it, its first reason as `reason`, and each
+  reason it was owed for as `reasons`. It applies no message of another store, and no message
+  while no good whole read has given the project a store. It does not decode a message whose
+  events do not go from `firstSeq` to `seq` with one event for each sequence. It applies a
+  transaction that the daemon split over several messages only when the last message arrives,
+  and a whole read that fails does not delete the parts that Dispatch holds. It finishes a
+  message that the database refuses for good (SQLSTATE class 22 or 23) and does not try it
+  again. It takes no starting point while a Dispatch process of an earlier build is in the fleet.
+  When Dispatch has NATS, a `PUT` of a project's Legion setting, of the same URL too, makes one
+  whole read.
   `legion_reads` records each transaction the intake applies as a row of kind `events` at the
   daemon's commit time. `legion_event_cursors` records how far the observations of each project
-  follow its daemon, `legion_event_parts` holds the parts of a split transaction, and
+  follow its daemon and the whole read it owes, with the reasons for that read,
+  `legion_event_parts` holds the parts of a split transaction, and
   `server_processes.legion_state_intake` tells a process of this build from one of an earlier
   build (migration `20261118212431_legion_events`). A call to a daemon waits up to 60 s, not 20 s.
   Dispatch's NATS grant names the new durable, and on a VM hub the changed grant replaces the

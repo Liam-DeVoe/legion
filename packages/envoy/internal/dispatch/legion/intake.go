@@ -9,15 +9,15 @@ package legion
 // applies them, and writes legion_observations from them as a whole read would have written them.
 //
 // Each project's messages run one at a time on that project's runner (messageKey), and so does
-// every whole read of the project (ReadWhole): a take-over's and a settings change's are queued on
+// every whole read of the project (readWhole): a take-over's and a settings change's are queued on
 // the same runner (delivery.HeldDurable.Queue), so a read never interleaves with the project's
-// messages and its snapshot is never older than a message already applied. legion_event_cursors
-// says how far the project's observations have followed its daemon (cursor), and
-// legion_event_parts holds the messages of a transaction the daemon split over several until the
-// last one arrives (part).
+// messages and its snapshot is never older than a message already applied. So a project has at
+// most one whole read in flight; it has at most one owed (cursor.readOwed), and its whole reads
+// start ReadRetryAfter apart (cursor.readDue). legion_event_cursors says how far the project's
+// observations have followed its daemon (cursor), and legion_event_parts holds the messages of a
+// transaction the daemon split over several until the last one arrives (part).
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,9 +53,12 @@ const stateSubject = contracts.LegionNoticeTopicPrefix + "*" + contracts.LegionS
 // stateAckWait only redelivers a message the runner never reached in two minutes. stateMaxAckPending
 // is how many messages may wait on their runners at once. One project's messages run one at a
 // time, and INFRA's measured rate is about 53,000 messages a day, so 256 messages are about seven
-// minutes of INFRA's traffic. A runner held that long (a database that refuses its writes, a whole
-// read that waits on its daemon) fills the window, and NATS then delivers no message of any
-// project until that runner moves again. The messages wait in the stream meanwhile: none is lost.
+// minutes of INFRA's traffic. A runner held that long (a database that refuses its writes) fills
+// the window, and NATS then delivers no message of any project until that runner moves again. The
+// messages wait in the stream meanwhile: none is lost. A whole read holds its project's runner for
+// one read at the most, since a message that calls for a read inside ReadRetryAfter of the last one
+// makes none: it is finished once the cursor records the read owed, so a burst of such messages,
+// forged or from a bug, holds the window for the length of one read and no longer.
 const (
 	stateAckWait       = 2 * time.Minute
 	stateMaxAckPending = 256
@@ -78,14 +81,18 @@ func consumerConfig() natsgo.ConsumerConfig {
 	}
 }
 
-// ReadRetryAfter is how long an owed whole read waits after the one before it was tried: a read
-// that failed is tried again at the project's next message, its next settings change or the next
-// take-over, and never sooner than this after the last try. A message of another store than the
-// cursor's (ReadReasonStore) is read for no sooner than this after the last whole read either.
+// ReadRetryAfter is how long a project's whole read waits after the one before it was tried, for
+// every reason. A read called for inside it is owed rather than made (cursor.readOwed), and the
+// message that called for it is finished once the cursor records it owed. The owed read is made at
+// the project's next message, its next settings change or the next take-over once it is due, and
+// no timer makes it. A good starting read holds back no read after it (recordWhole), and a project
+// with no cursor has no read to wait after.
 const ReadRetryAfter = time.Minute
 
 // The reasons a whole read is made, which legion_reads.reason records and the whole read's log
-// line names. There are no others: no timer reads a daemon.
+// line names. There are no others: no timer reads a daemon. A reason that calls for a read while
+// one is owed joins the owed read (cursor.readReasons), and the read is recorded under the first
+// reason it was owed for and logged with every one it joined (reasons).
 const (
 	// ReadReasonStart is a project with a setting and no starting point: no cursor, or one that
 	// follows another daemon than the setting names. It is read at the intake's take-over (which
@@ -142,9 +149,16 @@ const wholeReadLine = "legion intake: whole read"
 const (
 	// droppedLine is a message for a project with no Legion setting.
 	droppedLine = "legion intake: a state message for a project with no Legion setting is dropped"
+	// noStoreLine is a message of a project whose cursor holds no store: every whole read since
+	// the setting was written failed, so no read has said which store its daemon counts in.
+	noStoreLine = "legion intake: a state message is dropped while no good whole read has given its project a store"
 	// otherStoreLine is a message whose stateId is not the cursor's, after the read it called
 	// for or inside ReadRetryAfter of the last read.
 	otherStoreLine = "legion intake: a state message of another store than the starting point's is dropped"
+	// unfollowedLine is a message that does not follow the cursor (a gap, a boot that does not
+	// follow, a part that does not continue the held parts) while the read it calls for is owed:
+	// the read holds its events.
+	unfollowedLine = "legion intake: a state message that does not follow the cursor is dropped while a whole read is owed"
 	// beyondLine is a message whose first sequence is still past the next one after a good whole
 	// read it called for: the read holds every event the daemon published before it.
 	beyondLine = "legion intake: a state message past the sequence of the whole read it called for is dropped"
@@ -276,10 +290,11 @@ func (in *Intake) Run(ctx context.Context) {
 // SettingsChanged queues each configured project's starting point on the project's runner
 // (startingPoint). A write of a Legion setting wakes it (SettingsChannel), and each take-over
 // queues it (takenOver): a project whose cursor is gone (PutSettings, DeleteSettings, or no read
-// yet) is read whole once, and every other project, whose cursor stands, is not read at all. A
-// settings read that fails queues nothing: a project with no starting point is read at its next
-// message all the same, and the listener's wake fires again once it listens again. A process that
-// does not hold the durable queues nothing: the process that holds it heard the same notification.
+// yet) is read whole once, a project whose cursor owes a read that is due is read for the reasons
+// it owes it for, and every other project is not read at all. A settings read that fails queues
+// nothing: a project with no starting point is read at its next message all the same, and the
+// listener's wake fires again once it listens again. A process that does not hold the durable
+// queues nothing: the process that holds it heard the same notification.
 func (in *Intake) SettingsChanged(ctx context.Context) {
 	settings, err := ListSettings(ctx, in.pool)
 	if err != nil {
@@ -303,10 +318,10 @@ func (in *Intake) takenOver() {
 }
 
 // startingPoint reads project's daemon whole where its observations have no starting point
-// (ReadReasonStart), or where a read is owed and due (ReadReasonRetry), and reads nothing
-// otherwise. It takes no starting point while a Dispatch process of an earlier build is in the
-// fleet (startBlocked). It runs on the project's runner; a database step that fails is tried again
-// in place until it succeeds or the handling ends.
+// (ReadReasonStart), or where a read is owed and due, for the reasons it is owed for, and reads
+// nothing otherwise (startReasons). It takes no starting point while a Dispatch process of an
+// earlier build is in the fleet (startBlocked). It runs on the project's runner; a database step
+// that fails is tried again in place until it succeeds or the handling ends.
 func (in *Intake) startingPoint(ctx context.Context, project string) {
 	var pending *wholeRead
 	in.untilDone(ctx, nil, project, func(ctx context.Context) (outcome, error) {
@@ -314,17 +329,17 @@ func (in *Intake) startingPoint(ctx context.Context, project string) {
 		if err != nil || !found {
 			return outcomeDone, err
 		}
-		reason := startReason(current, setting.StateURL, in.now())
-		if reason == "" {
+		reasons := startReasons(current, setting.StateURL, in.now())
+		if len(reasons) == 0 {
 			return outcomeDone, nil
 		}
-		if blocked, err := in.startBlocked(ctx, reason); err != nil || blocked {
+		if blocked, err := in.startBlocked(ctx, reasons[0]); err != nil || blocked {
 			if blocked {
 				in.reportEvery(earlierBuildLine, project)
 			}
 			return outcomeDone, err
 		}
-		recorded, err := in.readWhole(ctx, setting, reason, &pending)
+		recorded, err := in.readWhole(ctx, setting, reasons, &pending)
 		if err != nil {
 			return outcomeDone, err
 		}
@@ -369,20 +384,20 @@ func messageKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
 type outcome int
 
 const (
-	// outcomeDone is a message applied, or work finished.
+	// outcomeDone is a message taken: its events above the position applied, or held while more of
+	// its transaction is to come (holdPart), or none of them above the position. Or work finished.
 	outcomeDone outcome = iota
-	// outcomeSkipped is a message at or below the cursor, or a part of a split transaction held
-	// already: nothing is written.
-	outcomeSkipped
-	// outcomeHeld is a part of a split transaction held until its last part (part): no
-	// observation is written and the cursor does not move.
-	outcomeHeld
 	// outcomeDropped is a message for a project with no Legion setting.
 	outcomeDropped
-	// outcomeOtherStore is a message whose stateId is not the cursor's (verdictOtherStore).
+	// outcomeNoStore is a message of a project whose cursor holds no store (judge).
+	outcomeNoStore
+	// outcomeOtherStore is a message whose stateId is not the cursor's (judge).
 	outcomeOtherStore
+	// outcomeUnfollowed is a message that does not follow the position, finished while the read it
+	// calls for is owed (judge).
+	outcomeUnfollowed
 	// outcomeBeyond is a message still past the next sequence after a good whole read it called
-	// for (verdictBeyond).
+	// for (judge).
 	outcomeBeyond
 	// outcomeEarlierBuild is a message of a project with no starting point while a Dispatch
 	// process of an earlier build is in the fleet (startBlocked).
@@ -422,9 +437,14 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 		in.pruneHourly(ctx)
 	case outcomeDropped:
 		in.reportEvery(droppedLine, message.Project)
+	case outcomeNoStore:
+		in.reportEvery(noStoreLine, message.Project, append(sequences, "stateId", message.StateID)...)
 	case outcomeOtherStore:
 		in.reportEvery(otherStoreLine, message.Project, append(sequences,
 			"stateId", message.StateID, "cursorStateId", logValue(attempt.cursor.stateID))...)
+	case outcomeUnfollowed:
+		in.reportEvery(unfollowedLine, message.Project, append(sequences,
+			"lastSeq", logValue(attempt.cursor.lastSeq), "reason", attempt.reason)...)
 	case outcomeBeyond:
 		in.reportEvery(beyondLine, message.Project, append(sequences, "stateSeq", logValue(attempt.cursor.lastSeq))...)
 	case outcomeEarlierBuild:
@@ -441,22 +461,24 @@ type messageAttempt struct {
 	// whether one was recorded: a message is read for once, but for a starting point.
 	pending  *wholeRead
 	readMade bool
-	// cursor is the project's cursor as the last batch read it (applyBatch), which the log line
-	// of a message finished unapplied names.
+	// cursor is the project's cursor as the last batch read it (applyBatch), and reason the whole
+	// read that batch found the message calls for (judge), which the log line of a message
+	// finished unapplied names.
 	cursor cursor
+	reason string
 	// refusal is the database's refusal for good of the message's batch, once there is one: the
 	// message is not tried again, and one whole read is made of its project (readRefused).
 	refusal *pgconn.PgError
 }
 
 // applyMessage is one attempt at a message: its batch (applyBatch), or the whole read the batch
-// found the message calls for first (judge). The read waits on the daemon, so it is made outside
-// the batch's transaction, and the attempt is then made again: the batch decides once more on the
-// cursor the read left. A message is applied while a read is owed, and the cursor follows it; the
-// read is retried at the next message once it is due. A starting point is not taken while a
-// Dispatch process of an earlier build is in the fleet (startBlocked): the message is finished
-// unapplied. A batch the database refuses for good (refusedForGood) is logged with its refusal,
-// is not tried again, and makes one whole read of the project (readRefused).
+// found is owed and due first (judge, cursor.readDue). The read waits on the daemon, so it is made
+// outside the batch's transaction, and the attempt is then made again: the batch decides once more
+// on the cursor the read left. A read that is owed and not due is recorded owed by the batch, which
+// takes the message or finishes it as judge says. A starting point is not taken while a Dispatch
+// process of an earlier build is in the fleet (startBlocked): the message is finished unapplied. A
+// batch the database refuses for good (refusedForGood) is logged with its refusal, is not tried
+// again, and calls for one whole read of the project (readRefused).
 func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (outcome, error) {
 	if attempt.refusal != nil {
 		return in.readRefused(ctx, attempt)
@@ -472,12 +494,12 @@ func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (ou
 	if err != nil || owed == nil {
 		return result, err
 	}
-	if blocked, err := in.startBlocked(ctx, owed.reason); err != nil || blocked {
+	if blocked, err := in.startBlocked(ctx, owed.reasons[0]); err != nil || blocked {
 		return outcomeEarlierBuild, err
 	}
 	// A read takes up to RequestTimeout: the message is still in hand.
 	inProgress(attempt.msg)
-	recorded, err := in.readWhole(ctx, owed.setting, owed.reason, &attempt.pending)
+	recorded, err := in.readWhole(ctx, owed.setting, owed.reasons, &attempt.pending)
 	if err != nil {
 		return outcomeDone, err
 	}
@@ -487,24 +509,32 @@ func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (ou
 	return outcomeAgain, nil
 }
 
-// readRefused is the one whole read of a message the database refused for good
+// readRefused is the whole read a message the database refused for good calls for
 // (ReadReasonRefused), which finishes the message whatever the read comes to: the read's rows then
 // hold the daemon's state, the refused message's events among it, since the daemon commits each
-// event before it publishes it. Nothing is read where the project has no setting, or a setting
-// whose starting point its change queues (a cursor that does not follow it), or where the database
-// refuses for good the read's record as well, or the project's position itself (a key it does not
-// take): the message is finished all the same. Any other failure of the database is tried again in
-// place, as every database step is.
+// event before it publishes it. The read is made where it is due (cursor.readDue), and is recorded
+// owed otherwise, as every read is (owe). Nothing is read where the project has no setting, or a
+// setting whose starting point its change queues (a cursor that does not follow it), or where the
+// database refuses for good the read's record as well, or the project's position itself (a key it
+// does not take): the message is finished all the same. Any other failure of the database is tried
+// again in place, as every database step is.
 func (in *Intake) readRefused(ctx context.Context, attempt *messageAttempt) (outcome, error) {
-	setting, current, found, err := in.position(ctx, attempt.message.Project)
+	project := attempt.message.Project
+	setting, current, found, err := in.position(ctx, project)
 	if err != nil || !found || !current.follows(setting.StateURL) {
 		if refusedForGood(err) != nil {
 			err = nil
 		}
 		return outcomeDone, err
 	}
+	if !current.readDue(in.now()) {
+		if err := owe(ctx, in.pool, project, ReadReasonRefused); err != nil && refusedForGood(err) == nil {
+			return outcomeDone, err
+		}
+		return outcomeDone, nil
+	}
 	inProgress(attempt.msg)
-	if _, err := in.readWhole(ctx, setting, ReadReasonRefused, &attempt.pending); err != nil && refusedForGood(err) == nil {
+	if _, err := in.readWhole(ctx, setting, current.owedWith(ReadReasonRefused), &attempt.pending); err != nil && refusedForGood(err) == nil {
 		return outcomeDone, err
 	}
 	return outcomeDone, nil
@@ -522,11 +552,25 @@ func refusedForGood(err error) *pgconn.PgError {
 	return nil
 }
 
-// owedRead is the whole read a message calls for before it is applied (judge): the setting whose
-// daemon is read, and why.
+// owedRead is the whole read a message calls for before it is applied, owed and due (applyBatch):
+// the setting whose daemon is read, and every reason it was owed for, the first one first.
 type owedRead struct {
 	setting Settings
-	reason  string
+	reasons []string
+}
+
+// owe records on project's cursor, through db (a batch's transaction, or the pool), a whole read
+// owed for reason: read_owed, and reason among read_reasons after the reasons the read was owed
+// for already, where it is not among them. The message that called for the read is then finished,
+// and the read is made once it is due (cursor.readDue).
+func owe(ctx context.Context, db Execer, project, reason string) error {
+	if _, err := db.Exec(ctx, `
+		update legion_event_cursors set read_owed = true, read_reasons = array_append(read_reasons, $2)
+		where project = $1 and not ($2 = any(read_reasons))
+	`, project, reason); err != nil {
+		return fmt.Errorf("owe a whole read of %s for %s: %w", project, reason, err)
+	}
+	return nil
 }
 
 // untilDone runs step until it answers with no error, at once again for outcomeAgain, and after a
@@ -599,8 +643,8 @@ func logValue[T any](value *T) any {
 	return *value
 }
 
-// pruneHourly prunes legion_reads (PruneReads) after a batch, at most once per pruneEvery in this
-// process.
+// pruneHourly prunes legion_reads (PruneReads) after a message the intake took, at most once per
+// pruneEvery in this process.
 func (in *Intake) pruneHourly(ctx context.Context) {
 	now := in.now()
 	in.mu.Lock()
@@ -620,11 +664,16 @@ func (in *Intake) pruneHourly(ctx context.Context) {
 // cursor is one project's legion_event_cursors row: how far its observations have followed its
 // daemon (migration 20261118212431). exists is false for a project with no row.
 type cursor struct {
-	exists      bool
-	stateURL    string
-	run         *string
-	lastSeq     *int64
+	exists   bool
+	stateURL string
+	run      *string
+	lastSeq  *int64
+	// readOwed is a whole read owed, and readReasons every reason it is owed for, in the order
+	// they called for it (owe), or retry alone after a read that failed (recordWhole). readTriedAt
+	// is when the read the next one waits ReadRetryAfter after was tried, nil where none holds the
+	// next one back (readDue).
 	readOwed    bool
+	readReasons []string
 	readTriedAt *time.Time
 	// stateID is the store the cursor's sequence is counted in, nil while a read is owed and no
 	// good read set it; schemaVersion the store's schema version as the cursor last saw it, nil for
@@ -633,9 +682,21 @@ type cursor struct {
 	schemaVersion *int64
 }
 
-// retryDue reports whether an owed read may be tried at now: ReadRetryAfter after the last try.
-func (c cursor) retryDue(now time.Time) bool {
+// readDue reports whether a whole read of the project may start at now, whatever its reason:
+// ReadRetryAfter after the read before it was tried, or at once where no read holds the next one
+// back.
+func (c cursor) readDue(now time.Time) bool {
 	return c.readTriedAt == nil || !now.Before(c.readTriedAt.Add(ReadRetryAfter))
+}
+
+// owedWith is the reasons a read made now is made for: every reason the cursor owes it for, in
+// order, then reason where it is not among them ("" adds none).
+func (c cursor) owedWith(reason string) []string {
+	reasons := slices.Clone(c.readReasons)
+	if reason != "" && !slices.Contains(reasons, reason) {
+		reasons = append(reasons, reason)
+	}
+	return reasons
 }
 
 // follows reports whether the cursor follows the daemon at stateURL. A cursor that is missing, or
@@ -645,150 +706,163 @@ func (c cursor) follows(stateURL string) bool {
 }
 
 // cursorColumns is the legion_event_cursors select list scanCursor reads, in scan order.
-const cursorColumns = `state_url, run, last_seq, read_owed, read_tried_at, state_id, schema_version`
+const cursorColumns = `state_url, run, last_seq, read_owed, read_reasons, read_tried_at, state_id, schema_version`
 
 // scanCursor decodes one cursorColumns row, or no row as a cursor that does not exist.
 func scanCursor(row pgx.Row) (cursor, error) {
 	current := cursor{exists: true}
-	err := row.Scan(&current.stateURL, &current.run, &current.lastSeq, &current.readOwed, &current.readTriedAt,
-		&current.stateID, &current.schemaVersion)
+	err := row.Scan(&current.stateURL, &current.run, &current.lastSeq, &current.readOwed, &current.readReasons,
+		&current.readTriedAt, &current.stateID, &current.schemaVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cursor{}, nil
 	}
 	return current, err
 }
 
-// position reads project's setting and its cursor in one statement, outside any transaction, for
-// a decision whether to read the daemon whole (startingPoint, readRefused); found is false for a
-// project with no setting.
-func (in *Intake) position(ctx context.Context, project string) (setting Settings, current cursor, found bool, err error) {
-	var cursorURL *string
-	var readOwed *bool
-	err = in.pool.QueryRow(ctx, `
-		select s.state_url, c.state_url, c.run, c.last_seq, c.read_owed, c.read_tried_at, c.state_id, c.schema_version
-		from legion_settings s
-		left join legion_event_cursors c on c.project = s.project
-		where s.project = $1
-	`, project).Scan(&setting.StateURL, &cursorURL, &current.run, &current.lastSeq, &readOwed, &current.readTriedAt,
-		&current.stateID, &current.schemaVersion)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Settings{}, cursor{}, false, nil
-	}
-	if err != nil {
-		return Settings{}, cursor{}, false, fmt.Errorf("read where the Legion events of %s stand: %w", project, err)
-	}
-	setting.Project = project
-	if cursorURL != nil {
-		current.exists, current.stateURL, current.readOwed = true, *cursorURL, *readOwed
-	}
-	return setting, current, true, nil
+// rowReader is what readPosition reads through: the pool, outside any transaction, or a
+// transaction.
+type rowReader interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// lockPosition reads project's setting `for share` and its cursor `for update` inside tx, which is
-// how each write of the project's observations opens (applyBatch, recordWhole): a write of the
-// setting (settingWritten) waits for the transaction, and so does each other write of the cursor.
-// found is false for a project with no setting.
-func lockPosition(ctx context.Context, tx pgx.Tx, project string) (stateURL string, current cursor, found bool, err error) {
-	switch err := tx.QueryRow(ctx, `select state_url from legion_settings where project = $1 for share`, project).Scan(&stateURL); {
+// readPosition reads project's setting and then its cursor (cursorColumns, scanCursor) through db:
+// inside a transaction with the setting `for share` and the cursor `for update` where locked is
+// set (lockPosition), and outside any transaction with no lock otherwise (position). found is
+// false for a project with no setting.
+func readPosition(ctx context.Context, db rowReader, project string, locked bool) (stateURL string, current cursor, found bool, err error) {
+	settingLock, cursorLock := "", ""
+	if locked {
+		settingLock, cursorLock = " for share", " for update"
+	}
+	switch err := db.QueryRow(ctx, `select state_url from legion_settings where project = $1`+settingLock, project).Scan(&stateURL); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", cursor{}, false, nil
 	case err != nil:
 		return "", cursor{}, false, fmt.Errorf("read the Legion setting of %s: %w", project, err)
 	}
-	current, err = scanCursor(tx.QueryRow(ctx, `select `+cursorColumns+` from legion_event_cursors where project = $1 for update`, project))
+	current, err = scanCursor(db.QueryRow(ctx, `select `+cursorColumns+` from legion_event_cursors where project = $1`+cursorLock, project))
 	if err != nil {
 		return "", cursor{}, false, fmt.Errorf("read where the Legion events of %s stand: %w", project, err)
 	}
 	return stateURL, current, true, nil
 }
 
-// startReason is the whole read a project's starting point calls for, at a take-over or a settings
-// change: ReadReasonStart where the cursor is missing or follows another daemon, ReadReasonRetry
-// where a read is owed and due, and none otherwise.
-func startReason(current cursor, stateURL string, now time.Time) string {
-	switch {
-	case !current.follows(stateURL):
-		return ReadReasonStart
-	case current.readOwed && current.retryDue(now):
-		return ReadReasonRetry
+// position reads project's setting and its cursor outside any transaction (readPosition), for a
+// decision whether to read the daemon whole (startingPoint, readRefused), which the read's record
+// checks again under the locks it takes (recordWhole); found is false for a project with no
+// setting.
+func (in *Intake) position(ctx context.Context, project string) (setting Settings, current cursor, found bool, err error) {
+	stateURL, current, found, err := readPosition(ctx, in.pool, project, false)
+	if err != nil || !found {
+		return Settings{}, cursor{}, false, err
 	}
-	return ""
+	return Settings{Project: project, StateURL: stateURL}, current, true, nil
 }
 
-// verdict is what a message comes to on the position its project's transaction holds (judge).
-type verdict int
+// lockPosition reads project's setting `for share` and its cursor `for update` inside tx
+// (readPosition), which is how each write of the project's observations opens (applyBatch,
+// recordWhole): a write of the setting (settingWritten) waits for the transaction, and so does
+// each other write of the cursor. found is false for a project with no setting.
+func lockPosition(ctx context.Context, tx pgx.Tx, project string) (stateURL string, current cursor, found bool, err error) {
+	return readPosition(ctx, tx, project, true)
+}
 
-const (
-	// verdictTake is a message whose events above the position are applied, or held while more
-	// of its transaction is to come (applyBatch).
-	verdictTake verdict = iota
-	// verdictRead is a message that calls for a whole read first, for the reason judge answers.
-	verdictRead
-	// verdictOtherStore is a message whose stateId is not the cursor's, once the one read it may
-	// call for is made or not due: it is finished unapplied.
-	verdictOtherStore
-	// verdictBeyond is a message whose first sequence is still past the next one after a good
-	// whole read it called for: it is finished unapplied.
-	verdictBeyond
-)
-
-// judge is what a message calls for before its events are taken, on the project's cursor and the
-// parts of a split transaction held for it:
-//
-//   - A project with no starting point is read whatever else holds (ReadReasonStart).
-//   - A message whose stateId is not the cursor's is counted in another store, and nothing of it
-//     is applied: it makes one whole read (ReadReasonStore) where no read was made in the last
-//     ReadRetryAfter, so a daemon whose store was replaced is found again, and is dropped where
-//     the read still holds another id, or where no read is due (verdictOtherStore).
-//   - After a good whole read the message called for (readMade), a message whose first sequence
-//     is still past the next one is no event of the daemon read: the daemon commits each event
-//     before it publishes it, so the read holds every event published before it. It is dropped
-//     (verdictBeyond). After a read that failed it is taken, as any message is while a read is
-//     owed.
-//   - Otherwise a message is read for once: a boot, a sequence or a part that does not follow the
-//     position (stateMessage.unfollowed), or a read owed since one failed (ReadReasonRetry) - and
-//     while a read is owed, never sooner than ReadRetryAfter after the last try, whatever the
-//     message.
-func judge(current cursor, held []part, stateURL string, message stateMessage, now time.Time, readMade bool) (verdict, string) {
+// startReasons is the whole read a project's starting point calls for, at a take-over or a
+// settings change: ReadReasonStart where the cursor is missing or follows another daemon, every
+// reason a read is owed for where one is owed and due, and none otherwise.
+func startReasons(current cursor, stateURL string, now time.Time) []string {
 	switch {
 	case !current.follows(stateURL):
-		return verdictRead, ReadReasonStart
-	case current.stateID != nil && *current.stateID != message.StateID:
-		if readMade || !current.retryDue(now) {
-			return verdictOtherStore, ""
+		return []string{ReadReasonStart}
+	case current.readOwed && current.readDue(now):
+		return current.readReasons
+	}
+	return nil
+}
+
+// judge is what a message comes to on the position its project's transaction holds: the cursor
+// and the parts of a split transaction held for it. It answers the outcome of the message where no
+// whole read is made first, outcomeDone for a message whose events above the position are taken,
+// and the reason of the whole read the message calls for, "" for none. The caller (applyBatch)
+// makes that read first where it is due, and where a read owed for another reason is due; it
+// records the read owed otherwise (owe), and the message comes to the outcome judge answered. A
+// message whose read was made (readMade) is judged again on the cursor the read left, and calls
+// for no second read:
+//
+//   - A project with no starting point calls for a read whatever else holds (ReadReasonStart),
+//     which is always due: there is no read before it to wait after.
+//   - A cursor that holds no store, one whose every read since the setting was written failed,
+//     takes no message (outcomeNoStore), since no good read has said which store the daemon the
+//     setting names counts in. The message may be of the daemon the setting named before, which
+//     still publishes under the same project, and R3 applies none of its messages after the
+//     setting names another. The read owed since the last one failed holds the message's events.
+//   - A message whose stateId is not the cursor's is counted in another store, and nothing of it
+//     is applied (outcomeOtherStore). It calls for a read (ReadReasonStore), so a daemon whose
+//     store was replaced is found again.
+//   - After a good whole read the message called for, a message whose first sequence is still
+//     past the next one is no event of the daemon read: the daemon commits each event before it
+//     publishes it, so the read holds every event published before it (outcomeBeyond). Any other
+//     message is taken.
+//   - Otherwise a message that does not follow the position (stateMessage.unfollowed: a gap, a
+//     boot that does not follow, a part that does not continue the held parts) calls for a read,
+//     and where no read is made first it is finished unapplied (outcomeUnfollowed). The read holds
+//     its events, and taking it would move the cursor past events never applied: R1 applies no
+//     message beyond the starting point's stateSeq and what the stream has delivered since. A boot
+//     that follows the position and whose schema version moved calls for a read
+//     (ReadReasonSchema) and is taken, as is every message that follows.
+//
+// So while a read is owed and not due, or after a read the message called for failed: a gap, a
+// boot that does not follow and a part that does not continue the held parts are finished
+// unapplied; a message of another store is finished unapplied; every message is finished
+// unapplied while the cursor holds no store; and a boot that follows, of a moved schema or not,
+// and every other message that follows are taken, the cursor following them. Each reason a
+// message calls for joins the owed read (owe), but for the reason of a message whose own read just
+// failed, which the retry that failure owes covers. The owed read is made at the project's next
+// message, boot, settings change or take-over once it is due, and never on a timer.
+func judge(current cursor, held []part, stateURL string, message stateMessage, readMade bool) (outcome, string) {
+	switch {
+	case !current.follows(stateURL):
+		return outcomeDone, ReadReasonStart
+	case current.stateID == nil:
+		return outcomeNoStore, ""
+	case *current.stateID != message.StateID:
+		if readMade {
+			return outcomeOtherStore, ""
 		}
-		return verdictRead, ReadReasonStore
-	case readMade:
-		if !current.readOwed && current.lastSeq != nil && message.FirstSeq > *current.lastSeq+1 {
-			return verdictBeyond, ""
+		return outcomeOtherStore, ReadReasonStore
+	case readMade && !current.readOwed:
+		if current.lastSeq != nil && message.FirstSeq > *current.lastSeq+1 {
+			return outcomeBeyond, ""
 		}
-		return verdictTake, ""
-	case current.readOwed && !current.retryDue(now):
-		return verdictTake, ""
+		return outcomeDone, ""
 	}
-	if reason := message.unfollowed(current, held); reason != "" {
-		return verdictRead, reason
+	reason := message.unfollowed(current, held)
+	result := outcomeDone
+	if reason != "" && reason != ReadReasonSchema {
+		result = outcomeUnfollowed
 	}
-	if current.readOwed {
-		return verdictRead, ReadReasonRetry
+	if readMade {
+		reason = ""
 	}
-	return verdictTake, ""
+	return result, reason
 }
 
 // applyBatch takes the attempt's message in one transaction that holds the project's position
-// (lockPosition, and the parts held for it, heldParts). A message that calls for a whole read
-// first (judge, decided on the setting, the cursor and the parts the transaction holds) writes
-// nothing and answers that read: the caller makes it outside the transaction and tries again. A
-// message judge drops writes nothing either (outcomeOtherStore, outcomeBeyond), and neither does
-// one whose project has no setting (outcomeDropped), one at or below the position
-// (outcomeSkipped) or one with more of its transaction to come, which is held (outcomeHeld,
-// holdPart).
+// (lockPosition, and the parts held for it, heldParts). Where the message calls for a whole read
+// (judge), or a read is owed, and the read is due, it writes nothing and answers that read with
+// every reason it is owed for: the caller makes it outside the transaction and tries again. A read
+// that is not due is recorded owed (owe), in the transaction, so the message is acknowledged once
+// the read it calls for is recorded, and holds no slot of the durable's window while it waits. A
+// message judge finishes unapplied writes nothing else (outcomeNoStore, outcomeOtherStore,
+// outcomeUnfollowed, outcomeBeyond), and neither does one whose project has no setting
+// (outcomeDropped), one at or below the position, or one with more of its transaction to come,
+// which is held (holdPart).
 //
 // The last message of a transaction applies every event of it above the cursor, the held parts'
 // and its own, each field at its last value in sequence order, written where it differs from
 // legion_current's (recordEvents); one legion_reads row of kind `events` at the message's `at`
-// with the bytes of every message of the transaction; the cursor moved to the message's sequence,
-// run and store, and to the schema version of a boot among the events; the parts deleted; and the
+// with the bytes of every message of the transaction; the cursor moved to the message's sequence
+// and run, and to the schema version of a boot among the events; the parts deleted; and the
 // batch's announcement on StateChannel, which Postgres sends at the commit.
 func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outcome, *owedRead, error) {
 	message := attempt.message
@@ -805,31 +879,37 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 	if !found {
 		return outcomeDropped, nil, nil
 	}
-	attempt.cursor = current
 	held, err := heldParts(ctx, tx, project)
 	if err != nil {
 		return outcomeDone, nil, err
 	}
-	switch verdict, reason := judge(current, held, stateURL, message, in.now(), attempt.readMade); verdict {
-	case verdictRead:
-		return outcomeDone, &owedRead{setting: Settings{Project: project, StateURL: stateURL}, reason: reason}, nil
-	case verdictOtherStore:
-		return outcomeOtherStore, nil, nil
-	case verdictBeyond:
-		return outcomeBeyond, nil, nil
-	}
-	if n := len(held); n > 0 {
-		switch last := held[n-1]; {
-		case message.Seq <= last.lastSeq:
-			return outcomeSkipped, nil, nil
-		case !message.continues(last):
-			// Only while an owed read waits out ReadRetryAfter, when a message is taken whatever
-			// it follows: the transaction the parts began cannot be completed, so they go.
-			if _, err := tx.Exec(ctx, `delete from legion_event_parts where project = $1`, project); err != nil {
-				return outcomeDone, nil, fmt.Errorf("drop the held state events of %s: %w", project, err)
-			}
-			held = nil
+	result, reason := judge(current, held, stateURL, message, attempt.readMade)
+	attempt.cursor, attempt.reason = current, reason
+	setting := Settings{Project: project, StateURL: stateURL}
+	switch {
+	case !current.follows(stateURL):
+		return outcomeDone, &owedRead{setting: setting, reasons: []string{ReadReasonStart}}, nil
+	case (reason != "" || current.readOwed) && !attempt.readMade && current.readDue(in.now()):
+		return outcomeDone, &owedRead{setting: setting, reasons: current.owedWith(reason)}, nil
+	case reason != "" && !slices.Contains(current.readReasons, reason):
+		if err := owe(ctx, tx, project, reason); err != nil {
+			return outcomeDone, nil, err
 		}
+	}
+	// Every return from here commits: a read this batch recorded owed is part of it.
+	finish := func(result outcome) (outcome, *owedRead, error) {
+		if err := tx.Commit(ctx); err != nil {
+			return outcomeDone, nil, fmt.Errorf("commit the Legion state events of %s: %w", project, err)
+		}
+		return result, nil, nil
+	}
+	if result != outcomeDone {
+		return finish(result)
+	}
+	// A message judge takes that has parts held before it continues them (unfollowed), or is one
+	// of them delivered again.
+	if n := len(held); n > 0 && message.Seq <= held[n-1].lastSeq {
+		return finish(outcomeDone)
 	}
 	// The transaction's events in sequence order: the held parts', then the message's own.
 	var transaction []stateEvent
@@ -841,16 +921,13 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 	transaction = append(transaction, message.Events...)
 	events := eventsAfter(transaction, current.lastSeq)
 	if len(events) == 0 {
-		return outcomeSkipped, nil, nil
+		return finish(outcomeDone)
 	}
 	if message.More {
 		if err := holdPart(ctx, tx, project, message, attempt.bytes); err != nil {
 			return outcomeDone, nil, err
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return outcomeDone, nil, fmt.Errorf("commit the held state events of %s: %w", project, err)
-		}
-		return outcomeHeld, nil, nil
+		return finish(outcomeDone)
 	}
 	if _, err := recordEvents(ctx, tx, project, message.At, lastValues(events)); err != nil {
 		return outcomeDone, nil, err
@@ -868,11 +945,17 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 			schemaVersion = &event.SchemaVersion
 		}
 	}
+	// The cursor keeps its store: judge takes only a message of the cursor's own store, and no
+	// message at all while the cursor holds none. A message cannot give the cursor a store, since
+	// it cannot show it is of the daemon the setting names: after a setting names another daemon,
+	// the one it named before may still publish under the same project, and its stateId would then
+	// pass for the named daemon's store. Only a good whole read of the daemon the setting names
+	// sets the store (recordWhole).
 	if _, err := tx.Exec(ctx, `
 		update legion_event_cursors
-		set last_seq = $2, run = $3, state_id = $4, schema_version = coalesce($5, schema_version)
+		set last_seq = $2, run = $3, schema_version = coalesce($4, schema_version)
 		where project = $1
-	`, project, message.Seq, run, message.StateID, schemaVersion); err != nil {
+	`, project, message.Seq, run, schemaVersion); err != nil {
 		return outcomeDone, nil, fmt.Errorf("move where the Legion events of %s stand: %w", project, err)
 	}
 	if len(held) > 0 {
@@ -883,10 +966,7 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 	if err := NotifyRead(ctx, tx, project); err != nil {
 		return outcomeDone, nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return outcomeDone, nil, fmt.Errorf("commit the Legion state events of %s: %w", project, err)
-	}
-	return outcomeDone, nil, nil
+	return finish(outcomeDone)
 }
 
 // part is one held message of a transaction the daemon split over several (legion_event_parts,
@@ -894,8 +974,9 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 // none of its events is applied until the last arrives (applyBatch), so no observation holds a
 // value of a transaction Dispatch has not read whole. A part is held only where it follows the
 // cursor or the part before it (stateMessage.continues), so the parts of a project are one run of
-// sequences under one run and one store. A whole read deletes them (recordWhole), and so does
-// every write of the project's setting, which deletes the cursor they belong to (settingWritten).
+// sequences under one run and one store. A good whole read deletes them, since its snapshot holds
+// them, and so does every write of the project's setting, which deletes the cursor they belong to
+// (settingWritten); a failed read keeps them (recordWhole).
 type part struct {
 	firstSeq, lastSeq int64
 	run, stateID      string
@@ -1067,31 +1148,34 @@ func fetchWhole(ctx context.Context, setting Settings, now func() time.Time) *wh
 	return read
 }
 
-// ReadWhole reads setting's project's daemon state whole and records it (D9's whole read, made
-// for a reason and never on a timer): the state through Client.State, its observations at one
-// moment, Dispatch's now or just after the project's newest row (recordObservations), a
-// legion_reads row of kind `read` at Dispatch's now naming reason, and the project's cursor set to
-// the daemon's own daemon.stateSeq, daemon.stateId and daemon.schemaVersion, which takes the cursor
-// back too after a database restore took the daemon's counter back, and to its daemon.stateRun
-// where it serves one. A read that fails, and one fetchWhole judges failed, records a failed
-// legion_reads row naming why, its observations where the state is the project's own, and leaves
-// the read owed. Each read is announced on StateChannel and logged at INFO (wholeReadLine).
-//
-// It answers an error only for a record the database refused, and records nothing when the
-// setting no longer names setting.StateURL by the time it is written.
+// ReadWhole is the intake's whole read (Intake.readWhole) of setting's daemon for reason, made once
+// and on Dispatch's wall clock, for a caller that is not on the project's runner: the record's
+// tests outside the intake drive the intake's own read through it, and the intake calls readWhole.
+// It answers an error only for a record the database refused, refused again as a failed read, and
+// for a context that ended, and records nothing when the setting no longer names setting.StateURL
+// by the time it is written.
 func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason string) error {
-	read := fetchWhole(ctx, setting, time.Now)
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, err := finishWhole(ctx, pool, setting.Project, reason, read)
+	var pending *wholeRead
+	_, err := (&Intake{pool: pool, now: time.Now}).readWhole(ctx, setting, []string{reason}, &pending)
 	return err
 }
 
-// readWhole is ReadWhole on the intake's clock, keeping the read it fetched in pending until it is
-// recorded, so an attempt made again after a refused record records that read rather than reading
-// the daemon again. It reports whether the read was recorded: not when the setting moved meanwhile.
-func (in *Intake) readWhole(ctx context.Context, setting Settings, reason string, pending **wholeRead) (bool, error) {
+// readWhole reads setting's project's daemon state whole and records it (D9's whole read, made for
+// a reason and never on a timer), for reasons, the first of which legion_reads records: the state
+// through Client.State (fetchWhole), its observations at one moment, the intake's now or just
+// after the project's newest row (recordObservations), a legion_reads row of kind `read` at the
+// intake's now, and the project's cursor set to the daemon's own daemon.stateSeq, daemon.stateId
+// and daemon.schemaVersion, which takes the cursor back too after a database restore took the
+// daemon's counter back, and to its daemon.stateRun where it serves one (recordWhole). A read that
+// fails, and one fetchWhole judges failed, records a failed legion_reads row naming why, its
+// observations where the state is the project's own, and leaves the read owed. Each read is
+// announced on StateChannel and logged at INFO with its reasons (finishWhole).
+//
+// It keeps the read it fetched in pending until it is recorded, so an attempt made again after a
+// refused record records that read rather than reading the daemon again. It reports whether the
+// read was recorded: not when the setting moved meanwhile. It answers an error only for a record
+// the database refused, and for a stop that cut the read short.
+func (in *Intake) readWhole(ctx context.Context, setting Settings, reasons []string, pending **wholeRead) (bool, error) {
 	read := *pending
 	if read == nil || read.stateURL != setting.StateURL {
 		read = fetchWhole(ctx, setting, in.now)
@@ -1101,7 +1185,7 @@ func (in *Intake) readWhole(ctx context.Context, setting Settings, reason string
 		}
 		*pending = read
 	}
-	recorded, err := finishWhole(ctx, in.pool, setting.Project, reason, read)
+	recorded, err := finishWhole(ctx, in.pool, setting.Project, reasons, read)
 	if err != nil {
 		return false, err
 	}
@@ -1109,31 +1193,32 @@ func (in *Intake) readWhole(ctx context.Context, setting Settings, reason string
 	return recorded, nil
 }
 
-// finishWhole records read (recordWhole, which announces it on StateChannel), then logs it. A
+// finishWhole records read (recordWhole, which announces it on StateChannel), then logs it, naming
+// the first of reasons as its reason and every one of them as its reasons, comma-separated. A
 // record Postgres refused is recorded as a failed read instead, its failure `record: <why>` and
 // none of its observations, so the last good observations stand and the read is owed rather than
 // its project's runner held on a value the database will never take. An error is answered only
 // when that record is refused too: the database itself is failing, and the caller tries the record
 // again in place.
-func finishWhole(ctx context.Context, pool *store.Pool, project, reason string, read *wholeRead) (bool, error) {
-	recorded, written, err := recordWhole(ctx, pool, project, reason, read)
+func finishWhole(ctx context.Context, pool *store.Pool, project string, reasons []string, read *wholeRead) (bool, error) {
+	recorded, written, err := recordWhole(ctx, pool, project, reasons, read)
 	if err != nil && ctx.Err() == nil {
-		slog.Warn("legion intake: record a whole read; recording it as a failed read", "project", project, "reason", reason, "error", err)
+		slog.Warn("legion intake: record a whole read; recording it as a failed read", "project", project, "reason", reasons[0], "error", err)
 		refused := *read
 		refused.failure, refused.observed = fmt.Errorf("record: %w", err), false
-		if recorded, written, err = recordWhole(ctx, pool, project, reason, &refused); err == nil {
+		if recorded, written, err = recordWhole(ctx, pool, project, reasons, &refused); err == nil {
 			read = &refused
 		}
 	}
 	if err != nil || !recorded {
 		if err == nil {
-			slog.Info("legion intake: the Legion setting changed during a whole read; it is not recorded", "project", project, "reason", reason)
+			slog.Info("legion intake: the Legion setting changed during a whole read; it is not recorded", "project", project, "reason", reasons[0])
 		}
 		return recorded, err
 	}
-	attributes := []any{"project", project, "reason", reason, "stateSeq", logValue(read.stateSeq),
-		"stateId", logValue(read.stateID), "stateRun", logValue(read.stateRun), "bytes", read.bytes, "duration", read.took,
-		"ok", read.failure == nil, "rows", written}
+	attributes := []any{"project", project, "reason", reasons[0], "reasons", strings.Join(reasons, ","),
+		"stateSeq", logValue(read.stateSeq), "stateId", logValue(read.stateID), "stateRun", logValue(read.stateRun),
+		"bytes", read.bytes, "duration", read.took, "ok", read.failure == nil, "rows", written}
 	if read.failure != nil {
 		attributes = append(attributes, "error", read.failure.Error())
 	}
@@ -1141,20 +1226,26 @@ func finishWhole(ctx context.Context, pool *store.Pool, project, reason string, 
 	return true, nil
 }
 
-// recordWhole writes read in one transaction that holds the project's position (lockPosition):
-// the step every whole read's record takes (recordRead: its observations where it observed them,
-// its legion_reads row and its announcement), then the cursor, and it deletes the project's held
-// parts (part), which the read holds or makes a gap of. A good read sets the cursor to its
-// stateSeq, its stateId and its schemaVersion and clears the read owed; a failed one owes the read
-// and keeps the cursor's where it follows the same daemon. Either way the cursor follows the
-// setting's daemon from here, and read_tried_at is the read's time. A good read whose state serves
-// a stateRun sets the cursor's run to it: the run of the daemon that served the read, which is the
-// run of every message that daemon run publishes, so a boot of that run at or below the read's
-// stateSeq, one that reaches Dispatch after the read, is one the read holds and not a daemon whose
-// counter went back (stateMessage.unfollowed). Any other read keeps the cursor's run where it
-// follows the same daemon, and sets none where it does not. recorded is false, with nothing
-// written, when the setting no longer names the daemon read.
-func recordWhole(ctx context.Context, pool *store.Pool, project, reason string, read *wholeRead) (recorded bool, written int64, err error) {
+// recordWhole writes read, made for reasons, in one transaction that holds the project's position
+// (lockPosition): the step every whole read's record takes (recordRead: its observations where it
+// observed them, its legion_reads row naming the first reason, and its announcement), then the
+// cursor. A good read sets the cursor to its stateSeq, its stateId and its schemaVersion, clears
+// the read owed and every reason it was owed for, and deletes the project's held parts (part),
+// which its snapshot holds. A failed one owes the read for retry alone (ReadReasonRetry), and keeps
+// the cursor's sequence, store, schema version and held parts where it follows the same daemon:
+// the read holds none of them, and a part held is applied whole when its transaction's last part
+// arrives. Either way the cursor follows the setting's daemon from here, and read_tried_at, which
+// the next read waits ReadRetryAfter after (cursor.readDue), is the read's time; a good starting
+// read writes none there, since it is made because the project had no starting point and not
+// because a message called for it, so it holds back no read a message calls for after it (a gap
+// past what it read, a boot that does not follow it). A good read whose state serves a stateRun
+// sets the cursor's run to it: the run of the daemon that served the read, which is the run of
+// every message that daemon run publishes, so a boot of that run at or below the read's stateSeq,
+// one that reaches Dispatch after the read, is one the read holds and not a daemon whose counter
+// went back (stateMessage.unfollowed). Any other read keeps the cursor's run where it follows the
+// same daemon, and sets none where it does not. recorded is false, with nothing written, when the
+// setting no longer names the daemon read.
+func recordWhole(ctx context.Context, pool *store.Pool, project string, reasons []string, read *wholeRead) (recorded bool, written int64, err error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, 0, fmt.Errorf("open the transaction of the Legion state read of %s: %w", project, err)
@@ -1167,7 +1258,7 @@ func recordWhole(ctx context.Context, pool *store.Pool, project, reason string, 
 	if !found || stateURL != read.stateURL {
 		return false, 0, nil
 	}
-	if written, err = recordRead(ctx, tx, project, reason, read); err != nil {
+	if written, err = recordRead(ctx, tx, project, reasons[0], read); err != nil {
 		return false, 0, err
 	}
 	var lastSeq, schemaVersion *int64
@@ -1175,24 +1266,31 @@ func recordWhole(ctx context.Context, pool *store.Pool, project, reason string, 
 	if current.follows(stateURL) {
 		lastSeq, run, stateID, schemaVersion = current.lastSeq, current.run, current.stateID, current.schemaVersion
 	}
+	owed, triedAt := []string{ReadReasonRetry}, &read.at
 	if read.failure == nil {
 		lastSeq, stateID, schemaVersion = read.stateSeq, read.stateID, read.schemaVersion
 		if read.stateRun != nil {
 			run = read.stateRun
 		}
+		owed = []string{}
+		if reasons[0] == ReadReasonStart {
+			triedAt = nil
+		}
 	}
 	if _, err := tx.Exec(ctx, `
-		insert into legion_event_cursors (project, state_url, run, last_seq, read_owed, read_tried_at, state_id, schema_version)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
+		insert into legion_event_cursors (project, state_url, run, last_seq, read_owed, read_reasons, read_tried_at, state_id, schema_version)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		on conflict (project) do update set
 			state_url = excluded.state_url, run = excluded.run, last_seq = excluded.last_seq,
-			read_owed = excluded.read_owed, read_tried_at = excluded.read_tried_at,
+			read_owed = excluded.read_owed, read_reasons = excluded.read_reasons, read_tried_at = excluded.read_tried_at,
 			state_id = excluded.state_id, schema_version = excluded.schema_version
-	`, project, stateURL, run, lastSeq, read.failure != nil, read.at, stateID, schemaVersion); err != nil {
+	`, project, stateURL, run, lastSeq, len(owed) > 0, owed, triedAt, stateID, schemaVersion); err != nil {
 		return false, 0, fmt.Errorf("set where the Legion events of %s stand: %w", project, err)
 	}
-	if _, err := tx.Exec(ctx, `delete from legion_event_parts where project = $1`, project); err != nil {
-		return false, 0, fmt.Errorf("delete the held state events of %s: %w", project, err)
+	if read.failure == nil || !current.follows(stateURL) {
+		if _, err := tx.Exec(ctx, `delete from legion_event_parts where project = $1`, project); err != nil {
+			return false, 0, fmt.Errorf("delete the held state events of %s: %w", project, err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, 0, fmt.Errorf("commit the Legion state read of %s: %w", project, err)
@@ -1278,8 +1376,11 @@ const (
 
 // decodeStateMessage decodes one message's envelope, unless keying decoded it already, and its
 // payload, and converts each event into the observations it makes (decodeEvents). A message with
-// no project, no store, no sequence, sequences that do not run forwards or no time, or an event
-// whose value is not of its field's type, does not decode.
+// no project, no store, no sequence, sequences that do not run forwards or no time, events that do
+// not run from firstSeq to seq one sequence each, or an event whose value is not of its field's
+// type, does not decode. The events' rule is the contract's (legionStateMessage's refine): the
+// cursor moves to a message's seq (applyBatch), so a seq its events do not reach would move it
+// past every later event, and no whole read would follow.
 func decodeStateMessage(envelope *contracts.Envelope, data []byte) (stateMessage, error) {
 	if envelope == nil {
 		var decoded contracts.Envelope
@@ -1306,12 +1407,24 @@ func decodeStateMessage(envelope *contracts.Envelope, data []byte) (stateMessage
 	if err != nil {
 		return stateMessage{}, err
 	}
+	if int64(len(events)) != message.Seq-message.FirstSeq+1 {
+		return stateMessage{}, fmt.Errorf("the message's sequences %d to %d carry %d events: its events must run from firstSeq to seq, one sequence each",
+			message.FirstSeq, message.Seq, len(events))
+	}
+	for index, event := range events {
+		if want := message.FirstSeq + int64(index); event.Seq != want {
+			return stateMessage{}, fmt.Errorf("the message's event %d is at sequence %d, not %d: its events must run from firstSeq to seq, one sequence each",
+				index, event.Seq, want)
+		}
+	}
 	message.Events = events
 	return message, nil
 }
 
-// decodeEvents decodes the JSON array of a message's events, in sequence order, and fills each
-// event's observations (observe): a message's as it arrives, and a held part's as it was held.
+// decodeEvents decodes the JSON array of a message's events, in the order the daemon sent them,
+// which is sequence order (decodeStateMessage holds a message to it, and a held part is a message
+// that decoded), and fills each event's observations (observe): a message's as it arrives, and a
+// held part's as it was held.
 func decodeEvents(raw json.RawMessage) ([]stateEvent, error) {
 	var events []stateEvent
 	if len(raw) > 0 {
@@ -1319,7 +1432,6 @@ func decodeEvents(raw json.RawMessage) ([]stateEvent, error) {
 			return nil, fmt.Errorf("decode the events: %w", err)
 		}
 	}
-	slices.SortStableFunc(events, func(a, b stateEvent) int { return cmp.Compare(a.Seq, b.Seq) })
 	for index := range events {
 		if err := events[index].observe(); err != nil {
 			return nil, fmt.Errorf("event %d: %w", events[index].Seq, err)
@@ -1430,19 +1542,21 @@ func eventsAfter(events []stateEvent, lastSeq *int64) []stateEvent {
 }
 
 // unfollowed is the whole read a message calls for because it does not follow the position
-// current and the parts held for it stand at, or "" for one that does. The position is the last
-// held part's sequence and run where parts are held, and the cursor's otherwise; a position that
-// holds no sequence is followed by any message. A boot above the position whose schemaVersion is
-// not the cursor's (where the cursor holds one) is ReadReasonSchema, and one that is not the next
-// sequence ReadReasonBoot. A boot at or below the position is a replay of one the position already
-// holds when its run is the position's run - the run of the newest message applied or held, or the
-// stateRun of the daemon that served the last good whole read (recordWhole) - and otherwise a
-// daemon whose sequence went back (a database restore), which is ReadReasonBoot too. A boot that
-// follows the position with the cursor's schema version makes no read, whatever run the cursor
-// holds. A message whose first sequence is past the next one is ReadReasonGap: events the stream no
-// longer holds. So is a message above the held parts that does not continue them
-// (stateMessage.continues): a part of another run or another store, or one that overlaps them,
-// after which the transaction they began cannot be completed.
+// current and the parts held for it stand at, or because it moved the store's schema, or "" for
+// one that follows with the cursor's schema. The position is the last held part's sequence and run
+// where parts are held, and the cursor's otherwise; a position that holds no sequence is followed
+// by any message. A boot above the position that is not the next sequence is ReadReasonBoot. A
+// boot at or below the position is a replay of one the position already holds when its run is the
+// position's run - the run of the newest message applied or held, or the stateRun of the daemon
+// that served the last good whole read (recordWhole) - and otherwise a daemon whose sequence went
+// back (a database restore), which is ReadReasonBoot too. A message whose first sequence is past
+// the next one is ReadReasonGap: events the stream no longer holds. So is a message above the held
+// parts that does not continue them (stateMessage.continues): a part of another run or another
+// store, or one that overlaps them, after which the transaction they began cannot be completed.
+// Only a message that follows the position in all of these is ReadReasonSchema, for a boot above
+// the position whose schemaVersion is not the cursor's (where the cursor holds one): so the reason
+// says whether the message follows (judge). A boot that follows the position with the cursor's
+// schema version makes no read, whatever run the cursor holds.
 func (m stateMessage) unfollowed(current cursor, held []part) string {
 	last, run := current.lastSeq, current.run
 	if n := len(held); n > 0 {
@@ -1451,17 +1565,18 @@ func (m stateMessage) unfollowed(current cursor, held []part) string {
 	if last == nil {
 		return ""
 	}
+	schemaMoved := false
 	for _, event := range m.Events {
 		if event.Kind != eventBoot {
 			continue
 		}
 		switch {
-		case event.Seq > *last && current.schemaVersion != nil && event.SchemaVersion != *current.schemaVersion:
-			return ReadReasonSchema
 		case event.Seq > *last && event.Seq != *last+1:
 			return ReadReasonBoot
 		case event.Seq <= *last && (run == nil || *run != m.Run):
 			return ReadReasonBoot
+		case event.Seq > *last && current.schemaVersion != nil && event.SchemaVersion != *current.schemaVersion:
+			schemaMoved = true
 		}
 	}
 	if m.FirstSeq > *last+1 {
@@ -1469,6 +1584,9 @@ func (m stateMessage) unfollowed(current cursor, held []part) string {
 	}
 	if n := len(held); n > 0 && m.Seq > *last && !m.continues(held[n-1]) {
 		return ReadReasonGap
+	}
+	if schemaMoved {
+		return ReadReasonSchema
 	}
 	return ""
 }
