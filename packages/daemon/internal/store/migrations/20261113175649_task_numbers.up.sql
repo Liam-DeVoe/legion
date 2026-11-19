@@ -60,7 +60,7 @@
 -- (packages/daemon/internal/store/claims.go, claimSelect), so every claim read fails and the
 -- supervisor loads nothing, and its delivery write names all three (putDelivery). Rolling the image
 -- back therefore needs the three columns back first. This directory keeps no down migrations —
--- migrations here are forward-only and no .down.sql file exists — so the way back is the nineteen
+-- migrations here are forward-only and no .down.sql file exists — so the way back is the twenty
 -- statements below, run with the daemon stopped. docs/kubernetes.md carries the same block as the
 -- step an operator runs, beside the phase entry's, and the two say the same thing.
 --
@@ -70,6 +70,7 @@
 --   alter table pending_task_deliveries add column if not exists marked_by text not null default '';
 --   alter table pending_task_deliveries add column if not exists prompted boolean not null default false;
 --   update outbox set payload = payload - 'origin' where kind = 'supervise' and payload ? 'origin';
+--   update outbox set payload = payload - 'mergeState' - 'stateReadAt' where kind = 'merge_forward' and (payload ? 'mergeState' or payload ? 'stateReadAt');
 --   alter table claims drop column if exists task_written;
 --   alter table claims drop column if exists task_taken;
 --   alter table claims drop column if exists task_finished;
@@ -89,10 +90,11 @@
 --   SQL
 --
 -- The run prints BEGIN, three ALTER TABLEs, UPDATE <n> for the supervise rows whose payload
--- carried the key, fourteen ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE for each of
--- the seventeen columns it finds as it means to leave them, the same ALTER TABLEs, UPDATE 0,
+-- carried the key, UPDATE <m> for the merge-forward rows whose payload carried either of its two
+-- keys, fourteen ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE for each of the
+-- seventeen columns it finds as it means to leave them, the same ALTER TABLEs, UPDATE 0 twice,
 -- DELETE 0 and COMMIT, and changes nothing. The transaction, the ON_ERROR_STOP and the if-exists
--- clauses are what make the nineteen one act that may be run twice, for the reason the phase
+-- clauses are what make the twenty one act that may be run twice, for the reason the phase
 -- entry's block gives: run as bare statements in a psql without ON_ERROR_STOP, either half a
 -- failure leaves is a broken store — the drops taken while the delete fails leave this release a
 -- schema it reads by names that no longer stand, and the delete taken while a drop fails stops the
@@ -114,6 +116,14 @@
 -- lost with the key, since it records no origin, and a row the roll-forward finds naming none is
 -- read as a phase start where it names a phase and an operator's task otherwise (supervise's
 -- originOf), as a row of the release before this one is.
+--
+-- The fifth takes out the two keys this release writes into every merge-forward ask and hold, the
+-- read of GitHub the act rests on (record.MergeForwardMessage.MergeState and StateReadAt). The
+-- release before it knows neither key and decodes that row strictly too, so a row still carrying
+-- either fails to decode at every attempt, retried on the runner's backoff, and its message is
+-- never delivered. Nothing that daemon reads is lost with them, since its ask and its hold name no
+-- read, and a row the roll-forward finds carrying neither says that GitHub's merge state and the
+-- time of its read are unknown (record.AnsweredMergeState).
 --
 -- The fourteen drops and the deleted version row are for the roll-forward that follows the rollback
 -- rather than for the older daemon, which reads none of the fourteen columns and writes none of them:

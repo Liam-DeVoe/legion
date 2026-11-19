@@ -1632,7 +1632,9 @@ branch, or the daemon could not read the base's rules. Its log says which: `work
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
 conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
 merge-state reads then follow the head), `workflow: a confirmed conflict needs no merge yet` with the
-required contexts and the green ones, and `workflow: merge forward asked` with the reason. A read
+required contexts and the green ones, and `workflow: merge forward asked` with the reason and the
+read it rests on: GitHub's merge state for the head (`mergeState`) and when the daemon read it
+(`stateReadAt`), which the ask, the hold and the architect's `checks-red` notice name as well. A read
 GitHub answered before the newest read the record holds of the same head is dropped whole, with
 `workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
 so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge

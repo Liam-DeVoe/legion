@@ -85,7 +85,9 @@ Every path it cites is in cybermonklabs/legion.
   merge-forward message on its role topic: merge the base forward in `$LEGION_WORKSPACE`, the one
   workspace every role of the issue shares, after the working-copy check of
   `skill://legion-worker/references/foreign-path.md`, as this section says, and push the issue
-  branch. Write no handoff and make no completion for the merge itself. In `testing`,
+  branch. Write no handoff and make no completion for the merge itself. The message, and the
+  hold the phase's worker gets, name the read the daemon acted on: GitHub's merge state for the
+  head and the time the daemon read it, in RFC 3339 UTC, or that both are unknown. In `testing`,
   `reviewing` and `merging` the phase is another role's: the daemon told its worker to stop
   writing the workspace and tells it the new head when your push lands. In `accepting` the phase
   is the architect's. In `implementing` and in `retro` the phase is your own, and your

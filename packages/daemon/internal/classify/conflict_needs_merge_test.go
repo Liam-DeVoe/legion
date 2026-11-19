@@ -75,7 +75,8 @@ func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 				return
 			}
 			ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: head, Base: "main",
-				Phase: record.StandsAt(tc.issue), PullRequest: 42, Why: got}
+				Phase: record.StandsAt(tc.issue), PullRequest: 42, Why: got, MergeState: record.MergeStateDirty,
+				StateReadAt: time.Date(2026, 11, 19, 0, 59, 0, 0, time.UTC)}
 			if _, err := record.NewOutboxRow(tc.issue.Key, ask, time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)); err != nil {
 				t.Fatalf("the merge forward's ask with why %q cannot be queued: %v", got, err)
 			}

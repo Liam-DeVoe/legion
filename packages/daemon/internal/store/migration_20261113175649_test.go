@@ -28,13 +28,13 @@ const taskNumbersVersion = 20261113175649
 // operator reads it at a rollback. The two paths are what a failure names, so a failing run names
 // the file to open. taskNumbersHeredoc opens the block in both and taskNumbersTerminator closes
 // it; taskNumbersWayBackStatements is how many statements stand between its begin and its commit,
-// which the header and the guide both call the nineteen.
+// which the header and the guide both call the twenty.
 const (
 	taskNumbersFile              = "internal/store/migrations/20261113175649_task_numbers.up.sql"
 	taskNumbersGuide             = "docs/kubernetes.md"
 	taskNumbersHeredoc           = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	taskNumbersTerminator        = "SQL"
-	taskNumbersWayBackStatements = 19
+	taskNumbersWayBackStatements = 20
 )
 
 // taskNumbersReadMarks are the push path's three marks on a pending task, which the migration
@@ -424,7 +424,7 @@ func taskNumbersWayBackOfTheHeader(t *testing.T) string {
 
 // taskNumbersWayBack is the transaction of that block, what psql reads on its standard input. Its
 // statements are counted, so a block that lost one or grew one while the header and the guide
-// still call them the nineteen stops the test; the count splits on the semicolon, which no
+// still call them the twenty stops the test; the count splits on the semicolon, which no
 // statement of this block carries inside a literal.
 func taskNumbersWayBack(t *testing.T, block string) string {
 	t.Helper()
@@ -445,7 +445,7 @@ func taskNumbersWayBack(t *testing.T, block string) string {
 			taskNumbersFile, recovery)
 	}
 	if held := len(statements) - 2; held != taskNumbersWayBackStatements {
-		t.Fatalf("the way back's block of %s holds %d statements between its begin and its commit, want the %d that file and %s call the nineteen:\n%s",
+		t.Fatalf("the way back's block of %s holds %d statements between its begin and its commit, want the %d that file and %s call the twenty:\n%s",
 			taskNumbersFile, held, taskNumbersWayBackStatements, taskNumbersGuide, recovery)
 	}
 	return recovery
@@ -516,11 +516,12 @@ func TestMigrationTaskNumbersWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T
 // protocol, as psql sends it) over a store this release wrote, twice: the second run is the rerun
 // the header says changes nothing. After it the release before this one can read its claims and
 // write its deliveries again — the three read marks stand, at the defaults that read as a task it
-// has queued and not yet sent — and decode every supervise row of its outbox, the start this
-// release wrote having lost its `origin`, a key that release's strict decoder refuses, and kept
-// every other key; none of the fourteen columns stands, nor this migration's version row, while
-// every other row stays recorded. The roll-forward then runs the migration again, and its second
-// fill numbers what it finds as the first fill numbered what an earlier release left: the task the
+// has queued and not yet sent — and decode every supervise row and every merge-forward row of its
+// outbox: the start this release wrote has lost its `origin`, and the ask this release wrote its
+// `mergeState` and `stateReadAt`, keys that release's strict decoder refuses, and each kept every
+// other key. None of the fourteen columns stands, nor this migration's version row, while every
+// other row stays recorded. The roll-forward then runs the migration again, and its second fill
+// numbers what it finds as the first fill numbered what an earlier release left: the task the
 // claim held under number 7 is task 1 again, its turn started since a take confirmed it, and the
 // claim that had finished task 4 has finished task 1, in the session it holds.
 func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *testing.T) {
@@ -548,6 +549,13 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 		values ('supervise', 'LEGION-209', $1::jsonb, 0, now(), '') returning id`, start).Scan(&started); err != nil {
 		t.Fatalf("enqueue the start this release writes, naming its origin: %v", err)
 	}
+	const ask = `{"role": "implementer", "step": "ask", "head": "c0de", "base": "main", "phase": "testing", "pullRequest": 42, "why": "required-check-not-green", "mergeState": "dirty", "stateReadAt": "2026-11-19T01:01:00Z"}`
+	const askWithoutTheRead = `{"role": "implementer", "step": "ask", "head": "c0de", "base": "main", "phase": "testing", "pullRequest": 42, "why": "required-check-not-green"}`
+	var asked int64
+	if err := store.pool.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+		values ('merge_forward', 'LEGION-209', $1::jsonb, 0, now(), '') returning id`, ask).Scan(&asked); err != nil {
+		t.Fatalf("enqueue the merge-forward ask this release writes, naming the read it rests on: %v", err)
+	}
 
 	recovery := taskNumbersWayBack(t, taskNumbersWayBackOfTheHeader(t))
 	for run := range 2 {
@@ -563,6 +571,15 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 	if !stripped || unstripped {
 		t.Fatalf("the start after the way back equals %s = %v and still names origin = %v; want origin taken out and every other key kept: the release before this one decodes a supervise payload strictly and refuses the key",
 			startWithoutOrigin, stripped, unstripped)
+	}
+	var askStripped, askUnstripped bool
+	if err := store.pool.QueryRow(ctx, `select payload = $2::jsonb, payload ? 'mergeState' or payload ? 'stateReadAt' from outbox where id = $1`,
+		asked, askWithoutTheRead).Scan(&askStripped, &askUnstripped); err != nil {
+		t.Fatalf("read the merge-forward ask after the way back: %v", err)
+	}
+	if !askStripped || askUnstripped {
+		t.Fatalf("the ask after the way back equals %s = %v and still names mergeState or stateReadAt = %v; want both taken out and every other key kept: the release before this one decodes a merge-forward payload strictly and refuses either key",
+			askWithoutTheRead, askStripped, askUnstripped)
 	}
 
 	var deliveredAt *string

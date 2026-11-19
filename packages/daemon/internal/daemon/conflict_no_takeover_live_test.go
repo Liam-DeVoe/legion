@@ -324,6 +324,9 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 // implementer is asked, on its own role topic, to merge the base forward (record.MergeForwardAsk),
 // the tester is told, on its own, to hold while the merge runs (MergeForwardHold), and the
 // architect is told once, in a checks-red notice naming testing, the phase the issue stays in. The
+// ask, the hold and the notice name the read of GitHub the act rests on (dispatch://INFRA-2833
+// R3): GitHub's merge state for h1 and the time of the second read, which the daemon logs with its
+// ask, a time after the first read was logged and before the second read's own line. The
 // tester's connection is sent nothing at all — no abort and no prompt, both frames gone — its claim
 // stays working on the task it took in step 1, and nothing is suspended. Nothing repeats once it is
 // sent.
@@ -339,10 +342,18 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 		t.Fatalf("the daemon logged %q for %s with %v, want the merge forward of %s asked in testing for %s",
 			asked.Message, r.key, asked.Attrs, conflictFirstHead, record.ConflictCheckNotGreen)
 	}
-	r.note("read back: the daemon logged %q for %s: head %v, phase %v, why %v", asked.Message, r.key, asked.Attrs["head"], asked.Attrs["phase"], asked.Attrs["why"])
+	// A time attribute reaches the recording log as time.Time's String (decodeAttr).
+	readAt, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", fmt.Sprint(asked.Attrs["stateReadAt"]))
+	if err != nil || readAt.Before(first.at) || readAt.After(second.at) {
+		t.Fatalf("the daemon logged %q for %s with the read time %v (%v), want the second read's: after the first read's line at %s and before the second read's at %s",
+			asked.Message, r.key, asked.Attrs["stateReadAt"], err, first.at.UTC().Format(time.RFC3339Nano), second.at.UTC().Format(time.RFC3339Nano))
+	}
+	r.note("read back: the daemon logged %q for %s: head %v, phase %v, why %v, merge state %q, read at %s",
+		asked.Message, r.key, asked.Attrs["head"], asked.Attrs["phase"], asked.Attrs["why"], asked.Attrs["mergeState"], readAt.UTC().Format(time.RFC3339Nano))
 
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictFirstHead,
-		Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen}
+		Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen,
+		MergeState: record.MergeState(fmt.Sprint(asked.Attrs["mergeState"])), StateReadAt: readAt}
 	if told := r.awaitHeard(claim.RoleImplementer, 1, bound); told[0].Message != ask.Message(r.key, liveRepo) {
 		t.Fatalf("the implementer was told %q, want the merge forward's ask %q", told[0].Message, ask.Message(r.key, liveRepo))
 	}
@@ -353,13 +364,15 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 		t.Fatalf("the tester was told %q, want the merge forward's hold %q", told[0].Message, hold.Message(r.key, liveRepo))
 	}
 	r.note("read back: one message on the tester's role topic — %s", hold.Message(r.key, liveRepo))
+	named := " at " + readAt.UTC().Format(time.RFC3339)
 	var notices []record.Notice
 	testwait.WithinPolling(t, bound, testwait.Poll, "the architect's notice of the merge forward", func() bool {
 		notices = r.architectNoticesSince()
 		return len(notices) > 0
 	})
-	if len(notices) != 1 || notices[0].Kind != "checks-red" || notices[0].Phase != phase.Testing {
-		t.Fatalf("the architect was told %+v after the second read, want one checks-red notice naming testing", notices)
+	if len(notices) != 1 || notices[0].Kind != "checks-red" || notices[0].Phase != phase.Testing || !strings.HasSuffix(notices[0].Reason, named) {
+		t.Fatalf("the architect was told %+v after the second read, want one checks-red notice naming testing whose reason ends naming the read it rests on, %q",
+			notices, named)
 	}
 	r.note("read back: one notice on the architect's role topic, checks-red naming %s — %s", notices[0].Phase, notices[0].Reason)
 

@@ -179,9 +179,10 @@ When it acts, it asks the implementer, in a merge-forward message on the impleme
 topic, to merge the base forward in the issue workspace and push, with no handoff and no
 completion; in `testing`, `reviewing` and `merging` it tells the phase's worker to stop writing
 the workspace; and it tells you once with
-a `checks-red` notice naming the phase the issue stays in, the head, the base and why. You start
-nothing for it. In `implementing` the daemon tells the implementer alone, and no notice comes to
-you.
+a `checks-red` notice naming the phase the issue stays in, the head, the base, why, and GitHub's
+merge state for the head with the time the daemon read it, in RFC 3339 UTC, or that both are
+unknown. You start nothing for it. In `implementing` the daemon tells the implementer alone, and
+no notice comes to you.
 
 Once the merge lands, the phase's worker is told the new head and reads what the merge changed.
 For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
