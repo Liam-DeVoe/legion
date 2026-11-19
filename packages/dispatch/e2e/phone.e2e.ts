@@ -207,7 +207,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
   }
 });
 
-test("a phone thread trap skips a held composer's disabled controls @phone", async ({
+test("a phone thread trap wraps Tab from a held composer's last control @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -232,23 +232,22 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();
 
+    // The hold makes none of the composer's controls `disabled` - its fieldset is `aria-disabled`
+    // and its fields read-only - so the focus a reader has in it stays, and the last control the
+    // trap reaches can be one of the composer's own.
+    await expect(form.locator(":disabled")).toHaveCount(0);
     const focused = await sheet.evaluate((container) => {
       const controls = [
         ...container.querySelectorAll<HTMLElement>(
           'a[href], button, textarea, input, select, [tabindex]:not([tabindex="-1"])'
         ),
-      ];
-      const last = controls.filter((control) => !control.matches(":disabled")).at(-1);
-      if (last === undefined) throw new Error("expected an enabled focus target");
+      ].filter((control) => !control.matches(":disabled") && control.getClientRects().length > 0);
+      const last = controls.at(-1);
+      if (last === undefined) throw new Error("expected a focus target");
       last.focus();
-      return {
-        focused: document.activeElement === last,
-        hasDisabledControlAfter: controls
-          .slice(controls.indexOf(last) + 1)
-          .some((control) => control.matches(":disabled")),
-      };
+      return document.activeElement === last;
     });
-    expect(focused).toEqual({ focused: true, hasDisabledControlAfter: true });
+    expect(focused).toBe(true);
     await page.keyboard.press("Tab");
     expect(await activeElementInside(page, '[data-testid="margin-sheet"]')).toBe(true);
     expect(
@@ -265,9 +264,9 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
   }
 });
 
-// The wrap's other end. Shift+Tab from the sheet's first control goes to its last enabled one,
-// past the held composer's disabled controls, which a trap that read the `disabled` attribute
-// counted as the last and could not focus, leaving focus where it was.
+// The wrap's other end. Shift+Tab from the sheet's first control goes to its last one a reader
+// can reach, which a held composer leaves focusable: the hold makes none of its controls
+// `disabled`.
 test("a phone sheet trap wraps Shift+Tab from its first control past a held composer @phone", async ({
   browser,
 }) => {

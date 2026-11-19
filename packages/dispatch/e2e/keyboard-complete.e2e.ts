@@ -627,7 +627,13 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   await expectPriorityChoices(menu, "P1", "k-priority-menu: on the Board p opens the card's menu");
   await page.keyboard.press("Escape");
   await expect(menu, "k-priority-menu: on the Board Escape closes the menu").toHaveCount(0);
-  expect(writes, "k-priority-menu: on the Board Escape writes nothing").toHaveLength(1);
+  // A write is counted by its key: one the page sends again under the same key - an attempt
+  // after one that got no answer, or one a load of the next page sends again because it was
+  // still out - is that one write, which CI run 44535117619 saw twice here.
+  expect(
+    new Set(writes.map((write) => write.key)).size,
+    "k-priority-menu: on the Board Escape writes nothing"
+  ).toBe(1);
 
   // The project List: a click on a row's priority control opens the same menu.
   await page.getByRole("button", { exact: true, name: "List" }).click();
@@ -643,7 +649,10 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   );
   await page.keyboard.press("Escape");
   await expect(menu, "k-priority-menu: on the List Escape closes the menu").toHaveCount(0);
-  expect(writes, "k-priority-menu: on the List nothing more is written").toHaveLength(1);
+  expect(
+    new Set(writes.map((write) => write.key)).size,
+    "k-priority-menu: on the List nothing more is written"
+  ).toBe(1);
 });
 
 // ---------------------------------------------------------------------------
@@ -4228,21 +4237,9 @@ async function runFromCommandBar(page: Page, label: string, step: string): Promi
   await expect(bar, `${step}: the command bar closes`).toHaveCount(0);
 }
 
-/** Every read mark `page` writes from here on: a thread's (`PUT /api/v1/me/threads/{id}/read`)
- *  and an Agent row's session state (`PUT /api/v1/me/agents/{id}/state`). */
-function readMarkWrites(page: Page): string[] {
-  const writes: string[] = [];
-  page.on("request", (request) => {
-    const path = new URL(request.url()).pathname;
-    if (
-      request.method() === "PUT" &&
-      /^\/api\/v1\/me\/(threads\/[^/]+\/read|agents\/[^/]+\/state)$/.test(path)
-    ) {
-      writes.push(path);
-    }
-  });
-  return writes;
-}
+/** A read mark's write: a thread's (`PUT /api/v1/me/threads/{id}/read`) and an Agent row's
+ *  session state (`PUT /api/v1/me/agents/{id}/state`). */
+const READ_MARK_PATH = /^\/api\/v1\/me\/(threads\/[^/]+\/read|agents\/[^/]+\/state)$/;
 
 /** Every step of k-every-action that runs an action from ⌘K where `place` draws the Inbox -
  *  Decline, Ask back instead, Assign to me and Un-snooze in both places, Mark read in card mode,
@@ -4310,8 +4307,12 @@ async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise
 
   // In card mode, Mark read marks the reply thread read: no message of its card reads unread.
   // Beside the reading pane the column reads a thread as it opens it, so it draws no Mark read.
+  // The card's thread also marks itself read, with the same write, once its newest message has
+  // been on screen for a second (`useMarkThreadRead`), which a slow command bar outlasts: every
+  // read mark is held while the step reads Mark read's own, which its button names while it is
+  // out, so the dwell's mark can neither stand in for it nor count against it.
   if (place === "card mode") {
-    const marks = readMarkWrites(page);
+    const marks = await holdWrites(page, "PUT", READ_MARK_PATH);
     const unread = row(seed.reply).locator("[data-inbox-thread-unread]");
     await take(seed.reply);
     await expect(
@@ -4319,9 +4320,11 @@ async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise
       step("the reply thread's card shows its reply unread")
     ).toBeVisible();
     await runFromCommandBar(page, "Mark read", step("Mark read"));
-    await expect
-      .poll(() => marks.length, { message: step("Mark read writes a read mark") })
-      .toBe(1);
+    await expect(
+      row(seed.reply).locator('[data-inbox-action="mark-read"]'),
+      step("Mark read sends its read mark")
+    ).toHaveText("Marking read…");
+    marks.release();
     await expect(unread, step("Mark read: the thread reads as read")).toHaveCount(0);
   }
 
