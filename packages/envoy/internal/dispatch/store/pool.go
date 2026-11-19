@@ -49,12 +49,12 @@ var ErrNestedAcquire = errors.New(
 
 // holding records whether the context's caller holds a connection of this pool: its
 // transaction, or one it acquired directly. One writer sets it and one reader tests it, so a
-// flag is the whole state - a transaction never opens a second transaction of its own. sent
-// records that the transaction has sent a write batch (WriteBatch.Send), which is what gives it
-// its transaction id; the release that clears connection clears it too.
+// flag is the whole state - a transaction never opens a second transaction of its own. wrote
+// records that a test's statement tracer saw the transaction write (OpenXidWindow), which is what
+// gives it its transaction id; the release that clears connection clears it too.
 type holding struct {
 	connection atomic.Bool
-	sent       atomic.Bool
+	wrote      atomic.Bool
 }
 
 type holdingKey struct{}
@@ -91,7 +91,7 @@ func hold(ctx context.Context) func() {
 	state.connection.Store(true)
 	return sync.OnceFunc(func() {
 		state.connection.Store(false)
-		state.sent.Store(false)
+		state.wrote.Store(false)
 	})
 }
 
@@ -108,23 +108,28 @@ func holdsConnection(ctx context.Context) bool {
 // stack names a call site that is working as intended.
 func HoldsPooledConnection(ctx context.Context) bool { return holdsConnection(ctx) }
 
-// SentWriteBatch reports whether ctx's caller holds one of this pool's connections and its
-// transaction has gone past its first write batch (WriteBatch.Send): it marks a transaction in its
-// write phase, which holds a transaction id from there until its commit. The xid window rigs'
-// collaborator check (storetest/collabtest) reads it. Before the first batch a transaction is in
-// its read phase, where a route's own document work runs on its transaction (docs.API.Join).
-func SentWriteBatch(ctx context.Context) bool {
+// InXidWindow reports whether ctx's caller holds one of this pool's connections and its
+// transaction is inside its xid window: a test's statement tracer saw a statement of it write
+// (OpenXidWindow), so it holds a transaction id from there until it ends. The xid window rigs'
+// collaborator and document-work checks (storetest/collabtest, storetest.XidTracer) read it. Nothing
+// in production opens a window, so there it is always false, and nothing in production reads it.
+func InXidWindow(ctx context.Context) bool {
 	state, ok := ctx.Value(holdingKey{}).(*holding)
-	return ok && state.connection.Load() && state.sent.Load()
+	return ok && state.connection.Load() && state.wrote.Load()
 }
 
-// markSent records, for WriteBatch.Send, that ctx's caller's transaction is sending a write batch
-// (SentWriteBatch). A context the pool cannot see, or one that holds no connection, has nothing to
-// mark.
-func markSent(ctx context.Context) {
-	if state, ok := ctx.Value(holdingKey{}).(*holding); ok && state.connection.Load() {
-		state.sent.Store(true)
+// OpenXidWindow is the xid window rigs' hook: storetest.XidTracer, a pgx tracer a test installs on
+// its pool, calls it with the context of the first statement whose own result says it wrote, inline
+// or in a batch, and from then until the transaction ends InXidWindow answers true for that context
+// and every context derived from it. It reports whether it marked anything: a context the pool
+// cannot see, or one that holds no connection, has nothing to mark. No production code calls it.
+func OpenXidWindow(ctx context.Context) bool {
+	state, ok := ctx.Value(holdingKey{}).(*holding)
+	if !ok || !state.connection.Load() {
+		return false
 	}
+	state.wrote.Store(true)
+	return true
 }
 
 // ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's

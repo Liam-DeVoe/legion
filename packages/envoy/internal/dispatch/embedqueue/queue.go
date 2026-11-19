@@ -83,10 +83,11 @@ type Deps struct {
 	Wake <-chan struct{}
 	// Clock is what the queue's own waits and ages run on: the coverage loop's wait for the next
 	// identity recheck, the pauses between batches and after a throttle, a reservation's wait on
-	// the shared token budget, and a claim renewal's age. clock.Real when nil, and a test's
-	// clocktest.Fake, whose timers fire only where the test moves it. The queue's other times -
-	// a row's next_attempt_at, pending_since, embedded_at - are the database's own clock, which
-	// no fake reaches.
+	// the shared token budget, a claim renewal's age, and the floor a scan pass holds its due time
+	// to (scanPass). clock.Real when nil, and a test's clocktest.Fake, whose timers fire only where
+	// the test moves it. The queue's other times - a row's next_attempt_at, pending_since,
+	// embedded_at - are the database's own clock, which no fake reaches, and so the scan loop's
+	// own timer, which waits for them, runs on the real clock.
 	Clock clock.Clock
 	// proven records that an Embed call this process's queue made has succeeded (embedDocuments
 	// records it), which is what lets Cover act on rows another identity left with no canary of
@@ -237,13 +238,13 @@ const nextPendingDue = `
 
 // scanPass is the scan loop's pass: it drains what is eligible now (scan), then returns when the
 // earliest row still pending falls due, and the zero time when none is, so an idle queue holds no
-// timer. The due time is never sooner than retryInterval from now: a row that stays eligible
-// (a blocked batch's, or one another process's scan held under skip locked) would otherwise be
-// scanned again at once, and a retry due sooner than that waited for the old ticker's next tick
-// too. A failed read retries after retryInterval, as the ticker would have.
+// timer. The due time is never sooner than retryInterval from now on the queue's clock: a row that
+// stays eligible (a blocked batch's, or one another process's scan held under skip locked) would
+// otherwise be scanned again at once, and a retry due sooner than that waited for the old ticker's
+// next tick too. A failed read retries after retryInterval, as the ticker would have.
 func scanPass(ctx context.Context, deps Deps) time.Time {
 	scan(ctx, deps)
-	floor := time.Now().Add(retryInterval)
+	floor := deps.clock().Now().Add(retryInterval)
 	var due *time.Time
 	if err := deps.Store.Pool.QueryRow(ctx, nextPendingDue).Scan(&due); err != nil {
 		if ctx.Err() == nil {

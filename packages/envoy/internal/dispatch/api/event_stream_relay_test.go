@@ -71,7 +71,7 @@ func TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed(t *testing.T) {
 	handler, _ := secondProcess(t, database)
 	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
 	subscribeEvents(t, client, "events", nil)
 
 	renameIssue(t, first, issue.Key, "Renamed on the other process")
@@ -364,7 +364,7 @@ func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *te
 	handler, _ := secondProcess(t, database)
 	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
 	subscribeEvents(t, client, "events", nil)
 
 	// Appended through a broker of process A's own: B learns of them only from the rows.
@@ -539,7 +539,7 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	t.Cleanup(second.Close)
 	dial := func() *socketClient {
 		t.Helper()
-		return openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).read()
+		return openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
 	}
 
 	// B's relay publishes through the old log's head, so its cursor and horizon stand there.

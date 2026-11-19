@@ -9,6 +9,7 @@ import (
 
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -22,34 +23,41 @@ import (
 
 // A room's append held for half a second while Shutdown drains the room: the drain waits for it
 // (waitForDurableAppends) and settles the document once it lands. Its wait wakes when the append
-// lands, not every millisecond of the half second, and the drain's settlement starts promptly once
-// the append commits. The promptness is read between the append's commit (afterAppendCommit) and
-// the settlement's start (beforeSettleStart), in process: a bound on the version's write would
-// also time the settlement's own database work, which says nothing about how it is woken.
+// lands, not every millisecond of the half second, and the drain's settlement starts on the wake
+// the landing gives it. That is read off the order of the events, in process: the append's commit
+// (afterAppendCommit), each wake of the drain's wait (settlementWoke) and the settlement's start
+// (beforeSettleStart), each numbered from one counter as it happens, with exactly one wake between
+// the commit and the start. The service's clock is held, so no timer of the service's - a poll, a
+// pause before settling - can wake the drain or start its settlement: what starts it is the
+// landing's wake. A wait the service took off its clock, on the wall clock, which the order alone
+// would not show, is refused by name where it is written
+// (TestTheDocumentServiceWaitsOffItsClockOnlyWhereItSaysWhy).
 func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 	const held = 500 * time.Millisecond
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	persist := NewPgVersioned(database)
 	var counting atomic.Bool
-	var committed, started atomic.Int64
+	// order numbers each event of the drain this row reads, as it happens; committed, started
+	// and the two wake counts are read at the commit and at the start.
+	var order, committed, started, wakes, wakesAtCommit, wakesAtStart atomic.Int64
 	persist.afterAppendCommit = func(room string, _ persistence.Version) {
-		if room == artifactID && counting.Load() {
-			committed.CompareAndSwap(0, time.Now().UnixNano())
+		if room == artifactID && counting.Load() && committed.CompareAndSwap(0, order.Add(1)) {
+			wakesAtCommit.Store(wakes.Load())
 		}
 	}
 	appends := &heldStore{VersionedStore: persist, room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
 	t.Cleanup(appends.let)
-	service := newShutdownTestService(t, database, appends)
-	var wakes atomic.Int64
+	service := newShutdownTestServiceOn(t, database, appends, clocktest.Held())
 	service.settlementWoke = func(room string) {
 		if room == artifactID && counting.Load() {
+			order.Add(1)
 			wakes.Add(1)
 		}
 	}
 	service.beforeSettleStart = func(room string) {
-		if room == artifactID && counting.Load() && committed.Load() != 0 {
-			started.CompareAndSwap(0, time.Now().UnixNano())
+		if room == artifactID && counting.Load() && committed.Load() != 0 && started.CompareAndSwap(0, order.Add(1)) {
+			wakesAtStart.Store(wakes.Load())
 		}
 	}
 	seedServiceText(t, service, artifactID, "before")
@@ -83,9 +91,11 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 		t.Errorf("the held append's commit was never seen")
 	case started.Load() == 0:
 		t.Errorf("no settlement started after the held append committed")
+	case started.Load() < committed.Load():
+		t.Errorf("the drain's settlement started (event %d) before its room's append committed (event %d)", started.Load(), committed.Load())
 	default:
-		if after := time.Duration(started.Load() - committed.Load()); after > 50*time.Millisecond {
-			t.Errorf("the drain's settlement started %s after its room's append committed, want within 50ms", after.Round(time.Millisecond))
+		if between := wakesAtStart.Load() - wakesAtCommit.Load(); between != 1 {
+			t.Errorf("the drain woke %d times between its room's append committing and its settlement starting, want once: the landing's wake, on which it settles", between)
 		}
 	}
 	number, markdown, _ := latestDocumentVersion(t, observer, artifactID)

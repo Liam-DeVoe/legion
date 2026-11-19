@@ -315,9 +315,9 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 // task A armed when it sent the query; then it returns task B's answer.
 func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	pair, clock := newQueryProcesses(t)
-	// Production's wait, which this test holds: the pair's own is answerWait, the shared wait's
-	// (newSeededProcessPair).
-	pair.taskA.roomQueries.wait = roomQueryWait
+	// Production's wait, which this test holds (nil is roomQueryWait): the pair's own is
+	// answerWait, the shared wait's (newSeededProcessPair).
+	pair.taskA.roomQueries.wait = nil
 	silent := uuid.NewString()
 	conn, err := pair.database.Pool.Dedicated(context.Background(), ListenerApplicationPrefix+silent)
 	if err != nil {

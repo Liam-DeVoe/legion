@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -166,16 +167,29 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 
 // openWriter is the Open a Reconciler of this harness binds through: cistore's own writer, which
 // creates no bucket and so fails until the listener has made one, stamping its records on
-// ciClock, the listener's clock.
+// ciClock, the listener's clock (writerClock).
 func openWriter(client *bus.Client, ciClock *clocktest.Fake) func() (Writer, error) {
 	return func() (Writer, error) {
-		writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithClock(ciClock))
+		writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithClock(writerClock{Clock: clock.Real(), stamps: ciClock}))
 		if err != nil {
 			return nil, err
 		}
 		return writer, nil
 	}
 }
+
+// writerClock is a pass's writer's clock: the moments it stamps and the retry budget it reads
+// are ciClock's, the listener's, so its records stand on the clock the summary loop judges them
+// by, and its waits - the backoff after a lost compare-and-swap, a record's RecordWait - run on
+// the real clock, as each is a few milliseconds' or seconds' pause of the pass that makes it. On
+// ciClock they would end only when driveLoop moved it, and a pass a test runs on its own
+// goroutine, with nothing driving the loop, would wait for ever on a race it lost.
+type writerClock struct {
+	clock.Clock
+	stamps *clocktest.Fake
+}
+
+func (c writerClock) Now() time.Time { return c.stamps.Now() }
 
 // holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes wait until
 // the pass making it has run out of its own bound. It is a CI bucket slower to answer than the

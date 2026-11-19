@@ -1920,18 +1920,21 @@ func TestAKilledPublisherIsReplacedWithin10Seconds(t *testing.T) {
 	scene.requireOnceAndInOrder(t)
 }
 
-// restartedPublishesWithin bounds how long a restarted process takes, from the moment it is
-// healthy, to publish the events the process killed before it left unpublished.
+// restartedPublishesWithin bounds how long a restarted process takes, from its registration, to
+// publish the events the process killed before it left unpublished: both on the database's clock,
+// and read in benchtime's timing lane alone.
 const restartedPublishesWithin = 10 * time.Second
 
 // The only process is killed while its batch carrying comment 1 of an issue is in flight - its NATS
 // proxy frozen, so the envelope has left the process and reached nothing - with comment 2 of the
 // same issue written behind it. Restarted on the same database and NATS, the process publishes
 // both, comment 1 first: on the issue's topic family the stream holds comment 1 at a lower sequence
-// than comment 2, a session following the issue takes comment 1 before comment 2, and both are
-// marked published within 10 s of the restarted process becoming healthy. What the killed process
-// had in flight is dropped with its connection, as a dead host's sends that never reached the
-// server are, so nothing of comment 1 reaches the stream but what the restarted process publishes.
+// than comment 2, a session following the issue takes comment 1 before comment 2, and neither is
+// marked published before the restart and both are after the restarted process registered, by
+// that process's own records on the database's clock; in the timing lane, within 10 s of its
+// registration. What the killed process had in flight is dropped with its connection, as a dead
+// host's sends that never reached the server are, so nothing of comment 1 reaches the stream but
+// what the restarted process publishes.
 func TestAPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin10Seconds(t *testing.T) {
 	pair := newPair(t)
 	proxy := testnats.StartProxy(t, pair.nats)
@@ -1979,15 +1982,21 @@ func TestAPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWi
 		t.Fatalf("write comment 2: %v", second.err)
 	}
 	secondEvent := commentEventID(t, pair.database, second.commentID)
-	killedAt := killed.signal(t, syscall.SIGKILL)
+	killed.signal(t, syscall.SIGKILL)
 	killed.WaitExit(t, "SIGKILL")
 	proxy.Cut()
 	proxy.Restore()
+	// Nothing the killed process sent reached the stream, so neither comment is marked published
+	// before the restart: what marks them is the restarted process.
+	for _, event := range []string{firstEvent, secondEvent} {
+		if at, ok := eventPublishedAt(t, pair.database, event); ok {
+			t.Fatalf("%s was marked published at %s, before the restart: the killed process's batch was not dropped with its connection", event, at)
+		}
+	}
 
 	restarted = pair.startProcess(t, nil)
 	restarted.waitHealthy(t)
-	healthy := time.Now()
-	t.Logf("the restarted process was healthy %v after the kill", healthy.Sub(killedAt).Round(time.Millisecond))
+	started := latestProcessStart(t, pair.database)
 
 	published := map[string]time.Time{}
 	testwait.Eventually(t, "both comments marked published and taken by the session following the issue", func() bool {
@@ -2022,18 +2031,26 @@ func TestAPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWi
 	taken := watcher.takenComments()
 	firstTaken, secondTaken := taken[first.commentID], taken[second.commentID]
 	if !secondTaken.at.After(firstTaken.at) {
-		t.Errorf("the session following the issue took comment 2 (%s) %v after the restarted process was healthy and comment 1 (%s) %v after: want comment 1 first",
-			secondEvent, secondTaken.at.Sub(healthy).Round(time.Millisecond), firstEvent, firstTaken.at.Sub(healthy).Round(time.Millisecond))
+		t.Errorf("the session following the issue took comment 2 (%s) at %s and comment 1 (%s) at %s: want comment 1 first",
+			secondEvent, secondTaken.at.Format(time.RFC3339Nano), firstEvent, firstTaken.at.Format(time.RFC3339Nano))
 	}
 	watcher.requireInOrder(t)
 
+	// Each comment is marked published by the restarted process, after it registered: both on the
+	// database's clock, the restarted process's own records of when it started and when it
+	// published. How soon after its start it publishes is the timing lane's reading
+	// (benchtime.TimingEnv), on those records.
 	for _, comment := range []struct {
 		name, event string
 	}{{"comment 1", firstEvent}, {"comment 2", secondEvent}} {
-		after := published[comment.event].Sub(healthy)
-		t.Logf("%s (%s) was marked published %v after the restarted process was healthy", comment.name, comment.event, after.Round(time.Millisecond))
-		if after > restartedPublishesWithin {
-			t.Errorf("%s (%s) was marked published %v after the restarted process was healthy, past the %v bound",
+		after := published[comment.event].Sub(started)
+		t.Logf("%s (%s) was marked published %v after the restarted process registered", comment.name, comment.event, after.Round(time.Millisecond))
+		if published[comment.event].Before(started) {
+			t.Errorf("%s (%s) was marked published at %s, before the restarted process registered at %s",
+				comment.name, comment.event, published[comment.event].Format(time.RFC3339Nano), started.Format(time.RFC3339Nano))
+		}
+		if os.Getenv(benchtime.TimingEnv) != "" && after > restartedPublishesWithin {
+			t.Errorf("%s (%s) was marked published %v after the restarted process registered, past the %v bound",
 				comment.name, comment.event, after.Round(time.Millisecond), restartedPublishesWithin)
 		}
 	}
@@ -2067,6 +2084,18 @@ func eventPublishedAt(t *testing.T, database *store.Store, eventID string) (time
 		return time.Time{}, false
 	}
 	return *published, true
+}
+
+// latestProcessStart is when the latest Dispatch process to register started, on the database's
+// clock (server_processes.started_at, which its registration stamps): a process's own record of
+// its start, which its later writes' stamps are ordered against.
+func latestProcessStart(t *testing.T, database *store.Store) time.Time {
+	t.Helper()
+	var started time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select max(started_at) from server_processes`).Scan(&started); err != nil {
+		t.Fatalf("read the latest process's start: %v", err)
+	}
+	return started
 }
 
 // natsTap relays a process's NATS connections to the NATS URL it fronts and keeps every byte the
@@ -6256,9 +6285,11 @@ func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
 	deleteP := func(t *testing.T, artifactID string, bob, bobsOtherTab *docstest.Peer, want string) {
 		t.Helper()
 		deleteParagraph(t, bob, "pear")
+		deleted := time.Now()
 		if err := bobsOtherTab.WaitForText(t, markdown, want); err != nil {
 			t.Fatalf("B's room never showed bob's delete of P to his other tab: %v; %s", err, pair.roomCloses(t, artifactID))
 		}
+		withinLive(t, deleted, "bob's delete of P reaching his other tab on B")
 	}
 
 	t.Run("before the fork: an edit into a paragraph deleted on the other process is refused", func(t *testing.T) {
@@ -6327,7 +6358,10 @@ func TestAnAgentWriteSeesEditsInFlightOnTheOtherProcess(t *testing.T) {
 			if answer := pair.a.send(t, http.MethodPost, editPath(artifactID), editBody(t, "Intro.", "Intro, first.", "", true), asAgent()); answer.status != http.StatusOK {
 				t.Fatalf("the agent's earlier write through A: %v", answer)
 			}
-			if err := bobsOtherTab.WaitForText(t, markdown, earlier); err != nil {
+			wrote := time.Now()
+			if err := bobsOtherTab.WaitForText(t, markdown, earlier); err == nil {
+				withinLive(t, wrote, "the agent's earlier write through A reaching bob's tab on B")
+			} else {
 				if !peerEnded(bobsOtherTab) {
 					t.Fatalf("the agent's earlier write through A reached neither bob's tab on B nor closed it: %v", err)
 				}

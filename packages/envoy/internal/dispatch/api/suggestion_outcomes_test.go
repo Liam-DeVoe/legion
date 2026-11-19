@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -125,8 +126,10 @@ func awaitDatabaseClockPastSuggestions(t *testing.T, pool *store.Pool) {
 type idleSweep struct {
 	handler        http.Handler
 	server         *server
+	database       *store.Store
 	counter        *storetest.StatementCounter
 	clock          *clocktest.Fake
+	schedule       suggestionSchedule
 	target, source string
 }
 
@@ -134,7 +137,14 @@ type idleSweep struct {
 // database's clock passes it before the row moves the sweep's own.
 const idleSweepSettle = 200 * time.Millisecond
 
+// startIdleSweep starts an idle sweep at the server's own gap, with settle as its settle.
 func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSweep {
+	t.Helper()
+	return startIdleSweepOn(t, project, suggestionSchedule{minGap: suggestionOutcomeSchedule.minGap, settle: settle, page: suggestionOutcomePage})
+}
+
+// startIdleSweepOn starts an idle sweep on schedule.
+func startIdleSweepOn(t *testing.T, project string, schedule suggestionSchedule) idleSweep {
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, project)
@@ -159,16 +169,18 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	srv := directServer(deps)
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	schedule := suggestionSchedule{minGap: suggestionOutcomeSchedule.minGap, settle: settle, page: suggestionOutcomePage}
 	fake := clocktest.New(time.Now())
 	// The sweep reads through the counted pool and observes the horizon through the server's own
 	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.
 	runSweep(t, func(ctx context.Context) {
 		runSuggestionOutcomeSweep(ctx, fake, counted.Pool, srv.horizon(), wake, schedule)
 	})
-	sweep := idleSweep{handler: handler, server: srv, counter: counter, clock: fake, target: target, source: source}
+	sweep := idleSweep{handler: handler, server: srv, database: database, counter: counter, clock: fake, schedule: schedule, target: target, source: source}
 	testwait.Receive(t, "the hub's connection", connected)
-	testwait.Eventually(t, "the boot pass to set the cursor", func() bool { return outcomeCursor(t, database) != nil })
+	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
+	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's,
+	// which fails at once, naming the holder, on a hold in this test's own database.
+	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
 	// The hub's signal after its LISTEN earns one more pass, held to the gap after the boot pass
 	// began on the sweep's clock; after it the loop is idle.
 	sweep.pass(t, "the pass the hub's signal after its LISTEN earned")
@@ -185,10 +197,11 @@ func (s idleSweep) pass(t *testing.T, what string) {
 
 // passesUntil runs the passes the loop waits for, moving the sweep's clock to each timer it holds
 // in turn - the pass a wake earned, a horizon still behind the event's commit asking again a gap
-// later, a due time - until holds.
+// later, a due time - until holds. A pass judges an event only once the horizon has passed it, so
+// the wait is the horizon's (horizontest.PollInProcess).
 func (s idleSweep) passesUntil(t *testing.T, what string, holds func() bool) {
 	t.Helper()
-	testwait.Eventually(t, what, func() bool {
+	horizontest.PollInProcess(t, what, s.database, func() bool {
 		if holds() {
 			return true
 		}
@@ -242,26 +255,47 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 
 // An agent that comments on what it filed and, moments later, updates the suggested issue acted
 // on the suggestion. The comment wakes the sweep, and the pass that wake earns runs while the
-// comment is younger than settle: it judges nothing, and the loop arms its next pass. An event is
-// judged by only once it is settle old, by which time the update is written too, so the rules see
-// both and the acted_on rules run before the overridden one: the comment is not judged alone as an
-// override. A sweep that judged the comment at once would mark the suggestion overridden at that
-// first pass. Settle is ten seconds by the database's clock, so the first pass, which the row runs
-// at once by moving the sweep's clock to it, is far inside it; the row then waits until both
-// writes are settle old by the database's clock, so how long the second write takes decides
-// nothing.
+// comment is younger than settle: it judges nothing, and holds its next pass for the comment's
+// settle. An event is judged by only once it is settle old, by which time the update is written
+// too, so the rules see both and the acted_on rules run before the overridden one: the comment is
+// not judged alone as an override. A sweep that judged the comment at once would mark the
+// suggestion overridden at that first pass. Settle is ten seconds by the database's clock, so the
+// first pass, which the row runs at once by moving the sweep's clock to it, is far inside it; the
+// row then waits until both writes are settle old by the database's clock, so how long the second
+// write takes decides nothing.
+//
+// A pass that finds the horizon behind the comment's commit judges nothing either, and asks again
+// a gap later (suggestionOutcomePass), so "nothing judged" alone does not say settle held it. The
+// row's gap is a second, under settle, so the pass the settle holds is told apart by what it arms:
+// its due time past the gap and within settle of the pass (now+settlesIn). A pass that arms the
+// gap is a horizon's re-ask, and the row runs it in turn until one holds for settle.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	const settle = 10 * time.Second
-	sweep := startIdleSweep(t, "OTOGETHER", settle)
+	sweep := startIdleSweepOn(t, "OTOGETHER", suggestionSchedule{minGap: time.Second, settle: settle, page: suggestionOutcomePage})
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 	pool := sweep.server.deps.Store.Pool
 
 	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
-	sweep.pass(t, "the pass the comment earned")
-	// The pass has ended once the loop holds its next timer again.
-	sweep.clock.AwaitArmed(t, "the loop's next pass, armed once the comment's pass ended", 1)
+	held := testwait.Until(t, "a pass held for the comment's settle", func() (time.Time, bool) {
+		if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "ignored" {
+			t.Fatalf("outcome = %+v after a pass while the comment was younger than settle; want ignored, nothing judged yet", row)
+		}
+		armed := sweep.clock.Armed()
+		if len(armed) == 0 {
+			return time.Time{}, false
+		}
+		if armed[0].After(sweep.clock.Now().Add(sweep.schedule.minGap)) {
+			return armed[0], true
+		}
+		// The wake's pass, held to the gap, or a horizon's re-ask a gap later: run it.
+		sweep.clock.Set(armed[0])
+		return armed[0], false
+	})
+	if limit := sweep.clock.Now().Add(settle); held.After(limit) {
+		t.Fatalf("the pass held for the comment's settle armed its next pass at %s, past settle at %s", held, limit)
+	}
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "ignored" {
-		t.Fatalf("outcome = %+v after a pass while the comment was younger than settle; want ignored, nothing judged yet", row)
+		t.Fatalf("outcome = %+v after a pass held for the comment's settle; want ignored, nothing judged yet", row)
 	}
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
 	awaitDatabaseAge(t, pool, "the update", newestEventAt(t, pool, sweep.target), settle)

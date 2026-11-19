@@ -1223,7 +1223,8 @@ func (b heldBucket) Healthy(ctx context.Context) error {
 // run one after the other they took four, and the compose healthcheck and the deploy script
 // read that silence as a dead process; run side by side they take two. The row proves them side
 // by side: the database probe arms its bound on the fake while the bucket's probe is held in
-// flight, and a handler that ran them one after the other never has both in flight at once.
+// flight, and a handler that ran them one after the other never has both in flight at once. The
+// bound it arms is then the whole answer's wait, and it must end inside tightestProber.
 func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) {
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
@@ -1250,6 +1251,9 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 	answered := healthzAsync(t, server.URL)
 	testwait.Receive(t, "the bucket's probe to start", bucket.reached)
 	armed := fake.AwaitArmed(t, "the database probe's bound, armed while the bucket's probe is held in flight", 1)
+	if bound := armed[0].Sub(began); bound >= tightestProber {
+		t.Fatalf("the database probe armed its bound %v after the poll came, while the bucket's probe was in flight beside it: at or past the tightest prober's %v", bound, tightestProber)
+	}
 	close(bucket.release)
 	fake.Set(armed[0])
 	health := testwait.Receive(t, "the health probe to answer once both probes ended", answered).decode(t)
@@ -1258,6 +1262,12 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 			health.status, health.body)
 	}
 }
+
+// tightestProber is the shortest wait a prober of /healthz gives an answer: the compose
+// healthcheck's `timeout: 3s` (deploy/compose/dispatch.compose.yml) and the deploy script's
+// `curl --max-time 3` (deploy/scripts/autodeploy.sh). A probe that answers later reads to both as
+// a dead process.
+const tightestProber = 3 * time.Second
 
 // healthzReply is one GET of /healthz as healthzAsync received it.
 type healthzReply struct {

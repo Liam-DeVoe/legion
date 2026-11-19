@@ -29,7 +29,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -45,10 +44,8 @@ import (
 )
 
 // TestMain drops the databases the package's tests clone (storetest.Main). contract_test.go's
-// broker store is the broker's storetest's, whose database each test's own cleanup drops. The xid
-// window rows judge their windows' gaps only in the timing lane (storetest.JudgeXidGaps).
+// broker store is the broker's storetest's, whose database each test's own cleanup drops.
 func TestMain(m *testing.M) {
-	storetest.JudgeXidGaps(os.Getenv(benchtime.TimingEnv) != "")
 	os.Exit(storetest.Main(m.Run))
 }
 
@@ -275,7 +272,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	agentStream, embedder, answerer, fileStore, verifier := options.agentStream, options.embedder, options.answerer, options.files, options.oidc
 	var collaboratorHTTP *http.Client
 	// An xid window rig checks every call the server makes to a collaborator (collabtest): none
-	// may run inside a transaction's xid window, after its first write batch (store.SentWriteBatch).
+	// may run inside a transaction's xid window, from its first write to its end (store.InXidWindow).
 	if _, windowRig := options.tracer.(*storetest.XidTracer); windowRig {
 		documents = checkedDocs(t, documents)
 		people = checkedIdentity(t, people)

@@ -661,6 +661,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               # text's testdata too: the daemon's race-tested packages compile it, and a compiled
               # package's testdata is read by the job that compiles it.
               - 'packages/envoy/internal/dispatch/text/**'
@@ -766,6 +767,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
@@ -902,6 +904,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
@@ -2125,6 +2128,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
@@ -2452,6 +2456,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/listenerwire/*'
@@ -3282,6 +3287,7 @@ jobs:
               # serverchange soak compiles this package: a change to it must re-run that soak.
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
@@ -4024,6 +4030,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/*'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/*'
               - 'packages/envoy/internal/dispatch/pmdoc/pmdoctest/*'
               # The two schema files internal/dispatch/pmdoc embeds.
@@ -4215,6 +4222,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/*'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               # internal/dispatch/pmdoc embeds schema/blocks.json; history_fold_test.go:478 reads
               # pmdoc/testdata/fixtures.json.
               - 'packages/envoy/internal/dispatch/pmdoc/schema/**'
@@ -4375,6 +4383,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
+              - 'packages/envoy/internal/dispatch/docwork/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'

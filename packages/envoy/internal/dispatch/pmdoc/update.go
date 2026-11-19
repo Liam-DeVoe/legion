@@ -10,6 +10,8 @@ import (
 	"unsafe"
 
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 // Update writes want into frag with the same element and rich-text layout that
@@ -51,8 +53,11 @@ func UpdateDocument(txn *crdt.Transaction, frag *crdt.YXmlFragment, want ValidDo
 }
 
 // updateShape refuses a write with nothing to write into or no document to write, the check every
-// writer runs before the tree is validated.
+// writer runs before the tree is validated. Every write of a tree into a fragment - Update,
+// UpdateHolding, UpdateDocument - starts here, so it is the encode docwork's observers are told of
+// (docwork.Encode).
 func updateShape(txn *crdt.Transaction, frag *crdt.YXmlFragment, want *Node) error {
+	docwork.Enter(docwork.Encode)
 	if txn == nil || frag == nil || want == nil {
 		return fmt.Errorf("%w: Update requires transaction, fragment, and document", ErrSchema)
 	}

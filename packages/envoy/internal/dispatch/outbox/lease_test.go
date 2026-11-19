@@ -583,7 +583,19 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 // timer never fires, and 100 events written one after another while the holder holds send not one
 // take and not one lapse read, where a standby woken by events would put a write on duty_holds
 // for every event.
+//
+// The holder must hold throughout: a holder whose renewals go unconfirmed for TTL less Margin
+// (4 s at publisherHoldOptions) gives the hold up, and the standby then rightly takes it, which
+// this row would read as a take an event caused. The holder cannot be held on a fake as the
+// standby is: its hold lasts on the database's clock (duty's renewHold stamps now() + TTL), and
+// the outbox reads the hold's deadline against the wall clock (Publishing, scan), so a
+// renewal clock the row did not move in step with real time would stop the holder at once. The
+// row gives the publisher hold a TTL and Margin no run reaches instead, so the holder's hold ends
+// only when it is released, which the row never does while it counts.
 func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
+	saved := publisherHoldOptions
+	publisherHoldOptions.TTL, publisherHoldOptions.Margin = 24*time.Hour, time.Hour
+	t.Cleanup(func() { publisherHoldOptions = saved })
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)

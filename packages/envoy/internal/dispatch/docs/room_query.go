@@ -1,7 +1,6 @@
 package docs
 
 import (
-	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -114,10 +113,11 @@ type roomAnswer struct {
 // lanes call them, roomSync.handlers).
 type roomQueries struct {
 	service *Service
-	// wait is answerWait's bound, roomQueryWait where it is zero, as it is in production. A test
-	// of what an answer holds sets a bound of its own: roomQueryWait is a latency budget, and on a
-	// loaded machine an answer can take longer than that to cross Postgres twice.
-	wait    time.Duration
+	// wait answers answerWait's bound at each ask, and nil leaves it roomQueryWait, as it is in
+	// production. A test of what an answer holds sets a bound of its own: roomQueryWait is a
+	// latency budget, and on a loaded machine an answer can take longer than that to cross
+	// Postgres twice.
+	wait    func() time.Duration
 	mu      sync.Mutex
 	pending map[string]*pendingRoomQuery
 }
@@ -125,7 +125,10 @@ type roomQueries struct {
 // answerWait is how long this process's queries wait for the other members' answers, and how
 // long a flush it answers waits for its room's appends.
 func (r *roomQueries) answerWait() time.Duration {
-	return cmp.Or(r.wait, roomQueryWait)
+	if r.wait != nil {
+		return r.wait()
+	}
+	return roomQueryWait
 }
 
 // pendingRoomQuery is one query of this process's waiting on answers: the parts of each member's

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 // Resolver says what a bare issue key, a `#id` and a short id name for one text. Mentions asks it
@@ -49,8 +51,10 @@ type Prefix struct {
 // mark's edge), or after one of ( [ " ' * _ > ` ~ |. A key is an uppercase project key of 2 to 10
 // characters, `-` and a number from 1 up, ending as keyEnds says. A `#id` is `#` and the longest
 // run of the block-id characters [A-Za-z0-9_-], read as questionRef reads it. There is no markdown
-// parse here, so a candidate in code is read, as a reference in code is.
+// parse here, so a candidate in code is read, as a reference in code is. It is a reference
+// extraction docwork's observers are told of (docwork.References).
 func Mentions(body, serverURL string, r Resolver) ([]Located, error) {
+	docwork.Enter(docwork.References)
 	spans := referencePattern.FindAllStringIndex(body, -1)
 	located := extractSpans(body, serverURL, spans, true)
 	if r == nil {

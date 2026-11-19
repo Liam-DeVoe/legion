@@ -71,7 +71,7 @@ func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTrac
 	}
 	// An xid window rig (issue_ask_repair_xid_window_test.go) checks every collaborator call the
 	// document service and the repair make (collabtest): none may run inside a transaction's xid
-	// window, after its first write batch (store.SentWriteBatch). The rows read the service
+	// window, from its first write to its end (store.InXidWindow). The rows read the service
 	// itself, unwrapped, through documents.
 	var people identity.Identity = headerIdentity(database)
 	_, windowRig := tracer.(*storetest.XidTracer)

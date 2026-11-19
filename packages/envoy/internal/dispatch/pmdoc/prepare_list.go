@@ -570,11 +570,17 @@ func (m *lineMachine) exitBare(keep, line int) {
 // exit, which is quadratic in its lines (a 1 MiB body of 4,000 bare exits took 7.7 s that way,
 // and 0.08 s this way). The patched mdast-util-from-markdown collects prepareList's own
 // insertions the same way and rebuilds the events once.
+//
+// Every stream insert goes through here, so here is where its steps are counted (ParseWork): the
+// events an insert moves and the line marks it walks, and the record of it. This one moves no
+// event and walks no mark, so it counts the record alone; an insert that moved the stream in place
+// would count each event it moved and each mark it walked, which writeInserts then moves no more.
 func (m *lineMachine) insertEvents(index int, added []spreadEvent) {
 	if len(added) == 0 {
 		return
 	}
 	m.inserts = append(m.inserts, eventInsert{at: index, events: added})
+	parseWork.Add(1)
 }
 
 // writeInserts rebuilds the stream with every recorded insert in place, each before the event it

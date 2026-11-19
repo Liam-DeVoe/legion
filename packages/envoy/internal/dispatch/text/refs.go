@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 )
 
 // referenceEnd is every character that ends a reference: whitespace (the Unicode space separators
@@ -112,8 +114,10 @@ func Refs(located []Located) []Ref {
 }
 
 // ExtractAt is Extract with each reference's byte offset into body, so a caller can find the
-// block a mention sits in. Trailing punctuation the grammar trims never moves the start.
+// block a mention sits in. Trailing punctuation the grammar trims never moves the start. It is the
+// reference extraction docwork's observers are told of (docwork.References), Extract's included.
 func ExtractAt(body, serverURL string) []Located {
+	docwork.Enter(docwork.References)
 	return extractAt(body, serverURL, true)
 }
 

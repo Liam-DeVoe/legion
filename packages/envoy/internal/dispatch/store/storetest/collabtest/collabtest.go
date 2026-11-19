@@ -1,12 +1,12 @@
 // Package collabtest is the xid window rigs' structural check on Dispatch's collaborators: the
 // services, stores and HTTP peers Dispatch calls outside its own Postgres. A call to one of them
-// made inside a transaction's xid window - once the transaction has sent its first write batch
-// (store.SentWriteBatch) and until it ends - holds that transaction id, and the pooled connection
-// under it, for as long as the call takes, which starves the pool and stretches the window
-// whatever the machine's speed. Each rig wraps the collaborators it hands the product in
-// decorators that, at every method that takes a context, fail the test (Check) when the context
-// carries that mark, then call through. A plain run checks it; the gap judgment, which reads the
-// clock, runs only in the timing lane (storetest.XidJudgesGaps).
+// made inside a transaction's xid window - from the transaction's first statement that writes,
+// inline or batched, until it ends (store.InXidWindow, which storetest.XidTracer opens) - holds
+// that transaction id, and the pooled connection under it, for as long as the call takes, which
+// starves the pool and stretches the window whatever the machine's speed. Each rig wraps the
+// collaborators it hands the product in decorators that, at every method that takes a context,
+// fail the test (Check) when the context carries that mark, then call through. Every run checks
+// it, as it checks the document work the tracer sees through docwork; neither reads a clock.
 //
 // The decorators sit beside the rigs that hand the collaborators: the api package's
 // (api/collaborators_check_test.go: docs.API, identity, the embedder, the file store, the agent
@@ -28,16 +28,16 @@ import (
 )
 
 // Check fails t, naming the collaborator, the method and the caller's stack, when ctx's
-// transaction is past its first write batch (store.SentWriteBatch), and returns either way: the
-// decorator calls through, so the row goes on to whatever else it would find. A call in the read
-// phase, before that batch, holds no transaction id yet and is not a window's. It uses t.Errorf,
+// transaction is inside its xid window (store.InXidWindow), and returns either way: the decorator
+// calls through, so the row goes on to whatever else it would find. A call before the
+// transaction's first write holds no transaction id yet and is not a window's. It uses t.Errorf,
 // which is safe from the goroutine a collaborator call runs on.
 func Check(t testing.TB, ctx context.Context, collaborator, method string) {
-	if !store.SentWriteBatch(ctx) {
+	if !store.InXidWindow(ctx) {
 		return
 	}
 	t.Errorf("%s.%s was called while its caller holds a connection of the pool (store.HoldsPooledConnection) "+
-		"and its transaction is past its first write batch (store.SentWriteBatch): a collaborator call made then "+
+		"and its transaction has written (store.InXidWindow): a collaborator call made then "+
 		"holds that transaction id, and the connection under it, for as long as the call takes\n%s",
 		collaborator, method, debug.Stack())
 }

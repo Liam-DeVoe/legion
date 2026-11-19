@@ -3,11 +3,14 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/reearth/ygo/crdt"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 )
 
 // parseFullTarget and renderFullTarget are
@@ -57,7 +60,7 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 		full := parseFullTarget / len(shape)
 		small := full / growthStep
 		t.Run(shape, func(t *testing.T) {
-			growsLinearly(t, fmt.Sprintf("parsing %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) uint64 {
+			growsLinearly(t, fmt.Sprintf("parsing %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) work {
 				text := strings.Repeat(shape, size/len(shape))
 				return workOf(func() {
 					if _, err := ParseRendering(text); err != nil {
@@ -83,7 +86,7 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 		small := full / growthStep
 		name := "a typed block of spaced items in a list item"
 		t.Run(name, func(t *testing.T) {
-			growsLinearly(t, name, []int{small * len(repeat), full * len(repeat)}, linearSlack, func(size int) uint64 {
+			growsLinearly(t, name, []int{small * len(repeat), full * len(repeat)}, linearSlack, func(size int) work {
 				text := open + strings.Repeat(repeat, size/len(repeat)) + closer
 				return workOf(func() {
 					if _, err := ParseForWrite(text, nil); err != nil {
@@ -109,7 +112,7 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 		small := full / growthStep
 		name := "quoted typed blocks ending on a bare line"
 		t.Run(name, func(t *testing.T) {
-			growsLinearly(t, name, []int{small * unit, full * unit}, linearSlack, func(size int) uint64 {
+			growsLinearly(t, name, []int{small * unit, full * unit}, linearSlack, func(size int) work {
 				var text strings.Builder
 				for index := 0; index < size/unit; index++ {
 					fmt.Fprintf(&text, repeat, index)
@@ -151,7 +154,7 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 			parse func(string) (*Node, error)
 		}{{"ParseRendering", ParseRendering}, {"Parse", Parse}} {
 			t.Run(reader.name+" "+name, func(t *testing.T) {
-				growsLinearly(t, fmt.Sprintf("%s of %q", reader.name, name), []int{small * pair, full * pair}, linearSlack, func(size int) uint64 {
+				growsLinearly(t, fmt.Sprintf("%s of %q", reader.name, name), []int{small * pair, full * pair}, linearSlack, func(size int) work {
 					repeats := size / pair
 					text := shape.before + strings.Repeat(shape.open, repeats) + strings.Repeat(shape.close, repeats) + shape.after
 					return workOf(func() {
@@ -170,7 +173,7 @@ func TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText(t *testing.T) {
 			return &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{{Type: "text", Text: strings.Repeat(shape, repeats)}}}}}
 		}
 		t.Run(shape, func(t *testing.T) {
-			growsLinearly(t, fmt.Sprintf("rendering %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) uint64 {
+			growsLinearly(t, fmt.Sprintf("rendering %q", shape), []int{small * len(shape), full * len(shape)}, linearSlack, func(size int) work {
 				tree := doc(size / len(shape))
 				return workOf(func() {
 					if _, err := Render(tree); err != nil {
@@ -214,26 +217,41 @@ func TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack(t *testing.T
 	const small, full = 1, growthStep // the growth step itself; growthVerdict never reads these as bytes
 	linear := func(size int) uint64 { return uint64(size) * 1000 }
 	quadratic := func(size int) uint64 { return uint64(size*size) * 1000 }
-	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, quadratic); failedStep != 0 {
+	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, "steps", quadratic); failedStep != 0 {
 		t.Errorf("growthVerdict did not fail a synthetic quadratic count at growth=%d, slack=%d (failedStep=%d), want step 0 to fail", growthStep, linearSlack, failedStep)
 	}
-	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, linear); failedStep != -1 {
+	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, "steps", linear); failedStep != -1 {
 		t.Errorf("growthVerdict failed a synthetic linear count at growth=%d, slack=%d (step %d), want it to pass", growthStep, linearSlack, failedStep)
 	}
-	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, func(int) uint64 { return 0 }); failedStep != 0 {
+	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, "steps", func(int) uint64 { return 0 }); failedStep != 0 {
 		t.Errorf("growthVerdict passed a count of nothing (failedStep=%d), want step 0 to fail", failedStep)
 	}
 	// Negative control: round 1-2's 2x step, the same slack, the same quadratic function. This
 	// must still pass growthVerdict (wrongly) - it is the historical defect
 	// growthStep's doc comment names, kept here so a future reader can run it and see the defect
 	// reproduce rather than take the claim on faith.
-	if failedStep, _ := growthVerdict([]int{1, 2}, linearSlack, quadratic); failedStep != -1 {
+	if failedStep, _ := growthVerdict([]int{1, 2}, linearSlack, "steps", quadratic); failedStep != -1 {
 		t.Errorf("growthVerdict unexpectedly failed the 2x-step negative control (failedStep=%d) - if this starts failing, the control no longer demonstrates round 1-2's defect and this test's comment needs updating, not alarm", failedStep)
 	}
 	// growsLinearly itself, through a real *testing.T, confirms the wrapper agrees with
 	// growthVerdict on the passing direction (the failing direction cannot run through a real
-	// t.Fatalf without failing this test, which the growthVerdict assertion above already proves).
-	growsLinearly(t, "synthetic linear", []int{small, full}, linearSlack, linear)
+	// t.Fatalf without failing this test, which the growthVerdict assertion above already proves),
+	// with steps and bytes both linear.
+	growsLinearly(t, "synthetic linear", []int{small, full}, linearSlack, func(size int) work {
+		return work{steps: linear(size), bytes: linear(size)}
+	})
+	// The two measures are judged apart: quadratic steps beside linear bytes many times their
+	// size still fail, where their sum would pass (workOf once added them, so bytes that
+	// outweighed the steps could hide the steps' growth).
+	masked := func(size int) work { return work{steps: quadratic(size), bytes: 1000 * linear(size)} }
+	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, "steps", func(size int) uint64 { return masked(size).steps }); failedStep != 0 {
+		t.Errorf("growthVerdict passed quadratic steps judged on their own (failedStep=%d), want step 0 to fail", failedStep)
+	}
+	if failedStep, _ := growthVerdict([]int{small, full}, linearSlack, "steps and bytes", func(size int) uint64 {
+		return masked(size).steps + masked(size).bytes
+	}); failedStep != -1 {
+		t.Errorf("the sum of quadratic steps and far larger linear bytes failed (failedStep=%d): this case no longer shows what judging the sum hid", failedStep)
+	}
 }
 
 // linearSlack is how many times faster than growth itself a linear operation's work may grow
@@ -286,7 +304,7 @@ func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
 		{"line feeds", func(size int) *Node { return doc(paragraph(strings.Repeat("a\n", size/2))) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			growsLinearly(t, "rendering "+test.name, []int{renderFullTarget / growthStep, renderFullTarget}, linearSlack, func(size int) uint64 {
+			growsLinearly(t, "rendering "+test.name, []int{renderFullTarget / growthStep, renderFullTarget}, linearSlack, func(size int) work {
 				document := test.doc(size)
 				return workOf(func() {
 					if _, err := Render(document); err != nil {
@@ -309,7 +327,7 @@ func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
 		{"a\\~~ repeated", func(size int) string { return strings.Repeat("a\\~~", size/4) }, ParseRendering},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			growsLinearly(t, "parsing "+test.name, []int{parseFullTarget / growthStep, parseFullTarget}, linearSlack, func(size int) uint64 {
+			growsLinearly(t, "parsing "+test.name, []int{parseFullTarget / growthStep, parseFullTarget}, linearSlack, func(size int) work {
 				markdown := test.markdown(size)
 				return workOf(func() {
 					if _, err := test.parse(markdown); err != nil {
@@ -332,7 +350,7 @@ func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
 // so it is read as a rendering is, whose parse no element limit stops.
 func TestParseIsLinearInATableOfEscapedPipes(t *testing.T) {
 	const header, row = "| a |\n| --- |\n", "`\\|`\n"
-	growsLinearly(t, "parsing a table of `\\|` cells", []int{16 << 10, 256 << 10, 1 << 20}, growthAllowance, func(size int) uint64 {
+	growsLinearly(t, "parsing a table of `\\|` cells", []int{16 << 10, 256 << 10, 1 << 20}, growthAllowance, func(size int) work {
 		markdown := header + strings.Repeat(row, (size-len(header))/len(row))
 		return workOf(func() {
 			if _, err := ParseRendering(markdown); err != nil {
@@ -340,6 +358,78 @@ func TestParseIsLinearInATableOfEscapedPipes(t *testing.T) {
 			}
 		})
 	})
+}
+
+// The row above counts unescapeTablePipes, pmdoc's own walk of a table's cells. goldmark's table
+// AST transformer, which did that work in time quadratic in a table of escaped pipes, counts no
+// step and allocates only on a match, so registered again it would leave that row's steps and
+// bytes linear: what keeps it out is that no reader registers it. Every goldmark parser pmdoc reads
+// markdown with - the document reader, the display reader and the inline readers a parse and a
+// render's read-backs use - holds no AST transformer of goldmark's table extension, read off the
+// parser after a parse, a display read and a render have each built theirs, and off its
+// configuration where a parser has not been built yet.
+func TestNoReaderRegistersGoldmarksTableASTTransformer(t *testing.T) {
+	const table = "| a | b |\n| --- | --- |\n| `\\|` | x |\n"
+	tree, err := ParseRendering(table)
+	if err != nil {
+		t.Fatalf("parse the table: %v", err)
+	}
+	if _, err := Render(tree); err != nil {
+		t.Fatalf("render the table: %v", err)
+	}
+	_ = ReadForDisplay(table, DisplayLatest)
+	if _, err := ParseInline("`\\|` a", NewWriteBudget()); err != nil {
+		t.Fatalf("parse the inline markdown: %v", err)
+	}
+	goldmarks := reflect.TypeOf(extension.NewTableASTTransformer())
+	for _, reader := range []struct {
+		name   string
+		parser parser.Parser
+	}{
+		{"the document reader (blockReader)", blockReader.md.Parser()},
+		{"the display reader (displayReader)", displayReader.md.Parser()},
+		{"inlineMarkdown", inlineMarkdown.run},
+		{"inlineMarkdown with definitions", inlineMarkdown.withDefinitions},
+		{"storedMarkdown", storedMarkdown.run},
+		{"storedMarkdown with definitions", storedMarkdown.withDefinitions},
+		{"flankingMarkdown", flankingMarkdown.run},
+		{"flankingMarkdown with definitions", flankingMarkdown.withDefinitions},
+	} {
+		for _, registered := range astTransformerTypes(t, reader.parser) {
+			if registered == goldmarks {
+				t.Errorf("%s registers goldmark's table AST transformer (%s), whose work in a table of escaped pipes "+
+					"is quadratic and counted by nothing: unescapeTablePipes does that work", reader.name, registered)
+			}
+		}
+	}
+}
+
+// astTransformerTypes is the type of every AST transformer goldmark's parser p runs after a parse:
+// those it built at its first parse (its astTransformers) and, for a parser not built yet, those its
+// configuration still holds (config.ASTTransformers). goldmark answers neither, so they are read
+// off its unexported fields; a goldmark whose parser holds neither fails here, naming the fields,
+// rather than passing on a list it could not read.
+func astTransformerTypes(t *testing.T, p parser.Parser) []reflect.Type {
+	t.Helper()
+	value := reflect.ValueOf(p)
+	if value.Kind() != reflect.Pointer || value.Elem().Kind() != reflect.Struct {
+		t.Fatalf("goldmark's parser is a %s, not a pointer to its struct: read where it keeps its AST transformers again", value.Type())
+	}
+	built, config := value.Elem().FieldByName("astTransformers"), value.Elem().FieldByName("config")
+	if !built.IsValid() || !config.IsValid() {
+		t.Fatalf("goldmark's parser %s holds no astTransformers or config field: read where it keeps its AST transformers again", value.Type())
+	}
+	var types []reflect.Type
+	for index := range built.Len() {
+		types = append(types, built.Index(index).Elem().Type())
+	}
+	if !config.IsNil() {
+		configured := config.Elem().FieldByName("ASTTransformers")
+		for index := range configured.Len() {
+			types = append(types, configured.Index(index).FieldByName("Value").Elem().Type())
+		}
+	}
+	return types
 }
 
 // A bare URL or email is read and written in time linear in its line. A line can hold an address
@@ -423,7 +513,7 @@ func TestUnclosedRawHTMLShapesParseAndRenderLinearly(t *testing.T) {
 func readsAndWritesLinearly(t *testing.T, head, shape, tail string, sizes []int) {
 	t.Helper()
 	what := head + shape + tail
-	growsLinearly(t, fmt.Sprintf("reading and writing %q", what), sizes, growthAllowance, func(size int) uint64 {
+	growsLinearly(t, fmt.Sprintf("reading and writing %q", what), sizes, growthAllowance, func(size int) work {
 		markdown := head + strings.Repeat(shape, (size-len(head))/len(shape)) + tail + "._\n"
 		return workOf(func() {
 			doc, err := ParseRendering(markdown)
@@ -471,7 +561,7 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 		full := test.target / len(test.to)
 		small := full / growthStep
 		t.Run(test.name, func(t *testing.T) {
-			growsLinearly(t, test.name, []int{small * len(test.to), full * len(test.to)}, linearSlack, func(size int) uint64 {
+			growsLinearly(t, test.name, []int{small * len(test.to), full * len(test.to)}, linearSlack, func(size int) work {
 				blocks := size / len(test.to)
 				want := repeatedBlocks(t, test.to, blocks)
 				doc := crdt.New()
@@ -559,18 +649,21 @@ func writeUpdate(t *testing.T, doc *crdt.Doc, fragment *crdt.YXmlFragment, tree 
 // at any step over four.
 const growthAllowance = 4
 
-// workOf is the steps op takes, read from the package's counts of its own work before and after
-// it - the parse's (ParseWork), the render's (RenderWork) and a write's into a document
-// (UpdateWork) - and the bytes op allocates (allocatedBy). The counts see the scans and walks the
+// work is what op cost (workOf): its steps, read from the package's counts of its own work before
+// and after it - the parse's (ParseWork), the render's (RenderWork) and a write's into a document
+// (UpdateWork) - and the bytes op allocates (allocatedBy). The steps see the scans and walks the
 // package counts where it makes them; the bytes see what no count of the package's sits in: a
 // string or a list built again for each piece of the input (a text joined from the rest of its
 // lines at each line, a fragment's children listed by ygo again for each block), whose cost grows
 // in the copies it allocates, whether the code making them is this package's, ygo's or
 // goldmark's. Both are the process's, and no test in this package calls t.Parallel, so what grows
-// between the two readings is op's.
-func workOf(op func()) uint64 {
+// between the two readings is op's. growsLinearly judges each on its own, so neither can hide the
+// other's growth: a quadratic count of steps is quadratic whatever the bytes beside it.
+type work struct{ steps, bytes uint64 }
+
+func workOf(op func()) work {
 	before, allocated := allWork(), allocatedBy(op)
-	return allWork() - before + allocated
+	return work{steps: allWork() - before, bytes: allocated}
 }
 
 // allWork is every step the package has counted.
@@ -587,16 +680,17 @@ func allocatedBy(op func()) uint64 {
 	return after.TotalAlloc - before.TotalAlloc
 }
 
-// growthVerdict is growsLinearly's verdict without a *testing.T to report through: which step
-// (0-based, among sizes[1:]) first grew past its bound, or -1 if none did, and one line of context
-// for every step up to and including a failure - the fail-style line at that step, a log-style
-// line at every other. The counts are the work itself, so each size is counted once.
+// growthVerdict is growsLinearly's verdict on one measure of the work, unit naming it (steps, or
+// bytes allocated), without a *testing.T to report through: which step (0-based, among sizes[1:])
+// first grew past its bound, or -1 if none did, and one line of context for every step up to and
+// including a failure - the fail-style line at that step, a log-style line at every other. The
+// counts are the work itself, so each size is counted once.
 // TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack calls this directly, so the
 // bound it proves is provable without a real *testing.T failing.
-func growthVerdict(sizes []int, allowance int, counted func(size int) uint64) (failedStep int, lines []string) {
+func growthVerdict(sizes []int, allowance int, unit string, counted func(size int) uint64) (failedStep int, lines []string) {
 	before := counted(sizes[0])
 	if before == 0 {
-		return 0, []string{fmt.Sprintf("counted no work at %s, so its growth says nothing: none of the work it does is counted", sizeText(sizes[0]))}
+		return 0, []string{fmt.Sprintf("counted no %s at %s, so its growth says nothing: none of the work it does is counted", unit, sizeText(sizes[0]))}
 	}
 	failedStep = -1
 	for i := 1; i < len(sizes); i++ {
@@ -606,28 +700,49 @@ func growthVerdict(sizes []int, allowance int, counted func(size int) uint64) (f
 		allowed := uint64(allowance*growth) * before
 		ratio := float64(work) / float64(before)
 		if work > allowed {
-			lines = append(lines, fmt.Sprintf("took %d steps at %s, %.1f times the %d it took at %s: the input grew %d times, and work linear in it may take %d steps at most",
-				work, sizeText(size), ratio, before, sizeText(smaller), growth, allowed))
+			lines = append(lines, fmt.Sprintf("took %d %s at %s, %.1f times the %d it took at %s: the input grew %d times, and work linear in it may take %d at most",
+				work, unit, sizeText(size), ratio, before, sizeText(smaller), growth, allowed))
 			return i - 1, lines
 		}
-		lines = append(lines, fmt.Sprintf("%d steps at %s, %d at %s, %.1f times for an input %d times larger (at most %d)", before, sizeText(smaller), work, sizeText(size), ratio, growth, allowed))
+		lines = append(lines, fmt.Sprintf("%d %s at %s, %d at %s, %.1f times for an input %d times larger (at most %d)", before, unit, sizeText(smaller), work, sizeText(size), ratio, growth, allowed))
 		before = work
 	}
 	return failedStep, lines
 }
 
-// growsLinearly counts what's work at each of sizes in turn and fails t at the first size whose
-// work grew more than allowance times faster than the size did (growthVerdict, which this wraps).
-// A count of none at the first size fails too, since a growth from nothing proves nothing.
-func growsLinearly(t *testing.T, what string, sizes []int, allowance int, counted func(size int) uint64) {
+// growsLinearly counts what's work at each of sizes in turn, once each, and fails t at the first
+// size whose steps, or whose bytes allocated, grew more than allowance times faster than the size
+// did (growthVerdict, which this runs on each measure in turn). A count of none at the first size
+// fails too, since a growth from nothing proves nothing: a row whose op the package counts no step
+// of, or that allocates nothing, is no row of these.
+func growsLinearly(t *testing.T, what string, sizes []int, allowance int, counted func(size int) work) {
 	t.Helper()
-	failedStep, lines := growthVerdict(sizes, allowance, counted)
-	for step, line := range lines {
-		if step == failedStep {
-			t.Fatalf("%s %s", what, line)
-			return
+	works := map[int]work{}
+	workAt := func(size int) work {
+		measured, ok := works[size]
+		if !ok {
+			measured = counted(size)
+			works[size] = measured
 		}
-		t.Logf("%s: %s", what, line)
+		return measured
+	}
+	for _, measure := range []struct {
+		unit string
+		of   func(work) uint64
+	}{
+		{"steps", func(w work) uint64 { return w.steps }},
+		{"bytes allocated", func(w work) uint64 { return w.bytes }},
+	} {
+		failedStep, lines := growthVerdict(sizes, allowance, measure.unit, func(size int) uint64 {
+			return measure.of(workAt(size))
+		})
+		for step, line := range lines {
+			if step == failedStep {
+				t.Fatalf("%s %s", what, line)
+				return
+			}
+			t.Logf("%s: %s", what, line)
+		}
 	}
 }
 

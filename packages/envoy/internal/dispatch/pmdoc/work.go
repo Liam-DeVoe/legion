@@ -19,8 +19,9 @@ var parseWork, renderWork, updateWork atomic.Uint64
 //     literalDomains, literalURL's path, and the transform's nextURLPattern, urlDomain, emailRun
 //     and findURLs);
 //   - each node unescapeTablePipes walks, each event the reading of list spreads steps over
-//     (readSpreads), and each footnote definition keyed for, and each reference looked up in, the
-//     map that resolves a reference up to case (footnoteDefinitionsByKey).
+//     (readSpreads) and each insert into that stream it records (insertEvents), and each footnote
+//     definition keyed for, and each reference looked up in, the map that resolves a reference up
+//     to case (footnoteDefinitionsByKey).
 //
 // A test reads it before and after a call and holds the difference to a count linear in the
 // call's input, which no load on the machine moves: the parse costs that once grew with the
