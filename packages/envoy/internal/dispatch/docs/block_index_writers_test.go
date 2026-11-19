@@ -606,8 +606,8 @@ var indexPasses = map[string]string{
 	// queueAppend is the second half of one write rather than a second look at it: it appends the
 	// tuples its caller states, and states the base attributes of the node rows its node write
 	// marked and moves them onto the write's cause, which it reads off those rows' marks
-	// (nodeMark). It reads the store's own rows its write just wrote, no projection, and mends
-	// nothing.
+	// (graphstore's nodeMarks). It reads the store's own rows its write just wrote, no
+	// projection, and mends nothing.
 	"graphstore/write.go#queueAppend": "the tuples its caller states and the node rows its own node write marked",
 	// The publisher's record of a batch splices the store's arms into its own statement
 	// (graphstore.WriteArms): the roles and sessions the batch reached, and its deliveries.
@@ -639,9 +639,9 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
 // the same use as one. The names are every exported function of graphstore that writes the store
 // or builds the statement that does, the list that test holds as storeWriteFunctions:
-// SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
+// QueueSessionRecorded writes a session's node through arms of its own, and a pass that wrote the
 // store through it alone would otherwise be read as no writer at all.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|QueueWrite|QueueNodes|QueueCaused|Authored|Reached|SessionRecorded|QueueAuthored|QueueReached|QueueSessionRecorded|WriteArms|WriteArmsUncaused|EraseNode)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|Caused|QueueWrite|QueueNodes|QueueCaused|QueueAuthored|QueueReached|QueueSessionRecorded|WriteArms|WriteArmsUncaused|EraseNode)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

@@ -981,8 +981,8 @@ var outsideTheFence = []struct{ file, function string }{
 // revisionTest matches what a revision test is made of in a function's source: a read or a
 // write of document_block_versions, the row that holds a document's revision, whose `version`
 // is what such a test compares against, or a call of the fence that compares it
-// (standsAtVersion) or of the pass that runs that fence (IndexBlocks).
-var revisionTest = regexp.MustCompile(`(?is)\bdocument_block_versions\b|\bstandsAtVersion\(|\bIndexBlocks\(`)
+// (queueStand) or of the pass that runs that fence (IndexBlocks).
+var revisionTest = regexp.MustCompile(`(?is)\bdocument_block_versions\b|\bqueueStand\(|\bIndexBlocks\(`)
 
 // requireNoRevisionTestOutsideTheFence reads the source of each writer outside the fence and
 // fails if either carries a revision test. A writer that compared a revision it does not own

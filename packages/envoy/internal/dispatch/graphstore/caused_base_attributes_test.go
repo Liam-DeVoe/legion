@@ -18,8 +18,7 @@ import (
 // that is appended. No tuple may be updated to learn its cause, so a base attribute stated at
 // the sentinel would stand for ever under event 0 while the row it projects named the receipt:
 // a row whose own log says no event recorded it. The settle therefore states no base attribute
-// in its node statement and appends both under the receipt (WriteArmsUncaused,
-// BaseAttributeFacts).
+// in its node statement and appends both under the receipt (WriteArmsUncaused, queueAppend).
 func TestASettlesNodeAndItsBaseTuplesNameOneEvent(t *testing.T) {
 	database := storetest.Open(t)
 	who := model.Actor{Kind: "user", ID: "alice"}
@@ -28,8 +27,12 @@ func TestASettlesNodeAndItsBaseTuplesNameOneEvent(t *testing.T) {
 	const session = "caused-base-attributes"
 
 	runInOneTransaction(t, database, "the settle of a delivery attempt", func(ctx context.Context, tx pgx.Tx) error {
-		reached, err := Reached(ctx, tx, model.DeliveryStateQueued, session, who, at)
-		if err != nil {
+		var reached Uncaused
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			var err error
+			reached, err = QueueReached(b, model.DeliveryStateQueued, session, who, at, NoEvent)
+			return err
+		}); err != nil {
 			return err
 		}
 		return Caused(ctx, tx, reached, receipt)
