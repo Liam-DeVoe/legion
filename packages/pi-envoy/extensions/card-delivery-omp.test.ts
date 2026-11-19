@@ -1244,7 +1244,7 @@ test.skipIf(skip)(
 // next turn` and `a low card stored on a branch with no reply` run on SQL storage, the storage of
 // every Legion workflow session, since what they check hangs on how the store answers a stored
 // card. The other cases run on file storage, which covers the file witness: the pi-envoy CI job
-// has ten minutes for all of its steps.
+// has fifteen minutes for all of its steps (ci-job-pi-envoy.yaml), and these cases take about four.
 
 /** How long a case watches a session that holds a `low` card for a turn that must not come. */
 const QUIET_MS = 30_000;
