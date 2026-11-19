@@ -582,8 +582,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"architect-root.md", "takes no `run`"},
 		// The reviewer's gate takes R5's three cases for a check CI proves: a run still going or
 		// unread is waited for, and a name no run answers goes to the architect, rather than sending
-		// the work back to an implementer who cannot cure it. The final gate points at that rule.
-		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
+		// the work back to an implementer who cannot cure it. The final gate points at that rule. A
+		// head whose line reads not known for a pass and a fail is no reason to wait: the reviewer
+		// requests changes for that check at once, since no later result at that commit ends it.
+		{"reviewer.md", "Wait for a `ci_check` run still going or unread, unless the head's line reads not known because a pass and a fail count there, which is a request for changes naming the check, at once."},
+		{"reviewer.md", "Send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {

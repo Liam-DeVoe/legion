@@ -190,8 +190,9 @@ and decides there, the only gate on such an issue.
   pass standing at the head (the line of that head under the check), because a result from CI there
   is a fail, a pass and a fail from CI are there, or its run concluded `skipped`, `neutral` or
   `cancelled`, is a test failure. A run still going, or GitHub
-  unread, goes in `implementerProof.how` and fails no round. A name no run answers once the head's
-  checks have settled goes to the architect as a finding. It re-runs the
+  unread, goes in `implementerProof.how` and fails no round, unless that head's line reads not
+  known because a pass and a fail count there, which is that test failure, at once. A name no run
+  answers once the head's checks have settled goes to the architect as a finding. It re-runs the
   implementer's command or drives the same surface independently, and records the verdict in
   its `test` handoff as `implementerProof` (`{verdict, how}`). The tester runs the
   application, not CI again, and by hand it drives only the changed behaviour on the real surface,

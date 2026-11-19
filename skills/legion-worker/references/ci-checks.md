@@ -33,7 +33,7 @@ recorded, as a recorded result prints, with `on branch <branch>` after `by ci`:
 
 ```
 - <id> (before_merge): <verdict> at <sha> by ci (CI run <name>, <conclusion>), <currency>. <text>
-  A pass stands: <yes, from ci | no | not known>.
+  A pass stands: <yes, from ci | no, as <k> of <n> heads read yes | not known, as <k> of <n> heads read yes>.
   - #<number> at <commit>: yes, from <roles>. Pass <id> decides it.
     Pull request line: - Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <words>
   - <verdict> by ci on branch <branch> at <sha>. <where that commit stands>. …
@@ -43,7 +43,7 @@ When the run gives no result, the command prints the case in place of a verdict:
 
 ```
 - <id> (before_merge): <no result | its CI job's results below, and CI run <name> derives none>: <detail> <text>
-  A pass stands: <no | not known>.
+  A pass stands: <no | not known>, as <k> of <n> heads read yes.
   - #<number> at <commit>: no, as it holds no result.
     Pull request line: - Check <id> (before_merge): CI run <name> has no result (<case>)
   - <verdict> by ci on branch <branch> at <sha>. <where that commit stands>. …
@@ -80,6 +80,12 @@ the named run gives no result, that line is the no-result line. The next role th
 reads `dispatch results` again and puts the derived line in its place.
 
 ## A run that is still going
+
+A pass and a fail that count at a head leave the line of that head `not known`, and no later
+result at that commit ends that, so nothing in this section holds for such a check while its run
+is still going or GitHub is unread: the tester lists it in `failures`, the reviewer requests
+changes naming the check, and the architect sends the issue back naming the check, each at once,
+with no wait for the run or for GitHub.
 
 A named run that has not concluded is no test failure, and it is the fault of no role. The tester
 writes in its `test` handoff's `implementerProof.how` that the run is still going. The handoff
