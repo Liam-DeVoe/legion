@@ -15,7 +15,7 @@ section can use the words without stopping to explain them.
   in, and starts and stops the agents that do the work. It keeps its own record in Postgres, so a
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
-- **Agents** are [Oh My Pi](https://github.com/sjawhar/oh-my-pi) sessions. Under the Kubernetes
+- **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
   runtime every agent the daemon starts runs in a pod of its own, from one published worker image,
   and talks to the daemon over a connection the pod dials back. Under the tmux runtime a phase
   worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
@@ -63,7 +63,15 @@ Each token reaches every repository its own installation holds.
 `legion gh`, the `gh` wrapper every pane and pod runs, reads the directory of the owner of the
 repository a command names, and `git` reaches the same bundle through a credential helper that
 picks a directory the same way, so a command naming an owner the App is not installed on is
-refused there, not merely discouraged.
+refused there, not merely discouraged. The one exception is a `gh` read the wrapper knows (a
+command such as `pr list` typed by its full name with each value its own word, a `gh api` GET,
+or a `gh api graphql -f query=…` in the one form
+[the deployment guide](https://github.com/cybermonklabs/legion/blob/main/docs/deployment.md#what-a-panes-gh-git-and-jj-are)
+lists, whose query holds neither the word `mutation` nor `subscription`, in any case) that names
+only such owners, names no repository a configured
+rename moves, and reads no `github.com` remote of the working directory: it runs with
+`GH_CONFIG_DIR`'s token, which GitHub lets read public data and that installation's own
+repositories alone.
 
 ## The controller
 
@@ -330,8 +338,10 @@ approves the new version. Your own answer to a decision block in the approved sp
 exception: when that answer is the whole change since the version you approved, Dispatch records
 your approval at the new version and the gate reopens, so the architect asks you for nothing; when
 the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-again, naming what changed since your approval. Work already in flight carries on, through its
-merge: the gate holds a tree's start, and nothing after it. The daemon only reads approvals;
+again, naming what changed since your approval. Work already in flight carries on, but the merge
+waits: while a step that someone registered waits for a person's approval, the merger merges
+nothing, and each task it gets says the gate is closed. A step that nobody registered names no
+document, so it holds no merger. The daemon only reads approvals;
 nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your
 answer is yours, in your name.
 
