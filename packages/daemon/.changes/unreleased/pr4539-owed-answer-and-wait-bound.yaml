@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `POST /legion/v1/claims/owed` answers that a claim owes a completion only where the completion
+  route would take it: the claim serves the issue's current run, is not behind its phase entry,
+  has no recorded completion of that entry, and no merge forward the daemon asked for holds its
+  role. A claim behind its entry, or serving no run of the issue's generation, is answered that it
+  owes nothing, and the daemon sends that entry's task itself. While the daemon records that a
+  started issue gave its admission slot back to wait on another issue, the silence sweep writes no
+  start row for its phase workers, tells the architect of a quiet worker once after 24 hours, and
+  the idle backstop wakes its released pod no earlier than 24 hours after the release; the normal
+  bounds apply again once the issue holds a slot. A migration adds `pod_wake_backstops.armed_at`.
+  The role prompt says when a reminder comes and what to do when a completion is refused.

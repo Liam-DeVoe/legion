@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The Claude Code phase hook blocks no `Stop` and sends no reminder when its read of what the claim
+  owes fails or runs past its 3 s bound. A reminder timer whose check decides not to remind clears
+  the session's reminder wake and sends the activity report at once. The activity report is bounded
+  at 3 s, so a `Stop` returns within about 6 s when the daemon does not answer, and the request is
+  aborted at the bound.
