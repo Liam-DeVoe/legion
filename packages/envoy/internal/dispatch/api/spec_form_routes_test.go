@@ -204,11 +204,12 @@ var procedureFaults = []formFault{
 	{name: "a procedure of 21 words", node: "run-merge", kind: specform.KindProcedure,
 		clean:  "Run the merge test.",
 		broken: "Run the merge test against a fixture server that holds two approved specs of the same issue and three open requests.",
-		rule:   "sentence-words", detail: `a sentence has 21 words, and a sentence of a procedure has at most 20: "Run the merge test against a fixture server"`},
+		rule:   "sentence-words", detail: `a sentence has 21 words, and an instruction has at most 20: "Run the merge test against a fixture server"`},
 	{name: "a procedure of two instructions", node: "read-requests", kind: specform.KindProcedure,
 		clean:  "Read each open approval request.",
 		broken: "Read each open approval request and record its version.",
-		rule:   "instructions", detail: `a sentence gives two instructions, and a sentence of a procedure gives one: "record its version". Write each instruction in a sentence of its own`},
+		rule:   "instructions", detail: `a sentence gives two instructions, and a sentence of a procedure gives one: "record its version". ` +
+			`Write each instruction in a sentence of its own, or, if "record" is no verb here, write "that" before the clause after it`},
 }
 
 // twentyWords is the control of the procedure faults: a procedure of one instruction in 20 words.

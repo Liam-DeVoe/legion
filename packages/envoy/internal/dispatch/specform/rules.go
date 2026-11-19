@@ -407,9 +407,10 @@ func serverPage(c Context, address string) (text.Ref, bool) {
 
 // formBreaks is each word that holds a stop with no space after it (stopsWithNoSpace), the
 // sentence count of a statement, with the sentences of its footnotes (noted), and each sentence
-// over maxWords, or over maxProcedureWords in a procedure, as sentencesOf reads the line, each
-// sentence of a procedure that gives two instructions (instructionBreaks), and each hard finding of
-// ste-lint, by its own rule name. The verbs of the footnotes that a text holds stand beside the
+// over maxWords, or, for an instruction of a procedure (isInstruction), over maxProcedureWords, as
+// sentencesOf reads the line, each sentence of a procedure that gives two instructions
+// (instructionBreaks), and each hard finding of ste-lint, by its own rule name. The verbs of the
+// footnotes that a text holds stand beside the
 // line's in the rule synonym-rotation where no one footnote that it refers to holds them all
 // (ste.Rotations): two verbs for one action that the words of a footnote hold, or that it holds
 // with the footnotes that it refers to, are the footnote's one finding (footnoteJudge.rotations),
@@ -424,11 +425,11 @@ func formBreaks(kind Kind, line string, noted footnotesHeld) ([]broken, int, ste
 	if count := len(sentences) + noted.count; kind == KindStatement && (count < 1 || count > maxSentences) {
 		found = append(found, broken{rule: ruleSentences, detail: sentencesDetail(count, noted)})
 	}
-	bound, of := maxWords, "a sentence"
-	if kind == KindProcedure {
-		bound, of = maxProcedureWords, "a sentence of a procedure"
-	}
 	for _, sentence := range sentences {
+		bound, of := maxWords, "a sentence"
+		if kind == KindProcedure && isInstruction(sentence) {
+			bound, of = maxProcedureWords, "an instruction"
+		}
 		if len(sentence) > bound {
 			found = append(found, broken{rule: ruleSentenceWords, detail: fmt.Sprintf("a sentence has %d words, and %s has at most %d: %q",
 				len(sentence), of, bound, strings.Join(sentence[:8], " "))})

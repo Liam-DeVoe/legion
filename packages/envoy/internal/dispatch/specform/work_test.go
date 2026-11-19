@@ -151,6 +151,10 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 		in := Input{Texts: []Text{{Node: "s", Kind: KindStatement, Body: "Dispatch keeps it.", Where: where, Notes: notes}}}
 		return func() []Finding { return Check(context, in) }
 	}
+	// procedureCheck is one check block whose procedure (its `run`) is run.
+	procedureCheck := func(run string) string {
+		return fmt.Sprintf(":::check{#v run=%q}\nDispatch keeps each record.\n:::\n", run)
+	}
 	const requirement, end = ":::requirement{#r}\nDispatch keeps", "\n:::\n"
 	const statementUnit = ":::requirement{#s-%d}\nDispatch keeps record %[1]d[^shared].\n:::\n\n"
 	for _, row := range []struct {
@@ -212,6 +216,10 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 				return units(":::requirement{#s}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n) + units("", "[^%d]: It.\n\n", "")(n)
 			})},
 		{"one statement that refers to many footnotes, with no store", ruleSentences, 8_000, noted},
+		{"one long procedure sentence", ruleSentenceWords, 4_000,
+			extracted(func(n int) string { return procedureCheck("Run the test with " + strings.Repeat("word ", n) + "now.") })},
+		{"one sentence of many spans of code", ruleInstructions, 4_000,
+			extracted(func(n int) string { return procedureCheck("Run " + strings.Repeat("`x` and ", n) + "read the log.") })},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			sizes := []int{row.n, workScale * row.n}

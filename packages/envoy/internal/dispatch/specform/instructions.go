@@ -1,14 +1,16 @@
 package specform
 
 import (
+	_ "embed"
 	"fmt"
 	"slices"
 	"strings"
 	"unicode"
 )
 
-// maxProcedureWords is R49's bound on a sentence of the procedure of a check, which ASD-STE100
-// writes as an instruction: an instruction has at most 20 words, where a description has 25.
+// maxProcedureWords is R49's bound on an instruction, a sentence of the procedure of a check that
+// starts with a verb of instructionVerbs: ASD-STE100 gives an instruction at most 20 words, where
+// a description, a sentence of a procedure that describes a program among them, has 25.
 const maxProcedureWords = 20
 
 // instructionQuote is how many words of the second instruction a finding of the rule instructions
@@ -20,6 +22,14 @@ const instructionQuote = 8
 // "Run `go test` and read the log" (codeAsWords).
 const codeWord = "\uE000"
 
+// instructionVerbsFile is the list of the verbs of an instruction, which its program writes from
+// the imperative sentences of the repository's skills and of the live procedures of The Spec
+// (instruction_verbs_test.go; its header names the source commit and the command). The rule
+// instructions reads a verb only from it, so a word that it does not list starts no instruction.
+//
+//go:embed instruction-verbs.txt
+var instructionVerbsFile string
+
 // wordSet is a set of words in lower case.
 func wordSet(words ...string) map[string]bool {
 	set := make(map[string]bool, len(words))
@@ -30,6 +40,16 @@ func wordSet(words ...string) map[string]bool {
 }
 
 var (
+	// instructionVerbs is each verb of instructionVerbsFile, in its base form and in lower case.
+	instructionVerbs = func() map[string]bool {
+		verbs := map[string]bool{}
+		for line := range strings.Lines(instructionVerbsFile) {
+			if word := strings.TrimSpace(line); word != "" && !strings.HasPrefix(word, "#") {
+				verbs[word] = true
+			}
+		}
+		return verbs
+	}()
 	// conditions open a condition at the start of a sentence, which a comma ends: the instruction
 	// starts after that comma.
 	conditions = wordSet("if", "when", "after", "before", "once", "unless", "until", "while")
@@ -37,43 +57,36 @@ var (
 	// possessive, a demonstrative, a pronoun, or a span in code font.
 	objectStarts = wordSet("the", "a", "an", "each", "every", "all", "any", "both", "no", "its", "their",
 		"this", "these", "those", "it", "them", codeWord)
+	// wholePhrases are the object starts that are a whole noun phrase alone: a pronoun, and a span
+	// in code font.
+	wholePhrases = wordSet("it", "them", codeWord)
+	// auxiliaries are the verbs that, after a noun phrase, make it the subject of a clause.
+	auxiliaries = wordSet("is", "are", "was", "were", "has", "have", "had", "does", "do", "did", "can", "could",
+		"may", "might", "must", "shall", "should", "will", "would")
 	// relatives open a relative clause, whose verbs give no instruction.
 	relatives = wordSet("that", "which", "who", "whom", "whose")
 	// joiners join a second instruction to the first, as a comma does.
 	joiners = wordSet("and", "or", "then")
-	// closedWords are no verb: articles, words of quantity, pronouns, prepositions, conjunctions,
-	// auxiliary verbs, numbers, adverbs and question words.
-	closedWords = wordSet(
-		"the", "a", "an", "each", "every", "all", "any", "both", "no", "some", "most", "many", "few", "more", "less", "other", "another",
-		"its", "their", "his", "her", "our", "your", "my", "this", "these", "those", "that", "which", "who", "whom", "whose", "what",
-		"it", "they", "them", "we", "us", "you", "he", "him", "she", "i", "me", "there", "here",
-		"of", "in", "on", "at", "to", "from", "for", "with", "by", "as", "into", "onto", "over", "under", "about", "against",
-		"between", "through", "without", "within", "beside", "after", "before", "during", "since", "per", "via", "than",
-		"inside", "outside", "around", "across", "along", "among", "behind", "below", "above", "beyond", "near", "off", "out", "up",
-		"down", "toward", "towards", "upon", "throughout", "except", "like", "unlike", "despite", "beneath",
-		"and", "or", "but", "nor", "so", "if", "when", "where", "while", "once", "unless", "until", "because", "then",
-		"whether", "how", "why", "whatever", "whichever", "wherever", "whenever",
-		"is", "are", "was", "were", "be", "been", "am", "do", "does", "did", "has", "have", "had", "can", "could", "may", "might",
-		"must", "shall", "should", "will", "would", "not", "also", "only", "too", "very", "just", "still", "even", "first",
-		"never", "always", "often", "sometimes", "usually", "again", "now", "later", "soon", "rather", "instead", "else", "already",
-		"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve")
 )
 
 // instructionBreaks is a finding of the rule instructions for each sentence of a procedure that
 // gives two instructions (secondInstruction). A span in code font counts as one word of the
-// sentence, where the rules that count words read none.
+// sentence, where the rules that count words read none. The finding gives both ways out: two
+// sentences, or "that" before the clause, for a listed verb that is a noun of the object there.
 func instructionBreaks(line string) []broken {
 	var found []broken
 	coded, spans := codeAsWords(line)
 	for _, sentence := range sentencesOf(coded) {
-		second, ok := secondInstruction(sentence)
+		words, commas := sentenceWords(sentence)
+		second, ok := secondInstruction(words, commas)
 		if !ok {
 			continue
 		}
 		quoted := strings.Join(sentence[second:min(len(sentence), second+instructionQuote)], " ")
 		found = append(found, broken{rule: ruleInstructions, detail: fmt.Sprintf(
-			"a sentence gives two instructions, and a sentence of a procedure gives one: %q. Write each instruction in a sentence of its own",
-			strings.TrimRight(spans.Replace(quoted), ".!?"))})
+			"a sentence gives two instructions, and a sentence of a procedure gives one: %q. "+
+				`Write each instruction in a sentence of its own, or, if %q is no verb here, write "that" before the clause after it`,
+			strings.TrimRight(spans.Replace(quoted), ".!?"), words[second])})
 	}
 	return found
 }
@@ -103,21 +116,20 @@ func codeAsWords(line string) (string, *strings.Replacer) {
 	return written.String(), strings.NewReplacer(spans...)
 }
 
-// secondInstruction is where the second instruction of sentence starts, when it gives two. A
-// sentence gives an instruction when it starts with a verb in its base form, with no comma after
-// it, and the first word of the verb's object (objectStarts); after a condition at its start
-// (conditions), the instruction starts after the comma that ends the condition. A second
-// instruction is the same pair after a word that joins it (joiners) or a comma, once the first
-// instruction's object stands between them. So two verbs of one object, as in "Push and hold the
-// switch", are one instruction, as ASD-STE100 lets two actions at the same time be. A verb after a
-// relative clause is no instruction: in "the requests that open and close the same day" the verbs
-// are the clause's.
-func secondInstruction(sentence []string) (int, bool) {
+// sentenceWords is each word of sentence as wordCore reads it, and whether a comma ends it.
+func sentenceWords(sentence []string) ([]string, []bool) {
 	words := make([]string, len(sentence))
 	commas := make([]bool, len(sentence))
 	for index, word := range sentence {
 		words[index], commas[index] = wordCore(word)
 	}
+	return words, commas
+}
+
+// instructionStart is where the instruction of a sentence starts: its first word, or the word
+// after the comma that ends a condition at its start (conditions). It is false for a condition
+// that no comma ends, and for a sentence whose words there are no instruction (opensInstruction).
+func instructionStart(words []string, commas []bool) (int, bool) {
 	start := 0
 	if len(words) > 0 && conditions[words[0]] {
 		start = slices.Index(commas, true) + 1
@@ -125,48 +137,91 @@ func secondInstruction(sentence []string) (int, bool) {
 			return 0, false
 		}
 	}
-	instruction := func(at int) bool {
-		return at+1 < len(words) && baseForm(words[at]) && !commas[at] && objectStarts[words[at+1]]
+	return start, opensInstruction(words, commas, start)
+}
+
+// opensInstruction reports whether an instruction starts at at: a verb of instructionVerbs with
+// no comma after it, then the first word of its object (objectStarts), which is no clause of its
+// own (contactClause). A word that the list does not name is no verb.
+func opensInstruction(words []string, commas []bool, at int) bool {
+	return at+1 < len(words) && instructionVerbs[words[at]] && !commas[at] && objectStarts[words[at+1]] &&
+		!contactClause(words, commas, at)
+}
+
+// contactClause reports whether the words after the word at at are a clause of their own: a noun
+// phrase (a pronoun or a span in code font alone, else a determiner and one noun), no comma after
+// it, and then a verb of its own, an auxiliary or a form in -s or -ed. That is a relative clause
+// with no "that", as in "the memory and time it uses" or "the input and output the tool writes",
+// so the word at at is a noun of the object that the clause tells of, and no verb.
+func contactClause(words []string, commas []bool, at int) bool {
+	phrase := at + 1
+	if !wholePhrases[words[phrase]] {
+		phrase++
 	}
-	if !instruction(start) {
+	if phrase+1 >= len(words) || commas[phrase] {
+		return false
+	}
+	next := words[phrase+1]
+	return auxiliaries[next] || inflected(next)
+}
+
+// inflected reports whether word, in lower case and of letters alone, ends in -ed or in an -s that
+// is no part of -ss, -us or -is.
+func inflected(word string) bool {
+	if len(word) < 3 || strings.ContainsFunc(word, func(r rune) bool { return !unicode.IsLetter(r) }) {
+		return false
+	}
+	switch {
+	case strings.HasSuffix(word, "ed"):
+		return true
+	case strings.HasSuffix(word, "s"):
+		return !strings.HasSuffix(word, "ss") && !strings.HasSuffix(word, "us") && !strings.HasSuffix(word, "is")
+	}
+	return false
+}
+
+// secondInstruction is where the second instruction of a sentence starts, when it gives two. A
+// sentence gives an instruction when its words open one at instructionStart. A second instruction
+// is a listed verb that opens one after a word that joins it (joiners) or a comma, once the first
+// instruction's object stands between them. So two verbs of one object, as in "Push and hold the
+// switch", are one instruction, as ASD-STE100 lets two actions at the same time be. A verb after a
+// relative clause is no instruction: in "the requests that open and close the same day" the verbs
+// are the clause's.
+func secondInstruction(words []string, commas []bool) (int, bool) {
+	start, ok := instructionStart(words, commas)
+	if !ok {
 		return 0, false
 	}
 	for at := start + 2; at+1 < len(words); at++ {
 		if relatives[words[at-1]] {
 			return 0, false
 		}
-		if (commas[at-1] || joiners[words[at-1]]) && instruction(at) {
+		if (commas[at-1] || joiners[words[at-1]]) && opensInstruction(words, commas, at) {
 			return at, true
 		}
 	}
 	return 0, false
 }
 
+// isInstruction reports whether sentence, as sentencesOf reads a line, is an instruction: it
+// opens one at instructionStart, a span in code font standing for the object. So the 20-word bound
+// of an instruction is its, and a sentence of a procedure that describes keeps 25.
+func isInstruction(sentence []string) bool {
+	words, commas := sentenceWords(sentence)
+	_, ok := instructionStart(words, commas)
+	return ok
+}
+
 // wordCore is word in lower case without the marks that open or close it and the stops and
-// commas after it, and whether a comma ends it. A span in code font is codeWord.
+// commas after it, and whether a comma ends it. A span in code font is codeWord, as codeAsWords
+// writes it or as a word of the line that opens with "`".
 func wordCore(word string) (string, bool) {
 	word = strings.TrimLeft(word, openingMarks)
 	word = strings.TrimRight(word, closingMarks+".!?:;")
 	comma := strings.HasSuffix(word, ",")
 	word = strings.TrimRight(word, closingMarks+",")
-	if strings.HasPrefix(word, codeWord) {
+	if strings.HasPrefix(word, codeWord) || strings.HasPrefix(word, "`") {
 		return codeWord, comma
 	}
 	return strings.ToLower(word), comma
-}
-
-// baseForm reports whether word, in lower case, can be a verb in its base form: a word of letters
-// alone, no word of closedWords, and no ending of another form, -s, -ed or -ing, but for a word
-// that ends in -ss, -us or -is, such as "process" or "focus".
-func baseForm(word string) bool {
-	if len(word) < 2 || closedWords[word] || strings.ContainsFunc(word, func(r rune) bool { return !unicode.IsLetter(r) }) {
-		return false
-	}
-	switch {
-	case strings.HasSuffix(word, "ing"), strings.HasSuffix(word, "ed"):
-		return false
-	case strings.HasSuffix(word, "s"):
-		return strings.HasSuffix(word, "ss") || strings.HasSuffix(word, "us") || strings.HasSuffix(word, "is")
-	}
-	return true
 }
