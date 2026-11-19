@@ -91,6 +91,9 @@ const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageK
  * line at the foot of the outline to reply to it - and once a person has replied in a thread,
  * the outline draws it and this list no longer does.
  *
+ * The day that was today as midnight passes with the history drawn stays open, as if the reader
+ * had opened it: a reader reading its entries then is still on them.
+ *
  * `/activity`, `t v` and the address of a comment or message of such a thread open Details here:
  * at `/activity` the heading is brought into Details' view once for each arrival, except a
  * reader's coming back to the history they left drawn, who finds it where they left it;
@@ -212,8 +215,17 @@ export function IssueHistory({
   const runKeyOfUpload = useRef(new Map<number, string>());
   const drawnIds = useMemo(() => runKeys(days, runKeyOfUpload.current), [days]);
   // The days before today the reader opened; the day the address's entry is in is opened as
-  // the address names it, and the reader's own press closes it again like any other.
+  // the address names it, and the day that was today as the date moves on as if the reader had
+  // opened it; the reader's own press closes either again like any other.
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  // The day the history last drew as today: the render that reads a new date opens it, and React
+  // draws that render again with it opened before committing anything, so the day never folds
+  // under the reader for a frame.
+  const [drawnToday, setDrawnToday] = useState(today);
+  if (drawnToday !== today) {
+    setDrawnToday(today);
+    setOpened((held) => (held.has(drawnToday) ? held : new Set(held).add(drawnToday)));
+  }
   const marked = item === undefined ? undefined : dayOf(days, item);
   useEffect(() => {
     if (marked === undefined) return;

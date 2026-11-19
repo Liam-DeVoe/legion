@@ -237,6 +237,80 @@ test("an event arriving just after midnight leaves the entry the reader reads wh
   }
 });
 
+// Midnight opens the day that was today as if the reader had opened it, and nothing else: a day
+// before it the reader opened stays open, one they opened and folded again stays folded, the new
+// day at the head is drawn open as today's, and the day that was today folds at a press of its
+// line, as any day the reader opened does.
+test("midnight opens the day that was today and leaves every other day as the reader left it", async () => {
+  setSystemTime(new Date(2026, 10, 19, 23, 59, 50, 0));
+  // A claim at sequence `seq` at noon of November's day `date`, in the reader's own time.
+  const onDay = (seq: number, date: number): DispatchEvent => ({
+    ...claim(seq),
+    created_at: new Date(2026, 10, date, 12, 0, 0, 0).toISOString(),
+  });
+  const restoreReads = stubHistoryReads([
+    claim(6),
+    claim(5),
+    onDay(4, 18),
+    onDay(3, 18),
+    onDay(2, 17),
+    onDay(1, 17),
+  ]);
+  const lineOf = (date: string) =>
+    document.querySelector<HTMLElement>(`[data-history-day="${date}"] > button`);
+  const press = async (date: string) => {
+    const line = lineOf(date);
+    if (line === null) throw new Error(`${date} draws no line`);
+    await userEvent.click(line);
+  };
+  const drawn = (seq: number) => document.querySelector(`[data-event-seq="${seq}"]`) !== null;
+  let unmount: (() => void) | undefined;
+
+  try {
+    const history = drawHistory(undefined);
+    unmount = history.unmount;
+    await waitFor(() => expect(lineOf("2026-11-17")).not.toBeNull());
+    // The reader opens the 17th, and opens the 18th and folds it again.
+    await press("2026-11-17");
+    await press("2026-11-18");
+    await press("2026-11-18");
+    expect(drawn(2)).toBe(true);
+    expect(drawn(4)).toBe(false);
+
+    // Midnight passes; the first event of the new day arrives.
+    setSystemTime(new Date(2026, 10, 20, 0, 0, 30, 0));
+    act(() => {
+      prependEventToLog(history.queryClient, claim(7));
+    });
+    await waitFor(() => expect(drawn(7), "the new day's event is not drawn").toBe(true));
+
+    expect(lineOf("2026-11-20"), "the new day is not drawn as today's").toBeNull();
+    expect(
+      lineOf("2026-11-19")?.getAttribute("aria-expanded"),
+      "the day that was today folded as midnight passed"
+    ).toBe("true");
+    expect(drawn(6) && drawn(5)).toBe(true);
+    expect(
+      lineOf("2026-11-18")?.getAttribute("aria-expanded"),
+      "midnight opened a day the reader had folded"
+    ).toBe("false");
+    expect(drawn(4) || drawn(3)).toBe(false);
+    expect(
+      lineOf("2026-11-17")?.getAttribute("aria-expanded"),
+      "midnight folded a day the reader had opened"
+    ).toBe("true");
+    expect(drawn(2) && drawn(1)).toBe(true);
+
+    // The day that was today is the reader's like any day they opened: a press of its line folds it.
+    await press("2026-11-19");
+    expect(lineOf("2026-11-19")?.getAttribute("aria-expanded")).toBe("false");
+    expect(drawn(6) || drawn(5)).toBe(false);
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
 /** A message an agent wrote outside every thread a person wrote in, `ago` seconds ago: a thread
  *  of the history whose first turn's event no page of the log read here holds. */
 function agentMessage(id: string, ago: number): MessageRead {
