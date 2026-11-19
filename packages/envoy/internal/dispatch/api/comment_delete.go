@@ -161,10 +161,14 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		}
 		events = append(events, appended)
 	}
-	// A copy of the comment the outbox held back for a mention it waited on is settled with
-	// nothing published: the text that copy carries is withdrawn, and the comment.deleted event
-	// below is what each subscriber is told instead (comment_fallback_copies, migration
-	// 20261101180039).
+	// Every fallback copy of the comment not yet settled (comment_fallback_copies, migration
+	// 20261101180039) is settled with nothing published, and no fallback pass claims a settled
+	// row: the text that copy carries is withdrawn, and the comment.deleted event below is what
+	// each subscriber is told instead. A pass that claimed a copy before this delete committed is
+	// a send in flight: it publishes the copy as recorded, though the row reads published = false.
+	// Nor does this reach the outbox's own copy of the comment.created event, held while a mention
+	// of the comment sends: that copy is the event as Dispatch recorded it, and it goes as
+	// recorded.
 	if err := queueExec(ledger, `
 		update comment_fallback_copies set settled_at = now(), published = false
 		where comment_id = $1 and settled_at is null

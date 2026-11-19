@@ -260,7 +260,15 @@ func messageAttemptsRead(pending []model.MessageDelivery) pendingAttemptsRead {
 // failed with deletedPostDeliveryError. A delivery Dispatch already sent keeps what it carried;
 // one still waiting would send the text after the delete, so it is settled here rather than left
 // to the delivery sweep. claimed_at moves with the settle, as every other settle of an attempt
-// moves it: it is how a sender still holding the old claim learns the row is no longer its own.
+// moves it. That move tells a sender still holding the old claim that the row is no longer its own
+// only in a statement that matches the claim exactly (claimed_at = the claim it holds:
+// recordCommentDeliveryResolution, holdCommentDeliveryClaim, the first statement of
+// settleDeliveryAttempt, holdMessageDeliveryClaim). A statement that matches it by
+// model.DeliveryClaimSinceSQL counts this settle's claimed_at = now() as that sender's own claim
+// whenever it lands less than a lease after the claim held, so each such statement leaves the
+// settled row alone only because it also requires the attempt pending: state = 'pending' in
+// standDown, supersedeCommentDelivery and rereadMentionClaims, and the state it reads in
+// claimCommentDeliveryAttempt's read of its bound attempt.
 //
 // The caller read the post's attempts in its read phase, under the post's owner lock, and builds
 // the receipt each settle owes from the pending ones (deliveryOutcome), queued after this

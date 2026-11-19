@@ -432,8 +432,7 @@ export interface AgentText {
 }
 
 /**
- * `AgentText.label` for a caller that reads no agent registry, a pure model among them (the
- * issue page's tree, `tree-drafts.ts`): the label `useAgentText` spells before the registry has
+ * `AgentText.label` for a caller that reads no agent registry, such as a pure model: the label `useAgentText` spells before the registry has
  * answered, or with no registry. A person by login, with the agent an act was made through; a
  * session by the title stamped on its write, else its short id (`session:<8>…`); and the
  * attribution after either. Where the registry lists a session under a title, `label` names it

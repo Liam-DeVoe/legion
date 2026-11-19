@@ -663,11 +663,46 @@ func (s *server) recordCommentDeliveryResolution(
 	return recorded, renewed, true, nil
 }
 
+// holdCommentDeliveryClaim is the re-check of the claim a mention's sender holds on its attempt,
+// made after the copy rule and before the send (deliverResolvedCommentMention), the comment twin
+// of holdMessageDeliveryClaim: it renews that claim in one statement scoped to it, as the settle's
+// statements are, in a transaction of its own, as every write a keyed request makes is
+// (markRequestKeyCommitted). It answers the claim it renewed, and held = false, with claim
+// unchanged, when the claim is no longer this sender's: the attempt was answered, taken by
+// another sender, or settled by its post's delete meanwhile, and the settle that follows reads
+// which.
+func (s *server) holdCommentDeliveryClaim(
+	ctx context.Context, comment model.Comment, target string, claim attemptClaim,
+) (attemptClaim, bool, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return claim, false, err
+	}
+	defer tx.Rollback(ctx)
+	renewed := claim
+	err = tx.QueryRow(ctx, `
+		update comment_deliveries set claimed_at = now()
+		where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending' and claimed_at = $4
+		returning claimed_at
+	`, comment.ID, target, claim.attempt, claim.claimedAt).Scan(&renewed.claimedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return claim, false, nil
+	}
+	if err != nil {
+		return claim, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return claim, false, err
+	}
+	return renewed, true, nil
+}
+
 // deliverResolvedCommentMention delivers one mention of a comment: it claims an attempt in one
 // short transaction, resolves with nothing held, records that resolution on the claimed row,
-// sends while that record still found the claim its own, then records the outcome in a second
-// transaction, and settles behind it every earlier attempt its send superseded
-// (supersedeOvertakenAttempts). The listener never runs inside a transaction.
+// sends while that record, and the re-check of the claim after the copy rule, still find the
+// claim its own, then records the outcome in a second transaction, and settles behind it every
+// earlier attempt its send superseded (supersedeOvertakenAttempts). The listener never runs
+// inside a transaction.
 //
 // resume binds the claim (claimCommentDeliveryAttempt): the attempt the mention sender's lane was
 // queued for and the claim this process has held on it since its comment committed, an owed
@@ -697,6 +732,10 @@ func (s *server) recordCommentDeliveryResolution(
 // event (mentionHeldForOrder.unread): the send keeps its claim and its place on its lane, so the
 // owner's later comments to the session stay behind it, and it tries again a moment later by
 // reading the rule alone for that session, as a send held behind an event does (sendCommentMention).
+// A rule that holds the send behind nothing is read with nothing held too, so the claim is checked
+// again after it and renewed (holdCommentDeliveryClaim): a claim no longer this sender's - a delete
+// settled the attempt while the rule was read - makes no try, and the call settles on the row as
+// it stands.
 //
 // Attempt 1 of a comment whose other routes were decided on its mentions' resolution
 // (mentions_decide_routes, resolveCommentDeliveries) keeps the resolution it was opened with,
@@ -738,13 +777,15 @@ func (s *server) deliverResolvedCommentMention(
 		return model.CommentDelivery{}, nil, err
 	}
 	// The statement that recorded the resolution is scoped to this sender's claim, and it is the
-	// last word on that claim before the send. A claim it no longer found is no longer this
-	// sender's to send on: a delete settled the attempt while the resolution ran
-	// (queueDeletedPostSettlement moves claimed_at for exactly this), or another sender took it
-	// over. So nothing is sent, and the settle reads the row as it stands and appends whatever
-	// receipt that row still owes, as the message sender's settle does once its renew finds its
-	// claim gone (deliverMessageResuming). The send is held behind no event either: the attempt is
-	// no longer this sender's to send later, so its lane has nothing to wait for.
+	// last word on that claim before the copy rule; the re-check of the claim after the copy rule
+	// (holdCommentDeliveryClaim, in send below) is the last word on it before the send. A claim
+	// the record no longer found is no longer this sender's to send on: a delete settled the
+	// attempt while the resolution ran (queueDeletedPostSettlement moves claimed_at for exactly
+	// this), or another sender took it over. So nothing is sent, and the settle reads the row as it
+	// stands and appends whatever receipt that row still owes, as the message sender's settle does
+	// once its renew finds its claim gone (deliverMessageResuming). The send is held behind no
+	// event either: the attempt is no longer this sender's to send later, so its lane has nothing
+	// to wait for.
 	if !mine {
 		settled, err := s.completeCommentDelivery(ctx, stored, recorded, actor, held, sendOutcome{})
 		return settled, nil, err
@@ -781,9 +822,23 @@ func (s *server) deliverResolvedCommentMention(
 	// take-over's (retryableDeliveryFailure).
 	var heldBy *model.MentionCopyHolder
 	var orderErr error
+	// claimErr is a re-check of the claim that failed. It ends the tries too, as a re-check that
+	// turned mine false does (mentionClaimGoneFailure).
+	var claimErr error
 	send := func() string {
 		if heldBy, orderErr = s.mentionCopyHolder(ctx, created, target); heldBy != nil || orderErr != nil {
 			return mentionWaitsFailure
+		}
+		if s.afterMentionCopyRule != nil {
+			s.afterMentionCopyRule()
+		}
+		// The copy rule is read with nothing held, as the resolution is: one statement, and up to
+		// mentionLookupTimeout for each role route an earlier event still owes. A delete that
+		// commits meanwhile settles the attempt and moves its claim (queueDeletedPostSettlement),
+		// so the claim is checked again after the rule, and renewed, in one statement scoped to
+		// it: a claim no longer this sender's sends nothing.
+		if held, mine, claimErr = s.holdCommentDeliveryClaim(ctx, stored, target.Target, held); claimErr != nil || !mine {
+			return mentionClaimGoneFailure
 		}
 		// A comment mention is never the live view's model and thinking switch, so it asks for no
 		// connected session: a stopped session the listener knows takes it when it runs again.
@@ -811,6 +866,15 @@ func (s *server) deliverResolvedCommentMention(
 		if err != nil {
 			return model.CommentDelivery{}, nil, err
 		}
+	}
+	if claimErr != nil {
+		return model.CommentDelivery{}, nil, claimErr
+	}
+	if !mine {
+		// The re-check after the copy rule found the claim no longer this sender's, and no try was
+		// made on it: the settle reads the row as it stands, as the arm above does.
+		settled, err := s.completeCommentDelivery(ctx, stored, recorded, actor, held, sendOutcome{})
+		return settled, nil, err
 	}
 	if orderErr != nil {
 		// Nothing was sent, and whether the session must take an earlier event first is not
@@ -842,6 +906,12 @@ func (s *server) deliverResolvedCommentMention(
 // no take-over's failure (retryableDeliveryFailure), so the loop makes no further try. No attempt
 // records it: the call answers a *mentionHeldForOrder instead and settles nothing.
 const mentionWaitsFailure = "the mention waits for an earlier event of its comment's owner"
+
+// mentionClaimGoneFailure is what a try answers the take-over loop when the re-check of its claim
+// after the copy rule (holdCommentDeliveryClaim) found the attempt no longer this sender's, or
+// failed: no take-over's failure (retryableDeliveryFailure), so the loop makes no further try. No
+// attempt records it: the call settles on the row as it stands, or ends with the re-check's error.
+const mentionClaimGoneFailure = "the mention's claim on its attempt is no longer its sender's"
 
 // mentionHeldForOrder is the answer of a mention's send that waited for an earlier event of its
 // comment's owner (mentionCopyHolder) and made no try: the comment as the claim read it, the

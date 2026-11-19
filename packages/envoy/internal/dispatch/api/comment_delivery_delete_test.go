@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ const endedByThePostsDelete = "ended by the post's delete"
 // listener's state.
 type mentionRetryBehindADelete struct {
 	handler  http.Handler
+	served   *server
 	database *store.Store
 	issueKey string
 	comment  mentionedCommentRead
@@ -30,7 +32,7 @@ type mentionRetryBehindADelete struct {
 func newMentionRetryBehindADelete(t *testing.T, title string) mentionRetryBehindADelete {
 	t.Helper()
 	listener, state := newMentionListener(t)
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	issue := createInteractionIssue(t, handler, "TEST", title, "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body":     "The mention a delete withdraws while its Retry is under way.",
@@ -39,7 +41,9 @@ func newMentionRetryBehindADelete(t *testing.T, title string) mentionRetryBehind
 	if settled := settledCommentDeliveries(t, database, comment.ID); len(settled) != 1 || settled[0].State != "sent" {
 		t.Fatalf("the mention's first attempt = %#v, want one attempt sent to s1", settled)
 	}
-	return mentionRetryBehindADelete{handler: handler, database: database, issueKey: issue.Key, comment: comment, listener: state}
+	return mentionRetryBehindADelete{
+		handler: handler, served: served, database: database, issueKey: issue.Key, comment: comment, listener: state,
+	}
 }
 
 // retry sends the person's Retry of the mention on another goroutine and answers on the channel.
@@ -95,6 +99,40 @@ func TestAMentionSendWhoseClaimADeleteSettledSendsNothing(t *testing.T) {
 	if sends := mention.framesSent(); sends != 1 {
 		t.Fatalf("the listener took %d frames of the comment, want its first attempt's alone: the Retry sent on a "+
 			"claim the delete had settled", sends)
+	}
+}
+
+// The settle beats the sender after the record too. The record of the sender's resolution finds
+// the claim its own, and the sender then reads, with nothing held, whether s1 must take an earlier
+// event of the comment's owner first (mentionCopyHolder); the comment's delete commits while it
+// reads and settles the attempt, moving its claim. The claim is checked again after that read, in
+// a statement scoped to it, so the sender sends nothing: the listener takes no frame of the Retry,
+// and the attempt reads as the delete left it. A sender whose last word on its claim was the
+// record put the withdrawn text on the wire after the delete had committed.
+func TestAMentionSendWhoseClaimADeleteSettledDuringItsCopyRuleSendsNothing(t *testing.T) {
+	mention := newMentionRetryBehindADelete(t, "A delete inside a send's copy rule")
+	// The Retry's send waits once its copy rule has answered, between the record of its
+	// resolution on the claim and the re-check of that claim; the delete is written while it does.
+	inCopyRule, release := make(chan struct{}), make(chan struct{})
+	reached, letSend := sync.OnceFunc(func() { close(inCopyRule) }), sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letSend)
+	mention.served.afterMentionCopyRule = func() {
+		reached()
+		<-release
+	}
+	retried := mention.retry(t)
+	select {
+	case <-inCopyRule:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Retry's send never reached the end of its copy rule")
+	}
+	deleteThreadComment(t, mention.handler, mention.comment.ID, "alice")
+	letSend()
+
+	endedByTheDelete(t, <-retried)
+	if sends := mention.framesSent(); sends != 1 {
+		t.Fatalf("the listener took %d frames of the comment, want its first attempt's alone: the Retry sent on a "+
+			"claim the delete settled while its copy rule was read", sends)
 	}
 }
 

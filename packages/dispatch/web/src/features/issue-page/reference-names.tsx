@@ -187,7 +187,7 @@ export function useKnownAmbiguousReferences(): ReadonlySet<string> {
 /** Every reference among the page's names whose post its author edited, a comment, a message or
  *  a block of either, empty where the page published none. A surface that draws such a
  *  reference's name cuts the name to its own length and then marks it ` · edited`
- *  (`editedName`), so no cut takes the mark (`row-references.ts`'s `rowReferenceWords`). */
+ *  (`editedName`), so no cut takes the mark. */
 export function useKnownEditedReferences(): ReadonlySet<string> {
   return useContext(ReferenceNamesContext).edited;
 }

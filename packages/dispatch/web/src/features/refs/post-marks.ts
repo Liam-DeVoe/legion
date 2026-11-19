@@ -35,13 +35,11 @@ export function postDeletion(post: DeletablePost | undefined): PostDeletion | nu
   return { at, by: post?.deleted_by ?? null };
 }
 
-/** The deleted line's words as plain text, for a place that holds only a string - an
- *  `aria-label`, a `title`, a checkbox's name, a reference link's text, the issue page's model:
- *  `Deleted by <name>`, the actor named by `text.label` - the rule `DeletedBody` names the author
- *  by (`useAgentText`), or, for a caller that reads no registry, `actorLabelText` - or `Deleted`
- *  for a payload that names nobody. The time stays the visible line's. It lives here rather than
- *  beside `DeletedBody` because a reference link (`RefLink`) draws it, and `PostBody.tsx` imports
- *  `MarkdownBody`, which draws that link. */
+/** The deleted line's words as plain text, for a place that holds only a string: `Deleted by
+ *  <name>`, the actor named by `text.label` (`useAgentText`'s, or `actorLabelText` where no
+ *  registry is read), or `Deleted` for a payload that names nobody. The time stays the visible
+ *  line's. It lives here rather than beside `DeletedBody` because `PostBody.tsx` imports
+ *  `MarkdownBody`, whose reference links draw these words too. */
 export function deletedLineText(deleted: PostDeletion, text: Pick<AgentText, "label">): string {
   return deleted.by === null ? "Deleted" : `Deleted by ${text.label(deleted.by)}`;
 }
@@ -50,9 +48,8 @@ export function deletedLineText(deleted: PostDeletion, text: Pick<AgentText, "la
  *  to it writes the name: `words` then ` · edited`, the mark the post's byline writes
  *  (`EditedMark`). `words` as they are for a post nobody edited (`edited` false), and `""` for no
  *  words, which take no mark. A place that cuts a name to a length cuts `words` and marks what
- *  the cut left, so no cut takes the mark: a link's title (`useReferenceLabel`) and a row's link
- *  on the issue page (`rowReferenceWords`) both mark a name through here, and cannot drift
- *  apart. */
+ *  the cut left, so no cut takes the mark. Every place that marks a name marks it here, so no
+ *  two can drift apart. */
 export function editedName(words: string, edited: boolean): string {
   return !edited || words === "" ? words : `${words} · edited`;
 }

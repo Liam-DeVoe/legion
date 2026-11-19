@@ -618,7 +618,7 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * - **`edited`**: the references among `names` whose post its author edited, a comment, a
  *   message or a block of either (`NodeChip.editedAt`). A link that draws a published name cuts
  *   it to its own length and then marks it ` · edited` (`editedName`), so no cut takes the mark:
- *   a mark published inside the name would be cut off a long one (`rowReferenceWords`).
+ *   a mark published inside the name would be cut off a long one.
  *
  * No reference is in both `names` and `ambiguous`: an ambiguous chip's name is `""`. Every
  * reference in `edited` is in `names`: a name of no words takes no mark.

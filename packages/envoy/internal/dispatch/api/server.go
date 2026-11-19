@@ -542,6 +542,11 @@ type server struct {
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
+	// afterMentionCopyRule is called inside a comment mention's send once its copy rule answered
+	// that the send waits for no earlier event, before the re-check of its claim
+	// (deliverResolvedCommentMention); nil, which every server the deployment builds leaves it,
+	// calls nothing. Only a test sets it, to commit a delete of the comment while the copy rule runs.
+	afterMentionCopyRule func()
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
