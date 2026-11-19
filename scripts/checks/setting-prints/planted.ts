@@ -10,7 +10,8 @@ import { root } from "./program";
 /** The planted shapes. A line that ends `// planted: found` must be found, and one that ends
  *  `// planted: quiet` must not be; a line that is neither must not be found either, since it
  *  writes no setting as read. They are read with the tree, as one more file of it. */
-export const PLANTED = `import { shownSettingUrl } from "${root}/packages/contracts/src/setting-url";
+export const PLANTED = `import { requestForText, urlForText } from "${root}/packages/contracts/src/log-text";
+import { shownSettingUrl } from "${root}/packages/contracts/src/setting-url";
 
 interface PlantedBanner {
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -43,7 +44,10 @@ try {
   console.error(String(error));
 }
 console.log(\`a home that is never a URL: \${process.env.PLANTED_HOME}\`); // planted: quiet
-console.log(\`judged \${shownSettingUrl(process.env.PLANTED_JUDGED ?? "") ?? "nothing"}\`); // planted: quiet
+console.log(\`admitted \${shownSettingUrl(process.env.PLANTED_JUDGED ?? "") ?? "nothing"}\`); // planted: found
+console.log(\`named \${urlForText(process.env.PLANTED_NAMED ?? "", "PLANTED_NAMED")}\`); // planted: quiet
+const plantedRequested = process.env.PLANTED_NAMED ?? "";
+console.log(\`asked \${requestForText(plantedRequested, \`\${plantedRequested}/planted\`, "PLANTED_NAMED")}\`); // planted: quiet
 console.log(\`a port \${Number(process.env.PLANTED_ERROR)}\`); // planted: quiet
 const plantedAdmitted = process.env.PLANTED_ADMITTED ?? "";
 if (shownSettingUrl(plantedAdmitted) === undefined) process.exit(2);
@@ -66,6 +70,17 @@ export const plantedFile = path.join(root, "scripts/checks/setting-prints.plante
 
 /** The planted file as the findings name it. */
 export const plantedName = path.relative(root, plantedFile);
+
+/** Whether `finding` is the planted file's own: a line of that file, or a line of the tree that
+ *  only planted lines print (a plant that prints what `shownSettingUrl` answers makes a line of
+ *  `setting-url.ts` one). Such a line says nothing of the tree, and a judgement of it would hide
+ *  every line of the tree that prints it too. */
+export function plantedOwn(finding: Finding): boolean {
+  return (
+    finding.file === plantedName ||
+    (finding.ends.length > 0 && finding.ends.every((end) => end.includes(plantedName)))
+  );
+}
 
 /** The planted lines, by number, marked `found` or `quiet`. */
 export function plantedMarks(text: string): { found: number[]; quiet: number[] } {

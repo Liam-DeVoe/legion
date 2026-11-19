@@ -5,8 +5,12 @@
  */
 import ts from "typescript";
 
-/** The functions that end a value's path: the one function and its words for a value it hides. */
-export const SANITIZERS = new Set(["shownSettingUrl", "unshownSettingUrl"]);
+/** The functions that end a value's path: the one naming function of a configured URL and of a
+ *  request built from one (`urlForText`, `requestForText`), and the words a refusal names a value
+ *  it hides by (`unshownSettingUrl`). `shownSettingUrl` is no such function: it decides whether a
+ *  value is admitted, and what it answers can still hold a piece of a password, so a line that
+ *  prints its answer prints the setting. */
+export const SANITIZERS = new Set(["urlForText", "requestForText", "unshownSettingUrl"]);
 /** The calls whose answer, read by a guard, admits a value to a `new URL(…)` of it. */
 export const JUDGES = new Set(["shownSettingUrl", "canParse"]);
 /** Calls and classes that take their argument as a URL, or hand it to another program. */
@@ -24,6 +28,8 @@ export const URL_TAKERS = new Set([
   "SQL",
   "shownSettingUrl",
   "unshownSettingUrl",
+  "urlForText",
+  "requestForText",
 ]);
 
 /** Methods whose answer holds their receiver's text: of a string, an array, a map, a URL. */

@@ -829,7 +829,7 @@ export function search(files: readonly string[], extra: ReadonlyMap<string, stri
     let finding = lines.get(key);
     if (finding === undefined) {
       const file = program.getSourceFile(path.join(root, label.file));
-      const text = file === undefined ? "" : (file.text.split("\n")[label.line - 1] ?? "").trim();
+      const text = file === undefined ? "" : lineText(file.text.split("\n"), label.line - 1);
       finding = {
         file: label.file,
         line: label.line,
@@ -868,4 +868,15 @@ export function search(files: readonly string[], extra: ReadonlyMap<string, stri
     rounds,
     printing,
   };
+}
+
+/** The text a finding names its line by: the line, trimmed, and where it holds no word (a bare `{`
+ *  or `(`), the lines after it up to the first that does, so a judgement names it apart from every
+ *  other line of its file. */
+function lineText(lines: readonly string[], index: number): string {
+  let text = (lines[index] ?? "").trim();
+  for (let next = index + 1; !/\w/.test(text) && next < lines.length; next += 1) {
+    text = `${text} ${(lines[next] ?? "").trim()}`;
+  }
+  return text;
 }
