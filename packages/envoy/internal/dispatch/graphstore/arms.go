@@ -376,13 +376,13 @@ func nodeParams(nodes []Node) ([]any, error) {
 	madeAts := make([]time.Time, len(nodes))
 	madeBys := make([][]byte, len(nodes))
 	sourceEvents := make([]int64, len(nodes))
+	var writers writerEncoder
 	for index, node := range nodes {
 		encoded, err := encodeAttributes(node.Attributes)
 		if err != nil {
 			return nil, fmt.Errorf("encode attributes of node %s/%s: %w", node.Kind, node.ID, err)
 		}
-		// Recorded drops the request's credential, which no row ever holds.
-		madeBy, err := json.Marshal(node.MadeBy.Recorded())
+		madeBy, err := writers.encode(node.MadeBy)
 		if err != nil {
 			return nil, fmt.Errorf("encode writer of node %s/%s: %w", node.Kind, node.ID, err)
 		}
@@ -406,8 +406,9 @@ func tupleParams(tuples []Tuple) ([]any, error) {
 	sourceEvents := make([]int64, len(tuples))
 	legacySeqs := make([]*int64, len(tuples))
 	asserted := make([]bool, len(tuples))
+	var writers writerEncoder
 	for index, tuple := range tuples {
-		who, err := json.Marshal(tuple.Who.Recorded())
+		who, err := writers.encode(tuple.Who)
 		if err != nil {
 			return nil, fmt.Errorf("encode writer of %s %s: %w", tuple.Kind, tuple.FromID, err)
 		}
@@ -429,8 +430,9 @@ func claimParams(claims []Claim) ([]any, error) {
 	ats := make([]time.Time, len(claims))
 	whos := make([][]byte, len(claims))
 	sourceEvents := make([]int64, len(claims))
+	var writers writerEncoder
 	for index, claim := range claims {
-		who, err := json.Marshal(claim.Who.Recorded())
+		who, err := writers.encode(claim.Who)
 		if err != nil {
 			return nil, fmt.Errorf("encode writer of %s %s: %w", claim.Kind, claim.FromID, err)
 		}
@@ -439,4 +441,28 @@ func claimParams(claims []Claim) ([]any, error) {
 		whos[index], sourceEvents[index] = who, claim.SourceEvent
 	}
 	return []any{fromKinds, fromIDs, kinds, toKinds, toIDs, ats, whos, sourceEvents}, nil
+}
+
+// writerEncoder encodes the writer each row of a write binds, as the row records it: Recorded
+// drops the request's credential, which no row ever holds. A run of rows with one writer shares
+// one encoding, since a write of a version's blocks names one writer for every node and tuple of
+// it, and an encoding per row held as many copies of the same bytes as the version has blocks.
+type writerEncoder struct {
+	last    model.Actor
+	encoded []byte
+}
+
+// encode is writer's encoding: the one the previous call answered where that call encoded the
+// same recorded actor, else a new one.
+func (e *writerEncoder) encode(writer model.Actor) ([]byte, error) {
+	recorded := writer.Recorded()
+	if e.encoded != nil && recorded == e.last {
+		return e.encoded, nil
+	}
+	encoded, err := json.Marshal(recorded)
+	if err != nil {
+		return nil, err
+	}
+	e.last, e.encoded = recorded, encoded
+	return encoded, nil
 }

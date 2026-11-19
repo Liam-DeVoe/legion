@@ -567,8 +567,9 @@ func appendedNodeParams(write appending) ([]any, error) {
 	madeBys := make([][]byte, len(write.nodes))
 	causes := make([]int64, len(write.nodes))
 	skips := make([]int32, len(write.nodes))
+	var writers writerEncoder
 	for index, node := range write.nodes {
-		madeBy, err := json.Marshal(node.MadeBy.Recorded())
+		madeBy, err := writers.encode(node.MadeBy)
 		if err != nil {
 			return nil, fmt.Errorf("encode writer of node %s/%s: %w", node.Kind, node.ID, err)
 		}
