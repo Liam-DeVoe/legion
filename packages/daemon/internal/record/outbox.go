@@ -1613,7 +1613,8 @@ const (
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
 	// MergeForwardReview asks the reviewer to read the merge that landed on an issue standing
-	// past its review, and to approve the new head or request changes.
+	// past its review whose task has a reviewer step, and to approve the new head or request
+	// changes.
 	MergeForwardReview MergeForwardStep = "review"
 )
 
@@ -1641,7 +1642,8 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // to merge Base forward onto Head in the issue workspace and push (MergeForwardAsk), and tells the
 // worker of the phase the issue stays in to stop writing that workspace while the merge runs
 // (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
-// the reviewer of an issue past its review to read the merge (MergeForwardReview).
+// the reviewer of an issue past its review whose task has a reviewer step to read the merge
+// (MergeForwardReview).
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
 // to). Head is the head that conflicted, Landed the head the merge left ("" before it lands), Base
@@ -1682,10 +1684,12 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 	return ""
 }
 
-// Message is what the runner publishes for issue to Role, where repo is the repository the record
-// holds the pull request under (PullRequest.Repo). It starts with the issue key, as every message
-// of this lane does, and names the pull request as `owner/name#n`. The sentences are short and
-// plain, one instruction to a sentence, because an agent reads them (ASD-STE100).
+// Message is what the runner publishes for issue to Role, where pr is the pull request as the
+// record holds it when the row is delivered: the repository it is held under (PullRequest.Repo),
+// and its merge forward (PullRequest.MergeForward), whose ReviewAsked says whether the landing
+// asked the reviewer to read the merge. It starts with the issue key, as every message of this
+// lane does, and names the pull request as `owner/name#n`. The sentences are short and plain, one
+// instruction to a sentence, because an agent reads them (ASD-STE100).
 //
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
 // the daemon acted, and tells the implementer to merge the base forward in the issue workspace,
@@ -1704,17 +1708,19 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // The landed names both heads and how to read what changed: `git diff` from the old head to the
 // new, and, for a merge of the base, `git show --remerge-diff` for how the merge resolved the
 // conflict and `git diff --stat` against the merge's first parent for the files the base brought
-// in. Then the worker goes on at the new head. To the merger in merging it also says to merge the
-// pull request or put it in the merge queue at the new head only once the reviewer's approval of
-// that head is on the pull request: in merging the landing asks the reviewer for that review, and
-// the merger's task says the same (workflow's task). The review names both heads and the phase,
+// in. Then the worker goes on at the new head. To the merger in merging, where the landing asked
+// the reviewer to read the merge (MergeForward.ReviewAsked), it also says to merge the pull request
+// or put it in the merge queue at the new head only once the reviewer's approval of that head is
+// on the pull request, and the merger's task says the same (workflow's task). A landing on a task
+// with no reviewer step asks no review, so its merger is told to go on at the new head as every
+// other worker is, with no approval to wait for. The review names both heads and the phase,
 // tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
 // its review's Legion footer naming that head, or to request changes, with no handoff and no
 // completion, and then to tell what it decided, on their role topics, to the architect and to the
 // worker of the phase the issue stands in (the implementer in retro, the merger in merging; the
 // architect alone in accepting).
-func (p MergeForwardMessage) Message(issue, repo string) string {
-	pull := fmt.Sprintf("pull request %s#%d", repo, p.PullRequest)
+func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
+	pull := fmt.Sprintf("pull request %s#%d", pr.Repo, p.PullRequest)
 	switch p.Step {
 	case MergeForwardAsk:
 		own := ""
@@ -1742,7 +1748,7 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 			issue, pull, p.Head, p.Base, mergeForwardReason(p.Why, p.Base), p.Base, p.Phase, merger, p.Head, p.Head, p.Head)
 	case MergeForwardLanded:
 		merge := ""
-		if p.Role == claim.RoleMerger && p.Phase == phase.Merging {
+		if p.Role == claim.RoleMerger && p.Phase == phase.Merging && pr.MergeForward != nil && pr.MergeForward.ReviewAsked {
 			merge = fmt.Sprintf(" Merge the pull request or put it in the merge queue at head %s only once the reviewer's approval of that head is on the pull request.", p.Landed)
 		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s. The old head is %s, and the new head is %s."+

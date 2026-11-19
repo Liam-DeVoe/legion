@@ -1043,13 +1043,14 @@ type ConflictRead struct {
 // stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0, ConflictWhy).
 // AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
 // until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
-// it does when the issue stands past review. Earlier is every merge forward that landed before
-// this ask in the same stretch of work, oldest first: a later ask replaces the one the record
-// holds, so when the head a merge left conflicts in its turn and is merged forward again, Earlier
-// is what still names the head the first merge replaced (PullRequest.MergeForward says how long
-// the stretch lasts). It is stored as the jsonb of pull_requests.merge_forward (migration
-// 20261119003157), null for nil; the jsonb takes Earlier with no migration of its own, and leaves
-// it out while it is empty.
+// it does when the issue stands past review and its task has a reviewer step (workflow's
+// mergeForwardLanded), and which the merger's task and its landed message read. Earlier is every
+// merge forward that landed before this ask in the same stretch of work, oldest first: a later ask
+// replaces the one the record holds, so when the head a merge left conflicts in its turn and is
+// merged forward again, Earlier is what still names the head the first merge replaced
+// (PullRequest.MergeForward says how long the stretch lasts). It is stored as the jsonb of
+// pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier
+// with no migration of its own, and leaves it out while it is empty.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`

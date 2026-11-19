@@ -1549,8 +1549,8 @@ names both heads. A completion of the phase the issue stands in that names a hea
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Past review the reviewer is asked to read the merge and approve the new head. A red check
-sends nothing back from anywhere.
+before. Past review, where the task has a reviewer step, the reviewer is asked to read the merge
+and approve the new head. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 

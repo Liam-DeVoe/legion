@@ -203,10 +203,12 @@ Once the merge lands, the phase's worker is told the new head and reads what the
 For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
 A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
 A completion that names the replaced head, or names no head once the merge landed, is refused
-(`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head. Past review, the daemon asks the reviewer to read the merge and approve the
+(`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head. Past review, where the task has
+a reviewer step, the daemon asks the reviewer to read the merge and approve the
 new head by its SHA, or request changes, and to tell you and the phase's worker what it decided:
 in `accepting`, wait for that approval of the new head before `sign_off`, and send the issue back
-with `request_backward_move` when the reviewer requests changes. No Legion check compares the head
+with `request_backward_move` when the reviewer requests changes. A task with no reviewer step has
+no review to ask, and nothing waits for one. No Legion check compares the head
 that merges with the one an approval named: a repository that wants a later push reviewed says so
 in its own rulesets.
 
