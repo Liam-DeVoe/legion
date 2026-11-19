@@ -164,9 +164,9 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	}
 	capturing := info.Config
 	notAgents := info.Config
-	notAgents.Subjects = slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
+	notAgents.Subjects = append(slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
 		return subject == contracts.AgentTopicPrefix+">"
-	})
+	}), keptByEveryKeeper(contracts.AgentTopicPrefix))
 	testnats.UpdateStream(t, js, notAgents)
 
 	database := storetest.Open(t)
@@ -378,8 +378,8 @@ func newSessionOrderRig(t *testing.T) sessionOrderRig {
 	return sessionOrderRig{client: client, reader: reader, js: js, capturing: info.Config, database: database, broker: events.NewBroker()}
 }
 
-// refuse has the stream capture no subject under prefix, so NATS answers a publish there with no
-// responders.
+// refuse has the stream capture no subject under prefix but keptByEveryKeeper's, so NATS answers a
+// publish there with no responders.
 func (r sessionOrderRig) refuse(t *testing.T, prefix string) {
 	t.Helper()
 	narrowed := r.capturing
@@ -389,6 +389,7 @@ func (r sessionOrderRig) refuse(t *testing.T, prefix string) {
 	if len(narrowed.Subjects) == len(r.capturing.Subjects) {
 		t.Fatalf("no stream subject is under %q: %v", prefix, r.capturing.Subjects)
 	}
+	narrowed.Subjects = append(narrowed.Subjects, keptByEveryKeeper(prefix))
 	testnats.UpdateStream(t, r.js, narrowed)
 }
 
@@ -396,6 +397,15 @@ func (r sessionOrderRig) captureAgain(t *testing.T) {
 	t.Helper()
 	testnats.UpdateStream(t, r.js, r.capturing)
 }
+
+// keptByEveryKeeper is the subject a test's narrowing of the stream under prefix leaves in the
+// place of the subjects it takes away: nothing the tests send is published on it, and it overlaps
+// what was taken away, so no keeper puts that back. A keeper puts back a subject of its own build
+// only when no subject the stream holds overlaps it (bus's keptSubjects), at its client's first
+// keeper pass, 30 s after the client's start. On a loaded machine a test's set-up outlasts that,
+// and the outbox's own client's keeper then took the narrowing back before the test published:
+// TestABackedOffEventHoldsBackOnlyItsDestination's session route was published, not refused.
+func keptByEveryKeeper(prefix string) string { return prefix + "nothing-is-sent-here" }
 
 func (r sessionOrderRig) write(t *testing.T, actor model.Actor, body string) model.Event {
 	t.Helper()
