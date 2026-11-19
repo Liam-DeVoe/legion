@@ -2,6 +2,7 @@ package texts
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -187,5 +188,36 @@ func TestInFrontGivesWhatTheSharedCasesSay(t *testing.T) {
 		if got := InFront(c.Parts, c.Text); got != c.Sent {
 			t.Errorf("%s: InFront(%q, %q) is\n%q\nwant\n%q", c.Label, c.Parts, c.Text, got, c.Sent)
 		}
+	}
+}
+
+// A text's blocks are drawn under tags chosen against the whole of what is sent (blockTags), and
+// the notes a start puts in front of a task can be long: a process's cause quotes the runtime's,
+// which can carry a tail of the role's log. At 205c968b blockTags read every piece of the text
+// again for each distinct name of a block, so the time grew with the length of the text times the
+// count of its names. The tags are chosen in one read of the text: a text of 4,000 blocks of
+// distinct names behind a note of 1.2 MiB, whose 98,000 < marks begin no name, is drawn in well
+// under a second, and the few marks in the note that do hold a tag still move that block's tag
+// past it, as the plain substring test says: </w7 holds w7, and <w12-1 holds w1, w12 and w12-1.
+func TestATextOfManyNamesBehindALongNoteIsDrawnInLinearTime(t *testing.T) {
+	const blocks = 4000
+	var text strings.Builder
+	text.WriteString("kind: phase-assignment\nissue: LEGION-208")
+	for n := range blocks {
+		fmt.Fprintf(&text, "\n<w%d by=\"tester\">\nblock %d %s\n</w%d>", n, n, strings.Repeat("y", 40), n)
+	}
+	note := strings.Repeat("a note that names <w and </w-1 and <x, ", 1<<15) + "and </w7 and <w12-1."
+	started := time.Now()
+	sent := InFront([]string{note}, text.String())
+	elapsed := time.Since(started)
+	t.Logf("%d blocks of distinct names behind a note of %d bytes drawn in %s", blocks, len(note), elapsed)
+
+	want := note + "\n\n" + strings.NewReplacer("<w1 ", "<w1-1 ", "</w1>", "</w1-1>", "<w7 ", "<w7-1 ", "</w7>", "</w7-1>",
+		"<w12 ", "<w12-2 ", "</w12>", "</w12-2>").Replace(text.String())
+	if sent != want {
+		t.Fatalf("the text is sent with other tags than the note's marks give: w1, w7 and w12 take w1-1, w7-1 and w12-2, and every other block keeps its own")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("%d blocks of distinct names behind a note of %d bytes took %s to draw, want under a second: the text is read once for every name", blocks, len(note), elapsed)
 	}
 }

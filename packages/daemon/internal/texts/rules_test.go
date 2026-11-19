@@ -48,7 +48,8 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 			}
 		}
 		// checks-red is low to the architect while a worker holds the phase the issue stays in,
-		// and med in accepting, which the architect holds itself, and wherever no worker holds it.
+		// and med in accepting, which the architect holds itself, and wherever no worker holds it:
+		// a held issue stays in the phase its hold came from, and its notice names the hold.
 		if _, held := workers[p]; held {
 			lows = append(lows, low{ChecksRed, architect, Variant{Phase: p}})
 		}
@@ -61,6 +62,15 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 	if got := UrgencyOf(ChecksRed, architect, Variant{Phase: phase.Accepting}); got != Med {
 		t.Errorf("checks-red to the architect in accepting is %q, want med: the architect holds the phase and must not sign off the head", got)
 	}
+	// An issue held from a worker's phase, by that worker's failed claim or by the architect's
+	// escalation, has no worker at that phase: med, as the CI settlement of a held issue is.
+	for p := range workers {
+		for _, hold := range []string{HoldFailure, HoldEscalation} {
+			if got := UrgencyOf(ChecksRed, architect, Variant{Phase: p, Hold: hold}); got != Med {
+				t.Errorf("checks-red to the architect of an issue held (%s) from %s is %q, want med: no worker holds the phase", hold, p, got)
+			}
+		}
+	}
 
 	variants := []Variant{{}}
 	for _, l := range lows {
@@ -72,6 +82,8 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 		Variant{Role: claim.RoleReviewer, Phase: phase.Reviewing},
 		Variant{Phase: phase.Testing, Hold: HoldFailure},
 		Variant{Phase: phase.Testing, Hold: HoldCarried},
+		Variant{Phase: phase.Merging, Hold: HoldFailure},
+		Variant{Phase: phase.Retro, Hold: HoldEscalation},
 		Variant{Change: ChangeLeft}, Variant{Change: ChangeBeneathAccepted}, Variant{Change: ChangeReparented})
 	// read is the part of a variant that the Design's case for kind reads.
 	read := func(kind Kind, v Variant) Variant {
@@ -85,8 +97,10 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 			return Variant{Hold: v.Hold}
 		case ChildStatus:
 			return Variant{Change: v.Change}
-		case CISettled, ChecksRed:
+		case CISettled:
 			return Variant{Phase: v.Phase}
+		case ChecksRed:
+			return Variant{Phase: v.Phase, Hold: v.Hold}
 		}
 		return Variant{}
 	}

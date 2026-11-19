@@ -182,8 +182,10 @@ the workspace; and it tells you once with a `checks-red` notice naming the phase
 in (`phase`), the head (`head`), the base (`conflicts_with`, absent where the daemon has not
 recorded the pull request's base) and why (`why`). The notice is `low` while a worker holds that
 phase, so you read it at your next turn, and `med` in `accepting`, where you hold the phase
-yourself and must not sign off the conflicting head. You start nothing for it. In
-`implementing` the daemon tells the implementer alone, and no notice comes to you.
+yourself and must not sign off the conflicting head. It is `med` as well wherever no worker
+holds the phase: a held issue stays in the phase its hold came from, and its notice names what
+holds it (`hold`). You start nothing for it. In `implementing` the daemon tells the implementer
+alone, and no notice comes to you.
 
 Once the merge lands, the phase's worker is told the new head and reads what the merge changed.
 For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.

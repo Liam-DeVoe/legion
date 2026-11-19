@@ -249,17 +249,28 @@ func (b *goldenBuild) notices(r goldenRendering) {
 
 	// checks-red, review-stuck in each cause, status-reasserted, session-lost, session-store-fault.
 	// checks-red, as mergeForward writes it: in a phase a worker holds (low), in accepting, which
-	// the architect holds itself (med), and of a pull request recorded before the daemon kept the
-	// base, which names the head and no base.
+	// the architect holds itself (med), of a pull request recorded before the daemon kept the
+	// base, which names the head and no base, and of an issue held from testing, by its tester's
+	// failed claim and by its architect's escalation, which no worker holds (med).
+	standing := func(at phase.Phase) record.Issue {
+		stands := issue
+		stands.Phase = at
+		return stands
+	}
 	why := []record.ConflictWhy{record.ConflictCheckNotGreen, record.ConflictRulesUnread}[r.n-1]
-	b.notice(r, "conflict", arch, workflow.ChecksRedNotice(issue.Key, pr, phase.Reviewing, why),
+	b.notice(r, "conflict", arch, workflow.ChecksRedNotice(standing(phase.Reviewing), pr, why),
 		goldenWant("issue", issue.Key, "phase", phase.Reviewing, "conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", why))
-	b.notice(r, "accepting", arch, workflow.ChecksRedNotice(issue.Key, pr, phase.Accepting, record.ConflictMergeNext),
+	b.notice(r, "accepting", arch, workflow.ChecksRedNotice(standing(phase.Accepting), pr, record.ConflictMergeNext),
 		goldenWant("issue", issue.Key, "phase", phase.Accepting, "conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", record.ConflictMergeNext))
 	unbased := record.PullRequest{Issue: issue.Key, Repo: r.repo, Number: 750 + r.n, HeadSHA: r.sha("notice/no-base/head")}
-	b.notice(r, "no-base", arch, workflow.ChecksRedNotice(issue.Key, unbased, phase.Merging, record.ConflictMergeNext),
+	b.notice(r, "no-base", arch, workflow.ChecksRedNotice(standing(phase.Merging), unbased, record.ConflictMergeNext),
 		goldenWant("issue", issue.Key, "phase", phase.Merging, "head", unbased.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, unbased.Number),
 			"why", record.ConflictMergeNext))
+	heldFrom := standing(phase.Held)
+	heldFrom.Hold = &record.Hold{From: phase.Testing, Reason: []record.HoldReason{"", record.HoldEscalated}[r.n-1]}
+	b.notice(r, "held", arch, workflow.ChecksRedNotice(heldFrom, pr, why),
+		goldenWant("issue", issue.Key, "phase", phase.Testing, "hold", []string{texts.HoldFailure, texts.HoldEscalation}[r.n-1],
+			"conflicts_with", pr.Base, "head", head, "pull_request", ref, "why", why))
 	stuck := goldenStuckRequest(r)
 	stuckRef := texts.PullRequestRef(r.repo, stuck.Number)
 	topic := "notifications.role." + string(r.token(t, issue.Key, claim.RoleReviewer))

@@ -343,6 +343,13 @@ func (w Words) empty() bool {
 // lines, and no two blocks share a tag: a reader that pairs each opening tag with the next closing
 // tag of its name reads each block's words as its own. The test is a plain substring test, so
 // text that holds <name-1 or <names also steps past name.
+//
+// The text is read once, for every name at once (tagNames), and each block's tag is then looked
+// up in what that read holds, so a text is drawn in time linear in its length whatever the count
+// of its names. A name's next block starts where its last block's tag stopped: every suffix below
+// that one is held or taken, and stays so. limit, the length of the lines, the length of the
+// words and the count of the blocks, bounds every tag the text can need, since each held number
+// and each block takes away at most one candidate.
 func blockTags(before []string, blocks []block) []string {
 	limit := len(blocks)
 	for _, line := range before {
@@ -351,17 +358,20 @@ func blockTags(before []string, blocks []block) []string {
 	for _, b := range blocks {
 		limit += len(b.words.Text)
 	}
+	names, ids := newTagNames(blocks, limit)
+	for _, line := range before {
+		names.hold(line)
+	}
+	for _, b := range blocks {
+		names.hold(b.words.Text)
+	}
 	tags := make([]string, len(blocks))
 	taken := make(map[string]bool, len(blocks))
-	held := map[string]map[int]bool{}
+	next := make([]int, len(names.held))
 	for i, b := range blocks {
-		suffixes, read := held[b.name]
-		if !read {
-			suffixes = heldSuffixes(b.name, before, blocks, limit)
-			held[b.name] = suffixes
-		}
-		for n := 0; ; n++ {
-			if suffixes[n] {
+		id := ids[i]
+		for n := next[id]; ; n++ {
+			if names.held[id][n] {
 				continue
 			}
 			tag := b.name
@@ -369,7 +379,7 @@ func blockTags(before []string, blocks []block) []string {
 				tag += "-" + strconv.Itoa(n)
 			}
 			if !taken[tag] {
-				tags[i], taken[tag] = tag, true
+				tags[i], taken[tag], next[id] = tag, true, n+1
 				break
 			}
 		}
@@ -377,51 +387,105 @@ func blockTags(before []string, blocks []block) []string {
 	return tags
 }
 
-// heldSuffixes is each n up to limit such that a line of before or the words of a block of blocks
-// hold <tag or </tag, where tag is name for n = 0 and name-n otherwise (holdSuffixes). Nil where
-// they hold none. One scan of the text, so a text is drawn in time linear in its length: limit,
-// the length of the lines, the length of the words and the count of the blocks, bounds every tag
-// the text can need, since each held number and each block takes away at most one candidate. A
-// line is scanned on its own, which finds what the joined text holds: a tag holds no new line.
-func heldSuffixes(name string, before []string, blocks []block, limit int) map[int]bool {
-	var held map[int]bool
-	for _, line := range before {
-		held = holdSuffixes(held, name, line, limit)
-	}
-	for _, b := range blocks {
-		held = holdSuffixes(held, name, b.words.Text, limit)
-	}
-	return held
+// tagNames is the names of a text's blocks, as a trie whose node 0 is the empty name, and what the
+// text holds of each name's tags (hold).
+type tagNames struct {
+	// edges is the node each node's edge of one byte leads to.
+	edges map[tagEdge]int
+	// name is, for each node, one more than the index of the name that ends there, 0 where none
+	// does.
+	name []int
+	// held is, for each name, each n up to limit whose tag a text read holds: name for n = 0 and
+	// name-n otherwise. It is nil for a name whose tags no text read holds.
+	held  []map[int]bool
+	limit int
 }
 
-// holdSuffixes adds to held each n up to limit that text holds as <tag or </tag: 0 where it holds
-// <name or </name at all, and, after <name- or </name-, each number whose digits begin the digits
-// there (<name-12 holds 1 and 12). It returns held, which stays nil while nothing is held.
-func holdSuffixes(held map[int]bool, name, text string, limit int) map[int]bool {
-	for {
-		at := strings.IndexByte(text, '<')
-		if at < 0 {
-			return held
+// tagEdge is an edge of the trie: the node it leaves and the byte it reads.
+type tagEdge struct {
+	from int
+	b    byte
+}
+
+// newTagNames is the trie of the names of blocks, which holds nothing yet, and the index of each
+// block's name in it: blocks of one name share one index.
+func newTagNames(blocks []block, limit int) (*tagNames, []int) {
+	names := &tagNames{edges: map[tagEdge]int{}, name: []int{0}, limit: limit}
+	ids := make([]int, len(blocks))
+	for i, b := range blocks {
+		node := 0
+		for j := range len(b.name) {
+			edge := tagEdge{from: node, b: b.name[j]}
+			child, ok := names.edges[edge]
+			if !ok {
+				child = len(names.name)
+				names.name = append(names.name, 0)
+				names.edges[edge] = child
+			}
+			node = child
 		}
-		text = text[at+1:]
-		after, named := strings.CutPrefix(strings.TrimPrefix(text, "/"), name)
-		if !named {
-			continue
+		if names.name[node] == 0 {
+			names.held = append(names.held, nil)
+			names.name[node] = len(names.held)
 		}
-		if held == nil {
-			held = map[int]bool{}
+		ids[i] = names.name[node] - 1
+	}
+	return names, ids
+}
+
+// hold adds what text holds of the names' tags. At each < of text, past a / that follows it, the
+// names are walked along the text that follows: each name the walk reaches is one the text holds
+// as <name or </name, so it is held at 0, and after <name- or </name- each number whose digits
+// begin the digits there is held too (<name-12 holds 1 and 12). A name is a field's json name, of
+// letters, digits and underscores, so a walk reads no further than the run of those after its <,
+// and no two runs meet, since a run holds no <: text is read once. A text is read on its own,
+// which finds what the joined text holds: a tag holds no new line.
+func (t *tagNames) hold(text string) {
+	for at := strings.IndexByte(text, '<'); at >= 0; {
+		from := at + 1
+		if from < len(text) && text[from] == '/' {
+			from++
 		}
-		held[0] = true
-		digits, suffixed := strings.CutPrefix(after, "-")
-		if !suffixed || digits == "" || digits[0] < '1' || digits[0] > '9' {
-			continue
-		}
-		for n, j := 0, 0; j < len(digits) && digits[j] >= '0' && digits[j] <= '9'; j++ {
-			if n = n*10 + int(digits[j]-'0'); n > limit {
+		node := 0
+		for i := from; ; i++ {
+			if id := t.name[node]; id > 0 {
+				t.holdSuffixes(id-1, text[i:])
+			}
+			if i == len(text) {
 				break
 			}
-			held[n] = true
+			child, ok := t.edges[tagEdge{from: node, b: text[i]}]
+			if !ok {
+				break
+			}
+			node = child
 		}
+		next := strings.IndexByte(text[at+1:], '<')
+		if next < 0 {
+			return
+		}
+		at += 1 + next
+	}
+}
+
+// holdSuffixes holds the name of index id at 0, and, where after, the text after the name, is -
+// and a number with no leading zero, each number up to limit that the number's digits begin.
+func (t *tagNames) holdSuffixes(id int, after string) {
+	held := t.held[id]
+	if held == nil {
+		held = map[int]bool{}
+		t.held[id] = held
+	}
+	held[0] = true
+	digits, suffixed := strings.CutPrefix(after, "-")
+	if !suffixed || digits == "" || digits[0] < '1' || digits[0] > '9' {
+		return
+	}
+	for n, j := 0, 0; j < len(digits) && digits[j] >= '0' && digits[j] <= '9'; j++ {
+		if n = n*10 + int(digits[j]-'0'); n > t.limit {
+			break
+		}
+		held[n] = true
 	}
 }
 

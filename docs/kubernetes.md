@@ -2461,7 +2461,7 @@ This release adds fields to the payloads that its outbox queues:
 
 - A role message carries `kind`, `urgency` and `fields`.
 
-- A checks-red notice carries `why`, beside the notice keys above.
+- A checks-red notice carries `why`, and for a held issue `hold`, beside the notice keys above.
 
 - An update ask carries `images`, `settings`, `reasons` and `endsAt`.
 

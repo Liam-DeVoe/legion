@@ -20,8 +20,8 @@ const (
 	ChangeReparented      = "reparented"
 )
 
-// The variant words of a held notice: what held the issue. The payload key is hold
-// (Variant.Hold).
+// The variant words of a held notice: what held the issue. A checks-red notice of a held issue
+// names what holds it with the same words. The payload key is hold (Variant.Hold).
 const (
 	// HoldFailure is the hold that a phase worker's failed claim puts the issue in.
 	HoldFailure = "failure"
@@ -84,12 +84,15 @@ func lowToArchitect(reader claim.Role, _ Variant) Urgency {
 }
 
 // checksRedUrgency is the checks-red notice's rule, read from the phase the issue stays in
-// (Variant.Phase). For the architect it is Low while a worker holds that phase, since the daemon
-// has already asked the implementer to merge the base forward and told that worker to hold, and
-// Med where the architect holds it itself (accepting), where it must not sign off the conflicting
-// head, and where no role does. It is Med for every other reader.
+// (Variant.Phase) and what holds the issue (Variant.Hold). For the architect it is Low while a
+// worker holds that phase, since the daemon has already asked the implementer to merge the base
+// forward and told that worker to hold, and Med wherever no worker holds it: where the architect
+// holds it itself (accepting), where it must not sign off the conflicting head, where no role
+// does, and where the issue is held, which stays in the phase its hold came from while no worker
+// works it, as the CI settlement's rule reads a held issue (ciSettledUrgency). It is Med for every
+// other reader.
 func checksRedUrgency(reader claim.Role, v Variant) Urgency {
-	if worker := phase.RoleFor(v.Phase); reader == claim.RoleArchitect && worker != "" && worker != claim.RoleArchitect {
+	if worker := phase.RoleFor(v.Phase); reader == claim.RoleArchitect && v.Hold == "" && worker != "" && worker != claim.RoleArchitect {
 		return Low
 	}
 	return Med

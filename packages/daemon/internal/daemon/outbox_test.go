@@ -3424,12 +3424,19 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 // follow-up, as any coded 404 does (dispatch.PermanentRefusal): their routes stand on every
 // Dispatch, so that answer means a dispatch_url that reaches no Dispatch of the project's, and a
 // status write left waiting would hold every later status write of its issue behind it (the
-// store's outboxInOrder). The status write's finish queues the architect's notice that the status
-// is not set, the message post's the architect's notice of the message it did not post, and the
-// claim release's tells nobody; each logs its line. A step record that meets the same answer in the
-// same run waits (waitsForTheRoute): it stays for its retry, logged as a wait and never as a
-// failure, since a Dispatch older than the record lane serves no route of it yet.
+// store's outboxInOrder). Each finish logs its line. The status write's queues a message-refused
+// notice (texts.MessageRefusedRecord) naming the refused status write, Dispatch's answer, the
+// status and that it is not set; the message post's names the refused message, Dispatch's answer,
+// the message's length and its first line; and the claim release's tells nobody. The list gives
+// that notice's reader, the architect, and the outbox routes it to the architect that owns its
+// issue: at the next drain LEGION-2's notice is published on its tree root's architect's role
+// topic, since LEGION-2 has no sub-architect, while the same write's notice for LEGION-9, which no
+// tree records, has no architect to go to and is finished undelivered with its own line and
+// published to nobody. A step record that meets the same answer in the same run waits
+// (waitsForTheRoute): it stays for its retry, logged as a wait and never as a failure, since a
+// Dispatch older than the record lane serves no route of it yet.
 func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.T) {
+	unset := false
 	for _, tc := range []struct {
 		name    string
 		kind    record.OutboxKind
@@ -3437,16 +3444,20 @@ func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.
 		// route is the request the write makes, and meets gives that request the router's 404.
 		route string
 		meets func(d *outboxDispatch, noRoute error)
-		// logged is the line the finish logs, and told a part of the architect's notice it queues,
-		// "" where it queues none.
-		logged, told string
+		// logged is the line the finish logs for each issue, and told the record of the notice it
+		// queues for the issue's architect, but for its head and Dispatch's answer; nil where it
+		// queues none.
+		logged string
+		told   *texts.MessageRefusedRecord
 	}{
 		{name: "a status write", kind: record.OutboxKindDispatchStatus, payload: record.OrdinaryStatusWrite("done", "in_progress", ""),
 			route: "PATCH /api/v1/issues/LEGION-2", meets: func(d *outboxDispatch, noRoute error) { d.statusErr = noRoute },
-			logged: "outbox status write refused by Dispatch; its architect is told what the issue holds now", told: "The status done is not set"},
+			logged: "outbox status write refused by Dispatch; its architect is told what the issue holds now",
+			told:   &texts.MessageRefusedRecord{Refused: texts.RefusedStatus, Status: "done", StatusSet: &unset}},
 		{name: "a message post", kind: record.OutboxKindDispatchMessage, payload: record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"},
 			route: "POST /api/v1/issues/LEGION-2/messages", meets: func(d *outboxDispatch, noRoute error) { d.postErr = noRoute },
-			logged: "outbox Dispatch message refused and dropped; its architect is told", told: "READY #42 at head"},
+			logged: "outbox Dispatch message refused and dropped; its architect is told",
+			told:   &texts.MessageRefusedRecord{Refused: texts.RefusedMessage, Length: 41, Begins: "READY #42 at head"}},
 		{name: "a claim release", kind: record.OutboxKindClaimRelease, payload: record.ClaimRelease{},
 			route: "GET /api/v1/issues/LEGION-2", meets: func(d *outboxDispatch, noRoute error) { d.getErr = noRoute },
 			logged: claimRefusedLine},
@@ -3456,23 +3467,30 @@ func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			now := time.Now().UTC()
-			noticeTree(t, pool, records, true)
+			// The tree LEGION-1 runs with its root's architect working, and LEGION-2, its child, has
+			// no architect of its own, so LEGION-2's notices are the root architect's. LEGION-9 is
+			// in no tree the daemon records.
+			const owned, unowned = "LEGION-2", "LEGION-9"
+			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+			architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 			started := now.Add(-time.Minute)
-			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", tc.payload, now))
-			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.StepRecord{ID: "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b",
+			for _, issue := range []string{owned, unowned} {
+				enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, tc.payload, now))
+			}
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, owned, record.StepRecord{ID: "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b",
 				Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
 				Agent: "legion-legion-legion-2-implementer", Generation: 1, StartedAt: &started}, now))
 			noRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for " + tc.route}
 			noStepRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND",
 				Message: "no route for PUT /api/v1/issues/LEGION-2/steps/1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b"}
-			client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-2", Status: "in_progress"}, recordErr: noStepRoute}
+			client := &outboxDispatch{issue: dispatch.Issue{Key: owned, Status: "in_progress"}, recordErr: noStepRoute}
 			tc.meets(client, noRoute)
 			logs := &syncBuffer{}
+			publisher := &holderPublisher{}
 			runner := &outbox{
 				project: "legion", dispatchProject: "LEGION", log: slog.New(slog.NewJSONHandler(logs, nil)),
-				pool: pool, records: records, dispatch: client, notices: &holderPublisher{}, supervisor: sup,
+				pool: pool, records: records, dispatch: client, notices: publisher, supervisor: sup,
 				now: func() time.Time { return now },
 			}
 			if err := runner.RunOnce(ctx); err != nil {
@@ -3492,33 +3510,67 @@ func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.
 				return attempts
 			}
 			if left := attemptsOf(tc.kind); len(left) != 0 {
-				t.Errorf("the row of %s stands after the router's 404 with attempts %v, want it ended on its first attempt", tc.name, left)
+				t.Errorf("the rows of %s stand after the router's 404 with attempts %v, want each ended on its first attempt", tc.name, left)
 			}
-			if lines := loggedLines(t, logs.String(), tc.logged); len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["error"]), noRoute.Message) {
-				t.Errorf("logged %q %d times, want once naming the router's %q: %s", tc.logged, len(lines), noRoute.Message, logs.String())
-			}
-			rows, err := pool.Query(ctx, "select payload from outbox where kind = $1 order by id", string(record.OutboxKindNotice))
-			if err != nil {
-				t.Fatalf("read the notice rows: %v", err)
-			}
-			payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
-			if err != nil {
-				t.Fatalf("read the notice rows: %v", err)
-			}
-			var told []record.Notice
-			for _, payload := range payloads {
-				var notice record.Notice
-				if err := json.Unmarshal(payload, &notice); err != nil {
-					t.Fatalf("decode a notice: %v", err)
+			logged := map[string]int{}
+			for _, line := range loggedLines(t, logs.String(), tc.logged) {
+				if strings.Contains(fmt.Sprint(line["error"]), noRoute.Message) {
+					logged[fmt.Sprint(line["issue"])]++
 				}
-				told = append(told, notice)
+			}
+			if len(logged) != 2 || logged[owned] != 1 || logged[unowned] != 1 {
+				t.Errorf("logged %q naming the router's %q %v times by issue, want once for %s and once for %s: %s",
+					tc.logged, noRoute.Message, logged, owned, unowned, logs.String())
+			}
+			type queuedNotice struct {
+				id     int64
+				issue  string
+				notice record.Notice
+			}
+			rows, err := pool.Query(ctx, "select id, issue, payload from outbox where kind = $1 order by id", string(record.OutboxKindNotice))
+			if err != nil {
+				t.Fatalf("read the notice rows: %v", err)
+			}
+			defer rows.Close()
+			var told []queuedNotice
+			for rows.Next() {
+				var queued queuedNotice
+				var payload []byte
+				if err := rows.Scan(&queued.id, &queued.issue, &payload); err != nil {
+					t.Fatalf("read the notice rows: %v", err)
+				}
+				if err := json.Unmarshal(payload, &queued.notice); err != nil {
+					t.Fatalf("decode the notice of row %d: %v", queued.id, err)
+				}
+				told = append(told, queued)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("read the notice rows: %v", err)
+			}
+			// Each queued notice is the record the finish names, on the row's own issue, carrying
+			// Dispatch's answer with the router's message in it, and no other key.
+			byIssue := map[string]queuedNotice{}
+			for _, queued := range told {
+				if tc.told == nil || !strings.Contains(queued.notice.DispatchAnswer, noRoute.Message) {
+					continue
+				}
+				want := *tc.told
+				want.NoticeHead = texts.NoticeHead{Kind: texts.MessageRefused, Issue: queued.issue}
+				want.DispatchAnswer = queued.notice.DispatchAnswer
+				wantNotice, err := record.NoticeOf(want)
+				if err != nil {
+					t.Fatalf("the notice of %+v: %v", want, err)
+				}
+				if reflect.DeepEqual(queued.notice, wantNotice) {
+					byIssue[queued.issue] = queued
+				}
 			}
 			switch {
-			case tc.told == "" && len(told) != 0:
-				t.Errorf("notices queued = %+v, want none: the finish of %s tells nobody", told, tc.name)
-			case tc.told != "" && (len(told) != 1 || told[0].Kind != "message-refused" || told[0].Role != claim.RoleArchitect ||
-				!strings.Contains(told[0].Reason, tc.told) || !strings.Contains(told[0].Reason, noRoute.Message)):
-				t.Errorf("notices queued = %+v, want the architect's one message-refused notice saying %q, naming %q", told, tc.told, noRoute.Message)
+			case tc.told == nil && len(told) != 0:
+				t.Fatalf("notices queued = %+v, want none: the finish of %s tells nobody", told, tc.name)
+			case tc.told != nil && (len(told) != 2 || len(byIssue) != 2 || byIssue[owned].id == 0 || byIssue[unowned].id == 0):
+				t.Fatalf("notices queued = %+v, want one for %s and one for %s, each the message-refused record %+v on its issue carrying Dispatch's answer naming %q",
+					told, owned, unowned, *tc.told, noRoute.Message)
 			}
 
 			if left := attemptsOf(record.OutboxKindStepRecord); !slices.Equal(left, []int{1}) {
@@ -3529,7 +3581,37 @@ func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.
 				t.Errorf("logged %d waits, want the step record's one: %s", len(waited), logs.String())
 			}
 			if failed := loggedLines(t, logs.String(), "outbox row failed"); len(failed) != 0 {
-				t.Errorf("logged %d failed attempts, want none: the row of %s ended and the step record waits: %s", len(failed), tc.name, logs.String())
+				t.Errorf("logged %d failed attempts, want none: the rows of %s ended and the step record waits: %s", len(failed), tc.name, logs.String())
+			}
+
+			// The next drain delivers what the finishes queued. The notice of LEGION-2 is published
+			// on its owning architect's role topic, under its row's key, as it was queued; that of
+			// LEGION-9 has no architect and is finished undelivered with its line. The step record is
+			// not due again in this drain.
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the outbox notices: %v", err)
+			}
+			attempts, delivered := publisher.snapshot()
+			if tc.told == nil {
+				if attempts != 0 {
+					t.Errorf("published %d notices (%+v), want none: the finish of %s tells nobody", attempts, delivered, tc.name)
+				}
+				return
+			}
+			architect := architectTopic(t, "LEGION-1")
+			if attempts != 1 || len(delivered) != 1 || delivered[0].topic != architect || delivered[0].key != record.OutboxKey(byIssue[owned].id) ||
+				!reflect.DeepEqual(delivered[0].payload, byIssue[owned].notice) || delivered[0].urgency != texts.Med {
+				t.Errorf("published %d notices %+v, want the one of %s, row %d, at med on %s, the role topic of the architect that owns it, as it was queued: %+v",
+					attempts, delivered, owned, byIssue[owned].id, architect, byIssue[owned].notice)
+			}
+			const unrouted = "outbox notice finished undelivered: it has no architect"
+			lines := loggedLines(t, logs.String(), unrouted)
+			if len(lines) != 1 || lines[0]["issue"] != unowned || lines[0]["row"] != float64(byIssue[unowned].id) || lines[0]["kind"] != string(texts.MessageRefused) {
+				t.Errorf("logged %q %d times (%v), want once for row %d, the message-refused notice of %s: %s",
+					unrouted, len(lines), lines, byIssue[unowned].id, unowned, logs.String())
+			}
+			if left := attemptsOf(record.OutboxKindNotice); len(left) != 0 {
+				t.Errorf("notice rows with attempts %v stand after the drain, want both finished", left)
 			}
 		})
 	}

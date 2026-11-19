@@ -29,7 +29,8 @@ type Variant struct {
 	To phase.Phase `json:"to,omitempty"`
 	// Change is the variant word of a child-status notice (ChangeTodo and the others).
 	Change string `json:"change,omitempty"`
-	// Hold is the variant word of a held notice (HoldFailure and the others).
+	// Hold is the variant word of a held notice (HoldFailure and the others), and what holds the
+	// held issue a checks-red notice is of.
 	Hold string `json:"hold,omitempty"`
 }
 

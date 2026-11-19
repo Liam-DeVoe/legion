@@ -485,13 +485,18 @@ func designLow() []urgencyCase {
 		{texts.ChildStatus, arch, texts.Variant{Change: texts.ChangeBeneathAccepted}, texts.Med},
 		{texts.ChildStatus, arch, texts.Variant{Change: texts.ChangeReparented}, texts.Med},
 		// checks-red to the architect while a worker holds the phase the issue stays in, med in
-		// accepting, which the architect holds itself; pr-merged to the architect; awaiting-person
-		// to the controller.
+		// accepting, which the architect holds itself, and med for an issue held from a worker's
+		// phase, which no worker holds (its notice names the hold); pr-merged to the architect;
+		// awaiting-person to the controller.
 		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Testing}, texts.Low},
 		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Reviewing}, texts.Low},
 		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Retro}, texts.Low},
 		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Merging}, texts.Low},
 		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Accepting}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Testing, Hold: texts.HoldFailure}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Reviewing, Hold: texts.HoldFailure}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Retro, Hold: texts.HoldFailure}, texts.Med},
+		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Merging, Hold: texts.HoldEscalation}, texts.Med},
 		{texts.PRMerged, arch, texts.Variant{Phase: phase.Merging}, texts.Low},
 		{texts.AwaitingPerson, ctl, texts.Variant{}, texts.Low},
 	}

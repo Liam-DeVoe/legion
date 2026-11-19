@@ -4598,6 +4598,46 @@
     },
     {
       "kind": "checks-red",
+      "variant": "held",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "checks-red on ALPHA-1100",
+      "payload": {
+        "kind": "checks-red",
+        "phase": "testing",
+        "issue": "ALPHA-1100",
+        "hold": "failure",
+        "pull_request": "alpha-works/alpha-tower#701",
+        "conflicts_with": "main-utobo",
+        "head": "a4aa35d37cd80c0cbbf323a8d7a3a9dc2f543e01",
+        "why": "required-check-not-green"
+      }
+    },
+    {
+      "kind": "checks-red",
+      "variant": "held",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "checks-red on BRAVO-2100",
+      "payload": {
+        "kind": "checks-red",
+        "phase": "testing",
+        "issue": "BRAVO-2100",
+        "hold": "escalation",
+        "pull_request": "bravo-labs/bravo-yard#702",
+        "conflicts_with": "main-mbvdv",
+        "head": "1315f971598302e61b9a45984bc494f5921e9bcf",
+        "why": "base-rules-unread"
+      }
+    },
+    {
+      "kind": "checks-red",
       "variant": "no-base",
       "sample": 1,
       "reader": "architect",

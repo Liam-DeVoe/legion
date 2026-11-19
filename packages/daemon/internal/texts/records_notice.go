@@ -481,12 +481,15 @@ type DecisionMark struct {
 
 // ChecksRedRecord is the notice that the daemon asked the implementer to merge the base forward
 // onto a head that conflicts with its base (workflow's mergeForward): the phase the issue stays
-// in, the base, the head, the pull request and why the daemon acted (record.ConflictWhy's word).
+// in, what holds the issue where it is held (a Hold word: HoldFailure or HoldEscalation), the
+// base, the head, the pull request and why the daemon acted (record.ConflictWhy's word). A held
+// issue stays in the phase its hold came from, and no worker holds that phase (checksRedUrgency).
 // The base is absent where the daemon has not recorded it, as for a pull request recorded before
 // the daemon kept the base (record.PullRequest.Base).
 type ChecksRedRecord struct {
 	NoticeHead
 	Phase         phase.Phase `json:"phase,omitempty"`
+	Hold          string      `json:"hold,omitempty"`
 	ConflictsWith string      `json:"conflicts_with,omitempty"`
 	Head          string      `json:"head"`
 	PullRequest   string      `json:"pull_request"`

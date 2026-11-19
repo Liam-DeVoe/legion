@@ -486,7 +486,8 @@ type Notice struct {
 	Work           []string  `json:"work,omitempty"`
 	ReportedAt     time.Time `json:"reported_at,omitzero"`
 	StoodFor       string    `json:"stood_for,omitempty"`
-	// Hold is what held the issue (a held notice's variant word, which its urgency rule reads).
+	// Hold is what held the issue (a held notice's variant word, which its urgency rule reads),
+	// and what holds the held issue a checks-red notice is of, in the same words.
 	Hold string `json:"hold,omitempty"`
 	// The review round cap (pr-blocked).
 	Cap            int `json:"cap,omitempty"`
