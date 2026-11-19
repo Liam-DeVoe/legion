@@ -2797,6 +2797,9 @@ jobs:
               # internal/dispatch/testlimits/testlimits_test.go holds this script's
               # max_connections to testlimits.ServerConnections.
               - 'packages/daemon/docker/legion-testpg'
+              # internal/tests3/waits_test.go holds the shard job's file-store steps in this
+              # workflow to their bounds (its RULES entry in .github/scripts/ci_job_reads.py).
+              - '.github/workflows/dispatch-browser.yaml'
               # The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
               # and ./cmd/broker: each runs only what its tag adds, so a change that starts one
               # must start this job too (check-ci-filters.sh's rule 15).

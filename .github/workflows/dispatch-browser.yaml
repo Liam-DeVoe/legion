@@ -532,7 +532,11 @@ jobs:
         # not tries, since a try can take its whole bound: the readiness wait's 60 tries of a 5 s
         # bound held a store that never answered for 361 s. With prepare's own bounds (its head
         # says how), the step ends by its own name within 10 minutes on any store, before the job's
-        # 22.
+        # 22. TestEveryWaitAndCheckOfTheScriptHasACase, in
+        # packages/envoy/internal/tests3/waits_test.go, reads this step and the two around it, and
+        # fails on a curl outside s3 or with no --max-time of its own, on a wait that is not an
+        # until right after its deadline whose body ends the step by name once it passes, and on
+        # any other loop or sleep.
         run: |
           # s3 <seconds> <what> <curl argument>...: one request to the store, bounded by seconds.
           s3() {

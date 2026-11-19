@@ -35,8 +35,10 @@
 # things in two helpers only, shell and master, each under a bound of its own, and it waits in
 # one only, within, which ends by its seconds; every check and every wait fails by a message of
 # its own. TestEveryWaitAndCheckOfTheScriptHasACase (waits_test.go) reads this file and fails
-# when a request runs outside those helpers, a wait outside within, or a message is the want of
-# no case of TestOneCollectionFailsWhenTheRuleDoesNotHold, which runs each case with its cut.
+# when a request runs outside those helpers, a wait outside within, a command outside the list
+# of those that end by themselves (its scriptCommands), an exit outside fail and usage, or a
+# message is the want of no case of TestOneCollectionFailsWhenTheRuleDoesNotHold, which runs
+# each case with its cut.
 #
 # The log lines this reads are SeaweedFS 3.97's, which .github/ci-images.yaml pins by digest for
 # both images; whoever moves that row reads them again.
