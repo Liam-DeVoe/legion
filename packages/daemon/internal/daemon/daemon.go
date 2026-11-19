@@ -1825,7 +1825,7 @@ type sessionStop struct {
 //
 // budget, when not zero, is the budget each stop's read and delete share in place of
 // cleanSessionStopBudget: a test that holds the stop's read at its listener until the claim's
-// relaunch has begun gives it what is left of the test binary's deadline, so the machine's load
+// relaunch has begun gives it minutes where production gives seconds, so the machine's load
 // between the two is not read as a listener that never answered.
 //
 // end, when not nil, ends every stop in flight once the test closes it, as the end of its budget
