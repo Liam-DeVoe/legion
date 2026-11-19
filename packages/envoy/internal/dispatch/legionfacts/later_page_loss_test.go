@@ -40,11 +40,11 @@ func TestALossMetOnALaterPageIsAnswered(t *testing.T) {
 		t.Fatal(err)
 	}
 	run.exec(t, "prune the oldest changes", `delete from delivery_changes where seq <= $1`, first)
-	cursors, err := readCursors(t.Context(), run.database.Pool)
+	cursors, _, err := readCursors(t.Context(), run.database.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lost, err := delivery.CursorLost(t.Context(), run.database.Pool, cursors[changesCursor], run.at)
+	lost, err := delivery.CursorLost(t.Context(), run.database.Pool, cursors.changes, run.at)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { installCountingStorage } from "../../__tests__/counting-storage";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import {
   type FakeLiveSockets,
@@ -121,9 +122,15 @@ const DAEMON: LegionSetting = {
 /**
  * Draws the Issues tab of CORE at `/projects/CORE/issues<search>` over `issues`, as the listing
  * route answers them: `open` leaves the closed rows out and `status` keeps the rows in those
- * statuses. `daemon` is the project's Legion daemon setting, none by default.
+ * statuses. `daemon` is the project's Legion daemon setting, none by default. `rescued` draws
+ * the tab inside the shell's main content with the page's focus rescue on it, as `app.tsx` does.
  */
-function board(issues: IssueSummary[], search: string, daemon: LegionSetting | null = null) {
+function board(
+  issues: IssueSummary[],
+  search: string,
+  daemon: LegionSetting | null = null,
+  rescued = false
+) {
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
     issues.filter(
       (row) =>
@@ -159,7 +166,13 @@ function board(issues: IssueSummary[], search: string, daemon: LegionSetting | n
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <Route />
-          <IssuesTable listing={{ project: "CORE" }} />
+          {rescued ? (
+            <RescuedMain>
+              <IssuesTable listing={{ project: "CORE" }} />
+            </RescuedMain>
+          ) : (
+            <IssuesTable listing={{ project: "CORE" }} />
+          )}
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -769,6 +782,28 @@ test("by Legion phase only a move within Queue is taken, and every other key mov
   await user.keyboard("{Shift>}L{/Shift}");
   expect(liveRegion().textContent).toBe(DAEMON_SETS_PHASE);
   expect(patch).toHaveBeenCalledTimes(1);
+});
+
+// A Board card is a row of its column's list. A refetch that takes the card holding the focus off
+// the Board - another reader moved its issue on - is a loss the reader did not cause, so the app
+// shell's focus rescue, mounted here on the tab's main content as the shell mounts it, hands the
+// focus into no other card: the reader's next key acts on no card they did not pick.
+test("a card a refetch takes away from under the focus hands it to no other card", async () => {
+  const rows = keyboardIssues();
+  const { client } = board(rows, "?layout=board", null, true);
+  const region = await boardRegion();
+  const bravo = await within(region).findByRole("article", { name: "CORE-2 Bravo" });
+  const title = bravo.querySelector<HTMLElement>("[data-issue-link]");
+  if (title === null) throw new Error("CORE-2's card draws no title link");
+  act(() => title.focus());
+
+  rows.splice(1, 1);
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(bravo).not.toBeInTheDocument());
+  await afterRescue();
+
+  expect(document.activeElement?.closest("[data-board-card]") ?? null).toBeNull();
+  expect(within(region).getByRole("article", { name: "CORE-3 Charlie" })).toBeInTheDocument();
 });
 
 test("j/k/h/l rove real focus over cards, columns and rails", async () => {

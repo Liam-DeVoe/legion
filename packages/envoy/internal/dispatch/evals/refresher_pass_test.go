@@ -99,11 +99,11 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 	r.settle(t)
 	r.pass(t)
 	ctx := t.Context()
-	cursors, err := r.registry.readRefresherCursors(ctx)
+	cursors, _, err := r.registry.readRefresherCursors(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resting := cursors[changesCursor]
+	resting := cursors.changes
 	if resting.Seq == 0 || resting.At == nil {
 		t.Fatalf("the changes cursor rests at %d recorded %v, want a change", resting.Seq, resting.At)
 	}
@@ -133,10 +133,10 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 	r.settle(t)
 	r.exec(t, "log a change for the cursor to rest on", `insert into delivery_changes (kind, repo, ref) values ('session_group', null, 'stall')`)
 	r.pass(t)
-	if cursors, err = r.registry.readRefresherCursors(ctx); err != nil {
+	if cursors, _, err = r.registry.readRefresherCursors(ctx); err != nil {
 		t.Fatal(err)
 	}
-	resting = cursors[changesCursor]
+	resting = cursors.changes
 	r.exec(t, "age the log past its retention", `update delivery_changes set at = now() - interval '25 hours' where seq <= $1`, resting.Seq)
 	r.exec(t, "age the cursor's change with it", `update eval_days_cursor set at = now() - interval '25 hours' where name = $1`, changesCursor)
 	if _, err := delivery.PruneChanges(ctx, r.database.Pool); err != nil {
@@ -148,6 +148,75 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 		t.Errorf("the pass after 25 hours with no pass committed wrote %v, want every walk begun again, EVAL's Legion days among them", stalled.sorted())
 	}
 	t.Logf("after a stall past the retention the pass wrote %d days", len(stalled.days))
+}
+
+// TestARefresherCatchUpThatAPruneCrossesReadsItsCursorAsLost: the refresher's half of the Legion
+// facts consumer's TestAPruneBetweenTwoPagesOfACatchUpReadsTheCursorAsLost. Its last read of the
+// whole change log stands 23 hours before a pass that catches up a backlog a page at a time; the
+// first page reads one change of the backlog and carries that read's ReadAt forward, a prune takes
+// that change and EVAL-1's moved hours after it, and the page after the prune reads the clock two
+// hours on, past the retention since that read. It reads the cursor as lost and begins every walk
+// again, so the walk writes EVAL-1's close day with its new hours, which no page read.
+func TestARefresherCatchUpThatAPruneCrossesReadsItsCursorAsLost(t *testing.T) {
+	r := newRefresherRig(t)
+	history := r.seedLegionEval(t)
+	r.settle(t)
+	r.pass(t)
+	ctx := t.Context()
+	evalID := EvalID("EVAL", SlugLegionWorkTime)
+	if samples := r.day(t, evalID, metrics.SeriesHours, "", history.d1).Samples; slices.Contains(samples, 7) {
+		t.Fatalf("%s already holds 7 hours (%v), so this test examined nothing", history.d1.Format(time.DateOnly), samples)
+	}
+	var first int64
+	if err := r.database.Pool.QueryRow(ctx, `insert into delivery_changes (kind, repo, ref) values ('session_group', null, 'backlog') returning seq`).Scan(&first); err != nil {
+		t.Fatalf("log the backlog's first change: %v", err)
+	}
+	row := history.rows["EVAL-1"]
+	row.WorkHours = 7
+	history.rows["EVAL-1"] = row
+	r.writeFacts(t, history, "EVAL-1")
+	if _, err := delivery.DrainPending(ctx, r.database.Pool); err != nil {
+		t.Fatalf("move EVAL-1's change into the log: %v", err)
+	}
+	last := r.latestSeq(t)
+	r.exec(t, "record the backlog a day ago", `update delivery_changes set at = now() - interval '25 hours' where seq between $1 and $2`, first, last)
+	r.exec(t, "log a change the prune keeps", `insert into delivery_changes (kind, repo, ref) values ('session_group', null, 'kept')`)
+	r.exec(t, "stamp the last read of the whole log 23 hours ago", `update eval_days_cursor set updated_at = $1 where name = $2`, r.now.Add(-23*time.Hour), changesCursor)
+
+	clock := r.now
+	pass := r.registry.newRefresh(r.build, r.now, r.batch)
+	pass.clock = func() time.Time { return clock }
+	if err := pass.load(ctx, r.seeds); err != nil {
+		t.Fatalf("load the pass: %v", err)
+	}
+	safe, err := r.horizon.Await(ctx)
+	if err != nil {
+		t.Fatalf("await the event log's safe horizon: %v", err)
+	}
+	more, err := pass.page(ctx, safe, 1)
+	if cursors, _, readErr := r.registry.readRefresherCursors(ctx); err != nil || readErr != nil || !more || cursors.changes.Seq != first {
+		t.Fatalf("the first page answered more %t, %v, and left the change cursor at %d (%v); want a full page resting on %d", more, err, cursors.changes.Seq, readErr, first)
+	}
+	if _, err := delivery.PruneChanges(ctx, r.database.Pool); err != nil {
+		t.Fatalf("prune the log: %v", err)
+	}
+	if left := r.count(t, `select count(*) from delivery_changes where seq between $1 and $2`, first, last); left != 0 {
+		t.Fatalf("the prune left %d of the backlog's changes %d to %d, so this test examined nothing", left, first, last)
+	}
+	clock = clock.Add(2 * time.Hour)
+	for more {
+		if more, err = pass.page(ctx, safe, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pass.walk(ctx); err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	samples := r.day(t, evalID, metrics.SeriesHours, "", history.d1).Samples
+	if !slices.Contains(samples, 7) {
+		t.Errorf("after the catch-up %s holds the hours %v, want EVAL-1's 7, which the prune took before a page read it", history.d1.Format(time.DateOnly), samples)
+	}
+	t.Logf("the page after the prune read the clock 25 hours after the last read of the whole log; %s then held %v", history.d1.Format(time.DateOnly), samples)
 }
 
 // TestTheUnownedP0RowOfEachDayIsWrittenWithNoDeliverySettings: with no delivery settings, so no

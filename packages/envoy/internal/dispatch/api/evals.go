@@ -272,10 +272,11 @@ func evalCompareRange(compare *evals.Range) *evalRange {
 // evalFreshness is how fresh the day rows an answer folded are: the oldest updated_at among them,
 // the moment each row's values last moved (a rebuild to the same values leaves it, so the live
 // evals view, which hears of a row only when its values move, answers the same; null where it
-// folded none), and how long ago the day-row refresher's last pass committed
-// (evals.Store.RefresherAge), in seconds, null where no pass has run on this database. The
-// refresher is the deployment's one, so its age says how fresh the computed evals' rows are and
-// never whether a project has any.
+// folded none), and the day-row refresher's age (evals.Store.RefresherAge), in seconds: the time
+// since its last pass ran, or since a pass last read the delivery change log to its end,
+// whichever is older, so a pass catching up a backlog of changes reads as old as its last read of
+// the whole log; null where no pass has run on this database. The refresher is the deployment's
+// one, so its age says how fresh the computed evals' rows are and never whether a project has any.
 type evalFreshness struct {
 	RowsUpdatedAt       *time.Time `json:"rows_updated_at"`
 	RefresherAgeSeconds *int       `json:"refresher_age_seconds"`

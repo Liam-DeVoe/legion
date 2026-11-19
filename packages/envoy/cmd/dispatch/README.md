@@ -1503,14 +1503,15 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   Passes start at least 10 s apart.
   The first pass of each process seeds every project's evals (`evals.Store.Ensure`, the catalogue this build states), and each later pass every project no seed has reached (one made by SQL), each project whose seed failed, and each whose seed was refused because its `evals-md` is a file once that artifact is a document again.
   A pass first moves the outbox's pending changes into the change log (`delivery.DrainPending`), then reads the changes and the events after its two cursors (`eval_days_cursor`, `20261117100021`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
-  A change cursor whose change has left the log, or names another change, is a loss only when that change was younger than its 24 hours or no pass committed for longer than that, and so is one above the newest seq of a log that holds rows, whose sequence went backwards (`delivery.CursorLost`, the one rule the delivery live hub and the Legion facts consumer read their own cursors by too): one pruned after its 24 hours while passes committed within them lost nothing, as does one over a log a prune emptied, and a loss begins every walk again.
+  A change cursor whose change has left the log, or names another change, is a loss only when that change was younger than its 24 hours or no page read the change log to its end for longer than that, and so is one above the newest seq of a log that holds rows, whose sequence went backwards (`delivery.CursorLost`, the one rule the delivery live hub and the Legion facts consumer read their own cursors by too): one pruned after its 24 hours while pages read the log to its end within them lost nothing, as does one over a log a prune emptied, and a loss begins every walk again.
+  Each page judges the cursor at its own reading of the clock, and a page shorter than its limit stamps that reading as the cursor's last read of the whole log (`delivery.ChangeCursor`'s `ReadAt`), while a full page leaves the stamp where it stood, so a catch-up that a prune overtakes between two pages reads the cursor as lost.
   The pass then builds up to 28 days of each walk (`eval_days_walks`): every day from the first input day of the delivery and CI rows, of each project's Legion rows and of each project's logged evals, once per build and then each new UTC day, which writes the explicit zero rows of the days nothing happened on, and each project's `unowned-p0` row of today, once a day whether or not delivery settings exist.
   It asks for its next pass at once while a walk has days left, and otherwise at the earlier of the next UTC midnight and five minutes after the oldest delivery change passes its 24 hours, which the pass prunes (`delivery.PruneChanges`), so the change log keeps its retention where no GitHub App runs the reconcile that prunes it too, and the passes that prune a busy log run every five minutes rather than every 10 s.
   A pass that leaves an event above the safe horizon it read (`events.Horizon.HeldBack`) asks for its next pass 10 s on, since the end of the write that held that event back wakes nothing; a failed pass is retried 10 s later.
 
 - The Legion facts consumer (`legionfacts.Run`, lease `legion-facts`) keeps each project's `issue_facts` and `issue_filings` true to their inputs, and holds no timer that rewrites a row.
   It is woken by `dispatch_events`, by the sampler's `dispatch_legion_state` and by `delivery_changes`, and reads the events after its cursor up to the safe horizon it reads once (`events.Horizon.SafeOrAwait`, which waits on no open transaction past a process's first pass), the sampler's observations and the delivery changes (`issue_facts_cursor`).
-  A change cursor lost by the change log's one rule (`delivery.CursorLost`, which reads the change's `at` and the last pass's stamp the cursor row keeps) reads every project whole once; the routine prune of the change the cursor rests on, after a quiet day with passes committed within its 24 hours, is no loss.
+  A change cursor lost by the change log's one rule (`delivery.CursorLost`, which reads the change's `at` and the cursor row's stamp of the last page that read the change log to its end, judged at each page's own reading of the clock) reads every project whole once; the routine prune of the change the cursor rests on, after a quiet day with passes that read the log to its end within its 24 hours, is no loss.
   A pass that leaves an event above that horizon (`events.Horizon.HeldBack`), or that failed, asks for its next pass 10 s on; every other pass answers no due time, and a pass that finds nothing new writes nothing.
   Passes start at least 10 s apart (`legionfacts.PassGap`), so a row stands at most that gap, a lease retry and a pass behind the event that moved it, from the moment the safe horizon can pass that event.
   A row holds its issue's facts closed at the newest input they read and how fast each grows after it (`as_of`, `growth`), so a pass that computes an issue whose inputs did not move writes nothing, and a read closes each open part at its own clock (`legionfacts.Row.At`).
@@ -1623,7 +1624,8 @@ Version 8 is an empty file: that version was recorded from Go by the one-time co
 
 **A migration must leave the release before it able to read and write the schema.**
 A rolling update runs the old build and the new build against one database at once (Running more than one process, above), and the old build applies no compatibility shim:
-nothing at boot refuses a schema newer than the binary knows, since the runner applies the versions it has not recorded and reads no other (`internal/dispatch/store/store.go`, `migrate`).
+nothing at boot refuses a schema newer than the binary knows, since the runner applies the versions it has not recorded and judges only the versions it has a file of (`internal/dispatch/store/store.go`, `migrate`).
+A later release records the identity of each version's first file (`pgmigrate.Migration.RecordedIdentity`, "A recorded version under another file" below), so what it records of a version the old build has a file of is an identity that file accepts.
 So a schema change is expand-then-contract across two releases.
 The expanding migration adds, with a default or a backfill, and the release that ships it writes both shapes;
 the contracting migration — one that drops, renames or narrows — ships no earlier than the next release, once no running build reads the old shape:
@@ -1655,7 +1657,7 @@ Two pull requests open at once used to take one number each and collide only whe
 — nothing conflicts in git — while two timestamps taken a moment apart belong to their own authors.
 The version is the file name's leading digits read as a number, as before, so every timestamp orders after every number and timestamps order among themselves by time.
 A 14-digit version is past what an `integer` column holds, so `schema_migrations.version` is a `bigint`.
-A database created before the change keeps its `integer` column until a boot whose set holds a timestamped migration, which widens it once, in the same locked transaction that creates the table (`createVersionTable`):
+A database created before the change keeps its `integer` column until a boot whose set holds a timestamped migration, which widens it once, in the same locked transaction that creates the table (`prepareVersionTable`):
 a boot with no timestamped migration leaves it alone, because the release before this change reads `max(version)` uncast and would fail that read once on every connection that prepared it while it still serves.
 So this release is rolled out before any release that carries a timestamped migration:
 a deployment that skips it costs the release it replaces one failed `/healthz` schema read on each connection that prepared the uncast read, which pgx then drops.
@@ -1671,7 +1673,7 @@ If T2 deploys before T1 merges, that database applies T2 then T1 while a fresh o
 So a migration must not depend on its order relative to one written in a concurrent pull request, another branch open at the same time;
 one that needs another's effect is written after that one has merged.
 
-The runner records a migration by its version alone, so before it touches the database it reads the whole directory (`pgmigrate.Load`) and refuses to start, applying nothing and naming every file concerned, when two migrations share a version (it would apply the first and skip the rest as already applied;
+The runner applies every version it has not recorded, so before it touches the database it reads the whole directory (`pgmigrate.Load`) and refuses to start, applying nothing and naming every file concerned, when two migrations share a version (it would apply the first and skip the rest as already applied;
 keep the version on the file that merged to `main` first, since a database may already have applied it, and give each of the rest the UTC moment it was created), when a file is named other than `<version>_<name>.up.sql`, `<version>_<name>.down.sql` or `<version>_<name>.census.sql` (a `.down.sql` is a rollback script an operator runs by hand, and a `.census.sql` is the migration's census, "Pre-deploy census" below;
 each needs its `.up.sql`), when a census is not one `select` or calls a function it may not (below), when a version is not decimal digits of a positive number the `bigint` column holds, and when a file cannot be read.
 The directory is embedded with `all:`, which keeps a name beginning with `_` or `.`, so such a name is refused like any other.
@@ -1680,11 +1682,80 @@ Vim writes its swap file beside the file it edits by default.
 What no directive embeds, such as a symlink, a `.git` or a hidden name Go's module paths refuse, never reaches the runner, so only the store's tests catch it (`pgmigrate/pgmigratetest.CheckEmbedsEveryFile` names each cause).
 Versions are applied by their number, not by file name, and the store's tests require every file on disk to be embedded (`TestEveryMigrationFileIsEmbedded`) and the identifiers to be the numbered migrations 1 to the number the series closed at (recorded once in `migrationid`), each taken once with none above it, and a real UTC instant above them (`TestMigrationSetTakesNumbersThenTimestamps`, `migrationid.Check`), both reading file names alone.
 
+**A recorded version under another file.**
+`schema_migrations` records three facts of each applied migration beside its version.
+`name` and `checksum` hold an identity: a file's name, without its directory, and the sha256 of its whole text, in lower-case hex.
+For a file with no `-- replaces:` line that identity is the file's own; for one with them it is the one its first line names, the version's first file (`pgmigrate.Migration.RecordedIdentity`), so every release whose file of the version is in the chain accepts it.
+`applied_checksum` holds the sha256 of the text the runner applied, so a database that ran an edit of the file this build does not hold, such as another branch's, is told apart from one that ran this build's text.
+A row the runner fills, which an earlier runner wrote, records no applied text, since nothing says which text ran.
+The runner adds the nullable columns itself to a table an earlier runner made, in the locked transaction that creates the table (`prepareVersionTable`), reading the columns first so that the `alter table` runs once per database:
+it takes `ACCESS EXCLUSIVE` on `schema_migrations`, and its wait is bounded by `pgmigrate.LockTimeout`, five seconds.
+A wait that outlasts it, behind a `pg_dump` or a census, rolls the transaction back and tries it again, up to `pgmigrate.LockTimeoutAttempts` times with a pause between, as a migration is tried (`pgmigrate.RetryVersionTableLockTimeouts`); a holder that outlives every attempt fails the boot with the lock-timeout error, not a refusal.
+Adding the columns is a catalog change that rewrites no row; where the same boot also widens the version column (above), once, for a table from before the timestamps, the one statement does both, and the widen rewrites the table's few hundred rows.
+Every statement the release before it sends on the table names its columns, so that release serves beside it while it rolls, and the rows it writes record no name.
+In the same transaction, before it applies anything, the runner reads every row and judges it against this build's file of the row's version (`pgmigrate.Reconcile`):
+
+- A row whose name is null, which is every row a runner before this one wrote, and one written by hand, is filled with the recorded identity and never refused; a name that is not null, the empty string included, is judged like any other.
+  Each fill logs `pgmigrate: recorded the identity of a migration applied before the runners recorded identities` at INFO, with the table, the version, the name and the checksum.
+
+- A row whose identity is neither the file's own nor one its replaces lines name is refused.
+
+- A row whose identity passes, but whose applied text is neither the file's own text nor one its replaces lines name, is refused: the database ran an edit of the file this build does not hold.
+
+- Any other row passes and is left as it is: the release that recorded it still finds what it records there and boots, as a rolling update and the auto-deployer's version-only rollback need, on a database an earlier release created and a later one migrated forward (`TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile`).
+  A second edit of the same file keeps the first replaces line first and adds one naming the first edit's identity after it, so the chain covers every text a database may have applied, and the recorded identity stays the version's first.
+
+- A version no file of the build has is left as it is, as before: an image rolled back meets the versions a later one recorded.
+
+The refusal names the version, what the database records and what the build's file is, and both ways out:
+
+```text
+migrations refused, none applied: version 20261117022936 is recorded as 20261117022936_legion_current.up.sql sha256:<recorded>, and this build's file of version 20261117022936 is 20261117022936_legion_current.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 20261117022936_legion_current.up.sql, after the replaces lines it has (its first replaces line names the identity version 20261117022936 first shipped with): -- replaces: 20261117022936_legion_current.up.sql sha256:<recorded>
+```
+
+A file whose replaces lines name other identities adds `, whose replaces lines name only <identity>` after its own.
+A refusal of the applied text reads `version <v> is recorded as <identity>, which this build's file of version <v>, <file>, accepts, but the text applied under it has sha256 <text>, which neither that file nor its replaces lines name`, and offers the lines that would accept that text.
+The runner gives the key back between that judgment and each migration, so another process can record any version in between: before it applies a migration, the runner judges every row again against its whole set, and applies nothing while any row is refused, in either apply mode.
+Such a refusal reads `apply migration <version>: check migration: version …`, and the migrations the boot applied before it stay applied.
+A lock timeout, or a failed read or write of the table, reads `read or record what schema_migrations records, none applied: …` instead, and asks for no reset.
+What the operator does:
+
+- A database that ran another branch's or an earlier commit's migration, or an edit of one, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.
+  This includes a fresh preview or development database that a newer build created and an older build then boots: the older build refuses it, and you reset it.
+  It includes too a development or preview database whose rows recorded no name when a branch's build first booted it under this runner, where that branch edits a migration in place and its file does not yet declare main's identity of it in a replaces line: the boot filled the row with the branch's own identity, not main's, and main refuses that identity, so you reset it.
+  A branch whose edited file already declares main's identity, as the pre-merge check requires, fills the row with main's identity, and main boots on it.
+  A production database meets this refusal only on a rollback by hand to a release it never ran, one older than the release that first applied a migration it holds; roll back only to a release the database ran, as the auto-deployer does, which rolls back to the image that was running, and only when the deploy applied no version.
+
+- A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own and outside every literal; in a `-- pgmigrate:non-transactional` file it goes after the marker, which stays the first line, and the loader refuses a file whose marker stands on any other line, naming it, since such a file would run in a transaction.
+  The first replaces line names the identity the version first shipped with, and a later line goes after the ones there, in their order; the next boot accepts the row as it is.
+  The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
+  A line ending in a carriage return, as a file with CRLF line endings has, is read without it.
+  Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version, building `./internal/pgmigrate/cmd/edited-migrations` and running it with `--base <commit>` (built and run, it exits 2 when the check could not be taken; `go run` reports every failure as exit 1).
+  The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch that names none fails the check.
+  It fails a head file whose first replaces line is not the base's first identity, a head file that accepts no text of the base's, and a base file whose version the head no longer has a file of, each naming the lines to add, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
+  A revert of an edit is refused there too, since a database the edited release created applied the edit's text: the revert keeps the replaces lines.
+
+**The limit.**
+A release cannot accept a text it has never seen, so it refuses a database whose migration a later release applied from an edited text: a database that a later release created from empty when that release had edited a migration, and a production database that skipped the release which first shipped a migration, rolled back by hand to that release.
+A release boots on a database a later release filled, since a fill records the version's first identity and no applied text.
+That is the same row a development database leaves when it ran another branch's edit, and refusing it is what this check is for.
+A production database is created once and booted by every later release, so a rollback onto it to a release it ran, and a rolling update over it, still boot: a later release applies no version the earlier one holds, and leaves each row's applied text as it was.
+A fill records the file of the build that boots, not the text the database ran, so an edited text a database ran before the runners recorded identities is not detected: the first boot of this runner records its own file's identity for that version, and refuses nothing.
+The two-build tests build their database the same way, in production's order: the previous release migrates it from empty, then this tree migrates it forward, and the previous release boots on that (`laneDatabase`, `cmd/dispatch/twobuild_harness_test.go`); the browser step starts the previous release first for the same reason (`packages/dispatch/e2e/harness-listeners.ts`).
+So a pull request that edits a migration the previous release holds, with its replaces line, keeps that lane green, as it keeps production booting (`TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration`, whose control is a database the pull request's tree migrated from empty, which the previous release refuses).
+
+Every row a runner before this one wrote has a null name, so a database's first boot of this runner fills each one with the identity this runner records of its file, and refuses none.
+A migration edited in place after this runner's first release needs its replaces line, which the pre-merge check requires.
+`DATABASE_URL=<url> envoy-dispatch versions`, run as a one-off task of the image about to roll out, reads in a read-only transaction what that image's next boot would do with each row, and exits 1 when a recorded version has no file, a row would be refused, or the table records nothing on the connection's `search_path`, which it reports as `NOTHING CHECKED` rather than as a clean check (`pgmigrate.CheckVersions`); a `search_path` that names no schema is an error, exit 2.
+`envoy-broker versions` is the broker's, signing in as a broker pod does (`docs/site/src/content/docs/broker/operate.md`).
+The pre-deploy census (`envoy-dispatch census`) reads only which versions are recorded, and judges no identity.
+
 A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
 The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
+It refuses, naming the line, a file that holds the marker as a comment of its own on any other line, as one does with a replaces line written above it: that file would run in a transaction, and its concurrent index would fail on a fresh database.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
 Every runner takes that key by polling `pg_try_advisory_lock` as statements of its own, with nothing open between two tries, and never by a blocking call: a backend blocked on a lock keeps the snapshot its statement took, and a concurrent index build waits for every older snapshot, so a blocking wait and the build that holds the key deadlock (SQLSTATE 40P01, measured on PostgreSQL 18.6).
-That holds at each of the three places a boot waits for the key (`createVersionTable`, `applyMigrationOnce`, `applyNonTransactionalMigration`) and at the auto-deployer's schema read.
+That holds at each of the three places a boot waits for the key (`prepareVersionTable`, `applyMigrationOnce`, `applyNonTransactionalMigration`) and at the auto-deployer's schema read.
 If recording the version fails after a successful build, the next boot safely repeats the idempotent statement.
 An INVALID index of the migration's own index name, on the table the migration builds on, is the runner's own leftover, from a build its lock bound cancelled or a boot that was killed mid-build: the runner drops it with `drop index concurrently if exists`, logged at WARN, and builds the index again, so one failed build no longer stops every later boot.
 An index of that name on another table, valid or INVALID, is refused with a schema-qualified `DROP INDEX CONCURRENTLY` recovery command, because `IF NOT EXISTS` skips on any relation of that name in the schema and the index would never be built on the target table.
@@ -2719,7 +2790,7 @@ while a deployment rolls, the old build's connections are still open and still h
 `envoy-dispatch census` is run before a new image goes out, with the service's `DATABASE_URL` and under the service's own database credentials, and it is a gate:
 a census that refuses stops the deploy before the service moves, and nothing accepts a refusal and rolls past it.
 The `envoy-infra:gcp:Dispatch` component registers no census task, so a deployment runs it itself against its database before it updates the image:
-as a Kubernetes Job from the new image, or by hand with the `kubectl run` recipe in `packages/envoy/infra/README.md`.
+as a Kubernetes Job from the new image, or by hand as the one-off pod in `packages/envoy/infra/README.md` ("The pods"), which runs `census` and `versions` alike.
 
 ```bash
 DATABASE_URL=postgres://... envoy-dispatch census
@@ -4141,7 +4212,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Log one batch of readings of one eval, `{readings, actor?}`, stored in one transaction or not at all; an `Idempotency-Key` is required (`400 IDEMPOTENCY_KEY_REQUIRED`), and a repeat under it is answered the first write's answer.
   A slug no eval holds registers its eval with the caller as owner, no target and state `active`; a reading under a computed eval's slug is stored and answered by its items, and never folded into its value.
-  The write that registers its eval writes the eval's section of `evals-md` as a register write does (above): queued behind the project's other registry writes of the document, and last, after its readings and day rows.
+  The write that registers its eval writes the eval's section of `evals-md` as a register write does (above): under the document's owner lock, which every writer of the document takes, with the section read and rendered before the write stores anything, and committed in the same transaction as the eval's version.
   The server sets `recorded_by` and `recorded_at`, and a row carrying either is refused; a row whose value would take a sum of its day row (its values, or each weighted by its `n`) past what a float holds is refused `READING_DAY_OVERFLOW`, since no read could answer it; a refused batch stores nothing and answers `400 {code, error, rows}`, each refused row named by its index and field with its own code.
   A row's `measured_at` lies from 2025-01-01T00:00:00Z (`evals.MeasuredAtFloor`) to 24 hours after the server's time, else the row is refused `MEASURED_AT_OUT_OF_RANGE`: the refresher writes a logged eval's zero rows from its first day on, and one reading at 0001-01-01 made it write 739,934 rows.
   A row's `series`, `row_kind`, `row_key` and `attributes.repo`, and the slug, hold at most 512 bytes each (`EVAL_KEY_TOO_LONG`), and a link's `href` is an absolute `http` or `https` URL (`LINK_HREF_NOT_ABSOLUTE`, `LINK_HREF_NOT_HTTP`).
@@ -4318,7 +4389,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-six tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-seven tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
   The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.

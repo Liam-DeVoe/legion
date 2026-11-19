@@ -12,6 +12,8 @@ package legion
 // reports of one issue, and what the tree walk reads of one (TreeChain). Neither reader's own
 // population comes here, and nothing here reads a database.
 
+import "slices"
+
 // LineIssue is what the line reads of one issue the daemon reports: the phase the daemon puts it
 // in and the slot it holds of its own. Both readers take them from the newest observation of each
 // field, by the one decode of that field (ParseSlot).
@@ -59,6 +61,8 @@ type WaitingLine struct {
 
 // NewWaitingLine numbers the line and takes the blocker links. A key the daemon reports nothing
 // of takes no place: the board draws no card for it, so no reader has a card to put a place on.
+// A field of the admission block it comes to read goes into SameLine too: a reader that holds a
+// line asks SameLine whether the next block builds another one.
 func NewWaitingLine(input WaitingLineInput) *WaitingLine {
 	line := &WaitingLine{
 		input:    input,
@@ -84,6 +88,20 @@ func NewWaitingLine(input WaitingLineInput) *WaitingLine {
 		line.blockers[blocked.Issue] = blocked.BlockedBy
 	}
 	return line
+}
+
+// SameLine is whether two admission blocks build the same line: the fields NewWaitingLine reads,
+// which are whether a block is recorded at all (nil for none), its Waiting, and the Issue and the
+// BlockedBy of each of its Blocked, each in its order. The cap, the active slots and the live
+// trees build no part of the line. The facts consumer asks it of each new block against the one
+// before it, and recomputes no waiting reason where it holds (legionfacts' blockMoved).
+func SameLine(a, b *Admission) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return slices.Equal(a.Waiting, b.Waiting) && slices.EqualFunc(a.Blocked, b.Blocked, func(x, y BlockedIssue) bool {
+		return x.Issue == y.Issue && slices.Equal(x.BlockedBy, y.BlockedBy)
+	})
 }
 
 // queued is what this line knows of the issue, in the shape the column rule reads (Queued):

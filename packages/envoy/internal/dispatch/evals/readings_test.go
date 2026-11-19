@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -416,6 +418,75 @@ func TestTwoFirstWritesOfOneSlugRegisterItOnce(t *testing.T) {
 	}
 }
 
+// TestACorrectionWaitsForTheEvalsLockHoldingNoTransactionID: a correction of a reading of an
+// eval whose lock another transaction holds waits for that lock before it locks the reading it
+// replaces, so it waits holding no transaction id (pg_stat_activity's backend_xid is null) and
+// holds back no reader of the event log, whose horizon waits for every running transaction id
+// (events.Horizon). Let go, it lands. Before, it locked the reading first (lockReplaced, `for
+// update`), which gave it an id it held for the whole wait.
+func TestACorrectionWaitsForTheEvalsLockHoldingNoTransactionID(t *testing.T) {
+	r := newRig(t)
+	slug := "correction-wait"
+	stored := r.write(t, slug, alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 4, "measured_at": at(4, 9, 0)}))
+	evalID, replaced := stored.Definition.EvalID, stored.Readings[0].ID
+	holder, err := r.database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer holder.Rollback(context.Background())
+	if err := lockEval(t.Context(), holder, evalID); err != nil {
+		t.Fatalf("hold the eval's lock: %v", err)
+	}
+
+	answered := make(chan error, 1)
+	go func() {
+		_, err := r.registry.WriteReadings(t.Context(), Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
+			Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 6, "measured_at": at(4, 9, 0), "replaces": replaced})}})
+		answered <- err
+	}()
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Minute); waiting < 1 {
+		t.Fatalf("the correction never waited for the eval's lock")
+	}
+	// backend_xid is null for a backend holding no transaction id, read here as "".
+	rows, err := r.database.Pool.Query(t.Context(), `
+		select pid, coalesce(wait_event, ''), coalesce(backend_xid::text, '') from pg_stat_activity
+		where datname = current_database() and $1::integer = any(pg_blocking_pids(pid))
+	`, int32(holder.Conn().PgConn().PID()))
+	if err != nil {
+		t.Fatalf("read the backends waiting on the eval's lock: %v", err)
+	}
+	type waiter struct {
+		pid       int32
+		waitEvent string
+		xid       string
+	}
+	waiters, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (waiter, error) {
+		var found waiter
+		err := row.Scan(&found.pid, &found.waitEvent, &found.xid)
+		return found, err
+	})
+	if err != nil {
+		t.Fatalf("read the backends waiting on the eval's lock: %v", err)
+	}
+	if len(waiters) != 1 || waiters[0].waitEvent != "advisory" {
+		t.Fatalf("the backends waiting on the holder are %+v, want the correction alone, on the eval's advisory lock", waiters)
+	}
+	if xid := waiters[0].xid; xid != "" {
+		t.Errorf("the correction waits for the eval's lock holding transaction id %s, want none", xid)
+	}
+	t.Logf("backend %d waits on the eval's %s lock holding transaction id %q", waiters[0].pid, waiters[0].waitEvent, waiters[0].xid)
+
+	if err := holder.Commit(t.Context()); err != nil {
+		t.Fatalf("release the eval's lock: %v", err)
+	}
+	if err := <-answered; err != nil {
+		t.Fatalf("the correction, let go: %v", err)
+	}
+	if superseded := r.count(t, `select count(*) from eval_readings where id = $1 and superseded_at is not null`, replaced); superseded != 1 {
+		t.Errorf("the reading the correction replaces is not superseded")
+	}
+}
+
 // TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow: a correction leaves the reading
 // it replaces stored, with superseded_at set, and takes that reading's part out of its day rows
 // while adding its own: the project's row and its repository's row both move n, sum, samples,
@@ -485,11 +556,12 @@ func TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow(t *testing.T
 // and then a correction of the day's 08:00 reading, which folds the day's row again. The day's
 // last value is the reading of the write that began later, whose recorded_at (the time its
 // transaction began) breaks the tie, once both writes land and after the refold alike. The write
-// that began first also corrects a reading of the 3rd, and is held at its lock of that reading,
-// which it takes before anything of the eval, while the other writes and commits. Before, it
-// appended its reading to the row the other had written and so made it the day's last, as the
-// later part at an equal moment, and the refold, which orders the readings by when their writes
-// began, put the other's back: the day's last flipped from 10 to 20.
+// that began first is held right after its transaction began, before it takes the eval's lock,
+// the first lock it takes (WriteReadings), while the other writes and commits: its registry's
+// document service holds its Join, the step after the begin (joinPause). Before, it appended its
+// reading to the row the other had written and so made it the day's last, as the later part at
+// an equal moment, and the refold, which orders the readings by when their writes began, put the
+// other's back: the day's last flipped from 10 to 20.
 func TestTheDaysLastSurvivesARefoldWhenTheLaterStartedOfTwoTiedWritesCommitsFirst(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
@@ -502,28 +574,28 @@ func TestTheDaysLastSurvivesARefoldWhenTheLaterStartedOfTwoTiedWritesCommitsFirs
 		}
 		return row(t, fields)
 	}
-	stored := r.write(t, slug, alice, minutes("held", 1, at(3, 9, 0), ""), minutes("early", 1, at(4, 8, 0), ""))
-	held, early := stored.Readings[0].ID, stored.Readings[1].ID
-	holder, err := r.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the holder: %v", err)
+	early := r.write(t, slug, alice, minutes("early", 1, at(4, 8, 0), "")).Readings[0].ID
+	pause := joinPause{API: r.documents, reached: make(chan struct{}), release: make(chan struct{})}
+	let := sync.OnceFunc(func() { close(pause.release) })
+	t.Cleanup(let)
+	held := New(r.database, pause, r.registry.events)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := held.WriteReadings(context.WithValue(ctx, joinPauseKey{}, true), Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
+			Rows: []json.RawMessage{minutes("first", 10, moment, "")}})
+		firstDone <- err
+	}()
+	select {
+	case <-pause.reached:
+	case err := <-firstDone:
+		t.Fatalf("the write that began first answered %v before it was held", err)
+	case <-time.After(lockOrderBound):
+		t.Fatalf("the write that began first never reached its Join")
 	}
-	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
-	if _, err := holder.Exec(ctx, `select 1 from eval_readings where id = $1::uuid for update`, held); err != nil {
-		t.Fatalf("lock the reading the first write corrects: %v", err)
-	}
-	firstErr, laterErr := race(t, holder,
-		func(ctx context.Context) error {
-			_, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
-				Rows: []json.RawMessage{minutes("held", 2, at(3, 9, 0), held), minutes("first", 10, moment, "")}})
-			return err
-		},
-		func(ctx context.Context) error {
-			_, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
-				Rows: []json.RawMessage{minutes("later", 20, moment, "")}})
-			return err
-		})
-	if firstErr != nil || laterErr != nil {
+	_, laterErr := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
+		Rows: []json.RawMessage{minutes("later", 20, moment, "")}})
+	let()
+	if firstErr := <-firstDone; firstErr != nil || laterErr != nil {
 		t.Fatalf("the write that began first answered %v and the one that began later %v", firstErr, laterErr)
 	}
 	var laterBegan bool
@@ -546,6 +618,26 @@ func TestTheDaysLastSurvivesARefoldWhenTheLaterStartedOfTwoTiedWritesCommitsFirs
 			t.Errorf("the 4th's last value %s is %s, want 20 at 12:00, the reading of the write that began later", check.when, showValue(check.row.LastValue))
 		}
 	}
+}
+
+// joinPauseKey marks the context of a write whose Join a joinPause holds.
+type joinPauseKey struct{}
+
+// joinPause is a registry's document service whose Join, the step of every registry write right
+// after its transaction begins (writeOnce), says so on reached and waits for release in a write
+// whose context carries joinPauseKey: so that write's transaction has begun, and its now() is
+// fixed, before it takes any lock. Every other call goes to the service it holds.
+type joinPause struct {
+	docs.API
+	reached, release chan struct{}
+}
+
+func (p joinPause) Join(ctx context.Context, tx pgx.Tx) (context.Context, *docs.Ledger) {
+	if ctx.Value(joinPauseKey{}) != nil {
+		p.reached <- struct{}{}
+		<-p.release
+	}
+	return p.API.Join(ctx, tx)
 }
 
 // TestAWriteThatEmptiesADayRowWritesItsZeroRowBesideTheRowsItFills: one write's day rows are

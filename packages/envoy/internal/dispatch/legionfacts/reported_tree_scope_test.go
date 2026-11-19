@@ -82,9 +82,18 @@ func TestAChangeToAChildRecomputesTheRootItReportsAsItsTree(t *testing.T) {
 			tree, show(want))
 	}
 
-	if difference := rowDifference(stored[tree], want); difference != "" {
+	// This pass runs at the first pass's moment, and a rewrite at the moment the row was last
+	// written stores updated_at a microsecond past it (upsert), so the row's moment is held to move
+	// from the row before rather than to equal the computation's.
+	fresh := want
+	fresh.UpdatedAt = stored[tree].UpdatedAt
+	if difference := rowDifference(stored[tree], fresh); difference != "" {
 		t.Errorf("%s is the root %s reports as its tree, and its stored row is not the row the computation answers for it: %s",
 			tree, child, difference)
+	}
+	if !stored[tree].UpdatedAt.After(before[tree].UpdatedAt) {
+		t.Errorf("%s is the root %s reports as its tree, and its row was rewritten at %s, no later than the row before it, written at %s",
+			tree, child, stored[tree].UpdatedAt.UTC(), before[tree].UpdatedAt.UTC())
 	}
 	if !slices.Contains(changed, tree) {
 		t.Errorf("%s is the root %s reports as its tree and the pass left its row alone; it changed %v", tree, child, changed)

@@ -120,6 +120,10 @@ function MachineView({ host }: { host: string }): ReactNode {
     age === undefined
       ? undefined
       : (relativeTimeLabel(new Date(age.oldestSeen), now) ?? "just now");
+  // No link where the Agents page's address cannot carry the host's name whole
+  // (`agentsAddress`): a cut name would open another machine's sessions, or none. The heading
+  // still names the host.
+  const agentsLink = agentsAddress({ machines: [host] });
 
   return (
     <section aria-label={`Machine ${host}`} data-machine={host} data-testid="machine-page">
@@ -134,9 +138,11 @@ function MachineView({ host }: { host: string }): ReactNode {
         </h1>
         <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
           <span>{sessionCountSentence(model.summary)}</span>
-          <Link className={`${linkText} ${linkHoverText}`} to={agentsAddress({ machines: [host] })}>
-            Agents on this machine
-          </Link>
+          {agentsLink === null ? null : (
+            <Link className={`${linkText} ${linkHoverText}`} to={agentsLink}>
+              Agents on this machine
+            </Link>
+          )}
         </p>
       </header>
       {model.sharedName ? (

@@ -346,7 +346,9 @@ test("merge to production shows the response's verdict and its target as its eva
   expect(merge.innerHTML).toContain("target under 45m for every change (the dashed line)");
   expect(judged("merge_to_production")).toEqual(["Longest today 38m, 7 days 52m"]);
   expect(card("opened_to_merge").innerHTML).toContain("target median under 60m (the dashed line)");
-  expect(judged("opened_to_merge")).toEqual(["Median today 60m, 7 days 60m"]);
+  // Today's median, 59.9m, and the seven days', 59.95m, meet "under 60m": whole minutes would
+  // print the target itself beside their green, so they take the digits that do not (R3-C1).
+  expect(judged("opened_to_merge")).toEqual(["Median today 59.9m, 7 days 59.95m"]);
   for (const metric of ["pr_ci", "staging_e2e", "staging_apply", "production_apply"]) {
     expect(card(metric).innerHTML).not.toContain("target");
   }
@@ -499,24 +501,35 @@ function targetLines(metric: string): number {
   return card(metric).querySelectorAll('svg[aria-label="per-day median and p90"] line').length;
 }
 
-/** The tone of each figure of a lead-time card a target may tone, met, missed or plain, by where
- *  it stands and what it shows: its Today and Last 7 days figures as `<span> <statistic>`, and
- *  each judged line's two as `line <span> <statistic>`. */
+/** Each figure of a lead-time card a target may tone, keyed by where it stands and what it shows:
+ *  its Today and Last 7 days figures as `<span> <statistic>`, and each judged line's two as
+ *  `line <span> <statistic>`; with its tone, met, missed or plain, and what it writes. */
+function figures(metric: string): [string, { tone: string; text: string }][] {
+  return Array.from(card(metric).querySelectorAll("span[data-statistic]"), (figure) => {
+    const className = figure.getAttribute("class") ?? "";
+    const tone = className.includes(successText)
+      ? "met"
+      : className.includes(dangerText)
+        ? "missed"
+        : "plain";
+    const line = figure.closest("[data-judge]") === null ? "" : "line ";
+    return [
+      `${line}${figure.getAttribute("data-span")} ${figure.getAttribute("data-statistic")}`,
+      { tone, text: figure.textContent ?? "" },
+    ];
+  });
+}
+
+/** The tone of each figure of a lead-time card a target may tone (`figures`). */
 function tones(metric: string): Record<string, string> {
+  return Object.fromEntries(figures(metric).map(([key, { tone }]) => [key, tone]));
+}
+
+/** What each figure of a lead-time card a target may tone writes, and its tone (`figures`):
+ *  "44.6m met". */
+function written(metric: string): Record<string, string> {
   return Object.fromEntries(
-    Array.from(card(metric).querySelectorAll("span[data-statistic]"), (figure) => {
-      const className = figure.getAttribute("class") ?? "";
-      const tone = className.includes(successText)
-        ? "met"
-        : className.includes(dangerText)
-          ? "missed"
-          : "plain";
-      const line = figure.closest("[data-judge]") === null ? "" : "line ";
-      return [
-        `${line}${figure.getAttribute("data-span")} ${figure.getAttribute("data-statistic")}`,
-        tone,
-      ];
-    })
+    figures(metric).map(([key, { tone, text }]) => [key, `${text} ${tone}`])
   );
 }
 
@@ -939,6 +952,60 @@ test("a lead-time chart draws its target line exactly where its bars take a tone
   // the same, since the catalogue's target judges the median the bars draw.
   view({ ...PIPELINE, merge_to_production: leadTimes(null, null) });
   expect(targetLines("merge_to_production")).toBe(1);
+});
+
+// R3-C1, the architect's rule of 2026-11-19 for review round 3: a toned figure's printed text lies
+// on the same side of its target as its value. A lead time that rounds to the target itself, "45m"
+// in green beside "under 45m for every change", is written with more digits until it does not.
+test("a toned lead-time figure is written on its value's side of the target: more digits where whole minutes would print the target itself", () => {
+  view({
+    ...PIPELINE,
+    merge_to_production: leadTimes(
+      { n: 1, median: 44.6, p90: 44.6, max: 44.6 },
+      { n: 2, median: 44.6, p90: 44.8, max: 44.9 }
+    ),
+  });
+  // Under 45m for every change: today's 44.6m and the seven days' median, 44.6m, and longest
+  // change, 44.9m, meet, where whole minutes would print 45m. No judge names the p90, which keeps
+  // its whole minutes, nor the count.
+  expect(judged("merge_to_production")).toEqual(["Longest today 44.6m, 7 days 44.9m"]);
+  expect(written("merge_to_production")).toEqual({
+    "day minutes.median": "44.6m met",
+    "day minutes.p90": "45m plain",
+    "day minutes.n": "1 plain",
+    "window minutes.median": "44.6m met",
+    "window minutes.p90": "45m plain",
+    "window minutes.n": "2 plain",
+    "line day minutes.max": "44.6m met",
+    "line window minutes.max": "44.9m met",
+  });
+  // PR open to merge under 60m, judged by its median: today's 59.9m and the seven days' 59.95m
+  // meet, where whole minutes would print 60m, and one decimal 60.0m.
+  expect(judged("opened_to_merge")).toEqual(["Median today 59.9m, 7 days 59.95m"]);
+  expect(written("opened_to_merge")).toMatchObject({
+    "day minutes.median": "59.9m met",
+    "window minutes.median": "59.95m met",
+  });
+});
+
+// R3-C1: the digits are added only where whole minutes would print the figure on the other side of
+// its target; a lead time whose whole minutes print it on its value's side keeps them, one at the
+// target itself included.
+test("a toned lead-time figure whose whole minutes print it on its value's side of the target keeps them", () => {
+  view();
+  // Under 45m for every change: today's 38m meets; the seven days' median, 45m, sits on the
+  // target and misses, as its value does; the longest change, 52m, misses.
+  expect(judged("merge_to_production")).toEqual(["Longest today 38m, 7 days 52m"]);
+  expect(written("merge_to_production")).toEqual({
+    "day minutes.median": "38m met",
+    "day minutes.p90": "38m plain",
+    "day minutes.n": "1 plain",
+    "window minutes.median": "45m missed",
+    "window minutes.p90": "51m plain",
+    "window minutes.n": "2 plain",
+    "line day minutes.max": "38m met",
+    "line window minutes.max": "52m missed",
+  });
 });
 
 test("lists the slowest jobs in the server's order and the jobs that failed in the last day", () => {

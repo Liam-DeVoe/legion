@@ -640,3 +640,84 @@ func documentRowHeld(t *testing.T, holder pgx.Tx, documentID string) bool {
 	}
 	return !found
 }
+
+// collidingIDs is how many eval ids of the shape P/s<n> the test below searches for two whose
+// lock keys collide: the key is a 32-bit hash, so about ten pairs collide among 300,000 ids (12 on
+// the server the test was written against, found in under a second).
+const collidingIDs = 300_000
+
+// TestTwoWritersLockingEvalsWhoseKeysCollideNeverDeadlock: lockEvals over ids whose lock keys
+// (hashtext('eval:' || id)) collide. The test finds two ids, a and c, that share a key, and a
+// third, b, between them in byte order under another key. While the test holds the shared key,
+// one writer locks a and b and queues on it, and then a second locks b and c and queues too; the
+// test then lets them on. Taken in the byte order of the ids, the first took the shared key and
+// then b's and the second b's and then the shared key, c's: each waited for the other, and
+// Postgres ended one of them with 40P01. Taken in key order, both take the two keys in one order,
+// and both land.
+func TestTwoWritersLockingEvalsWhoseKeysCollideNeverDeadlock(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(t.Context(), lockOrderBound)
+	defer cancel()
+	searched := time.Now()
+	var a, b, c string
+	var shared, other int32
+	if err := database.Pool.QueryRow(ctx, `
+		with ids as materialized (
+			select 'P/s' || n as id, hashtext('eval:P/s' || n) as key from generate_series(1, $1::integer) n),
+		pairs as (
+			select min(id collate "C") as a, max(id collate "C") as c, key
+			from ids group by key having count(*) = 2)
+		select pairs.a, middle.id, pairs.c, pairs.key, middle.key
+		from pairs cross join lateral (
+			select ids.id, ids.key from ids
+			where ids.id collate "C" > pairs.a and ids.id collate "C" < pairs.c and ids.key <> pairs.key
+			limit 1) middle
+		order by pairs.a
+		limit 1
+	`, collidingIDs).Scan(&a, &b, &c, &shared, &other); err != nil {
+		t.Fatalf("find two of %d eval ids whose lock keys collide, and one between them: %v", collidingIDs, err)
+	}
+	t.Logf("%s and %s share the key %d and %s between them holds %d, found among %d ids in %s",
+		a, c, shared, b, other, collidingIDs, time.Since(searched).Round(time.Millisecond))
+	if !(a < b && b < c) {
+		t.Fatalf("%s, %s and %s are not in byte order", a, b, c)
+	}
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if err := lockEval(ctx, holder, a); err != nil {
+		t.Fatalf("hold the key of %s: %v", a, err)
+	}
+	lock := func(ids ...string) <-chan error {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the writer of %v: %v", ids, err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			if err := lockEvals(ctx, tx, ids); err != nil {
+				_ = tx.Rollback(context.Background())
+				done <- err
+				return
+			}
+			done <- tx.Commit(ctx)
+		}()
+		return done
+	}
+	first := lock(a, b)
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, lockOrderBound); waiting < 1 {
+		t.Fatalf("the writer of %s and %s never waited for the key the test holds", a, b)
+	}
+	second := lock(b, c)
+	if waiting := storetest.WaitForLockWaiters(t, holder, 2, lockOrderBound); waiting < 2 {
+		t.Fatalf("the writer of %s and %s never waited, behind the test or the first writer", b, c)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("let the writers on: %v", err)
+	}
+	requireNoDeadlock(t, "the writer of "+a+" and "+b, <-first)
+	requireNoDeadlock(t, "the writer of "+b+" and "+c, <-second)
+}

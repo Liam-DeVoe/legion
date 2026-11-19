@@ -1,14 +1,16 @@
 import type { Row } from "@tanstack/react-table";
 import type { ReactNode } from "react";
 import { DataTableCells, type LineProps } from "../../components/DataTable";
+import { ROW_MARKER } from "../../components/row-marker";
 import { focusVisibleRing, selectedCardBg } from "../../theme/classes";
 
 /**
  * One row of the priorities table: the shared cells, and, while the table's order is the
  * reader's to drag, the drop that lands another row here. The row carries `data-priority-row`
  * and `data-priority-group` (`PRIORITY_ROW_ATTRIBUTE` and `PRIORITY_GROUP_ATTRIBUTE`), which
- * the table's own keys walk it by and its box measures its height from. The row being dragged
- * is painted to its left edge, its pinned cells with it (`DataTableCells`' `highlight`).
+ * the table's own keys walk it by and its box measures its height from, and the shared row
+ * marker (`ROW_MARKER`). The row being dragged is painted to its left edge, its pinned
+ * cells with it (`DataTableCells`' `highlight`).
  */
 export function TableBodyRow<Row_>({
   dragging,
@@ -42,6 +44,7 @@ export function TableBodyRow<Row_>({
       }}
       ref={measure}
       tabIndex={-1}
+      {...ROW_MARKER}
     >
       <DataTableCells highlight={dragged ? selectedCardBg : undefined} row={row} />
     </tr>

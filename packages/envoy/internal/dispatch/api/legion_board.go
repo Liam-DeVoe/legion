@@ -200,10 +200,12 @@ type legionBoardHeader struct {
 	// rows of the issues the map carries (Issues: the open issues and the issues the board shows)
 	// and not every row the project holds, null where it served none.
 	FactsUpdatedAt *time.Time `json:"facts_updated_at"`
-	// FactsCursorAgeSeconds is how long ago the facts consumer's oldest cursor last moved
-	// (legionfacts.CursorAge), measured when the board was read, and null where the consumer
-	// holds no cursor row at all. It is of the deployment's one consumer and not of this
-	// project, so it says how fresh the facts are and never whether this project has any.
+	// FactsCursorAgeSeconds is the facts consumer's age (legionfacts.CursorAge), measured when the
+	// board was read: the time since its last pass ran, or since a pass last read the delivery
+	// change log to its end, whichever is older, so a pass catching up a backlog of changes reads
+	// as old as its last read of the whole log; null where the consumer holds no cursor row at
+	// all. It is of the deployment's one consumer and not of this project, so it says how fresh
+	// the facts are and never whether this project has any.
 	FactsCursorAgeSeconds *int `json:"facts_cursor_age_seconds"`
 }
 
@@ -338,8 +340,8 @@ type legionBoardPopulation struct {
 	// them at the moment of the read: the rows of the open issues and of the issues the board
 	// shows, and no computation of this server's own.
 	facts map[string]legionfacts.Row
-	// cursorAge is how long ago the facts consumer's oldest cursor last moved, in seconds,
-	// measured when this population was read; nil where the consumer holds no cursor row.
+	// cursorAge is the facts consumer's age (legionfacts.CursorAge, FactsCursorAgeSeconds), in
+	// seconds, measured when this population was read; nil where the consumer holds no cursor row.
 	cursorAge *int
 	// ranked is the project's issue keys in Dispatch's rank order, read in that order, which is
 	// the order sortByRank puts any set of this project's keys in.

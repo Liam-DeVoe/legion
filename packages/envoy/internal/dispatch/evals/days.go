@@ -144,7 +144,7 @@ func dayKeysOf(reading Reading, row int) ([]dayKey, dayPart, bool) {
 
 // writeDays keeps the day rows of definition, a logged eval, for the readings a write added (in
 // the batch's order) and the readings it replaced that a row folded, in the write's transaction,
-// under the eval's lock (registerMissing): it makes sure each touched row exists and locks the
+// under the eval's lock (WriteReadings): it makes sure each touched row exists and locks the
 // rows, both in the byte order of their keys (compareDayKeys), folds each row again or appends to
 // it, and writes every row's new parts in one statement, recording builtBy as the build that wrote
 // them. It runs after the write's readings are inserted and its replaced readings superseded, so a
