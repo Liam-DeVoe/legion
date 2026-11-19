@@ -92,6 +92,16 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 	return value
 }
 
+// mustJSON is value encoded as JSON text.
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	return string(encoded)
+}
+
 // TestTheFailingJobsItemsAreThePipelinesFailingJobs: pr-ci's items with sort=failures over the
 // range from the first of the seven days an `at` shows to that at answer the list
 // GET /api/v1/delivery/pipeline answers in pr_checks.failing_jobs for that at, one list and two
