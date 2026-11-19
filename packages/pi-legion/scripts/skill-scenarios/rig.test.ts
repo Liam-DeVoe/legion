@@ -3337,6 +3337,7 @@ describe("red_fixture", () => {
       spent: false,
       by_hand: false,
       over_lane: false,
+      log_gone: false,
     };
     const facts: Record<RedWorld, object> = {
       a: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: true, ...plain },
@@ -3361,7 +3362,15 @@ describe("red_fixture", () => {
         ...plain,
         over_lane: true,
       },
-      h: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: false, ...plain },
+      h: {
+        after: "green",
+        ...tester,
+        ...reruns,
+        round: "goes-on",
+        disposal: false,
+        ...plain,
+        log_gone: true,
+      },
       i: {
         after: "green",
         ...reviewer,

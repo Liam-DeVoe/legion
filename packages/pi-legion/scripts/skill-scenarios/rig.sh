@@ -2817,18 +2817,18 @@ run_tester_proof() {
 red_world_table() {
   printf '%s\n' '
     {
-      a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false},
-      b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false},
-      c: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false},
-      d: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false},
-      e: {after:"red",   role:"tester",   rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:false, spent:true,  by_hand:false, over_lane:false},
-      f: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false},
-      g: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:true},
-      h: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false},
-      i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false, over_lane:false},
-      j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false, over_lane:false},
-      k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false, spent:false, by_hand:true,  over_lane:false},
-      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false}
+      a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
+      b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
+      c: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
+      d: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
+      e: {after:"red",   role:"tester",   rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:false, spent:true,  by_hand:false, over_lane:false, log_gone:false},
+      f: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
+      g: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:true, log_gone:false},
+      h: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:true},
+      i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false, over_lane:false, log_gone:false},
+      j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false, over_lane:false, log_gone:false},
+      k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false, spent:false, by_hand:true,  over_lane:false, log_gone:false},
+      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false}
     }'
 }
 red_world() {
@@ -2853,7 +2853,7 @@ red_worlds() {
 #   lane       the red's own check, its job, its test's full name (empty where the red is no
 #              test), its one step, the line that step prints when it fails (`log`), the workflow
 #              its run belongs to (`run_name`) and whether its attempt-1 log is past retention
-#              (`log_gone`, world `h`); null in the tester-proof world, which names no WORLD
+#              (`log_gone`, red_world's fact); null in the tester-proof world, which names no WORLD
 #   workflows  each workflow the world's runs name: its name, its file, its triggers and its jobs
 #              in the order the run lists them, each job with its steps in order and the line its
 #              failing step prints (`log`, null for a job no world fails); an aggregate job names
@@ -2902,7 +2902,7 @@ red_workflows() {
                      jobs:[job("test"; [{run:"bun test ."}]; null), job("lint"; [{run:"bun lint"}]; null)]}]}
       else
         ($lane | if .message != null then .step = title_step else . end) as $lane
-        | ($lane + {log:($lane | lane_log), run_name:($lane.run_name // "ci"), log_gone:($world == "h")})
+        | ($lane + {log:($lane | lane_log), run_name:($lane.run_name // "ci"), log_gone:$facts.log_gone})
           as $lane
         | job($lane.job; [$lane.step]; $lane.log) as $red
         # The aggregate `ci` over the lanes of the run of the red (worlds `g`, `i` and `j`): it
