@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -91,10 +91,31 @@ func retryGitHubPage(ctx context.Context, attempt, status int, err error) bool {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return true
 		}
-		var netErr net.Error
-		return errors.As(err, &netErr) && netErr.Timeout()
+		return chainTimedOut(err)
 	}
 	return status == http.StatusBadGateway || status == http.StatusGatewayTimeout
+}
+
+// chainTimedOut is whether any error in err's chain, through both forms of Unwrap, says it timed
+// out (a Timeout method that answers true). net/http gives one read that timed out in either of
+// two shapes -- the read's error directly under the client's *url.Error, or wrapped first by its
+// read loop ("readLoopPeekFailLocked: %w") -- and *url.Error's own Timeout asks only the error it
+// directly wraps, so only the whole chain finds the timeout in both.
+func chainTimedOut(err error) bool {
+	for err != nil {
+		if t, ok := err.(interface{ Timeout() bool }); ok && t.Timeout() {
+			return true
+		}
+		switch wrapper := err.(type) {
+		case interface{ Unwrap() error }:
+			err = wrapper.Unwrap()
+		case interface{ Unwrap() []error }:
+			return slices.ContainsFunc(wrapper.Unwrap(), chainTimedOut)
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // waitBeforeRetry sleeps between attempts, or returns the caller's context error when it ends
