@@ -2045,7 +2045,7 @@ func stateCarried(encoded []byte) int {
 // rule lets no runner claim them, and a runner whose lease on head lapsed, and was taken by
 // another, finishes nothing, the other runner publishing the same message under the same key. A
 // finish that does not commit is the row's failure and head runs again; one cut short by the
-// daemon's stop is recorded on a bounded context of its own, as settle's is (outboxSettleTimeout),
+// daemon's stop is recorded on a bounded context of its own, as settle's is (settleContext),
 // since the message was published.
 //
 // A publish that fails returns its error, and settle retries head on the outbox's backoff with its
@@ -2100,12 +2100,8 @@ func (r *outbox) stateEvents(ctx context.Context, head record.OutboxRow, payload
 	if err := r.notices.Publish(ctx, notify.StateTopic(r.project), summary, message, record.OutboxKey(head.ID)); err != nil {
 		return fmt.Errorf("publish the state events %d-%d of %s: %w", message.FirstSeq, message.Seq, project, err)
 	}
-	finishCtx := ctx
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		finishCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), outboxSettleTimeout)
-		defer cancel()
-	}
+	finishCtx, cancel := settleContext(ctx)
+	defer cancel()
 	if err := pgx.BeginFunc(finishCtx, r.pool, func(tx pgx.Tx) error {
 		return r.records.FinishStateRows(finishCtx, tx, head, message.Seq)
 	}); err != nil {

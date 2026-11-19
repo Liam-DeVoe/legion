@@ -50,6 +50,9 @@ type workflowRuntime struct {
 	admission *admit.Admission
 	handlers  []intake.Handler
 	dispatch  dispatch.Client
+	// recordStore is the Postgres store openWorkflow builds records over (projectRecords), kept so
+	// the boot can turn its state events on once the boot event is queued (publishRecordStates).
+	recordStore *record.Postgres
 	// gatedSteps are the design-gate steps the project gates, which the send-time narrowing of a
 	// held architect task reads: a catch-up it writes to another tree's architect is composed
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
@@ -466,7 +469,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// pool are the workflow's before it reads GitHub's spelling of each repository, since a
 	// repository whose read GitHub's rate limit refuses is served on the default branch a record
 	// of the project holds for it (holdLimited).
-	w.records = projectRecords{Store: record.NewStore(), project: cfg.Project, wake: w.wakeOutbox, log: log}
+	w.recordStore = record.NewStore()
+	w.records = projectRecords{Store: w.recordStore, project: cfg.Project, wake: w.wakeOutbox, log: log}
 	w.pool = st.Pool()
 	log.Info("legion workflow boot stage", "stage", "appauth")
 	if err := w.nameMapping(ctx); err != nil {

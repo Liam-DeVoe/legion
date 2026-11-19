@@ -139,9 +139,12 @@ func architectClaim(t *testing.T, sup *supervisor, issue string, state supervise
 // under its lease.
 func leasedOutboxRow(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) record.OutboxRow {
 	t.Helper()
-	enqueueOutbox(t, pool, records, row)
-	if err := pool.QueryRow(context.Background(), "select id from outbox where kind = $1 order by id desc limit 1", string(row.Kind)).Scan(&row.ID); err != nil {
-		t.Fatalf("read the enqueued row: %v", err)
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		var err error
+		row.ID, err = records.EnqueueID(context.Background(), tx, row)
+		return err
+	}); err != nil {
+		t.Fatalf("enqueue the row: %v", err)
 	}
 	row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
 	return row

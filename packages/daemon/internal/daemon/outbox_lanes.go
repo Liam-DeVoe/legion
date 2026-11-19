@@ -318,14 +318,21 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	renewal := r.renewLease(store.ForConcurrentWorker(ctx), row)
 	err := r.execute(ctx, row)
 	renewal.stop()
-	settleCtx := ctx
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		settleCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), outboxSettleTimeout)
-		defer cancel()
-	}
+	settleCtx, cancel := settleContext(ctx)
+	defer cancel()
 	r.settle(settleCtx, row, err)
 	return nil
+}
+
+// settleContext is the context a row's run records what it came to on, once its effect ran: ctx
+// while ctx lives, and once the daemon's stop has ended ctx, a context of its own bounded by
+// outboxSettleTimeout, since a record the stop cut short would leave the row to run again at the
+// next boot as though it had not.
+func settleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), outboxSettleTimeout)
 }
 
 // leaseRenewal keeps a running row's lease live (renewLease): the tick armed next, whether the run

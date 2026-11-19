@@ -396,19 +396,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// since nothing was on while it ran. A row an earlier run left unpublished holds a lower
 		// sequence still, so the project's state lane publishes it first and the boot event
 		// follows it with no gap. Both switches carry this run's id and wake the project's state
-		// lane once a write that queued a row commits (projectRecords, publishClaimStates). Only a
-		// daemon with a workflow runs the outbox that sends and deletes the rows, so a daemon with
-		// none writes no boot row and turns nothing on.
+		// lane once a write that queued a row commits (publishRecordStates, publishClaimStates).
+		// Only a daemon with a workflow runs the outbox that sends and deletes the rows, so a daemon
+		// with none writes no boot row and turns nothing on.
 		if err := workflow.queueStateBoot(boot, runID, api.SettingsOf(cfg), applied > 0); err != nil {
 			workflow.stop()
 			st.Close()
 			return err
 		}
-		if err := publishRecordStates(workflow.records, runID); err != nil {
-			workflow.stop()
-			st.Close()
-			return err
-		}
+		publishRecordStates(workflow, runID)
 		publishClaimStates(st, workflow, runID)
 		log.Info("legion daemon state events on", "project", cfg.Project, "run", runID, "migrated", applied > 0)
 		// From here on, a claim write that changes a role holder queues its issue's publication in
@@ -664,49 +660,37 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	return errors.Join(liveErr, stopErr)
 }
 
-// queueStateBoot queues the boot event of run (record.StateBoot) in a transaction of its own: the
-// settings the state route serves (api.SettingsOf), and whether this boot applied a migration,
-// which can have rewritten what Dispatch observes outside every write that queues a state event.
-// The row carries the bare Dispatch project key in its issue column, as every state row does, so
-// it runs on the project's one state lane (record.LaneState), and it takes the lane's next
-// sequence when the transaction commits. run calls it before it turns the state events on, so
-// that sequence is below every one the run's other state rows take.
+// queueStateBoot queues the boot event of run (record.StateBoot) in a transaction of its own
+// (enqueueOutbox): the settings the state route serves (api.SettingsOf), and whether this boot
+// applied a migration, which can have rewritten what Dispatch observes outside every write that
+// queues a state event. The row carries the bare Dispatch project key in its issue column, as every
+// state row does, so it runs on the project's one state lane (record.LaneState), and it takes the
+// lane's next sequence when the transaction commits. run calls it before it turns the state events
+// on, so that sequence is below every one the run's other state rows take.
 func (w *workflowRuntime) queueStateBoot(ctx context.Context, run string, settings api.Settings, migrated bool) error {
 	encoded, err := json.Marshal(settings)
 	if err != nil {
 		return fmt.Errorf("encode the settings of the boot event of %s: %w", w.dispatchProject, err)
 	}
-	row, err := record.NewOutboxRow(w.dispatchProject, record.StateBoot{
+	if err := w.enqueueOutbox(ctx, w.dispatchProject, record.StateBoot{
 		Project: w.dispatchProject, Run: run, Settings: encoded, Migrated: migrated,
-	}, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("queue the boot event of %s: %w", w.dispatchProject, err)
-	}
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		return w.records.Enqueue(scoped, tx, row)
 	}); err != nil {
 		return fmt.Errorf("queue the boot event of %s: %w", w.dispatchProject, err)
 	}
-	committed()
 	return nil
 }
 
 // publishRecordStates turns the state events of the issue and slot writes and of the admission
-// block on (record.Postgres.PublishState) for run, the id of this daemon run, in the one record
-// store the workflow writes through, whose switch the admission pass reads as well
-// (record.Store.StateRun). record.Store names no such switch, so the store is reached through
-// the projectRecords openWorkflow builds over it; records of any other shape are refused, since
-// a daemon that went on with them would write its boot event and then no state event at all.
-// Each write that queues a row wakes the project's state lane once it commits (projectRecords).
-func publishRecordStates(records record.Store, run string) error {
-	if scoped, ok := records.(projectRecords); ok {
-		if postgres, ok := scoped.Store.(*record.Postgres); ok {
-			postgres.PublishState(run)
-			return nil
-		}
-	}
-	return fmt.Errorf("turn the state events on: the workflow's records are a %T, not the project's records over the Postgres store", records)
+// block on (record.Postgres.PublishState) for run, the id of this daemon run, in the record store
+// the workflow's records are built over (workflowRuntime.recordStore), whose switch the admission
+// pass reads as well (record.Store.StatePublished). The store tells each write that queued a state
+// row, and the project's state lane is woken once that write's transaction commits
+// (projectRecords.wakeOnCommit), as publishClaimStates routes the claim writes' wake: every state
+// row of the project names the lane by the bare project key in its issue column, which an issue
+// or a slot write does not name.
+func publishRecordStates(workflow *workflowRuntime, run string) {
+	lane := projectRecords{project: workflow.dispatchProject, wake: workflow.wakeOutbox, log: workflow.log}
+	workflow.recordStore.PublishState(run, func(ctx context.Context) { lane.wakeOnCommit(ctx, lane.stateLane()) })
 }
 
 // publishClaimStates turns the state events of the claim writes on (store.Store.PublishState) for
@@ -2827,11 +2811,11 @@ type source struct {
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
 // the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
-// no lane polls for one. A write of an issue or a slot — PutIssue, PutSlot, ReleaseSlot and
-// ReleaseSlotForWait — wakes the project's state lane the same way, since the store queues the
-// state event of such a write itself, and so does a write of the admission block that queued its
-// event (QueueAdmissionBlock). wake is nil where there is no workflow to wake: the API-only
-// daemon, the state route's reads and the stranded report.
+// no lane polls for one. A state row the store queues itself — the write of an issue, a slot or
+// the admission block that moved what Dispatch observes — wakes the project's state lane the same
+// way, through the call the store makes once it has queued the row (publishRecordStates). wake is
+// nil where there is no workflow to wake: the API-only daemon, the state route's reads and the
+// stranded report.
 type projectRecords struct {
 	record.Store
 	project string
@@ -2918,20 +2902,6 @@ func (s projectRecords) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publi
 	return nil
 }
 
-// PutIssue records the issue and then wakes the project's state lane once the transaction
-// commits: a write that moves the issue's phase, tree or waitingOn queues its state event in that
-// transaction (record.Postgres.PublishState), under the bare project key rather than the issue's,
-// so the lane it runs on is the project's one state lane (record.LaneState), and the store, which
-// knows nothing of the lanes, cannot wake it. A write that queued nothing costs the woken lane one
-// list.
-func (s projectRecords) PutIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	if err := s.Store.PutIssue(ctx, tx, issue); err != nil {
-		return err
-	}
-	s.wakeOnCommit(ctx, s.stateLane())
-	return nil
-}
-
 // PutSlot grants the slot and then wakes the issue's lifecycle lane once the transaction
 // commits. A grant writes a slots row and no outbox row, so nothing would otherwise tell the
 // lane that anything changed — and the thing the grant releases is an outbox row: the worker
@@ -2939,52 +2909,18 @@ func (s projectRecords) PutIssue(ctx context.Context, tx pgx.Tx, issue record.Is
 // (record.SuperviseRequest.NeedsSlot). Without this wake that task would sit until the lane's
 // next sweep, up to one outbox lease behind the grant. The wake belongs here rather than in
 // record.Store for the same reason every other wake does: the store is the daemon's
-// transactional record and knows nothing of the lanes that run beside it. A grant or a move of
-// the slot queues its state event too, so the project's state lane is woken as PutIssue wakes it.
+// transactional record and knows nothing of the lanes that run beside it.
 func (s projectRecords) PutSlot(ctx context.Context, tx pgx.Tx, slot record.Slot) error {
 	if err := s.Store.PutSlot(ctx, tx, slot); err != nil {
 		return err
 	}
 	s.wakeOnCommit(ctx, record.OutboxRow{Issue: slot.Issue, Kind: record.OutboxKindSupervise})
-	s.wakeOnCommit(ctx, s.stateLane())
 	return nil
-}
-
-// ReleaseSlot takes the slot away and then wakes the project's state lane once the transaction
-// commits, as PutIssue does: the release queues the state event naming the slot it took.
-func (s projectRecords) ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error {
-	if err := s.Store.ReleaseSlot(ctx, tx, issue); err != nil {
-		return err
-	}
-	s.wakeOnCommit(ctx, s.stateLane())
-	return nil
-}
-
-// ReleaseSlotForWait takes the slot away for what the issue waits on and then wakes the
-// project's state lane once the transaction commits, as ReleaseSlot does.
-func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error {
-	if err := s.Store.ReleaseSlotForWait(ctx, tx, issue, at); err != nil {
-		return err
-	}
-	s.wakeOnCommit(ctx, s.stateLane())
-	return nil
-}
-
-// QueueAdmissionBlock writes the admission block, and where the write queued its state event,
-// wakes the project's state lane once the transaction commits, as PutIssue does. The admission
-// pass writes the block at the end of every pass and almost every pass leaves it as it was, which
-// queues nothing, so the lane is woken for the pass that queued a row and for no other.
-func (s projectRecords) QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project, run string, block record.AdmissionBlock) (bool, error) {
-	queued, err := s.Store.QueueAdmissionBlock(ctx, tx, project, run, block)
-	if err != nil || !queued {
-		return queued, err
-	}
-	s.wakeOnCommit(ctx, s.stateLane())
-	return true, nil
 }
 
 // stateLane names the project's state lane to wakeOnCommit: every state row of the project
-// carries the bare project key in its issue column, so that key and any state kind name the lane.
+// carries the bare project key in its issue column, so that key and any state kind name the lane
+// (publishRecordStates).
 func (s projectRecords) stateLane() record.OutboxRow {
 	return record.OutboxRow{Issue: s.project, Kind: record.OutboxKindStateChange}
 }
@@ -3006,8 +2942,9 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	if log == nil {
 		log = slog.Default()
 	}
-	// Caller 2 is the caller of the method that wrote the row (Enqueue, ExpediteOutbox, PutIssue
-	// and the rest), past this helper and the method.
+	// Caller 2 is the caller of the method that wrote the row (Enqueue, ExpediteOutbox and the
+	// rest), past this helper and the method; for a state row the record store queued, it is the
+	// store's own line that called back once it had queued the row (publishRecordStates).
 	_, file, line, _ := goruntime.Caller(2)
 	log.Error("outbox row written outside a commit scope; its lane is woken at once",
 		"kind", row.Kind, "issue", row.Issue, "file", file, "line", line)

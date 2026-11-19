@@ -97,7 +97,10 @@ func testConfig(t *testing.T) config.Config {
 	// is pinned by TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort.
 	port := holdPortOn(t, "127.0.0.1")
 	return config.Config{
-		Project:                                 "TEST" + randomSuffix(t),
+		// A key Dispatch can hold (projects.key, `^[A-Z][A-Z0-9]{1,9}$`), which a workflow daemon
+		// refuses to boot without (claim.IsProjectKey, its boot event): nine of randomSuffix's hex
+		// digits, 36 random bits, keep each test's project its own.
+		Project:                                 "T" + randomSuffix(t)[:9],
 		Port:                                    port,
 		Bind:                                    "127.0.0.1",
 		PostgresDSN:                             testDSN(t),

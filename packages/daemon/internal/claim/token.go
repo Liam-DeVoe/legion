@@ -9,6 +9,10 @@ import (
 var (
 	// issueKey is a Dispatch issue key, the one shape an issue has (legion-roles.ts:30).
 	issueKey = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-([0-9]+)$`)
+	// projectKey is a Dispatch project key, the contract's PROJECT_KEY_PATTERN
+	// (packages/contracts/src/dispatch-tools.ts): a capital letter, then one to nine capitals or
+	// digits.
+	projectKey = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}$`)
 	// projectToken is a project as a token spells it (legion-roles.ts:28).
 	projectToken = regexp.MustCompile(`^[a-z0-9]+$`)
 	// notAlphanumeric is everything ProjectToken drops.
@@ -32,6 +36,9 @@ func ProjectToken(project string) (string, error) {
 
 // IsIssueKey reports whether key is a Dispatch issue key (`LEGION-208`).
 func IsIssueKey(key string) bool { return issueKey.MatchString(key) }
+
+// IsProjectKey reports whether key is a Dispatch project key (`LEGION`), as the contract reads one.
+func IsProjectKey(key string) bool { return projectKey.MatchString(key) }
 
 // IsRole reports whether role is one of the six a claim can be on.
 func IsRole(role Role) bool {

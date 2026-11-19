@@ -190,27 +190,31 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 }
 
 // queueAdmissionBlock ends every admission pass, Apply's on each fact and Reconcile's at boot.
-// With the state events on (record.Store.StateRun) it judges the project's admission block afresh,
-// after every write of the transaction, the workflow handler's ahead of this one included, through
-// the one judgement the state route serves the block from (blockers.JudgeAdmission), and writes it
-// where it differs from the block last written, which queues its state event in the same statement
-// (record.Store.QueueAdmissionBlock): a pass that leaves the block as it was writes nothing. With
-// the events off it judges nothing, so a daemon that publishes no state pays nothing for it.
+// With the state events on (record.Store.StatePublished) it judges the project's admission block
+// afresh, from the pass's shared reads taken after every write of the transaction, the workflow
+// handler's ahead of this one included (reread), through the one judgement the state route serves
+// the block from (blockers.JudgeAdmissionFrom), and writes it where it differs from the block last
+// written, which queues its state event in the same statement (record.Store.QueueAdmissionBlock):
+// a pass that leaves the block as it was writes nothing. With the events off it judges nothing, so
+// a daemon that publishes no state pays nothing for it.
 //
 // It runs whatever the fact, the entry sweep's included, which promotes nothing: a fact the pass
 // promotes nothing on can still move the block — a Dispatch rank or a blocker link the mirror
 // wrote, a phase the workflow wrote — and a block that moves with no write at all (a held word
 // read against the clock, record.HeldTreeClosed) moves at the sweep's next minute at the latest.
 func (a *Admission) queueAdmissionBlock(ctx context.Context, tx pgx.Tx) error {
-	run, on := a.store.StateRun()
-	if !on {
+	if !a.store.StatePublished() {
 		return nil
 	}
-	judged, err := blockers.JudgeAdmission(ctx, tx, a.store, a.project, a.engine.GatedSteps(), a.cap, a.now())
+	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
 		return err
 	}
-	_, err = a.store.QueueAdmissionBlock(ctx, tx, a.project, run, judged.Block)
+	judged, err := blockers.JudgeAdmissionFrom(ctx, tx, a.store, a.project, issues, slots, facts, a.cap, a.now())
+	if err != nil {
+		return err
+	}
+	_, err = a.store.QueueAdmissionBlock(ctx, tx, a.project, judged.Block)
 	return err
 }
 
@@ -569,18 +573,19 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 // (`held`, C3 of dispatch://INFRA-3107), and every issue whose phase worker nothing will prompt
 // (`silent`, silentWorkers).
 //
-// The two are two assemblies of one judgement of the line, so they are built together here:
-// `blocked` is blockers.Blocked over the mirror rows and the line, `held` is record.HeldList
-// over the same line and the rows the pass left behind, and both read the judgement promotion
-// itself reads (blockers.JudgeLine). Built apart they cost the tick two judgements of the whole
-// project — the same four reads, and the mirror read twice in one transaction — and a reader of
-// either list could not say the two were made over one record.
+// The two are two assemblies of one judgement of the line, the admission block's own `held` and
+// `blocked` (blockers.JudgeAdmissionFrom), so they are built together here: `blocked` is
+// blockers.Blocked over the mirror rows and the line, `held` is record.HeldList over the same line
+// and the rows the pass left behind, and both read the judgement promotion itself reads
+// (blockers.JudgeLine). Built apart they cost the tick two judgements of the whole project — the
+// same four reads, and the mirror read twice in one transaction — and a reader of either list
+// could not say the two were made over one record.
 //
-// Each is built by the function the state builds the same list with, over this transaction's
-// own reads, so what the controller is told and what `legion state` shows for one issue agree:
-// one word in both, and one set of blocked rows in both. The rows are built whether or not a
-// controller is registered to be told, because the unclassified line is written from them
-// (logUnclassified), and that line is the daemon's own record of what the words miss.
+// Each is built by the judgement the state builds the same list with (blockers.JudgeAdmission),
+// over this transaction's own reads, so what the controller is told and what `legion state` shows
+// for one issue agree: one word in both, and one set of blocked rows in both. The rows are built
+// whether or not a controller is registered to be told, because the unclassified line is written
+// from them (logUnclassified), and that line is the daemon's own record of what the words miss.
 //
 // It makes no read of the line of its own: the three reads are the pass's (reread), and the
 // candidates are the live issues the daemon holds in the workflow, which record.HeldList takes
@@ -596,14 +601,12 @@ func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	own := record.OwnSlots(issues, slots)
-	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
+	judged, err := blockers.JudgeAdmissionFrom(ctx, tx, a.store, a.project, issues, slots, facts, a.cap, a.now())
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	held := record.HeldList(issues, own, line, dropped, facts)
-	a.logUnclassified(held, issues)
-	return held, blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), silent, nil
+	a.logUnclassified(judged.Block.Held, issues)
+	return judged.Block.Held, judged.Block.Blocked, silent, nil
 }
 
 // logUnclassified writes one line for each row the ladder could put no word to (C2), naming the

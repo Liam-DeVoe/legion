@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,24 +14,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // blockRun is the run id the state events of these tests carry.
 const blockRun = "7d3e9a41-0c6b-4f28-b5e1-93a2c4d8f067"
 
-// publishingAdmission is an admission of this cap over a record store with the state events on
-// (record.Postgres.PublishState), which is what makes the pass write the admission block, and
-// which logs nowhere.
+// publishingAdmission is an admission of this cap (newAdmissionForProject) over a record store with
+// the state events on (record.Postgres.PublishState), which is what makes the pass write the
+// admission block, and which logs nowhere.
 func publishingAdmission(t *testing.T, cap int) *Admission {
 	t.Helper()
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	admission := newAdmissionForProject(t, testProject, cap, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	records := record.NewStore()
-	records.PublishState(blockRun)
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-		Clock: func() time.Time { return fixedNow }}, log)
-	admission := New(records, engine, cap, testProject, log)
-	admission.now = func() time.Time { return fixedNow }
+	records.PublishState(blockRun, nil)
+	admission.store = records
 	return admission
 }
 
@@ -40,7 +35,7 @@ func publishingAdmission(t *testing.T, cap int) *Admission {
 // each decoded as the outbox decodes it, so a row this package could not send fails here.
 func admissionEvents(t *testing.T, pool *pgxpool.Pool) []record.StateAdmission {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox where kind = 'state_admission' order by id`)
+	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox where kind = $1 order by id`, string(record.OutboxKindStateAdmission))
 	if err != nil {
 		t.Fatalf("list the admission events: %v", err)
 	}

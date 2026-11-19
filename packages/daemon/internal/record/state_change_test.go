@@ -44,7 +44,7 @@ type changeRig struct {
 func newChangeRig(t *testing.T) *changeRig {
 	t.Helper()
 	records := record.NewStore()
-	records.PublishState(changeRun)
+	records.PublishState(changeRun, nil)
 	return &changeRig{st: testpg.CloneStore(t, "legion_record_test"), records: records}
 }
 
@@ -246,11 +246,11 @@ func changeIssue(key string, p phase.Phase) record.Issue {
 }
 
 // A write of an issue queues, in its own transaction, one state change naming each field Dispatch
-// observes that the write moved (record.Observed): its phase, its tree and what it waits on from a
-// person, in that order, each from the value the state route served before the write to the value
-// it serves after it, as the route encodes them — a time at the microsecond Postgres stores it at,
-// not the nanosecond the write was handed. A first write names each field it gives a value from
-// null, and no field it leaves null. A write that moves none of them queues nothing, whatever
+// observes that the write moved (record.ObservationOf): its phase, its tree and what it waits on
+// from a person, in that order, each from the value the state route served before the write to the
+// value it serves after it, as the route encodes them — a time at the microsecond Postgres stores
+// it at, not the nanosecond the write was handed. A first write names each field it gives a value
+// from null, and no field it leaves null. A write that moves none of them queues nothing, whatever
 // else it writes — a status, a rank, the detail of an answer, the sequence a wait began at — and so
 // does a write the store refused, a write that rolled back, and every write of a store whose state
 // events are off.
@@ -491,7 +491,7 @@ func TestASlotWriteQueuesOneStateEventNamingTheSlotItMoved(t *testing.T) {
 		recordIssue(t, key)
 		r.commit(t, key, grant(t, key, 50))
 		slotMoved(t, key, r.commit(t, key, releaseForWait(t, key)), "50", "null")
-		// The mark is written with the release, in the same statement, as it was before.
+		// The mark is written with the release, in the same statement.
 		if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
 			issue, err := record.NewStore().Issue(context.Background(), tx, key)
 			if err != nil {

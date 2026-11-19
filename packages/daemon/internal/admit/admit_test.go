@@ -581,15 +581,12 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				var id int64
 				inTx(t, pool, func(tx pgx.Tx) {
-					if err := record.NewStore().Enqueue(context.Background(), tx, row); err != nil {
+					if id, err = record.NewStore().EnqueueID(context.Background(), tx, row); err != nil {
 						t.Fatalf("enqueue %s: %v", payload.Op, err)
 					}
 				})
-				var id int64
-				if err := pool.QueryRow(context.Background(), `select max(id) from outbox where kind = $1`, string(record.OutboxKindSupervise)).Scan(&id); err != nil {
-					t.Fatalf("read the %s row's id: %v", payload.Op, err)
-				}
 				return id
 			}
 			putClaim := func(token claim.Token, project, tree, state string, serving uint64, lastStart int64) {

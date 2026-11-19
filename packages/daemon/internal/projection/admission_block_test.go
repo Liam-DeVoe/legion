@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -40,14 +39,11 @@ func (s routeRecords) Issues(ctx context.Context, tx pgx.Tx) ([]record.Issue, er
 
 // The admission block has one computation (blockers.JudgeAdmission), which the state route serves
 // and the admission pass's state event carries, judged from the pass's own read: the project's
-// live records and its own slots. Before the state took the judgement up it judged the block from
-// every record of the project and every slot, and this test held the two equal over the same two
-// stores first. It holds the block the state serves (Project) to the judgement's block, encoded as
-// the route serves it (api.AdmissionOf) and as the event carries it (record.AdmissionBlock), over
-// the store the controller-claim golden projects and over one holding what the two reads part on:
-// done issues — a child, a child holding a slot still, a parent on a member's chain, a root whose
-// linger ran out — another project's slot, and a lingering tree with a member still in the
-// workflow.
+// live records and its own slots. It holds the block the state serves (Project) to the judgement's
+// block as the event carries it (record.AdmissionBlock), over the store the controller-claim golden
+// projects and over one holding what the two reads part on: done issues — a child, a child holding
+// a slot still, a parent on a member's chain, a root whose linger ran out — another project's slot,
+// and a lingering tree with a member still in the workflow.
 func TestTheJudgedAdmissionBlockIsTheBlockTheStateServes(t *testing.T) {
 	architect, err := claim.NewToken("legion", "LEGION-208", claim.RoleArchitect)
 	if err != nil {
@@ -73,16 +69,13 @@ func TestTheJudgedAdmissionBlockIsTheBlockTheStateServes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("encode the served block: %v", err)
 			}
-			judged, err := blockers.JudgeAdmission(ctx, nil, records, "LEGION", nil, tc.cap, projectedAt)
+			slots, err := records.Slots(ctx, nil)
+			if err != nil {
+				t.Fatalf("read the slots: %v", err)
+			}
+			judged, err := blockers.JudgeAdmission(ctx, nil, records, "LEGION", nil, slots, tc.cap, projectedAt)
 			if err != nil {
 				t.Fatalf("JudgeAdmission: %v", err)
-			}
-			routed, err := json.Marshal(api.AdmissionOf(judged.Block))
-			if err != nil {
-				t.Fatalf("encode the judged block as the route serves it: %v", err)
-			}
-			if !bytes.Equal(routed, served) {
-				t.Fatalf("the judged block, as the route serves it, is\n%s\nwant the block the state serves\n%s", routed, served)
 			}
 			carried, err := json.Marshal(judged.Block)
 			if err != nil {

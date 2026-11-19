@@ -27,38 +27,44 @@ type AdmissionJudgement struct {
 }
 
 // JudgeAdmission is project's admission block, judged from one read of tx: the project's live
-// records (record.Store.LiveIssues), its own slots among every project's (record.OwnSlots), the
-// pass's facts (record.ReadLineFacts) under the design-gate steps the deployment gates, and the
-// line those leave (JudgeLine). From them, under cap: `active`, the issues holding the project's
-// own slots in slot order; `waiting`, the line in its order; `trees`, the live roots by key
-// (record.LiveRoots); `blocked`, what waits on another issue (Blocked); and `held`, what the daemon
-// holds in the workflow and runs nothing of (record.HeldList). now is the caller's clock, the one
-// thing the judgement reads beside the records (JudgeLine).
+// records (record.Store.LiveIssues), its own slots among slots, every project's as the caller read
+// them in tx (record.Store.Slots, record.OwnSlots), the pass's facts (record.ReadLineFacts) under
+// the design-gate steps the deployment gates, and the line those leave (JudgeLine). From them,
+// under cap: `active`, the issues holding the project's own slots in slot order; `waiting`, the
+// line in its order; `trees`, the live roots by key (record.LiveRoots); `blocked`, what waits on
+// another issue (Blocked); and `held`, what the daemon holds in the workflow and runs nothing of
+// (record.HeldList). now is the caller's clock, the one thing the judgement reads beside the
+// records (JudgeLine).
 //
 // It is the one computation of the block, and both readers of it call it: the state route
 // (projection.Project), which serves it, and the admission pass, which at the end of each of its
-// passes writes the block's state event where the block changed (admit's queueAdmissionBlock).
-// The pass's own read is the live records, which leave out a done record holding no slot, so the
-// route judges the block from that read too, and the two cannot differ for any record of the
-// project. The records a live read leaves out still reach the judgement where it needs them: a done
-// parent on a chain (LineFacts.Parents) and a done or parked root (LineFacts.Roots), each read by
-// ReadLineFacts.
+// passes writes the block's state event where the block changed (admit's queueAdmissionBlock), and
+// whose tick tells the controller its held and blocked lists (admit's tickRows). The pass's own
+// read is the live records, which leave out a done record holding no slot, so the route judges the
+// block from that read too, and the two cannot differ for any record of the project. The records a
+// live read leaves out still reach the judgement where it needs them: a done parent on a chain
+// (LineFacts.Parents) and a done or parked root (LineFacts.Roots), each read by ReadLineFacts.
 func JudgeAdmission(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep,
-	cap int, now time.Time,
+	slots []record.Slot, cap int, now time.Time,
 ) (AdmissionJudgement, error) {
 	issues, err := store.LiveIssues(ctx, tx, project)
 	if err != nil {
 		return AdmissionJudgement{}, fmt.Errorf("judge the admission of %s: %w", project, err)
 	}
-	every, err := store.Slots(ctx, tx)
-	if err != nil {
-		return AdmissionJudgement{}, fmt.Errorf("judge the admission of %s: %w", project, err)
-	}
-	slots := record.OwnSlots(issues, every)
 	facts, err := record.ReadLineFacts(ctx, tx, store, project, issues, steps)
 	if err != nil {
 		return AdmissionJudgement{}, fmt.Errorf("judge the admission of %s: %w", project, err)
 	}
+	return JudgeAdmissionFrom(ctx, tx, store, project, issues, slots, facts, cap, now)
+}
+
+// JudgeAdmissionFrom is JudgeAdmission over the reads its caller already made in tx: the project's
+// live records, every project's slots and the facts read over those records, as the admission pass
+// reads them once for all its judgements (admit's reread).
+func JudgeAdmissionFrom(ctx context.Context, tx pgx.Tx, store record.Store, project string, issues []record.Issue,
+	every []record.Slot, facts record.LineFacts, cap int, now time.Time,
+) (AdmissionJudgement, error) {
+	slots := record.OwnSlots(issues, every)
 	rows, facts, line, dropped, err := JudgeLine(ctx, tx, store, project, issues, slots, facts, nil, now)
 	if err != nil {
 		return AdmissionJudgement{}, fmt.Errorf("judge the admission of %s: %w", project, err)

@@ -374,7 +374,7 @@ func snapshot(t *testing.T, pool *pgxpool.Pool) recordSnapshot {
 		if got.Phases, err = records.Phases(context.Background(), tx, "LEGION-209"); err != nil {
 			return err
 		}
-		return tx.QueryRow(context.Background(), "select count(*) from outbox where "+notStateRows).Scan(&got.Outbox)
+		return tx.QueryRow(context.Background(), "select count(*) from outbox").Scan(&got.Outbox)
 	})
 	return got
 }

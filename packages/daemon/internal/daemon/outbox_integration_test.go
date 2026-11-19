@@ -207,7 +207,7 @@ func enqueueOutbox(t *testing.T, pool *store.Pool, records record.Store, row rec
 // of the whole outbox: a write of an issue, a slot, a claim or the admission block queues one when
 // the store's state events are on, and a test that counts or lists the outbox asserts the rows of
 // the other lanes.
-const notStateRows = `kind not in ('state_change', 'state_admission', 'state_boot')`
+var notStateRows = "kind not in ('" + strings.Join(stateKindNames(), "', '") + "')"
 
 func outboxRows(t *testing.T, pool *store.Pool) int {
 	t.Helper()

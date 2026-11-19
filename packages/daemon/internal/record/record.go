@@ -1994,14 +1994,15 @@ type Store interface {
 	// RecentClaimIssues is every issue of the Dispatch project with a live claim, or a claim that
 	// changed at or after since, in key order: the issues the boot publishes.
 	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)
-	// StateRun is the run id the state events carry and whether they are on
-	// (Postgres.PublishState): the switch a writer reads before it judges an event of its own.
-	StateRun() (string, bool)
+	// StatePublished says whether the state events are on (Postgres.PublishState): the switch a
+	// writer reads before it judges an event of its own.
+	StatePublished() bool
 	// QueueAdmissionBlock writes block as project's admission block where it differs from the
-	// one stored, and queues its state event (StateAdmission, carrying run) from that write, in
-	// one statement; a block equal to the stored one writes nothing. It answers whether it queued
-	// the event.
-	QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project, run string, block AdmissionBlock) (bool, error)
+	// one stored, and queues its state event (StateAdmission, carrying the run the state events
+	// were turned on with) from that write, in one statement; a block equal to the stored one
+	// writes nothing, and so does any block while the state events are off. It answers whether
+	// it queued the event.
+	QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project string, block AdmissionBlock) (bool, error)
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.

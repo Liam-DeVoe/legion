@@ -7,9 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"flag"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,7 +17,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
-	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -100,7 +96,6 @@ type stateGoldenRig struct {
 	scoped   projectRecords
 	claims   *store.Store
 	workflow *workflowRuntime
-	state    *httptest.Server
 	cfg      config.Config
 	// now is the fixed clock: every time a write is handed is now.
 	now time.Time
@@ -131,25 +126,10 @@ func newStateGoldenRig(t *testing.T) *stateGoldenRig {
 	}
 	r := &stateGoldenRig{stateRig: newStateRig(t), cfg: cfg}
 	r.scoped = projectRecords{Store: r.records, project: cfg.Project}
-	st, err := store.Open(context.Background(), r.pool.Config().ConnString())
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	t.Cleanup(st.Close)
-	st.PublishState(cfg.Project, stateTestRun, nil)
-	r.claims = st
+	r.claims = r.serveState(t, source{runtime: cfg.Runtime.Name, admissionCap: cfg.AdmissionCap, startedAt: stateGoldenStart,
+		gatedSteps: cfg.Gates.Steps(), experiments: cfg.ExperimentsDeclared(), settings: api.SettingsOf(cfg)})
+	r.claims.PublishState(cfg.Project, stateTestRun, nil)
 	r.workflow = &workflowRuntime{pool: r.pool, records: r.scoped, dispatchProject: cfg.Project}
-	view := &source{
-		store: st, records: r.records, project: cfg.Project, projectToken: "legion", runtime: cfg.Runtime.Name,
-		admissionCap: cfg.AdmissionCap, startedAt: stateGoldenStart,
-		deployment:  func() capabilities.Deployment { return capabilities.Deployment{} },
-		reports:     func() map[claim.Token]capabilities.Report { return nil },
-		gatedSteps:  cfg.Gates.Steps(),
-		experiments: cfg.ExperimentsDeclared(),
-		settings:    api.SettingsOf(cfg),
-	}
-	r.state = httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{State: view, StateTransactions: st, Log: quietLogger()}).Handler)
-	t.Cleanup(r.state.Close)
 	return r
 }
 
@@ -179,18 +159,6 @@ func (r *stateGoldenRig) stamped(t *testing.T, live time.Time) time.Time {
 	return time.Time{}
 }
 
-// seed writes the records the daemon boots over through a record store with no state events, as a
-// daemon's records stand before a boot turns them on: what the lane publishes is what the steps
-// change, and the boot's state is where a reader of the lane starts.
-func (r *stateGoldenRig) seed(t *testing.T, write func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
-	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		return write(context.Background(), tx, record.NewStore())
-	}); err != nil {
-		t.Fatalf("seed the records: %v", err)
-	}
-}
-
 // pass commits write in one transaction that ends as every admission pass ends a fact (admit's
 // queueAdmissionBlock): the project's admission block judged afresh at the clock's instant, through
 // the one judgement the state route serves it from, and written where it moved, which queues its
@@ -202,11 +170,15 @@ func (r *stateGoldenRig) pass(t *testing.T, write func(ctx context.Context, tx p
 		if err := write(ctx, tx); err != nil {
 			return err
 		}
-		judged, err := blockers.JudgeAdmission(ctx, tx, r.scoped, r.cfg.Project, r.cfg.Gates.Steps(), r.cfg.AdmissionCap, r.now)
+		slots, err := r.scoped.Slots(ctx, tx)
 		if err != nil {
 			return err
 		}
-		_, err = r.scoped.QueueAdmissionBlock(ctx, tx, r.cfg.Project, stateTestRun, judged.Block)
+		judged, err := blockers.JudgeAdmission(ctx, tx, r.scoped, r.cfg.Project, r.cfg.Gates.Steps(), slots, r.cfg.AdmissionCap, r.now)
+		if err != nil {
+			return err
+		}
+		_, err = r.scoped.QueueAdmissionBlock(ctx, tx, r.cfg.Project, judged.Block)
 		return err
 	}); err != nil {
 		t.Fatalf("commit the pass: %v", err)
@@ -283,15 +255,7 @@ func (r *stateGoldenRig) record(t *testing.T, name string) stateEventsStep {
 	}
 	read := r.now.Add(time.Duration(len(commits)+1) * time.Millisecond)
 
-	response, err := http.Get(r.state.URL + "/legion/v1/state")
-	if err != nil {
-		t.Fatalf("GET the state: %v", err)
-	}
-	body, err := io.ReadAll(response.Body)
-	response.Body.Close()
-	if err != nil || response.StatusCode != http.StatusOK {
-		t.Fatalf("GET the state = %d %s (%v), want the state", response.StatusCode, body, err)
-	}
+	body := r.getState(t)
 	// The state is rewritten through the type the route encodes, so it must come back from it as
 	// the route served it, byte for byte.
 	var state api.State
@@ -316,6 +280,7 @@ func (r *stateGoldenRig) record(t *testing.T, name string) stateEventsStep {
 		issue.TreeMovedAt, issue.QuietHours = &moved, &quiet
 		state.Issues[key] = issue
 	}
+	var err error
 	if step.State, err = json.Marshal(state); err != nil {
 		t.Fatalf("encode the state: %v", err)
 	}

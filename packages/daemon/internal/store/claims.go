@@ -365,8 +365,9 @@ type storedClaim struct {
 // of the claim lands between this read and the write that replaces it. A claim's first row is its
 // admission (AdmitClaim), which is globally serialized, so two first writes of one claim never race
 // past this read. With the state events on (state), the same statement reads whether the write
-// lists c's issue first (storedClaim.unlisted): whether the issue has a record of state's project,
-// and, only for an issue that has none, whether any claim of c's project names it.
+// lists c's issue first (storedClaim.unlisted): never for a claim the store holds a row of, since
+// that row names the issue already; else whether the issue has a record of state's project, and,
+// only for an issue that has none, whether any claim of c's project names it.
 func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *statePublication) (storedClaim, error) {
 	var stored storedClaim
 	var storedState, session *string
@@ -376,10 +377,12 @@ func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *state
 			string(c.Token)).Scan(&storedState, &session)
 	} else {
 		// One row whether or not the claim has one: the left join gives null state and session to
-		// a claim the store does not hold yet. The case reads the claims only for an issue with no
-		// record of the project, since the claims table has no index on the issue.
+		// a claim the store does not hold yet. The case reads the claims only for a claim the store
+		// holds no row of, on an issue with no record of the project, since the claims table has no
+		// index on the issue: almost every claim write is of a claim the store already holds.
 		err = tx.QueryRow(ctx, `select stored.state, stored.session,
-			case when exists (select 1 from issues where key = $2 and project = $3) then false
+			case when stored.state is not null then false
+				when exists (select 1 from issues where key = $2 and project = $3) then false
 				else not exists (select 1 from claims where issue = $2 and project = $4) end
 			from (values (1)) as one (x)
 			left join (select state, session from claims where token = $1 for update) as stored on true`,

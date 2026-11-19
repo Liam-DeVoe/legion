@@ -401,7 +401,7 @@ func (r *heldTaskRig) enqueueStart() int64 {
 		r.t.Fatalf("enqueue the architect start of generation %d: %v", r.root.Generation, err)
 	}
 	var id int64
-	if err := r.pool.QueryRow(r.ctx, "select max(id) from outbox where kind = $1", string(record.OutboxKindSupervise)).Scan(&id); err != nil {
+	if err := r.pool.QueryRow(r.ctx, "select max(id) from outbox").Scan(&id); err != nil {
 		r.t.Fatalf("read the start row just enqueued: %v", err)
 	}
 	return id

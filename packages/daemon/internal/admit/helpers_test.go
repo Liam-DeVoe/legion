@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,7 +150,13 @@ func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID strin
 // of the whole outbox: a write of an issue, a slot, a claim or the admission block queues one when
 // the store's state events are on, and a test that counts or lists the outbox asserts the rows of
 // the other lanes.
-const notStateRows = `kind not in ('state_change', 'state_admission', 'state_boot')`
+var notStateRows = func() string {
+	var kinds []string
+	for _, kind := range record.LaneKinds(record.LaneState) {
+		kinds = append(kinds, "'"+string(kind)+"'")
+	}
+	return "kind not in (" + strings.Join(kinds, ", ") + ")"
+}()
 
 type effect struct {
 	kind    record.OutboxKind

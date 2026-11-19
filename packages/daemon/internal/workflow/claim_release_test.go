@@ -236,7 +236,7 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 // are written in internal/admit, never here.
 func queuedKinds(t *testing.T, pool *pgxpool.Pool) map[string]int {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox where `+notStateRows)
+	rows, err := pool.Query(t.Context(), `select kind from outbox`)
 	if err != nil {
 		t.Fatalf("read the outbox: %v", err)
 	}

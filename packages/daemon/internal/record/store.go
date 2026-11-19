@@ -28,9 +28,16 @@ const maxInt64 = uint64(^uint64(0) >> 1)
 // Postgres implements Store exclusively through caller-owned pgx transactions. It has no pool:
 // opening, committing, and retrying a transaction belong to the layer that owns its boundary.
 type Postgres struct {
-	// stateRun is the run id the state events this store queues carry (PublishState). It is nil
-	// until the daemon turns the events on, and while it is nil no write queues one.
-	stateRun atomic.Pointer[string]
+	// state is what PublishState turned the state events on with. It is nil until the daemon turns
+	// the events on, and while it is nil no write queues one.
+	state atomic.Pointer[statePublication]
+}
+
+// statePublication is what PublishState turns the state events on with: the id of the daemon run
+// every state row carries, and the call each write makes once it has queued a state row.
+type statePublication struct {
+	run    string
+	queued func(ctx context.Context)
 }
 
 var _ Store = (*Postgres)(nil)
@@ -39,26 +46,31 @@ var _ Store = (*Postgres)(nil)
 func NewStore() *Postgres { return &Postgres{} }
 
 // PublishState turns the state events on: from this call on, each write of an issue or a slot that
-// moves what Dispatch observes of it — the issue's phase, tree or waitingOn (PutIssue, Observed),
-// its slot's index (PutSlot, ReleaseSlot, ReleaseSlotForWait) — queues one state_change row
-// naming each field it moved, in the write's own transaction, so the change and its event commit
-// together or not at all. Each row carries run, the id of the daemon run that wrote it, which a row
-// that names none is refused for (StateChange). Only a daemon with a workflow runs the outbox that
-// sends and deletes the rows, so only that daemon turns the events on, beside the role-holder
-// publication (store.Store.PublishRoleHolders); every other store, a daemon's with no workflow
-// among them, queues none, since a row it wrote would be neither sent nor deleted.
-func (s *Postgres) PublishState(run string) { s.stateRun.Store(&run) }
-
-// StateRun is the run id the state events carry and whether they are on (PublishState). A writer
-// whose event costs a judgement of its own before its statement, the admission pass's block
-// (QueueAdmissionBlock), reads it first, so that with the events off it judges nothing.
-func (s *Postgres) StateRun() (string, bool) {
-	run := s.stateRun.Load()
-	if run == nil {
-		return "", false
+// moves what Dispatch observes of it — the issue's phase, tree or waitingOn (PutIssue,
+// ObservationOf), its slot's index (PutSlot, ReleaseSlot, ReleaseSlotForWait) — queues one
+// state_change row naming each field it moved, in the write's own transaction, so the change and
+// its event commit together or not at all, and a write of the admission block that moves it queues
+// its state_admission row (QueueAdmissionBlock). Each row carries run, the id of the daemon run that
+// wrote it, which a row that names none is refused for (StateChange). Only a daemon with a workflow
+// runs the outbox that sends and deletes the rows, so only that daemon turns the events on, beside
+// the role-holder publication (store.Store.PublishRoleHolders); every other store, a daemon's with
+// no workflow among them, queues none, since a row it wrote would be neither sent nor deleted.
+//
+// Each write that queued a state row calls queued with its own context, inside its transaction
+// and once the row is queued, and a write that queued none calls nothing: the store knows nothing
+// of the lanes, and the daemon wakes the project's state lane from there once the transaction
+// commits (its commit hooks, intake.OnCommit). A nil queued calls nothing.
+func (s *Postgres) PublishState(run string, queued func(ctx context.Context)) {
+	if queued == nil {
+		queued = func(context.Context) {}
 	}
-	return *run, true
+	s.state.Store(&statePublication{run: run, queued: queued})
 }
+
+// StatePublished says whether the state events are on (PublishState). A writer whose event costs a
+// judgement of its own before its statement, the admission pass's block (QueueAdmissionBlock),
+// reads it first, so that with the events off it judges nothing.
+func (s *Postgres) StatePublished() bool { return s.state.Load() != nil }
 
 func (s *Postgres) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) (bool, error) {
 	tag, err := tx.Exec(ctx, `insert into processed_events (source, event_id) values ($1, $2)
@@ -311,8 +323,8 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent}
-	run := s.stateRun.Load()
-	if run == nil {
+	state := s.state.Load()
+	if state == nil {
 		tag, err := tx.Exec(ctx, statement, args...)
 		if err != nil {
 			return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -326,8 +338,12 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// the observed columns are read with the row locked, so nothing moves them before the upsert,
 	// and the upsert returns them as Postgres stores them — its times at microseconds — so the
 	// values compared, and the values the event carries, are the row the state route reads, not
-	// the Go values handed in. A refused write returns no row and queues nothing. The row is due
-	// at the transaction's own time, now(), read with the write since the store has no clock.
+	// the Go values handed in. The read and the upsert are two statements on purpose: in one
+	// statement the old row is read only while a CTE that locks it runs ahead of the upsert, and
+	// Postgres keeps no such order on its own — read after the upsert, the CTE skips the row the
+	// upsert replaced and answers no row, so the write would read as a first write with no error.
+	// A refused write returns no row and queues nothing. The row is due at the transaction's own
+	// time, now(), read with the write since the store has no clock.
 	before, err := lockedObservedIssue(ctx, tx, issue.Key)
 	if err != nil {
 		return fmt.Errorf("put issue %s: read what Dispatch observes of it: %w", issue.Key, err)
@@ -344,7 +360,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
 	}
-	return s.queueStateChange(ctx, tx, issue.Project, *run, issue.Key, changes, due)
+	return s.queueStateChange(ctx, tx, state, issue.Project, issue.Key, changes, due)
 }
 
 // refusedIssue is the refusal of a PutIssue whose upsert changed no row: the issue is recorded on
@@ -361,7 +377,7 @@ func refusedIssue(ctx context.Context, tx pgx.Tx, key string) error {
 // lockedObservedIssue is what Dispatch observes of the issue key as its record stores it, read
 // with the row locked until tx ends, so that no other write moves it before tx's own write; nil
 // for an issue the record does not hold yet.
-func lockedObservedIssue(ctx context.Context, tx pgx.Tx, key string) (*ObservedIssue, error) {
+func lockedObservedIssue(ctx context.Context, tx pgx.Tx, key string) (*IssueObservation, error) {
 	observed, err := scanObservedIssue(tx.QueryRow(ctx, "select "+observedIssueColumns+" from issues where key = $1 for update", key))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -373,19 +389,24 @@ func lockedObservedIssue(ctx context.Context, tx pgx.Tx, key string) (*ObservedI
 }
 
 // queueStateChange queues the state event of one write that moved changes of issue (StateChange),
-// carrying run, in tx and due at due, through the insert every outbox row takes (Enqueue). Its
-// issue column is project, the bare Dispatch project key, so it runs on the project's one state
-// lane (LaneState), and the commit trigger of migration 20261118164019_state_events gives it its
-// sequence and its time when tx commits. A write that moved nothing (no changes) queues nothing.
-func (s *Postgres) queueStateChange(ctx context.Context, tx pgx.Tx, project, run, issue string, changes []StateFieldChange, due time.Time) error {
+// carrying state's run, in tx and due at due, through the insert every outbox row takes (Enqueue),
+// and tells state it queued it (PublishState). Its issue column is project, the bare Dispatch
+// project key, so it runs on the project's one state lane (LaneState), and the commit trigger of
+// migration 20261118164019_state_events gives it its sequence and its time when tx commits. A
+// write that moved nothing (no changes) queues nothing.
+func (s *Postgres) queueStateChange(ctx context.Context, tx pgx.Tx, state *statePublication, project, issue string, changes []StateFieldChange, due time.Time) error {
 	if len(changes) == 0 {
 		return nil
 	}
-	row, err := NewOutboxRow(project, StateChange{Project: project, Run: run, Issue: issue, Changes: changes}, due)
+	row, err := NewOutboxRow(project, StateChange{Project: project, Run: state.run, Issue: issue, Changes: changes}, due)
 	if err != nil {
 		return fmt.Errorf("queue the state change of %s: %w", issue, err)
 	}
-	return s.Enqueue(ctx, tx, row)
+	if err := s.Enqueue(ctx, tx, row); err != nil {
+		return err
+	}
+	state.queued(ctx)
+	return nil
 }
 
 // MarkIssueMoved records at as when the daemon last saw key move. It is the one writer of
@@ -2247,13 +2268,13 @@ func (s *Postgres) Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error) {
 // PutSlot grants issue its slot, or moves it to another index. With the state events on
 // (PublishState) it reads the index the issue holds with its row locked, and where the write moved
 // it queues the state change naming the slot: null to the index for a grant, one index to another
-// for a move, none for an index written again. The row is due at the transaction's own time,
-// now(), read with the write.
+// for a move, none for an index written again. The read and the upsert are two statements for the
+// reason PutIssue's are. The row is due at the transaction's own time, now(), read with the write.
 func (s *Postgres) PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error {
 	const statement = `insert into slots (issue, index, admitted_at) values ($1, $2, $3)
 		on conflict (issue) do update set index = excluded.index, admitted_at = excluded.admitted_at`
-	run := s.stateRun.Load()
-	if run == nil {
+	state := s.state.Load()
+	if state == nil {
 		if _, err := tx.Exec(ctx, statement, slot.Issue, slot.Index, slot.AdmittedAt); err != nil {
 			return fmt.Errorf("put slot for %s: %w", slot.Issue, err)
 		}
@@ -2274,7 +2295,7 @@ func (s *Postgres) PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error {
 	if held != nil {
 		old = json.RawMessage(strconv.Itoa(*held))
 	}
-	return s.queueStateChange(ctx, tx, keyProject(slot.Issue), *run, slot.Issue,
+	return s.queueStateChange(ctx, tx, state, keyProject(slot.Issue), slot.Issue,
 		[]StateFieldChange{{Field: StateFieldSlot, Old: old, New: json.RawMessage(strconv.Itoa(slot.Index))}}, due)
 }
 
@@ -2283,22 +2304,26 @@ func (s *Postgres) PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error {
 // row queued says the index the delete found; a release of an issue holding no slot deletes
 // nothing and queues nothing.
 func (s *Postgres) ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error {
-	run := s.stateRun.Load()
-	if run == nil {
+	state := s.state.Load()
+	if state == nil {
 		if _, err := tx.Exec(ctx, "delete from slots where issue = $1", issue); err != nil {
 			return fmt.Errorf("release slot for %s: %w", issue, err)
 		}
 		return nil
 	}
-	row, err := slotReleaseRow(issue, *run)
+	row, err := slotReleaseRow(issue, state.run)
 	if err != nil {
 		return fmt.Errorf("release slot for %s: %w", issue, err)
 	}
-	if _, err := tx.Exec(ctx, `with released as (delete from slots where issue = $1 returning index)
+	tag, err := tx.Exec(ctx, `with released as (delete from slots where issue = $1 returning index)
 		insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
 		select $2::text, $3::text, jsonb_set($4::jsonb, '{changes,0,old}', to_jsonb(released.index)), 0, now(), '', '', null from released`,
-		issue, string(row.Kind), row.Issue, string(row.Payload)); err != nil {
+		issue, string(row.Kind), row.Issue, string(row.Payload))
+	if err != nil {
 		return fmt.Errorf("release slot for %s: %w", issue, err)
+	}
+	if tag.RowsAffected() > 0 {
+		state.queued(ctx)
 	}
 	return nil
 }
@@ -2310,24 +2335,28 @@ func (s *Postgres) ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) err
 // on (PublishState), the same returning feeds the state change naming the slot, as ReleaseSlot's
 // does.
 func (s *Postgres) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error {
-	run := s.stateRun.Load()
-	if run == nil {
+	state := s.state.Load()
+	if state == nil {
 		if _, err := tx.Exec(ctx, `with released as (delete from slots where issue = $1 returning issue)
 			update issues set released_for_wait_at = $2 from released where issues.key = released.issue`, issue, at); err != nil {
 			return fmt.Errorf("release the slot of %s for what it waits on: %w", issue, err)
 		}
 		return nil
 	}
-	row, err := slotReleaseRow(issue, *run)
+	row, err := slotReleaseRow(issue, state.run)
 	if err != nil {
 		return fmt.Errorf("release the slot of %s for what it waits on: %w", issue, err)
 	}
-	if _, err := tx.Exec(ctx, `with released as (delete from slots where issue = $1 returning issue, index),
+	tag, err := tx.Exec(ctx, `with released as (delete from slots where issue = $1 returning issue, index),
 			marked as (update issues set released_for_wait_at = $2 from released where issues.key = released.issue)
 		insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
 		select $3::text, $4::text, jsonb_set($5::jsonb, '{changes,0,old}', to_jsonb(released.index)), 0, now(), '', '', null from released`,
-		issue, at, string(row.Kind), row.Issue, string(row.Payload)); err != nil {
+		issue, at, string(row.Kind), row.Issue, string(row.Payload))
+	if err != nil {
 		return fmt.Errorf("release the slot of %s for what it waits on: %w", issue, err)
+	}
+	if tag.RowsAffected() > 0 {
+		state.queued(ctx)
 	}
 	return nil
 }

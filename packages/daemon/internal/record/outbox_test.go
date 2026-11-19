@@ -86,13 +86,13 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// The state rows' values are raw JSON, which the jsonb column hands back in its own
 		// spacing and key order; a string, a number, null and the empty object come back as
 		// written, so the comparison below holds them byte for byte.
-		StateChange{Project: "LEGION", Run: "0b9f5c2e-4f1d-4c8a-9d57-2f3a6e8b1c40", Issue: "LEGION-208", Changes: []StateFieldChange{
+		StateChange{Project: "LEGION", Run: stateRun, Issue: "LEGION-208", Changes: []StateFieldChange{
 			{Field: StateFieldPhase, Old: json.RawMessage(`null`), New: json.RawMessage(`"planning"`)},
 			{Field: StateFieldSlot, Old: json.RawMessage(`null`), New: json.RawMessage(`3`)},
 			{Field: StateFieldClaim, Role: claim.RoleImplementer, Old: json.RawMessage(`"launching"`), New: json.RawMessage(`"working"`)},
 		}},
-		StateAdmission{Project: "LEGION", Run: "0b9f5c2e-4f1d-4c8a-9d57-2f3a6e8b1c40", Admission: json.RawMessage(`{}`)},
-		StateBoot{Project: "LEGION", Run: "0b9f5c2e-4f1d-4c8a-9d57-2f3a6e8b1c40", Settings: json.RawMessage(`{}`), Migrated: true},
+		StateAdmission{Project: "LEGION", Run: stateRun, Admission: json.RawMessage(`{}`)},
+		StateBoot{Project: "LEGION", Run: stateRun, Settings: json.RawMessage(`{}`), Migrated: true},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -356,6 +356,9 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
 		{name: "a state change of no project", payload: stateChange("", "run", phaseMoved), reason: `the project "", which is no bare Dispatch project key`},
 		{name: "a state change keyed by an issue rather than its project", payload: stateChange("LEGION-208", "run", phaseMoved), reason: `the project "LEGION-208", which is no bare Dispatch project key`},
+		// Keys the contract's PROJECT_KEY_PATTERN refuses: one letter alone, and eleven characters.
+		{name: "a state change of a one-letter project", payload: stateChange("L", "run", phaseMoved), reason: `the project "L", which is no bare Dispatch project key`},
+		{name: "a state change of a project past ten characters", payload: stateChange("LEGIONLEGIO", "run", phaseMoved), reason: `the project "LEGIONLEGIO", which is no bare Dispatch project key`},
 		{name: "a state change of no run", payload: stateChange("LEGION", "", phaseMoved), reason: "names no run"},
 		{name: "a state change of no issue", payload: StateChange{Project: "LEGION", Run: "run", Changes: []StateFieldChange{phaseMoved}}, reason: `the issue "", which is no issue key`},
 		{name: "a state change naming no field", payload: stateChange("LEGION", "run"), reason: "names no field the write moved"},

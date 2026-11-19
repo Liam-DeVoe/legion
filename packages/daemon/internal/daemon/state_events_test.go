@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -47,23 +46,72 @@ const stateTestRun = "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
 var stateKinds = record.LaneKinds(record.LaneState)
 
 // stateRig is the outbox of project LEGION, token legion, over a database of its own: it writes
-// through a record store whose state events are on, publishes through the package's recording
-// publisher (outboxPublisher) and logs as JSON into logged.
+// through a record store whose state events are on and wake nothing, publishes through the
+// package's recording publisher (outboxPublisher) and logs as JSON into logged. stateURL is where
+// GET /legion/v1/state is served over the same database, once serveState serves it.
 type stateRig struct {
 	pool      *store.Pool
 	records   *record.Postgres
 	publisher *outboxPublisher
 	runner    *outbox
 	logged    *syncBuffer
+	stateURL  string
 }
 
 func newStateRig(t *testing.T) *stateRig {
 	t.Helper()
 	r := &stateRig{pool: isolatedOutboxPool(t), records: record.NewStore(), publisher: &outboxPublisher{}, logged: &syncBuffer{}}
-	r.records.PublishState(stateTestRun)
+	r.records.PublishState(stateTestRun, nil)
 	r.runner = &outbox{pool: r.pool, records: r.records, notices: r.publisher, project: "legion", dispatchProject: "LEGION",
 		log: slog.New(slog.NewJSONHandler(r.logged, nil)), now: time.Now}
 	return r
+}
+
+// seed writes the records a case starts from through a record store with no state events, as a
+// daemon's records stand before a boot turns them on and as the admission tests seed theirs: what
+// is published is what the writes after it change.
+func (r *stateRig) seed(t *testing.T, write func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
+	t.Helper()
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		return write(context.Background(), tx, record.NewStore())
+	}); err != nil {
+		t.Fatalf("seed the records: %v", err)
+	}
+}
+
+// serveState serves GET /legion/v1/state over the rig's database through the daemon's own state
+// source (source), at stateURL: view, with the claim store it opens here, the rig's records,
+// project LEGION and its token legion, and the deployment and reports of a daemon that runs
+// nothing filled in. It answers the claim store, which the route reads the claims through.
+func (r *stateRig) serveState(t *testing.T, view source) *store.Store {
+	t.Helper()
+	st, err := store.Open(context.Background(), r.pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	view.store, view.records, view.project, view.projectToken = st, r.records, "LEGION", "legion"
+	view.deployment = func() capabilities.Deployment { return capabilities.Deployment{} }
+	view.reports = func() map[claim.Token]capabilities.Report { return nil }
+	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{State: &view, StateTransactions: st, Log: quietLogger()}).Handler)
+	t.Cleanup(server.Close)
+	r.stateURL = server.URL
+	return st
+}
+
+// getState is the body GET /legion/v1/state serves now (serveState), which a case expects served.
+func (r *stateRig) getState(t *testing.T) []byte {
+	t.Helper()
+	response, err := http.Get(r.stateURL + "/legion/v1/state")
+	if err != nil {
+		t.Fatalf("GET the state: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("GET the state = %d %s (%v), want the state", response.StatusCode, body, err)
+	}
+	return body
 }
 
 // stateWrite is one write a test commits through records.
@@ -179,14 +227,12 @@ func statesPublished(t *testing.T, publisher *outboxPublisher, from int) []publi
 	return states
 }
 
-// stateProjectKey is a Dispatch project key, as legionStateMessage's `project` holds it.
-var stateProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
-
 // decodeState decodes one state message strictly, refusing any key the Go types do not name, and
 // holds it to the contract's rules (legionStateMessage, packages/contracts/src/legion-api.ts): a
-// project key, a run that is a UUID, the commit time in UTC with its microseconds, events that run
-// from firstSeq to seq one sequence each, and each event of one of the three kinds carrying its
-// kind's fields and no other's. The summary is the one line the executor writes for it.
+// project key (claim.IsProjectKey), a run that is a UUID, the commit time in UTC with its
+// microseconds, events that run from firstSeq to seq one sequence each, and each event of one of
+// the three kinds carrying its kind's fields and no other's. The summary is the one line the
+// executor writes for it.
 func decodeState(t *testing.T, topic, summary, key string, encoded []byte) publishedState {
 	t.Helper()
 	strict := func(raw []byte, into any) {
@@ -200,7 +246,7 @@ func decodeState(t *testing.T, topic, summary, key string, encoded []byte) publi
 	published := publishedState{topic: topic, summary: summary, key: key}
 	strict(encoded, &published.message)
 	message := published.message
-	if !stateProjectKey.MatchString(message.Project) {
+	if !claim.IsProjectKey(message.Project) {
 		t.Fatalf("the state message names the project %q, which is no Dispatch project key", message.Project)
 	}
 	if _, err := uuid.Parse(message.Run); err != nil {
@@ -286,7 +332,12 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 	// The lanes run on a held clock, so no sweep runs but the one the test fires.
 	clock := &heldClock{}
 	stop := runLanes(t, r.runner, clock)
-	waking := projectRecords{Store: r.records, project: "LEGION", wake: r.runner.wake, log: quietLogger()}
+	// The writes go through a record store whose state events the daemon's own switch turned on
+	// (publishRecordStates), which wakes the project's state lane as each write that queued a row
+	// commits.
+	w := &workflowRuntime{recordStore: record.NewStore(), dispatchProject: "LEGION", log: quietLogger()}
+	w.outboxWake.Store(r.runner)
+	publishRecordStates(w, stateTestRun)
 	var heads []int64
 	for _, write := range []stateWrite{
 		moveTo(phase.Admitted),
@@ -295,7 +346,7 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 		},
 		moveTo(phase.Planning),
 	} {
-		heads = append(heads, one(r.commit(t, waking, write)))
+		heads = append(heads, one(r.commit(t, w.recordStore, write)))
 	}
 	testwait.Eventually(t, "the three woken transactions published", func() bool {
 		return len(r.publisher.publishes()) == 3 && len(r.stateRows(t)) == 0
@@ -304,8 +355,8 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 		t.Fatalf("sweep timers armed = %d, want the one Run armed at boot and never fired: each commit's wake ran the lane", sweeps)
 	}
 	testwait.Eventually(t, "the state lane exited with nothing left to run", func() bool { return liveLanes(r.runner) == 0 })
-	// A row written through the bare store wakes nothing, and with the clock held nothing else can
-	// start the lane until the sweep's timer fires.
+	// A row written through the rig's store, whose state events wake nothing, wakes nothing, and
+	// with the clock held nothing else can start the lane until the sweep's timer fires.
 	heads = append(heads, one(r.commit(t, r.records, moveTo(phase.Implementing))))
 	if published, lanes := len(r.publisher.publishes()), liveLanes(r.runner); published != 3 || lanes != 0 {
 		t.Fatalf("after a write that woke nothing: %d publishes and %d lanes, want 3 and none", published, lanes)
@@ -526,7 +577,6 @@ func TestTheStateEventsOfOneTransactionArePublishedAsOneMessage(t *testing.T) {
 type admissionStateRig struct {
 	*stateRig
 	handlers []intake.Handler
-	state    *httptest.Server
 }
 
 func newAdmissionStateRig(t *testing.T) *admissionStateRig {
@@ -536,30 +586,8 @@ func newAdmissionStateRig(t *testing.T) *admissionStateRig {
 	engine := workflow.New(r.records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, log)
 	admission := admit.New(r.records, engine, 1, "LEGION", log)
 	r.handlers = []intake.Handler{blockers.NewMirror(r.records, "LEGION"), engine, admission}
-	st, err := store.Open(context.Background(), r.pool.Config().ConnString())
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	t.Cleanup(st.Close)
-	view := &source{
-		store: st, records: r.records, project: "LEGION", projectToken: "legion", runtime: "tmux", admissionCap: 1, startedAt: time.Now(),
-		deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
-		reports:    func() map[claim.Token]capabilities.Report { return nil },
-	}
-	r.state = httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{State: view, StateTransactions: st, Log: quietLogger()}).Handler)
-	t.Cleanup(r.state.Close)
+	r.serveState(t, source{runtime: "tmux", admissionCap: 1, startedAt: time.Now()})
 	return r
-}
-
-// seed writes the records a case starts from through a record store with no state events, as the
-// admission tests seed theirs: what is published is what the facts after it change.
-func (r *admissionStateRig) seed(t *testing.T, write func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
-	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		return write(context.Background(), tx, record.NewStore())
-	}); err != nil {
-		t.Fatalf("seed the records: %v", err)
-	}
 }
 
 // root is a root of its own tree recorded at admitted, handed to Legion, at rank and status.
@@ -626,15 +654,7 @@ func (r *admissionStateRig) publishedBlocks(t *testing.T) []any {
 // servedBlock is the `admission` GET /legion/v1/state serves now, decoded.
 func (r *admissionStateRig) servedBlock(t *testing.T) any {
 	t.Helper()
-	response, err := http.Get(r.state.URL + "/legion/v1/state")
-	if err != nil {
-		t.Fatalf("GET the state: %v", err)
-	}
-	body, err := io.ReadAll(response.Body)
-	response.Body.Close()
-	if err != nil || response.StatusCode != http.StatusOK {
-		t.Fatalf("GET the state = %d %s (%v), want the state", response.StatusCode, body, err)
-	}
+	body := r.getState(t)
 	var state map[string]json.RawMessage
 	if err := json.Unmarshal(body, &state); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
@@ -732,10 +752,11 @@ func TestTheAdmissionEventCarriesTheBlockTheStateServes(t *testing.T) {
 }
 
 // listenerEnvelope is the envelope the Envoy listener's publish route stores for one publish
-// (messageEnvelope, packages/envoy/cmd/listener/api.go:559-588, whose fields are contracts.Envelope's
-// under its JSON names): the daemon's publish names no source, so the route writes agent, and no
-// session; its message is one line, so the summary is that line whole; its payload rides as the
-// string the daemon sent; and the three ids the route mints are 32 hex digits each (id.New).
+// (contracts.MessageEnvelope, packages/envoy/internal/contracts/message_envelope.go, whose fields
+// are contracts.Envelope's under its JSON names): the daemon's publish names no source, so the
+// route writes agent, and no session; its message is one line, so the summary is that line whole;
+// its payload rides as the string the daemon sent; and the three ids the route mints are 32 hex
+// digits each (id.New).
 type listenerEnvelope struct {
 	EventID        string `json:"event_id"`
 	Source         string `json:"source"`
@@ -784,11 +805,12 @@ func seedBootStore(t *testing.T, cfg config.Config, issue string, earlier bool, 
 	}
 	payload := fmt.Sprintf(`{"project":%q,"run":%q,"issue":%q,"changes":[{"field":"phase","old":"merging","new":"done"}]}`, cfg.Project, earlierRun, issue)
 	if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-		values ('state_change', $1, $2, 0, now(), '')`, cfg.Project, payload); err != nil {
+		values ($1, $2, $3, 0, now(), '')`, string(record.OutboxKindStateChange), cfg.Project, payload); err != nil {
 		t.Fatalf("seed the earlier run's state row: %v", err)
 	}
 	var seq int64
-	if err := st.Pool().QueryRow(ctx, `select state_seq from outbox where issue = $1 and kind = 'state_change'`, cfg.Project).Scan(&seq); err != nil {
+	if err := st.Pool().QueryRow(ctx, `select state_seq from outbox where issue = $1 and kind = $2`,
+		cfg.Project, string(record.OutboxKindStateChange)).Scan(&seq); err != nil {
 		t.Fatalf("read the earlier run's state row: %v", err)
 	}
 	if seq != 1 {

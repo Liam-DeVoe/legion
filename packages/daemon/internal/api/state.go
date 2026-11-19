@@ -775,7 +775,7 @@ type AssignmentView struct {
 // answered root then stands in admission's waiting line as well, among the issues whose work came
 // back, oldest first, until the pass that resumes it. It is record.WaitingOnView, where its fields
 // are declared: the state's `waitingOn` and a state event's are the same value read two ways
-// (record.Observed), and the view is declared once, under both.
+// (record.ObservationOf), and the view is declared once, under both.
 type WaitingOnView = record.WaitingOnView
 
 // MarshalJSON keeps `workers` an object on the wire for an issue that has no worker yet.

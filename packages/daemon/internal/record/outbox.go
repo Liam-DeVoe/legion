@@ -73,7 +73,7 @@ const (
 // with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
 // notice publishes beside them, so a status write or a notice never waits behind a start pulling
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
-// publish too, the one row addressed to the bare project key rather than to an issue, so that
+// publish too, addressed like each state row (LaneState) to the bare project key, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of
 // the issue on that role's own topic: the end of a phase and a hook's words, which go to a phase
@@ -1182,13 +1182,11 @@ type StateBoot struct {
 
 func (StateBoot) OutboxKind() OutboxKind { return OutboxKindStateBoot }
 
-// projectKey is a Dispatch project key, the part of an issue key before its hyphen.
-var projectKey = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
-
 // validateStateRow holds the two fields every state row carries: the bare project key its lane
-// is keyed by, and the run that wrote it.
+// is keyed by, in the one shape the contract takes for one (claim.IsProjectKey), and the run that
+// wrote it.
 func validateStateRow(kind OutboxKind, project, run string) error {
-	if !projectKey.MatchString(project) {
+	if !claim.IsProjectKey(project) {
 		return fmt.Errorf("a %s row names the project %q, which is no bare Dispatch project key", kind, project)
 	}
 	if run == "" {
