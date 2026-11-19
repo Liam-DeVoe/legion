@@ -325,7 +325,8 @@
 #      the two copies as one, so the second selects nothing; it is a slip a forward merge leaves
 #      without a conflict, and one of the two lines was likely meant to be another path. A path
 #      that two groups one list names both hold is no repeat, since each group's list holds it
-#      once.
+#      once, and neither is an alias beside a glob that spells its name (`*group` and
+#      `'*group'`), since the two select different files.
 #
 # Rules 1, 6, 9, 17 and 22 name .github/ci-filters.yaml in their refusals, the file the filters
 # are in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That

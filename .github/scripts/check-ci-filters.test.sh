@@ -437,7 +437,9 @@ check "a key repeated in a nested mapping is refused the same way" \
 
 # Rule 22. A list that holds one item twice as written is refused, naming the list, the item and
 # both lines: a path (quoted or plain alike), an alias, or a path twice in a list written inside a
-# list. What two groups one list names share is no repeat: each group's own list holds it once.
+# list or under a change type. What two groups one list names share is no repeat: each group's own
+# list holds it once. Nor is an alias and a glob that spells its name: the two select different
+# files.
 echo "case: a filter that holds one path twice"
 root=$(fixture filter-path-repeated)
 first=$(grep -n "^  - 'mod/lib/\*'$" "$root/.github/ci-filters.yaml" | cut -d: -f1)
@@ -456,7 +458,7 @@ first=$(grep -n '^  - \*workspace$' "$root/.github/ci-filters.yaml" | sed -n 2p 
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the alias as written and both of its lines" \
-  "$(contains "$out" "^::error file=.github/ci-filters.yaml::filter site holds '\*workspace' twice, at lines $first and $((first + 1)): ")"
+  "$(contains "$out" "^::error file=.github/ci-filters.yaml::filter site holds the alias \*workspace twice, at lines $first and $((first + 1)): ")"
 
 echo "case: a list written inside a filter that holds one path twice"
 root=$(fixture filter-inner-list-repeated)
@@ -464,8 +466,18 @@ replace "$root/.github/ci-filters.yaml" $'image:\n  - \'docs/**\'' $'image:\n  -
 line=$(grep -n '^  - \[' "$root/.github/ci-filters.yaml" | cut -d: -f1)
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the inner list by its line and the filter it is in" \
-  "$(contains "$out" "^::error file=.github/ci-filters.yaml::the list at line $line of filter image holds 'docs/\*\*' twice, at lines $line and $line: ")"
+check "names the inner list by its line, the filter it is in, and the one line both copies are on" \
+  "$(contains "$out" "^::error file=.github/ci-filters.yaml::the list at line $line of filter image holds 'docs/\*\*' twice, on line $line: ")"
+
+echo "case: a change type's list that holds one path twice"
+root=$(fixture filter-change-type-repeated)
+replace "$root/.github/ci-filters.yaml" $'image:\n  - \'docs/**\'' \
+  $'image:\n  - \'docs/**\'\n  - added|modified:\n      - \'docs/**\'\n      - \'docs/**\''
+line=$(grep -n '^  - added|modified:$' "$root/.github/ci-filters.yaml" | cut -d: -f1)
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the change type's list and both of its lines" \
+  "$(contains "$out" "^::error file=.github/ci-filters.yaml::the added|modified list of the mapping at line $line of filter image holds 'docs/\*\*' twice, at lines $((line + 1)) and $((line + 2)): ")"
 
 echo "case: two groups one filter names share a path"
 root=$(fixture filter-groups-share)
@@ -473,6 +485,21 @@ replace "$root/.github/ci-filters.yaml" $'app:\n' $'module: &module\n  - \'mod/g
 replace "$root/.github/ci-filters.yaml" $'site:\n  - *workspace' $'site:\n  - *workspace\n  - *module'
 run_check "$root"
 check "passes" "$(is "$status" 0)"
+
+echo "case: an alias and a glob that spells its name"
+root=$(fixture filter-alias-and-glob)
+printf 'a file the glob matches\n' > "$root/workspace"
+replace "$root/.github/ci-filters.yaml" $'image:\n  - \'docs/**\'' $'image:\n  - \'docs/**\'\n  - *workspace\n  - \'*workspace\''
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: a filters file the YAML reader refuses, with rule 22 reading it first"
+root=$(fixture filters-control-character)
+replace "$root/.github/ci-filters.yaml" $'image:\n  - \'docs/**\'' $'image:\n  - \'docs/**\'\n  - "docs/\x01/**"'
+run_check "$root"
+check_input_parse_error ".github/ci-filters.yaml"
+check "names the character the reader refuses" \
+  "$(contains "$out" "^::error file=.github/ci-filters.yaml::cannot read repository input: unacceptable character #x0001")"
 
 echo "case: importing an unsafe data string cannot inject warning commands"
 root=$(fixture import-warning-command)
