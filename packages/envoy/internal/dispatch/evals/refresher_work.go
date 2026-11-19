@@ -271,12 +271,12 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // which covers every change the log ever held.
 //
 // The page reads the clock once, before its reads, and that one reading is what the lost-cursor
-// check is judged at and what a read of the change log to its end stamps (delivery.ChangeCursor):
-// a page shorter than limit, a move to the head, and the first read. A full page moves the change
-// cursor and carries its ReadAt forward, so a pass that catches up a backlog of changes, judged
-// page by page, finds the cursor lost once the retention has passed since the last read of the
-// whole log, a prune having taken changes after it meanwhile. The rows are built as of the pass's
-// moment (now), whatever the page's reading.
+// check is judged at and what a read of the change log to its end stamps (delivery.ChangeCursor
+// and its Through): a page shorter than limit, a move to the head, and the first read. A full page
+// moves the change cursor and carries its ReadAt forward, so a pass that catches up a backlog of
+// changes, judged page by page, finds the cursor lost once the retention has passed since the last
+// read of the whole log, a prune having taken changes after it meanwhile. The rows are built as of
+// the pass's moment (now), whatever the page's reading.
 func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error) {
 	r.beginPage()
 	checked := r.clock()
@@ -312,16 +312,11 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 			if err != nil {
 				return false, fmt.Errorf("read the delivery changes after %d: %w", after.Seq, err)
 			}
-			moved.changes = after
+			moved.changes = after.Through(changes, limit, checked)
 			for _, change := range changes {
-				at := change.At
-				moved.changes.Seq, moved.changes.At = change.Seq, &at
 				work.addChange(change)
 			}
 			full = len(changes) == limit
-			if !full {
-				moved.changes.ReadAt = checked
-			}
 		}
 		events, err := r.store.readRefresherEvents(ctx, cursors.events, safe, limit)
 		if err != nil {

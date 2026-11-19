@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 
@@ -95,16 +94,10 @@ func LockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker,
 }
 
 // DrainRepoProjectChange is what every writer of a mapping runs right after its write committed:
-// it moves one batch of the change log's outbox into the log (DrainPendingBatch), the lowest ids
-// first, so the settings change the mapping's trigger recorded (migration 20261117100020) is among
-// them where no more than a batch was pending ahead of it, as an eval write's own drain moves its
-// rows (evals' drainChanges). One batch and no more, so a route that drains before it answers
-// waits for one batch whatever backlog another writer left. A write that finds more than a batch
-// ahead of its change leaves it pending, as it does when its drain fails, which is logged and
-// fails nothing: the change committed with the write, and the next drain of any process moves it,
-// or else the next process's boot before it serves (DrainPending states the bound).
+// the drain of one batch of the change log's outbox (DrainAfterCommit), so the settings change the
+// mapping's trigger recorded (migration 20261117100020) is moved into the log where no more than a
+// batch was pending ahead of it, as an eval write's own drain moves its rows (evals'
+// drainChanges).
 func DrainRepoProjectChange(ctx context.Context, pool *store.Pool) {
-	if _, _, err := DrainPendingBatch(ctx, pool); err != nil && ctx.Err() == nil {
-		slog.Warn("dispatch: a repository mapping write could not move its change into the delivery change log; the next drain moves it", "error", err)
-	}
+	DrainAfterCommit(ctx, pool, "dispatch: a repository mapping write could not move its change into the delivery change log; the next drain moves it")
 }

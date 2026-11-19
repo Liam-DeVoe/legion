@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -160,7 +161,7 @@ const drainBatch = 250
 // facts pass, right after its commit; the live hub, before each read of the log; the refresher, at
 // the start of each pass; and the server's boot, before it serves. An eval write, the registry's
 // and the refresher's, and every write of a repository's mapping (DrainRepoProjectChange) drain
-// one batch instead (DrainPendingBatch), so a route that answers after its drain waits for one
+// one batch instead (DrainAfterCommit), so a route that answers after its drain waits for one
 // batch at most, whatever backlog another writer left: those callers move the rest.
 //
 // A writer killed between its commit and its drain loses no change: its pending rows committed
@@ -200,6 +201,22 @@ func DrainPending(ctx context.Context, pool *store.Pool) (int64, error) {
 func DrainPendingBatch(ctx context.Context, pool *store.Pool) (int64, bool, error) {
 	moved, err := drainOneBatch(ctx, pool)
 	return moved, err == nil && moved == drainBatch, err
+}
+
+// DrainAfterCommit is the drain a writer whose changes wait in the outbox runs right after its
+// write committed: it moves one batch (DrainPendingBatch), the lowest ids first, so the writer's
+// own rows are among them where no more than a batch was pending ahead of them. One batch and no
+// more, so a route that drains before it answers waits for one batch whatever backlog another
+// writer left. A write that finds more than a batch ahead of its rows leaves them pending, as it
+// does when its drain fails. A failed drain fails nothing and logs warning, the caller's own text,
+// unless ctx has ended: the rows committed with the write, and the next drain of any process moves
+// them, or else the next process's boot before it serves (DrainPending states the bound). Its
+// callers are every eval write (evals' drainChanges) and every writer of a mapping
+// (DrainRepoProjectChange), each with its own warning.
+func DrainAfterCommit(ctx context.Context, pool *store.Pool, warning string) {
+	if _, _, err := DrainPendingBatch(ctx, pool); err != nil && ctx.Err() == nil {
+		slog.Warn(warning, "error", err)
+	}
 }
 
 // drainOneBatch is the statement that moves up to drainBatch pending rows into delivery_changes,
@@ -249,10 +266,9 @@ func OldestChangeSeq(ctx context.Context, q Querier) (int64, error) {
 // ChangeCursor is where one reader of the change log stands in that log, and is a cursor of that
 // log alone: the seq of the last change it read (0 before it read any), when the log recorded that
 // change (At, nil where the reader holds none: a position no change held), and when the reader last
-// read the log to its end, by the reader's own clock (ReadAt). A read reaches the end where it
-// finds no change after the last one it took, a page shorter than its limit, and so does a move to
-// the log's head (ChangesHead, on a first read or a lost cursor). A full page moves Seq and At and
-// carries the earlier ReadAt forward, since the reader has not seen the log's end since.
+// read the log to its end, by the reader's own clock (ReadAt). A page of the log moves it by one
+// rule (Through), and a move to the log's head (ChangesHead, on a first read or a lost cursor) is a
+// read of the log to its end too.
 //
 // A reader reads its clock afresh for each page, before that page's read: the one reading is the
 // now its lost-cursor check is judged at (CursorLost) and the ReadAt a read to the end stamps, so
@@ -261,6 +277,24 @@ type ChangeCursor struct {
 	Seq    int64
 	At     *time.Time
 	ReadAt time.Time
+}
+
+// Through is c moved over changes, a page ChangesSince read after c.Seq with limit, where checked
+// is the reader's clock as it read it before that page (ChangeCursor). Seq and At move to the
+// page's last change, and an empty page leaves them where they stood. A page shorter than limit
+// found no change after the last one it took, a read of the log to its end, and stamps ReadAt
+// with checked; a full page carries the earlier ReadAt forward, since the reader has not seen the
+// log's end since. At points at a copy of the change's time, so the cursor keeps none of the page
+// alive.
+func (c ChangeCursor) Through(changes []Change, limit int, checked time.Time) ChangeCursor {
+	if n := len(changes); n > 0 {
+		at := changes[n-1].At
+		c.Seq, c.At = changes[n-1].Seq, &at
+	}
+	if len(changes) < limit {
+		c.ReadAt = checked
+	}
+	return c
 }
 
 // CursorLost reports whether cursor may have passed over changes its reader never read, as of

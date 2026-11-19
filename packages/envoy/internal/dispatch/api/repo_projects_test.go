@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -468,21 +467,17 @@ func TestEveryMappingWriterMovesItsChangeIntoTheChangeLog(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createProjects(t, handler, "CORE")
 	ctx := t.Context()
-	answered := func(response *httptest.ResponseRecorder, status int) error {
-		if response.Code != status {
-			return fmt.Errorf("status=%d body=%s, want %d", response.Code, response.Body.String(), status)
-		}
-		return nil
-	}
 	for _, write := range []struct {
 		what, repo string
 		run        func() error
 	}{
 		{"the PUT", "acme/put", func() error {
-			return answered(dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/put", map[string]any{"project": "CORE"}, "alice"), http.StatusOK)
+			wantStatus(t, "the PUT of acme/put", dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/put", map[string]any{"project": "CORE"}, "alice"), http.StatusOK)
+			return nil
 		}},
 		{"the DELETE", "acme/put", func() error {
-			return answered(dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/repo-projects/acme/put", nil, "alice"), http.StatusNoContent)
+			wantStatus(t, "the DELETE of acme/put", dispatchRequest(t, handler, http.MethodDelete, "/api/v1/settings/repo-projects/acme/put", nil, "alice"), http.StatusNoContent)
+			return nil
 		}},
 		{"the boot seed", "acme/seeded", func() error {
 			return SeedRepoProjects(ctx, database, events.NewBroker(), "acme/seeded=CORE")
