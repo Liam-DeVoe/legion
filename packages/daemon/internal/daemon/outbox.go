@@ -1764,8 +1764,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 		// launch the wake pacing holds is waited for until it runs, the claim read again at its
 		// turn or parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake
 		// brings the pod back whatever the listener does with the publish, a listener before #4079
-		// included; the listener's own report of the kept publish meets the role's open resume,
-		// and the pod starts once.
+		// included; where the prompt is published kept (publishKeptToRole, below), the listener's
+		// own report of that publish meets the role's open resume, and the pod starts once.
 		if waits, turn, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
 			return err
 		} else if !turn.IsZero() {
