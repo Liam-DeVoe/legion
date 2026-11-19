@@ -238,14 +238,14 @@ const (
 
 // nodeMarks draws the mark a node write leaves on each row it made or moved, until the statement
 // that states that write's facts reads it and moves the row onto its cause (queueAppend): a
-// negative source_event, -(mark*4 + attributes), where mark names the write and attributes are
-// the base attributes it states for the node (markVisibility, markState: both for a node it
-// made). No event has a negative id, and a row carries the mark only between two statements of
-// one transaction, the node write and the append, which run in one write phase or one after the
-// other in a transaction that holds the node's row from the first: no other transaction sees it,
-// and the transaction's commit follows the append. That is how the append knows which nodes the
-// write made and which it moved, and which attribute of each moved, without reading the node
-// write's result back in Go between the two.
+// negative source_event, -(mark*markSpan + attributes), where mark names the write and
+// attributes are the base attributes it states for the node (markVisibility, markState: both for
+// a node it made). No event has a negative id, and a row carries the mark only between two
+// statements of one transaction, the node write and the append, which run in one write phase or
+// one after the other in a transaction that holds the node's row from the first: no other
+// transaction sees it, and the transaction's commit follows the append. That is how the append
+// knows which nodes the write made and which it moved, and which attribute of each moved, without
+// reading the node write's result back in Go between the two.
 //
 // The mark is drawn from a counter of the process, so two writes of one transaction never share
 // one. A node two writes of one transaction write before the first states its facts carries the
@@ -259,15 +259,25 @@ func nextNodeMark() int64 {
 	return nodeMarks.Add(1)%(1<<40) + 1
 }
 
-// markSQL is the source_event a node write leaves on a row: -(mark*4 + attributes), mark bound
-// as the parameter at markParam.
+// markSpan is how many values the attributes a mark carries can take, every set of markVisibility
+// and markState: a mark is spelled mark*markSpan + attributes, so neither part reaches the other.
+const markSpan = (markVisibility | markState) + 1
+
+// markSQL is the source_event a node write leaves on a row: -(mark*markSpan + attributes), mark
+// bound as the parameter at markParam.
 func markSQL(markParam, attributes string) string {
-	return `-(` + markParam + `::bigint * 4 + ` + attributes + `)`
+	return `-(` + markParam + `::bigint * ` + strconv.Itoa(markSpan) + ` + ` + attributes + `)`
 }
 
 // markedBy is the condition that row's source_event is the mark the write at markParam left.
 func markedBy(row, markParam string) string {
-	return `(` + row + `.source_event < 0 and (-` + row + `.source_event) / 4 = ` + markParam + `::bigint)`
+	return `(` + row + `.source_event < 0 and (-` + row + `.source_event) / ` + strconv.Itoa(markSpan) + ` = ` + markParam + `::bigint)`
+}
+
+// markAttributes is the base attributes the mark on row's source_event says its write states
+// (markVisibility, markState), read where markedBy holds.
+func markAttributes(row string) string {
+	return `((-` + row + `.source_event) % ` + strconv.Itoa(markSpan) + `)::integer`
 }
 
 // queueNodes queues the write of nodes, in two statements, each of whose rows arrive in ascending
@@ -494,7 +504,7 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 				with ordinality as node(kind, id, visibility, state, made_at, made_by, cause, skip, position)
 		),
 		marked as (
-			select written.*, ((-held.source_event) % 4)::integer & ~written.skip as attributes
+			select written.*, `+markAttributes("held")+` & ~written.skip as attributes
 			from written
 			cross join lateral (
 				select g.source_event from graph_nodes g
