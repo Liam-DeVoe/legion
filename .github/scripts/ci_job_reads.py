@@ -888,7 +888,7 @@ RULES = {
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/tests3/waits_test.go": reads(
         (".github/workflows/dispatch-browser.yaml",
-         "internal/tests3/waits_test.go:450 os.ReadFile (workflow :430, ../../../..): "
+         "internal/tests3/waits_test.go:645 os.ReadFile (workflow :612, ../../../..): "
          "TestEveryWaitAndCheckOfTheScriptHasACase holds the shard job's file-store steps to their bounds")),
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),

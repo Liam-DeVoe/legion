@@ -534,9 +534,9 @@ jobs:
         # says how), the step ends by its own name within 10 minutes on any store, before the job's
         # 22. TestEveryWaitAndCheckOfTheScriptHasACase, in
         # packages/envoy/internal/tests3/waits_test.go, reads this step and the two around it, and
-        # fails on a curl outside s3 or with no --max-time of its own, on a wait that is not an
-        # until right after its deadline whose body ends the step by name once it passes, and on
-        # any other loop or sleep.
+        # fails on a command off its list (wget, tail, weed shell), a curl outside s3 or with no
+        # --max-time, an s3 call of 0 seconds, a wait that is not an until right after its deadline
+        # whose body ends the step by name once it passes, a sleep but `sleep 1`, and other loops.
         run: |
           # s3 <seconds> <what> <curl argument>...: one request to the store, bounded by seconds.
           s3() {

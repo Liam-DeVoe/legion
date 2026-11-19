@@ -50,18 +50,27 @@ var goBounds = []goBound{
 }
 
 // Every wait and every check of one-collection.sh, and every deadline of seaweedfs.go, has a case
-// that fails when it is cut, every request and wait of the workflow steps around the browser
-// suite's file store has a bound, and this is the program that says so, by reading the three
-// files:
+// that fails when it is cut, every command of the workflow steps around the browser suite's file
+// store ends by itself or under a bound these rules read, and this is the program that says so,
+// by reading the three files. It reads shell as the shell runs it: each line, each command
+// substitution in it (`$(...)` or backticks, quoted or not) and the quoted command of a trap, a
+// command named by a path by its base name, and a command with all of its words.
 //
 //   - The script asks the store things only in shell and master, each line of them under
-//     `timeout -s KILL <seconds>`; a timeout by any other signal is refused, since weed shell
-//     ends 0 on TERM in the SeaweedFS image.
-//   - The script waits (until, while, sleep, wait) only in within, which ends by its seconds.
+//     `timeout -s KILL <seconds>` with seconds above 0; a timeout by any other signal is refused,
+//     since weed shell ends 0 on TERM in the SeaweedFS image, and so is one of 0 seconds, which
+//     turns the bound off.
+//   - The script waits (until, while, sleep, wait) only in within, which ends by its seconds,
+//     and sleeps only as within's `sleep 1`.
 //   - The script runs its own functions and the commands of scriptCommands alone, and so does
-//     within, so a command that can wait with no bound (`tail -f`, `read`, `nc -l`) is named:
-//     tail only as `tail -n <lines>`, and exit only in fail and usage, so no check ends the
-//     script with no message for a case to want.
+//     within, so a command that can wait with no bound (`read`, `nc -l`) is named, and so is a
+//     command given by a variable, which this program cannot name. tail runs only as
+//     `tail -n <lines> <file>...`: any other word of it (`-f`, `-F`, `--follow`) can follow a
+//     file for ever.
+//   - No check ends the script with no message for a case to want: exit runs only in fail and
+//     usage, return only as `return "$status"`, and no test (`[`, `test`, `grep`) stands on a
+//     line where nothing acts on its failure (`||`, `&&`, if, until, while), which `set -e`
+//     turns into an exit with no message.
 //   - Every bound the script sets, `timeout ... <seconds>`, `within <seconds>` and
 //     `registered <seconds>`, lies in a text of scriptBounds, whose case exists.
 //   - Every message the script fails by is the want of a case of storeCases, so a check or a
@@ -69,13 +78,19 @@ var goBounds = []goBound{
 //   - In seaweedfs.go, every function that sets a deadline is in goBounds, whose case exists, and
 //     every function that sends a request (Exec, Do) sets one.
 //   - In the shard job of .github/workflows/dispatch-browser.yaml, the steps of storeSteps, which
-//     start the browser suite's file store, wait for it and check it, ask the store things only
-//     through the wait step's s3, by a curl under `--max-time "$seconds"`; s3 ends the step by
-//     name, with exit 1, on curl's timeout (exit 28); and every s3 call gives a whole number of
-//     seconds. They wait only in an until right after `deadline=$(( $(date +%s) + <seconds> ))`,
-//     whose body ends the step by name, with exit 1, once the deadline passes; no while, for or
-//     sleep stands outside such a wait. No case in this package starts those steps, so these
-//     rules are their check.
+//     start the browser suite's file store, wait for it and check it, run their own function s3
+//     and the commands of stepCommands alone, so a request or a wait by any other command
+//     (`wget`, `weed shell`, `tail`) is named. They ask the store things only through the wait
+//     step's s3, by a curl under `--max-time "$seconds"`, where seconds is s3's first argument
+//     and every s3 call gives a whole number of them above 0 (curl's 0 is no limit); s3 ends the
+//     step by name, with exit 1, on curl's timeout (exit 28). They start weed server only by
+//     `nohup weed server ... &`, in the background of the step that starts the store. They wait
+//     only in an until right after `deadline=$(( $(date +%s) + <seconds> ))`, whose body ends
+//     the step by name, with exit 1, once the deadline passes, and sleeps only as `sleep 1`;
+//     they are read statement by statement, so this holds whatever the layout, and an until
+//     whose done this program does not find fails. No while or for stands anywhere, and no
+//     sleep outside such a wait. No case in this package starts those steps, so these rules are
+//     their check.
 //
 // The last subtest plants each kind of fault and wants this program to name it, so a rule that
 // cannot see what it is for fails too.
@@ -119,6 +134,11 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 				return stepFindings(waitStep, replaceOnce(t, "the wait step", steps[waitStep], old, replacement))
 			}
 		}
+		start := func(old, replacement string) func() []string {
+			return func() []string {
+				return stepFindings(storeSteps[0], replaceOnce(t, "the start step", steps[storeSteps[0]], old, replacement))
+			}
+		}
 		for _, c := range []struct {
 			name     string
 			findings func() []string
@@ -131,7 +151,21 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a bound with no case", script("\n  grow\n  configure\n", "\n  grow\n  within 30 \"the store took no rule\" \"$work/x\" true\n  configure\n"), "within 30"},
 			{"a check with no case", script("\n  grow\n  configure\n", "\n  grow\n  [ -d /data ] || fail \"the store has no data directory\"\n  configure\n"), "the store has no data directory"},
 			{"a check that exits with no message", script("  registered 0\n  list\n", "  [ -d /data ] || exit 1\n  registered 0\n  list\n"), "exits outside fail and usage"},
-			{"a wait that follows the log", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  tail -f \"$log\" | grep -q -m1 procesing\n  alone_before_writes\n"), "a tail that is not `tail -n <lines>`"},
+			{"a wait that follows the log", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  tail -f \"$log\" | grep -q -m1 procesing\n  alone_before_writes\n"), "a tail that is not `tail -n <lines> <file>...`"},
+			{"a tail that follows after its lines", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  tail -n 200 -f \"$log\" > /dev/null\n  alone_before_writes\n"), "a tail that is not `tail -n <lines> <file>...`"},
+			{"a tail that follows by name", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  tail -F \"$log\" > /dev/null\n  alone_before_writes\n"), "a tail that is not `tail -n <lines> <file>...`"},
+			{"a tail named by its path", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  /usr/bin/tail -f \"$log\" | grep -q -m1 procesing\n  alone_before_writes\n"), "a tail that is not `tail -n <lines> <file>...`"},
+			{"a tail whose word is escaped", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  \\tail -f \"$log\" > /dev/null\n  alone_before_writes\n"), "a tail that is not `tail -n <lines> <file>...`"},
+			{"a command whose word is partly quoted", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  t'ai'l -f \"$log\" > /dev/null\n  alone_before_writes\n"), `runs t""l, which is not in scriptCommands`},
+			{"a tail in backticks", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  seen=`tail -f \"$log\" | grep -m1 procesing`\n  alone_before_writes\n"), "a tail that is not `tail -n <lines> <file>...`"},
+			{"a tail given to within", script(`"$work/rule.txt" grep -q "procesing.*$marker" "$log"`, `"$work/rule.txt" tail -n 1 -f "$log"`), "a tail that is not `tail -n <lines> <file>...`"},
+			{"a sleep in a quoted substitution", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  echo \"$(sleep 100000)\"\n  alone_before_writes\n"), "waits outside within"},
+			{"a sleep in a trap", script(`trap 'rm -rf "$work"' EXIT`, `trap 'sleep 100000; rm -rf "$work"' EXIT`), "waits outside within"},
+			{"a sleep that holds within past its seconds", script("    sleep 1\n  done\n", "    sleep 100000\n  done\n"), "a sleep other than `sleep 1`"},
+			{"a command given by a variable", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  follow=tail; $follow -f \"$log\" > /dev/null\n  alone_before_writes\n"), "runs $follow, which is not in scriptCommands"},
+			{"a check that returns with no message", script("  registered 0\n  list\n", "  [ -d /data ] || return 1\n  registered 0\n  list\n"), `returns a status other than "$status"`},
+			{"a test that nothing acts on", script("  registered 0\n  list\n", "  [ -d /data ]\n  registered 0\n  list\n"), "a test whose failure nothing on its line acts on"},
+			{"a shell bounded by 0 seconds", script("timeout -s KILL 60 weed", "timeout -s KILL 0 weed"), "or not of whole seconds above 0"},
 			{"a command that can wait", script("  wait_in_force\n  alone_before_writes\n", "  wait_in_force\n  read answer\n  alone_before_writes\n"), "runs read, which is not in scriptCommands"},
 			{"a wait given to within", script(`"$work/rule.txt" grep -q "procesing.*$marker" "$log"`, `"$work/rule.txt" inotifywait -q -e modify "$log"`), "runs inotifywait, which is not in scriptCommands"},
 			{"an error printed outside fail", script("\n  grow\n  configure\n", "\n  grow\n  echo \"::error::the store is odd\"\n  configure\n"), "prints ::error:: outside fail"},
@@ -150,6 +184,15 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"a deadline that ends nothing", wait(`[ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store took no object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }`, "true"), "a wait that does not end the step by name"},
 			{"a wait by tries in the wait step", wait("store=http://", "for try in $(seq 1 60); do s3 10 \"the root\" -o /dev/null http://127.0.0.1:18333/ && break; done\nstore=http://"), "a loop that is not a wait with a deadline"},
 			{"a sleep outside a wait", wait("store=http://", "sleep 5\nstore=http://"), "a sleep outside a wait"},
+			{"an s3 call of 0 seconds", wait(`s3 10 "the bucket"`, `s3 0 "the bucket"`), "an s3 call whose seconds are not a whole number above 0"},
+			{"s3 with seconds of its own", wait(`seconds=$1 what=$2`, `seconds=0 what=$2`), "s3 takes its seconds from other than its first argument"},
+			{"a request by wget in the wait step", wait("store=http://", "wget -q -O /dev/null http://127.0.0.1:18333/\nstore=http://"), "runs wget, which is not in stepCommands"},
+			{"a weed shell in the wait step", wait("store=http://", "printf 'collection.list\\n' | weed shell -master=127.0.0.1:9333 > \"$RUNNER_TEMP/collections.txt\"\nstore=http://"), "runs weed, which is not in stepCommands"},
+			{"a tail in the wait step", wait("store=http://", "tail -f \"$RUNNER_TEMP/weed.log\" | grep -q -m1 \"Start Seaweed S3\"\nstore=http://"), "runs tail, which is not in stepCommands"},
+			{"a wait on one line whose deadline ends nothing", wait("store=http://", "deadline=$(( $(date +%s) + 60 ))\nuntil s3 10 \"the root\" -o /dev/null http://127.0.0.1:18333/; do sleep 1; done\nstore=http://"), "a wait that does not end the step by name"},
+			{"a long sleep in a wait", wait("  sleep 1\ndone\npackages/envoy/internal/tests3/one-collection.sh prepare", "  sleep 100000\ndone\npackages/envoy/internal/tests3/one-collection.sh prepare"), "a sleep in a wait other than its sleep 1"},
+			{"a wait whose done is never found", wait("one-collection.sh check", "one-collection.sh check dispatch-e2e-objects \"$RUNNER_TEMP/weed.log\"\ndeadline=$(( $(date +%s) + 60 ))\nuntil s3 10 \"the root\" -o /dev/null http://127.0.0.1:18333/; do\n  sleep 1\n#"), "a wait whose done this program does not find"},
+			{"a store started in the foreground", start("2>&1 &", "2>&1"), "a nohup that is not `nohup weed server ... &`"},
 		} {
 			findings := c.findings()
 			if !slices.ContainsFunc(findings, func(f string) bool { return strings.Contains(f, c.want) }) {
@@ -221,51 +264,181 @@ func caseNames(t *testing.T, cases []storeCase) map[string]bool {
 // scriptCommands are the commands one-collection.sh may run besides its own functions: shell
 // builtins, and programs that read what they are given and end, or that run under a bound the
 // rules above hold (timeout, sleep). A command that can wait with no bound is left out, so the
-// program names it where the script or within runs it; tail is held to `tail -n <lines>`, and exit
-// to fail and usage, by rules of their own.
+// program names it where the script, within, a substitution or a trap runs it; tail is held to
+// `tail -n <lines> <file>...`, sleep to `sleep 1`, exit to fail and usage and return to
+// `return "$status"`, by rules of their own.
 var scriptCommands = map[string]bool{
 	"[": true, "basename": true, "cat": true, "date": true, "echo": true, "exit": true, "grep": true,
-	"mktemp": true, "printf": true, "return": true, "set": true, "shift": true, "sleep": true,
-	"tail": true, "timeout": true, "tr": true, "trap": true,
+	"mktemp": true, "printf": true, "return": true, "rm": true, "set": true, "shift": true,
+	"sleep": true, "tail": true, "timeout": true, "tr": true, "trap": true,
 }
 
 var (
 	scriptFunction   = regexp.MustCompile(`^([a-z_][a-z0-9_]*)\(\) \{$`)
-	quoted           = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'[^']*'`)
 	storeRequest     = regexp.MustCompile(`\b(weed|wget|curl|nc)\b`)
-	boundedRequest   = regexp.MustCompile(`timeout -s KILL [0-9]+ (weed|wget|curl|nc)\b`)
+	boundedRequest   = regexp.MustCompile(`timeout -s KILL [1-9][0-9]* (weed|wget|curl|nc)\b`)
 	anyTimeout       = regexp.MustCompile(`\btimeout\b`)
-	killTimeout      = regexp.MustCompile(`^timeout -s KILL [0-9]+ `)
+	killTimeout      = regexp.MustCompile(`^timeout -s KILL [1-9][0-9]* `)
 	scriptWait       = regexp.MustCompile(`\b(until|while|sleep|wait)\b`)
 	scriptBoundSet   = regexp.MustCompile(`\btimeout(?: -s [A-Z]+)? [0-9]+|\bwithin [0-9]+|\bregistered [0-9]+`)
 	failMessage      = regexp.MustCompile(`\bfail "((?:[^"\\]|\\.)*)"|\bwithin (?:[0-9]+|"[^"]*") "((?:[^"\\]|\\.)*)"`)
 	onlyVariable     = regexp.MustCompile(`^\$[a-z_0-9]+$`)
 	variable         = regexp.MustCompile(`\\\$\{?[a-z_]+\}?`)
 	commandSeparator = regexp.MustCompile(`[;&|(){}]`)
-	substitution     = regexp.MustCompile(`\$\(([^()]*)`)
+	redirection      = regexp.MustCompile(`[0-9]*(?:>>?|<)(?:&[0-9-]+|\s*[^\s;&|()<>]+)`)
+	trapCommand      = regexp.MustCompile(`\btrap '([^']*)'|\btrap "((?:[^"\\]|\\.)*)"`)
 	withinCommand    = regexp.MustCompile(`\bwithin (?:[0-9]+|"") "" "" ([^;&|]*)`)
-	commandName      = regexp.MustCompile(`^(?:[a-z_][a-z0-9_]*|\[)$`)
+	commandName      = regexp.MustCompile(`^(?:[A-Za-z_][A-Za-z0-9_.-]*|\[)$`)
 	assignment       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
-	tailLines        = regexp.MustCompile(`^-n [0-9]+(?:\s|$)`)
+	tailArguments    = regexp.MustCompile(`^-n [0-9]+(?: [^-\s]\S*)+$`)
 )
 
-// commands answers the commands that shell code runs, each as its name and the words after it:
-// code, its quoted text blanked, is cut at every ; & | ( ) { }, and each piece is read past the
-// keywords that lead a command and the assignments before it. A piece led by case or for runs no
-// word of its own, and a word that is no name, such as "$@", is no command this program can name.
+// skipShell answers, when text[i:] starts quoted text, a command substitution ($(...) or a
+// backtick pair) or an arithmetic expansion ($((...))), where it ends and the code of each
+// command substitution it holds at its top: its own, or those inside quoted text or arithmetic.
+// Text in single quotes holds none. ok is false when text[i:] starts none of them.
+func skipShell(text string, i int) (end int, substitutions []string, ok bool) {
+	switch {
+	case text[i] == '\'':
+		if j := strings.IndexByte(text[i+1:], '\''); j >= 0 {
+			return i + j + 2, nil, true
+		}
+		return len(text), nil, true
+	case text[i] == '`':
+		if j := strings.IndexByte(text[i+1:], '`'); j >= 0 {
+			return i + j + 2, []string{text[i+1 : i+1+j]}, true
+		}
+		return len(text), []string{text[i+1:]}, true
+	case text[i] == '"':
+		for j := i + 1; j < len(text); {
+			switch {
+			case text[j] == '\\':
+				j += 2
+			case text[j] == '"':
+				return j + 1, substitutions, true
+			case text[j] == '`' || strings.HasPrefix(text[j:], "$("):
+				next, inner, _ := skipShell(text, j)
+				substitutions, j = append(substitutions, inner...), next
+			default:
+				j++
+			}
+		}
+		return len(text), substitutions, true
+	case strings.HasPrefix(text[i:], "$("):
+		arithmetic := strings.HasPrefix(text[i:], "$((")
+		depth := 0
+		for j := i + 1; j < len(text); {
+			switch {
+			case text[j] == '\\':
+				j += 2
+			case text[j] == '\'' || text[j] == '"' || text[j] == '`' || strings.HasPrefix(text[j:], "$("):
+				// A substitution inside this one is read with this one's code; arithmetic is no
+				// code, so the substitutions inside it are this text's own.
+				next, inner, _ := skipShell(text, j)
+				if arithmetic {
+					substitutions = append(substitutions, inner...)
+				}
+				j = next
+			case text[j] == '(':
+				depth++
+				j++
+			case text[j] == ')':
+				depth--
+				j++
+				if depth == 0 {
+					if !arithmetic {
+						substitutions = []string{text[i+2 : j-1]}
+					}
+					return j, substitutions, true
+				}
+			default:
+				j++
+			}
+		}
+		return len(text), substitutions, true
+	}
+	return i, nil, false
+}
+
+// readShell answers one line of shell with its quoted text, command substitutions and arithmetic
+// each made "", which leaves the commands the line runs itself and their words, and the code of
+// each command substitution at its top, which the shell runs too, quoted or not.
+func readShell(line string) (code string, substitutions []string) {
+	var b strings.Builder
+	for i := 0; i < len(line); {
+		if line[i] == '\\' && i+1 < len(line) {
+			b.WriteString(line[i : i+2])
+			i += 2
+			continue
+		}
+		if end, inner, ok := skipShell(line, i); ok {
+			b.WriteString(`""`)
+			substitutions = append(substitutions, inner...)
+			i = end
+			continue
+		}
+		b.WriteByte(line[i])
+		i++
+	}
+	return b.String(), substitutions
+}
+
+// shellCode answers every piece of code that shell runs for line: the line itself, as readShell
+// leaves it, then, read the same way, each command substitution in it, at any depth, and the
+// quoted command of a trap it sets, which the shell runs later.
+func shellCode(line string) []string {
+	code, substitutions := readShell(line)
+	codes := []string{code}
+	for _, s := range substitutions {
+		codes = append(codes, shellCode(s)...)
+	}
+	if slices.ContainsFunc(commands(code), func(c [2]string) bool { return c[0] == "trap" }) {
+		for _, m := range trapCommand.FindAllStringSubmatch(line, -1) {
+			codes = append(codes, shellCode(m[1]+m[2])...)
+		}
+	}
+	return codes
+}
+
+// commands answers the commands that shell code (as readShell leaves it) runs, each as its name
+// and all of the words after it: the code, its redirections taken out, is cut at every
+// ; & | ( ) { }, and each piece is read past the keywords that lead a command and the
+// assignments before it. A command is named without the backslashes that can escape its word,
+// and a command named by a path by its base name. A piece led by case or for runs no word of its
+// own. A command word that holds quoted text or a variable, such as "$@" (which readShell leaves
+// as ""), t'ai'l or $tool, is answered as it stands, a name no list holds, so a rule that reads
+// it names it; any other word that is no name (a case's pattern) is none.
 func commands(code string) [][2]string {
 	var found [][2]string
-	for _, piece := range commandSeparator.Split(code, -1) {
+	for _, piece := range commandSeparator.Split(redirection.ReplaceAllString(code, " "), -1) {
 		words := strings.Fields(piece)
 		for len(words) > 0 && (slices.Contains([]string{"if", "then", "else", "elif", "do", "until", "while", "!"}, words[0]) || assignment.MatchString(words[0])) {
 			words = words[1:]
 		}
-		if len(words) == 0 || slices.Contains([]string{"case", "for", "esac", "done", "fi"}, words[0]) || !commandName.MatchString(words[0]) {
+		if len(words) == 0 || slices.Contains([]string{"case", "for", "esac", "done", "fi"}, words[0]) {
 			continue
 		}
-		found = append(found, [2]string{words[0], strings.Join(words[1:], " ")})
+		name := strings.ReplaceAll(words[0], `\`, "")
+		if strings.Contains(name, "/") {
+			name = filepath.Base(name)
+		}
+		if !commandName.MatchString(name) && !strings.ContainsAny(name, `"$`) {
+			continue
+		}
+		found = append(found, [2]string{name, strings.Join(words[1:], " ")})
 	}
 	return found
+}
+
+// untested answers whether line, whose code readShell left as code, runs a test ([, test or grep)
+// with nothing on the line that acts on its failure: no ||, && or leading if, elif, until or
+// while. Under the script's set -e that failure ends the script with no message.
+func untested(line, code string) bool {
+	words := strings.Fields(code)
+	if len(words) == 0 || slices.Contains([]string{"if", "elif", "until", "while"}, words[0]) || strings.Contains(line, "||") || strings.Contains(line, "&&") {
+		return false
+	}
+	return slices.ContainsFunc(commands(code), func(c [2]string) bool { return slices.Contains([]string{"[", "test", "grep"}, c[0]) })
 }
 
 // scriptFindings answers what one-collection.sh (script) breaks of the rules above, against
@@ -314,39 +487,48 @@ func scriptFindings(script string, cases []storeCase, bounds []scriptBound, name
 			function = ""
 			continue
 		}
-		code := quoted.ReplaceAllString(line, `""`)
-		if storeRequest.MatchString(code) && (function != "shell" && function != "master" || !boundedRequest.MatchString(code)) {
-			findings = append(findings, at+": asks the store outside shell and master, or with no `timeout -s KILL` of its own: "+trimmed)
-		}
-		for _, loc := range anyTimeout.FindAllStringIndex(code, -1) {
-			if !killTimeout.MatchString(code[loc[0]:]) {
-				findings = append(findings, at+": a timeout not by KILL, which weed shell answers with exit 0: "+trimmed)
+		// What the line runs, read as code wherever the shell runs it: the line itself, each
+		// command substitution in it, which its quoted text can hold, the command of a trap, and
+		// the command within is given to run until it succeeds.
+		pieces := shellCode(line)
+		for _, code := range pieces {
+			if storeRequest.MatchString(code) && (function != "shell" && function != "master" || !boundedRequest.MatchString(code)) {
+				findings = append(findings, at+": asks the store outside shell and master, or with no `timeout -s KILL` of its own: "+trimmed)
+			}
+			for _, loc := range anyTimeout.FindAllStringIndex(code, -1) {
+				if !killTimeout.MatchString(code[loc[0]:]) {
+					findings = append(findings, at+": a timeout not by KILL, which weed shell answers with exit 0, or not of whole seconds above 0, since 0 turns the bound off: "+trimmed)
+				}
+			}
+			if scriptWait.MatchString(code) && function != "within" {
+				findings = append(findings, at+": waits outside within, which ends by its seconds: "+trimmed)
+			}
+			run := commands(code)
+			for _, m := range withinCommand.FindAllStringSubmatch(code, -1) {
+				run = append(run, commands(m[1])...)
+			}
+			for _, command := range run {
+				switch name := command[0]; {
+				case name == `""` && function == "within":
+					// within's "$@": the command each call gives it, read at that call.
+				case name == "exit" && function != "fail" && function != "usage":
+					findings = append(findings, at+": exits outside fail and usage, so with no message for a case to want: "+trimmed)
+				case name == "return" && (command[1] != `""` || !strings.Contains(line, `return "$status"`)):
+					findings = append(findings, at+`: returns a status other than "$status", which under set -e ends the script with no message for a case to want: `+trimmed)
+				case name == "tail" && !tailArguments.MatchString(command[1]):
+					findings = append(findings, at+": a tail that is not `tail -n <lines> <file>...`, which can follow a file for ever: "+trimmed)
+				case name == "sleep" && command[1] != "1":
+					findings = append(findings, at+": a sleep other than `sleep 1`, which holds a wait past its seconds: "+trimmed)
+				case !scriptCommands[name] && !functions[name]:
+					findings = append(findings, at+": runs "+name+", which is not in scriptCommands, so it may wait with no bound: "+trimmed)
+				}
 			}
 		}
-		if scriptWait.MatchString(code) && function != "within" {
-			findings = append(findings, at+": waits outside within, which ends by its seconds: "+trimmed)
+		if untested(line, pieces[0]) {
+			findings = append(findings, at+": a test whose failure nothing on its line acts on, which under set -e ends the script with no message for a case to want: "+trimmed)
 		}
 		if strings.Contains(line, "::error::") && function != "fail" && function != "usage" {
 			findings = append(findings, at+": prints ::error:: outside fail, so with no case: "+trimmed)
-		}
-		// What the line runs: its own commands, those of each $(...), which its quoted text can
-		// hold, and the command within is given to run until it succeeds.
-		run := commands(code)
-		for _, m := range substitution.FindAllStringSubmatch(line, -1) {
-			run = append(run, commands(quoted.ReplaceAllString(m[1], `""`))...)
-		}
-		for _, m := range withinCommand.FindAllStringSubmatch(code, -1) {
-			run = append(run, commands(m[1])...)
-		}
-		for _, command := range run {
-			switch name := command[0]; {
-			case name == "exit" && function != "fail" && function != "usage":
-				findings = append(findings, at+": exits outside fail and usage, so with no message for a case to want: "+trimmed)
-			case name == "tail" && !tailLines.MatchString(command[1]):
-				findings = append(findings, at+": a tail that is not `tail -n <lines>`, which can follow a file for ever: "+trimmed)
-			case !scriptCommands[name] && !functions[name]:
-				findings = append(findings, at+": runs "+name+", which is not in scriptCommands, so it may wait with no bound: "+trimmed)
-			}
 		}
 		for _, loc := range scriptBoundSet.FindAllStringIndex(line, -1) {
 			position := lineStart + loc[0]
@@ -433,15 +615,28 @@ const (
 
 var storeSteps = []string{"Start an S3-compatible server for uploaded files", waitStep, "Check that no write grew the file store"}
 
+// stepCommands are the commands the store steps may run besides their own function s3: each
+// ends by itself, or under a bound a rule of stepFindings reads. curl runs only in s3, under
+// --max-time "$seconds"; one-collection.sh's own waits are held by the script's rules; nohup only
+// starts weed server in the background, in the step that starts the store; sleep runs only as a
+// wait's sleep 1. Any other command is named, so a request or a wait by any other command
+// (wget, nc, tail, weed shell) fails the program.
+var stepCommands = map[string]bool{
+	"[": true, "cat": true, "curl": true, "date": true, "echo": true, "exit": true, "mkdir": true,
+	"nohup": true, "one-collection.sh": true, "return": true, "shift": true, "sleep": true,
+}
+
 var (
-	stepDeadline = regexp.MustCompile(`^deadline=\$\(\( \$\(date \+%s\) \+ [0-9]+ \)\)$`)
-	stepWaitEnds = regexp.MustCompile(`^\[ "\$\(date \+%s\)" -lt "\$deadline" \] \|\| \{ echo "::error::[^"]+"; .*\bexit 1; \}$`)
-	stepS3Call   = regexp.MustCompile(`(?:^|[\s;|&(!])s3 ([^ ]+) `)
-	wholeNumber  = regexp.MustCompile(`^[0-9]+$`)
-	stepLoop     = regexp.MustCompile(`\b(while|for)\b`)
-	stepCurl     = regexp.MustCompile(`\bcurl\b`)
-	stepSleep    = regexp.MustCompile(`\bsleep\b`)
-	stepTimeout  = regexp.MustCompile(`if \[ "\$status" = 28 \]; then\n\s*echo "::error::[^"]*"\n(?:\s*cat "\$RUNNER_TEMP/weed\.log"\n)?\s*exit 1\n`)
+	stepDeadline  = regexp.MustCompile(`^deadline=\$\(\( \$\(date \+%s\) \+ [0-9]+ \)\)$`)
+	stepWaitEnds  = regexp.MustCompile(`^\[ "\$\(date \+%s\)" -lt "\$deadline" \] \|\| \{ echo "::error::[^"]+"; .*\bexit 1; \}$`)
+	stepS3Call    = regexp.MustCompile(`(?:^|[\s;|&(!])s3 ([^ ]+) `)
+	stepS3Seconds = regexp.MustCompile(`(?:^|\s)seconds=(\S*)`)
+	aboveZero     = regexp.MustCompile(`^[1-9][0-9]*$`)
+	stepLoop      = regexp.MustCompile(`\b(while|for)\b`)
+	stepCurl      = regexp.MustCompile(`\bcurl\b`)
+	stepStart     = regexp.MustCompile(`^nohup weed server .*&$`)
+	stepGoesOn    = regexp.MustCompile(`(?:\\|\|\||&&|\|)\s*$`)
+	stepTimeout   = regexp.MustCompile(`if \[ "\$status" = 28 \]; then\n\s*echo "::error::[^"]*"\n(?:\s*cat "\$RUNNER_TEMP/weed\.log"\n)?\s*exit 1\n`)
 )
 
 // storeStepRuns answers the run: text of each step of storeSteps, read from workflow's shard job.
@@ -476,14 +671,69 @@ func storeStepRuns(t *testing.T) map[string]string {
 	return runs
 }
 
+// statements answers the statements of one line of shell: the line cut at each ; outside quoted
+// text, substitutions, parentheses and braces, each without the do, then or else that leads it.
+func statements(line string) []string {
+	var found []string
+	depth, start := 0, 0
+	cut := func(end int) {
+		statement := strings.TrimSpace(line[start:end])
+		for {
+			word, rest, _ := strings.Cut(statement, " ")
+			if word != "do" && word != "then" && word != "else" {
+				break
+			}
+			statement = strings.TrimSpace(rest)
+		}
+		if statement != "" {
+			found = append(found, statement)
+		}
+		start = end + 1
+	}
+	for i := 0; i < len(line); i++ {
+		if end, _, ok := skipShell(line, i); ok {
+			i = end - 1
+			continue
+		}
+		switch line[i] {
+		case '\\':
+			i++
+		case '(', '{':
+			depth++
+		case ')', '}':
+			depth--
+		case ';':
+			if depth == 0 {
+				cut(i)
+			}
+		}
+	}
+	cut(len(line))
+	return found
+}
+
 // stepFindings answers what the run: text (run) of the shard job's step name breaks of the rules
-// above for the workflow's store steps.
+// above for the workflow's store steps. A line that ends in \, ||, && or | goes on into the next,
+// and each line is read statement by statement, so a wait is judged at its until and its done
+// whatever its layout.
 func stepFindings(name, run string) []string {
 	var findings []string
+	lines := strings.Split(run, "\n")
+	functions := map[string]bool{}
+	for _, line := range lines {
+		if m := scriptFunction.FindStringSubmatch(line); m != nil {
+			functions[m[1]] = true
+		}
+	}
 	function := ""
 	deadline, waiting, ends := false, false, false
-	for number, line := range strings.Split(run, "\n") {
+	for number := 0; number < len(lines); number++ {
 		at := fmt.Sprintf("dispatch-browser.yaml, step %q, line %d", name, number+1)
+		line := lines[number]
+		for !strings.HasPrefix(strings.TrimSpace(line), "#") && stepGoesOn.MatchString(line) && number+1 < len(lines) {
+			number++
+			line = strings.TrimSuffix(strings.TrimRight(line, " "), `\`) + " " + strings.TrimSpace(lines[number])
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -496,39 +746,60 @@ func stepFindings(name, run string) []string {
 			function = ""
 			continue
 		}
-		// The deadline must be the line just before its until.
-		afterDeadline := deadline
-		deadline = stepDeadline.MatchString(trimmed)
-		code := quoted.ReplaceAllString(line, `""`)
-		// Read on the line itself, not on code: a curl inside "$(...)" is quoted text.
-		if stepCurl.MatchString(line) && (function != "s3" || !strings.Contains(line, `curl -sf --max-time "$seconds" `)) {
-			findings = append(findings, at+`: a curl outside s3, or with no --max-time "$seconds" of its own: `+trimmed)
-		}
-		for _, m := range stepS3Call.FindAllStringSubmatch(code, -1) {
-			if !wholeNumber.MatchString(m[1]) {
-				findings = append(findings, at+": an s3 call whose seconds are not a whole number: "+trimmed)
+		for _, statement := range statements(trimmed) {
+			// The deadline must be the statement just before its until.
+			afterDeadline := deadline
+			deadline = stepDeadline.MatchString(statement)
+			switch {
+			case strings.HasPrefix(statement, "until "):
+				if !afterDeadline {
+					findings = append(findings, at+": a wait with no deadline=$(( $(date +%s) + <seconds> )) just before it: "+statement)
+				}
+				waiting, ends = true, false
+			case waiting && statement == "done":
+				if !ends {
+					findings = append(findings, at+": a wait that does not end the step by name, with exit 1, once its deadline passes")
+				}
+				waiting = false
+			case waiting && stepWaitEnds.MatchString(statement):
+				ends = true
+			}
+			// Read on the statement itself, not on its code: a curl inside "$(...)" is quoted text.
+			if stepCurl.MatchString(statement) && (function != "s3" || !strings.Contains(statement, `curl -sf --max-time "$seconds" `)) {
+				findings = append(findings, at+`: a curl outside s3, or with no --max-time "$seconds" of its own: `+statement)
+			}
+			for _, code := range shellCode(statement) {
+				for _, m := range stepS3Call.FindAllStringSubmatch(code, -1) {
+					if !aboveZero.MatchString(m[1]) {
+						findings = append(findings, at+": an s3 call whose seconds are not a whole number above 0, while curl's --max-time 0 is no limit: "+statement)
+					}
+				}
+				for _, m := range stepS3Seconds.FindAllStringSubmatch(code, -1) {
+					if function == "s3" && m[1] != "$1" {
+						findings = append(findings, at+": s3 takes its seconds from other than its first argument, so no call's seconds say its bound: "+statement)
+					}
+				}
+				if stepLoop.MatchString(code) {
+					findings = append(findings, at+": a loop that is not a wait with a deadline (an until after its deadline): "+statement)
+				}
+				for _, command := range commands(code) {
+					switch c := command[0]; {
+					case functions[c]:
+					case !stepCommands[c]:
+						findings = append(findings, at+": runs "+c+", which is not in stepCommands, so it may ask the store or wait with no bound: "+statement)
+					case c == "nohup" && (name != storeSteps[0] || !stepStart.MatchString(statement)):
+						findings = append(findings, at+": a nohup that is not `nohup weed server ... &` in the step that starts the store, so it may hold the step: "+statement)
+					case c == "sleep" && !waiting:
+						findings = append(findings, at+": a sleep outside a wait with a deadline: "+statement)
+					case c == "sleep" && command[1] != "1":
+						findings = append(findings, at+": a sleep in a wait other than its sleep 1, which holds the wait past its deadline: "+statement)
+					}
+				}
 			}
 		}
-		switch {
-		case strings.HasPrefix(trimmed, "until "):
-			if !afterDeadline {
-				findings = append(findings, at+": a wait with no deadline=$(( $(date +%s) + <seconds> )) just before it: "+trimmed)
-			}
-			waiting, ends = true, false
-		case waiting && trimmed == "done":
-			if !ends {
-				findings = append(findings, at+": a wait that does not end the step by name, with exit 1, once its deadline passes")
-			}
-			waiting = false
-		case waiting && stepWaitEnds.MatchString(trimmed):
-			ends = true
-		}
-		if stepLoop.MatchString(code) {
-			findings = append(findings, at+": a loop that is not a wait with a deadline (an until after its deadline): "+trimmed)
-		}
-		if stepSleep.MatchString(code) && !waiting {
-			findings = append(findings, at+": a sleep outside a wait with a deadline: "+trimmed)
-		}
+	}
+	if waiting {
+		findings = append(findings, fmt.Sprintf("dispatch-browser.yaml, step %q: a wait whose done this program does not find, so nothing ends it", name))
 	}
 	if name == waitStep && !stepTimeout.MatchString(run) {
 		findings = append(findings, fmt.Sprintf("dispatch-browser.yaml, step %q: s3 does not end the step by name, with exit 1, on curl's timeout (exit 28)", name))
