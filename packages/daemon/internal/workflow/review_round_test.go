@@ -156,7 +156,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				carried := issueRecord(t, pool, "LEGION-208")
 				carried.Generation++
 				seedIssue(t, pool, *carried)
-				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 					return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
 				})
 				return pool, resume
@@ -168,7 +168,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				pool, engine, _ := reviewRoundTwoNaming(t, noCommit)
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				outboxRan(t, pool)
-				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
 				})
 				return pool, strings.TrimSuffix(row.EntryTask, reviewedPartOf(commitNamed(row))+reviewEntryPartOf(row.Entry))
@@ -209,7 +209,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				pool, engine, _ := reviewRoundTwoNaming(t, noCommit)
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				outboxRan(t, pool)
-				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 					return engine.repairSilence(ctx, tx, *issue, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 						intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 						reviewTestedAt.Add(2*time.Hour))
@@ -240,7 +240,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					t.Fatalf("after the re-admission the reviewer's row stores the task %q, want none", row.EntryTask)
 				}
 				outboxRan(t, pool)
-				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 					return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
 				})
 				return pool, reviewingResumeTask("child")
@@ -368,7 +368,7 @@ func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) 
 					row.ReviewedHead, row.EntryTask, issue.Phase, tc.moved)
 			}
 			outboxRan(t, pool)
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
 			})
 			if delivered := deliveredTask(t, pool, tc.name); delivered != stored {
@@ -439,7 +439,7 @@ func bootResumesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
 	row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 	outboxRan(t, pool)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := engine.startSuspendedOwner(ctx, tx, suspendedOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
 			run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row)
 		return err
@@ -518,7 +518,7 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 		apply("wake-backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: role})
 		return WakeTask("LEGION-208", kind, string(role))
 	}
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		released, found, err := engine.cfg.Pods.ReleasedClaimOfRole(ctx, tx, "LEGION-208", role)
 		if err != nil || !found {
 			return fmt.Errorf("read the released %s claim: found %t, %v", role, found, err)
@@ -611,7 +611,7 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			name: "a woken reviewer whose row the clear left with no task", role: claim.RoleReviewer, after: reviewedPartOf("none") + noEntryPart,
 			walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
 				pool, engine, _ := reviewRoundTwo(t)
-				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 					return record.NewStore().ClearGeneration(ctx, tx, "LEGION-208", engine.now())
 				})
 				if row := reviewerRow(t, pool); row.EntryTask != "" || row.ReviewedHead != "" || row.Entry < 2 {
