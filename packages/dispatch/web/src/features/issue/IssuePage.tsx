@@ -145,6 +145,7 @@ const DecisionsPanel = chunkComponent(() =>
   issueTabChunks.decisions().then((module) => module.DecisionsPanel)
 );
 const PlanTab = chunkComponent(() => issueTabChunks.plan().then((module) => module.PlanTab));
+const StepsTab = chunkComponent(() => issueTabChunks.steps().then((module) => module.StepsTab));
 const VerificationTab = chunkComponent(() =>
   issueTabChunks.verification().then((module) => module.VerificationTab)
 );
@@ -368,13 +369,15 @@ const tabChords: readonly { keys: string; label: string; tab: IssueTab }[] = [
   // is free (`p` alone focuses the priority, which is a different scope of key).
   { keys: "t k", label: "Verification tab", tab: "verification" },
   { keys: "t p", label: "Plan tab", tab: "plan" },
+  // `t s` is the Spec, so Steps takes the next letter of its name.
+  { keys: "t e", label: "Steps tab", tab: "steps" },
   { keys: "t c", label: "Conversation tab", tab: "conversation" },
   { keys: "t h", label: "Children tab", tab: "children" },
   { keys: "t a", label: "Artifacts tab", tab: "artifacts" },
   // `t a` is Artifacts and `l` is the issue's label editor, so Activity takes `t v`.
   { keys: "t v", label: "Activity tab", tab: "activity" },
   { keys: "t d", label: "Decisions tab", tab: "decisions" },
-  // `s k p c h a v d` are taken, so Collaborators, the last tab, takes `t o`.
+  // `s k p e c h a v d` are taken, so Collaborators, the last tab, takes `t o`.
   { keys: "t o", label: "Collaborators tab", tab: "collaborators" },
 ];
 
@@ -617,6 +620,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
     spec: activeTab === "spec",
+    steps: activeTab === "steps",
     verification: activeTab === "verification",
   }));
   if (!activatedTabs[activeTab]) {
@@ -816,6 +820,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         onVersionChange={selectDocumentVersion}
         tab="plan"
       />
+      <div
+        aria-hidden={activeTab !== "steps"}
+        aria-labelledby="issue-steps-tab"
+        hidden={activeTab !== "steps"}
+        id="issue-steps-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.steps ? (
+          <Suspense fallback={null}>
+            <StepsTab active={activeTab === "steps"} issueKey={issueKey} />
+          </Suspense>
+        ) : null}
+      </div>
       <div
         aria-hidden={activeTab !== "conversation"}
         aria-labelledby="issue-conversation-tab"

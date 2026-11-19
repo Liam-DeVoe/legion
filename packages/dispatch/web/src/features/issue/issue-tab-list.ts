@@ -6,13 +6,14 @@ import type { IssueTab } from "../refs/routes";
  *  labels, and which tab carries a count, since a count is what the strip's height is
  *  (`issue-page-skeleton.tsx`) - but that box is in the shell every page loads: were this list
  *  in `IssueTabs.tsx`, the `Tabs` component and the `Pill` it draws counts with would load with
- *  the shell to supply nine strings. Everything here is data and types, so the shell takes the
+ *  the shell to supply ten strings. Everything here is data and types, so the shell takes the
  *  list alone and the tablist itself stays in the issue page's own chunk. */
 export function issueTabs(artifactCount: number): readonly TabDefinition<IssueTab>[] {
   return [
     { id: "spec", label: "Spec" },
     { id: "verification", label: "Verification" },
     { id: "plan", label: "Plan" },
+    { id: "steps", label: "Steps" },
     { id: "conversation", label: "Conversation" },
     { id: "children", label: "Children" },
     artifactCount === 0
@@ -44,5 +45,6 @@ export const issueTabChunks = {
   conversation: () => import("../conversation/ConversationTab"),
   decisions: () => import("./DecisionsPanel"),
   plan: () => import("../plan/PlanTab"),
+  steps: () => import("../steps/StepsTab"),
   verification: () => import("../verification/VerificationTab"),
 } satisfies Partial<Record<IssueTab, () => Promise<unknown>>>;

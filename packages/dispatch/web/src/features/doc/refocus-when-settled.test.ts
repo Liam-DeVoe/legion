@@ -7,6 +7,7 @@ import {
   type ReadersStep,
   THE_READERS_CASES,
 } from "../../__tests__/readers-place-harness";
+import { installResizeObserver, type ResizeControl } from "../../__tests__/scroll-box";
 import { appKeymap } from "../shell/keymap";
 // This watch's own windows are read on the real clock: the correction it makes is made in an
 // animation frame, and the window in which the movement that correction started is still its own
@@ -20,25 +21,15 @@ import { scrollElementToTop } from "./scroll-block";
 
 /** The observers the rows below fire by hand: happy-dom lays nothing out and watches no size, so
  *  a drawn root grows only when its test says it did. */
-let observers: ResizeObserverCallback[] = [];
-let originalObserver: typeof ResizeObserver;
+let sizes: ResizeControl;
 let restoreScroll: (() => void) | undefined;
 
 beforeEach(() => {
-  observers = [];
-  originalObserver = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = class {
-    constructor(callback: ResizeObserverCallback) {
-      observers.push(callback);
-    }
-    observe() {}
-    disconnect() {}
-    unobserve() {}
-  } as unknown as typeof ResizeObserver;
+  sizes = installResizeObserver();
 });
 
 afterEach(() => {
-  globalThis.ResizeObserver = originalObserver;
+  sizes.restore();
   restoreScroll?.();
   restoreScroll = undefined;
   // The selection is the page's, not a row's: one left standing reaches every later row in
@@ -64,9 +55,7 @@ function drawnRoot(): {
     element,
     grow(by: number) {
       height += by;
-      for (const observer of observers) {
-        observer([], undefined as unknown as ResizeObserver);
-      }
+      sizes.resize();
     },
     /** What stands above the document grows, which pushes the document down the page and
      *  changes the size of nothing the watch is observing. */
@@ -169,9 +158,7 @@ function readingColumn(): {
       element,
       grow(by: number) {
         height += by;
-        for (const observer of observers) {
-          observer([], undefined as unknown as ResizeObserver);
-        }
+        sizes.resize();
       },
     },
     heading,
@@ -243,7 +230,7 @@ test("a caller with no drawn root and no diagram waiting arms nothing", async ()
   const stop = refocusWhenSettled(() => (focused += 1));
 
   try {
-    expect(observers).toHaveLength(0);
+    expect(sizes.live()).toBe(0);
     await Bun.sleep(AFTER_THE_QUIET);
     expect(focused).toBe(0);
   } finally {
@@ -749,7 +736,7 @@ function aDocument(): {
   };
   const element = document.createElement("div");
   const tell = () => {
-    for (const observer of observers) observer([], undefined as unknown as ResizeObserver);
+    sizes.resize();
   };
   element.getBoundingClientRect = () =>
     (hidden

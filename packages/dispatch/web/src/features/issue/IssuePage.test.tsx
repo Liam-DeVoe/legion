@@ -9,6 +9,7 @@ import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "rea
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -17,6 +18,7 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -40,6 +42,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { IssuePage } from "./IssuePage";
 import { issueClosedCalloutClassName } from "./issue-header-classes";
+import { issueTabChunks } from "./issue-tab-list";
 
 const issue = {
   route_status: null,
@@ -1250,6 +1253,69 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
     decisions.mockRestore();
     restore();
   }
+});
+
+// `s` is the Spec's and `t` starts the chord, so the Steps tab takes the next letter of its name.
+test("IssuePage opens the Steps tab with the t e chord", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+
+  try {
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await user.keyboard("t");
+    await user.keyboard("e");
+
+    await screen.findByRole("tab", { name: "Steps", selected: true });
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/steps");
+    await screen.findByText("No step of this issue has run in Legion.");
+    expect(steps).toHaveBeenCalledWith("CORE-1");
+  } finally {
+    view.unmount();
+    steps.mockRestore();
+    restore();
+  }
+});
+
+// The page keeps the Steps tab mounted once shown and hides its panel, so the page tells the tab
+// when it is shown: a Steps tab the reader left reads nothing more, however long the page stays
+// open, and catches up once it is shown again.
+test("IssuePage stops the Steps tab's reads while another tab is shown, and restarts them when Steps is", async () => {
+  // Each tab panel this row opens is a chunk of its own, drawn in the commit its chunk arrives
+  // in (`chunkComponent`), and an import answers on no clock of this row's. Both are imported
+  // before the clock is held, and the click that mounts the Activity panel is inside `act`, so
+  // each chunk lands inside the act that asked for it rather than in the gap after one.
+  await issueTabChunks.steps();
+  await issueTabChunks.activity();
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    const restore = stubIssuePage(issue);
+    const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
+    const view = renderIssuePage("/issues/CORE-1/steps");
+    try {
+      await tick(0);
+      await screen.findByText("No step of this issue has run in Legion.");
+      expect(screen.getByRole("tab", { name: "Steps", selected: true })).toBeDefined();
+      expect(steps).toHaveBeenCalledTimes(1);
+
+      await act(() => user.click(screen.getByRole("tab", { name: "Activity" })));
+      await tick(0);
+      await screen.findByText("No activity yet.");
+      expect(screen.getByRole("tab", { name: "Activity", selected: true })).toBeDefined();
+      const left = steps.mock.calls.length;
+      await tick(600_000, 1_000);
+      expect(steps).toHaveBeenCalledTimes(left);
+
+      await user.click(screen.getByRole("tab", { name: "Steps" }));
+      await tick(300_000, 1_000);
+      expect(steps).toHaveBeenCalledTimes(left + 7);
+    } finally {
+      view.unmount();
+      steps.mockRestore();
+      restore();
+    }
+  });
 });
 
 test("IssuePage opens the Collaborators tab with the t o chord", async () => {

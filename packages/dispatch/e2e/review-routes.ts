@@ -620,10 +620,14 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  navigated to, and then the page drops the ring by itself
  *  (`web/src/features/artifacts/ArtifactHeader.tsx`, which marks the header
  *  `data-landing-ring` for exactly as long as the ring is painted). So a page still carrying
- *  that attribute is a page still changing, and both layers wait it out here rather than in a
+ *  that attribute is a page still changing: a scheme shot inside those two seconds draws the
+ *  ring and one shot after them does not (CI runs 44308307388 and 44323538727 read the dark
+ *  `issue-artifact` row without it and with it). Both layers wait it out here rather than in a
  *  row: it belongs to no row, it is the artifact pages' alone to carry, and it costs every
- *  other page one locator that matches nothing. The wait is for the mark itself and never for
- *  two seconds of wall clock - a duration would be the same race run against a stopwatch.
+ *  other page one locator that matches nothing. It is counted, as the pending marks are,
+ *  because an assertion on the header itself waits for one to exist, and timed out every row
+ *  of a page without one (run 44326108595). The wait is for the mark itself and never for two
+ *  seconds of wall clock - a duration would be the same race run against a stopwatch.
  *
  *  And the shell's one Inbox number must have stopped moving (`waitForInboxCountSettled`
  *  below), which every page draws and no row names. It is waited for last, once everything
@@ -679,6 +683,17 @@ export function railInboxLink(page: Page): Locator {
   return page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: /^Inbox/ });
 }
 
+/** The compact top bar's Inbox badge, which carries the shell's one Inbox number below the wide
+ *  layout (`web/src/app.tsx`), where the rail is not drawn. From the wide layout up the top bar is
+ *  not drawn and this matches nothing. The settle wait below reads the number through it, and the
+ *  visual review masks it as it masks the rail's entry (e2e/visual.e2e.ts says why). */
+export function topBarInboxBadge(page: Page): Locator {
+  return page
+    .locator("header")
+    .first()
+    .getByText(/^Inbox( \d+)?$/);
+}
+
 /** Waits until the shell's Inbox number has settled: none of the requests that feed it or move it
  *  is still waiting for its answer, and the number has then held one value for
  *  `INBOX_COUNT_QUIET_MS`. The number is drawn on every page, by the sidebar's entry from the wide
@@ -697,12 +712,7 @@ export function railInboxLink(page: Page): Locator {
  *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
  *  page's latest hundred, which holds every request recent enough to still be waiting. */
 async function waitForInboxCountSettled(page: Page): Promise<void> {
-  const count = wideLayout(page)
-    ? railInboxLink(page)
-    : page
-        .locator("header")
-        .first()
-        .getByText(/^Inbox( \d+)?$/);
+  const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
   let heldSince = Date.now();
   await expect

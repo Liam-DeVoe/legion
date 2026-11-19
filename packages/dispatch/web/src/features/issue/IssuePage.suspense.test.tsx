@@ -315,6 +315,7 @@ test("the tab strip lands in a commit after the document's, with the tabs it has
     "Spec",
     "Verification",
     "Plan",
+    "Steps",
     "Conversation",
     "Children",
     "Artifacts 2",
