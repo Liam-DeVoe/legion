@@ -1011,9 +1011,12 @@ Dispatch would store under another spelling with the call's refusal and exit cod
 at most 5 s. When it gets no answer (no Dispatch configured, a failure, no answer in time, or a
 Dispatch without the route), the dry run passes, and one `dispatch: warning:` line on stderr says
 why and what the call does then, so the JSON stays alone on stdout. With `DISPATCH_DRY_RUN_LOCAL=1`
-the dry run asks Dispatch nothing, for a caller that reads the arguments alone. Every other dry run
-reads no Dispatch, so it runs with Dispatch off too. A call that a dry run passed can still stop on
-what Dispatch answers or on this session's state.
+the dry run asks Dispatch nothing, for a caller that reads the arguments alone. A `dispatch result`
+record's dry run asks Dispatch through the call itself (`dryRunAsksDispatch`): it needs Dispatch on,
+as the record does, and after the arguments prints the pull-request body line Dispatch answers on
+`POST …/results/dry-run`, recording nothing. A retraction's dry run sends nothing. Every other dry
+run reads no Dispatch, so it runs with Dispatch off too. A call that a dry run passed can still stop
+on what Dispatch answers or on this session's state.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
