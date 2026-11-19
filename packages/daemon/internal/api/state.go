@@ -435,6 +435,14 @@ type DaemonInfo struct {
 	// empty, and left off the wire, while the project has no state row, and stateSeqContract's
 	// narrowing leaves it off with StateSeq.
 	StateID string `json:"stateId,omitempty"`
+	// StateRun is the id of the daemon run that serves this body, minted once at the process's
+	// start, which is the `run` every state message that run publishes carries. A reader that took
+	// this body as its starting point takes it as the run of that starting point: a boot event of
+	// this run at or below StateSeq is one the body already holds, not a daemon whose sequence went
+	// back. Only a daemon whose state events are on (one with a workflow) serves it; it is empty,
+	// and left off the wire, from any other, and stateSeqContract's narrowing leaves it off with
+	// StateSeq.
+	StateRun string `json:"stateRun,omitempty"`
 }
 
 // ContractView is the mark of the narrowing: the contract this body was built at and the

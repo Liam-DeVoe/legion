@@ -2475,6 +2475,21 @@ test("the state names the store its state events are counted in, and the key may
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
+// `daemon.stateRun` is the id of the daemon run that serves the state, the `run` of every state
+// message that run publishes, which a reader takes as its starting point's run. A daemon before
+// the contract that added it, and a daemon that runs no workflow, write none, so the key may be
+// absent; a run that is no UUID is refused.
+test("the state names the daemon run that serves it, and the key may be absent", () => {
+  const state = fixture("state.json") as { daemon: Record<string, unknown> };
+  const served = state.daemon.stateRun;
+  expect(typeof served).toBe("string");
+  expect(LegionStateResponse.parse(state).daemon.stateRun).toBe(served as string);
+  delete state.daemon.stateRun;
+  expect(LegionStateResponse.parse(state).daemon.stateRun).toBeUndefined();
+  state.daemon.stateRun = "run-1";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 /** One message of the state lane: the events one transaction committed, at sequences 41 to 43 —
  * a change of an answered root's phase, tree, slot, wait and implementer claim, the admission
  * block, and a boot — with the block, the settings and the schema version the state golden serves,

@@ -95,7 +95,7 @@ github_apps:
 // stateGoldenRig is a stateRig whose writes run on a fixed clock: the record store and the claim
 // store of project LEGION, both with the state events on under the run stateTestRun, and
 // GET /legion/v1/state served over the same database by the daemon's own state source, configured
-// from stateGoldenSettingsFile as the daemon's serve configures it.
+// from stateGoldenSettingsFile as the daemon's serve configures it, under that same run.
 type stateGoldenRig struct {
 	*stateRig
 	// scoped is the stateRig's record store scoped to the project, as the workflow writes through
@@ -134,7 +134,7 @@ func newStateGoldenRig(t *testing.T) *stateGoldenRig {
 	r := &stateGoldenRig{stateRig: newStateRig(t), cfg: cfg}
 	r.scoped = projectRecords{Store: r.records, project: cfg.Project}
 	r.claims = r.serveState(t, source{runtime: cfg.Runtime.Name, admissionCap: cfg.AdmissionCap, startedAt: stateGoldenStart,
-		gatedSteps: cfg.Gates.Steps(), experiments: cfg.ExperimentsDeclared(), settings: api.SettingsOf(cfg)})
+		gatedSteps: cfg.Gates.Steps(), experiments: cfg.ExperimentsDeclared(), settings: api.SettingsOf(cfg), stateRun: stateTestRun})
 	r.claims.PublishState(cfg.Project, stateTestRun, nil)
 	r.workflow = &workflowRuntime{pool: r.pool, records: r.scoped, dispatchProject: cfg.Project}
 	return r
@@ -284,6 +284,13 @@ func (r *stateGoldenRig) record(t *testing.T, name string) stateEventsStep {
 	}
 	if state.Daemon.StateID != storeID {
 		t.Fatalf("after step %q the state serves daemon.stateId %q, want the store's id %q, which every message carries", name, state.Daemon.StateID, storeID)
+	}
+	// The run the state serves is the run of every message the step published: a reader that took
+	// this state as its starting point holds a boot of that run at or below its stateSeq.
+	for _, publish := range published {
+		if run := publish.payload.(stateMessage).Run; state.Daemon.StateRun != run {
+			t.Fatalf("after step %q the state serves daemon.stateRun %q, want %q, the run of the messages the step published", name, state.Daemon.StateRun, run)
+		}
 	}
 	state.Daemon.SchemaVersion, state.Daemon.StateID = stateGoldenSchemaVersion, stateGoldenStateID
 	// Left out: each contract bump would stale it, at a path check-daemon-api-contract.sh cannot name.

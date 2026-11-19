@@ -856,8 +856,9 @@ func statementBound(bound time.Duration) int64 {
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
 // `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
 // below stateSeqContract, the contract that added the sequence of the newest state event the
-// body's snapshot holds and the id of the store it is counted in, is served the daemon block
-// without `stateSeq` and `stateId` (withoutStateSeq).
+// body's snapshot holds, the id of the store it is counted in and the id of the daemon run that
+// serves the body, is served the daemon block without `stateSeq`, `stateId` and `stateRun`
+// (withoutStateSeq).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -986,7 +987,7 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
-	{stateSeqContract, carriesStateSeq, withoutStateSeq, "daemon.stateSeq and daemon.stateId"},
+	{stateSeqContract, carriesStateSeq, withoutStateSeq, "daemon.stateSeq, daemon.stateId and daemon.stateRun"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1172,14 +1173,15 @@ const entryTimesContract = 146
 
 // stateSeqContract is the daemon contract that added `daemon.stateSeq`, the sequence of the newest
 // state event the project's daemon committed, read in the body's own snapshot, and beside it
-// `daemon.stateId`, the id of the store that count is kept in (version.go's 166,
-// DaemonInfo.StateSeq and StateID). A plugin before it is served the daemon block without the two
-// keys: one built before sjawhar/legion#2788 reads it with a strict schema and would refuse the
-// whole body for a key it does not name, and one built after strips the keys instead, so the strip
-// is what keeps them from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. entryTimesContract stands below it with no row of stateNarrowings between the
-// two, so a caller in a pod at or above entryTimesContract and below this contract is served
-// those three keys and neither `stateSeq` nor `stateId`.
+// `daemon.stateId`, the id of the store that count is kept in, and `daemon.stateRun`, the id of the
+// daemon run that serves the body (version.go's 166, DaemonInfo.StateSeq, StateID and StateRun).
+// A plugin before it is served the daemon block without the three keys: one built before
+// sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body for a key it
+// does not name, and one built after strips the keys instead, so the strip is what keeps them from
+// a caller that did not ask for them rather than what keeps such a caller reading at all.
+// entryTimesContract stands below it with no row of stateNarrowings between the two, so a caller
+// in a pod at or above entryTimesContract and below this contract is served those three keys and
+// none of `stateSeq`, `stateId` and `stateRun`.
 const stateSeqContract = 166
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
@@ -1513,23 +1515,23 @@ func withoutEntryTimes(state State) State {
 	return state
 }
 
-// carriesStateSeq is whether state carries a key stateSeqContract added: `daemon.stateSeq` or
-// `daemon.stateId`. The daemon's own source sets the sequence on every body it answers
-// (DaemonInfo.StateSeq), 0 included, and the id once the project has a state row; a state built
-// without either, a test's or another source's, carries nothing to strip, so this is asked of the
-// state rather than answered true.
+// carriesStateSeq is whether state carries a key stateSeqContract added: `daemon.stateSeq`,
+// `daemon.stateId` or `daemon.stateRun`. The daemon's own source sets the sequence on every body it
+// answers (DaemonInfo.StateSeq), 0 included, the id once the project has a state row, and the run
+// where its state events are on; a state built without any of them, a test's or another source's,
+// carries nothing to strip, so this is asked of the state rather than answered true.
 func carriesStateSeq(state State) bool {
-	return state.Daemon.StateSeq != nil || state.Daemon.StateID != ""
+	return state.Daemon.StateSeq != nil || state.Daemon.StateID != "" || state.Daemon.StateRun != ""
 }
 
-// withoutStateSeq is state with no `daemon.stateSeq` and no `daemon.stateId`, the two keys
-// stateSeqContract added to this route; nothing else of that contract is on it. The sequence is
-// left off rather than zeroed, because the strict reader before the contract refuses it when it is
-// 0 as surely as when it names a sequence, and a 0 would tell a reader of this contract that the
-// project has no state event. The daemon block is a value of the state's own, so the state the
-// source answered is left as it was.
+// withoutStateSeq is state with no `daemon.stateSeq`, no `daemon.stateId` and no
+// `daemon.stateRun`, the three keys stateSeqContract added to this route; nothing else of that
+// contract is on it. The sequence is left off rather than zeroed, because the strict reader before
+// the contract refuses it when it is 0 as surely as when it names a sequence, and a 0 would tell a
+// reader of this contract that the project has no state event. The daemon block is a value of the
+// state's own, so the state the source answered is left as it was.
 func withoutStateSeq(state State) State {
-	state.Daemon.StateSeq, state.Daemon.StateID = nil, ""
+	state.Daemon.StateSeq, state.Daemon.StateID, state.Daemon.StateRun = nil, "", ""
 	return state
 }
 

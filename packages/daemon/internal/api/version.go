@@ -2392,13 +2392,19 @@ package api
 // it, `stateId` (api.DaemonInfo.StateID) is the id of the store that count is kept in
 // (state_publication.store_id), made at the project's first state row and never changed, which
 // every state message carries: a reader applies only messages whose `stateId` is its starting
-// point's. The route writes `stateSeq` on every body, 0 while the project has no state row, and
-// `stateId` once the project has one, and a caller in a pod whose claims record a contract below
-// 166 is served the daemon block without either (stateSeqContract, withoutStateSeq): one built
-// before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body
-// for a key it does not name, and one built after strips the keys instead.
-// `packages/contracts/src/legion-api.ts` reads both keys as optional, so a reader of this contract
-// served such a body, or the body of a daemon before 166, takes them as absent rather than as 0.
+// point's. Beside both, `stateRun` (api.DaemonInfo.StateRun) is the id of the daemon run that
+// serves the body, minted at the process's start, which is the `run` every state message of that
+// run carries: a reader takes it as its starting point's run, so a boot of that run at or below
+// `stateSeq` is one the body already holds and not a daemon whose sequence went back. The route
+// writes `stateSeq` on every body, 0 while the project has no state row, `stateId` once the
+// project has one, and `stateRun` from a daemon whose state events are on (one with a workflow),
+// and a caller in a pod whose claims record a contract below 166 is served the daemon block
+// without any of the three (stateSeqContract, withoutStateSeq): one built before
+// sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
+// key it does not name, and one built after strips the keys instead.
+// `packages/contracts/src/legion-api.ts` reads the three keys as optional, so a reader of this
+// contract served such a body, or the body of a daemon before 166, takes them as absent rather
+// than as 0.
 // (This change took 166, the lowest number above main's 152 that no open pull request declared,
 // as `.github/scripts/check-daemon-api-contract.sh` read it on 2026-11-18: 153 #4115, 154 #3659,
 // 155 #4273, 156 #4065, 157 #3993, 158 #4251, #4259, #4261, #4269 and #4290, 159 #4175, 160

@@ -38,9 +38,11 @@
 --   row naming another daemon than the setting is no starting point, so the intake reads the
 --   setting's daemon whole. Every write of the setting deletes the row (legion.PutSettings and
 --   legion.DeleteSettings), which is what makes a PUT of the same URL a fresh whole read.
--- - run is the daemon run (the UUID it minted at boot) of the newest message the intake applied,
---   null before the first. A boot at or below last_seq under another run is a daemon whose
---   sequence went back, which the intake reads whole.
+-- - run is the daemon run (the UUID it minted at boot) of the newest message the intake applied, or
+--   the daemon.stateRun of the daemon that served a successful whole read made after it, where that
+--   daemon served one; null before either. A boot at or below last_seq under another run is a
+--   daemon whose sequence went back, which the intake reads whole; one under this run is one the
+--   cursor holds.
 -- - last_seq is the newest state sequence the project's observations reflect: the stateSeq a
 --   successful whole read served, or the seq of the newest transaction applied. Null while the row
 --   holds none, which is only while a read is owed.

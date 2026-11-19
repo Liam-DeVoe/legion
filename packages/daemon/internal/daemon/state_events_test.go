@@ -860,9 +860,10 @@ func seedBootStore(t *testing.T, cfg config.Config, issue string, earlier bool, 
 // project's state topic through the Envoy listener: one message of its own, carrying the settings
 // and the schema version GET /legion/v1/state serves, the run id the boot logged, the sequence its
 // commit took and the store id the state serves, and nothing of the state itself, its envelope as
-// the listener stores it well under the 1 MiB a NATS server takes whole. A state row an earlier run
-// left unpublished holds a lower sequence, so the lane publishes it first, and the boot event
-// follows it one sequence above.
+// the listener stores it well under the 1 MiB a NATS server takes whole. The state serves that run
+// id as `daemon.stateRun`, the run of every message this daemon run publishes, and not the run of
+// a message an earlier run left. A state row an earlier run left unpublished holds a lower
+// sequence, so the lane publishes it first, and the boot event follows it one sequence above.
 func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
 	const earlierRun = "1c9e4b7a-6d2f-4a83-9b05-e8f7d3c2a160"
 	for _, tc := range []struct {
@@ -941,6 +942,7 @@ func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
 					SchemaVersion int64  `json:"schemaVersion"`
 					StateSeq      *int64 `json:"stateSeq"`
 					StateID       string `json:"stateId"`
+					StateRun      string `json:"stateRun"`
 				} `json:"daemon"`
 			}
 			if err := json.Unmarshal(body, &state); err != nil {
@@ -958,6 +960,12 @@ func TestABootedDaemonPublishesItsBootEventFirst(t *testing.T) {
 			}
 			if state.Daemon.StateSeq == nil || *state.Daemon.StateSeq < boot.message.Seq {
 				t.Fatalf("the state serves daemon.stateSeq %v, want at least the boot event's %d, which committed before the API served", state.Daemon.StateSeq, boot.message.Seq)
+			}
+			// The state serves the run that published the boot, which a reader takes as its
+			// starting point's run: a boot of that run at or below the state's stateSeq is one
+			// the state already holds.
+			if state.Daemon.StateRun != boot.message.Run {
+				t.Fatalf("the state serves daemon.stateRun %q, want the run of the boot event this daemon published, %q", state.Daemon.StateRun, boot.message.Run)
 			}
 			// Every message counted in this store carries its one id, the earlier run's left row
 			// among them, and the state serves the same id.

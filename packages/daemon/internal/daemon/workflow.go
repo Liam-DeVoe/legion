@@ -56,6 +56,10 @@ type workflowRuntime struct {
 	// recordStore is the Postgres store openWorkflow builds records over (projectRecords), kept so
 	// the boot can turn its state events on once the boot event is queued (publishRecordStates).
 	recordStore *record.Postgres
+	// stateRun is the run id the boot turned the state events on under (publishRecordStates), the
+	// `run` of every state message this daemon run publishes, which the state route serves as
+	// `daemon.stateRun` (source.stateRun). The boot writes it once, before the API serves.
+	stateRun string
 	// gatedSteps are the design-gate steps the project gates, which the send-time narrowing of a
 	// held architect task reads: a catch-up it writes to another tree's architect is composed
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step

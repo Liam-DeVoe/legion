@@ -862,9 +862,9 @@ const legionIssue = z.object({
  * `stateId` is the id of the store that count is kept in, made at the project's first state event
  * and never changed, absent while the project has none: a reader that takes this body as its
  * starting point applies only a state message whose `stateId` is this one, since a message of
- * another id is counted in another store and its sequences say nothing of this body's. Both are
- * optional because a daemon before the contract that added them writes neither, and the route
- * strips both from the body it serves a caller below that contract. */
+ * another id is counted in another store and its sequences say nothing of this body's. The three
+ * keys of contract 166 are optional because a daemon before that contract writes none of them, and
+ * the route strips them from the body it serves a caller below that contract. */
 const daemonInfo = z.object({
   project: nonEmptyString,
   schemaVersion: z.number().int().nonnegative(),
@@ -873,6 +873,12 @@ const daemonInfo = z.object({
   startedAt: timestamp,
   stateSeq: z.number().int().nonnegative().optional(),
   stateId: z.uuid().optional(),
+  /** The id of the daemon run that serves the body, which is the `run` of every state message
+   * that run publishes. A reader takes it as the run of its starting point, so a `boot` event of
+   * that run at or below the starting point's `stateSeq` is one the reader already holds, not a
+   * daemon whose sequence went back. Only a daemon whose state events are on serves it: one that
+   * runs no workflow serves none. */
+  stateRun: z.uuid().optional(),
 });
 
 /** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the

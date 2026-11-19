@@ -24,11 +24,12 @@ func daemonAPIFixture(name string) string {
 // decode — the settings the board carries, the admission block its header and queue are drawn
 // from, and each issue's phase and claims — and so does every field a whole read needs to be a
 // good read: daemon.project, which must name the setting's project, daemon.stateSeq, the cursor's
-// starting point, and the dispatch_url of the settings (fetchWhole). Of the pull request the
-// decode keeps nothing, though the golden carries one: cybermonklabs/legion#2539 (main's contract
-// 86) took the CI verdict out of the daemon's state and deleted the record its required-check mark
-// was read from, so metric 2's CI-wait segment is not measured, a board card carries no CI
-// verdict, and no reader is left for the pull request's state.
+// starting point, and the dispatch_url of the settings (fetchWhole); so does daemon.stateRun, which
+// a good read takes as the cursor's run (recordWhole). Of the pull request the decode keeps
+// nothing, though the golden carries one: cybermonklabs/legion#2539 (main's contract 86) took the
+// CI verdict out of the daemon's state and deleted the record its required-check mark was read
+// from, so metric 2's CI-wait segment is not measured, a board card carries no CI verdict, and no
+// reader is left for the pull request's state.
 func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	body, err := os.ReadFile(daemonAPIFixture("state.json"))
 	if err != nil {
@@ -64,6 +65,10 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	if read.failure != nil || !read.observed || read.stateSeq == nil || *read.stateSeq != *state.Daemon.StateSeq {
 		t.Errorf("a whole read of the golden for project %s = failure %v, observed %v, stateSeq %v; want a good read at stateSeq %d",
 			state.Daemon.Project, read.failure, read.observed, read.stateSeq, *state.Daemon.StateSeq)
+	}
+	if state.Daemon.StateRun == "" || read.stateRun == nil || *read.stateRun != state.Daemon.StateRun {
+		t.Errorf("daemon.stateRun = %q and the whole read keeps %s, want the run the golden serves, which a good read takes as the cursor's run",
+			state.Daemon.StateRun, orNone(read.stateRun))
 	}
 
 	// The observations a read of this document writes: the two project rows the board's header

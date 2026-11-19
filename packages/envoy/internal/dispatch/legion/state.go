@@ -60,6 +60,11 @@ type Daemon struct {
 	// project's first state event and never changes, and which every state message carries as its
 	// stateId: the intake applies only a message of this id. Empty where the daemon serves none.
 	StateID string `json:"stateId,omitempty"`
+	// StateRun is the id of the daemon run that serves the document, the run every state message
+	// of that run carries. A good whole read takes it as the cursor's run, so a boot of that run at
+	// or below StateSeq is one the read already holds (stateMessage.unfollowed). Empty where the
+	// daemon serves none.
+	StateRun string `json:"stateRun,omitempty"`
 }
 
 // Admission is the admission block in the members Dispatch records. Every member is optional and

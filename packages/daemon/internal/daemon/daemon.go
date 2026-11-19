@@ -426,6 +426,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			return err
 		}
 		publishRecordStates(workflow, runID)
+		workflow.stateRun = runID
 		publishClaimStates(st, workflow, runID)
 		log.Info("legion daemon state events on", "project", cfg.Project, "run", runID, "schemaVersion", schemaVersion)
 		// From here on, a claim write that changes a role holder queues its issue's publication in
@@ -2641,6 +2642,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
 	var architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+	var stateRun string
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
@@ -2649,6 +2651,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
 		architectStalls = workflow.admission.ArchitectStallArms
+		stateRun = workflow.stateRun
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2683,6 +2686,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 			architectStalls: architectStalls,
+			stateRun:        stateRun,
 		},
 		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
@@ -2870,6 +2874,10 @@ type source struct {
 	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
 	// which weighs no architect and serves no arm.
 	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+	// stateRun is the id of this daemon run, the `run` every state message it publishes carries
+	// (workflowRuntime.stateRun), which State serves as `daemon.stateRun`; empty for a daemon with
+	// no workflow, which publishes no state event and serves no run.
+	stateRun string
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
@@ -3110,6 +3118,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		StartedAt:     s.startedAt,
 		StateSeq:      &published.Seq,
 		StateID:       published.StateID,
+		StateRun:      s.stateRun,
 	}
 	state.Settings = s.settings
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)

@@ -1002,10 +1002,11 @@ func lastValues(events []stateEvent) []Observation {
 // (recordWhole), so a record the database refuses is made again without reading the daemon again.
 type wholeRead struct {
 	stateURL string
-	// stateSeq is the daemon.stateSeq the state serves, stateID its daemon.stateId and
-	// schemaVersion its daemon.schemaVersion, each nil for none.
+	// stateSeq is the daemon.stateSeq the state serves, stateID its daemon.stateId, stateRun its
+	// daemon.stateRun and schemaVersion its daemon.schemaVersion, each nil for none.
 	stateSeq      *int64
 	stateID       *string
+	stateRun      *string
 	schemaVersion *int64
 	// observations is what the state observes (State.Observations), recorded where observed is
 	// true: the daemon answered with the setting's project's state, failed read or not.
@@ -1035,6 +1036,9 @@ func fetchWhole(ctx context.Context, setting Settings, now func() time.Time) *wh
 		read.stateSeq, read.schemaVersion = state.Daemon.StateSeq, state.Daemon.SchemaVersion
 		if state.Daemon.StateID != "" {
 			read.stateID = &state.Daemon.StateID
+		}
+		if state.Daemon.StateRun != "" {
+			read.stateRun = &state.Daemon.StateRun
 		}
 	}
 	switch {
@@ -1068,10 +1072,10 @@ func fetchWhole(ctx context.Context, setting Settings, now func() time.Time) *wh
 // moment, Dispatch's now or just after the project's newest row (recordObservations), a
 // legion_reads row of kind `read` at Dispatch's now naming reason, and the project's cursor set to
 // the daemon's own daemon.stateSeq, daemon.stateId and daemon.schemaVersion, which takes the cursor
-// back too after a database restore took the daemon's counter back. A read that fails, and one
-// fetchWhole judges failed, records a failed legion_reads row naming why, its observations where
-// the state is the project's own, and leaves the read owed. Each read is announced on StateChannel
-// and logged at INFO (wholeReadLine).
+// back too after a database restore took the daemon's counter back, and to its daemon.stateRun
+// where it serves one. A read that fails, and one fetchWhole judges failed, records a failed
+// legion_reads row naming why, its observations where the state is the project's own, and leaves
+// the read owed. Each read is announced on StateChannel and logged at INFO (wholeReadLine).
 //
 // It answers an error only for a record the database refused, and records nothing when the
 // setting no longer names setting.StateURL by the time it is written.
@@ -1128,7 +1132,8 @@ func finishWhole(ctx context.Context, pool *store.Pool, project, reason string, 
 		return recorded, err
 	}
 	attributes := []any{"project", project, "reason", reason, "stateSeq", logValue(read.stateSeq),
-		"stateId", logValue(read.stateID), "bytes", read.bytes, "duration", read.took, "ok", read.failure == nil, "rows", written}
+		"stateId", logValue(read.stateID), "stateRun", logValue(read.stateRun), "bytes", read.bytes, "duration", read.took,
+		"ok", read.failure == nil, "rows", written}
 	if read.failure != nil {
 		attributes = append(attributes, "error", read.failure.Error())
 	}
@@ -1142,11 +1147,13 @@ func finishWhole(ctx context.Context, pool *store.Pool, project, reason string, 
 // parts (part), which the read holds or makes a gap of. A good read sets the cursor to its
 // stateSeq, its stateId and its schemaVersion and clears the read owed; a failed one owes the read
 // and keeps the cursor's where it follows the same daemon. Either way the cursor follows the
-// setting's daemon from here, and read_tried_at is the read's time. The cursor's run is kept where
-// it follows the same daemon: a whole read names no run, so the run is the newest applied
-// message's, which is what tells a replayed boot from a daemon whose counter went back
-// (stateMessage.unfollowed). recorded is false, with nothing written, when the setting no longer
-// names the daemon read.
+// setting's daemon from here, and read_tried_at is the read's time. A good read whose state serves
+// a stateRun sets the cursor's run to it: the run of the daemon that served the read, which is the
+// run of every message that daemon run publishes, so a boot of that run at or below the read's
+// stateSeq, one that reaches Dispatch after the read, is one the read holds and not a daemon whose
+// counter went back (stateMessage.unfollowed). Any other read keeps the cursor's run where it
+// follows the same daemon, and sets none where it does not. recorded is false, with nothing
+// written, when the setting no longer names the daemon read.
 func recordWhole(ctx context.Context, pool *store.Pool, project, reason string, read *wholeRead) (recorded bool, written int64, err error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -1170,6 +1177,9 @@ func recordWhole(ctx context.Context, pool *store.Pool, project, reason string, 
 	}
 	if read.failure == nil {
 		lastSeq, stateID, schemaVersion = read.stateSeq, read.stateID, read.schemaVersion
+		if read.stateRun != nil {
+			run = read.stateRun
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into legion_event_cursors (project, state_url, run, last_seq, read_owed, read_tried_at, state_id, schema_version)
@@ -1424,14 +1434,15 @@ func eventsAfter(events []stateEvent, lastSeq *int64) []stateEvent {
 // held part's sequence and run where parts are held, and the cursor's otherwise; a position that
 // holds no sequence is followed by any message. A boot above the position whose schemaVersion is
 // not the cursor's (where the cursor holds one) is ReadReasonSchema, and one that is not the next
-// sequence ReadReasonBoot. A boot at or below the position is a replay of one the cursor already
-// passed when its run is the run of the newest message applied or held, and otherwise a daemon
-// whose sequence went back (a database restore), which is ReadReasonBoot too. A boot that follows
-// the position with the cursor's schema version makes no read, whatever run the cursor holds. A
-// message whose first sequence is past the next one is ReadReasonGap: events the stream no longer
-// holds. So is a message above the held parts that does not continue them (stateMessage.continues):
-// a part of another run or another store, or one that overlaps them, after which the transaction
-// they began cannot be completed.
+// sequence ReadReasonBoot. A boot at or below the position is a replay of one the position already
+// holds when its run is the position's run - the run of the newest message applied or held, or the
+// stateRun of the daemon that served the last good whole read (recordWhole) - and otherwise a
+// daemon whose sequence went back (a database restore), which is ReadReasonBoot too. A boot that
+// follows the position with the cursor's schema version makes no read, whatever run the cursor
+// holds. A message whose first sequence is past the next one is ReadReasonGap: events the stream no
+// longer holds. So is a message above the held parts that does not continue them
+// (stateMessage.continues): a part of another run or another store, or one that overlaps them,
+// after which the transaction they began cannot be completed.
 func (m stateMessage) unfollowed(current cursor, held []part) string {
 	last, run := current.lastSeq, current.run
 	if n := len(held); n > 0 {

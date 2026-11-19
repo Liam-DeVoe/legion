@@ -93,7 +93,7 @@ func newIntakeRig(t *testing.T) *intakeRig {
 	}
 	return &intakeRig{
 		t: t, database: database, publisher: publisher, leases: leases, wake: make(chan struct{}, 1),
-		clock: &intakeClock{}, logs: logs, run: "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80",
+		clock: &intakeClock{}, logs: logs, run: rigRun,
 	}
 }
 
@@ -179,10 +179,12 @@ func (r *intakeRig) awaitWholeReads(want int) {
 // The store ids of the rig's messages and states (the state route's daemon.stateId, which every
 // state message carries as stateId): rigStateID is the store of every state daemonState builds and
 // of the rig's own run, and otherStateID the store of any other run (publishOf), or of a message a
-// test names another store for (publishIn).
+// test names another store for (publishIn). rigRun is the rig's own run (intakeRig.run), the
+// daemon.stateRun every state daemonState builds serves.
 const (
 	rigStateID   = "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
 	otherStateID = "c2a94f17-5e3b-4d08-9b6a-7e1f0d8c5b32"
+	rigRun       = "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
 )
 
 // stateSchema is the schema version of every state daemonState builds (daemon.schemaVersion), and
@@ -273,13 +275,13 @@ func booted(seq int, schemaVersion int64, admissionCap int) map[string]any {
 }
 
 // daemonState is a state document of project's daemon whose daemon block serves stateSeq,
-// stateSchema and the rig's store (rigStateID), whose settings carry a dispatch_url, and whose
-// issues are the members given.
+// stateSchema, the rig's store (rigStateID) and the rig's run (rigRun), whose settings carry a
+// dispatch_url, and whose issues are the members given.
 func daemonState(project string, stateSeq int, issues string) string {
-	return fmt.Sprintf(`{"daemon":{"project":%[1]q,"schemaVersion":%[4]d,"stateSeq":%[2]d,"stateId":%[5]q},
+	return fmt.Sprintf(`{"daemon":{"project":%[1]q,"schemaVersion":%[4]d,"stateSeq":%[2]d,"stateId":%[5]q,"stateRun":%[6]q},
 		"settings":{"project":%[1]q,"dispatch_url":"http://dispatch.internal.example","admission_cap":2},
 		"admission":{"cap":2,"active":["%[1]s-1"],"waiting":[],"trees":["%[1]s-1"],"blocked":[],"held":[]},
-		"issues":{%[3]s}}`, project, stateSeq, issues, stateSchema, rigStateID)
+		"issues":{%[3]s}}`, project, stateSeq, issues, stateSchema, rigStateID, rigRun)
 }
 
 // planning is issue <project>-1 of a daemonState, planning in slot 0 under its own tree, its
@@ -829,6 +831,77 @@ func TestABootThatDoesNotFollowMakesOneWholeRead(t *testing.T) {
 				t.Errorf("the boot's read logged stateSeq %v, want %d", lines[1]["stateSeq"], tc.stateSeq)
 			}
 		})
+	}
+}
+
+// TestABootOfTheRunTheStartingReadServedMakesNoRead: a daemon commits its boot event before it
+// serves its state, so the starting read can hold the boot before the boot's message reaches
+// Dispatch. The read takes the run of the daemon that served it (daemon.stateRun) as the cursor's
+// run, so that boot, of the same run and at or below the read's stateSeq, is one the read already
+// holds: it writes nothing, moves no cursor and makes no second read.
+func TestABootOfTheRunTheStartingReadServedMakesNoRead(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	rows := observations(t, rig.database, "INFRA")
+
+	// The boot's message arrives after the read: the daemon's own run, at the read's stateSeq,
+	// with settings the read does not hold, so a boot the intake applied would show.
+	rig.publish("INFRA", booted(10, stateSchema, 3))
+	rig.settled()
+
+	reads := readRecords(t, rig.database, "INFRA")
+	if served := daemon.served(); served != 1 || len(reads) != 1 {
+		t.Fatalf("the daemon served %d reads and legion_reads holds %v, want the starting read alone: the boot is one the read already holds", served, reads)
+	}
+	requireWholeRead(t, reads[0], ReadReasonStart, true)
+	if after := observations(t, rig.database, "INFRA"); !slices.Equal(after, rows) {
+		t.Errorf("observations = %v, want the starting read's %v alone", after, rows)
+	}
+	requireLastSeq(t, rig.database, "INFRA", 10)
+	if run := cursorOf(t, rig.database, "INFRA").run; run == nil || *run != rig.run {
+		t.Errorf("the cursor follows the run %s, want %s, the run that served the starting read", orNone(run), rig.run)
+	}
+	if line := rig.requireWholeReadLines("INFRA", ReadReasonStart)[0]; line["stateRun"] != rig.run {
+		t.Errorf("the starting read's line = %v, want it to name the run that served it, %s", line, rig.run)
+	}
+}
+
+// TestABootOfAnotherRunAtOrBelowTheStartingReadMakesOneRead: a boot at or below the starting
+// read's stateSeq under another run than the one that served the read is a daemon of the same
+// store whose sequence went back (a database restore), which no event carries. It makes one whole
+// read (ReadReasonBoot), and the cursor then follows the run that served that read.
+func TestABootOfAnotherRunAtOrBelowTheStartingReadMakesOneRead(t *testing.T) {
+	const restoredRun = "9e3c5a71-2f4d-4b86-a0c9-6d1e8b7f3a52"
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	// The daemon's database is restored to sequence 9 and the daemon boots again under a new run:
+	// its boot takes sequence 10 again, and the state it serves is that run's.
+	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
+	daemon.serves(strings.Replace(daemonState("INFRA", 10, implementing), rigRun, restoredRun, 1))
+	rig.publishIn("INFRA", restoredRun, rigStateID, time.Now().UTC().Truncate(time.Microsecond), false, booted(10, stateSchema, 2))
+	rig.settled()
+
+	reads := readRecords(t, rig.database, "INFRA")
+	if served := daemon.served(); served != 2 || len(reads) != 2 {
+		t.Fatalf("the daemon served %d reads and legion_reads holds %v, want the starting read and one for the boot", served, reads)
+	}
+	requireWholeRead(t, reads[1], ReadReasonBoot, true)
+	requireLastSeq(t, rig.database, "INFRA", 10)
+	if phase := currentValues(t, rig.database, "INFRA")["INFRA-1/phase"]; phase != `"implementing"` {
+		t.Errorf("INFRA-1's phase is %s, want the implementing the boot's read found", phase)
+	}
+	if run := cursorOf(t, rig.database, "INFRA").run; run == nil || *run != restoredRun {
+		t.Errorf("the cursor follows the run %s, want %s, the run that served the boot's read", orNone(run), restoredRun)
+	}
+	if line := rig.requireWholeReadLines("INFRA", ReadReasonStart, ReadReasonBoot)[1]; line["stateRun"] != restoredRun {
+		t.Errorf("the boot's read's line = %v, want it to name the run that served it, %s", line, restoredRun)
 	}
 }
 
@@ -1417,10 +1490,10 @@ func orNone[T any](value *T) string {
 // before, so that rule moves no row of either project here: every row a step writes is at its
 // message's `at`, and the test fails on one that is not.
 //
-// The boot's message is at the starting read's stateSeq, and a whole read names no run, so the
-// intake cannot tell it from a daemon whose counter went back and reads the daemon whole once more
-// (stateMessage.unfollowed); the daemon still serves the first state, so that read writes nothing.
-// From the second step on the daemon is never read again: each step's rows are its message's.
+// The boot's message is at the starting read's stateSeq, under the run the first state serves as
+// daemon.stateRun, which the starting read takes as the cursor's run (recordWhole): the intake
+// knows the boot as one the read already holds, and reads nothing more (stateMessage.unfollowed).
+// The daemon is read once, at the start, and each step's rows are its message's.
 func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
 	const events, reads = "LEGION", "READS"
 	steps := readStateEventsGolden(t)
@@ -1487,9 +1560,16 @@ func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
 		if current.lastSeq == nil || *current.lastSeq != step.seq || current.readOwed {
 			t.Fatalf("%s: the cursor is at %s with a read owed %v, want it at %d with none owed", name, orNone(current.lastSeq), current.readOwed, step.seq)
 		}
+		if current.run == nil || *current.run != step.run {
+			t.Fatalf("%s: the cursor follows the run %s, want the message's %s", name, orNone(current.run), step.run)
+		}
 
 		if index == 0 {
 			firstReads, firstServed = wholeReads(), daemon.served()
+			if firstServed != 1 || !slices.Equal(firstReads, []string{ReadReasonStart}) {
+				t.Fatalf("%s: the daemon served %d reads and the whole reads logged are %v, want the starting read alone: the boot is of the run the starting read served, at its stateSeq",
+					name, firstServed, firstReads)
+			}
 			t.Logf("%s: seq %d at %s; the whole reads %v wrote %d rows", name, step.seq, step.at.Format(time.RFC3339Nano), firstReads, len(written))
 			continue
 		}
@@ -1505,9 +1585,6 @@ func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
 		}
 		if batches != 1 {
 			t.Fatalf("%s: %d batches of events are recorded at its message's at, want one", name, batches)
-		}
-		if current.run == nil || *current.run != step.run {
-			t.Fatalf("%s: the cursor follows the run %s, want the message's %s", name, orNone(current.run), step.run)
 		}
 		fromEvents += len(written)
 		t.Logf("%s: seq %d at %s; its message wrote %d rows", name, step.seq, step.at.Format(time.RFC3339Nano), len(written))

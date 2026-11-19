@@ -23,7 +23,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 1,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -339,7 +340,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 4,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -681,7 +683,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 5,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -1028,7 +1031,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 6,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -1375,7 +1379,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 7,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -1722,7 +1727,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 8,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -2074,7 +2080,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 10,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -2444,7 +2451,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 12,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -2814,7 +2822,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 13,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -3176,7 +3185,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 14,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
@@ -3550,7 +3560,8 @@
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
           "stateSeq": 15,
-          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
         "admission": {
           "cap": 1,
