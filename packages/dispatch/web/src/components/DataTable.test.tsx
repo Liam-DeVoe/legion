@@ -1406,6 +1406,16 @@ test("a table holds no row at the top unless it asks, and a commit that only scr
   scrollBoxTo(box, 1000);
   expect(listed(table)).toContain("d40");
   expect(point).not.toHaveBeenCalled();
+  // The virtualizer reads the scroll as over 150 ms after its last event (`isScrollingResetDelay`
+  // in @tanstack/virtual-core) and draws again then: let that commit land here, inside `act`,
+  // rather than wherever the row has got to by then, which a slow run reached before the
+  // rerender below ended (seed 2 at 5a9a6b66). It is a commit that only scrolls too.
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 200);
+    await promise;
+  });
+  expect(point).not.toHaveBeenCalled();
   view.rerender(
     <Deploys layoutKey="flat" pageSize={100} pager={null} rows={[...arrived, arrival("d61")]} />
   );
