@@ -935,6 +935,15 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: AgentDecisionNotice, Role: claim.RoleTester, AgentDecision: &AgentDecision{
 			ID: "dispatch:34", Issue: "LEGION-209", Session: "ses_tester", Asker: "user:person",
 			Ref: "dispatch://LEGION-209/ask/a-1", Text: "Selected: B"}},
+		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
+			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
+			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
+				UsedBytes: 48 << 30, FreeBytes: 2 << 30, FreedBytes: 1 << 30,
+				StopReason: "nothing left older than the minimum age", RefusedReads: []string{"pid 42"},
+				Sizes: []VolumeSize{{Path: "caches/uv", Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
+					Refused: "caches/uv/.../locked (depth 2)", Refusals: 3}},
+				SizesAt: answered, SizesPartial: true, SizesMissing: []VolumeMissing{{Path: "workspaces/LEGION-209", Reason: "openat: permission denied"}},
+				Faults: []string{"read the volume: panic: runtime error\nmain.go:1"}}},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))
