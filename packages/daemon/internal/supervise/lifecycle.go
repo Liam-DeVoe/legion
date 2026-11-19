@@ -45,31 +45,12 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
 // reserved, or whose bound epoch is no longer the open one, starts nothing and changes nothing, so
-// a relaunch refused here charges no budget. What it answers is read by one rule (treeRefuses),
-// wherever it is read.
+// a relaunch refused here charges no budget. What it answers is read by one rule
+// (treelifecycle.Refuses), wherever it is read: for the relaunch of a claim Envoy cannot reach
+// before its stop (relaunchUnreachable) and for every launch whose process is let go already
+// (relaunchRefused).
 func (m *Machine) checkLaunch(ctx context.Context) error {
 	return m.deps.Store.CheckLaunch(ctx, m.claim)
-}
-
-// treeRefuses is whether err, an answer of the tree lifecycle's recheck (checkLaunch), is the
-// tree's own refusal of the claim's launch rather than a store that did not answer it: a cleanup
-// reserved or confirmed, a lifecycle absent or open under another authority, or the claim bound to
-// a stale epoch or to none. Each of those meets every later try the same way until the tree's
-// close or its next start decides the claim, so it is never tried again at the probe interval;
-// every other error — a dropped connection, a pool that timed out, a lock wait past the caller's
-// time — is the store's, which a later try may get past. It is the one reading of that answer, for
-// the relaunch of a claim Envoy cannot reach before its stop (relaunchUnreachable) and for every
-// launch whose process is let go already (relaunchRefused).
-func treeRefuses(err error) bool {
-	for _, refusal := range []error{
-		treelifecycle.ErrCleanupReserved, treelifecycle.ErrLifecycleClosed, treelifecycle.ErrLifecycleAbsent,
-		treelifecycle.ErrAuthorityHeld, treelifecycle.ErrEpochStale, treelifecycle.ErrEpochUnbound,
-	} {
-		if errors.Is(err, refusal) {
-			return true
-		}
-	}
-	return false
 }
 
 // relaunchRefused is a relaunch checkLaunch refused, relaunch the call that made it
@@ -140,8 +121,8 @@ func treeRefuses(err error) bool {
 // they stop, so the check failed while the stop waited out its grace), the relaunch of a claim
 // Envoy cannot reach, which checks before its stop too (relaunchUnreachable), or a launch whose
 // write failed, waiting (relaunchLater). A claim left there would have nothing watching or
-// relaunching it. A refusal of the tree's own (treeRefuses) suspends it for the daemon, its
-// session kept: a reserved cleanup for the tree's close to retire, and a stale epoch or a closed
+// relaunching it. A refusal of the tree's own (treelifecycle.Refuses) suspends it for the daemon,
+// its session kept: a reserved cleanup for the tree's close to retire, and a stale epoch or a closed
 // lifecycle for the tree's next start to bind and launch, since every later try would meet the
 // same refusal. Any other failure is not the tree's — a store that did not answer — and ends
 // nothing: the relaunch waits (relaunchLater), as a stop that fails does, and the error it
@@ -150,7 +131,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
 	}
-	if treeRefuses(err) {
+	if treelifecycle.Refuses(err) {
 		m.log.Warn("supervise: the tree refuses the launch of the retired process, which is stopped; suspending the claim for the tree's close or its next start", "error", err)
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon))
 	}

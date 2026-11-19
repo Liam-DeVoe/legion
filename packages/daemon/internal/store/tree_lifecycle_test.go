@@ -233,9 +233,9 @@ func TestReservedCleanupWaitsForEveryClaimAndTheNextEpochRebindsIt(t *testing.T)
 // A claim's launch check names the tree's own refusal by type: a claim bound to an epoch its tree
 // no longer runs is refused with treelifecycle.ErrEpochStale, and one bound to no epoch with
 // ErrEpochUnbound, through the store's own wrapping. The relaunch of a claim Envoy cannot reach
-// tells the tree's refusal from a store that did not answer by errors.Is on these (supervise's
-// treeRefuses), so a refusal written as words alone would be read as the store's and retried. The
-// claim bound to the open epoch is the control: it is refused nothing.
+// tells the tree's refusal from a store that did not answer by errors.Is on these
+// (treelifecycle.Refuses), so a refusal written as words alone would be read as the store's and
+// retried. The claim bound to the open epoch is the control: it is refused nothing.
 func TestALaunchCheckNamesAStaleAndAnUnboundEpochByType(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()

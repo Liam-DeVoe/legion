@@ -674,9 +674,8 @@ func TestARelaunchWhoseTreeOpensAgainWhileItsStopWaitsSuspendsTheClaimAndTriesNo
 }
 
 // The tree lifecycle's own refusals are read by one rule before the stop and after it
-// (treeRefuses): a reserved or confirmed cleanup, an absent lifecycle, one held under another
-// authority, and a stale or unbound epoch, through whatever wraps them. Every other error of the
-// check is the store's.
+// (treelifecycle.Refuses): a reserved or confirmed cleanup, an absent lifecycle, and a stale or
+// unbound epoch, through whatever wraps them. Every other error of the check is the store's.
 func TestTheTreesOwnRefusalsAreReadByOneRule(t *testing.T) {
 	for _, tc := range []struct {
 		err  error
@@ -685,15 +684,14 @@ func TestTheTreesOwnRefusalsAreReadByOneRule(t *testing.T) {
 		{fmt.Errorf("launch claim c: bind work of tree T: %w", treelifecycle.ErrCleanupReserved), true},
 		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrLifecycleClosed), true},
 		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrLifecycleAbsent), true},
-		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrAuthorityHeld), true},
 		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrEpochStale), true},
 		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrEpochUnbound), true},
 		{errUnanswered, false},
 		{fmt.Errorf("launch claim c: serialize tree lifecycle: %w", context.DeadlineExceeded), false},
 		{errors.New("launch claim c: bound epoch 1 is stale; current is 2"), false},
 	} {
-		if got := treeRefuses(tc.err); got != tc.tree {
-			t.Errorf("treeRefuses(%v) = %t, want %t", tc.err, got, tc.tree)
+		if got := treelifecycle.Refuses(tc.err); got != tc.tree {
+			t.Errorf("treelifecycle.Refuses(%v) = %t, want %t", tc.err, got, tc.tree)
 		}
 	}
 }

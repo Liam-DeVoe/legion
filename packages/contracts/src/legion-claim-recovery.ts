@@ -119,7 +119,7 @@ export const LegionCompactResponse = z.object({
  * is reachable (`POD_UNREACHABLE`), one whose launcher is not connected
  * (`LAUNCHER_NOT_CONNECTED`), one whose launch would replace the pod and end every other role in
  * it (`RELAUNCH_REPLACES_POD`), and one whose tree allows it no launch, because the tree's cleanup
- * is reserved or confirmed, its lifecycle is absent or held under another authority, or the epoch
+ * is reserved or confirmed, its lifecycle is absent, or the epoch
  * the claim is bound to is no longer open (`TREE_REFUSES_LAUNCH`), which that tree's close or its
  * next start decides; and every relaunch while the daemon is stopping, with a 503 that carries no
  * code. A tree check that the daemon's store did not answer is a 503 too, coded

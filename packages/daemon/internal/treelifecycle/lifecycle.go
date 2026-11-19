@@ -219,7 +219,7 @@ func BindWork(ctx context.Context, tx pgx.Tx, project, tree string) (uint64, err
 // separate from runtime work: a cleanup reservation makes the outbox retry the start without
 // consuming a launch-failure budget. Each refusal of the tree's own wraps its sentinel
 // (ErrEpochUnbound, ErrEpochStale, and BindWork's), so a caller tells it from a store that did not
-// answer by errors.Is.
+// answer by Refuses.
 func CheckWork(ctx context.Context, tx pgx.Tx, project, tree string, epoch uint64) error {
 	if epoch == 0 {
 		return fmt.Errorf("check work of tree %s: %w", tree, ErrEpochUnbound)
@@ -232,6 +232,22 @@ func CheckWork(ctx context.Context, tx pgx.Tx, project, tree string, epoch uint6
 		return fmt.Errorf("check work of tree %s: %w: bound epoch %d, current is %d", tree, ErrEpochStale, epoch, bound)
 	}
 	return nil
+}
+
+// Refuses is whether err, an answer of CheckWork, is the tree's own refusal of the claim's work
+// rather than a store that did not answer: a lifecycle absent, a cleanup reserved or confirmed, or
+// the claim bound to a stale epoch or to none. Each meets every later check the same way until the
+// tree's close or its next start decides the claim; every other error — a dropped connection, a
+// pool that timed out, a lock wait past the caller's time — is the store's, which a later check
+// may get past. It names exactly the refusals CheckWork and BindWork answer, so a refusal either
+// adds is named here too.
+func Refuses(err error) bool {
+	for _, refusal := range []error{ErrLifecycleAbsent, ErrCleanupReserved, ErrLifecycleClosed, ErrEpochStale, ErrEpochUnbound} {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReserveCleanup is the irreversible durable reservation. A retry returns the existing

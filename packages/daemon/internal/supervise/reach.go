@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/timewords"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // UnreachableAfter is how long a claim's session may go without registering with Envoy before the
@@ -122,10 +123,10 @@ var (
 	// so a relaunch into it would recover none of them.
 	ErrPodUnreachable = errors.New("every claim of the claim's pod is out of reach")
 	// ErrTreeRefusesLaunch: the tree lifecycle's recheck, which every launch makes first
-	// (checkLaunch), refuses the claim's launch with an answer of the tree's own (treeRefuses) —
-	// its cleanup is reserved or confirmed, its lifecycle is absent or held under another authority,
-	// or the epoch the claim is bound to is no longer its tree's open one — so the relaunch stops
-	// nothing. The tree's close or its next start decides that claim, not a relaunch.
+	// (checkLaunch), refuses the claim's launch with an answer of the tree's own
+	// (treelifecycle.Refuses) — its cleanup is reserved or confirmed, its lifecycle is absent, or
+	// the epoch the claim is bound to is stale or unset — so the relaunch stops nothing. The tree's
+	// close or its next start decides that claim, not a relaunch.
 	ErrTreeRefusesLaunch = errors.New("the claim's tree allows it no launch, so nothing was stopped")
 	// ErrTreeCheckFailed: the tree lifecycle's recheck before the stop got no answer of the tree's
 	// — the store did not answer it, or the request's time ran out waiting on it — so the relaunch
@@ -241,10 +242,10 @@ type RequestRelaunch struct {
 // go. Nothing after the stop returns with the stopped process still recorded: the sweep's next
 // report of it would find it gone, charge a death and relaunch it under the death's cause. So a
 // refusal the launch's own recheck still meets while the stop waited on the runtime finds a claim
-// that records no process, which is read by the same rule as before the stop (treeRefuses,
-// relaunchRefused): the tree's own refusal — its cleanup reserved, or its next lifetime opened, so
-// the claim's epoch is stale — suspends the claim for the tree's close or its next start, and only
-// a store that did not answer is launched again at the probe interval.
+// that records no process, which is read by the same rule as before the stop
+// (treelifecycle.Refuses, relaunchRefused): the tree's own refusal — its cleanup reserved, or its
+// next lifetime opened, so the claim's epoch is stale — suspends the claim for the tree's close or
+// its next start, and only a store that did not answer is launched again at the probe interval.
 //
 // The task the cut turn ran goes back to waiting in memory at the stop, decided before the let-go
 // forgets the send and the prompts outstanding it reads (decideTakeBack, tookBack), and the claim
@@ -257,10 +258,11 @@ type RequestRelaunch struct {
 //
 // A refusal before the stop is a refusal of the claim, as the guard's and the runtime's are
 // (RefusedError), and the tree lifecycle's recheck answers one of two: the tree's own refusal
-// (treeRefuses) is ErrTreeRefusesLaunch, which its tree's close or next start decides, and any
-// other error of that check — a store that did not answer — is ErrTreeCheckFailed, written to the
-// log, which says nothing was stopped and the relaunch may be asked for again. A launch left to be
-// tried again after the stop (relaunchLater, whose error says so: errLaunchWaits) is no refusal:
+// (treelifecycle.Refuses) is ErrTreeRefusesLaunch, which its tree's close or next start decides,
+// and any other error of that check — a store that did not answer — is ErrTreeCheckFailed,
+// written to the log, which says nothing was stopped and the relaunch may be asked for again. A
+// launch left to be tried again after the stop (relaunchLater, whose error says so:
+// errLaunchWaits) is no refusal:
 // the process is stopped, the relaunch is recorded and the daemon makes the launch itself, so the
 // relaunch answers as one that ran, with the error the launch met written to the log (launchMade).
 // Every other error of the launch after the stop — a refusal of the tree's, or a claim failed at
@@ -323,7 +325,7 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		}
 	}
 	if err := m.checkLaunch(ctx); err != nil {
-		if treeRefuses(err) {
+		if treelifecycle.Refuses(err) {
 			return refuse(fmt.Errorf("%w: %w", ErrTreeRefusesLaunch, err))
 		}
 		m.log.Warn("supervise: the tree lifecycle's check of the relaunch got no answer; nothing is stopped, and the relaunch may be asked for again",
