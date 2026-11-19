@@ -349,8 +349,10 @@ const parallelProjects = [
   // does with no `focusout`, so the page's focus rescue sees it only by watching the page:
   // `table-controls`'s page-own focus row, its row whose focused row a live update takes
   // away, its row that Add a priority opens its form in view with the focus on Priority to
-  // advance, whose `+` takes itself away, and its row that Change answer opens the answer form
-  // with the focus in it, whose button takes itself away. Measured in WebKit as well as Firefox:
+  // advance, whose `+` takes itself away, its row that Change answer opens the answer form
+  // with the focus in it, whose button takes itself away, and its row that an ask withdrawn
+  // while the reader types its answer in the Inbox's list takes none of their next keys as text,
+  // whose answer box the record takes away. Measured in WebKit as well as Firefox:
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
   // scrolling-table row.

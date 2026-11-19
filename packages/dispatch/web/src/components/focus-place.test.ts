@@ -1830,3 +1830,46 @@ test("an uncaused loss whose place now holds a form leaves the focus out of its 
     }
   }
 });
+
+// (bf) INFRA-3135 round 17, the tester's: the Agents page draws each agent as an
+// `<article data-agent-row>` holding its broadcast mark and its name's toggle, a row of that list
+// as much as an Inbox row is of the Inbox. A session that ends takes its row away with no press of
+// the reader's, a loss they did not cause, and the rule of (ag) holds for it: the focus goes into
+// no other agent's row and nothing scrolls, so the reader's next Space marks no agent they did not
+// pick. Measured in Chromium at e4d8b3b1 (builds Job infra-3135-r17h2): with the focus on an
+// agent's mark or name when its session ended, the focus landed on the next agent's mark or name,
+// and a Space then marked that agent for broadcast; at the merge base bacd5d7e it stayed on the
+// body and Space marked nothing. With Chromium's `focusout` and without.
+test("an agent's row taken away by its session's end hands the focus to no other agent's row", async () => {
+  for (const withFocusout of [true, false]) {
+    const scrolls = spyOn(Element.prototype, "scrollIntoView");
+    try {
+      await withRescue(async () => {
+        const { main } = mainOf("Before");
+        const agents = ["One", "Two", "Three"].map((label) => {
+          const row = document.createElement("article");
+          row.setAttribute("data-agent-row", label);
+          row.tabIndex = -1;
+          const mark = document.createElement("input");
+          mark.type = "checkbox";
+          mark.setAttribute("aria-label", `Select Agent ${label} for broadcast`);
+          row.append(mark);
+          buttonIn(row, `Agent ${label}`);
+          main.append(row);
+          return { mark, row };
+        });
+        const second = agents[1] as { mark: HTMLInputElement; row: HTMLElement };
+        second.mark.focus();
+        placeAt(second.mark, 200);
+        if (withFocusout) lose(second.mark, () => second.row.remove());
+        else second.row.remove();
+        await settled();
+        expect(document.activeElement?.closest("[data-agent-row]") ?? null).toBeNull();
+        expect(agents[2]?.mark).not.toHaveFocus();
+      });
+      expect(scrolls).not.toHaveBeenCalled();
+    } finally {
+      scrolls.mockRestore();
+    }
+  }
+});
