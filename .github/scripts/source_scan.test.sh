@@ -2,10 +2,14 @@
 # Tests for `source_scan.py` and the modules beside it (source_statements.py, source_env.py,
 # source_python.py, source_shell.py), the reading of source files check-go-offline.sh and
 # check-omp-offline.sh share: the language of a path (.mts and .cts are TypeScript, a .d.ts is no
-# source), the walk that skips a test's inputs, installed packages and links, the lexing of Go,
-# TypeScript and Python into code with comments blanked and string text blanked but for the
-# literals the caller keeps, a Go or TypeScript call's arguments, assignments and environments,
-# Python's through its ast module, shell as simple commands, and where a reason comment counts.
+# source), the walk that skips a test's inputs, installed packages and links and, when asked, reads
+# a file by its shebang, the lexing of Go, TypeScript and Python into code with comments blanked
+# and string text blanked but for the literals the caller keeps, a Go or TypeScript call's
+# arguments, assignments, imports and environments (with what later statements set in a
+# TypeScript env object), Python's through its ast module (a module's name read in a function),
+# shell as simple commands (a ${NAME:-word}'s word, which commands are forked, $" inside double
+# quotes as text, the script a shell reads from its pipeline), an argv's program after its
+# launchers, and where a reason comment counts.
 # Last, one row both checks read through it: a .mts test that holds a quoted example of a start
 # and, in its control, the start itself; each check names the start and neither reads the example.
 #
@@ -289,6 +293,122 @@ EOF
 )
 check "a -c script, what eval runs, and a heredoc a shell reads, each with its line" \
   "$(is "$out" "[('go vet', 0), ('go build', 1), ('go mod download', 3)]")"
+
+echo "case: shell: \$\" and \$' inside double quotes are text, and a quote after them ends the string"
+out=$(py 'print([w.source() for c in shell.shell_script(sys.stdin.read()) for w in c.words])' <<'EOF'
+say "ends in a dollar$" 'and then'
+say "a $'b' c"
+EOF
+)
+check "each word ends where bash ends it" \
+  "$(is "$out" "['say', 'ends in a dollar\$', 'and then', 'say', \"a \$'b' c\"]")"
+
+echo "case: shell: a \${NAME:-word}'s word, and which commands are forked"
+out=$(py 'w = shell.shell_script(sys.argv[1])[0].words[0]
+print(w.defaults)' '"${GO:-go}" list')
+check "the default of each expansion with one, by the part it is" "$(is "$out" "{0: 'go'}")"
+out=$(py 'print([(c.values()[0], c.forked) for c in shell.shell_script(sys.stdin.read())])' <<'EOF'
+a | b
+c &
+d && e
+f
+EOF
+)
+check "each command of a pipeline and each one in the background is forked, an && list's are not" \
+  "$(is "$out" "[('a', True), ('b', True), ('c', True), ('d', False), ('e', False), ('f', False)]")"
+
+echo "case: shell: the script a shell reads from cat, echo or printf before it in a pipeline"
+out=$(py 'cs = shell.shell_script(sys.stdin.read())
+print([s for k in range(len(cs)) for s in shell.shell_stdin_scripts(cs, k)])' <<'EOF'
+cat <<'SCRIPT' | bash
+go vet
+SCRIPT
+echo "go build" | sh
+printf 'go list\n' | bash -e
+echo "go test" | grep go
+cat notes.txt | bash
+EOF
+)
+check "the heredoc, the echo's words and the printf's format, each with its line; no other feeder or reader" \
+  "$(is "$out" "[('go vet', 1), ('go build', 3), ('go list\\n', 4)]")"
+
+echo "case: the program of an argv after launchers, and the settings each env there makes"
+out=$(py 'v = sys.argv[1].split()
+k = shell.command_word(v)
+print(k, shell.env_settings(v, k))' 'env A=1 timeout 60 nice -n 5 command exec env -u B go build')
+check "past env, timeout and its duration, nice and its -n, command and exec" "$(is "$out" "12 [('set', 'A', '1'), ('set', 'B', None)]")"
+out=$(py 'print(shell.command_word(["timeout", None, "go"]), shell.command_word([None, "go"]))')
+check "an unknown word is a launcher's operand where it takes one, else the program" "$(is "$out" "2 0")"
+
+echo "case: Go and TypeScript imports, by the name each binds"
+out=$(py 'print(statements.Source(sys.stdin.read(), "go").go_imports())' <<'EOF'
+import (
+	osexec "os/exec"
+	. "fmt"
+	_ "embed"
+	"path/filepath"
+)
+import single "strings"
+EOF
+)
+check "an alias, a dot import, no blank one, a path's last element, and a single import" \
+  "$(is "$out" "[('osexec', 'os/exec'), ('.', 'fmt'), ('filepath', 'path/filepath'), ('single', 'strings')]")"
+out=$(py 'print(sorted(statements.Source(sys.stdin.read(), "ts").ts_imports().items()))' <<'EOF'
+import d, { a as b, type T, c } from "m";
+import * as ns from "n";
+const cp = require("node:child_process");
+const { exec: sh, spawn } = require("x");
+EOF
+)
+check "named, aliased, default, namespace and required names" \
+  "$(is "$out" "[('T', ('m', 'T')), ('b', ('m', 'a')), ('c', ('m', 'c')), ('cp', ('node:child_process', '*')), ('d', ('m', 'default')), ('ns', ('n', '*')), ('sh', ('x', 'exec')), ('spawn', ('x', 'spawn'))]")"
+out=$(py 's = statements.Source(sys.stdin.read(), "ts")
+print([c.callee for c in s.tagged_calls({"sh"})])' <<'EOF'
+await sh`go build`; await x.sh`no`; await other`no`;
+EOF
+)
+check "a template tagged by a given name, and no method of that name" "$(is "$out" "['sh']")"
+
+echo "case: TypeScript: an env object with what later statements set in it"
+out=$(py 's = statements.Source(sys.stdin.read(), "ts")
+call = [c for c in s.calls() if c.callee == "run"][0]
+print(env.ts_options_env(s, call, 0))' <<'EOF'
+const e = { GOPROXY: "off" };
+e.GOFLAGS = "-mod=mod";
+e["GOPROXY"] = "direct";
+delete e.GOFLAGS;
+Object.assign(e, { A: "1" });
+run({ env: e, ...(q ? {} : { stdin: "ignore" }) });
+EOF
+)
+check "each set, in order, and an env-free spread after it changes nothing" \
+  "$(is "$out" "[('set', 'GOPROXY', 'off'), ('set', 'GOFLAGS', '-mod=mod'), ('set', 'GOPROXY', 'direct'), ('set', 'GOFLAGS', None), ('set', 'A', '1')]")"
+
+echo "case: Python: a name a function does not bind is read from the module"
+out=$(py 'import ast
+tree = python_ast.python_tree(sys.stdin.read())
+uses = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "GO" and isinstance(n.ctx, ast.Load)]
+print([ast.unparse(python_ast.python_bound("GO", u)) if python_ast.python_bound("GO", u) else None for u in uses])' <<'EOF'
+GO = "go"
+def other():
+    GO = "local"
+def reads():
+    return GO
+def takes(GO):
+    return GO
+EOF
+)
+check "the module's, not another function's, and not over a parameter" "$(is "$out" "[\"'go'\", None]")"
+
+echo "case: the walk reads a file named with no source extension as shell when asked to and its first line runs a shell"
+mkdir -p "$work/bang"
+printf '#!/usr/bin/env bash\n' >"$work/bang/run"
+printf '#!/bin/sh -e\n' >"$work/bang/x.test"
+printf '#!/usr/bin/env python3\n' >"$work/bang/tool"
+printf 'notes\n' >"$work/bang/README"
+check "by its shebang, with shebang" \
+  "$(is "$(py 'print(" ".join(f"{p}:{l}" for p, l in scan.sources(sys.argv[1], shebang=True)))' "$work/bang")" "run:sh x.test:sh")"
+check "and by its name alone without" "$(is "$(py 'print(len(list(scan.sources(sys.argv[1]))))' "$work/bang")" "0")"
 
 echo "case: a reason counts on the line, or on a comment line within five above"
 reasoned() { py 'import re

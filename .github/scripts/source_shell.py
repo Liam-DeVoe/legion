@@ -1,8 +1,9 @@
 """Shell read as bash reads it, for check-go-offline.sh and check-omp-offline.sh: shell_script gives a
 shell text's simple commands, a continued line one line, a $(...) and `...` read as commands of
-their own, a heredoc body as no command, each with its NAME=value prefix, its function and its
-place in a pipeline; the helpers after it read a command's program, the environment its own words
-give it, and the shell it hands more shell to.
+their own, a heredoc body as no command, each with its NAME=value prefix, its function, its
+place in a pipeline and whether it is forked; the helpers after it read a command's program (an
+argv's too, after its launchers), the environment its own words give it, the shell it hands more
+shell to, and the script a shell reads from the command before it in a pipeline.
 
 Imported with PYTHONPATH naming the directory this file lives in. Its own test is
 source_scan.test.sh.
@@ -17,12 +18,14 @@ class ShWord:
     """A shell word as bash reads it: its parts in order, each (kind, text, nested), where kind is
     lit (unquoted text, a backslash's character included), sq (single-quoted text), dq (double-quoted
     text), param ($NAME or ${...}: text is the name), cmd ($(...), `...` or <(...): nested is the
-    list of its commands) or arith."""
+    list of its commands) or arith. defaults maps the index of each param part written
+    ${NAME:-word}, ${NAME-word}, ${NAME:=word} or ${NAME=word} to the text of its word, the value
+    the expansion takes when NAME is unset."""
 
-    __slots__ = ("parts", "start", "line")
+    __slots__ = ("parts", "start", "line", "defaults")
 
-    def __init__(self, parts, start, line):
-        self.parts, self.start, self.line = parts, start, line
+    def __init__(self, parts, start, line, defaults=None):
+        self.parts, self.start, self.line, self.defaults = parts, start, line, defaults or {}
 
     def value(self, placeholder="\x00"):
         """The word after quote removal, each expansion as placeholder."""
@@ -56,14 +59,18 @@ class ShCommand:
     """A simple command: its NAME=value assignments, its words, its heredocs (each [strip, delimiter,
     quoted, body, first line of the body]), the 0-based line it starts on, the frames that hold it
     (an id per function body and per subshell, a $(...) or `...` among them), the function it is
-    in, its index in its pipeline, and the command whose word holds the substitution it is in."""
+    in, its index in its pipeline, the command whose word holds the substitution it is in, and
+    whether it is forked: run by a child of the shell (one command of a pipeline of more than one,
+    or a command put in the background with &), so what it sets reaches no later command."""
 
-    __slots__ = ("assigns", "words", "heredocs", "line", "start", "frames", "function", "pipe", "parent")
+    __slots__ = ("assigns", "words", "heredocs", "line", "start", "frames", "function", "pipe", "parent",
+                 "forked")
 
     def __init__(self, line, start, frames, function, pipe, parent):
         self.assigns, self.words, self.heredocs = [], [], []
         self.line, self.start, self.frames, self.function, self.pipe, self.parent = \
             line, start, frames, function, pipe, parent
+        self.forked = pipe > 0
 
     def values(self):
         return [w.value() for w in self.words]
@@ -83,7 +90,7 @@ class _ShellReader:
     def __init__(self, text, line):
         self.text, self.n, self.base = text, len(text), line
         self.starts = [0] + [m.end() for m in re.finditer("\n", text)]
-        self.commands, self.pending = [], []
+        self.commands, self.pending, self.defaults = [], [], {}
 
     def line_at(self, offset):
         return self.base + bisect.bisect_right(self.starts, offset) - 1
@@ -162,7 +169,7 @@ class _ShellReader:
             else:
                 lit(c)
                 i += 1
-        return ShWord(parts, start, self.line_at(start)), i
+        return ShWord(parts, start, self.line_at(start), self.defaults.pop(id(parts), None)), i
 
     def double_quoted(self, i, parts, frames, function, parent):
         text, n, buf, first = self.text, self.n, [], len(parts)
@@ -174,6 +181,9 @@ class _ShellReader:
                     continue
                 buf.append(text[i + 1] if text[i + 1] in '$`"\\' else text[i:i + 2])
                 i += 2
+            elif c == "$" and text.startswith(("$'", '$"'), i):
+                buf.append(c)  # inside double quotes $'...' and $"..." quote nothing: "a$" ends there
+                i += 1
             elif c in "$`":
                 if buf:
                     parts.append(("dq", "".join(buf), None))
@@ -217,6 +227,9 @@ class _ShellReader:
             inner = text[i + 2:j - 1]
             name = re.match(r"[#!]?([A-Za-z_]\w*|[0-9@*#?$!-])", inner)
             parts.append(("param", name.group(1) if name else inner, None))
+            default = re.fullmatch(r"([A-Za-z_]\w*):?[-=](.*)", inner, re.S)
+            if default:  # ${NAME:-word}: the word the expansion takes when NAME is unset
+                self.defaults.setdefault(id(parts), {})[len(parts) - 1] = default.group(2)
             return j
         if text.startswith("$'", i):
             j, buf = i + 2, []
@@ -312,6 +325,8 @@ class _ShellReader:
                 continue
             if c in ";&|":
                 op = text[i:i + 2] if text[i:i + 2] in ("&&", "||", "|&") else c
+                if cur is not None and op in ("|", "|&", "&"):
+                    cur.forked = True  # the left side of a pipe, or a command put in the background
                 finish()
                 pipe = pipe + 1 if op in ("|", "|&") else 0
                 if expect in ("args", "cmd"):
@@ -417,7 +432,7 @@ class _ShellReader:
                 assignment = _SH_ASSIGNMENT.match(first[1]) if first and first[0] == "lit" else None
                 if assignment and (cur is None or not cur.words):
                     rest = [("lit", first[1][assignment.end():], None)] + w.parts[1:]
-                    command(w.start).assigns.append((assignment.group(1), ShWord(rest, w.start, w.line)))
+                    command(w.start).assigns.append((assignment.group(1), ShWord(rest, w.start, w.line, w.defaults)))
                     continue
                 command(w.start)
                 for kind, _, nested in w.parts:  # its substitutions ran before it, in its context
@@ -443,26 +458,28 @@ def shell_script(text, line=0):
 SHELLS = {"bash", "sh", "dash", "zsh", "ksh"}
 
 
-def shell_command_word(command):
-    """The index of the word a command runs after `env` with its settings and options, `command`,
-    `exec`, `nice`, `nohup`, `time`, `timeout` and `flock` with their operands, or None."""
-    values, k = command.values(), 0
+def command_word(values):
+    """The index of the word an argv runs after `env` with its settings and options, `command`,
+    `exec`, `nice`, `nohup`, `time`, `timeout` and `flock` with their operands, or None. A word no
+    reading can know (None, in a Go, TypeScript or Python argv) is the program."""
+    k = 0
     while k < len(values):
         v = values[k]
-        base = v.rsplit("/", 1)[-1]
+        base = v.rsplit("/", 1)[-1] if v is not None else None
         if base == "env":
             k += 1
-            while k < len(values) and (values[k].startswith("-") or _SH_ASSIGNMENT.match(values[k])):
+            while k < len(values) and values[k] is not None and (
+                    values[k].startswith("-") or _SH_ASSIGNMENT.match(values[k])):
                 k += 2 if values[k] in ("-u", "-C", "-S") else 1
             continue
         if base in ("command", "exec", "nohup", "time", "builtin"):
             k += 1
-            while k < len(values) and values[k].startswith("-"):
+            while k < len(values) and values[k] is not None and values[k].startswith("-"):
                 k += 1
             continue
         if base in ("nice", "timeout", "flock"):
             k += 1
-            while k < len(values) and values[k].startswith("-"):
+            while k < len(values) and values[k] is not None and values[k].startswith("-"):
                 k += 2 if values[k] in ("-n", "-s", "-k", "-w", "-E") else 1
             if base in ("timeout", "flock") and k < len(values):
                 k += 1  # the duration, or the lock file
@@ -471,16 +488,23 @@ def shell_command_word(command):
     return None
 
 
-def shell_env_elements(command, upto):
-    """The settings a command's own words make for the program at word index upto: its NAME=value
-    prefix, then each `env` before that word with its NAME=value, -u NAME and -i."""
-    out = [("set", name, value.value() if value.static else None) for name, value in command.assigns]
-    values, k = command.values(), 0
+def shell_command_word(command):
+    """command_word of a shell command's words."""
+    return command_word(command.values())
+
+
+def env_settings(values, upto, static=lambda k: True):
+    """The settings each `env` before word index upto of an argv makes, with its NAME=value, -u NAME
+    and -i; static(k) says whether word k is literal text (a setting's value is None when not). A
+    word no reading can know (None) ends an env's settings."""
+    out, k = [], 0
     while k < upto:
-        if values[k].rsplit("/", 1)[-1] == "env":
+        if values[k] is not None and values[k].rsplit("/", 1)[-1] == "env":
             k += 1
             while k < upto:
                 v = values[k]
+                if v is None:
+                    break
                 if v in ("-i", "-", "--ignore-environment"):
                     out.append(CLEAR)
                 elif v in ("-u", "--unset") and k + 1 < upto:
@@ -490,13 +514,20 @@ def shell_env_elements(command, upto):
                     out.append(("set", v[len("--unset="):], None))
                 elif _SH_ASSIGNMENT.match(v):
                     name, _, value = v.partition("=")
-                    out.append(("set", name, value if command.words[k].static else None))
+                    out.append(("set", name, value if static(k) else None))
                 elif not v.startswith("-"):
                     break
                 k += 1
             continue
         k += 1
     return out
+
+
+def shell_env_elements(command, upto):
+    """The settings a command's own words make for the program at word index upto: its NAME=value
+    prefix, then each `env` before that word (env_settings)."""
+    out = [("set", name, value.value() if value.static else None) for name, value in command.assigns]
+    return out + env_settings(command.values(), upto, lambda k: command.words[k].static)
 
 
 def shell_args(values, k):
@@ -534,3 +565,28 @@ def shell_inner_scripts(command):
     elif j >= len(values):
         out += [(doc[3], doc[4]) for doc in command.heredocs]
     return out
+
+
+def shell_stdin_scripts(commands, index):
+    """(text, line) of the script a shell with no script operand reads from its standard input,
+    for commands[index] (of shell_script's list) when that shell is fed by the command before it
+    in its pipeline: the heredoc bodies of a `cat` given no file, or the words of an `echo` or the
+    format of a `printf` (`cat <<EOF | bash`, `echo "go list" | sh`)."""
+    command = commands[index]
+    found = shell_args(command.values(), shell_command_word(command))
+    if command.pipe == 0 or found is None or found[1] or found[0] < len(command.words):
+        return []
+    feeder = next((c for c in reversed(commands[:index]) if c.pipe == command.pipe - 1
+                   and c.frames == command.frames and c.parent is command.parent), None)
+    k = shell_command_word(feeder) if feeder is not None else None
+    if k is None:
+        return []
+    values = feeder.values()
+    args = [v for v in values[k + 1:] if not re.fullmatch(r"-[neE]+", v)]
+    if values[k] == "cat" and not args:
+        return [(doc[3], doc[4]) for doc in feeder.heredocs]
+    if values[k] == "echo" and args:
+        return [(" ".join(args), feeder.words[k + 1].line)]
+    if values[k] == "printf" and args:
+        return [(args[0].replace("\\n", "\n"), feeder.words[k + 1].line)]
+    return []

@@ -13,8 +13,9 @@ from source_scan import INHERIT, UNKNOWN
 def env_elements(src, a, b, depth=0, known=None):
     """The environment elements of an expression that builds one: in Go a []string (append of
     os.Environ() and "K=V" strings, a []string{...}, a name bound to either), in TypeScript an
-    object ({ ...process.env, K: "v" }, a name bound to one). known maps a name to the
-    elements it stands for (a Cmd's own Env, read before a later assignment appends to it)."""
+    object ({ ...process.env, K: "v" }, a name bound to one, with what later statements set in it:
+    ts_changes). known maps a name to the elements it stands for (a Cmd's own Env, read before a
+    later assignment appends to it)."""
     if b <= a:
         return [UNKNOWN]
     tokens = src.tokens
@@ -24,7 +25,8 @@ def env_elements(src, a, b, depth=0, known=None):
             return list(known[name])
         bound = src.bound(name, a) if depth < 4 else None
         if bound:
-            return env_elements(src, *bound, depth + 1, known)
+            out = env_elements(src, *bound, depth + 1, known)
+            return out + ts_changes(src, name, bound[1], a) if src.lang == "ts" else out
         return [UNKNOWN]
     if src.lang == "ts":
         if src.punct(a, "{") and src.partner.get(a) == b - 1:
@@ -113,7 +115,9 @@ def go_cmd_env(src, call):
 
 def ts_options_env(src, call, first):
     """The environment elements of a TypeScript call's options: the `env` of the first object
-    argument from index `first` (or of the object a name there is bound to), else None."""
+    argument from index `first` (or of the object a name there is bound to), else None. A spread
+    after `env` in that object (`{ env: {...}, ...more }`) may replace it, so it ends unknown, but
+    for one of object displays that hold no env (`...(c ? {} : { stdin })`)."""
     for a, b in call.args[first:]:
         name = src.name(a, b)
         if name:
@@ -122,13 +126,72 @@ def ts_options_env(src, call, first):
                 a, b = bound
         if not (src.punct(a, "{") and src.partner.get(a) == b - 1):
             continue
+        env = None
         for pa, pb in src.split(a + 1, b - 1):
+            if env is not None:
+                if src.punct(pa, "...") and not _no_env(src, pa + 1, pb):
+                    env = env + [UNKNOWN]
+                continue
             key = src.tokens[pa]
             if key.value != "env" or key.kind not in ("ident", "string"):
                 continue
-            if pb - pa == 1:  # { env }
-                bound = src.bound("env", pa)
-                return env_elements(src, *bound) if bound else [UNKNOWN]
-            if src.punct(pa + 1, ":"):
-                return env_elements(src, pa + 2, pb)
+            if pb - pa == 1:  # { env }: the name env, read as env_elements reads a name
+                env = env_elements(src, pa, pb)
+            elif src.punct(pa + 1, ":"):
+                env = env_elements(src, pa + 2, pb)
+        if env is not None:
+            return env
     return None
+
+
+def _no_env(src, a, b):
+    """Whether an expression is an object display with no env key and no spread, or a
+    parenthesized one, or a conditional whose two values are each such an expression."""
+    while b - a > 1 and src.punct(a, "(") and src.partner.get(a) == b - 1:
+        a, b = a + 1, b - 1
+    if b - a > 1 and src.punct(a, "{") and src.partner.get(a) == b - 1:
+        return all(src.tokens[pa].value not in ("env", "...") for pa, _ in src.split(a + 1, b - 1))
+    question = next(iter(src.split(a, b, "?")[1:2]), None)
+    if question is None:
+        return False
+    branches = src.split(question[0], b, ":")
+    return len(branches) == 2 and all(_no_env(src, *r) for r in branches)
+
+
+def ts_changes(src, name, after, before):
+    """The environment elements statements between token after (the end of the value a TypeScript
+    name is bound to) and token before (where it is read) add to that object, in order: `name.K =
+    v` and `name["K"] = v` set K, `delete name.K` unsets it, and `Object.assign(name, ...)` adds
+    what each later argument holds. A key this cannot read (`name[k] = v`), and any change made in a
+    function that does not hold the read, may set any variable."""
+    tokens, out = src.tokens, []
+    around, fn = set(), src.function_at(before)
+    while fn is not None:
+        around.add(fn)
+        fn = src.function_at(fn.at)
+
+    def element(k, value):
+        held = src.function_at(k)
+        return value if held is None or held in around else UNKNOWN
+
+    for lhs, rhs, k in src.assignments():
+        if not after <= k < before or len(lhs) != 1:
+            continue
+        a, b = lhs[0]
+        target = src.name(a, b)
+        value = src.string(*rhs[0]) if len(rhs) == 1 else None
+        if target and target.startswith(name + ".") and "." not in target[len(name) + 1:]:
+            out.append((k, element(k, ("set", target[len(name) + 1:], value))))
+        elif b - a >= 3 and src.name(a, a + 1) == name and src.partner.get(a + 1) == b - 1:
+            key = src.string(a + 2, b - 1)  # name["K"] = v; a computed key may be any
+            out.append((k, element(k, ("set", key, value) if key is not None else UNKNOWN)))
+    for k in range(after, min(before, len(tokens) - 3)):
+        if tokens[k].kind == "ident" and tokens[k].value == "delete" and tokens[k + 1].value == name \
+                and src.name(k + 1, k + 4) is not None:
+            out.append((k, element(k, ("set", tokens[k + 3].value, None))))
+    for call in src.calls():
+        if call.callee == "Object.assign" and after <= call.at < before and call.args \
+                and src.name(*call.args[0]) == name:
+            for a, b in call.args[1:]:
+                out += [(call.at, element(call.at, e)) for e in env_elements(src, a, b)]
+    return [e for _, e in sorted(out, key=lambda pair: pair[0])]

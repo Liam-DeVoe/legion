@@ -209,6 +209,83 @@ class Source:
             self._call_spans = {(call.at, call.close + 1): call for call in self.calls()}
         return self._call_spans.get((a, b))
 
+    def tagged_calls(self, tags):
+        """The TypeScript templates tagged by a plain name of tags (a name Bun's $ is imported as),
+        as Calls, beside calls()'s `$` and `Bun.$`."""
+        out = []
+        for i, t in enumerate(self.tokens):
+            prev = self.tokens[i - 1] if i else None
+            if t.kind == "template" and prev is not None and prev.kind == "ident" and prev.value in tags \
+                    and not self.punct(i - 2, "."):
+                out.append(Call(prev.value, i - 1, i, i, [(i, i + 1)], tagged=True))
+        return out
+
+    # Imports.
+    def go_imports(self):
+        """Go: (the name each import binds, its path): its alias, or its path's last element; "." for
+        a dot import. A blank import binds nothing."""
+        out, tokens, n, i = [], self.tokens, len(self.tokens), 0
+        while i < n:
+            if tokens[i].kind == "ident" and tokens[i].value == "import":
+                block = self.punct(i + 1, "(") and i + 1 in self.partner
+                j, end = (i + 2, self.partner[i + 1]) if block else (i + 1, min(i + 3, n))
+                for k in range(j, end):
+                    if tokens[k].kind != "string":
+                        continue
+                    before = tokens[k - 1]
+                    alias = "." if self.punct(k - 1, ".") else before.value \
+                        if before.kind == "ident" and before.value != "import" else None
+                    if alias != "_":
+                        out.append((alias or tokens[k].value.rsplit("/", 1)[-1], tokens[k].value))
+                    if not block:
+                        break
+                i = end
+            i += 1
+        return out
+
+    def ts_imports(self):
+        """TypeScript: {local name: (module, the name it imports)}: `import { a as b } from "m"` binds
+        b to ("m", "a"), `import d from "m"` d to ("m", "default"), `import * as ns from "m"` and
+        `const ns = require("m")` ns to ("m", "*"), and `const { a: b } = require("m")` b to ("m",
+        "a")."""
+        out, tokens, n = {}, self.tokens, len(self.tokens)
+
+        def members(a, b, separator):
+            for pa, pb in self.split(a, b):
+                words = [tokens[k].value for k in range(pa, pb) if tokens[k].value != "type"]
+                if len(words) == 3 and words[1] == separator:
+                    yield words[2], words[0]
+                elif len(words) == 1:
+                    yield words[0], words[0]
+
+        for i, t in enumerate(tokens):
+            if t.kind != "ident" or t.value != "import" or self.punct(i + 1, "("):
+                continue
+            j, names = i + 1, []
+            if j < n and tokens[j].value == "type":
+                j += 1
+            if j < n and tokens[j].kind == "ident" and tokens[j].value != "from":
+                names.append((tokens[j].value, "default"))
+                j += 2 if self.punct(j + 1, ",") else 1
+            if self.punct(j, "*") and j + 2 < n and tokens[j + 1].value == "as":
+                names.append((tokens[j + 2].value, "*"))
+                j += 3
+            elif self.punct(j, "{") and j in self.partner:
+                names += list(members(j + 1, self.partner[j], "as"))
+                j = self.partner[j] + 1
+            if j + 1 < n and tokens[j].value == "from" and tokens[j + 1].kind == "string":
+                out.update((local, (tokens[j + 1].value, imported)) for local, imported in names)
+        for call in self.calls():
+            module = self.string(*call.args[0]) if call.callee == "require" and len(call.args) == 1 else None
+            if module is None or not self.punct(call.at - 1, "="):
+                continue
+            k = call.at - 2
+            if k >= 0 and tokens[k].kind == "ident":
+                out[tokens[k].value] = (module, "*")
+            elif self.punct(k, "}") and k in self.partner:
+                out.update((local, (module, imported)) for local, imported in members(self.partner[k] + 1, k, ":"))
+        return out
+
     # Assignments and bindings.
     def _statement_start(self, k):
         i = k

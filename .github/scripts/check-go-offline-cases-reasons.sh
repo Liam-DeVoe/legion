@@ -66,3 +66,23 @@ EOF
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "counts the command as covered by its file's reason" "$(contains "$out" 'is in a file whose reason covers it (1)')"
+
+# file_reason_at <name> <line>: a fixture whose tools/list-deps.sh holds its file reason on <line>,
+# comment lines above it, and one go command after it, run through the check.
+file_reason_at() {
+  root=$(fixture "$1")
+  {
+    echo '#!/usr/bin/env bash'
+    for ((n = 2; n < $2; n++)); do echo "# line $n"; done
+    echo '# go-offline-file: a person runs this by hand.'
+    echo 'go list -deps ./... >/dev/null'
+  } | put "$root" tools/list-deps.sh
+  run_check "$root"
+}
+
+echo "case: a file reason counts within the file's first 40 lines, and not on line 41"
+file_reason_at file-reason-line-40 40
+check "on line 40: exits 0" "$(is "$status" 0)"
+check "on line 40: covers the command" "$(contains "$out" 'is in a file whose reason covers it (1)')"
+file_reason_at file-reason-line-41 41
+refused tools/list-deps.sh 42

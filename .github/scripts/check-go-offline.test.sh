@@ -1,34 +1,36 @@
 #!/usr/bin/env bash
-# Tests for `check-go-offline.sh`, over trees it writes. Its first rule: a Go, a TypeScript, a
-# Python and a shell test that each run `go list -deps` with no offline rule are refused and named
-# with a GitHub annotation, and the offline form and the reasoned form of each pass, over a count
-# that shows the scan saw the command; a reason six lines up is too far; an argv array and a shell
-# command whose go names a directory with -C before its subcommand count too; a go command in a
-# comment, a quoted string or a heredoc's body starts nothing. Each form its header names is
-# planted once and refused bare: an argv Biome writes one element a line (Go, TypeScript, Python),
-# exec.CommandContext with a context made by a call, a command beside a neighbour whose Env holds
-# GOPROXY=off, the go binary as filepath.Join(runtime.GOROOT(), "bin", "go"), a path ending /go,
-# exec.LookPath, Bun.which, shutil.which or a variable, a shell's -c, eval, a heredoc fed to bash,
-# os.system, subprocess's string, shell=True and an f-string, execSync and exec, Bun's $`...` with
-# cd before go and with -C and a substitution, env SETTING go in an argv, a "GOPROXY=off" in a
-# trailing comment, GOPROXY=off before the inherited environment or before a later GOPROXY, the
-# later command of a pipeline, an export inside another function, env -u GOPROXY, and a .mts
-# test; and the offline form of the environment each language binds to its own command passes.
-# Its file reason: refused in a test file, and in a file ci.yaml or a workflow ci.yaml calls names,
-# but not in one only a workflow outside that set or a comment names. Its second rule: a job of any
-# workflow that runs internal/daemon's tests, which build envoy commands through
-# testbuild.EnvoyBinary, is refused when no step before that one runs `.github/scripts/go-fetch.sh
-# deps packages/envoy` of every such command - a step with none, one after, one that leaves a
-# command out, one in another job - and passes when one does; the tests a step runs through a
-# script and the library it sources, after a cd, with -C, or through bash -c count; a compile to
-# /dev/null runs no test. Its other half: a step that reaches an offline go build - in a script it
-# runs, in a function a sourced library defines and the script calls with its module and packages,
-# or in a script the TypeScript of a Playwright run names - is refused with no fetch of those
-# packages before it, or one that leaves a package out, and passes after one, or with a reason. Its
-# third rule: a required job whose fetch step comes before a restore of ~/go/pkg/mod, or after a
-# restore of another path, is refused, and one whose restore comes first passes and is listed. A
-# tree with no file of a language, a tree with testbuild and no caller, and a tree with no ci.yaml
-# each give UNKNOWN and exit 2.
+# Tests for `check-go-offline.sh`, over trees it writes. Every form the check's header names has a
+# case here, one planted file each: for its first rule, a Go, a TypeScript, a Python and a shell
+# test that run `go list -deps` with no offline rule are refused and named with a GitHub
+# annotation, and the offline form and the reasoned form of each pass, over a count that shows
+# the scan saw the command; then each other form of the go binary, of a site and of a launcher
+# before go is planted bare and refused (every subcommand, every spawn and exec name, each import
+# alias, each binding of a name, each shell a script is handed to, a file named with no shell
+# extension that runs one), each environment the header says passes passes, and each one it says
+# counts for nothing is refused (a neighbour's, a comment's, a loose string's, one a later
+# statement or a spread of other options undoes, an export in another function, in a pipeline or
+# in the background); what starts nothing starts nothing (a comment, a quoted command, a heredoc's
+# body, a skipped directory, a file with no shebang); a reason six lines up is too far, and a
+# Python file that does not parse is refused. The header's limits are not planted: they are what
+# the check does not read. Its file reason: counted within the first 40 lines and not on line 41;
+# refused in a test file, and in a file ci.yaml or a workflow ci.yaml calls names, but not in one
+# only a workflow outside that set or a comment names. Its second rule: a job of any workflow that
+# runs internal/daemon's tests, which build envoy commands through testbuild.EnvoyBinary, is
+# refused when no step before that one runs `.github/scripts/go-fetch.sh deps packages/envoy` of
+# every such command - a step with none, one after, one that leaves a command out, one in another
+# job - and passes when one does; the tests a step runs through a script and the library it
+# sources, after a cd, with -C, or through bash -c count; a compile to /dev/null and a listing run
+# no test. Its other half: a step that reaches an offline go build, install, run, list or
+# generate - in a script it runs, in a function a sourced library defines and the script calls
+# with its module and packages, or in a script the TypeScript of a Playwright run names - or a
+# goCommand a bun test run reaches, is refused with no fetch of those packages before it, or one
+# that leaves a package out, and passes after one (a deps command, a tools file of the pin, or a
+# fetch file's deps or tools line), or with a reason in its run or within five lines above its
+# name. Its third rule: a required job's fetch step (deps, tools or a fetch file), in ci.yaml or a
+# workflow it calls, that comes before a restore of ~/go/pkg/mod, or after a restore of another
+# path, is refused, and one whose restore (actions/cache/restore or actions/cache) comes first
+# passes and is listed. A tree with no file of a language, a tree with testbuild and no caller,
+# and a tree with no ci.yaml each give UNKNOWN and exit 2.
 #
 # The cases live in the files this one sources, one part of the check each:
 # check-go-offline-cases-go.sh, -typescript.sh, -python.sh and -shell.sh (rule 1 in each

@@ -181,3 +181,142 @@ test("deps", () => {
   Bun.spawnSync(["go", "list", "-deps", "./..."]);
 });
 EOF
+
+echo "case: TypeScript: spawn, execFile and execa of the go binary, their Sync and Async forms, and execAsync of a shell string"
+# A here-string, not a pipe: refuses must run in this shell, where the counters are.
+for call in spawn execFileSync execFileAsync execaSync; do
+  refuses "ts-$call" "packages/web/$call.test.ts" 1 <<<"test(\"build\", () => { $call(\"go\", [\"build\", \"./...\"]); });"
+done
+refuses ts-execfile packages/web/execfile.test.ts 2 <<'EOF'
+test("build", () => {
+  execFile("go", ["build", "./..."], () => {});
+});
+EOF
+refuses ts-execa packages/web/execa.test.ts 2 <<'EOF'
+test("build", async () => {
+  await execa("go", ["build", "./..."]);
+});
+EOF
+refuses ts-execasync packages/web/execasync.test.ts 2 <<'EOF'
+test("build", async () => {
+  await execAsync("go build ./...");
+});
+EOF
+
+echo "case: TypeScript: Bun's \$\` with a substitution that names the go binary"
+refuses ts-dollar-var packages/web/dollarvar.test.ts 3 <<'EOF'
+const goBin = "go";
+test("build", async () => {
+  await $`${goBin} build ./...`;
+});
+EOF
+
+echo "case: TypeScript: the go binary as path.join or path.resolve of a last \"go\""
+refuses ts-join packages/web/join.test.ts 2 <<'EOF'
+test("build", () => {
+  Bun.spawnSync([path.join(goroot, "bin", "go"), "build", "./..."]);
+});
+EOF
+refuses ts-resolve packages/web/resolve.test.ts 2 <<'EOF'
+test("build", () => {
+  Bun.spawnSync([path.resolve(goroot, "bin", "go"), "build", "./..."]);
+});
+EOF
+
+echo "case: TypeScript: an argv array given to a helper of the test's own"
+refuses ts-helper-argv packages/web/helper.test.ts 3 <<'EOF'
+function run(argv: string[]) { return Bun.spawnSync(argv); }
+test("a helper of its own", () => {
+  run(["go", "list", "-deps", "./..."]);
+});
+EOF
+
+echo "case: TypeScript: go after timeout in an argv"
+refuses ts-timeout packages/web/timeout.test.ts 2 <<'EOF'
+test("deps", () => {
+  Bun.spawn(["timeout", "600", "go", "test", "./..."]);
+});
+EOF
+
+echo "case: TypeScript: a spawn whose program is a command line is read as shell"
+refuses ts-shell-true packages/web/shelltrue.test.ts 3 <<'EOF'
+import { spawnSync } from "node:child_process";
+test("build", () => {
+  spawnSync("go build ./...", { shell: true });
+});
+EOF
+
+echo "case: TypeScript: a spawn, an exec and Bun's \$ imported under other names"
+refuses ts-spawn-alias packages/web/spawnalias.test.ts 3 <<'EOF'
+import { spawnSync as run } from "node:child_process";
+test("build", () => {
+  run("go", ["build", "./..."]);
+});
+EOF
+refuses ts-exec-namespace packages/web/namespace.test.ts 3 <<'EOF'
+import * as proc from "node:child_process";
+test("build", () => {
+  proc.execSync("go build ./...");
+});
+EOF
+refuses ts-require-alias packages/web/require.test.ts 3 <<'EOF'
+const { exec: shell } = require("node:child_process");
+test("build", () => {
+  shell("go build ./...", () => {});
+});
+EOF
+refuses ts-dollar-alias packages/web/dollaralias.test.ts 3 <<'EOF'
+import { $ as sh } from "bun";
+test("build", async () => {
+  await sh`go build ./...`;
+});
+EOF
+
+echo "case: TypeScript: an env object a later statement changes is read with the change"
+passes_offline ts-env-kept packages/web/envkept.test.ts <<'EOF'
+test("build", async () => {
+  const env = { ...process.env, GOPROXY: "off" };
+  await Bun.spawn(["go", "build", "./..."], { env }).exited;
+});
+EOF
+refuses ts-env-set packages/web/envset.test.ts 4 <<'EOF'
+test("build", async () => {
+  const env = { ...process.env, GOPROXY: "off" };
+  env.GOPROXY = "direct";
+  await Bun.spawn(["go", "build", "./..."], { env }).exited;
+});
+EOF
+refuses ts-env-key packages/web/envkey.test.ts 4 <<'EOF'
+test("build", async () => {
+  const env: Record<string, string> = { ...process.env, GOPROXY: "off" };
+  env["GOPROXY"] = "direct";
+  await Bun.spawn(["go", "build", "./..."], { env }).exited;
+});
+EOF
+refuses ts-env-delete packages/web/envdelete.test.ts 4 <<'EOF'
+test("build", async () => {
+  const env = { ...process.env, GOPROXY: "off" };
+  delete env.GOPROXY;
+  await Bun.spawn(["go", "build", "./..."], { env }).exited;
+});
+EOF
+refuses ts-env-assign packages/web/envassign.test.ts 4 <<'EOF'
+test("build", async () => {
+  const env = { ...process.env, GOPROXY: "off" };
+  Object.assign(env, { GOPROXY: "direct" });
+  await Bun.spawn(["go", "build", "./..."], { env: env }).exited;
+});
+EOF
+
+echo "case: TypeScript: a spread of other options after env may replace it; one of env-free objects does not"
+refuses ts-options-spread packages/web/optspread.test.ts 3 <<'EOF'
+const opts = { env: process.env };
+test("build", () => {
+  spawnSync("go", ["build"], { env: { ...process.env, GOPROXY: "off" }, ...opts });
+});
+EOF
+passes_offline ts-options-spread-plain packages/web/optplain.test.ts <<'EOF'
+test("build", () => {
+  Bun.spawnSync(["go", "build"], { env: { ...process.env, GOPROXY: "off" }, ...(quiet ? {} : { stdout: "inherit" }) });
+});
+EOF

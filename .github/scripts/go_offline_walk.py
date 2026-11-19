@@ -281,9 +281,9 @@ class Walk:
                     name, eq, rest = (value or "").partition("=")
                     if eq and re.fullmatch(r"[A-Za-z_]\w*", name):
                         vars_[name] = rest
-                        if verb == "export" and name == "GOPROXY":
+                        if verb == "export" and name == "GOPROXY" and not command.forked:
                             exported.append(("set", name, rest))
-            elif verb == "unset" and "GOPROXY" in values[k + 1:]:
+            elif verb == "unset" and "GOPROXY" in values[k + 1:] and not command.forked:
                 exported.append(("set", "GOPROXY", None))
             elif verb == "shift":
                 count = values[k + 1] if k + 1 < len(values) and (values[k + 1] or "").isdigit() else "1"
@@ -416,22 +416,42 @@ class Walk:
 
     @staticmethod
     def fetch(values, cwd, reach):
+        """The fetches a command makes through go-fetch.sh: deps DIR PACKAGE..., tools FILE, and
+        file FILE, whose every deps or tools line is one of those, its paths from the repository's
+        root (the GOOS, GOARCH or CGO_ENABLED setting before a deps aside)."""
         for k, value in enumerate(values):
             if not (value and value.endswith("go-fetch.sh")) or k + 2 >= len(values):
                 continue
-            if values[k + 1] == "deps":
-                module = in_repo(join(cwd, values[k + 2]))
-                packages = []
-                for v in values[k + 3:]:
-                    if v is None or v.startswith(("-", "|", ";", "&")):
-                        break
-                    packages.append(v)
-                reach.fetches.setdefault(module, set()).update(packages)
-            elif values[k + 1] == "tools":
+            if values[k + 1] == "file":
                 listed = in_repo(join(cwd, values[k + 2]))
-                if listed and os.path.isfile(listed):
-                    reach.tools.update(l.split("#", 1)[0].strip() for l in scan.read(listed).splitlines()
-                                       if l.split("#", 1)[0].strip())
+                for line in scan.read(listed).splitlines() if listed and os.path.isfile(listed) else ():
+                    words = line.split("#", 1)[0].split()
+                    while words and "=" in words[0]:
+                        words = words[1:]
+                    if len(words) >= 2 and words[0] in ("deps", "tools"):
+                        Walk.fetched(words[0], join(REPO, words[1]), words[2:], reach)
+            elif values[k + 1] in ("deps", "tools"):
+                Walk.fetched(values[k + 1], join(cwd, values[k + 2]), values[k + 3:], reach)
+
+    @staticmethod
+    def fetched(mode, path, rest, reach):
+        """One fetch into reach: for deps, the module at path and the packages rest names (its -test
+        and -tags T passed over); for tools, each pin the file at path lists."""
+        if mode == "deps":
+            packages, skip = [], False
+            for v in rest:
+                if v is None or v.startswith(("|", ";", "&")):
+                    break
+                if skip or v.startswith("-"):
+                    skip = not skip and v == "-tags"
+                    continue
+                packages.append(v)
+            reach.fetches.setdefault(in_repo(path), set()).update(packages)
+            return
+        listed = in_repo(path)
+        if listed and os.path.isfile(listed):
+            reach.tools.update(l.split("#", 1)[0].strip() for l in scan.read(listed).splitlines()
+                               if l.split("#", 1)[0].strip())
 
 
 def covered(need, fetched, tools):

@@ -249,3 +249,104 @@ func TestDeps(t *testing.T) {
 	_ = build.Run()
 }
 EOF
+
+echo "case: Go: the go binary as a + of strings that ends /go"
+refuses go-concat packages/app/concat_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command(runtime.GOROOT()+"/bin/go", "build", "./...").Run()
+}
+EOF
+
+echo "case: Go: env -i in an argv clears the Env's GOPROXY=off"
+refuses go-env-i packages/app/clear_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	build := exec.Command("env", "-i", "HOME=/tmp", "go", "build", "./...")
+	build.Env = append(os.Environ(), "GOPROXY=off")
+	_ = build.Run()
+}
+EOF
+
+echo "case: Go: a shell's -c among its other options (bash -ec)"
+refuses go-bash-ec packages/app/bashec_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command("bash", "-ec", "go build ./...").Run()
+}
+EOF
+
+echo "case: Go: os/exec imported under another name, and as a dot import"
+refuses go-exec-alias packages/app/alias_test.go 9 <<'EOF'
+package app
+
+import (
+	osexec "os/exec"
+	"testing"
+)
+
+func TestDeps(t *testing.T) {
+	_ = osexec.Command("go", "build", "./...").Run()
+}
+EOF
+refuses go-exec-dot packages/app/dot_test.go 5 <<'EOF'
+package app
+
+import . "os/exec"
+
+func TestDeps(t *testing.T) { _ = Command("go", "build", "./...").Run() }
+EOF
+
+echo "case: Go: go after timeout, nice, command, nohup, time or flock in an argv, with their operands"
+refuses go-timeout packages/app/timeout_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command("timeout", "600", "go", "test", "./...").Run()
+}
+EOF
+refuses go-nice packages/app/nice_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command("nice", "-n", "5", "command", "go", "build", "./...").Run()
+}
+EOF
+refuses go-nohup packages/app/nohup_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command("nohup", "time", "flock", "/tmp/lock", "exec", "go", "build", "./...").Run()
+}
+EOF
+
+echo "case: Go: a go bound to a package variable"
+refuses go-package-var packages/app/package_test.go 5 <<'EOF'
+package app
+
+var goBin = "go"
+
+func TestDeps(t *testing.T) { _ = exec.Command(goBin, "build", "./...").Run() }
+EOF
+
+echo "case: Go: a filepath.Join(..., \"bin\", \"go\") nothing here starts resolves the go a later line starts"
+refuses go-join-alone packages/app/join_test.go 4 <<'EOF'
+package app
+
+func goBinary() string {
+	return filepath.Join(runtime.GOROOT(), "bin", "go")
+}
+EOF
+
+echo "case: Go: a \"GOPROXY=off\" no command is given sets nothing"
+refuses go-loose-string packages/app/loose_test.go 5 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = "GOPROXY=off"
+	_ = exec.Command("go", "build", "./...").Run()
+}
+EOF

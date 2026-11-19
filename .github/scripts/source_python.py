@@ -30,10 +30,30 @@ def python_scope(node):
 
 
 def python_bound(name, node):
-    """The value of the nearest plain assignment of name before node in its function or module."""
+    """The value of the nearest plain assignment of name before node in its function or module;
+    when that function neither assigns name nor takes it as a parameter, the nearest assignment of
+    it in the scope around the function, made in that scope itself (a module's name a function
+    reads), before node or else after it."""
     scope = python_scope(node)
+    best = None
+    for stmt in _scope_assigns(scope).get(name, ()):
+        if stmt.lineno <= node.lineno and stmt is not node and (best is None or stmt.lineno >= best.lineno):
+            best = stmt
+    if best is not None:
+        return best.value
+    if isinstance(scope, ast.Module) or not hasattr(scope, "parent") or name in _parameters(scope):
+        return None
+    outer = python_scope(scope.parent)
+    own = [s for s in _scope_assigns(outer).get(name, ()) if python_scope(s) is outer]
+    before = [s for s in own if s.lineno <= node.lineno]
+    chosen = max(before, key=lambda s: s.lineno) if before else min(own, key=lambda s: s.lineno, default=None)
+    return chosen.value if chosen is not None else None
+
+
+def _scope_assigns(scope):
+    """A scope's plain assignments by name, those of the functions inside it included, read once."""
     assigns = getattr(scope, "_assigns", None)
-    if assigns is None:  # each scope's assignments, by name, read once
+    if assigns is None:
         assigns = {}
         for stmt in ast.walk(scope):
             if isinstance(stmt, ast.Assign):
@@ -41,11 +61,13 @@ def python_bound(name, node):
                     if isinstance(target, ast.Name):
                         assigns.setdefault(target.id, []).append(stmt)
         scope._assigns = assigns
-    best = None
-    for stmt in assigns.get(name, ()):
-        if stmt.lineno <= node.lineno and stmt is not node and (best is None or stmt.lineno >= best.lineno):
-            best = stmt
-    return best.value if best is not None else None
+    return assigns
+
+
+def _parameters(function):
+    args = function.args
+    names = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
+    return set(names) | {a.arg for a in (args.vararg, args.kwarg) if a is not None}
 
 
 def python_text(node, substitute=lambda value: "\x00"):

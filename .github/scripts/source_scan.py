@@ -60,16 +60,26 @@ def is_test_file(path):
     return bool(TEST_FILE.search(path))
 
 
-def sources(root="."):
+# A first line that runs the file with a shell: #!/bin/bash, #!/usr/bin/env sh, ...
+SHELL_SHEBANG = re.compile(rb"#!\s*\S*?(?:/|\benv\s+(?:-\S+\s+)*)(?:bash|sh|dash|zsh|ksh)\b")
+
+
+def sources(root=".", shebang=False):
     """(path, language) of every source file under root, in a stable order: each path relative to
-    root, no directory SKIP_DIRS names, no symbolic link."""
+    root, no directory SKIP_DIRS names, no symbolic link. With shebang, a file whose name gives it
+    no language is shell when its first line runs it with a shell (a test named `x.test` or `run`)."""
     for directory, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
         for name in sorted(files):
             path = os.path.relpath(os.path.join(directory, name), root)
             lang = language(path)
             full = os.path.join(root, path)
-            if lang and os.path.isfile(full) and not os.path.islink(full):
+            if not os.path.isfile(full) or os.path.islink(full):
+                continue
+            if lang is None and shebang:
+                with open(full, "rb") as file:
+                    lang = "sh" if SHELL_SHEBANG.match(file.readline(128)) else None
+            if lang:
                 yield path, lang
 
 

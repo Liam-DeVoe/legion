@@ -13,10 +13,10 @@ from source_shell import shell_script
 
 
 def runs_fetch(run):
-    """Whether a step's run text runs go-fetch.sh deps or tools."""
+    """Whether a step's run text runs go-fetch.sh deps, tools or file (a file of deps and tools lines)."""
     for command in shell_script(run):
         values = command.values()
-        if any(v.endswith("go-fetch.sh") and values[k + 1:k + 2] in (["deps"], ["tools"])
+        if any(v.endswith("go-fetch.sh") and values[k + 1:k + 2] in (["deps"], ["tools"], ["file"])
                for k, v in enumerate(values)):
             return True
     return False

@@ -128,3 +128,104 @@ def test_build():
     go = shutil.which("go")
     subprocess.run([go, "build", "./..."])
 EOF
+
+echo "case: Python: os.popen of a go command, and the go binary as a path.join of a last \"go\""
+refuses py-popen tools/test_popen.py 5 <<'EOF'
+import os
+
+
+def test_deps():
+    os.popen("go list -deps ./...").read()
+EOF
+refuses py-join tools/test_join.py 5 <<'EOF'
+import os, subprocess
+
+
+def test_build(goroot):
+    subprocess.run([os.path.join(goroot, "bin", "go"), "build", "./..."])
+EOF
+
+echo "case: Python: go after timeout, flock or exec in an argv"
+refuses py-timeout tools/test_timeout.py 5 <<'EOF'
+import subprocess
+
+
+def test_deps():
+    subprocess.run(["timeout", "600", "go", "test", "./..."])
+EOF
+refuses py-flock tools/test_flock.py 5 <<'EOF'
+import subprocess
+
+
+def test_build():
+    subprocess.run(["flock", "/tmp/lock", "exec", "go", "build", "./..."])
+EOF
+
+echo "case: Python: an argv tuple, a call's own arguments, and a shutil.which(\"go\") nothing here starts"
+refuses py-tuple tools/test_tuple.py 5 <<'EOF'
+import subprocess
+
+
+def test_build():
+    subprocess.run(("go", "build", "./..."))
+EOF
+refuses py-call-args tools/test_args.py 5 <<'EOF'
+import asyncio
+
+
+async def test_build():
+    await asyncio.create_subprocess_exec("go", "build", "./...")
+EOF
+refuses py-which-alone tools/test_alone.py 5 <<'EOF'
+import shutil
+
+
+def go_binary():
+    return shutil.which("go")
+EOF
+
+echo "case: Python: shlex.split of a go command is read as shell, in the environment of the call it is given to"
+refuses py-shlex tools/test_shlex.py 5 <<'EOF'
+import shlex, subprocess
+
+
+def test_build():
+    subprocess.run(shlex.split("go build ./..."))
+EOF
+passes_offline py-shlex-offline tools/test_shlex.py <<'EOF'
+import os, shlex, subprocess
+
+
+def test_build():
+    subprocess.run(shlex.split("go build ./..."), env={**os.environ, "GOPROXY": "off"})
+EOF
+
+echo "case: Python: a name bound in the module, read in a function"
+refuses py-module-name tools/test_module.py 6 <<'EOF'
+import subprocess
+
+GO = "go"
+
+def test_build():
+    subprocess.run([GO, "build", "./..."])
+EOF
+passes_offline py-module-env tools/test_module.py <<'EOF'
+import os, subprocess
+
+ENV = {**os.environ, "GOPROXY": "off"}
+
+def test_build():
+    subprocess.run(["go", "build", "./..."], env=ENV)
+EOF
+
+echo "case: Python: a file its ast module cannot parse is refused, since none of its go commands is seen"
+root=$(fixture py-unparsable)
+put "$root" tools/test_broken.py <<'EOF'
+import subprocess
+
+def test_build(:
+    subprocess.run(["go", "build", "./..."])
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file" "$(contains "$out" 'tools/test_broken.py:1: a Python file this check cannot parse')"
