@@ -88,11 +88,12 @@ import (
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
-// dispatch://INFRA-2040's table of the waits phase workers declare (20261119055500) and its kind
-// list with the wait's time (20261119055600) stand above every other version,
-// dispatch://INFRA-4109's 20261117200337 included, so an upgrade applies them last, in that
-// order. The table touches no outbox_kind_check; the kind list restates 20261117000528's kinds
-// with wait_due, so it is the last word of outbox_kind_check.
+// dispatch://INFRA-2040's table of the waits phase workers declare (20261119055500), its kind
+// list with the wait's time (20261119055600) and its mark of the design gate's own task on a
+// pending delivery (20261119055700) stand above every other version, dispatch://INFRA-4109's
+// 20261117200337 included, so an upgrade applies them last, in that order. The table and the mark
+// touch no outbox_kind_check; the kind list restates 20261117000528's kinds with wait_due, so it is
+// the last word of outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -101,7 +102,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116144907, 20261116165926, 20261116234034, 20261117000528, 20261117004117,
-	20261117064152, 20261117112334, 20261117200337, 20261119055500, 20261119055600,
+	20261117064152, 20261117112334, 20261117200337, 20261119055500, 20261119055600, 20261119055700,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -116,9 +117,9 @@ var thisBranchsMigrations = []int{
 // step records' three: the kind list with the step record (20261117000528), the count of starts of
 // each step (20261117004117) and its roll forward (20261117064152), dispatch://INFRA-1997's
 // 20261117112334, dispatch://INFRA-4109's 20261117200337, and dispatch://INFRA-2040's
-// 20261119055500 and 20261119055600. That is why the loop below holds the list rather than
-// counting it, so that a version added above any of them is named here rather than read as
-// main's.
+// 20261119055500, 20261119055600 and 20261119055700. That is why the loop below holds the list
+// rather than counting it, so that a version added above any of them is named here rather than
+// read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

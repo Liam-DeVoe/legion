@@ -916,18 +916,22 @@ func (w *workflowRuntime) waitHolds(ctx context.Context, c supervise.Claim, d su
 // gateNote answers supervise's Deps.GateNote: the design gate's state that a task of c's merger
 // carries at its send (dispatch://INFRA-2040 R7), built by the workflow's one rule
 // (workflow.MergerGateNote) from the merger's issue and its tree's gate rows as the record holds
-// them at that moment. The machine asks it holding its own lock, as it asks phaseHolds, so the
-// read is a read-only transaction of its own and takes no lock of the daemon's.
-func (w *workflowRuntime) gateNote(ctx context.Context, c supervise.Claim, _ supervise.Delivery) (supervise.GateNote, error) {
-	return readMergerGateNote(ctx, w.pool, w.records, w.gatedSteps, c.Issue, c.Role)
+// them at that moment, and for the gate's own task (supervise.Delivery.GateMessage, R8) the
+// gate's whole message, built from the same reading (workflow.MergerGateMessage). The machine asks
+// it holding its own lock, as it asks phaseHolds, so the read is a read-only transaction of its
+// own and takes no lock of the daemon's.
+func (w *workflowRuntime) gateNote(ctx context.Context, c supervise.Claim, d supervise.Delivery) (supervise.GateNote, error) {
+	return readMergerGateNote(ctx, w.pool, w.records, w.gatedSteps, c.Issue, c.Role, d.GateMessage)
 }
 
 // readMergerGateNote is the design gate's state that a task or the update ask of role on the issue
-// key carries now (workflow.MergerGateNote): the issue and its tree's gate rows under steps, the
-// steps the deployment gates, read in a read-only transaction of its own. Only a merger's carries
-// one, so no other role's reads anything, and an issue the record does not hold carries none.
+// key carries now (workflow.MergerGateNote), or the gate's whole message when message says the
+// task is the gate's own (workflow.MergerGateMessage): the issue and its tree's gate rows under
+// steps, the steps the deployment gates, read in a read-only transaction of its own. Only a
+// merger's carries one, so no other role's reads anything, and an issue the record does not hold
+// carries none.
 func readMergerGateNote(ctx context.Context, pool *store.Pool, records record.Store, steps []record.DesignStep,
-	key string, role claim.Role) (supervise.GateNote, error) {
+	key string, role claim.Role, message bool) (supervise.GateNote, error) {
 	var note supervise.GateNote
 	if role != claim.RoleMerger {
 		return note, nil
@@ -941,7 +945,12 @@ func readMergerGateNote(ctx context.Context, pool *store.Pool, records record.St
 		if err != nil {
 			return err
 		}
-		note = workflow.MergerGateNote(*issue, role, record.TreeGate{Steps: steps, Rows: rows})
+		gate := record.TreeGate{Steps: steps, Rows: rows}
+		if message {
+			note = workflow.MergerGateMessage(*issue, role, gate)
+		} else {
+			note = workflow.MergerGateNote(*issue, role, gate)
+		}
 		return nil
 	}); err != nil {
 		return supervise.GateNote{}, fmt.Errorf("read the design gate of the tree of %s for its %s: %w", key, role, err)

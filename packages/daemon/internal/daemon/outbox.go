@@ -2055,7 +2055,7 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.updateAskLeftRound(row, payload, token, current)
 		return nil
 	}
-	note, err := readMergerGateNote(ctx, r.pool, r.records, r.gatedSteps, row.Issue, payload.Role)
+	note, err := readMergerGateNote(ctx, r.pool, r.records, r.gatedSteps, row.Issue, payload.Role, false)
 	if err != nil {
 		return err
 	}
@@ -2414,7 +2414,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (record.SuperviseRequest.RoundNamed): the one place each prompt is composed reads it
 		// there, and gives a reviewer's task of a row that lacks it, which only a row of the
 		// release before this one can be, those sentences naming no commit and no entry
-		// (supervise's Delivery.message).
+		// (supervise's Delivery.message). So does the mark of the design gate's own task of a
+		// merger (record.SuperviseRequest.GateMessage): the send puts the gate's whole message in
+		// front of it, built as the gate stands then (supervise's Deps.GateNote).
 		var task *supervise.RequestDeliver
 		if payload.Task != "" {
 			kept, err := keptJSON(payload.Kept)
@@ -2422,7 +2424,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			task = &supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: payload.RoundNamed,
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: payload.RoundNamed, GateMessage: payload.GateMessage,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}
 		}

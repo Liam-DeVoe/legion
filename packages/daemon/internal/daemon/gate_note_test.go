@@ -47,18 +47,21 @@ func wantClosedNote(t *testing.T, sent fake.Prompt, says string, why string) {
 
 // The merger's first task after a move of the design gate gives the gate's state as it stands at
 // the send, whenever the task was queued (R7). Each order wakes a merger whose pod the idle
-// release took with a CI settlement of its head, whose start names no phase and so passes the
-// outbox's fence, and reads the first task the relaunched session receives:
+// release took, whose start names no phase and so passes the outbox's fence, and reads the first
+// task the relaunched session receives:
 //
-//  1. the gate closes before the outbox runs the wake's row: the task names the closed gate;
+//  1. the gate closes before the outbox runs a CI wake's row: the task names the closed gate;
 //  2. the outbox has run that row, so the task is queued and the relaunch is in flight, and then
 //     the gate closes: the task names the closed gate all the same, since its note is built at the
 //     send and not where the outbox queued the task;
 //  3. the wake comes during the hold, the outbox runs its row, and the gate opens while the
-//     relaunch is in flight: the task says the gate stands open, and nothing in it says closed.
-//
-// The gate's own delivery at each move (the opening message after the third order, and the
-// fourth order of c-gate-hold, whose task is the closing's own wake) is D16's, built in t26.
+//     relaunch is in flight: the task says the gate stands open, and nothing in it says closed;
+//     the session then receives the opening message, which the gate's own start carries (R8):
+//     the opening wrote it behind the task the merger held and had not taken;
+//  4. the gate closes over the released merger, the outbox runs the row of the closing's own wake,
+//     and the gate opens while that relaunch is in flight: the closing wake's task, whose message is
+//     built at its send, gives the opening message, and the opening's start follows it with the
+//     opening message.
 func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T) {
 	const settled = "The wake is a CI settlement on your pull request's head: " + heldMergerHead
 	for _, tc := range []struct {
@@ -70,6 +73,9 @@ func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T
 		moves func(r *waitDeliveryRig, at time.Time)
 		// want asserts the first task the relaunched session received.
 		want func(t *testing.T, r *waitDeliveryRig, first fake.Prompt)
+		// after, when set, ends the first task's turn and asserts what the session receives after
+		// it, the prompts before numbering sent, with the outbox's rows run at at.
+		after func(t *testing.T, r *waitDeliveryRig, first fake.Prompt, sent int, at time.Time)
 	}{
 		{
 			name: "the gate closes before the outbox runs the wake's row",
@@ -118,6 +124,13 @@ func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T
 						first.Message)
 				}
 			},
+			after: func(t *testing.T, r *waitDeliveryRig, first fake.Prompt, sent int, at time.Time) {
+				r.takeTask()
+				r.endTurn(first.DeliveryID)
+				r.drainAt(at, record.OutboxKindSupervise)
+				opening := r.wantPrompts(sent+2, "the opening's start follows the wake's task")[sent+1]
+				wantGateMessage(t, opening, heldMergerOpenedMessage, heldMergerGateTask, "the gate's own start carries the opening message")
+			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -138,8 +151,37 @@ func TestAHeldMergersFirstTaskGivesTheDesignGateAsItStandsAtItsSend(t *testing.T
 			r.boot()
 			prompts := r.wantPrompts(sent+1, "the relaunched session receives the wake's task")
 			tc.want(t, r, prompts[sent])
+			if tc.after != nil {
+				tc.after(t, r, prompts[sent], sent, released.Add(time.Hour))
+			}
 		})
 	}
+
+	t.Run("the closing's wake runs and the gate opens while its relaunch is in flight", func(t *testing.T) {
+		r := newHeldMergerRig(t)
+		r.mergerWorked()
+		released := time.Now().UTC().Add(time.Minute)
+		r.releasesAt(released)
+		sent := len(r.prompts())
+		r.closesTheGate()
+		if resumes := r.resumes(); len(resumes) != 1 || resumes[0] != "merger:"+pods.WakeDesignGate {
+			t.Fatalf("the pod resumes after the close = %v, want the closing's one wake of the merger", resumes)
+		}
+		r.drainAt(released.Add(time.Minute), record.OutboxKindSupervise)
+		if got := r.machine.Claim(); r.live() || got.Pending == nil || !strings.Contains(got.Pending.Task, heldMergerGateTask) || !got.Pending.DeliveredAt.IsZero() {
+			t.Fatalf("the merger after the outbox ran the closing wake's row = %s holding %+v, want its relaunch in flight with the gate's task queued and not sent",
+				got.State, got.Pending)
+		}
+		r.opensTheGate()
+		r.boot()
+		first := r.wantPrompts(sent+1, "the relaunched session receives the closing wake's task")[sent]
+		wantGateMessage(t, first, heldMergerOpenedMessage, heldMergerGateTask, "the closing wake's message is built at its send, after the opening")
+		r.takeTask()
+		r.endTurn(first.DeliveryID)
+		r.drainAt(released.Add(time.Hour), record.OutboxKindSupervise)
+		opening := r.wantPrompts(sent+2, "the opening's start follows the closing wake's task")[sent+1]
+		wantGateMessage(t, opening, heldMergerOpenedMessage, heldMergerGateTask, "the opening's own start carries the opening message")
+	})
 }
 
 // Every task a held merger's session receives from the daemon names the closed gate (R7), not

@@ -72,6 +72,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		WaitDue{Token: "legion-legion-208-tester", WaitID: "9b2f4c1e-wait"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3,
 			Task: "The time of your wait 9b2f4c1e-wait came.", WaitID: "9b2f4c1e-wait"},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3,
+			Task: "The design gate of LEGION-208 moved.", GateMessage: true},
 		RoleMessage{Role: "legion.sjawhar-legion.LEGION-208.implementer", Body: "Pull request #42: CI settled at c0de: unit failed."},
 		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"},
 		PhaseEnded{Role: claim.RoleImplementer, From: phase.Retro, To: phase.Implementing, Reason: "the head conflicts with main", TaskFollows: true},
@@ -334,6 +336,12 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a wait's start of a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Phase: phase.Testing, Task: "t", WaitID: "w"}, reason: waitStartRefusal},
 		{name: "a wait's start of an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "t", Entry: 2, WaitID: "w"}, reason: waitStartRefusal},
 		{name: "a wait on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, WaitID: "w"}, reason: waitStartRefusal},
+		{name: "the gate's message on a tester's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "t", GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a start with no task", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a start of a phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Phase: phase.Merging, Task: "t", GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a start of an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Task: "t", Entry: 2, GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a wait's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, Task: "t", WaitID: "w", GateMessage: true}, reason: gateStartRefusal},
+		{name: "the gate's message on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 3, GateMessage: true}, reason: gateStartRefusal},
 		{name: "a phase-ended message to an architect", payload: PhaseEnded{Role: claim.RoleArchitect, From: phase.Accepting, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "never to an architect"},
 		{name: "a phase-ended message to no role", payload: PhaseEnded{From: phase.Testing, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "never to an architect"},
 		{name: "a phase-ended message without the phase that ended", payload: PhaseEnded{Role: claim.RoleTester, To: phase.Implementing, Reason: "CI is red at head: pytest"}, reason: "names the phase that ended and the different phase"},
@@ -475,6 +483,11 @@ const checkLookRefusal = "a supervise check look names a start of the implemente
 // waitStartRefusal is the validation's words for a supervise row that names a wait and is not a
 // start with a task, no phase and no entry: the start of a wait's time is that start and no other.
 const waitStartRefusal = "a supervise start of a wait's time is a start with a task, no phase, no entry and no check look"
+
+// gateStartRefusal is the validation's words for a supervise row that carries the mark of the
+// design gate's own message and is not a merger's start with a task, no phase, no entry and no
+// wait: the gate's own start of a merger is that start and no other.
+const gateStartRefusal = "a supervise start of the design gate's own message is a merger's start with a task, no phase, no entry, no check look and no wait"
 
 // A hook prompt's message is three parts with a blank line between them: the daemon's header,
 // the hook's words exactly as the deployment wrote them, and the daemon's remaining facts. The

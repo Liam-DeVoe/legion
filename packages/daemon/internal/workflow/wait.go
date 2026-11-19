@@ -602,49 +602,20 @@ func (e *Engine) EndStaleWaits(ctx context.Context, tx pgx.Tx, endedBy string) e
 // session the claim replaced since the last fact, say — is the reconciler's to end, with that
 // term's cause, at this same fact's end (WaitReconciler).
 func (e *Engine) endHeldMergersWaits(ctx context.Context, tx pgx.Tx, key string, gates map[record.DesignStep]record.DesignGate) error {
-	gated, err := e.store.Issue(ctx, tx, key)
-	if err != nil || gated == nil {
+	tree, err := e.mergersOf(ctx, tx, key)
+	if err != nil || len(tree.mergers) == 0 {
 		return err
 	}
-	members, err := e.store.TreeIssues(ctx, tx, gated.Tree)
-	if err != nil {
-		return err
-	}
-	project, err := claim.ProjectToken(e.cfg.Project)
-	if err != nil {
-		return err
-	}
-	type merger struct {
-		issue record.Issue
-		token claim.Token
-	}
-	var root record.Issue
-	var mergers []merger
-	tokens := make([]claim.Token, 0, len(members))
-	for _, member := range members {
-		if member.Key == gated.Tree {
-			root = member
-		}
-		if member.Phase != phase.Merging {
-			continue
-		}
-		// A key that yields no claim token has no claim, so no wait (phaseWorkerRecord).
-		token, err := claim.NewToken(project, member.Key, claim.RoleMerger)
-		if err != nil {
-			continue
-		}
-		mergers = append(mergers, merger{issue: member, token: token})
-		tokens = append(tokens, token)
-	}
-	if len(mergers) == 0 {
-		return nil
+	tokens := make([]claim.Token, 0, len(tree.mergers))
+	for _, m := range tree.mergers {
+		tokens = append(tokens, m.token)
 	}
 	claims, err := e.store.RoleClaims(ctx, tx, tokens)
 	if err != nil {
 		return err
 	}
 	gate, endedBy := record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, factEndedBy(ctx)
-	for _, m := range mergers {
+	for _, m := range tree.mergers {
 		held := claims[m.token]
 		if held == nil || held.Wait == nil {
 			continue
@@ -653,7 +624,7 @@ func (e *Engine) endHeldMergersWaits(ctx context.Context, tx pgx.Tx, key string,
 		if err != nil {
 			return err
 		}
-		if WaitEndCause(m.issue, root, record.PhaseRowOf(rows, claim.RoleMerger), record.RoleRun{Claim: held}, gate) != WaitEndDesignGateClosed {
+		if WaitEndCause(m.issue, tree.root, record.PhaseRowOf(rows, claim.RoleMerger), record.RoleRun{Claim: held}, gate) != WaitEndDesignGateClosed {
 			continue
 		}
 		if _, err := e.endWait(ctx, tx, *held.Wait, WaitEndDesignGateClosed, endedBy); err != nil {
@@ -745,32 +716,43 @@ func (e *Engine) waitDue(ctx context.Context, tx pgx.Tx, fact intake.WaitDue) (i
 
 // writeWaitTimeTask writes the task of wait's time (waitTimeTask) for the claim that declared it,
 // on issue as the record holds it now, and answers the outbox row it wrote and whether that row is
-// a wake. A claim an idle release took (Pods.ReleasedClaimOfRole) is woken with the wake kind
-// pods.WakeWaitTime (wakeReleased), so its pod comes back with the task and the resume is recorded
-// as every wake's is. Every other claim is given a start with no phase and no entry that names the
-// wait (record.SuperviseRequest.WaitID): one that runs, one whose wake another pass took and whose
-// pod is on its way back, and one whose pod's release is still in progress, which the release has
-// not suspended yet. That start overtakes such a release (store's IssueReleaseStop and
+// a wake, through wakeOrStart with the wake kind pods.WakeWaitTime. Its start names the wait
+// (record.SuperviseRequest.WaitID), and the outbox finishes it with no delivery while a newer wait
+// of the claim stands (internal/daemon's waitTimeReplaced).
+func (e *Engine) writeWaitTimeTask(ctx context.Context, tx pgx.Tx, issue record.Issue, wait record.ClaimWait) (int64, bool, error) {
+	return e.wakeOrStart(ctx, tx, issue, wait.Role, pods.WakeWaitTime, record.SuperviseRequest{Op: "start", Tree: issue.Tree,
+		Role: wait.Role, Generation: issue.Generation, Task: waitTimeTask(wait), WaitID: wait.ID})
+}
+
+// wakeOrStart writes start's task for role's claim on issue, as the record holds the issue now,
+// and answers the outbox row it wrote and whether that row is a wake. It is the one helper the
+// task of a wait's time (writeWaitTimeTask) and the design gate's own start of a merger
+// (writeGateStart) are written with. start is a start that names no phase and no entry and carries
+// the task, with the mark of its own kind (WaitID, GateMessage).
+//
+// A claim an idle release took (Pods.ReleasedClaimOfRole) is woken with the wake kind kind
+// (wakeReleased), so its pod comes back with the task and the resume is recorded as every wake's
+// is. Every other claim is given start itself: one that runs, one whose wake another pass took
+// and whose pod is on its way back, and one whose pod's release is still in progress, which the
+// release has not suspended yet. That start overtakes such a release (store's IssueReleaseStop and
 // IssueRelease read a start queued above the release's own rows), and it brings back a claim the
 // release has suspended by the time it runs (the outbox's RequestRuleResume), so the task reaches
-// the worker once its pod is back. The outbox finishes it with no delivery while a newer wait of
-// the claim stands (internal/daemon's waitTimeReplaced).
-func (e *Engine) writeWaitTimeTask(ctx context.Context, tx pgx.Tx, issue record.Issue, wait record.ClaimWait) (int64, bool, error) {
-	task := waitTimeTask(wait)
+// the worker once its pod is back.
+func (e *Engine) wakeOrStart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, kind string,
+	start record.SuperviseRequest) (int64, bool, error) {
 	if e.cfg.Pods != nil {
-		released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, issue.Key, wait.Role)
+		released, found, err := e.cfg.Pods.ReleasedClaimOfRole(ctx, tx, issue.Key, role)
 		if err != nil {
 			return 0, false, err
 		}
 		if found {
-			row, err := e.wakeReleased(ctx, tx, released, pods.WakeWaitTime, task, e.now())
+			row, err := e.wakeReleased(ctx, tx, released, kind, start.Task, e.now())
 			if err != nil || row != 0 {
 				return row, row != 0, err
 			}
 		}
 	}
-	row, err := e.enqueueID(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: wait.Role,
-		Generation: issue.Generation, Task: task, WaitID: wait.ID})
+	row, err := e.enqueueID(ctx, tx, issue.Key, start)
 	return row, false, err
 }
 

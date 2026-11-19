@@ -18,7 +18,9 @@ import (
 // merger on the spec's row, and the spec's approval opens it again: the opening message calls open
 // every gated step that someone registered, and the hold agrees with the message. The criteria
 // step still holds the tree's work (record.TreeGate.Open), but it names no document, so it holds
-// no merger and no message names it.
+// no merger and no message names it. The merger's live session is told the closing (R8); the idle
+// release then takes its pod during the hold, so the approval writes the gate's own start of the
+// merger beside the opening message it sends the root's architect.
 func TestNoRowHoldsNoMergerAndTheSpecsApprovalSendsTheOpeningMessage(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
@@ -31,18 +33,25 @@ func TestNoRowHoldsNoMergerAndTheSpecsApprovalSendsTheOpeningMessage(t *testing.
 		held.LatestVersion != 1 {
 		t.Fatalf("the hold after the spec's registration = %+v, %t; want the spec's row at version 1, with its reviewer", held, holds)
 	}
+	if _, err := pool.Exec(t.Context(), `update claims set state = 'suspended', suspended_by = 'released' where token = $1`,
+		string(mergerToken(t, gatedRoot))); err != nil {
+		t.Fatalf("release the merger's pod: %v", err)
+	}
 	applyMirrored(t, pool, engine, "spec-approved-1", stepApproval(gatedRoot, "artifact-208", 1, record.EventMark{Seq: 12}))
 
 	closed := gateMovedBody(record.DesignStepSpec, "artifact-208", 1, false)
 	opened := gateMovedBody(record.DesignStepSpec, "artifact-208", 1, true)
 	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosedNote(gatedRoot, record.DesignStepSpec, "artifact-208", 1)},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: opened},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: opened},
 	})
 	if !strings.Contains(opened, "every gated step that someone registered now stands open") {
 		t.Fatalf("the opening message = %q, want it to call open every gated step that someone registered", opened)
+	}
+	if starts := mergerStartsOf(t, pool, gatedRoot); len(starts) != 1 || !starts[0].request.GateMessage || starts[0].request.Phase != "" ||
+		starts[0].request.Task != gateMovedTask(gatedRoot) {
+		t.Fatalf("the merger's starts after the spec's approval = %+v, want the gate's one opening start", starts)
 	}
 	if held, holds := treeMergerHold(t, pool, engine); holds {
 		t.Fatalf("the hold after the spec's approval = %+v, want none: the criteria step has no row", held)

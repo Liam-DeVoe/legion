@@ -168,6 +168,14 @@ type Delivery struct {
 	// delivery the release before stored can be, is sent with the daemon's sentences naming no
 	// commit and no entry at its end.
 	RoundNamed bool
+	// GateMessage marks the design gate's own task of a merger, from the start row that queued it
+	// (record.SuperviseRequest.GateMessage, RequestDeliver.GateMessage): its Task says only that
+	// the gate moved, and the send asks for the gate's whole message in front of it
+	// (Deps.GateNote), the closing message when the gate is closed at that send and the opening
+	// message when it stands open. It is persisted with the delivery, so a task queued at the close
+	// and sent after the opening, or after a restart, says what the gate is when the merger reads
+	// it (dispatch://INFRA-2040 R8).
+	GateMessage bool
 }
 
 // maxSendErrorRunes bounds the text of a failed send kept on a delivery (scrubSendError). What a
@@ -572,7 +580,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
+		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed,
+		GateMessage: request.GateMessage}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,

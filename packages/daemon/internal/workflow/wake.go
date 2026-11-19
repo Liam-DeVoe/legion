@@ -21,10 +21,11 @@ import (
 // A wake brings a released pod back. The release suspended every claim of the pod with the source
 // `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
 // which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Six things wake a pod, and this file holds four of them: the CI settlement, the
+// release saved. Seven things wake a pod, and this file holds four of them: the CI settlement, the
 // role message and the agent message the Envoy listener reports, and the stored backstop. The
-// fifth, the time of a wait the released worker declared, wakes through wakeReleased as they do
-// (waitDue, wait.go). The sixth — a delivery the daemon already had for a role of the pod — needs
+// fifth, the time of a wait the released worker declared, and the sixth, a move of the design gate
+// over a released merger, wake through wakeReleased as they do (waitDue, wait.go; deliverGateMove,
+// gate.go). The seventh — a delivery the daemon already had for a role of the pod — needs
 // nothing here, because a delivery to a suspended claim already resumes it (supervise's
 // deliverResuming) and the delivery is its own account of why the pod came back.
 //
@@ -77,6 +78,15 @@ type Pods interface {
 	// cutover's repair reads it to pass over a merger something will still wake
 	// (cutoverMergerRepair).
 	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
+	// IssueReleasing is whether an idle release of issue's pod is in progress: the release's mark
+	// stands (issue_releases), so its rows may still stop the pod's roles and take the pod away.
+	// The design gate's move reads it (deliverGateMove): a role message to a merger whose pod is
+	// being released can find no session to reach.
+	IssueReleasing(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// CancelPodBackstops drops the open backstops of issue's role in the caller's transaction:
+	// the design gate's opening cancels the backstop of every merger of the tree in merging, since
+	// the opening's one delivery is that merger's task for the opening (deliverGateMove).
+	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
@@ -128,8 +138,10 @@ func WakeTask(kind, detail string) string {
 		// merge nothing, which a call to take up its work where it left it would contradict.
 		return preamble + "The wake is the release's backstop running out: " + detail +
 			". Nothing else asked for you, so go on with your phase as it stands."
-	case pods.WakeWaitTime:
-		// The detail is the wait's own task (waitTimeTask), which says what the wake is.
+	case pods.WakeWaitTime, pods.WakeDesignGate:
+		// The detail is the wake's own task — the wait's (waitTimeTask) or the gate's
+		// (gateMovedTask) — which says what the wake is. The gate's state goes in front of the whole
+		// prompt at its send (the start's GateMessage mark, MergerGateMessage).
 		return preamble + detail
 	default:
 		return preamble + "The wake is " + kind + ": " + detail + "."
@@ -362,6 +374,11 @@ func (e *Engine) HeldMergers(ctx context.Context, tx pgx.Tx, issues []string) (m
 // queued (endWokenWait): R3's third end, so the start row's task is the claim's new work and is
 // delivered. The backstop's wake ends none.
 //
+// The design gate's own wake (pods.WakeDesignGate, deliverGateMove) writes its start row with the
+// mark that its task opens with the gate's own message (record.SuperviseRequest.GateMessage),
+// which the claim's send builds as the gate stands then, so a wake written at the close and sent
+// after the opening says that the gate opened.
+//
 // One row would refuse a wake wrongly, and it is closed before the take rather than read out of a
 // refusal: the resume of a pod that has gone away. A release of a pod no claim of the issue can
 // use ends no wake and so closes no resume, and it still takes the pod, leaving a row that would
@@ -398,7 +415,9 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		return 0, err
 	}
 	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
-	return e.enqueueID(ctx, tx, issue.Key, wakeRow(*issue, released.Role, WakeTask(kind, detail)))
+	start := wakeRow(*issue, released.Role, WakeTask(kind, detail))
+	start.GateMessage = kind == pods.WakeDesignGate
+	return e.enqueueID(ctx, tx, issue.Key, start)
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role

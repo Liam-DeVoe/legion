@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // A new version of an approved spec closes the tree's design gate under the workers already
@@ -93,14 +94,14 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 		Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion, Version: 2})
 	applyMirrored(t, pool, engine, "criteria-approved-2", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 11}))
 	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosedNote(gatedRoot, record.DesignStepSpec, "artifact-208", 4)},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
 	})
 
 	// The spec's own approval is the one that opens every gated step, so it is the one told.
 	applyMirrored(t, pool, engine, "spec-approved-4", stepApproval(gatedRoot, "artifact-208", 4, record.EventMark{Seq: 12}))
 	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosedNote(gatedRoot, record.DesignStepSpec, "artifact-208", 4)},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: gateMovedBody(record.DesignStepSpec, "artifact-208", 4, true)},
@@ -127,7 +128,7 @@ func TestAnUnregisteredGatedStepLeavesTheMessageAndTheHoldAgreed(t *testing.T) {
 
 	closed := gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)
 	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosedNote(gatedRoot, record.DesignStepSpec, "artifact-208", 4)},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
 	})
 }
@@ -151,7 +152,7 @@ func TestARegistrationThatClosesTheStandingGateTellsTheMerger(t *testing.T) {
 
 	closed := gateMovedBody(record.DesignStepSpec, "artifact-208", 4, false)
 	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
-		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: mergerClosedNote(gatedRoot, record.DesignStepSpec, "artifact-208", 4)},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
 	})
 }
@@ -184,11 +185,14 @@ func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
 
 // seedMergingRoot records the gated tree's root in merging, where its merger holds the phase the
 // design gate holds: the one phase a gate that moves under a running worker can let merge a head
-// whose design nobody approved.
+// whose design nobody approved. Its merger runs a live session, idle between turns, so each move
+// of the gate reaches it by the move's role message (gateDelivery), and its closing message is the
+// one that holds the merge (mergerClosedNote).
 func seedMergingRoot(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 4, Status: "retro", Rank: "U"})
+	seedMergerClaim(t, pool, gatedRoot, supervise.StateIdle, "")
 }
 
 // gateMovedBody is the whole message a role is sent for one move of LEGION-208's design gate

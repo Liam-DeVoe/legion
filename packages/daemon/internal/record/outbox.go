@@ -972,9 +972,9 @@ type SuperviseRequest struct {
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
 	// resume task to a silent worker level with that entry (workflow's workerSilent), a production
 	// check's look (workflow's startLook), the pod wake (workflow's wakeRow), the task of a wait's
-	// time (workflow's waitDue, WaitID below) and the resume of a cancelled idle release (the
-	// daemon's outbox). Each hands its role work it was already on, or work no phase entry numbers
-	// at all.
+	// time (workflow's waitDue, WaitID below), the design gate's own start of a merger (workflow's
+	// deliverGateMove, GateMessage below) and the resume of a cancelled idle release (the daemon's
+	// outbox). Each hands its role work it was already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
@@ -1075,6 +1075,17 @@ type SuperviseRequest struct {
 	// that task would end the newer wait as new work, and the time of a replaced wait sends
 	// nothing (dispatch://INFRA-2040 R3, D5 of its plan). Every other request names none.
 	WaitID string `json:"waitId,omitempty"`
+	// GateMessage marks the design gate's own start of a merger (workflow's deliverGateMove, at the
+	// gate's close and at its opening): a start with a task, no phase and no entry, so no phase
+	// fence holds it. The task says only that the gate moved; the gate's message, the closing
+	// message when the gate is closed at the send and the opening message when it stands open, is
+	// built at the send and goes in front of it (dispatch://INFRA-2040 R8, D16 of its plan). The
+	// outbox's start carries the mark into the claim's delivery (supervise.RequestDeliver and
+	// Delivery.GateMessage), where the send reads it (supervise.Deps.GateNote). Every other
+	// request carries none. The release before decodes strictly (DisallowUnknownFields), so the
+	// way back of 20261119055700_pending_delivery_gate_message deletes the key from each row
+	// before that release boots.
+	GateMessage bool `json:"gateMessage,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -1982,6 +1993,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.WaitID != "" && (value.Op != "start" || value.Task == "" || value.Phase != "" || value.Entry != 0 || value.CheckLook != 0) {
 			return fmt.Errorf("a supervise start of a wait's time is a start with a task, no phase, no entry and no check look")
+		}
+		if value.GateMessage && (value.Op != "start" || value.Role != claim.RoleMerger || value.Task == "" || value.Phase != "" ||
+			value.Entry != 0 || value.CheckLook != 0 || value.WaitID != "") {
+			return fmt.Errorf("a supervise start of the design gate's own message is a merger's start with a task, no phase, no entry, no check look and no wait")
 		}
 		if value.Kept != nil {
 			if value.Op != "start" || value.Task == "" {
