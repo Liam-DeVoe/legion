@@ -28,8 +28,8 @@ const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 
 /** How long one case gets, and the hook that ends it. The hook removes the case's scratch root
- *  (some 250 to 320 files, 135 MB), which took from 0.1 s to 38 s on a loaded dev box, past bun's
- *  own 5 s per hook. */
+ *  (some 254 to 322 files and directories, 135 MB), which took from 0.07 s to 38 s on a loaded dev
+ *  box, past bun's own 5 s per hook. */
 const CASE_MS = 180_000;
 
 /**
