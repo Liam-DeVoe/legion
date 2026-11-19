@@ -41,6 +41,7 @@ import { IssueMarginCards, IssueMarginPanel } from "./IssueMargin";
 import { IssuePresetPanels } from "./IssuePresetPanels";
 import { ItemMatchList } from "./ItemMatchList";
 import { agentsOnlyItem, type IssueAddress, issueAddress } from "./issue-address";
+import { issuePriority } from "./issue-priority";
 import { OpenedDocument } from "./OpenedDocument";
 import { OutlineWriterProvider } from "./outline-writer";
 import { NODE_TYPE_NAMES, NODE_TYPES, type Preset, sentenceCase } from "./page-words";
@@ -348,7 +349,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // Every key the issue page binds, in its own scope (`useIssueKeymap.ts`). The priority write
   // is the page's one, shared with the identity block and the palette, so a refusal of any of
   // them is reported once.
-  const priorityWrite = useIssuePriority(route.key);
+  const priorityWrite = useIssuePriority(route.key, issuePriority(issue.data?.priority));
   useIssueKeymap(priorityWrite, route.key);
 
   // Where the reader left this view, which this commit is about to put them back at. It is read

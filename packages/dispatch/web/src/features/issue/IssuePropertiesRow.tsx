@@ -31,7 +31,6 @@ import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { gatedStepEntries } from "./gated-steps";
 import { presetPath } from "./issue-address";
-import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -194,7 +193,6 @@ export function IssuePropertiesRow({
       <PriorityEditor
         disabled={isClosed}
         issueKey={issue.key}
-        priority={issuePriority(issue.priority)}
         variant="header"
         write={priorityWrite}
       />
