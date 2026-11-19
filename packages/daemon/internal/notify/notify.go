@@ -482,8 +482,8 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, response.Status, strings.TrimSpace(string(body)))
 }
 
-// ListedSession is one row of Envoy's session list as the daemon reads it (sessionInfo in
-// packages/envoy/cmd/listener/api.go): the session, the state its last registration puts it in —
+// ListedSession is one row of Envoy's session list as the daemon reads it (listenerwire.SessionInfo,
+// which the listener writes): the session, the state its last registration puts it in —
 // `live`, or `unresponsive` for one past the listener's live window and not gone — that
 // registration, read from `last_seen` in unix milliseconds, and the Envoy roles the session holds.
 // The row's other members are not read.
@@ -540,12 +540,7 @@ func (p *HTTPPublisher) ListSessions(ctx context.Context) ([]ListedSession, erro
 	if err != nil {
 		return nil, fmt.Errorf("read Envoy's session list: %w", err)
 	}
-	var rows []struct {
-		SessionID string   `json:"session_id"`
-		State     string   `json:"state"`
-		LastSeen  int64    `json:"last_seen"`
-		Roles     []string `json:"roles"`
-	}
+	var rows []listenerwire.SessionInfo
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return nil, fmt.Errorf("read Envoy's session list: %w", err)
 	}
@@ -554,7 +549,7 @@ func (p *HTTPPublisher) ListSessions(ctx context.Context) ([]ListedSession, erro
 		if row.SessionID == "" {
 			continue
 		}
-		sessions = append(sessions, ListedSession{Session: row.SessionID, State: row.State, LastSeen: time.UnixMilli(row.LastSeen), Roles: row.Roles})
+		sessions = append(sessions, ListedSession{Session: row.SessionID, State: string(row.State), LastSeen: time.UnixMilli(row.LastSeen), Roles: row.Roles})
 	}
 	return sessions, nil
 }
