@@ -70,21 +70,21 @@ func requireReconnected(t *testing.T, what string, hold *testnats.ReplyHold, err
 }
 
 // Each class of nats.go's answer for a connection's close (connectionCloses), given to a call the
-// bus made directly on a running client's connection once that connection is closed, is a lost
-// connection (lostIfClosed), unsent as the call says, keeping nats.go's answer in its text, and
-// Reconnected matches it once the client recovers its connection. The same answer stays nats.go's
-// while the connection is connected, for a call on a connection the client has replaced
-// (heldNow's nil), and on a stopped client.
+// bus made directly on a running client's connection, is a lost connection (lostIfClosed), unsent
+// as the call says, keeping nats.go's answer in its text, whether the connection is closed or
+// connected again: a close answer for a call made on the connection itself comes from its close,
+// its drain or a forced reconnect of it (TestADirectCallAForcedReconnectCutOffIsLostOnceTheConnectionIsBack),
+// and Reconnected matches it once the client recovers its connection. The same answer stays
+// nats.go's for a call on a connection the client has replaced (heldNow's nil), and on a stopped
+// client.
 //
-// The control is this row with lostIfClosed answering err as it is: every class on the closed
-// connection comes back as nats.go gave it.
+// The control is this row with lostIfClosed answering err as it is: every class comes back as
+// nats.go gave it.
 func TestEveryCloseOfADirectCallOnARunningClientsConnectionIsLost(t *testing.T) {
 	client, hold := heldClient(t)
 	conn := client.Connection()
-	for _, closed := range connectionCloses {
-		if err := client.lostIfClosed(closed, conn, true); !errors.Is(err, closed) || errors.Is(err, ErrConnectionLost) {
-			t.Fatalf("%v answered for a call on a connected connection came back %v, want it as it is", closed, err)
-		}
+	for i, closed := range connectionCloses {
+		requireLost(t, "a call on the connected connection nats.go answered "+closed.Error(), client.lostIfClosed(closed, conn, i%2 == 0), client, i%2 == 0, closed)
 	}
 	closeHeld(t, client, hold)
 	for i, closed := range connectionCloses {

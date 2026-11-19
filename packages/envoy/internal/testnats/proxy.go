@@ -33,6 +33,40 @@ type Proxy struct {
 	// gate is nil while the proxy moves bytes, and open from Freeze until Restore: every read
 	// and every write of a relayed connection waits for it to close.
 	gate chan struct{}
+	// hold is set from HoldConnectAnswers until Restore: each connection accepted meanwhile is
+	// held at its handshake.
+	hold *ConnectHold
+}
+
+// ConnectHold is a hold of the server's answer to a client's CONNECT (Proxy.HoldConnectAnswers):
+// the client has sent its CONNECT, and its handshake waits for the server's answer, with nats.go's
+// connection lock held (nats.go v1.53.1 processConnectInit, under doReconnect's lock, :3458-3485),
+// until Restore or until the client's own connect timeout ends the attempt.
+type ConnectHold struct {
+	held, ended, release chan struct{}
+	heldOnce, endedOnce  sync.Once
+}
+
+// Held is closed once a client's CONNECT has reached the server through the hold, so its
+// handshake is waiting for the answer the hold keeps.
+func (h *ConnectHold) Held() <-chan struct{} { return h.held }
+
+// Ended is closed once a connection the hold holds has closed: the client gave its handshake up,
+// at its connect timeout, or the proxy cut it.
+func (h *ConnectHold) Ended() <-chan struct{} { return h.ended }
+
+// HoldConnectAnswers ends a Cut and holds the handshake of each connection the proxy accepts from
+// now until Restore: the server's INFO reaches the client, the client's CONNECT reaches the server,
+// and nothing more the server sends reaches the client until Restore, its answer to the CONNECT
+// included. That is a hub that holds a CONNECT its auth service has not answered.
+func (p *Proxy) HoldConnectAnswers() *ConnectHold {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cut = false
+	if p.hold == nil {
+		p.hold = &ConnectHold{held: make(chan struct{}), ended: make(chan struct{}), release: make(chan struct{})}
+	}
+	return p.hold
 }
 
 // ProxyOption configures a Proxy.
@@ -110,8 +144,8 @@ func (p *Proxy) Freeze() {
 	}
 }
 
-// Restore ends a Cut and a Freeze: the proxy accepts and relays connections again, and the bytes a
-// freeze held move on.
+// Restore ends a Cut, a Freeze and a hold of CONNECT answers: the proxy accepts and relays
+// connections again, and the bytes a freeze or a hold kept move on.
 func (p *Proxy) Restore() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -119,6 +153,10 @@ func (p *Proxy) Restore() {
 	if p.gate != nil {
 		close(p.gate)
 		p.gate = nil
+	}
+	if p.hold != nil {
+		close(p.hold.release)
+		p.hold = nil
 	}
 }
 
@@ -134,7 +172,8 @@ func (p *Proxy) serve() {
 }
 
 // join dials the server for client and relays the two into each other, or closes client at once
-// while the proxy is cut or when the dial fails.
+// while the proxy is cut or when the dial fails. A connection accepted while CONNECT answers are
+// held (HoldConnectAnswers) is relayed under that hold.
 func (p *Proxy) join(client net.Conn) {
 	if !p.track(client) {
 		return
@@ -147,8 +186,11 @@ func (p *Proxy) join(client net.Conn) {
 		p.untrack(client)
 		return
 	}
-	go p.relay(server, client)
-	p.relay(client, server)
+	p.mu.Lock()
+	hold := p.hold
+	p.mu.Unlock()
+	go p.relay(server, client, hold, false)
+	p.relay(client, server, hold, true)
 }
 
 // track records conn as relayed and reports true, or closes it and reports false while the proxy
@@ -186,9 +228,13 @@ const proxyReadBuffer = 64 << 10
 
 // relay copies src to dst, each chunk written the proxy's delay after it was read and each read
 // held to the proxy's rate, until either ends; then it closes both, which ends the other direction
-// too.
-func (p *Proxy) relay(dst, src net.Conn) {
+// too. Under a hold (hold not nil), toClient says the direction: the server's chunks after the
+// line of its INFO wait for the hold's release, and the client's CONNECT marks the hold held.
+func (p *Proxy) relay(dst, src net.Conn, hold *ConnectHold, toClient bool) {
 	defer p.untrack(dst, src)
+	if hold != nil {
+		defer hold.endedOnce.Do(func() { close(hold.ended) })
+	}
 	type chunk struct {
 		data []byte
 		due  time.Time
@@ -211,12 +257,26 @@ func (p *Proxy) relay(dst, src net.Conn) {
 			}
 		}
 	}()
+	infoPassed := false
 	for c := range queue {
 		time.Sleep(time.Until(c.due))
 		p.pass()
+		if hold != nil && toClient && infoPassed {
+			select {
+			case <-hold.release:
+			case <-hold.ended:
+			case <-p.done:
+			}
+		}
 		if _, err := dst.Write(c.data); err != nil {
 			// The reader ends once src is closed below.
 			break
+		}
+		if hold != nil && toClient && bytes.Contains(c.data, []byte("\r\n")) {
+			infoPassed = true
+		}
+		if hold != nil && !toClient && bytes.Contains(c.data, []byte("CONNECT ")) {
+			hold.heldOnce.Do(func() { close(hold.held) })
 		}
 	}
 	_ = src.Close()

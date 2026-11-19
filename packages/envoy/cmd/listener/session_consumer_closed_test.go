@@ -93,3 +93,91 @@ func TestADeleteWhoseConnectionIsClosedReleasesTheSessionsLockAndDeletesOnceItIs
 		t.Fatalf("the delete logged a failure: %s", logs)
 	}
 }
+
+// heldHandshakeWait is how long the row below waits for the delete to release the session's lock
+// while the hub holds the reconnect's handshake. The hold lasts until the row restores the proxy,
+// and the client's connect timeout is above the test's deadline (bus.WithConnectTimeout), so a
+// delete that waits for nats.go's connection lock under the session's lock never releases it while
+// the hold lasts; one that reads the connection's status off the client's own record releases it
+// in milliseconds. The wait bounds a row that fails, not the answer of one that passes.
+const heldHandshakeWait = 10 * time.Second
+
+// A delete of a gone session's consumer made while the hub holds the handshake of its connection's
+// reconnect - as a hub whose auth service has not answered the CONNECT holds it for its
+// authorization timeout - releases the session's lock while the handshake is still held, and
+// deletes once the connection is back. nats.go holds its connection lock through the whole
+// handshake (doReconnect, nats.go v1.53.1 :3458-3485), and every read of its state waits for it;
+// the delete's first consumer call reads the client's own record of the connection's status
+// (bus's connForRequest and requestLife), answers the loss at once, and the delete releases the
+// lock and waits for the connection with nothing held (relockAfterReconnect).
+//
+// The order is made certain: the proxy holds the server's answer to the reconnect's CONNECT until
+// the row restores it (testnats.Proxy.HoldConnectAnswers), and the row holds the session's lock
+// until the delete waits for it, as the row above does.
+//
+// The control is this row with bus's connForRequest reading conn.IsConnected() in place of the
+// record: the delete holds the session's lock for as long as the handshake is held, and the row
+// fails at heldHandshakeWait.
+func TestADeleteDuringAHeldReconnectHandshakeReleasesTheSessionsLockWhileItIsHeld(t *testing.T) {
+	rig := newSweepRig(t)
+	proxy := testnats.StartProxy(t, testnats.URL(t))
+	consumers, err := bus.ConnectSessionConsumers([]string{proxy.URL()}, 0, nil, bus.WithConnectTimeout(testnats.Remaining(t)))
+	if err != nil {
+		t.Fatalf("connect the session consumers through the proxy: %v", err)
+	}
+	t.Cleanup(rig.deps.consumers.consumers.Close)
+	rig.deps.consumers.consumers = consumers
+	t.Cleanup(proxy.Restore)
+	const sessionID = "ses_delete_held_handshake"
+	rig.register(t, sessionID)
+	rig.now.advance(sweepLapse)
+	rig.requireState(t, sessionID, session.Gone)
+	ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
+	defer cancel()
+
+	proxy.Cut()
+	hold := proxy.HoldConnectAnswers()
+	select {
+	case <-hold.Held():
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("no reconnect's CONNECT reached the server through the hold by the test's deadline")
+	}
+	locks := &rig.deps.consumers.locks
+	held := locks.lock(sessionID)
+	deleted := make(chan bool, 1)
+	go func() { deleted <- rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil) }()
+	awaitLockUsers(t, locks, sessionID, 2)
+	held()
+	for deadline := time.Now().Add(heldHandshakeWait); lockUsers(locks, sessionID) != 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			proxy.Restore()
+			t.Fatalf("the delete still held the session's lock %s into the held handshake: it waited for nats.go's connection lock with the session's lock held", heldHandshakeWait)
+		}
+	}
+	select {
+	case <-hold.Ended():
+		t.Fatal("the delete released the session's lock only once the held handshake had ended")
+	default:
+	}
+	select {
+	case gone := <-deleted:
+		t.Fatalf("the delete answered %t before the connection was back; log: %s", gone, rig.harness.logs.String())
+	default:
+	}
+	rig.requireConsumer(t, sessionID)
+
+	proxy.Restore()
+	var gone bool
+	select {
+	case gone = <-deleted:
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the delete was still waiting at the test's deadline")
+	}
+	if !gone {
+		t.Fatalf("the delete made once the connection was back reported the consumer standing; log: %s", rig.harness.logs.String())
+	}
+	rig.requireNoConsumer(t, sessionID)
+	if logs := rig.harness.logs.String(); strings.Contains(logs, "session consumer delete failed") {
+		t.Fatalf("the delete logged a failure: %s", logs)
+	}
+}

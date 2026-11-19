@@ -72,16 +72,28 @@ func (e *connectionLost) Is(target error) bool { return target == ErrConnectionL
 // (connectWithContext) has failed, for whatever reason nats.go's dial gave: no server answered,
 // the server refused the credential or closed the connection during the handshake, the host did
 // not resolve, or the attempt's connect timeout passed. It reports true only once the client's
-// connection is connected, so a caller that retries on it does not retry before, and false for
-// each other end of that wait. Any other err, and a ctx that has ended, report false at once: the
-// caller answers err as it always did. The caller releases what it holds before it calls this,
-// since the wait lasts as long as the outage.
+// connection is connected and the record of its status reads it so too (connStatus.awaitUp), so a
+// caller that retries on it does not retry before, nor on a record still trailing nats.go's report,
+// which would answer the loss again at once; and false for each other end of that wait. Any other
+// err, and a ctx that has ended, report false at once: the caller answers err as it always did.
+// The caller releases what it holds before it calls this, since the wait lasts as long as the
+// outage.
 func Reconnected(ctx context.Context, err error) bool {
 	var lost *connectionLost
 	if !errors.As(err, &lost) || ctx.Err() != nil {
 		return false
 	}
-	return lost.client.ensureConnWithContext(ctx) == nil
+	c := lost.client
+	if c.ensureConnWithContext(ctx) != nil {
+		return false
+	}
+	c.mu.Lock()
+	var status *connStatus
+	if c.Conn != nil {
+		status = c.statusLocked()
+	}
+	c.mu.Unlock()
+	return status == nil || status.awaitUp(ctx)
 }
 
 // requestUnsent reports whether err is a request Request did not send, the life of its
@@ -103,16 +115,30 @@ func requestUnsent(err error) bool {
 // waits (Reconnected), so a wait made here would be made with it held: the dial that replaces a
 // closed connection, which lasts until a server answers, up to ten attempts a second apart
 // (connectWithContext), is made by that retry instead, through Reconnected's
-// ensureConnWithContext, with nothing held. A client still awaiting its first connection still
-// waits for it, a connection nats.go is draining counts as connected (nats.go v1.53.1
-// nats.go:6392-6394), and a stopped client still answers as ensureConnWithContext does.
+// ensureConnWithContext, with nothing held. Whether the connection is connected is upNow's
+// answer, which waits for no reconnect's dial or handshake: the record of the connection's status
+// (connStatus) answers a connection it reads down at once, and one it reads up is confirmed in
+// nats.go's own state by a probe that waits at most heldLockBudget for nats.go's connection lock,
+// which nats.go holds through a whole reconnect attempt, the dial and the handshake; a lock held
+// longer reads as a connection mid-reconnect, down. IsConnected itself would wait for the lock, with
+// the caller's held, for up to the attempt's connect timeout, or a hub's authorization timeout while
+// its auth service holds the CONNECT. A client still awaiting its first connection still waits for
+// it, a connection nats.go is draining counts as connected (nats.go v1.53.1 nats.go:6392-6394), and
+// a stopped client still answers as ensureConnWithContext does.
 func (c *Client) connForRequest(ctx context.Context) error {
 	if c.lossAtOnce && !c.stopped() {
 		c.mu.Lock()
 		conn, awaiting := c.Conn, c.awaitingConnection
+		var status *connStatus
+		if conn != nil {
+			status = c.statusLocked()
+		}
 		c.mu.Unlock()
-		if conn != nil && !awaiting && !conn.IsConnected() {
-			return &connectionLost{client: c, unsent: true}
+		if conn != nil && !awaiting {
+			if up, _ := status.upNow(); !up {
+				return &connectionLost{client: c, unsent: true}
+			}
+			return nil
 		}
 	}
 	return c.ensureConnWithContext(ctx)
@@ -181,12 +207,13 @@ var endedLife = func() context.Context {
 // bindRequest is the context a request made under ctx on c's connection is sent with, and the func
 // that ends it and names the request's error: one the end of the connection's life cut off, while
 // ctx itself had not ended, is lostOrClosed's, and so is nats.go's answer for that connection's
-// close given before the life ended (closedUnder). A nil c binds nothing.
+// close or forced reconnect given before the life ended (closedUnder, against the reconnect count
+// the life began at). A nil c binds nothing.
 func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) error) {
 	if c == nil {
 		return ctx, func(err error) error { return err }
 	}
-	life, conn := c.requestLife()
+	life, conn, reconnects := c.requestLife()
 	bound, cancel := context.WithCancelCause(ctx)
 	stop := context.AfterFunc(life, func() { cancel(ErrConnectionLost) })
 	if life.Err() != nil {
@@ -195,47 +222,84 @@ func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) 
 	return bound, func(err error) error {
 		stop()
 		cancel(nil)
-		if err == nil || ctx.Err() != nil || life.Err() == nil && !closedUnder(err, conn) {
+		if err == nil || ctx.Err() != nil || life.Err() == nil && !c.closedUnder(err, conn, reconnects) {
 			return err
 		}
 		return c.lostOrClosed(err)
 	}
 }
 
-// closedUnder reports whether err is nats.go's answer for a close of conn, the connection the
-// request's life belongs to - the connection closed, draining, its drain timed out, or no server
-// left to reconnect to - given while conn is closed or going away. nats.go answers a request a close
-// cut off before the status report that ends the life (close clears the pending requests,
-// nats.go:6086, before changeConnStatus, :6142, and sets the status CLOSED first, :6070), so that
-// answer is as lost as one after the life ended, and a running client recovers its connection for
-// the caller's retry. The same answer while conn is still connected is a handle's of an earlier
-// connection the client has since replaced, which no retry on the client's connection answers, so
-// it stays nats.go's: a caller reads it as lasting, rather than retrying it for ever.
-func closedUnder(err error, conn *nats.Conn) bool {
-	if !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrConnectionDraining) &&
-		!errors.Is(err, nats.ErrDrainTimeout) && !errors.Is(err, nats.ErrNoServers) {
+// closedUnder reports whether err, a request's answer, is nats.go's answer for a close of conn
+// (closeAnswer) given while conn is closed or going away, or once conn has reconnected since the
+// request's life began at reconnect count reconnects. nats.go answers a request a close cut off
+// before the status report that ends the life (close clears the pending requests, nats.go:6086,
+// before changeConnStatus, :6142, and sets the status CLOSED first, :6070), and a forced reconnect
+// (ForceReconnect, which the keeper of a service's token makes to present a new one, natscred)
+// answers every pending request nats.ErrConnectionClosed and reconnects in place, counting the
+// reconnect before it reports the connection connected (doReconnect, nats.go:3482), so by the time
+// the request reads its answer the connection can be connected again: each answer is as lost as
+// one after the life ended, and a running client recovers its connection for the caller's retry.
+// The same answer while conn is still connected and has not reconnected since is a handle's of an
+// earlier connection the client has since replaced (a request's send may use such a handle, where a
+// direct call is made on conn itself, lostIfClosed), which no retry on the client's connection
+// answers, so it stays nats.go's: a caller reads it as lasting, rather than retrying it for ever,
+// and a reconnect under such a handle's call makes its error lost once, for one retry.
+//
+// A connection the record of its status reads not connected answers without a read of nats.go's
+// own state; one it reads connected is read in nats.go by a probe bounded at heldLockBudget
+// (connStatus.probe), and a probe nats.go's lock kept waiting reads as a connection mid-reconnect,
+// whose close answer is lost.
+func (c *Client) closedUnder(err error, conn *nats.Conn, reconnects uint64) bool {
+	if conn == nil || !closeAnswer(err) {
 		return false
 	}
-	return conn != nil && (conn.IsClosed() || conn.IsDraining() || !conn.IsConnected())
+	c.mu.Lock()
+	var status *connStatus
+	if conn == c.Conn {
+		status = c.statusLocked()
+	}
+	c.mu.Unlock()
+	if status != nil {
+		if recorded, _ := status.read(); recorded != nats.CONNECTED {
+			return true
+		}
+		actual, now, answered := status.probe()
+		return !answered || actual != nats.CONNECTED || now != reconnects
+	}
+	if conn.IsClosed() || conn.IsDraining() || !conn.IsConnected() {
+		return true
+	}
+	return conn.Stats().Reconnects != reconnects
 }
 
 // lostIfClosed is err, nats.go's answer for a call the bus made directly on conn rather than
 // through Request, as a call the loss of a running client's connection cut off (connectionLost,
-// unsent when nats.go refused the call before writing anything) when it is nats.go's answer for
-// conn's close (closedUnder), and err as it is otherwise. It is closedUnder's rule, which Request's
-// own calls follow (bindRequest), for the calls that are made outside one. conn is the client's
-// connection the call was made on: the one the client held when the call began, or for a call of
-// an object bound to one connection (a pulled message's acknowledgement, a pull's request, a KV
-// handle's watch), that object's connection while it is still the client's (heldNow), and nil once
-// the client has replaced it. A nil conn answers err as it is, so a call on the handle of a
-// connection the client has replaced keeps nats.go's error, which no retry on the client's
-// connection answers and which its caller reads as lasting. So does a stopped client's call, since
-// that client recovers nothing, and a nil c's, a connection no client tracks.
+// unsent when nats.go refused the call before writing anything) when it is nats.go's answer for a
+// close (closeAnswer), and err as it is otherwise. conn is the client's connection the call was
+// made on: the one the client held when the call began, or for a call of an object bound to one
+// connection (a pulled message's acknowledgement, a pull's request, a KV handle's watch), that
+// object's connection while it is still the client's (heldNow), and nil once the client has
+// replaced it. A close answer for a call made on conn comes from conn's close or drain, or from a
+// forced reconnect of it (ForceReconnect, which the keeper of a service's token makes to present a
+// new one, natscred), which answers every pending flush and request nats.ErrConnectionClosed and
+// reconnects in place (nats.go v1.53.1 :2589-2622, :5948-5949): each is a loss of the connection,
+// however late the answer is read, so no read of conn's state decides it, and none waits for a
+// reconnect's handshake. A nil conn answers err as it is, so a call on the handle of a connection
+// the client has replaced keeps nats.go's error, which no retry on the client's connection answers
+// and which its caller reads as lasting. So does a stopped client's call, since that client
+// recovers nothing, and a nil c's, a connection no client tracks.
 func (c *Client) lostIfClosed(err error, conn *nats.Conn, unsent bool) error {
-	if c == nil || !closedUnder(err, conn) || c.stopped() {
+	if c == nil || conn == nil || !closeAnswer(err) || c.stopped() {
 		return err
 	}
 	return &connectionLost{client: c, unsent: unsent, cause: err}
+}
+
+// closeAnswer reports whether err is nats.go's answer for a close of its connection: the
+// connection closed, draining, its drain timed out, or no server left to reconnect to.
+func closeAnswer(err error) bool {
+	return errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrConnectionDraining) ||
+		errors.Is(err, nats.ErrDrainTimeout) || errors.Is(err, nats.ErrNoServers)
 }
 
 // heldNow is conn while it is c's connection, and nil once c has replaced it (lostIfClosed): the
@@ -269,79 +333,132 @@ func (c *Client) lostOrClosed(err error) error {
 	return fmt.Errorf("bus: the client was stopped before the request was answered: %w", nats.ErrConnectionClosed)
 }
 
-// requestLife is the life of the client's connection that a request made now is bound to, and that
-// connection: the life running while its connection is still the client's and connected, or else a
-// new one when the connection is connected; a connection that is not gets endedLife. Reading the
-// state here as well as listening for its change ends a life whose report of the loss went missing
-// at the next request.
+// requestLife is the life of the client's connection that a request made now is bound to, that
+// connection, and nats.go's reconnect count when the life began: the life running while its
+// connection is still the client's and in the connected run it began in, or else a new one when
+// the connection is connected; a connection that is not gets endedLife.
 //
-// A new life listens for the connection's loss before it reads the connection's state, so a loss
-// between the two still ends it, and a goroutine of its own ends it at the first of those reports
-// and then stops listening. nats.go drops a status report it finds a listener's channel holding an
-// unread one for (sendStatusEvent, nats.go:6682-6699), which a goroutine that reads at once makes a
-// microsecond window; the disconnect and close callbacks end it besides (endLifeIfDown).
-func (c *Client) requestLife() (context.Context, *nats.Conn) {
+// A connection the record of its status (connStatus) reads down gets endedLife without a read of
+// nats.go's own state, which waits for a reconnect's handshake, so a caller holding a lock is
+// answered at once while the connection is down. The running life is taken on the record's word,
+// under c.mu. A new life is begun only once nats.go's own state, read outside c.mu by a probe that
+// waits for nats.go's lock at most heldLockBudget (upNow), says the connection is connected, since
+// the record trails nats.go's report by the moment its sources take to tell it. So a request made
+// once nats.go has closed the connection, or reported its drop, and before any request since has
+// begun a life on it, is not sent, and one made while nats.go holds its lock for a reconnect's
+// handshake is answered within heldLockBudget.
+//
+// A life ends when its connected run does (connEpoch.down), at the record's first report of the
+// loss, the status change nats.go makes inside processOpErr (nats.go:3565), and a report nats.go
+// lost is made up for by a refresh (connStatus.refresh), which the disconnect, reconnect and close
+// callbacks make (endLifeIfDown) and so does a request the record answers down.
+//
+// A request made in the moment between nats.go's report and the record's applying it, on a running
+// life, is handed to nats.go. After a close, nats.go refuses it as closed before writing it, and
+// its answer is ErrConnectionLost (closedUnder), but not marked unsent, so a stored publish's charge
+// counts it as one that may have landed: a cost bounded by that moment, on a running client's
+// connection, which nats.go closes only at the client's own Close, a drain, or the hub refusing its
+// credential twice. After a drop it is refused, or abandoned at the life's end (RequestBounded).
+func (c *Client) requestLife() (context.Context, *nats.Conn, uint64) {
 	c.mu.Lock()
-	life, conn, replaced := c.requestLifeLocked()
-	c.mu.Unlock()
-	if replaced != nil {
-		c.endLifeNow(replaced)
-	}
-	return life, conn
-}
-
-// requestLifeLocked is requestLife's work under c.mu, and the end of the running life it replaces,
-// which requestLife makes once it has let c.mu go (endLifeNow).
-func (c *Client) requestLifeLocked() (context.Context, *nats.Conn, context.CancelCauseFunc) {
 	conn := c.Conn
-	if c.life != nil && c.life.Err() == nil && c.lifeConn == conn && conn.IsConnected() {
-		return c.life, conn, nil
+	var status *connStatus
+	var epoch *connEpoch
+	if conn != nil {
+		status = c.statusLocked()
+		_, epoch = status.read()
 	}
-	var replaced context.CancelCauseFunc
-	if c.life != nil && c.life.Err() == nil {
-		replaced = c.endLife
+	if life, reconnects, ok := c.runningLifeLocked(conn, epoch); ok {
+		c.mu.Unlock()
+		return life, conn, reconnects
 	}
-	if conn == nil {
-		return endedLife, nil, replaced
+	if epoch == nil {
+		replaced := c.takeLifeLocked()
+		c.mu.Unlock()
+		c.endLifeNow(replaced)
+		if status != nil {
+			status.refresh()
+		}
+		return endedLife, conn, 0
 	}
-	lost := conn.StatusChanged(nats.DISCONNECTED, nats.RECONNECTING, nats.CLOSED)
-	if !conn.IsConnected() {
-		conn.RemoveStatusListener(lost)
-		return endedLife, conn, replaced
+	c.mu.Unlock()
+
+	up, reconnects := status.upNow()
+	if !up {
+		return endedLife, conn, 0
 	}
+	c.mu.Lock()
+	if life, running, ok := c.runningLifeLocked(conn, epoch); ok {
+		c.mu.Unlock()
+		return life, conn, running
+	}
+	if _, now := status.read(); c.Conn != conn || now != epoch {
+		c.mu.Unlock()
+		return endedLife, conn, 0
+	}
+	replaced := c.takeLifeLocked()
 	life, end := context.WithCancelCause(context.Background())
-	c.life, c.endLife, c.lifeConn = life, end, conn
+	c.life, c.endLife, c.lifeConn, c.lifeEpoch, c.lifeReconnects = life, end, conn, epoch, reconnects
+	c.mu.Unlock()
+	c.endLifeNow(replaced)
 	go func() {
 		select {
-		case <-lost:
+		case <-epoch.down:
 			c.endLifeNow(end)
 		case <-life.Done():
 		}
-		conn.RemoveStatusListener(lost)
 	}()
-	return life, conn, replaced
+	return life, conn, reconnects
 }
 
-// endLifeIfDown ends the life of the connection requests are bound to once that connection is no
-// longer connected: the disconnect and close callbacks' share of ending it (requestLife). It reads
-// the connection's own state rather than trusting the callback, since nats.go runs a callback
-// late, behind those queued before it, and a life begun on a connection that is connected again
-// by then is not the one that was lost.
+// runningLifeLocked is the life running on conn in its connected run epoch, and the reconnect
+// count it began at, when there is one.
+func (c *Client) runningLifeLocked(conn *nats.Conn, epoch *connEpoch) (context.Context, uint64, bool) {
+	if epoch == nil || c.life == nil || c.life.Err() != nil || c.lifeConn != conn || c.lifeEpoch != epoch {
+		return nil, 0, false
+	}
+	return c.life, c.lifeReconnects, true
+}
+
+// takeLifeLocked is the end of the life running, nil when none is, for its caller to make once it
+// has let c.mu go (endLifeNow).
+func (c *Client) takeLifeLocked() context.CancelCauseFunc {
+	if c.life == nil || c.life.Err() != nil {
+		return nil
+	}
+	return c.endLife
+}
+
+// endLifeIfDown is the disconnect, reconnect and close callbacks' share of ending a life
+// (requestLife): it refreshes the record of the connection's status from nats.go's own
+// (connStatus.refresh), which makes up a report nats.go lost and so ends the life of a connected
+// run that ended, and it ends at once the life of a connection the client has since replaced.
+// nats.go runs a callback late, behind those queued before it, so the callback itself decides
+// nothing.
 func (c *Client) endLifeIfDown() {
 	c.mu.Lock()
 	var end context.CancelCauseFunc
-	if c.life != nil && c.life.Err() == nil && c.lifeConn != nil && !c.lifeConn.IsConnected() {
-		end = c.endLife
+	if c.lifeConn != nil && c.lifeConn != c.Conn {
+		end = c.takeLifeLocked()
+	}
+	var status *connStatus
+	if c.Conn != nil {
+		status = c.statusLocked()
 	}
 	c.mu.Unlock()
-	if end != nil {
-		c.endLifeNow(end)
+	c.endLifeNow(end)
+	if status != nil {
+		status.refresh()
 	}
 }
 
-// endLifeNow ends a connection's life through end, once lifeEndGate, a test's seam, lets it. It
-// never runs under c.mu, so a gate that holds an end holds no call that takes the client's lock.
+// endLifeNow ends a connection's life through end, once lifeEndGate, a test's seam, lets it; a nil
+// end, no life running, ends nothing. It never runs under c.mu, so a gate that holds an end holds
+// no call that takes the client's lock.
 func (c *Client) endLifeNow(end context.CancelCauseFunc) {
+	if end == nil {
+		return
+	}
 	if gate := c.lifeEndGate; gate != nil {
 		gate()
 	}

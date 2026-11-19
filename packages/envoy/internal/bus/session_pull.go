@@ -144,7 +144,7 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 	if err != nil {
 		return nil, err
 	}
-	life, conn := s.client.requestLife()
+	life, conn, _ := s.client.requestLife()
 	if life.Err() != nil {
 		return nil, s.client.lostOrClosed(nil)
 	}
