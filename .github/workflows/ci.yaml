@@ -3347,8 +3347,6 @@ jobs:
               - *listener_command
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
-              # natsd reads testnats, whose Gate reserves its port with internal/testport.
-              - 'packages/envoy/internal/testport/*'
               # The job reads no Markdown file: the listener, the renderer and the contracts
               # between them are its whole input, so a guide written under one of the directory
               # patterns above would start it for nothing.
