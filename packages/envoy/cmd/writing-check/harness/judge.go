@@ -79,6 +79,17 @@ func PromptsDigest() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// readerOwnWordsPrompt is the part of the fresh reader's system prompt that a call with the
+// person's own words appends (score --reader-vocabulary).
+const readerOwnWordsPrompt = "prompts/reader-own-words.md"
+
+// ReaderOwnWordsDigest is the SHA-256 of readerOwnWordsPrompt's file, which run.json records for a
+// run whose fresh reader reads the person's own words.
+func ReaderOwnWordsDigest() string {
+	data, _ := promptFiles.ReadFile(readerOwnWordsPrompt)
+	return sha256Hex(data)
+}
+
 // phrasesHeading heads the section of skills/plain-words that lists the phrases it tells agents to
 // stop.
 const phrasesHeading = "## The phrases to stop"
@@ -885,8 +896,9 @@ func boolField(reply map[string]json.RawMessage, name string) (bool, error) {
 	return b, nil
 }
 
-// Reader is the fresh reader of candidates.yaml: it reads only the text a person sees and the
-// person's question. It never reads session text.
+// Reader is the fresh reader of candidates.yaml, or of score --reader: it reads only the text a
+// person sees, the person's question and, with score --reader-vocabulary, the words of the text
+// that the person wrote himself before it. It never reads session text.
 type Reader struct {
 	Model *claude.Client
 }
@@ -914,17 +926,31 @@ type readerCall struct {
 }
 
 // call is the call that answers question from text alone. reply says text is the agent's reply
-// to the question, and firstParagraph that text is only that reply's first paragraph.
-func (r *Reader) call(text, question string, reply, firstParagraph bool) readerCall {
-	system, err := render("reader", promptData{Reply: reply || firstParagraph, FirstParagraph: firstParagraph})
+// to the question, and firstParagraph that text is only that reply's first paragraph. ownWords
+// are the words of text that the person wrote himself before the case (score
+// --reader-vocabulary): where it holds some, the user message ends with them in the tag
+// reader_own_words, after the question, and the system prompt with readerOwnWordsPrompt's part.
+// With none the request is the one the reader sent before that flag, byte for byte.
+func (r *Reader) call(text, question string, reply, firstParagraph bool, ownWords []string) readerCall {
+	data := promptData{Reply: reply || firstParagraph, FirstParagraph: firstParagraph}
+	system, err := render("reader", data)
 	if err != nil {
 		return readerCall{err: err}
+	}
+	user := tag("text", text) + tag("question", question)
+	if len(ownWords) > 0 {
+		part, err := render("reader-own-words", data)
+		if err != nil {
+			return readerCall{err: err}
+		}
+		system += "\n" + part
+		user += tag("reader_own_words", "- "+strings.Join(ownWords, "\n- "))
 	}
 	purpose := "reader"
 	if firstParagraph {
 		purpose = "reader:first_paragraph"
 	}
-	req := llm.Request{Purpose: purpose, System: system, User: tag("text", text) + tag("question", question), MaxTokens: 1024}
+	req := llm.Request{Purpose: purpose, System: system, User: user, MaxTokens: 1024}
 	return readerCall{model: r.Model, req: req, digest: requestDigest([]digestModel{r.Model}, req, claude.SessionText{})}
 }
 

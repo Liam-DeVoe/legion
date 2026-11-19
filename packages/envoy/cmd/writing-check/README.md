@@ -31,10 +31,11 @@ go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --
 go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
 go run ./cmd/writing-check dataset followups --from <bundle> --cases <build dir> --out <dir>
 go run ./cmd/writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
+go run ./cmd/writing-check dataset lists --cases <build dir> --verdicts <file> --plain-labels <file> --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check calibrate --name <name> (--run <dir>[,<dir>...] | --rows <file>) [--labels-v1 <file>] [--labels-v2 <file>] [--split <file>] [--read-before-split <file>] [--half fit|measure|all] [--pairs <file>] [--verdicts <file>] [--measured <file>]
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
-go run ./cmd/writing-check harness score --cases <build dir> [--sessions <dir>] --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S] [--grader <model> [--grader-no-session]] [--grader-timeout <d>] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify|inputs-first-verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] <model flags>
+go run ./cmd/writing-check harness score --cases <build dir> [--sessions <dir>] --out <dir> [--change <change> [--model <id> | --models <id>,<id>...] | --texts-from <run dir>] [--part development|held_out] [--sample N --sample-seed S | --case-list <file>] [--reader <model>] [--reader-vocabulary <owner-texts.jsonl.gz>] [--grader <model> [--grader-no-session]] [--grader-timeout <d>] [--grader-inputs final|full|trimmed[,j=mode]...] [--added-grader old|inputs-first|verify|inputs-first-verify] [--readers-from <dir>] [--grades-from <dir>[,<dir>...]] [--vocabulary <owner-texts.jsonl.gz>] [--judgements j,...] [--repeatability <file>] [--dry-run] <model flags>
 go run ./cmd/writing-check harness grader-test --planted <file> --cases <build dir> --sessions <dir> --out <dir> [--grader <model>] [--grader-inputs ...] [--added-grader old|inputs-first|verify|inputs-first-verify] <model flags>
 go run ./cmd/writing-check harness compare --a <run dir> --b <run dir> --out <repeatability.json>
 go run ./cmd/writing-check harness phrases-labels --labels <labeller round dir> --out <dir> <model flags>
@@ -799,6 +800,10 @@ The dataset is a file artifact of INFRA-3231. It is never a file of this reposit
 `named` is not one of these steps. It builds cases from document versions and asks that it reads
 from the live Dispatch, for a text the dataset does not hold (see "named").
 
+`lists` is not one of these steps either. It writes the case lists that
+`harness score --case-list` reads, from the build and the labels of the question check and the
+plain check (see "lists").
+
 ### fetch
 
 | Flag | Meaning |
@@ -1266,6 +1271,35 @@ another parent changes the record's parent and root.
 the output with the harness's case reader (`harness.LoadDataset`).
 `TestDatasetNamedMakesACaseOfAnAsk` does the same for an ask.
 
+### lists
+
+| Flag | Meaning |
+| --- | --- |
+| `--cases` | The cases that `build` wrote: the build directory, or its `cases.jsonl.gz`. |
+| `--verdicts` | The question check's verdicts: JSONL, one line for each question case, with `id`, `about_words` (`true`, `false`, or absent for a case the check left unlabelled) and `part`. |
+| `--plain-labels` | The plain check's final labels: JSONL, one line for each plain case, with `case_id` (or `id`), `label` (what the owner did after the text: `acted`, `silent` or `question_or_complaint`), `final` and `part`. |
+| `--out` | The directory for the lists. |
+
+`lists` writes three files of case ids for `harness score --case-list`, one id on each line, in
+id order. Each holds cases of the development part of the build:
+
+- `question.txt`: the question cases whose verdict says `about_words: true`, so the owner's
+  question is about the agent's words.
+- `answer.txt`: every answer case.
+- `plain.txt`: the plain cases whose `final` label is `understood`: the owner acted on the text,
+  or disputed its substance and not its wording. A plain case labelled `silent` or `not_plain` is
+  in no list.
+
+A case's part is the build's. `lists` refuses a line that names a case the build does not hold, a
+case of another group, a case that the line puts in another part than the build, and a case that
+two lines name; it refuses a plain label with no `final` label. For each list it prints the count,
+the count of each verdict or label value in the development part (a development case that no line
+names is `no verdict` or `no label`), and the file's SHA-256, which `run.json` records as
+`case_list_sha256` for a run of the list. It calls no model.
+
+`TestDatasetListsWritesTheThreeCaseLists` writes a build and the two label files in code, and
+checks each list and each refusal.
+
 ## calibrate
 
 `calibrate` checks the `answered` score of `harness` against what the owner did after an
@@ -1364,19 +1398,26 @@ Its inputs are in the package, and they are among the paths that decide a score:
 
 - `candidates.yaml`: the roles (grader `claude-opus-5`, writer `claude-opus-5-5`, fresh reader
   `claude-sonnet-4-6`), the candidates, and INFRA-3483's four deployments, pending until they
-  have ids. The harness refuses a role that is not Claude, a role that is a candidate, and a
-  grader that plays the writer or the fresh reader. A candidate that sets an `effort` is the model
-  at that reasoning effort, a candidate of its own named `<id>:<effort>`, such as
-  `Kimi-K3.1-Pro:off` beside `Kimi-K3.1-Pro`. Its effort is one of `off`, `minimal`, `low`,
-  `medium` and `high`, the efforts the local Dispatch takes in a test model's name, and it has the
-  price of its id. A Foundry candidate with no effort sends none.
+  have ids. R2 bars the grader alone: the grading model is a Claude model that is no candidate of
+  R3 and does not play the writer. So the harness refuses a role that is not Claude, a grader
+  or a fallback grader that is a candidate, a grader that plays the writer or the fresh reader,
+  and a fallback grader that plays another role. The writer and the fresh reader may be
+  candidates: the writer's model `claude-opus-5-5` and `claude-fable-5-2` are candidates. The
+  probe calls a model that plays a role and is a candidate once, and the probe and the figures
+  give both as its role (`writer, candidate`). A candidate that sets an `effort` is the model at
+  that reasoning effort, a candidate of its own named `<id>:<effort>`, such as `Kimi-K3.1-Pro:off`
+  beside `Kimi-K3.1-Pro`. Its effort is one of `off`, `minimal`, `low`, `medium` and `high`, the
+  efforts the local Dispatch takes in a test model's name, and it has the price of its id. A
+  Foundry candidate with no effort sends none.
 - `prices.yaml`: each model's price in USD per million tokens, with the source and the date of
   each family's prices. The harness refuses a model with no price. A Claude row's cache write is
   the price of a five-minute write (see "The prompt cache").
 - `prompts/`: `reader.md`, and one `grade-*.md` for each judgement, the system prompt of its
   calls: `answered`, `first-paragraph`, `lost`, `added`, `phrases`, `undefined`, `answer-start`,
   `harder` and `define`. `grade-added-verify.md` is the check of `--added-grader verify` and
-  `inputs-first-verify` (see "The added grader"). `parts.md` holds the parts they share.
+  `inputs-first-verify` (see "The added grader"). `reader-own-words.md` is the part the fresh
+  reader's prompt ends with under `score --reader-vocabulary` (see "The owner's own words").
+  `parts.md` holds the parts they share.
 - `writer/writer.md`: the prompts of the writer the harness plays. They are apart from
   `prompts/`, so change 1's prompt digest does not move with them; a run that plays the writer
   records their digest as `writer_sha256`.
@@ -1534,10 +1575,12 @@ parts are cached in `session-excerpts.jsonl.gz` in the output directory.
 `probe` calls each role model and each candidate `--calls` times (default 20) with one short
 message, and prints a table: the answers, the statuses, the `route_not_found` answers (Azure's
 `ms-azureml-model-error-reason` header), the model ids the provider served, and the latency. A
-Foundry candidate at an effort is asked for it (`reasoning_effort`, `off` sent as `none`), and its
-row bears its name, `<id>:<effort>`; a Claude call asks for no thinking. A model fails when a call
-answers `route_not_found`, a 404 or a 400 that names the model, when the provider serves another
-model's id, or when no call answers. Then `probe` exits 1. `--out` also writes the rows as JSON.
+model that plays a role and is a candidate has one row, whose role names both
+(`writer, candidate`). A Foundry candidate at an effort is asked for it (`reasoning_effort`,
+`off` sent as `none`), and its row bears its name, `<id>:<effort>`; a Claude call asks for no
+thinking. A model fails when a call answers `route_not_found`, a 404 or a 400 that names the
+model, when the provider serves another model's id, or when no call answers. Then `probe`
+exits 1. `--out` also writes the rows as JSON.
 
 ### score
 
@@ -1553,13 +1596,17 @@ model's id, or when no call answers. Then `probe` exits 1. `--out` also writes t
 | `--out` | The run's directory, or under `--models` the directory that holds each model's run directory. A run continues the cases that have no result in it, and refuses a directory whose `run.json` records other parameters. |
 | `--part` | `development` (the default), or `held_out`, which only this flag selects. |
 | `--groups` | The case groups to score (default all four; `question` alone for a change that holds 6). |
-| `--sample`, `--sample-seed` | A stratified sample of about this many cases (see below), drawn by the seed: under `--grader-no-session`, from the cases of `--readers-from`. |
+| `--sample`, `--sample-seed` | A stratified sample of about this many cases (see below), drawn by the seed: under `--grader-no-session`, from the cases of `--readers-from`. Not with `--case-list`. |
+| `--case-list` | A file of case ids, one on each line; a blank line and a line that starts with `#` name no case (`dataset lists` writes such files). The run scores the listed cases alone, of those that `--part` and `--groups` select (and, under `--grader-no-session`, that `--readers-from` holds). It refuses, with exit 2 and before any model call, an id that `--cases` does not hold in the part, the case of a group that `--groups` leaves out, an id listed twice and a file that lists none, naming each id and why: a typo cannot make the run smaller. `run.json` records the file's SHA-256 as `case_list_sha256`, so a run that continues in the directory must read the same file. Not with `--sample`. |
 | `--seed`, `--draws` | The bootstrap's seed (default 3231) and resamples (default 10,000). |
 | `--session-chars` | The bytes of a case's session that a grading call reads. |
 | `--exposure-log`, `--commit`, `--new-run` | The exposure log (default `$TMPDIR/infra-3231-impl/harness/exposure.log`), a held-out run's commit (default `git rev-parse HEAD`), and the reason for a second held-out run of a cell at one commit (see below). |
 | `--figures-only` | Compute the figures from the results the directory holds, and call no model. |
+| `--dry-run` | Do all that the run does before its first model call: check every flag, read `candidates.yaml` and `prices.yaml`, select the cases (`--part`, `--groups`, `--case-list`, `--sample`) and write `run.json` as the run writes it. Then print the cases selected, in all and in each group, the model of each role (the fresh reader, the grader, the fallbacks, the writer of a change that plays it, the candidate of each lane) and each `run.json`, and exit 0. It calls no model, signs in to no Foundry account, reads no session part and writes no line to the exposure log. A run with the same flags in the same directory continues that `run.json`. Not with `--figures-only`. |
 | `--grader-inputs` | The grader's input modes (see "Grader inputs"): `final` (the default), `full` or `trimmed`, then any `,<judgement>=full` or `,<judgement>=trimmed`. |
-| `--grader` | The grading model of this run in place of `candidates.yaml`'s grader, with the same fallbacks: a Claude model with a row in `prices.yaml` that is no candidate, not the writer, not the fresh reader and no fallback grader (R2). `run.json` and the figures record it as the grader. With `--grader-no-session`, a Foundry deployment of `prices.yaml` with no fallback (see "Session text"). |
+| `--grader` | The grading model of this run in place of `candidates.yaml`'s grader, with the same fallbacks: a Claude model with a row in `prices.yaml` that is no candidate, not the writer, not the run's fresh reader and no fallback grader (R2). `run.json` and the figures record it as the grader. With `--grader-no-session`, a Foundry deployment of `prices.yaml` with no fallback (see "Session text"). |
+| `--reader` | The fresh reader of this run in place of `candidates.yaml`'s reader: a Claude model with a row in `prices.yaml` that is not the grader (of `candidates.yaml`, which `--grader` may then replace) and no fallback grader (R2). It may be a candidate. `run.json` (`models.reader`) and the figures record it. Its answers' `input_sha256` names it, so `--grades-from` takes no answer of another reader. Not with `--readers-from`, whose answers no reader of this run gives. |
+| `--reader-vocabulary` | The `owner-texts.jsonl.gz` of `dataset owner-texts`. The fresh reader then also reads the words of the text it reads that the owner wrote himself before the case, and its prompt says that he knows them (see "The owner's own words"). The grader never gets them from this flag. Not with `--readers-from`. |
 | `--grader-no-session` | The grader reads no session part. Required with, and only with, a Foundry `--grader`; it needs `--readers-from`, and `--texts-from` for a change other than 1 (see "Session text"). |
 | `--grader-timeout` | The time bound of one attempt of a grading call: default 180 s for a Claude grader (llm's), and 10 minutes, the least it takes, for a grader of another family. Retries are as for every call. |
 | `--readers-from` | A run directory whose fresh readers' answers this run grades again, for each case whose text is the same: two runs that compare graders grade the same answers. A reused answer's call is that run's and is not counted again. |
@@ -1624,7 +1671,8 @@ A judgement the grader (`claude-opus-5`) refuses on every try goes to the fallba
 `candidates.yaml` in order (`claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-5`), Claude
 models that are no candidate and play no other role. The grade keeps each refused call and names
 the model that graded it. `--grader` replaces the grader for one run, and keeps the fallbacks; a
-Foundry grader of `--grader-no-session` has none.
+Foundry grader of `--grader-no-session` has none. `--reader` replaces the fresh reader for one
+run.
 
 `run.json` holds the parameters; `cases.jsonl` one line for each case, written as it ends, with
 the text the person sees after the change (`text`, the string `text_sha256` hashes: an ask's
@@ -1889,6 +1937,22 @@ undefined for him.
 
 `run.json` records the file's SHA-256 as `vocabulary_sha256`. A run that continues in a
 directory must read the same file.
+
+With `--reader-vocabulary <owner-texts.jsonl.gz>`, the fresh reader gets them too: for each
+reading, the words of the text it reads (the first paragraph, for the first-paragraph reader) that
+the owner wrote himself before the case, by the same time cut and the same words. Its user message
+holds them after the question, in the tag `reader_own_words`, and its system prompt ends with
+`prompts/reader-own-words.md`: these are words he used himself before the text, so he knows them,
+and the answer does not count them as words the text does not explain. A reading with no such
+word gets neither, so its request is byte for byte the one of a run without the flag. The grader
+never gets the words from this flag; it gets them from `--vocabulary` alone, for `undefined`.
+Without `--reader-vocabulary` the reader's requests are as they were, so `--grades-from` takes
+the answers of runs made before the flag by their `input_sha256`. `run.json` records the file's
+SHA-256 as `reader_vocabulary_sha256`, and that of `prompts/reader-own-words.md` as
+`reader_own_words_prompt_sha256`. The two flags may name the same file. `reader-own-words.md` is
+in `prompts/`, and it came with the candidates `claude-opus-5-5` and `claude-fable-5-2` in
+`candidates.yaml`, so `prompts_sha256` changed with them: a directory of a run made before does
+not continue, though `--grades-from` still takes its answers and grades.
 
 ### Grades of another run
 

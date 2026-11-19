@@ -153,8 +153,9 @@ type scorer struct {
 	// gradesFrom are the results of each run --grades-from names, in the flag's order, whose
 	// answers and grades this run takes for a case's same text and inputs.
 	gradesFrom []map[string]CaseResult
-	// vocabulary is the owner's own words (--vocabulary), nil for none.
-	vocabulary *Vocabulary
+	// vocabulary is the owner's own words the undefined judgement reads (--vocabulary), and
+	// readerVocabulary those the fresh reader reads (--reader-vocabulary); nil for none.
+	vocabulary, readerVocabulary *Vocabulary
 	// only are the judgements the run gives; empty, it gives every one.
 	only []Judgement
 	// skipped are the judgements the run does not give, each with the reason run.json records
@@ -168,6 +169,20 @@ type scorer struct {
 // wants is whether the run gives judgement j.
 func (s *scorer) wants(j Judgement) bool {
 	return (len(s.only) == 0 || slices.Contains(s.only, j)) && s.skipped[j] == ""
+}
+
+// readerOwnWords are the words of text, what a fresh reader reads of case c, that the owner wrote
+// himself before the case (--reader-vocabulary), at the time the undefined judgement cuts at: none
+// without the flag, and none for a case with no time, as none can be placed before it.
+func (s *scorer) readerOwnWords(c *Case, text string) []string {
+	if s.readerVocabulary == nil {
+		return nil
+	}
+	at, ok := c.writtenAt()
+	if !ok {
+		return nil
+	}
+	return s.readerVocabulary.Known(text, at)
 }
 
 func sha256Hex(data []byte) string {
@@ -304,7 +319,7 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 			unread = append(unread, string(j))
 			return
 		default:
-			r.call = s.reader.call(text, question, reply || firstParagraph, firstParagraph)
+			r.call = s.reader.call(text, question, reply || firstParagraph, firstParagraph, s.readerOwnWords(c, text))
 			r.taken = r.call.reused(same)
 		}
 		cr.readings = append(cr.readings, r)
@@ -439,9 +454,11 @@ type RunParams struct {
 	// Judgements are the judgements the run gives (--judgements), absent when it gives all.
 	Judgements []string `json:"judgements,omitempty"`
 	// Sample is the stratified sample the run scores, absent for the whole part; under
-	// --grader-no-session, a sample of the cases of the run --readers-from names.
-	Sample *Sample           `json:"sample,omitempty"`
-	Models map[string]string `json:"models"`
+	// --grader-no-session, a sample of the cases of the run --readers-from names. CaseListSHA256
+	// is the SHA-256 of the file of the case ids the run scores (--case-list), absent without one.
+	Sample         *Sample           `json:"sample,omitempty"`
+	CaseListSHA256 string            `json:"case_list_sha256,omitempty"`
+	Models         map[string]string `json:"models"`
 	// GraderInputs are the grader's input modes (--grader-inputs, every judgement named), and
 	// ReadersFrom the run whose readers' answers this run grades again.
 	GraderInputs string `json:"grader_inputs"`
@@ -454,10 +471,14 @@ type RunParams struct {
 	SkippedJudgements map[Judgement]string `json:"skipped_judgements,omitempty"`
 	// GradesFrom are the runs whose answers and grades this run takes for the same text and
 	// inputs, and VocabularySHA256 the SHA-256 of the owner's texts the undefined judgement
-	// reads his own words from.
-	GradesFrom       []string `json:"grades_from,omitempty"`
-	VocabularySHA256 string   `json:"vocabulary_sha256,omitempty"`
-	PromptsSHA256    string   `json:"prompts_sha256"`
+	// reads his own words from. ReaderVocabularySHA256 is the SHA-256 of the owner's texts the
+	// fresh reader reads his own words from (--reader-vocabulary), and ReaderOwnWordsPromptSHA256
+	// that of the reader's prompt part that says what they are (prompts/reader-own-words.md).
+	GradesFrom                 []string `json:"grades_from,omitempty"`
+	VocabularySHA256           string   `json:"vocabulary_sha256,omitempty"`
+	ReaderVocabularySHA256     string   `json:"reader_vocabulary_sha256,omitempty"`
+	ReaderOwnWordsPromptSHA256 string   `json:"reader_own_words_prompt_sha256,omitempty"`
+	PromptsSHA256              string   `json:"prompts_sha256"`
 	// AddedGrader is the added grader's variant (--added-grader), and TextsFrom the run whose
 	// texts this run grades again with no call of the change (--texts-from).
 	AddedGrader string `json:"added_grader"`
@@ -526,6 +547,70 @@ func selectCases(all []*Case, groups []string, limit int, seed uint64) []*Case {
 		slices.SortFunc(out, func(a, b *Case) int { return strings.Compare(a.ID, b.ID) })
 	}
 	return out
+}
+
+// readCaseList reads the case ids of a --case-list file, one on each line, and answers them with
+// the file's SHA-256; a blank line and a line that starts with # name no case. It refuses a file
+// that names no case, or names one case twice.
+func readCaseList(path string) ([]string, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", err
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for line := range strings.Lines(string(data)) {
+		id := strings.TrimSpace(line)
+		switch {
+		case id == "" || strings.HasPrefix(id, "#"):
+			continue
+		case seen[id]:
+			return nil, "", fmt.Errorf("%s names case %s twice", path, id)
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, "", fmt.Errorf("%s names no case", path)
+	}
+	return ids, sha256Hex(data), nil
+}
+
+// listCases is the cases of selected, the cases of the part and the groups the run scores, that
+// ids names, in selected's order. It refuses an id that selected does not hold, so a typo cannot
+// make the run smaller, and says why of each: the build holds no case of that id in the part, or
+// --groups leaves out the case's group, or else, under --grader-no-session, the run
+// --readers-from names holds no result for the case.
+func listCases(ds *Dataset, part string, groups []string, selected []*Case, ids []string) ([]*Case, error) {
+	listed := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		listed[id] = true
+	}
+	var out []*Case
+	for _, c := range selected {
+		if listed[c.ID] {
+			out = append(out, c)
+			delete(listed, c.ID)
+		}
+	}
+	var refused []string
+	for _, id := range ids {
+		if !listed[id] {
+			continue
+		}
+		why := "the run --readers-from names holds no result for it"
+		switch c := ds.Case(id); {
+		case c == nil:
+			why = "--cases holds no case of that id in the " + part + " part"
+		case !slices.Contains(groups, c.Group):
+			why = "its group " + c.Group + " is not one of --groups"
+		}
+		refused = append(refused, id+" ("+why+")")
+	}
+	if len(refused) > 0 {
+		return nil, fmt.Errorf("--case-list names cases the run does not score: %s", strings.Join(refused, "; "))
+	}
+	return out, nil
 }
 
 // fileSHA256 is the SHA-256 of the file at path.
@@ -602,6 +687,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	part := fs.String("part", PartDevelopment, "the part to score: development, or held_out, which the exposure log records")
 	groupsFlag := fs.String("groups", strings.Join(Groups, ","), "the case groups to score, comma-separated")
 	sampleSize := fs.Int("sample", 0, "score a stratified sample of about this many cases, by case group and conversation flag, each split group whole (0: the whole part)")
+	caseList := fs.String("case-list", "", "a file of case ids, one on each line (a blank line and a line that starts with # are none): the run scores those cases of the part and the groups alone, and refuses an id they do not hold; not with --sample")
 	sampleSeed := fs.Uint64("sample-seed", DefaultSeed, "the seed of --sample's draw")
 	seed := fs.Uint64("seed", DefaultSeed, "the seed of the bootstrap")
 	draws := fs.Int("draws", DefaultDraws, "the bootstrap's resamples")
@@ -610,8 +696,11 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	commit := fs.String("commit", "", "the commit of a held-out run, for the exposure log (default: git rev-parse HEAD)")
 	newRun := fs.String("new-run", "", "the reason for a second held-out run of a cell at one commit: a change, with a candidate or with none, that a run at that commit scored")
 	figuresOnly := fs.Bool("figures-only", false, "compute the figures from the results the output directory holds, calling no model")
+	dryRun := fs.Bool("dry-run", false, "check every flag, select the cases and write run.json as a run does, print the cases of each group and the model of each role, and call no model")
 	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
 	graderFlag := fs.String("grader", "", "the grading model of this run in place of candidates.yaml's roles.grader, with the same fallbacks: a Claude model with a row in prices.yaml that is no candidate and plays no other role; or, with --grader-no-session, a Foundry deployment of prices.yaml, with no fallback (default: roles.grader)")
+	readerFlag := fs.String("reader", "", "the fresh reader of this run in place of candidates.yaml's roles.reader: a Claude model with a row in prices.yaml that is not the grader and no fallback grader; it may be a candidate (default: roles.reader)")
+	readerVocabulary := fs.String("reader-vocabulary", "", "the owner-texts.jsonl.gz that writing-check dataset owner-texts wrote: the fresh reader also reads the words of the text it reads that the owner wrote himself before the case, in reader_own_words; the grader does not")
 	noSession := fs.Bool("grader-no-session", false, "the grader reads no writer session part: required with, and only with, a --grader of another family (a Foundry deployment), which also needs --readers-from and, for a change other than 1, --texts-from, so the run calls no reader, no writer and no candidate. Each request is the one the run builds for a case with no session part; added, for the texts of a change that plays the writer, is not graded; --sessions is optional; and the cases are those of the run --readers-from names, which --sample draws from")
 	graderTimeout := fs.Duration("grader-timeout", 0, "the time bound of one attempt of a grading call (0: llm's default, 180s, for a Claude grader, and 10m for a grader of another family, which takes no bound below 10m)")
 	readersFrom := fs.String("readers-from", "", "a run directory whose readers' answers this run grades again, for the cases whose text is the same")
@@ -722,6 +811,12 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return usage("--added-grader is " + strings.Join(AddedGraders, ", "))
 	case len(sources) > 0 && *part != PartDevelopment:
 		return usage("--texts-from takes a run of the development part: grading the held-out texts again is a second run of their cells")
+	case *caseList != "" && *sampleSize > 0:
+		return usage("give --case-list or --sample, not both (a run of --texts-from takes the sample of the run it names)")
+	case *readersFrom != "" && (*readerFlag != "" || *readerVocabulary != ""):
+		return usage("--readers-from takes the fresh reader's answers of another run, which --reader and --reader-vocabulary do not decide: give one or the other")
+	case *dryRun && *figuresOnly:
+		return usage("give --dry-run or --figures-only, not both")
 	}
 	if err := outsideRepository("--out", *out); err != nil {
 		return usage(err.Error())
@@ -758,6 +853,27 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(err)
 		}
 	}
+	var readerWords *Vocabulary
+	var readerVocabularySHA string
+	switch {
+	case *readerVocabulary == "":
+	case *readerVocabulary == *vocabulary:
+		readerWords, readerVocabularySHA = ownWords, vocabularySHA
+	default:
+		if readerWords, err = ReadVocabulary(*readerVocabulary); err != nil {
+			return usage(fmt.Sprintf("--reader-vocabulary: %v", err))
+		}
+		if readerVocabularySHA, err = fileSHA256(*readerVocabulary); err != nil {
+			return fail(err)
+		}
+	}
+	var caseIDs []string
+	var caseListSHA string
+	if *caseList != "" {
+		if caseIDs, caseListSHA, err = readCaseList(*caseList); err != nil {
+			return usage(fmt.Sprintf("--case-list: %v", err))
+		}
+	}
 	var agreement *Repeatability
 	if *repeatability != "" {
 		if agreement, err = readRepeatability(*repeatability); err != nil {
@@ -785,6 +901,10 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return usage(fmt.Sprintf("--grader %q grades again runs of the development part alone: a held-out run is graded by candidates.yaml's grader", *graderFlag))
 	case foreign && *graderTimeout != 0 && *graderTimeout < foreignGraderTimeout:
 		return usage(fmt.Sprintf("--grader-timeout for a grader of another family is at least %s", foreignGraderTimeout))
+	}
+	// The run's reader first, so --grader is checked against the reader the run calls.
+	if cfg, err = cfg.WithReader(*readerFlag); err != nil {
+		return usage(err.Error())
 	}
 	var skipped map[Judgement]string
 	if foreign {
@@ -880,11 +1000,19 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		// A run that calls no reader grades the cases of the run --readers-from names.
 		selected = slices.DeleteFunc(selected, func(c *Case) bool { _, ok := priorReaders[c.ID]; return !ok })
 	}
+	if caseIDs != nil {
+		if selected, err = listCases(ds, *part, groups, selected, caseIDs); err != nil {
+			return usage(err.Error())
+		}
+	}
 	params := RunParams{
 		Change: change.Name(), Part: *part, Groups: groups, GraderInputs: inputs.String(), ReadersFrom: *readersFrom,
-		GradesFrom: gradesDirs, VocabularySHA256: vocabularySHA, AddedGrader: *addedGrader,
+		GradesFrom: gradesDirs, VocabularySHA256: vocabularySHA, ReaderVocabularySHA256: readerVocabularySHA, AddedGrader: *addedGrader,
 		PromptsSHA256: PromptsDigest(), CasesSHA256: casesSHA, SessionsSHA: sessionsSHA, SessionChars: *sessionChars,
-		UncachedInputPerMinute: mf.uncachedPerMinute,
+		CaseListSHA256: caseListSHA, UncachedInputPerMinute: mf.uncachedPerMinute,
+	}
+	if readerWords != nil {
+		params.ReaderOwnWordsPromptSHA256 = ReaderOwnWordsDigest()
 	}
 	if foreign {
 		params.GraderFamily, params.SessionPart, params.SkippedJudgements = llm.FamilyFoundry, sessionPartNone, skipped
@@ -966,8 +1094,8 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	// A held-out run is in the exposure log before it scores a case of the part: no model has
 	// read one before this line, so a run that stops after it, for any reason, still counts as
-	// one that read the part.
-	if *part == PartHeldOut && !*figuresOnly {
+	// one that read the part. A dry run calls no model, so the log does not hold it.
+	if *part == PartHeldOut && !*figuresOnly && !*dryRun {
 		c := *commit
 		if c == "" {
 			if c, err = headCommit(); err != nil {
@@ -1018,6 +1146,24 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if slices.ContainsFunc(lanes, func(l *lane) bool { return l.todo[c.ID] }) {
 			todo = append(todo, c)
 		}
+	}
+	if *dryRun {
+		// The run's Claude clients call no model when they are built, so a dry run builds them
+		// and refuses what they refuse. A Foundry grader's client signs in, so it builds none.
+		runner, err := mf.runner()
+		if err != nil {
+			return usage(err.Error())
+		}
+		if !foreign {
+			if _, err := mf.grader(cfg, inputs, runner); err != nil {
+				return usage(err.Error())
+			}
+			if _, err := mf.claudeClient(cfg, cfg.Models.Roles.Reader, runner); err != nil {
+				return usage(err.Error())
+			}
+		}
+		printDryRun(stdout, groups, selected, lanes)
+		return 0
 	}
 	ids := make([]string, len(selected))
 	for i, c := range selected {
@@ -1081,7 +1227,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			}
 		}
 		s := &scorer{ds: ds, reader: reader, grader: grader, sessions: sessions, places: places, readersFrom: priorReaders,
-			gradesFrom: priorGrades, vocabulary: ownWords, only: only, skipped: skipped, noExport: *sessionsDir == ""}
+			gradesFrom: priorGrades, vocabulary: ownWords, readerVocabulary: readerWords, only: only, skipped: skipped, noExport: *sessionsDir == ""}
 		if err := scoreAll(ctx, s, lanes, todo, mf.concurrency, stderr, started); err != nil {
 			return fail(err)
 		}
@@ -1146,6 +1292,42 @@ type lane struct {
 	done           map[string]CaseResult
 	todo           map[string]bool
 	scored, failed int
+}
+
+// printDryRun prints what score --dry-run checked: the cases the run selected, in all and in each
+// of its groups; the model of each role as run.json records it, the candidate of each lane among
+// them; and each run.json it wrote.
+func printDryRun(w io.Writer, groups []string, selected []*Case, lanes []*lane) {
+	counts := map[string]int{}
+	for _, c := range selected {
+		counts[c.Group]++
+	}
+	by := make([]string, len(groups))
+	for i, g := range groups {
+		by[i] = fmt.Sprintf("%s %d", g, counts[g])
+	}
+	fmt.Fprintf(w, "dry run, no model called: %d cases (%s)\n", len(selected), strings.Join(by, ", "))
+	models := lanes[0].params.Models
+	for _, role := range []string{RoleReader, RoleGrader, RoleGraderFallback, RoleWriter} {
+		switch m, ok := models[role]; {
+		case m != "":
+			fmt.Fprintf(w, "%s: %s\n", role, m)
+		case ok:
+			fmt.Fprintf(w, "%s: none\n", role)
+		}
+	}
+	var candidates []string
+	for _, l := range lanes {
+		if l.model != "" {
+			candidates = append(candidates, l.model)
+		}
+	}
+	if len(candidates) > 0 {
+		fmt.Fprintf(w, "%s: %s\n", RoleCandidate, strings.Join(candidates, ","))
+	}
+	for _, l := range lanes {
+		fmt.Fprintf(w, "run.json: %s\n", filepath.Join(l.out, "run.json"))
+	}
 }
 
 // scoreAll scores each of cases for the lanes whose todo holds it, workers cases at once

@@ -19,20 +19,78 @@ func TestTheCandidateListAndThePriceTable(t *testing.T) {
 	if roles.Grader.ID != "claude-opus-5" || roles.Writer.ID != "claude-opus-5-5" || roles.Reader.ID != "claude-sonnet-4-6" {
 		t.Errorf("the roles of Decision 20: %+v", roles)
 	}
-	if len(cfg.Models.Candidates) != 7 || len(cfg.Models.Pending) != 4 {
-		t.Errorf("seven candidates today, Kimi-K3.1-Pro at reasoning off among them, and INFRA-3483's four pending: %d, %d", len(cfg.Models.Candidates), len(cfg.Models.Pending))
+	if len(cfg.Models.Candidates) != 9 || len(cfg.Models.Pending) != 4 {
+		t.Errorf("nine candidates today, Kimi-K3.1-Pro at reasoning off and the writer's model among them, and INFRA-3483's four pending: %d, %d", len(cfg.Models.Candidates), len(cfg.Models.Pending))
 	}
 	for _, bad := range []struct{ name, candidates string }{
-		{"a role that is a candidate", strings.Replace(string(candidatesFile), "reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: claude, id: claude-opus-4-8}", 1)},
 		{"a role of another family", strings.Replace(string(candidatesFile), "reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: foundry, id: grok-4.7}", 1)},
 		{"the grader playing the writer", strings.Replace(string(candidatesFile), "writer: {family: claude, id: claude-opus-5-5}", "writer: {family: claude, id: claude-opus-5}", 1)},
 		{"the grader playing the reader", strings.Replace(string(candidatesFile), "reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: claude, id: claude-opus-5}", 1)},
+		{"a fallback grader playing the reader", strings.Replace(string(candidatesFile), "reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: claude, id: claude-opus-4-7}", 1)},
 		{"a model with no price", strings.Replace(string(candidatesFile), "id: claude-haiku-5-5", "id: claude-haiku-9", 1)},
 		{"an effort the local Dispatch refuses", strings.Replace(string(candidatesFile), `effort: "off"`, `effort: "max"`, 1)},
 		{"a candidate at one effort named twice", strings.Replace(string(candidatesFile), "  - {family: foundry, id: grok-4.7}\n", "  - {family: foundry, id: grok-4.7}\n  - {family: foundry, id: Kimi-K3.1-Pro, effort: \"off\"}\n", 1)},
+		{"the writer's model named twice as a candidate", strings.Replace(string(candidatesFile), "  - {family: foundry, id: grok-4.7}\n", "  - {family: foundry, id: grok-4.7}\n  - {family: claude, id: claude-opus-5-5}\n", 1)},
 	} {
+		if bad.candidates == string(candidatesFile) {
+			t.Fatalf("%s: the replacement matched nothing in candidates.yaml", bad.name)
+		}
 		if _, err := parseConfig([]byte(bad.candidates), pricesFile); err == nil {
 			t.Errorf("%s was let through", bad.name)
+		}
+	}
+}
+
+// R2 bars only the grader from being a candidate: the writer and the fresh reader may be. So
+// candidates.yaml, whose writer claude-opus-5-5 is also a candidate, loads, and so does one whose
+// fresh reader is a candidate; one that names the grader or a fallback grader as a candidate is
+// refused. A model that plays a role and is a candidate is one model of AllModels, which the
+// probe calls once, and its role names both.
+func TestTheConfigBarsOnlyTheGraderFromTheCandidates(t *testing.T) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := cfg.Models.Roles.Writer
+	if writer.ID != "claude-opus-5-5" || !cfg.IsCandidate(writer.ID) || !cfg.IsCandidate("claude-fable-5-2") {
+		t.Errorf("the writer %s and claude-fable-5-2 are candidates of candidates.yaml: %+v", writer.ID, cfg.Models.Candidates)
+	}
+	if got := cfg.RoleOf(writer.ID); got != RoleWriter+", "+RoleCandidate {
+		t.Errorf("the role of the writer = %q, want %q", got, RoleWriter+", "+RoleCandidate)
+	}
+	if got := cfg.RoleOf(cfg.Models.Roles.Grader.ID); got != RoleGrader {
+		t.Errorf("the role of the grader = %q", got)
+	}
+	if got := cfg.RoleOf("claude-fable-5-2"); got != RoleCandidate {
+		t.Errorf("the role of claude-fable-5-2 = %q", got)
+	}
+	n := 0
+	for _, m := range cfg.AllModels() {
+		if m.ID == writer.ID {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("AllModels lists the writer %d times, want once", n)
+	}
+	replace := func(old, with string) []byte {
+		t.Helper()
+		out := strings.Replace(string(candidatesFile), old, with, 1)
+		if out == string(candidatesFile) {
+			t.Fatalf("%q matched nothing in candidates.yaml", old)
+		}
+		return []byte(out)
+	}
+	if _, err := parseConfig(replace("reader: {family: claude, id: claude-sonnet-4-6}", "reader: {family: claude, id: claude-fable-5-2}"), pricesFile); err != nil {
+		t.Errorf("a fresh reader that is a candidate was refused: %v", err)
+	}
+	for _, bad := range []struct{ name, id string }{
+		{"the grader", cfg.Models.Roles.Grader.ID},
+		{"a fallback grader", cfg.Models.Roles.GraderFallbacks[1].ID},
+	} {
+		_, err := parseConfig(replace("  - {family: claude, id: claude-opus-4-8}\n", "  - {family: claude, id: "+bad.id+"}\n"), pricesFile)
+		if err == nil || !strings.Contains(err.Error(), "is also a candidate") {
+			t.Errorf("%s %s as a candidate: %v, want it refused", bad.name, bad.id, err)
 		}
 	}
 }

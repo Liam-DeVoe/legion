@@ -28,6 +28,7 @@
 //	writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
 //	writing-check dataset followups --from <bundle> --cases <build dir> --out <dir>
 //	writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
+//	writing-check dataset lists --cases <build dir> --verdicts <file> --plain-labels <file> --out <dir>
 //	writing-check calibrate --name <name> (--run <dir>[,<dir>...] | --rows <file>) [--labels-v1 <file>] [--labels-v2 <file>] [--split <file>] [--read-before-split <file>] [--half fit|measure|all] [--pairs <file>] [--verdicts <file>] [--measured <file>]
 //	writing-check harness probe|score|grader-test|local|load [flags]
 //
@@ -84,7 +85,7 @@ subcommands:
   regress            run the reader on the regression cases and bound its disagreement
   reading            take the outcome reading over a window of agent writes
   validate           check a description file (scanner.yaml) against the method's rules
-  dataset            build the dataset of texts the owner could not read: fetch, classify, build, pack, owner-texts, followups, named
+  dataset            build the dataset of texts the owner could not read: fetch, classify, build, pack, owner-texts, followups, named, lists
   calibrate          check the answered score against what the owner did after an explanation
   harness            score the changes of INFRA-3231 on the dataset: probe, score, grader-test, local, load
 

@@ -127,21 +127,22 @@ func parseConfig(candidates, prices []byte) (Config, error) {
 	return c, c.check()
 }
 
-// check refuses a role that is not Claude, a role that is a candidate, a grader that plays the
-// writer or the reader, a model of an unknown family, a candidate whose effort the local Dispatch
-// would refuse, a model named twice, and a model with no price. A candidate at an effort is a
-// candidate of its own, named apart (Name), and has the price of its id.
+// check refuses a role that is not Claude, a grader or a fallback grader that is a candidate (R2:
+// the grading model is no candidate), a grader that plays the writer or the reader, a fallback
+// grader that plays another role, a model of an unknown family, a candidate whose effort the local
+// Dispatch would refuse, a candidate named twice, and a model with no price. The writer and the
+// fresh reader may be candidates. A candidate at an effort is a candidate of its own, named apart
+// (Name), and has the price of its id.
 func (c Config) check() error {
-	roles := c.roles()
-	for _, r := range roles {
+	for _, r := range c.roles() {
 		if r.model.Family != llm.FamilyClaude {
 			return fmt.Errorf("candidates.yaml: the %s is %q of family %q: every role reads session text or grades it, so it is a Claude model", r.name, r.model.ID, r.model.Family)
 		}
 		if r.model.ID == "" {
 			return fmt.Errorf("candidates.yaml: the %s names no model", r.name)
 		}
-		if slices.ContainsFunc(c.Models.Candidates, func(m ModelEntry) bool { return m.ID == r.model.ID }) {
-			return fmt.Errorf("candidates.yaml: the %s %q is also a candidate (R2)", r.name, r.model.ID)
+		if (r.name == RoleGrader || r.name == RoleGraderFallback) && c.IsCandidate(r.model.ID) {
+			return fmt.Errorf("candidates.yaml: the %s %q is also a candidate: a grader grades no output it wrote (R2)", r.name, r.model.ID)
 		}
 	}
 	r := c.Models.Roles
@@ -160,16 +161,18 @@ func (c Config) check() error {
 		return errors.New("candidates.yaml: the grader plays the fresh reader (R2)")
 	}
 	seen := map[string]bool{}
-	for _, m := range c.AllModels() {
+	for _, m := range c.Models.Candidates {
 		switch {
 		case m.Family != llm.FamilyClaude && m.Family != llm.FamilyFoundry:
 			return fmt.Errorf("candidates.yaml: %q has family %q, not %s or %s", m.ID, m.Family, llm.FamilyClaude, llm.FamilyFoundry)
-		case m.Effort != "" && !c.isRole(m.ID) && !slices.Contains(candidateEfforts, m.Effort):
+		case m.Effort != "" && !slices.Contains(candidateEfforts, m.Effort):
 			return fmt.Errorf("candidates.yaml: the candidate %q asks for effort %q, which the local Dispatch refuses: an effort is one of %s", m.ID, m.Effort, strings.Join(candidateEfforts, ", "))
-		case seen[m.Name()] && !c.isRole(m.ID):
+		case seen[m.Name()]:
 			return fmt.Errorf("candidates.yaml: %q is named twice", m.Name())
 		}
 		seen[m.Name()] = true
+	}
+	for _, m := range c.AllModels() {
 		p, ok := c.Prices.Prices[m.ID]
 		if !ok {
 			return fmt.Errorf("prices.yaml: %q has no price", m.ID)
@@ -207,6 +210,27 @@ func (c Config) WithGrader(id string, candidate bool) (Config, error) {
 		return c, fmt.Errorf("--grader %q has no Claude price in prices.yaml", id)
 	}
 	c.Models.Roles.Grader = ModelEntry{Family: llm.FamilyClaude, ID: id, Effort: r.Grader.Effort}
+	return c, nil
+}
+
+// WithReader is the config with id as its fresh reader in place of candidates.yaml's, for one run
+// (--reader), at the reader's effort. It refuses the grader (R2: the grader does not play the
+// fresh reader), a fallback grader, which plays no other role, and a model with no Claude price in
+// prices.yaml. The reader may be a candidate or the writer. An empty id is the config as it is.
+func (c Config) WithReader(id string) (Config, error) {
+	r := c.Models.Roles
+	switch {
+	case id == "" || id == r.Reader.ID:
+		return c, nil
+	case id == r.Grader.ID:
+		return c, fmt.Errorf("--reader %q is the grader: the grader does not play the fresh reader (R2)", id)
+	case slices.ContainsFunc(r.GraderFallbacks, func(m ModelEntry) bool { return m.ID == id }):
+		return c, fmt.Errorf("--reader %q is a fallback grader: a fallback grader plays no other role", id)
+	}
+	if p, ok := c.Prices.Prices[id]; !ok || p.Family != llm.FamilyClaude {
+		return c, fmt.Errorf("--reader %q has no Claude price in prices.yaml", id)
+	}
+	c.Models.Roles.Reader = ModelEntry{Family: llm.FamilyClaude, ID: id, Effort: r.Reader.Effort}
 	return c, nil
 }
 
@@ -249,11 +273,7 @@ func (c Config) roles() []namedRole {
 	return append(out, namedRole{RoleWriter, c.Models.Roles.Writer}, namedRole{RoleReader, c.Models.Roles.Reader})
 }
 
-func (c Config) isRole(id string) bool {
-	return slices.ContainsFunc(c.roles(), func(r namedRole) bool { return r.model.ID == id })
-}
-
-// AllModels is every role model, then every candidate, each once.
+// AllModels is every role model, then every candidate that is not one of them, each once.
 func (c Config) AllModels() []ModelEntry {
 	var out []ModelEntry
 	for _, r := range c.roles() {
@@ -261,15 +281,25 @@ func (c Config) AllModels() []ModelEntry {
 			out = append(out, r.model)
 		}
 	}
-	return append(out, c.Models.Candidates...)
-}
-
-// RoleOf is the role a model plays, RoleCandidate for a candidate.
-func (c Config) RoleOf(id string) string {
-	for _, r := range c.roles() {
-		if r.model.ID == id {
-			return r.name
+	for _, m := range c.Models.Candidates {
+		if !slices.Contains(out, m) {
+			out = append(out, m)
 		}
 	}
-	return RoleCandidate
+	return out
+}
+
+// RoleOf is the roles a model plays, comma-separated, then candidate where it is also a candidate
+// (the writer and the fresh reader may be); RoleCandidate for a model that plays no role.
+func (c Config) RoleOf(id string) string {
+	var roles []string
+	for _, r := range c.roles() {
+		if r.model.ID == id && !slices.Contains(roles, r.name) {
+			roles = append(roles, r.name)
+		}
+	}
+	if len(roles) == 0 || c.IsCandidate(id) {
+		roles = append(roles, RoleCandidate)
+	}
+	return strings.Join(roles, ", ")
 }

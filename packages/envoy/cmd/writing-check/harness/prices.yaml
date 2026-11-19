@@ -1,7 +1,7 @@
 # What each model of candidates.yaml charges, in USD per million tokens: prompt tokens (input),
 # reply tokens (output), a cache write and a cache read. The harness prices every call's tokens
 # with this table, and refuses to start when a model of candidates.yaml has no row here. A model
-# that --grader names needs a row too.
+# that --grader or --reader names needs a row too.
 sources:
   claude:
     source: >-
@@ -10,8 +10,8 @@ sources:
       times one million. cache_creation_input_token_cost is the price of a five-minute cache
       write; the gateway prices a write of a mark that names no life, which lives one hour, at
       cache_creation_input_token_cost_above_1hr. The harness's own calls carry no cache mark.
-      claude-fable-5-2, a grader that `--grader` may name, was read from the same source on
-      2026-11-16.
+      claude-fable-5-2, a candidate that `--reader` may name as the fresh reader, was read from
+      the same source on 2026-11-16.
     read: 2026-11-15
   foundry:
     source: >-

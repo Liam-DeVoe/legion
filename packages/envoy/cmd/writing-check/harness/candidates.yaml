@@ -10,7 +10,9 @@
 # `local --test-models` lists it in DISPATCH_TEST_MODELS. It has the price of its id. Without an
 # effort a Foundry candidate sends none, and a Claude candidate asks for no thinking.
 #
-# No role is a candidate, and the grader does not play the writer (R2).
+# The grader and each grader fallback are no candidate: a grader grades no output it wrote (R2).
+# The grader does not play the writer or the fresh reader, and a fallback plays no other role. The
+# writer and the fresh reader may be candidates.
 roles:
   # The grading model: it reads every text, Dispatch's record and the writer's session. Each
   # reply gives what the grader found before its verdict (prompts/, judge.go's numbered fields).
@@ -40,6 +42,10 @@ candidates:
   - {family: claude, id: claude-haiku-5-5}
   - {family: claude, id: claude-sonnet-5-5}
   - {family: claude, id: claude-opus-4-8}
+  # The writer's model, and claude-fable-5-2, which `score --reader` may also name as the fresh
+  # reader of a run.
+  - {family: claude, id: claude-opus-5-5}
+  - {family: claude, id: claude-fable-5-2}
 
 # The four deployments INFRA-3483 declares on the Foundry account, named by its stack outputs. Each
 # joins the candidates above, with its id, when it answers from the pod (`harness probe`).

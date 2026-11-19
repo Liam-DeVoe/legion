@@ -162,6 +162,7 @@ steps:
   owner-texts  write each text the owner wrote himself, with its time, from the snapshot build reads
   followups    write what the owner did after each case's text, and the question cases' explanations as answer cases
   named        build plain cases of the development part from the document versions --doc lists, read from the live Dispatch
+  lists        write the case lists of harness score --case-list: the question, answer and plain cases of the development part
 
 writing-check dataset <step> -h lists its flags.
 `
@@ -188,6 +189,8 @@ func runDataset(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runDatasetFollowups(args[1:], stdout, stderr)
 	case "named":
 		return runDatasetNamed(ctx, args[1:], stdout, stderr)
+	case "lists":
+		return runDatasetLists(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, dsUsage)
 		return 0

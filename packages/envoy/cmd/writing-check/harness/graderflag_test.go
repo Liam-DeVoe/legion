@@ -61,13 +61,15 @@ func writePlanted(t *testing.T) string {
 }
 
 // `score --grader` grades the run with the model it names, in place of candidates.yaml's grader:
-// every grading call goes to it, and run.json and the figures record it as the grader.
+// every grading call goes to it, and run.json and the figures record it as the grader. Each Claude
+// model of prices.yaml that is no candidate plays a role of candidates.yaml, so the run takes the
+// fresh reader's model as its grader and gives the reader's part to a candidate (--reader).
 func TestTheGraderFlagReplacesTheGraderOfOneRun(t *testing.T) {
-	const grader = "claude-fable-5-2"
+	const grader, reader = "claude-sonnet-4-6", "claude-fable-5-2"
 	build, sessions := writeFixture(t)
 	stand := modeltest.New(t, graderRules(t)...)
 	out := t.TempDir()
-	code, _, stderr := runHarness("score", "--cases", build, "--sessions", sessions, "--out", out, "--grader", grader,
+	code, _, stderr := runHarness("score", "--cases", build, "--sessions", sessions, "--out", out, "--grader", grader, "--reader", reader,
 		"--gateway", stand.URL, "--gateway-key-file", keyFile(t), "--draws", "50", "--exposure-log", filepath.Join(t.TempDir(), "exposure.log"))
 	if code != 0 {
 		t.Fatalf("score --grader %s = %d:\n%s", grader, code, stderr)
@@ -80,17 +82,16 @@ func TestTheGraderFlagReplacesTheGraderOfOneRun(t *testing.T) {
 	if err := json.Unmarshal(data, &params); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if params.Models[RoleGrader] != grader || params.Models[RoleReader] != cfg.Models.Roles.Reader.ID {
-		t.Errorf("run.json records the models %v, want the grader %s and the reader %s", params.Models, grader, cfg.Models.Roles.Reader.ID)
+	if params.Models[RoleGrader] != grader || params.Models[RoleReader] != reader {
+		t.Errorf("run.json records the models %v, want the grader %s and the reader %s", params.Models, grader, reader)
 	}
 	graded := 0
 	for _, r := range stand.Requests() {
 		switch {
 		case strings.Contains(r.Text, markReader):
+			if r.Model != reader {
+				t.Errorf("a reader's call went to %s, want %s", r.Model, reader)
+			}
 		case r.Model != grader:
 			t.Errorf("a grading call went to %s, want %s", r.Model, grader)
 		default:
