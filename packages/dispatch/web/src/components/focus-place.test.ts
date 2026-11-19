@@ -6,6 +6,7 @@ import { PANEL_ATTRIBUTE, takesText, useKeymap } from "../features/shell/keymap"
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
 import { inRow, useFocusRescue } from "./focus-place";
+import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
 // away fires a `focusout` in Chromium while it is still in the page, and none at all in Firefox
@@ -1016,8 +1017,8 @@ test("a control hidden after the reader scrolled it out of sight stays out of si
 });
 
 /** A box that scrolls by itself, laid out from 100 px to 400 px down the window, holding one row
- *  per label - an Inbox row carrying the one checkbox a row marks itself by - appended to
- *  `parent`. */
+ *  per label - an Inbox row, carrying the row marker as the Inbox draws it, and the one checkbox
+ *  a row marks itself by - appended to `parent`. */
 function rowBoxIn(
   parent: Element,
   ...labels: string[]
@@ -1029,6 +1030,7 @@ function rowBoxIn(
   const rows = labels.map((label) => {
     const row = document.createElement("div");
     row.setAttribute("data-inbox-row", label);
+    row.setAttribute(ROW_MARKER_ATTRIBUTE, "");
     row.tabIndex = -1;
     const mark = document.createElement("input");
     mark.type = "checkbox";
@@ -1866,6 +1868,124 @@ test("an uncaused loss whose place now holds a form leaves the focus out of its 
       expect(scrolls).not.toHaveBeenCalled();
     } finally {
       scrolls.mockRestore();
+    }
+  }
+});
+
+// (bf) INFRA-3135 round 17, the tester's: the Agents page draws each agent as an
+// `<article data-agent-row>` holding its broadcast mark and its name's toggle, a row of that list
+// as much as an Inbox row is of the Inbox. A session that ends takes its row away with no press of
+// the reader's, a loss they did not cause, and the rule of (ag) holds for it: the focus goes into
+// no other agent's row and nothing scrolls, so the reader's next Space marks no agent they did not
+// pick. Measured in Chromium at e4d8b3b1 (builds Job infra-3135-r17h2): with the focus on an
+// agent's mark or name when its session ended, the focus landed on the next agent's mark or name,
+// and a Space then marked that agent for broadcast; at the merge base bacd5d7e it stayed on the
+// body and Space marked nothing. With Chromium's `focusout` and without.
+test("an agent's row taken away by its session's end hands the focus to no other agent's row", async () => {
+  for (const withFocusout of [true, false]) {
+    const scrolls = spyOn(Element.prototype, "scrollIntoView");
+    try {
+      await withRescue(async () => {
+        const { main } = mainOf("Before");
+        const agents = ["One", "Two", "Three"].map((label) => {
+          const row = document.createElement("article");
+          row.setAttribute("data-agent-row", label);
+          row.setAttribute(ROW_MARKER_ATTRIBUTE, "");
+          row.tabIndex = -1;
+          const mark = document.createElement("input");
+          mark.type = "checkbox";
+          mark.setAttribute("aria-label", `Select Agent ${label} for broadcast`);
+          row.append(mark);
+          buttonIn(row, `Agent ${label}`);
+          main.append(row);
+          return { mark, row };
+        });
+        const second = agents[1] as { mark: HTMLInputElement; row: HTMLElement };
+        second.mark.focus();
+        placeAt(second.mark, 200);
+        if (withFocusout) lose(second.mark, () => second.row.remove());
+        else second.row.remove();
+        await settled();
+        expect(document.activeElement?.closest("[data-agent-row]") ?? null).toBeNull();
+        expect(agents[2]?.mark).not.toHaveFocus();
+      });
+      expect(scrolls).not.toHaveBeenCalled();
+    } finally {
+      scrolls.mockRestore();
+    }
+  }
+});
+
+// (bi) A keystroke in a field that takes typed text edits the field and is no press of the
+// reader's (`isPress`), and nor is the `change` the field fires as it goes, its commit on blur,
+// which Chromium fires as an update takes the focused field away. So a live update that takes a
+// field away from under the reader's typing, in the task of that `change`, is a loss they did not
+// cause (ag): the focus lands in no row and on no field that takes typed text - not on the Reply
+// text box the update draws in the row's place - and nothing scrolls. Measured in Chromium with
+// the `change` read as the reader's pick: the loss read as caused, and the focus landed on that
+// Reply text box, where the reader's next key was typed. A `<textarea>` with a character key and
+// then Enter, which inserts a line there, and an `<input>` with a character key, each by
+// Chromium's `focusout` and by none. The issue title's Enter, which commits its `<input>`, is
+// still a press (ap).
+test("a keystroke in a text field, or the change its removal fires, makes no press, so an uncaused removal of the field takes the uncaused path", async () => {
+  const fields = [
+    {
+      keys: [
+        { code: "KeyA", key: "a" },
+        { code: "Enter", key: "Enter" },
+      ],
+      make: () => document.createElement("textarea"),
+    },
+    { keys: [{ code: "KeyA", key: "a" }], make: () => document.createElement("input") },
+  ];
+  for (const { keys, make } of fields) {
+    for (const withFocusout of [true, false]) {
+      const scrolls = spyOn(Element.prototype, "scrollIntoView");
+      try {
+        await withRescue(async () => {
+          const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+          const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+          const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+          const field = make();
+          field.setAttribute("aria-label", "Note");
+          second.row.append(field);
+          field.focus();
+          placeAt(field, 200);
+          box.dispatchEvent(new Event("scroll"));
+          for (const { code, key } of keys) {
+            field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code, key }));
+            field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, code, key }));
+          }
+          // The update draws the row again in its place, holding a Reply form, its text box first.
+          const redrawn = document.createElement("div");
+          redrawn.setAttribute("data-inbox-row", "Two");
+          redrawn.setAttribute(ROW_MARKER_ATTRIBUTE, "");
+          redrawn.tabIndex = -1;
+          const reply = document.createElement("form");
+          const replyBox = document.createElement("textarea");
+          replyBox.setAttribute("aria-label", "Reply");
+          reply.append(replyBox);
+          buttonIn(reply, "Send");
+          redrawn.append(reply);
+          const replace = () => {
+            second.row.remove();
+            box.insertBefore(redrawn, third.row);
+          };
+          // The field's commit on blur, which Chromium fires as the update takes it away.
+          field.dispatchEvent(new Event("change", { bubbles: true }));
+          if (withFocusout) lose(field, replace);
+          else replace();
+          await settled();
+          const landed = document.activeElement as HTMLElement;
+          expect(box).toHaveFocus();
+          expect(inRow(landed)).toBe(false);
+          expect(takesText(landed)).toBe(false);
+          expect(replyBox).not.toHaveFocus();
+        });
+        expect(scrolls).not.toHaveBeenCalled();
+      } finally {
+        scrolls.mockRestore();
+      }
     }
   }
 });

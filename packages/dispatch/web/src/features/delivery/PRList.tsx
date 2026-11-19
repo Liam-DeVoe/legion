@@ -18,6 +18,7 @@ import {
   type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
+import { ROW_MARKER } from "../../components/row-marker";
 import { type LayoutColumns, useTableLayout } from "../../components/table-layout";
 import {
   borderDefault,
@@ -641,6 +642,7 @@ function PRRow({
       }}
       ref={measure}
       tabIndex={-1}
+      {...ROW_MARKER}
     >
       {row.getVisibleCells().map((cell) => (
         <td

@@ -45,6 +45,7 @@ import {
   putArchitectureSource,
   putRepoProject,
   replyToMessageDelivery,
+  resolveAsk,
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import {
@@ -5449,6 +5450,114 @@ test("a row a live update removes while it holds the focus hands the focus to no
   // `x` marks nothing: no row holds the focus for it to act on, so no bar appears.
   await page.keyboard.press("x");
   await expect(bar).toHaveCount(0);
+});
+
+// SLOW(>=2s): two surfaces, each with three questions seeded and one withdrawn by its asker.
+// INFRA-3135, round 17 (the tester's, measured in builds Job infra-3135-r17h2 at e4d8b3b1): the
+// reader is typing an answer in the Inbox's list layout - the Inbox page below 1280 px, and the
+// drawer at any width - when the asker withdraws the question. The card swaps to its record
+// under them, a loss they did not cause, and the record draws a Reply box where the answer form
+// was. At e4d8b3b1 Chromium leaves the focus in that Reply box, in three runs of three, so the
+// reader's next `j` is typed into it. At 90fa8211 and at the merge base bacd5d7e the focus goes to
+// the question's row and `j` steps to the next row, in Chromium, Firefox and WebKit alike. The
+// architect's rule of 2026-11-19 (13:0xZ): a loss the reader did not cause never lands in a field
+// that takes typed text. A focused control taken away, for which Firefox and WebKit fire no
+// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus
+// row (e2e/playwright.config.ts).
+test("an ask withdrawn while the reader types its answer in the Inbox's list takes none of their next keys as text @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const typed = "Only the last lease, on a cold start.";
+  await createProject({ key: "CORE", name: "Core" });
+  const wrong: string[] = [];
+  for (const surface of ["page at 390x664", "drawer at 1440x900"] as const) {
+    const ids: string[] = [];
+    for (const title of ["Keep going?", "Ship it?", "Describe the lease format."]) {
+      const issue = await createIssue({ project: "CORE", title: `${surface}: ${title}` });
+      await patchIssue(issue.key, { assignee: "alice" });
+      ids.push((await createAsk(issue.key, { question: title }, SURFACE_SESSION)).id);
+    }
+    // The Inbox lists newest first: the question the reader answers is the first row.
+    const withdrawn = ids[2] as string;
+    let root: Page | Locator = page;
+    if (surface === "page at 390x664") {
+      await page.setViewportSize({ height: 664, width: 390 });
+      await page.goto("/");
+    } else {
+      await page.setViewportSize({ height: 900, width: 1440 });
+      await page.goto("/settings");
+      await expect(page.getByRole("heading", { exact: true, name: "Agent tokens" })).toBeVisible();
+      await page.keyboard.press("i");
+      root = drawer(page);
+      await expect(root).toBeVisible();
+    }
+    const card = root.getByTestId(`ask-${withdrawn}`);
+    const answer = card.locator("[data-ask-answer]");
+    await answer.click();
+    await answer.fill(typed);
+    await expect(answer).toBeFocused();
+    await resolveAsk(
+      withdrawn,
+      { kind: "retracted", reason: "Answered on another issue." },
+      SURFACE_SESSION
+    );
+    // The card shows its closed state, or its row has gone from the list.
+    await expect
+      .poll(() =>
+        page.evaluate((id) => {
+          const shown = document.querySelector(`[data-testid="ask-${id}"]`);
+          return (
+            shown === null || shown.querySelector('[data-testid="ask-resolution-badge"]') !== null
+          );
+        }, withdrawn)
+      )
+      .toBe(true);
+    await expect(answer).toHaveCount(0);
+    // The card's own hand-off runs in the commit, the page's rescue a frame and a task after the
+    // loss, and a component's focus effect after its commit: all of them are done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+    const holder = await page.evaluate(() => {
+      const active = document.activeElement;
+      const takesText =
+        active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLElement && active.isContentEditable) ||
+        (active instanceof HTMLInputElement &&
+          ["", "text", "search", "email", "url", "tel", "number", "password"].includes(
+            active.getAttribute("type") ?? ""
+          ));
+      // A field's name as a reader hears it: its own label, else its placeholder.
+      const field = active as HTMLTextAreaElement | HTMLInputElement | null;
+      const named =
+        active?.getAttribute("aria-label") ||
+        field?.labels?.[0]?.textContent?.trim() ||
+        active?.getAttribute("placeholder") ||
+        active?.textContent?.trim().slice(0, 40);
+      return { name: `${active?.tagName.toLowerCase()} "${named}"`, takesText };
+    });
+    if (holder.takesText)
+      wrong.push(`${surface}: the focus is in ${holder.name}, which takes text`);
+    await page.keyboard.press("j");
+    await nextFrames(page);
+    // One read after the key's frames is the answer: a key typed into a box is there at once.
+    const typedInto = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("textarea, input")]
+        .filter((field) => field.value.includes("j"))
+        .map(
+          (field) =>
+            field.getAttribute("aria-label") ||
+            field.labels?.[0]?.textContent?.trim() ||
+            field.getAttribute("placeholder") ||
+            field.tagName.toLowerCase()
+        )
+    );
+    if (typedInto.length > 0) {
+      wrong.push(`${surface}: j was typed into ${typedInto.join(", ")}`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
 // SLOW(>=2s): three priorities and two asks seeded, and two pages opened.

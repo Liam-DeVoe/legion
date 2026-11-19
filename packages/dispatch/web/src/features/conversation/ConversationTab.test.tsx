@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { jump } from "../../__tests__/fake-clock";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
   dwellOn,
@@ -2794,5 +2795,42 @@ test("the turns' keys stand down while another tab is shown", async () => {
     ).toBeTruthy();
   } finally {
     page.cleanup();
+  }
+});
+
+// A turn is a row of the tab's list (`turnMarks`). A refetch that takes the turn holding the focus
+// away is a loss the reader did not cause, so the app shell's focus rescue, mounted here on the
+// page's main content as the shell mounts it, hands the focus into no other turn: the reader's
+// next `r` or `y` acts on no conversation they did not pick.
+test("a turn a refetch takes away from under the focus hands it to no other turn", async () => {
+  const stub = stubLists(turnLists());
+  const queryClient = newQueryClient();
+  const view = render(
+    <RescuedMain>
+      <IssueScope />
+      {tab({ "CORE-1": issueState() }, true, queryClient)}
+    </RescuedMain>
+  );
+  try {
+    const turn = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>('[data-turn="comment:comment-1"]');
+      if (found === null) throw new Error("expected the comment:comment-1 turn");
+      return found;
+    });
+    const expand = within(turn).getByRole("button", { name: "Expand thread" });
+    act(() => expand.focus());
+
+    stub.lists.comments = [];
+    await act(async () => {
+      await queryClient.refetchQueries();
+    });
+    await waitFor(() => expect(turn).not.toBeInTheDocument());
+    await afterRescue();
+
+    expect(document.activeElement?.closest("[data-turn], [data-reply]") ?? null).toBeNull();
+    expect(view.container.querySelector('[data-turn="handoff:handoff-1"]')).not.toBeNull();
+  } finally {
+    view.unmount();
+    stub.restore();
   }
 });

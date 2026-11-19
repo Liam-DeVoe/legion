@@ -12,6 +12,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { afterRescue } from "../../__tests__/focus-rescue";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -5132,6 +5133,38 @@ test("a group heading draws no count until the reads that place a row in its gro
     held.resolve(inbox);
     await waitFor(() => expect(screen.getByTestId("agents-group-count-needs-you")).toBeDefined());
     expect(screen.getByTestId("agents-group-count-active").textContent).toMatch(/^\(\d+\)$/);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The page's own agent row is a row of its list, as an Inbox row is of the Inbox. A session that
+// ends takes its row away with no press of the reader's, a loss they did not cause, so the app
+// shell's focus rescue hands the focus into no other agent's row, and the reader's next Space
+// marks no agent they did not pick for broadcast.
+test("an agent's session ending under the focus hands it to no other agent's row, and Space marks nobody", async () => {
+  const user = userEvent.setup();
+  const [alpha, bravo, charlie] = ["Alpha", "Bravo", "Charlie"].map((title) =>
+    session({ last_seen: Date.now(), session_id: `${title.toLowerCase()}-session`, title })
+  ) as [Agent, Agent, Agent];
+  const page = renderAgents({ inboxRows: [], listedAgents: [alpha, bravo, charlie] });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const mark = within(region).getByRole("checkbox", { name: "Select Bravo for broadcast" });
+    act(() => mark.focus());
+
+    page.listAgents.mockResolvedValue([alpha, charlie]);
+    await refetchAgents(page.queryClient);
+    await waitFor(() => expect(mark).not.toBeInTheDocument());
+    await afterRescue();
+
+    expect(document.activeElement?.closest("[data-agent-row]") ?? null).toBeNull();
+    await user.keyboard(" ");
+    const marks = within(region).getAllByRole("checkbox", { name: /^Select .* for broadcast$/ });
+    expect(marks).toHaveLength(2);
+    for (const each of marks) expect(each).not.toBeChecked();
   } finally {
     page.view.unmount();
     page.restore();

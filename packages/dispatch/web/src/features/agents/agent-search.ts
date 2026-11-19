@@ -52,8 +52,11 @@ function addressFields(
 /** The Agents page narrowed by `narrowing` (`/agents?machine=<host>` for one machine's
  *  sessions): the link another page sends a reader here by. It is written through the page's
  *  own grammar and the field names `useAgentFilters`'s setter writes, so it is the address that
- *  setter writes from a plain `/agents` for the same narrowing, cut and encoded the same way. */
-export function agentsAddress(narrowing: Partial<AgentFilters>): string {
+ *  setter writes from a plain `/agents` for the same narrowing, encoded the same way. `null`
+ *  where the grammar cannot carry the narrowing whole (`fieldsAddress`): a machine name longer
+ *  than `SEARCH_QUERY_MAX` would otherwise link to the cut `?machine=` writes, a name no session
+ *  reports or another machine's. The caller draws no link. */
+export function agentsAddress(narrowing: Partial<AgentFilters>): string | null {
   return fieldsAddress("/agents", AGENT_FILTER_SPEC, addressFields(narrowing));
 }
 

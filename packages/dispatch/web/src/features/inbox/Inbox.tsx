@@ -27,6 +27,7 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
+import { ROW_MARKER } from "../../components/row-marker";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
 import { useNestedPanels } from "../../components/useNestedPanels";
@@ -393,6 +394,7 @@ function InboxRowShell({
       }
       onPointerLeave={onRelease}
       tabIndex={-1}
+      {...ROW_MARKER}
     >
       {children}
     </li>

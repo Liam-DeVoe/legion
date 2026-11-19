@@ -6,6 +6,7 @@ import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { ROW_MARKER } from "../../components/row-marker";
 import { TruncatedText } from "../../components/TruncatedText";
 import {
   borderDefault,
@@ -59,6 +60,7 @@ function DocumentRow({ document }: { document: Artifact }): ReactNode {
       className={`flex flex-wrap items-center gap-x-4 gap-y-2 border-t py-3 outline-none focus-visible:ring-2 sm:grid sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] ${borderDefault} ${focusVisibleRing}`}
       data-document-row=""
       tabIndex={-1}
+      {...ROW_MARKER}
     >
       <div className="min-w-0 basis-full">
         <div className="flex min-w-0 items-center gap-1">

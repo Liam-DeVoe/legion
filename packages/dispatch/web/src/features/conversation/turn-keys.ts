@@ -1,6 +1,7 @@
 import { createContext } from "react";
 import { flushSync } from "react-dom";
 
+import { ROW_MARKER } from "../../components/row-marker";
 import { focusVisibleRing } from "../../theme/classes";
 import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/routes";
 
@@ -32,17 +33,19 @@ export const ConversationTurns = createContext(false);
 /** The ring a turn draws while the keyboard's focus is on it. */
 export const turnFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
 
-/** What a turn spreads on itself inside the tab: the focus the tab's keys give it, and the
- *  `dispatch://` reference `y` copies (`data-turn-ref`) where it has one - a handoff, and a
- *  message to a session that names no issue, have none. Outside the tab, nothing. */
+/** What a turn spreads on itself inside the tab: the focus the tab's keys give it, the shared row
+ *  marker (`ROW_MARKER`), since a turn is a row of the tab's list that the page's focus rescue
+ *  lands no loss the reader did not cause in, and the `dispatch://` reference `y` copies
+ *  (`data-turn-ref`) where it has one - a handoff, and a message to a session that names no
+ *  issue, have none. Outside the tab, nothing. */
 export function turnMarks(
   inTab: boolean,
   route: DispatchReferenceRoute | undefined
-): { "data-turn-ref"?: string; tabIndex?: number } {
+): { "data-row-marker"?: ""; "data-turn-ref"?: string; tabIndex?: number } {
   if (!inTab) return {};
   return route === undefined
-    ? { tabIndex: -1 }
-    : { "data-turn-ref": buildDispatchReference(route), tabIndex: -1 };
+    ? { ...ROW_MARKER, tabIndex: -1 }
+    : { ...ROW_MARKER, "data-turn-ref": buildDispatchReference(route), tabIndex: -1 };
 }
 
 /** The first control `selector` names inside `turn` that is the turn's own, not one of a reply

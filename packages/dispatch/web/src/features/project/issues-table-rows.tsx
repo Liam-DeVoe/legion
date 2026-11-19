@@ -6,6 +6,7 @@ import { DataTableCells, DataTableGroupRow } from "../../components/DataTable";
 import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
+import { ROW_MARKER } from "../../components/row-marker";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import {
   borderDefault,
@@ -58,6 +59,7 @@ export function IssueRow({
       data-moved={changed || undefined}
       ref={measure}
       tabIndex={-1}
+      {...ROW_MARKER}
     >
       <DataTableCells
         cellClass={(cell) => (row.depth > 0 && cell.column.id === "select" ? "pl-6" : "")}

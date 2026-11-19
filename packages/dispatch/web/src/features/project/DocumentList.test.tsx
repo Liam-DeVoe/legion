@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -289,6 +290,53 @@ test("j and k walk the documents, o and Enter on the row open one in this tab, a
   } finally {
     view.unmount();
     open.mockRestore();
+    listProjectArtifacts.mockRestore();
+  }
+});
+
+// A document's row is a row of the Documents list. A refetch that takes the row holding the focus
+// away is a loss the reader did not cause, so the app shell's focus rescue, mounted here on the
+// page's main content as the shell mounts it, hands the focus into no other row: the reader's
+// next `o` opens no document they did not pick.
+test("a row a refetch takes away from under the focus hands it to no other row", async () => {
+  const notes = document();
+  const roadmap = document({
+    id: "artifact-3",
+    name: "Roadmap",
+    ref_key: "CORE/roadmap",
+    slug: "roadmap",
+  });
+  const listProjectArtifacts = spyOn(api, "listProjectArtifacts").mockResolvedValue([
+    notes,
+    document({ id: "artifact-2", name: "Goals", ref_key: "CORE/goals", slug: "goals" }),
+    roadmap,
+  ]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <RescuedMain>
+          <DocumentList project="CORE" />
+        </RescuedMain>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const goals = await screen.findByRole("link", { name: "Goals" });
+    act(() => goals.focus());
+
+    listProjectArtifacts.mockResolvedValue([notes, roadmap]);
+    await act(async () => {
+      await queryClient.refetchQueries();
+    });
+    await waitFor(() => expect(goals).not.toBeInTheDocument());
+    await afterRescue();
+
+    // `document` here is the fixture above, so the page's own is read through `window`.
+    expect(window.document.activeElement?.closest("[data-document-row]") ?? null).toBeNull();
+    expect(screen.getByRole("listitem", { name: "Roadmap" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
     listProjectArtifacts.mockRestore();
   }
 });

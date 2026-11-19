@@ -52,19 +52,13 @@ test("the field the reader edits is cut at the cap, and emptying it leaves the a
 
 // Another page links here (the machine page's "Agents on this machine") through the page's own
 // grammar rather than spelling `?machine=` itself, so the link is the address the page's setter
-// writes for the same narrowing, encoded and cut the same way, and it reads back as exactly that
-// narrowing. Each name is paired with the machine the link reads back as: a name past the cap
-// reads back cut, as the setter wrote it.
+// writes for the same narrowing, encoded the same way, and it reads back as exactly that
+// narrowing.
 test("the link to the Agents page for a machine is the address the page's own grammar writes for it", () => {
-  const long = "x".repeat(SEARCH_QUERY_MAX + 12);
-  const names: readonly (readonly [string, string])[] = [
-    ["relay-1", "relay-1"],
-    ["sand-devbox.corp.example.com", "sand-devbox.corp.example.com"],
-    ["build host+1 & co #2", "build host+1 & co #2"],
-    [long, "x".repeat(SEARCH_QUERY_MAX)],
-  ];
-  for (const [name, readBack] of names) {
+  const names = ["relay-1", "sand-devbox.corp.example.com", "build host+1 & co #2"];
+  for (const name of names) {
     const link = agentsAddress({ machines: [name] });
+    if (link === null) throw new Error(`no link to the Agents page for ${name}`);
     const page = renderAddress(() => useAgentFilters(), ["/agents"]);
     try {
       act(() => page.result.current.value[1]({ machines: [name] }));
@@ -78,10 +72,27 @@ test("the link to the Agents page for a machine is the address the page's own gr
     try {
       expect([name, linked.result.current.value[0]]).toEqual([
         name,
-        { groups: [], machines: [readBack], roles: [], search: "" },
+        { groups: [], machines: [name], roles: [], search: "" },
       ]);
     } finally {
       linked.unmount();
     }
+  }
+});
+
+// `?machine=` is cut at `SEARCH_QUERY_MAX`, so a link for a longer name would read back as the
+// cut: a name no session reports, or another machine's. Such a name has no link, and a name of
+// exactly the cap has one that reads back whole.
+test("a machine name past the cap has no link to the Agents page, and a name at the cap has", () => {
+  expect(agentsAddress({ machines: ["x".repeat(SEARCH_QUERY_MAX + 1)] })).toBeNull();
+
+  const atCap = "x".repeat(SEARCH_QUERY_MAX);
+  const link = `/agents?machine=${atCap}`;
+  expect(agentsAddress({ machines: [atCap] })).toBe(link);
+  const linked = renderAddress(() => useAgentFilters(), [link]);
+  try {
+    expect(linked.result.current.value[0].machines).toEqual([atCap]);
+  } finally {
+    linked.unmount();
   }
 });
