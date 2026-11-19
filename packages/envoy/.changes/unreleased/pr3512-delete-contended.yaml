@@ -1,10 +1,11 @@
-kind: Changed
+kind: Added
 body: |-
   DELETE /api/v1/comments/{id} and DELETE /api/v1/messages/{id} answer `409 DELETE_CONTENDED` with
-  `Retry-After: 1`, with nothing written, when a send of the post moves while the delete is being
-  written, where they answered `500 INTERNAL`; the same delete sent again then lands. A delete's
-  settled send attempts read `ended by the post's delete`, where they read `not sent: the post was
-  deleted`, which claims nothing about a frame that had already reached its session.
+  `Retry-After: 1` when a send of the post moves while the delete is being written: nothing is
+  written, and the same delete can be sent again. A delete's settled send attempts read `ended by
+  the post's delete`, which says the delete ended the attempt and nothing about a frame already
+  sent (an earlier draft of this change wrote `not sent: the post was deleted`, which no release
+  carried).
 time: 2026-11-19T06:03:49.147617612Z
 custom:
     Issue: pr3512

@@ -388,15 +388,21 @@ func (s *server) recordPendingMessageDelivery(
 	}
 	// FOR NO KEY UPDATE, as the accept's is: the session's reply takes an attempt row and then
 	// this row FOR KEY SHARE through its insert's foreign key, and FOR UPDATE would wait for that
-	// while this transaction waits below for the attempt row the reply holds. The text is read
-	// here too, under the issue's owner lock every writer of it holds (lockedMessageForCorrection),
-	// so the frame and the send carry the body as the lock's previous holder left it, not as the
-	// caller read it before the lock.
+	// while this transaction waits below for the attempt row the reply holds. A message of an
+	// issue has its text read here too, under the issue's owner lock every writer of it holds
+	// (lockedMessageForCorrection), so the frame and the send carry the body as the lock's
+	// previous holder left it, not as the caller read it before the lock. A message with no issue,
+	// a direct message or a broadcast's copy, takes no edit and no delete (NOT_AN_ISSUE_MESSAGE),
+	// so the body the caller read is the body it has, and its row gives the target alone.
 	var target string
 	var deleted bool
-	if err := tx.QueryRow(ctx, `
-		select target, body, edited_at, deleted_at is not null from messages where id = $1 for no key update
-	`, message.ID).Scan(&target, &message.Body, &message.EditedAt, &deleted); err != nil {
+	if message.IssueKey != nil {
+		if err := tx.QueryRow(ctx, `
+			select target, body, edited_at, deleted_at is not null from messages where id = $1 for no key update
+		`, message.ID).Scan(&target, &message.Body, &message.EditedAt, &deleted); err != nil {
+			return pendingMessageDelivery{}, err
+		}
+	} else if err := tx.QueryRow(ctx, `select target from messages where id = $1 for no key update`, message.ID).Scan(&target); err != nil {
 		return pendingMessageDelivery{}, err
 	}
 	// An unbound send is a Retry (createDelivery), which resumes or opens an attempt of the

@@ -211,6 +211,23 @@ func TestDeletedPostHistoryGivesTheMarkAndNoBody(t *testing.T) {
 	}
 }
 
+// The pending send the two delete-settle tests seed on a post of each kind, one that nothing has
+// resolved yet, and the pin that send's own sender writes on its row holding no owner lock: a
+// comment's the session its send resolved to (recordCommentDeliveryResolution), a message's the
+// session its renewed try goes to (renewMessageDeliveryClaim). Each takes the post's id.
+const (
+	seedPendingCommentAttempt = `
+		insert into comment_deliveries (comment_id, target, attempt, delivery, state)
+		values ($1, 'role:reviewer', 1, 'steer', 'pending')
+	`
+	movePendingCommentAttempt = `update comment_deliveries set session_id = coalesce(session_id, 's1') where comment_id = $1`
+	seedPendingMessageAttempt = `
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state)
+		values ($1, 1, 'steer', '', 'pending')
+	`
+	movePendingMessageAttempt = `update message_deliveries set session_id = coalesce(nullif(session_id, ''), 's1') where message_id = $1`
+)
+
 // A delete settles each send of its post still pending from what its read found of it, and an
 // attempt's own sender moves a pending row holding no owner lock: a comment's pins the session
 // its send resolved to (recordCommentDeliveryResolution), a message's the session its renewed
@@ -244,10 +261,7 @@ func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
 			name: "comment",
 			open: func(t *testing.T) string {
 				comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "a comment a send waits on"}, "alice")
-				exec(t, `
-					insert into comment_deliveries (comment_id, target, attempt, delivery, state)
-					values ($1, 'role:reviewer', 1, 'steer', 'pending')
-				`, comment.ID)
+				exec(t, seedPendingCommentAttempt, comment.ID)
 				return comment.ID
 			},
 			read: func(t *testing.T, id string) pendingAttemptsRead {
@@ -267,17 +281,14 @@ func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
 				return commentAttemptsRead(pending)
 			},
 			none:  commentAttemptsRead(nil),
-			move:  `update comment_deliveries set session_id = coalesce(session_id, 's1') where comment_id = $1`,
+			move:  movePendingCommentAttempt,
 			state: `select state from comment_deliveries where comment_id = $1`,
 		},
 		{
 			name: "message",
 			open: func(t *testing.T) string {
 				message := createSessionIssueMessage(t, handler, issue.Key, "a message a send waits on")
-				exec(t, `
-					insert into message_deliveries (message_id, attempt, delivery, session_id, state)
-					values ($1, 1, 'steer', '', 'pending')
-				`, message.ID)
+				exec(t, seedPendingMessageAttempt, message.ID)
 				return message.ID
 			},
 			read: func(t *testing.T, id string) pendingAttemptsRead {
@@ -297,7 +308,7 @@ func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
 				return messageAttemptsRead(pending)
 			},
 			none:  messageAttemptsRead(nil),
-			move:  `update message_deliveries set session_id = coalesce(nullif(session_id, ''), 's1') where message_id = $1`,
+			move:  movePendingMessageAttempt,
 			state: `select state from message_deliveries where message_id = $1`,
 		},
 	}
@@ -394,32 +405,26 @@ func TestADeleteWhoseSendMovesWhileItIsWrittenAnswersDeleteContended(t *testing.
 			open: func(t *testing.T) string {
 				t.Helper()
 				comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "a comment whose send moves"}, "alice")
-				if _, err := database.Pool.Exec(ctx, `
-					insert into comment_deliveries (comment_id, target, attempt, delivery, state)
-					values ($1, 'role:reviewer', 1, 'steer', 'pending')
-				`, comment.ID); err != nil {
+				if _, err := database.Pool.Exec(ctx, seedPendingCommentAttempt, comment.ID); err != nil {
 					t.Fatalf("seed the pending attempt of comment %s: %v", comment.ID, err)
 				}
 				return comment.ID
 			},
 			route: "/api/v1/comments/", posts: "comments", attempts: "comment_deliveries", owner: "comment_id",
-			move: `update comment_deliveries set session_id = coalesce(session_id, 's1') where comment_id = $1`,
+			move: movePendingCommentAttempt,
 		},
 		{
 			name: "message",
 			open: func(t *testing.T) string {
 				t.Helper()
 				message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "a message whose send moves"}, "alice")
-				if _, err := database.Pool.Exec(ctx, `
-					insert into message_deliveries (message_id, attempt, delivery, session_id, state)
-					values ($1, 1, 'steer', '', 'pending')
-				`, message.ID); err != nil {
+				if _, err := database.Pool.Exec(ctx, seedPendingMessageAttempt, message.ID); err != nil {
 					t.Fatalf("seed the pending attempt of message %s: %v", message.ID, err)
 				}
 				return message.ID
 			},
 			route: "/api/v1/messages/", posts: "messages", attempts: "message_deliveries", owner: "message_id",
-			move: `update message_deliveries set session_id = coalesce(nullif(session_id, ''), 's1') where message_id = $1`,
+			move: movePendingMessageAttempt,
 		},
 	} {
 		t.Run(kind.name, func(t *testing.T) {
@@ -443,7 +448,7 @@ func TestADeleteWhoseSendMovesWhileItIsWrittenAnswersDeleteContended(t *testing.
 			}
 
 			refused := <-deleted
-			if code, text := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "DELETE_CONTENDED" ||
+			if code, text := refusalOf(t, refused); refused.Code != http.StatusConflict || code != deleteContended ||
 				text != "a send of this post moved while the delete was being written; nothing was written, and the same delete can be sent again" {
 				t.Fatalf("a delete whose send moved under it: status=%d body=%s, want 409 DELETE_CONTENDED",
 					refused.Code, refused.Body.String())

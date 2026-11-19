@@ -38,8 +38,8 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Actor, Ask, Comment, Message } from "@legion/contracts";
+import { deletedMark, editedMark, withEditedMark } from "@legion/envoy-client/actor-text";
 import { messageFor } from "@legion/envoy-client/errors";
-import { deletedMark, editedMark, withEditedMark } from "../../../envoy-client/src/actor-text";
 import {
   byCreatedAt,
   type CliIo,

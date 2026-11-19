@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -120,18 +119,8 @@ func TestAMentionWhoseFrameLeftBeforeTheDeleteReadsEndedByThePostsDelete(t *test
 	if sends := mention.framesSent(); sends != 2 {
 		t.Fatalf("the listener took %d frames of the comment, want two: the Retry's left before the delete", sends)
 	}
-	var receipts []model.CommentDeliveryEventPayload
-	for _, event := range issueEventsOfType(t, mention.handler, mention.issueKey, "comment.delivery") {
-		var receipt model.CommentDeliveryEventPayload
-		if err := json.Unmarshal(event.Payload, &receipt); err != nil {
-			t.Fatalf("decode a comment.delivery receipt %s: %v", event.Payload, err)
-		}
-		if receipt.CommentID == mention.comment.ID && receipt.Attempt == 2 {
-			receipts = append(receipts, receipt)
-		}
-	}
-	if len(receipts) != 1 || receipts[0].State != model.DeliveryStateFailed || receipts[0].Error != endedByThePostsDelete {
-		t.Fatalf("attempt 2's receipts = %#v, want the one the delete's settle appended, failed %q",
-			receipts, endedByThePostsDelete)
+	if receipts, want := commentDeliveryReceipts(t, mention.database, mention.comment.ID, "session:s1", 2),
+		"failed/"+endedByThePostsDelete+"//s1"; receipts != want {
+		t.Fatalf("attempt 2's receipts = %q, want the one the delete's settle appended, %q", receipts, want)
 	}
 }

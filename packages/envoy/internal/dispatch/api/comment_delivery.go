@@ -867,11 +867,11 @@ func mentionsDecideRoutes(created model.Event) bool {
 // created: its body, cut to the share an event carries (model.EventBody), and the time of its
 // last edit, which are what an edit of a comment moves. The rest of the event - the mentions as
 // they were resolved, the thread, the routes the outbox decided on - is the creation's, which no
-// later write changes. So a frame never carries text an edit replaced, and it says what the body
-// sent beside it says (listenerSendInput). created carries the creating request's
-// model.CommentEventPayload or, for every later sender, the map loadCommentCreatedEvent decoded,
-// as mentionsDecideRoutes reads it; either is copied, never written, since the mention sender
-// hands one event to every mention of its comment.
+// later write changes. So a frame carries no text that an edit committed before its claim
+// replaced, and it says what the body sent beside it says (listenerSendInput). created carries
+// the creating request's model.CommentEventPayload or, for every later sender, the map
+// loadCommentCreatedEvent decoded, as mentionsDecideRoutes reads it; either is copied, never
+// written, since the mention sender hands one event to every mention of its comment.
 func mentionFrameEvent(created model.Event, stored model.Comment) model.Event {
 	body, truncated := model.EventBody(stored.Body)
 	switch payload := created.Payload.(type) {

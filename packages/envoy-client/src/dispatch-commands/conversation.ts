@@ -199,9 +199,11 @@ const DELETED_COMMENT_READS =
  * either delete that asks for nothing but the same call again: a send of the post moved while the
  * delete was being written, so nothing was written and the next call reads the post's sends as
  * they stand then. Every other refusal (403 NOT_AUTHOR, 409 POST_DELETED, 409
- * NOT_AN_ISSUE_MESSAGE) asks the caller to change something first and reaches them as Dispatch
- * wrote it. Untouched, this one reaches them as prose with its code hidden, which reads as a
- * failure to work out rather than a write to repeat, as `dispatch result`'s CHECK_CONTENDED would.
+ * NOT_AN_ISSUE_MESSAGE) asks the caller to change something first and reaches them as
+ * `throughPostCorrections` leaves it, which rewrites Dispatch's `404 NOT_FOUND` of the post to name
+ * it and a router's no-route 404 to say this Dispatch predates post corrections. Untouched, this
+ * one reaches them as prose with its code hidden, which reads as a failure to work out rather than
+ * a write to repeat, as `dispatch result`'s CHECK_CONTENDED would.
  */
 async function throughDelete<T>(
   context: CommandContext,

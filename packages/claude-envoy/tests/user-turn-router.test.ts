@@ -13,6 +13,7 @@ import {
   type DispatchClient,
   DispatchServiceError,
   DispatchWriteLandedError,
+  DispatchWriteUnsettledError,
 } from "@legion/envoy-client/dispatch-http"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type ModSession, modSession } from "../src/mod-session"
@@ -166,8 +167,9 @@ async function harness(input: {
   /** Every reply is one Dispatch made and gave no copy of its answer for: it is recorded, then
    *  thrown as `409 KEY_COMMITTED` (`REPLY_LANDED`). */
   readonly repliesLand?: boolean
-  /** Every reply is one Dispatch itself refused: it is recorded, then this is thrown. */
-  readonly repliesRefused?: DispatchServiceError
+  /** Every reply ends in this error, Dispatch's refusal or a post that may have landed: it is
+   *  recorded, then this is thrown. */
+  readonly repliesFail?: Error
 }): Promise<Harness> {
   const directory = input.directory ?? (await mkdtemp(join(tmpdir(), "claude-envoy-turns-")))
   const stateFile = userTurnStateFile(directory, SESSION)
@@ -206,8 +208,8 @@ async function harness(input: {
       if (input.repliesLand === true) {
         throw REPLY_LANDED
       }
-      if (input.repliesRefused !== undefined) {
-        throw input.repliesRefused
+      if (input.repliesFail !== undefined) {
+        throw input.repliesFail
       }
     },
     session,
@@ -840,7 +842,7 @@ test("a reply or a BTW answer Dispatch refused is said not posted, with Dispatch
   const session = await harness({
     link: mod.link,
     accept: () => accepted("/model anthropic/claude-opus-4-1"),
-    repliesRefused: refusal,
+    repliesFail: refusal,
   })
   try {
     await session.router.route(frame(personSends("/model anthropic/claude-opus-4-1")))
@@ -862,6 +864,58 @@ test("a reply or a BTW answer Dispatch refused is said not posted, with Dispatch
     await rm(session.directory, { recursive: true, force: true })
   }
 })
+
+// A reply that ended with no definitive answer while an attempt of it may have reached Dispatch
+// (`DispatchWriteUnsettledError`), or on a 5xx, may have been posted, so the line says it may or
+// may not have been, never that it was not. A BTW answer that ends so is answered with the error,
+// and when that error reply ends so too the line says the same of the BTW answer.
+for (const [name, failure, tail] of [
+  [
+    "a write left unsettled",
+    new DispatchWriteUnsettledError(new DispatchServiceError("RATE_LIMITED", 429, "slow down"), 2),
+    "RATE_LIMITED: slow down (the last of 2 attempts), and an earlier attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it.",
+  ],
+  [
+    "a 5xx",
+    new DispatchServiceError("INTERNAL", 500, "internal error"),
+    "INTERNAL: internal error",
+  ],
+] as const) {
+  test(`a reply that ended in ${name} may have been posted, and its line says so`, async () => {
+    const mod = fakeMod({ "config.set": (args) => ({ value: args.value }) })
+    const session = await harness({
+      link: mod.link,
+      accept: () => accepted("/model anthropic/claude-opus-4-1"),
+      repliesFail: failure,
+    })
+    try {
+      await session.router.route(frame(personSends("/model anthropic/claude-opus-4-1")))
+      await waitFor(async () => session.warnings.length === 1, "the reply's line")
+      expect(session.warnings).toEqual([
+        `a reply to message ${MESSAGE} may or may not have been posted — ${tail}`,
+      ])
+    } finally {
+      await rm(session.directory, { recursive: true, force: true })
+    }
+  })
+
+  test(`a BTW answer that ended in ${name} may have been posted, and its line says so`, async () => {
+    const mod = fakeMod({
+      "model.fork": () => ({ isAnswered: true as const, text: "It is the migration guard." }),
+    })
+    const session = await harness({ link: mod.link, repliesFail: failure })
+    try {
+      await session.router.route(frame(personSends("what blocks it?", { mode: "btw" })))
+      await waitFor(async () => session.warnings.length === 1, "the BTW answer's line")
+      expect(session.order).toEqual(["reply:It is the migration guard.", `reply:${tail}`])
+      expect(session.warnings).toEqual([
+        `a BTW answer to message ${MESSAGE} may or may not have been posted — ${tail}`,
+      ])
+    } finally {
+      await rm(session.directory, { recursive: true, force: true })
+    }
+  })
+}
 
 // An accept Dispatch recorded and gave no copy of its answer for spent the attempt as this
 // session's, and the stored body a turn is made of is not in hand: the frame keeps its card, and
