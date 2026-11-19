@@ -1,10 +1,11 @@
 // The one reader of an ask header's geometry, which every row of `ask-header-sweep.e2e.ts` reads
 // its headers through (dispatch://INFRA-341, R1). `readHeader` reads, in the page, what a header
 // draws at the width it has; a sweep is that reading at every width from `NARROWEST` up, `STEP` px
-// at a time, the way a host of that width would draw it; and a host-width row is one reading at
-// the width its host draws the header at. Each reading fails on the five checks that file's head
-// names. What each place draws (`Drawn`) and what each row holds it to stay in that file, beside
-// its rows: this module is what they read with, and holds no row.
+// at a time, the way a host of that width would draw it; a switch-width row is that reading at the
+// widths a layout switches at alone; and a host-width row is one reading at the width its host
+// draws the header at. Each reading fails on the five checks that file's head names. What each
+// place draws (`Drawn`) and what each row holds it to stay in that file, beside its rows: this
+// module is what they read with, and holds no row.
 import { expect, type Locator } from "@playwright/test";
 
 /** The width the sweep starts from: just under the narrowest header a host draws, which is the
@@ -72,13 +73,11 @@ export interface Reading {
   readonly width: number;
 }
 
-/** The widths a sweep reads a header at: from `from` up by `step`, to `widest` or the header's
- *  own width, whichever is wider. */
-interface SweepWidths {
-  readonly from: number;
-  readonly step: number;
-  readonly widest: number;
-}
+/** The widths a reading is taken at: a sweep's, from `from` up by `step`, to `widest` or the
+ *  header's own width, whichever is wider; or the widths `at` alone. */
+type ReadWidths =
+  | { readonly from: number; readonly step: number; readonly widest: number }
+  | { readonly at: readonly number[] };
 
 /**
  * The one reader of a header's geometry, run in the page: `measure` reads what the header draws
@@ -88,7 +87,7 @@ interface SweepWidths {
  */
 function readHeader(
   node: Element,
-  { drawn, widths }: { drawn: Drawn; widths: SweepWidths | null }
+  { drawn, widths }: { drawn: Drawn; widths: ReadWidths | null }
 ): Reading[] {
   const root = node as HTMLElement;
   /** The sub-pixel slack two boxes laid side by side meet within. */
@@ -372,12 +371,16 @@ function readHeader(
   };
 
   if (widths === null) return [measure(null)];
-  const own = root.getBoundingClientRect().width;
   const swept: number[] = [];
-  for (let width = widths.from; width < Math.max(widths.widest, own); width += widths.step) {
-    swept.push(width);
+  if ("at" in widths) {
+    swept.push(...widths.at);
+  } else {
+    const own = root.getBoundingClientRect().width;
+    for (let width = widths.from; width < Math.max(widths.widest, own); width += widths.step) {
+      swept.push(width);
+    }
+    swept.push(Math.max(widths.widest, Math.round(own)));
   }
-  swept.push(Math.max(widths.widest, Math.round(own)));
   // Run in the page by `evaluate`: the root's own style, kept so the sweep can put it back.
   const style = root.getAttribute("style");
   try {
@@ -403,14 +406,20 @@ interface Failure {
   readonly width: number;
 }
 
-/** Sweeps `header` through its own width and returns every failure of the five
- *  `ask-header-sweep.e2e.ts`'s head names, with the width it was read at. */
-async function sweep(header: Locator, drawn: Drawn): Promise<Failure[]> {
-  const readings = await header.evaluate(readHeader, {
-    drawn,
-    widths: { from: NARROWEST, step: STEP, widest: WIDEST },
-  });
+/** Every failure of the five `ask-header-sweep.e2e.ts`'s head names in `readings`, with the
+ *  width it was read at. */
+function failuresOf(readings: readonly Reading[]): Failure[] {
   return readings.flatMap(({ failures, width }) => failures.map((message) => ({ message, width })));
+}
+
+/** Sweeps `header` through its own width and returns every failure it draws. */
+async function sweep(header: Locator, drawn: Drawn): Promise<Failure[]> {
+  return failuresOf(
+    await header.evaluate(readHeader, {
+      drawn,
+      widths: { from: NARROWEST, step: STEP, widest: WIDEST },
+    })
+  );
 }
 
 /** A sweep's failures as the row reports them: each failure once, with the widths it was read
@@ -440,4 +449,18 @@ function byWidth(failures: readonly Failure[]): string[] {
 export async function holds(header: Locator, drawn: Drawn, what: string): Promise<void> {
   await expect(header).toBeVisible();
   expect.soft(byWidth(await sweep(header, drawn)), what).toEqual([]);
+}
+
+/** Reads `header` at each of `widths` alone, as a sweep reads it at each of its own, and holds it
+ *  to its place there, as one reported check of the row: a switch-width row's reading, which
+ *  names the widths a layout switches at rather than every width. */
+export async function holdsAt(
+  header: Locator,
+  drawn: Drawn,
+  widths: readonly number[],
+  what: string
+): Promise<void> {
+  await expect(header).toBeVisible();
+  const readings = await header.evaluate(readHeader, { drawn, widths: { at: widths } });
+  expect.soft(byWidth(failuresOf(readings)), what).toEqual([]);
 }

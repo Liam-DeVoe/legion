@@ -83,10 +83,11 @@ body {
        they were copied from, so they cannot drift;
      - nothing below `xl`, where the margin is a sheet over the document rather than a column
        beside it and the sidebar is not drawn at all: this query is the exact inverse of
-       `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`). At a compact width the blocks
-       are laid out across the viewport and inset by `<main>`'s padding when the page adopts
-       them - 1,279 px to 1,231 px, measured at 1279x900 - which is the page's own gutter and
-       not either column;
+       `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`), and in `rem` as it is, so it
+       switches with the shell's `xl:` classes at any default font size. At a compact width the
+       blocks are laid out across the viewport and inset by `<main>`'s padding when the page
+       adopts them - 1,279 px to 1,231 px, measured at 1279x900 at a 16 px default font - which
+       is the page's own gutter and not either column;
      - nothing on a route that draws no margin, because the server writes this element on the
        four issue document addresses alone (`documentAddress` in `routes/first_screen.go`), and
        `routeHasMargin` answers true for every one of them. A page with no draw carries no
@@ -106,7 +107,7 @@ body {
    and 792 px (measured at 1280x900). Where two logins share a browser the key holds whichever
    drew last, so the other sees that one re-wrap until the shell writes their own layout, which
    it does on that same load. */
-@media (min-width: 1280px) {
+@media (width >= 80rem) {
   #first-screen > [data-first-screen-address] {
     margin-left: var(--first-screen-sidebar-inset, calc(20rem + 1.5rem));
     margin-right: var(--first-screen-margin-inset, calc(384px + 1.5rem));
@@ -369,8 +370,9 @@ html:has([data-issue-page]) {
 }
 
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
-   through tablet widths so the sheet remains directly operable. */
-@media (max-width: 1279px) {
+   through tablet widths so the sheet remains directly operable. Below `xl`, as
+   `COMPACT_VIEWPORT_QUERY` (`features/shell/useDialog.ts`) is, and in its unit. */
+@media (width < 80rem) {
   input,
   select,
   textarea {
@@ -378,7 +380,7 @@ html:has([data-issue-page]) {
   }
 }
 
-@media (max-width: 1279px) {
+@media (width < 80rem) {
   html {
     scroll-padding-bottom: 5rem;
   }
@@ -428,7 +430,7 @@ html:has([data-issue-page]) {
      A font whose text box is r em tall leaves a clearance of
      (line-height - (2r - 1.2) * font-size) / 2, so it reaches into the line above wherever
      (2r - 1.2) * font-size > line-height. Segoe UI (`system-ui` on Windows, in a window
-     narrower than 1280px) has r = 1.33 by its published metrics, ascent 2210 plus descent 514
+     narrower than 80rem) has r = 1.33 by its published metrics, ascent 2210 plus descent 514
      of 2048 units per em, not measured here; at each pitch above that gives: reasoning,
      12px on 16px, -0.76px (overlaps); an agent-view message body, 14px on 20px, -0.22px
      (overlaps); a message turn, 16px on 24px, 0.32px; a document, 16px on 25.6px, 1.12px; an
@@ -881,7 +883,7 @@ html:has([data-issue-page]) {
 
 /* On touch screens the library docks the selection bar at the viewport bottom.
    An expanded margin sheet owns that space, so it suppresses the bar. */
-@media (max-width: 1279px) {
+@media (width < 80rem) {
   body:has([data-testid="margin-sheet"][data-expanded="true"])
     .dispatch-action-bar[data-touch="true"] {
     display: none;

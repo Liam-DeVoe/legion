@@ -37,16 +37,17 @@ const firstScreenGo = read("../../../../../envoy/internal/dispatch/routes/first_
 /** The one rule in `styles.css` that lays the server's draw out: its breakpoint, the property
  *  on each side, and the default each property falls back to. */
 const RESERVATION =
-  /@media \(min-width: (?<breakpoint>\d+)px\) \{\n\s*#first-screen > \[data-first-screen-address\] \{\n\s*margin-left: var\((?<sidebarProperty>--[a-z-]+), calc\((?<sidebar>[^)]*)\)\);\n\s*margin-right: var\((?<marginProperty>--[a-z-]+), calc\((?<margin>\d+)px \+ (?<gutter>[^)]*)\)\);\n\s*\}\n\}/;
+  /@media \(width >= (?<breakpoint>\d+(?:\.\d+)?[a-z]+)\) \{\n\s*#first-screen > \[data-first-screen-address\] \{\n\s*margin-left: var\((?<sidebarProperty>--[a-z-]+), calc\((?<sidebar>[^)]*)\)\);\n\s*margin-right: var\((?<marginProperty>--[a-z-]+), calc\((?<margin>\d+)px \+ (?<gutter>[^)]*)\)\);\n\s*\}\n\}/;
 
 test("the server's draw is reserved for at exactly the widths above the compact viewport", () => {
   const found = RESERVATION.exec(stylesCss)?.groups;
   expect(found, "styles.css holds no reservation for the server's first-screen draw").toBeDefined();
   // The inverse of the query the shell reads: below it the margin is a sheet over the document
-  // rather than a column beside it, and the sidebar is not drawn at all.
-  const compact = /\(max-width: (\d+)px\)/.exec(COMPACT_VIEWPORT_QUERY);
-  expect(compact, "COMPACT_VIEWPORT_QUERY is no longer a max-width query").not.toBeNull();
-  expect(Number(found?.breakpoint)).toBe(Number(compact?.[1]) + 1);
+  // rather than a column beside it, and the sidebar is not drawn at all. The same length in the
+  // same unit, so the two switch at one width whatever the reader's default font size.
+  const compact = /^\(width < (\d+(?:\.\d+)?[a-z]+)\)$/.exec(COMPACT_VIEWPORT_QUERY);
+  expect(compact, "COMPACT_VIEWPORT_QUERY is no longer a `width <` query").not.toBeNull();
+  expect(found?.breakpoint).toBe(compact?.[1]);
 });
 
 test("the columns it falls back to are the ones the shell draws for a reader with no stored layout", () => {

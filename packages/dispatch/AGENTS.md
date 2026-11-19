@@ -929,8 +929,9 @@ tab, which retains its original event body; both have an `Unpin` action, so a pi
 Conversation became a list of conversations stays its event's line here and remains removable.
 
 Where the margin stands is CSS's, as the shell's own layout is: the margin's wrapper and rail (`features/margin/Margin.tsx`), and the sidebar's column and rail and the compact top bar (`app.tsx`), take their display from `xl:` classes, the clock the shell's `xl:flex` runs on, and `useMediaQuery(COMPACT_VIEWPORT_QUERY)` chooses only what those boxes hold.
-The browser applies those classes in the frame a window crosses 1280 px, and the state follows a task or two later, so a box the state placed drew a frame or two of the other layout: crossing upward, the compact sheet was a full-width flex child of the desktop shell and `<main>` fell to almost nothing (dispatch://INFRA-1630).
-A row of `e2e/layout.e2e.ts` resizes a window across 1280 px both ways and holds every animation frame to the layout the page settles at for that width.
+`COMPACT_VIEWPORT_QUERY` is `(width < 80rem)`, the exact inverse of `xl:` in its unit, because a media query's rem is the browser's default font size: in pixels it left a reader whose default font is 20 px no navigation at all from 1280 px to 1599 px, the Menu gone and the sidebar not yet drawn, and the `styles.css` blocks that pair with the compact layout are in rem for the same reason.
+The browser applies those classes in the frame a window crosses `xl` (1280 px at a 16 px default font), and the state follows a task or two later, so a box the state placed drew a frame or two of the other layout: crossing upward, the compact sheet was a full-width flex child of the desktop shell and `<main>` fell to almost nothing (dispatch://INFRA-1630).
+A row of `e2e/layout.e2e.ts` resizes a window across 1280 px both ways and holds every animation frame to the layout the page settles at for that width, and another reads the navigation at a 20 px default font just under and at `md` and `xl`.
 
 An issue's Spec tab also shows its decisions (`GET /api/v1/issues/{key}/decisions`, under
 `["decisions", <key>]`): `useMarginItems` makes one `decision` item of each decision that is not

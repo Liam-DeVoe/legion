@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { nextFrames } from "./frames";
@@ -305,6 +305,119 @@ test("a reader whose default font is 20 px or 12 px is drawn a way to the naviga
         ways.menu && (ways.rail || ways.sidebar),
         `at ${width} px with a ${fontSize} px default font both layouts draw: ${JSON.stringify(ways)}`
       ).toBe(false);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+/** A reader's own larger default font size, at which every `rem` is 20 px. */
+const LARGE_FONT = 20;
+/** Tailwind's `md` and `xl` in rem (`--breakpoint-md`, `--breakpoint-xl` in its `theme.css`):
+ *  from `xl` the shell draws its sidebar beside `<main>`, and under it the compact bar with its
+ *  Menu; `md` is where the pages' own `md:` classes and `MD_VIEWPORT_QUERY` switch. */
+const MD = 48;
+const XL = 80;
+
+/** A box the page draws, in the page's px. */
+interface Edges {
+  readonly bottom: number;
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+}
+
+/** The box `locator` draws, which the row has already waited to see drawn. */
+async function edgesOf(locator: Locator, what: string): Promise<Edges> {
+  const box = await locator.boundingBox();
+  if (box === null) throw new Error(`${what} is not drawn`);
+  return { bottom: box.y + box.height, left: box.x, right: box.x + box.width, top: box.y };
+}
+
+/** Whether two boxes share more than the pixel two boxes laid side by side meet within. */
+function overlap(a: Edges, b: Edges): boolean {
+  return (
+    Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+    Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1
+  );
+}
+
+// The row above reads widths inside each layout. This one reads a 20 px default font at the
+// widths the shell's layouts switch at, where `xl` is 1600 px and `md` 960 px, one pixel under
+// each and at it, with a fresh load at each. At each it holds the layout that side of `xl` draws,
+// the navigation reachable in it - the sidebar beside `<main>`, or the Menu and the drawer it
+// opens - and nothing the shell draws over the page: the sidebar clear of `<main>` and of the
+// page's first row, the compact bar above both.
+test("at a 20 px default font the navigation is reachable and the shell draws nothing over the page just under and at md and xl: 959, 960, 1599 and 1600 px", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Page.setFontSizes", { fontSizes: { fixed: 13, standard: LARGE_FONT } });
+    for (const width of [
+      MD * LARGE_FONT - 1,
+      MD * LARGE_FONT,
+      XL * LARGE_FONT - 1,
+      XL * LARGE_FONT,
+    ]) {
+      const at = `at ${width} px with a ${LARGE_FONT} px default font`;
+      await page.setViewportSize({ height: 900, width });
+      await page.goto("/inbox");
+      const main = page.getByTestId("main-content");
+      // The Inbox page's first row: its heading, which the page draws before its list arrives.
+      const firstRow = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
+      await expect(main).toBeVisible();
+      await expect(firstRow).toBeVisible();
+      // The page is drawn at the size the row says it reads, so a 16 px reading cannot pass
+      // for this one.
+      await expect
+        .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize), {
+          message: `${at}: the root's font size`,
+        })
+        .toBe(`${LARGE_FONT}px`);
+      const menu = page.getByRole("button", { exact: true, name: "Open navigation" });
+      const sidebar = page.getByRole("complementary", { exact: true, name: "Navigation" });
+      const rail = page.getByRole("complementary", { exact: true, name: "Collapsed sidebar" });
+      if (width < XL * LARGE_FONT) {
+        await expect(menu, `${at}: the compact bar's Menu`).toBeInViewport({ ratio: 1 });
+        await expect(sidebar, `${at}: the sidebar beside the compact bar`).toBeHidden();
+        await expect(rail, `${at}: the rail beside the compact bar`).toBeHidden();
+        const bar = await edgesOf(page.locator("header").filter({ has: menu }), "the compact bar");
+        expect(overlap(bar, await edgesOf(main, "main")), `${at}: the compact bar over main`).toBe(
+          false
+        );
+        expect(
+          overlap(bar, await edgesOf(firstRow, "the page's first row")),
+          `${at}: the compact bar over the page's first row`
+        ).toBe(false);
+        await menu.click();
+        const drawer = page.getByRole("dialog", { name: "Navigation" });
+        await expect(
+          drawer
+            .getByRole("navigation", { name: "Navigation" })
+            .getByRole("link", { name: "Inbox" }),
+          `${at}: the drawer's navigation`
+        ).toBeInViewport();
+      } else {
+        await expect(sidebar, `${at}: the sidebar`).toBeVisible();
+        await expect(menu, `${at}: the compact bar's Menu beside the sidebar`).toBeHidden();
+        await expect(
+          sidebar
+            .getByRole("navigation", { name: "Navigation" })
+            .getByRole("link", { name: "Inbox" }),
+          `${at}: the sidebar's navigation`
+        ).toBeInViewport();
+        const side = await edgesOf(sidebar, "the sidebar");
+        expect(overlap(side, await edgesOf(main, "main")), `${at}: the sidebar over main`).toBe(
+          false
+        );
+        expect(
+          overlap(side, await edgesOf(firstRow, "the page's first row")),
+          `${at}: the sidebar over the page's first row`
+        ).toBe(false);
+      }
     }
   } finally {
     await context.close();

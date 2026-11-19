@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { type Browser, devices, expect, type Locator, test } from "@playwright/test";
+import { type Browser, devices, expect, type Locator, type Page, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -18,6 +18,7 @@ import {
   type Drawn,
   type FieldReading,
   holds,
+  holdsAt,
   type Lines,
   type Reading,
   type Rect,
@@ -49,9 +50,15 @@ import { asUser } from "./users";
  *   stacked into rows where its place draws one line fails, as a header that never wraps does.
  *
  * Each project sweeps at its own size of control: the desktop's 32 px boxes, and the phone's
- * 44 px touch boxes, which every button is below 1280 px (`web/src/styles.css`), a tablet's
- * width included. That is why the phone sweeps past its own width, to 960 px: a header at a
- * tablet's width has the phone's boxes.
+ * 44 px touch boxes, which every button is below `xl` (`web/src/styles.css`), 1280 px at the
+ * browser's own 16 px default font, a tablet's width included. That is why the phone sweeps past
+ * its own width, to 960 px: a header at a tablet's width has the phone's boxes.
+ *
+ * The sweeps read at that 16 px default. Two rows read again at a reader's own 20 px one, set
+ * through Chromium's `Page.setFontSizes` and so run under `chromium` alone, where every `rem` is
+ * 20 px and every width a layout switches at moves with it: the three container sizes below, and
+ * `xl`. They read each header just under and at each container size alone rather than every
+ * width, on both sides of `xl`, and hold the same five assertions there.
  *
  * The rows after the sweeps read headers at the one width a reader meets each at, through the
  * same reader (`readHeader`, `e2e/ask-header-reader.ts`, which holds what every row of this file
@@ -90,14 +97,28 @@ test.beforeEach(async () => {
 /** The sheet the three layout widths are named in, as container sizes of its `@theme`. */
 const STYLESHEET = readFileSync(new URL("../web/src/styles.css", import.meta.url), "utf8");
 
-/** The width `styles.css`'s `@theme` names `--container-<name>`, in px of the root's 16 px rem:
- *  the one place each layout width is written, so these rows read the width the classes do. */
-function containerWidth(name: string): number {
+/** The browser's own default font size, which every row reads at unless it says otherwise: the
+ *  px of a `rem`, since nothing in `styles.css` sizes the root. */
+const DEFAULT_FONT = 16;
+
+/** A reader's own larger default font size, which the switch-width rows read at. */
+const LARGE_FONT = 20;
+
+/** Tailwind's `xl` in rem (`--breakpoint-xl` in its `theme.css`). Of the viewport's own switches
+ *  it is the one a header draws differently across: below it every button is a 44 px touch box
+ *  (`web/src/styles.css`, unlayered, so it outranks the `md:` size a control's classes give it),
+ *  and from it each control has its own box. */
+const XL = 80;
+
+/** The width `styles.css`'s `@theme` names `--container-<name>`, in px of a root whose `rem` is
+ *  `rem` px: the one place each layout width is written, so these rows read the width the
+ *  classes do. */
+function containerWidth(name: string, rem = DEFAULT_FONT): number {
   const found = new RegExp(`--container-${name}:\\s*([\\d.]+)rem;`).exec(STYLESHEET);
   if (found?.[1] === undefined) {
     throw new Error(`web/src/styles.css's @theme names no --container-${name} in rem`);
   }
-  return Number(found[1]) * 16;
+  return Number(found[1]) * rem;
 }
 
 /** From this width a read-only decision block's header is one line, below it rows
@@ -123,6 +144,26 @@ const ANSWERED_BLOCK_LINES: Lines = [
   [ASK_BLOCK_LINE, 1, 2],
   [0, 3, 4],
 ];
+
+/** The header widths a layout switches at, at a root whose `rem` is `rem` px: just under each of
+ *  the three container sizes, and at it. */
+function switchWidths(rem: number): number[] {
+  return ["ask-card-two-lines", "ask-card-line", "ask-block-line"].flatMap((name) => {
+    const width = containerWidth(name, rem);
+    return [width - 1, width];
+  });
+}
+
+/** What `drawn` draws at a root whose `rem` is `rem` px rather than the browser's own: each band
+ *  of its lines starts where its container size does, and a container size is a size in `rem`. */
+function atRem(drawn: Drawn, rem: number): Drawn {
+  return {
+    ...drawn,
+    lines: drawn.lines?.map(
+      ([from, least, most]) => [(from / DEFAULT_FONT) * rem, least, most] as const
+    ),
+  };
+}
 
 /** The header's own parts of a card, at each place a card is drawn. */
 function cardHeader(options: { anchored: boolean; notched: boolean; turn: boolean }): Drawn {
@@ -457,6 +498,149 @@ test("the answered, resolved, retracted and declined records' headers hold their
         turn.locator("[data-ask-header]").first(),
         recordHeader({ anchored: true, notched }),
         `the ${state} record`
+      );
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+/** The viewport widths on either side of `xl` at `LARGE_FONT`: one pixel under it, where every
+ *  button is the 44 px touch box, and at it. */
+const XL_SIDES = [XL * LARGE_FONT - 1, XL * LARGE_FONT] as const;
+
+/** Sets `page`'s default font size to `px`, as the reader's own browser setting does: Chromium's
+ *  `Page.setFontSizes`, so a row that calls it runs under `chromium` alone. */
+async function setDefaultFont(page: Page, px: number): Promise<void> {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Page.setFontSizes", { fontSizes: { fixed: 13, standard: px } });
+}
+
+/** Holds a switch-width row to what it says it reads, by what the page draws: the root at
+ *  `LARGE_FONT`, and `header`'s copy control the 44 px touch box under `xl` and a box of its own
+ *  from it. A row that read at the browser's own size, or on the other side of `xl`, fails here
+ *  rather than passing for this one. */
+async function readsAtLargeFont(header: Locator, compact: boolean): Promise<void> {
+  await expect
+    .poll(() => header.page().evaluate(() => getComputedStyle(document.documentElement).fontSize), {
+      message: "the root's font size",
+    })
+    .toBe(`${LARGE_FONT}px`);
+  const copy = header.locator("[data-copy-ref] button").first();
+  if (compact) await expect(copy).toHaveCSS("min-height", "44px");
+  else await expect(copy).not.toHaveCSS("min-height", "44px");
+}
+
+// SLOW(>=2s): six asks seeded, then on each side of `xl` the Inbox, the Conversation and the
+// issue page each loaded once, and eleven headers read at six widths each.
+test("at a 20 px default font the cards' and records' headers hold their layout just under and at each width it switches at, on both sides of xl", async ({
+  browser,
+}) => {
+  const { answered, declined, issue, resolved, retracted, theirs, yours } = await seedAsks();
+  const { alice, page } = await alicePage(browser);
+  try {
+    await setDefaultFont(page, LARGE_FONT);
+    const widths = switchWidths(LARGE_FONT);
+    const card = (turn: boolean) =>
+      atRem(cardHeader({ anchored: true, notched: true, turn }), LARGE_FONT);
+    for (const viewport of XL_SIDES) {
+      const compact = viewport < XL * LARGE_FONT;
+      const at = `at ${viewport} px with a ${LARGE_FONT} px default font`;
+      await page.setViewportSize({ height: 900, width: viewport });
+
+      await page.goto("/");
+      for (const [state, ask] of [
+        ["waiting on you", yours],
+        ["an agent's turn", theirs],
+      ] as const) {
+        // The Inbox's reading column shows from `xl` (`READING_PANE_QUERY`), where `askCard`
+        // selects the row and reads its card there. Under it each row holds its own card, read
+        // here directly: `askCard` takes the column to show from 1280 px, the 16 px default's.
+        const host = compact ? page.getByTestId(`ask-${ask.id}`) : await askCard(page, ask.id);
+        const header = host.locator("[data-ask-header]").first();
+        await readsAtLargeFont(header, compact);
+        await holdsAt(header, card(true), widths, `the Inbox card, ${state}, ${at}`);
+      }
+
+      await page.goto(`/issues/${issue.key}/conversation`);
+      for (const [state, ask] of [
+        ["waiting on you", yours],
+        ["an agent's turn", theirs],
+      ] as const) {
+        const header = page.locator(`[data-turn="ask:${ask.id}"] [data-ask-header]`).first();
+        await readsAtLargeFont(header, compact);
+        await holdsAt(header, card(true), widths, `the compact card, ${state}, ${at}`);
+      }
+      for (const [state, ask, notched, label] of [
+        ["answered", answered, true, "Answered"],
+        ["resolved", resolved, false, "Resolved"],
+        ["retracted", retracted, false, "Retracted"],
+        ["declined", declined, false, "Declined"],
+      ] as const) {
+        const turn = page.locator(`[data-turn="ask:${ask.id}"]`);
+        await expect(turn.locator("[data-ask-state-label]")).toHaveText(label);
+        await holdsAt(
+          turn.locator("[data-ask-header]").first(),
+          atRem(recordHeader({ anchored: true, notched }), LARGE_FONT),
+          widths,
+          `the ${state} record, ${at}`
+        );
+      }
+      await holdsAt(
+        await changing(page.locator(`[data-turn="ask:${answered.id}"]`)),
+        card(false),
+        widths,
+        `the compact card, answered, while the answer changes, ${at}`
+      );
+
+      await page.goto(`/issues/${issue.key}`);
+      await page.getByRole("tab", { name: "Spec" }).click();
+      // Under `xl` the margin is the review sheet over the document, drawn shut until the reader
+      // opens it; from `xl` it is the column beside the document.
+      if (compact) {
+        const sheet = page.getByTestId("margin-sheet");
+        await expect(sheet).toHaveAttribute("data-expanded", "false");
+        await page.getByRole("button", { name: /^Open review panel/ }).click();
+        await expect(sheet).toHaveAttribute("data-expanded", "true");
+      }
+      for (const [state, ask] of [
+        ["waiting on you", yours],
+        ["an agent's turn", theirs],
+      ] as const) {
+        const header = marginCard(page, ask.id).locator("[data-ask-header]").first();
+        await readsAtLargeFont(header, compact);
+        await holdsAt(header, card(true), widths, `the margin card, ${state}, ${at}`);
+      }
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): one decision block seeded, answered and its issue closed, then on each side of `xl`
+// the issue page loaded once and its block's header read at six widths.
+test("at a 20 px default font a closed issue's answered block's header holds its layout just under and at each width it switches at, on both sides of xl", async ({
+  browser,
+}) => {
+  const { issue } = await seedAnsweredBlock();
+  await patchIssue(issue.key, { status: "done" });
+  const { alice, page } = await alicePage(browser);
+  try {
+    await setDefaultFont(page, LARGE_FONT);
+    for (const viewport of XL_SIDES) {
+      const compact = viewport < XL * LARGE_FONT;
+      await page.setViewportSize({ height: 900, width: viewport });
+      await page.goto(`/issues/${issue.key}`);
+      const header = documentEditor(page).locator(
+        '[data-dispatch-ask-block="decide"] header[data-ask-header]'
+      );
+      await expect(header.locator("[data-dispatch-ask-answered]")).toBeVisible();
+      await readsAtLargeFont(header, compact);
+      await holdsAt(
+        header,
+        atRem(ANSWERED_BLOCK, LARGE_FONT),
+        switchWidths(LARGE_FONT),
+        `a closed issue's answered block, at ${viewport} px with a ${LARGE_FONT} px default font`
       );
     }
   } finally {

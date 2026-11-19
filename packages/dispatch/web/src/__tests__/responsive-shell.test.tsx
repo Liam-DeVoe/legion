@@ -21,6 +21,7 @@ import "../features/margin/Margin";
 import type { MarginProps } from "../features/margin/Margin";
 import { ReservedMarginColumn } from "../features/margin/MarginColumn";
 import { DEFAULT_MARGIN_WIDTH } from "../features/margin/margin-width";
+import { COMPACT_VIEWPORT_QUERY } from "../features/shell/useDialog";
 
 const issue: IssueDetails = {
   route_status: null,
@@ -106,7 +107,7 @@ function setViewport(width: number): void {
       addEventListener: () => {},
       addListener: () => {},
       dispatchEvent: () => true,
-      matches: query === "(max-width: 1279px)" && width <= 1279,
+      matches: query === COMPACT_VIEWPORT_QUERY && width < 1280,
       media: query,
       onchange: null,
       removeEventListener: () => {},

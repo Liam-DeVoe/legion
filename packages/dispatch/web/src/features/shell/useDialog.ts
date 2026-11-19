@@ -3,8 +3,13 @@ import { NavigationType, useLocation, useNavigationType } from "react-router-dom
 
 import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
 
-/** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. */
-export const COMPACT_VIEWPORT_QUERY = "(max-width: 1279px)";
+/** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. The exact inverse of the
+ *  `xl:` classes, which is how Tailwind writes `max-xl:`, and in `rem` for `MD_VIEWPORT_QUERY`'s
+ *  reason: this query chooses whether the shell renders the compact bar with its Menu or the
+ *  sidebar, and the `xl:` classes whether either is shown, so a pixel query here left a reader
+ *  whose default font is not 16 px a band of widths in which neither was drawn - from 1280 px to
+ *  1599 px at a 20 px default, and from 960 px to 1279 px at a 12 px one. */
+export const COMPACT_VIEWPORT_QUERY = "(width < 80rem)";
 /** Below Tailwind's `md`: a phone, where a margin thread opens full-screen. */
 export const PHONE_VIEWPORT_QUERY = "(max-width: 767px)";
 /** Tailwind's `md` itself: true exactly when the `md:` classes apply. A caller that pairs this

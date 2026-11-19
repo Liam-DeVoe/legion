@@ -12,6 +12,7 @@ import { ApiError, api } from "../../api/client";
 import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api/types";
 import type { RetypeOutcome } from "../doc/editor";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import { COMPACT_VIEWPORT_QUERY } from "../shell/useDialog";
 import { Margin } from "./Margin";
 import { type DocumentBridge, MarginProvider, useMargin } from "./margin-context";
 import {
@@ -1805,7 +1806,7 @@ test("margin keeps an ask draft through parent, width, and viewport layout updat
       addListener: () => {},
       dispatchEvent: () => true,
       get matches() {
-        return query === "(max-width: 1279px)" && compact;
+        return query === COMPACT_VIEWPORT_QUERY && compact;
       },
       media: query,
       onchange: null,
